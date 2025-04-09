@@ -4,10 +4,14 @@
 
 ### Features
 * Initial release of the Agent Development Kit (ADK).
-* Multi-agent support
+* Multi-agent, agent-as-workflow, and custom agent support
 * Tool authentication support
-* Rich tool support(including MCP)
+* Rich tool support, e.g. bult-in tools, google-cloud tools, thir-party tools, and MCP tools
 * Rich callback support
 * Built-in code execution capability
 * Asynchronous runtime and execution
-* (Experimental) Live(Bidi) agent support and Compositional Function Calling(CFC) support
+* Session, and memory support
+* Built-in evaluation support
+* Development UI that makes local devlopment easy
+* Deploy to Google Cloud Run, Agent Engine
+* (Experimental) Live(Bidi) auido/video agent support and Compositional Function Calling(CFC) support
