@@ -86,7 +86,7 @@ Explore the full documentation for detailed guides on building, evaluating, and 
 
 *   **[Get Started](https://google.github.io/adk-docs/get-started/)**
 *   **[Browse Sample Agents](https://github.com/google/adk-samples)**
-*   **[Evaluate Agents](https://google.github.io/adk-docs/guides/evaluate-agents/)**
+*   **[Evaluate Agents](https://google.github.io/adk-docs/evaluate/)**
 *   **[Deploy Agents](https://google.github.io/adk-docs/deploy/)**
 *   **[API Reference](https://google.github.io/adk-docs/api-reference/)**
 
