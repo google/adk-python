@@ -957,6 +957,20 @@ class TestToGeminiSchema:
     assert gemini_schema.type == Type.STRING
     assert not gemini_schema.format
 
+  def test_to_gemini_schema_array_type(self):
+    openapi_schema = {
+        "type": ["object", "null"],
+        "properties": {
+            "name": {"type": "string"},
+            "age": {"type": "integer"},
+        },
+    }
+    gemini_schema = to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.type == [Type.OBJECT, Type.NULL]
+    assert gemini_schema.properties["name"].type == Type.STRING
+    assert gemini_schema.properties["age"].type == Type.INTEGER
+
 
 def test_snake_to_lower_camel():
   assert snake_to_lower_camel("single") == "single"

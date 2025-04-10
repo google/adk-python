@@ -130,6 +130,13 @@ def to_gemini_schema(openapi_schema: Optional[Dict[str, Any]] = None) -> Schema:
         # Simple value assignment (int, str, bool, etc.)
         pydantic_schema_data[snake_case_key] = value
 
+  # Handle array types for the 'type' field
+  if "type" in pydantic_schema_data and isinstance(pydantic_schema_data["type"], list):
+    pydantic_schema_data["type"] = [
+        Type(item.upper()) if isinstance(item, str) else item
+        for item in pydantic_schema_data["type"]
+    ]
+
   return Schema(**pydantic_schema_data)
 
 
