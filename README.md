@@ -43,6 +43,30 @@ pip install google-adk
 
 ## 🏁 Getting Started
 
+### Beginning Step: Setup
+
+Before you start, ensure you have the necessary imports and environment keys set up.
+
+1. **Imports**: Make sure to import the required modules at the beginning of your script.
+    ```python
+    from google.adk.agents import Agent
+    from google.adk.tools import google_search
+    ```
+
+2. **Environment Keys**: Set up the necessary environment keys. You can use a `.env` file or set them directly in your script.
+    ```bash
+    # .env file
+    GOOGLE_API_KEY=your_api_key
+    ```
+
+    ```python
+    # Directly in your script
+    import os
+    os.environ['GOOGLE_API_KEY'] = 'your_api_key'
+    ```
+
+### Step 1: Create Your First Agent
+
 Create your first agent (`my_agent/agent.py`):
 
 ```python
@@ -59,12 +83,16 @@ root_agent = Agent(
 )
 ```
 
+### Step 2: Initialize Your Agent
+
 Create `my_agent/__init__.py`:
 
 ```python
 # my_agent/__init__.py
 from . import agent
 ```
+
+### Step 3: Run Your Agent
 
 Run it via the CLI (from the directory *containing* `my_agent`):
 
