@@ -310,7 +310,7 @@ def _merge_function_response_events(
     function_response_events: A list of function_response events.
       NOTE: function_response_events must fulfill these requirements: 1. The
         list is in increasing order of timestamp; 2. the first event is the
-        initial function_reponse event; 3. all later events should contain at
+        initial function_response event; 3. all later events should contain at
         least one function_response part that related to the function_call
         event. (Note, 3. may not be true when aync function return some
         intermediate response, there could also be some intermediate model

@@ -42,7 +42,7 @@ class ResponseEvaluator:
 
     A note on evaluation_criteria:
       `response_match_score`: This metric compares the agents final natural
-        language reponse with the expected final response, stored in the
+        language response with the expected final response, stored in the
         "reference" field in test/eval files. We use Rouge metric to compare the
         two responses.
 
