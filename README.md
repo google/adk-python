@@ -90,6 +90,53 @@ Explore the full documentation for detailed guides on building, evaluating, and 
 *   **[Deploy Agents](https://google.github.io/adk-docs/deploy/)**
 *   **[API Reference](https://google.github.io/adk-docs/api-reference/)**
 
+## Setting Up BigQuery Connectors
+
+### Granting IAM Roles
+
+To set up a BigQuery connector, you need to grant the necessary IAM roles to the service account. Follow these steps:
+
+1. Go to the [IAM & Admin](https://console.cloud.google.com/iam-admin) page in the Google Cloud Console.
+2. Select your project.
+3. Click on the "Add" button to add a new member.
+4. Enter the service account email address.
+5. Assign the following roles:
+   - `BigQuery Data Viewer`
+   - `BigQuery User`
+   - `BigQuery Job User`
+6. Click "Save" to apply the changes.
+
+### Example Code Snippets for BigQuery Operations
+
+Here are some example code snippets for performing BigQuery operations using the ADK:
+
+```python
+from google.adk.agents import Agent
+from google.adk.tools.google_api_tool.google_api_tool_sets import bigquery_tool_set
+
+# Create an agent with BigQuery tools
+bigquery_agent = Agent(
+    name="bigquery_agent",
+    model="gemini-2.0-flash-exp",
+    instruction="You are a BigQuery assistant. Help the user with BigQuery operations.",
+    description="An assistant for BigQuery operations.",
+    tools=bigquery_tool_set.get_tools()
+)
+
+# Example usage of BigQuery tool
+async def query_bigquery():
+    query = "SELECT * FROM `project.dataset.table` LIMIT 10"
+    result = await bigquery_agent.run_async(
+        args={"query": query},
+        tool_context=None
+    )
+    print(result)
+
+# Run the example
+import asyncio
+asyncio.run(query_bigquery())
+```
+
 ## 🤝 Contributing
 
 We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our [**Contributing Guidelines**](./CONTRIBUTING.md) to get started.

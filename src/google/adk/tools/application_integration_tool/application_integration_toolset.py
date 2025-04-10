@@ -69,6 +69,31 @@ class ApplicationIntegrationToolset:
       *application_integration_toolset.get_tools(),
   ])
   ```
+
+  ## Detailed Steps for IAM Setup and Connector Configuration
+
+  ### IAM Setup
+
+  1. Go to the [IAM & Admin](https://console.cloud.google.com/iam-admin) page in the Google Cloud Console.
+  2. Select your project.
+  3. Click on the "Add" button to add a new member.
+  4. Enter the service account email address.
+  5. Assign the following roles:
+     - `BigQuery Data Viewer`
+     - `BigQuery User`
+     - `BigQuery Job User`
+  6. Click "Save" to apply the changes.
+
+  ### Connector Configuration
+
+  1. Go to the [Integration Connectors](https://console.cloud.google.com/integration/connectors) page in the Google Cloud Console.
+  2. Select your project and location.
+  3. Click on the "Create Connection" button.
+  4. Follow the prompts to configure your connection, including specifying the connection name, service name, and host.
+  5. Ensure that the connection is in the same region as your Application Integration.
+  6. Create an integration named "ExecuteConnection" with a trigger "api_trigger/ExecuteConnection".
+  7. Use the connection name, service name, and host in your integration configuration.
+
   """
 
   def __init__(
