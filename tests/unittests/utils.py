@@ -303,4 +303,3 @@ class MockLlmConnection(BaseLlmConnection):
 
   async def close(self):
     pass
-    pass
