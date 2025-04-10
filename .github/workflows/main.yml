@@ -25,4 +25,4 @@ jobs:
         pip install -e .[test]
     - name: Run Pytest
       run: |
-        pytest src/google/adk/tests/unittest
+        pytest src/google/adk/tests/unittests
