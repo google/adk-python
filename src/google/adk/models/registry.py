@@ -26,14 +26,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
 _llm_registry_dict: dict[str, type[BaseLlm]] = {}
 """Registry for LLMs.
 
 Key is the regex that matches the model name.
 Value is the class that implements the model.
 """
-
 
 class LLMRegistry:
   """Registry for LLMs."""
@@ -100,3 +98,6 @@ class LLMRegistry:
         return llm_class
 
     raise ValueError(f'Model {model} not found.')
+
+# Add models/gemini-2.0-flash to the list of supported models
+LLMRegistry._register(r'models/gemini-2.0-flash', BaseLlm)

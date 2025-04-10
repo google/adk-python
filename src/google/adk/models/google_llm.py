@@ -181,6 +181,8 @@ class Gemini(BaseLlm):
     else:
       # use v1alpha for ml_dev
       api_version = 'v1alpha'
+      if self.model == 'gemini-2.0-flash':
+        api_version = 'v1'
       return Client(
           http_options=types.HttpOptions(
               headers=self._tracking_headers, api_version=api_version
