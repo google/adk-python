@@ -80,6 +80,7 @@ eval = [
 test = [
   # go/keep-sorted start
   "langchain-community>=0.3.17",
+  "langgraph>=0.2.60",           # For LangGraphAgent tests
   "pytest-asyncio>=0.25.0",
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
