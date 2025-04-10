@@ -66,7 +66,7 @@ def convert_session_to_eval_format(session: Session) -> list[dict[str, Any]]:
                 'tool_input': tool_input,
             })
           elif subsequent_part.text:
-            # Also keep track of all the natural langauge responses that
+            # Also keep track of all the natural language responses that
             # agent (or sub agents) generated.
             intermediate_agent_responses.append(
                 {'author': event_author, 'text': subsequent_part.text}
@@ -75,7 +75,7 @@ def convert_session_to_eval_format(session: Session) -> list[dict[str, Any]]:
       # If we are here then either we are done reading all the events or we
       # encountered an event that had content authored by the end-user.
       # This, basically means an end of turn.
-      # We assume that the last natural langauge intermediate response is the
+      # We assume that the last natural language intermediate response is the
       # final response from the agent/model. We treat that as a reference.
       eval_case.append({
           'query': query,
