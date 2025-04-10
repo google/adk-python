@@ -42,7 +42,7 @@ ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 # Set up environment variables - End
 
 # Install ADK - Start
-RUN pip install google-adk
+RUN python3 -m pip install google-adk
 # Install ADK - End
 
 # Copy agent - Start
@@ -127,7 +127,7 @@ def to_cloud_run(
     shutil.copytree(agent_folder, agent_src_path)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = (
-        f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
+        f'RUN python3 -m pip install -r "/app/agents/{app_name}/requirements.txt"'
         if os.path.exists(requirements_txt_path)
         else ''
     )

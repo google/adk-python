@@ -36,8 +36,8 @@ SCHEDULE_DB = {
 
 USER_PREFERENCES_DB = {
     "user_x": {"preferred_temp": 21, "location": "Bedroom"},
-    "user_x": {"preferred_temp": 21, "location": "Living Room"},
-    "user_y": {"preferred_temp": 23, "location": "Living Room"},
+    "user_y": {"preferred_temp": 21, "location": "Living Room"},
+    "user_z": {"preferred_temp": 23, "location": "Living Room"},
 }
 
 
@@ -65,8 +65,8 @@ def reset_data():
 
   USER_PREFERENCES_DB = {
       "user_x": {"preferred_temp": 21, "location": "Bedroom"},
-      "user_x": {"preferred_temp": 21, "location": "Living Room"},
-      "user_y": {"preferred_temp": 23, "location": "Living Room"},
+      "user_y": {"preferred_temp": 21, "location": "Living Room"},
+      "user_z": {"preferred_temp": 23, "location": "Living Room"},
   }
 
 

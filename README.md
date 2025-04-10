@@ -38,7 +38,7 @@ The Agent Development Kit (ADK) is designed for developers seeking fine-grained 
 You can install the ADK using `pip`:
 
 ```bash
-pip install google-adk
+python3 -m pip install google-adk
 ```
 
 ## 🏁 Getting Started

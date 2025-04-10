@@ -153,8 +153,8 @@ def _rearrange_events_for_latest_function_response(
         if function_call_event_idx != -1:
           # in case the last response event only have part of the responses
           # for the function calls in the function call event
-          for function_call in function_calls:
-            function_responses_ids.add(function_call.id)
+          for func_call in function_calls:
+            function_responses_ids.add(func_call.id)
           break
 
   if function_call_event_idx == -1:
