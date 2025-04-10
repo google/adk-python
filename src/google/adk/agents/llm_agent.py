@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import AsyncExitStack
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -45,6 +46,7 @@ from ..planners.base_planner import BasePlanner
 from ..tools.base_tool import BaseTool
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
+from ..tools.mcp_tool.mcp_toolset import MCPToolset, SseServerParams, StdioServerParameters
 from .base_agent import BaseAgent
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
@@ -73,6 +75,7 @@ InstructionProvider: TypeAlias = Callable[[ReadonlyContext], str]
 
 ToolUnion: TypeAlias = Union[Callable, BaseTool]
 ExamplesUnion = Union[list[Example], BaseExampleProvider]
+MCPServerParamsUnion = Union[SseServerParams, StdioServerParameters]
 
 
 def _convert_tool_union_to_tool(
@@ -108,6 +111,11 @@ class LlmAgent(BaseAgent):
 
   tools: list[ToolUnion] = Field(default_factory=list)
   """Tools available to this agent."""
+
+  mcp_server_params: list[MCPServerParamsUnion] = Field(default_factory=list)
+  """The MCP Server Params"""
+
+  mcp_server_exit_stacks: list[AsyncExitStack] = Field(default_factory=list)
 
   generate_content_config: Optional[types.GenerateContentConfig] = None
   """The additional content generation configurations.
@@ -225,23 +233,37 @@ class LlmAgent(BaseAgent):
   """
   # Callbacks - End
 
+  async def _initialize_mcp_server_tools(self):
+    for params in self.mcp_server_params:
+      tools, exit_stack = await MCPToolset.from_server(connection_params=params)
+      self.tools.extend(tools)
+      self.mcp_server_exit_stacks.append(exit_stack)
+
+  async def _close_mcp_server_exit_stack(self):
+    for exit_stack in self.mcp_server_exit_stacks:
+      await exit_stack.aclose()
+
   @override
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    await self._initialize_mcp_server_tools()
     async for event in self._llm_flow.run_async(ctx):
       self.__maybe_save_output_to_state(event)
       yield event
+    await self._close_mcp_server_exit_stack()
 
   @override
   async def _run_live_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    await self._initialize_mcp_server_tools()
     async for event in self._llm_flow.run_live(ctx):
       self.__maybe_save_output_to_state(event)
       yield event
     if ctx.end_invocation:
       return
+    await self._close_mcp_server_exit_stack()
 
   @property
   def canonical_model(self) -> BaseLlm:
