@@ -51,20 +51,9 @@ def _raise_for_any_of_if_mldev(schema: types.Schema):
     )
 
 
-def _update_for_default_if_mldev(schema: types.Schema):
-  if schema.default is not None:
-    # TODO(kech): Remove this walkaround once mldev supports default value.
-    schema.default = None
-    logger.warning(
-        'Default value is not supported in function declaration schema for'
-        ' Google AI.'
-    )
-
-
 def _raise_if_schema_unsupported(variant: str, schema: types.Schema):
   if not variant == 'VERTEX_AI':
     _raise_for_any_of_if_mldev(schema)
-    _update_for_default_if_mldev(schema)
 
 
 def _is_default_value_compatible(

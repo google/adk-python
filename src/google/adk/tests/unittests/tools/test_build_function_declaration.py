@@ -264,14 +264,85 @@ def test_basemodel_list():
   )
 
 
-# TODO: comment out this test for now as crewai requires python 3.10 as minimum
-# def test_crewai_tool():
-#   docs_tool = CrewaiTool(
-#       name='direcotry_read_tool',
-#       description='use this to find files for you.',
-#       tool=FileReadTool(),
-#   )
-#   function_decl = docs_tool.get_declaration()
-#   assert function_decl.name == 'direcotry_read_tool'
-#   assert function_decl.parameters.type == 'OBJECT'
-#   assert function_decl.parameters.properties['file_path'].type == 'STRING'
+def test_default_value():
+  def simple_function(input_str: str = "default") -> str:
+    return {'result': input_str}
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input_str'].type == 'STRING'
+  assert function_decl.parameters.properties['input_str'].default == 'default'
+
+
+def test_default_value_int():
+  def simple_function(input_int: int = 42) -> int:
+    return input_int
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input_int'].type == 'INTEGER'
+  assert function_decl.parameters.properties['input_int'].default == 42
+
+
+def test_default_value_float():
+  def simple_function(input_float: float = 3.14) -> float:
+    return input_float
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input_float'].type == 'NUMBER'
+  assert function_decl.parameters.properties['input_float'].default == 3.14
+
+
+def test_default_value_bool():
+  def simple_function(input_bool: bool = True) -> bool:
+    return input_bool
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input_bool'].type == 'BOOLEAN'
+  assert function_decl.parameters.properties['input_bool'].default == True
+
+
+def test_default_value_list():
+  def simple_function(input_list: List[str] = ["a", "b"]) -> List[str]:
+    return input_list
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input_list'].type == 'ARRAY'
+  assert function_decl.parameters.properties['input_list'].default == ["a", "b"]
+
+
+def test_default_value_dict():
+  def simple_function(input_dict: Dict[str, str] = {"key": "value"}) -> Dict[str, str]:
+    return input_dict
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input_dict'].type == 'OBJECT'
+  assert function_decl.parameters.properties['input_dict'].default == {"key": "value"}
