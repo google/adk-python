@@ -63,7 +63,7 @@ Create `my_agent/__init__.py`:
 
 ```python
 # my_agent/__init__.py
-from . import agent
+from . import root_agent
 ```
 
 Run it via the CLI (from the directory *containing* `my_agent`):
