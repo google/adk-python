@@ -41,6 +41,12 @@ You can install the ADK using `pip`:
 pip install google-adk
 ```
 
+To use the `DatabaseSessionService`, install the `database` extra requirement:
+
+```bash
+pip install google-adk[database]
+```
+
 ## 🏁 Getting Started
 
 Create your first agent (`my_agent/agent.py`):

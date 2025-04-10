@@ -108,6 +108,9 @@ extensions = [
   "lxml>=5.3.0",                          # For load_web_page tool.
 ]
 
+database = [
+  "sqlalchemy>=2.0",                      # SQL database ORM
+]
 
 [tool.pyink]
 # Format py files following Google style-guide
