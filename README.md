@@ -78,6 +78,7 @@ Or launch the Web UI from the folder that contains `my_agent` folder:
 adk web
 ```
 
+
 For a full step-by-step guide, check out the [quickstart](https://google.github.io/adk-docs/get-started/quickstart/) or [sample agents](https://github.com/google/adk-samples).
 
 ## 📚 Resources
