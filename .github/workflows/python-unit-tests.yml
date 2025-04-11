@@ -1,0 +1,39 @@
+name: Python Unit Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install uv
+      run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    - name: Install dependencies
+      run: |
+        uv venv .venv
+        source .venv/bin/activate
+        uv sync --extra test
+
+    - name: Run unit tests with pytest
+      run: |
+        source .venv/bin/activate
+        pytest tests/unittests \
+          --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py \
+          --ignore=tests/unittests/artifacts/test_artifact_service.py
