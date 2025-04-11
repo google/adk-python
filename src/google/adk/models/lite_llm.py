@@ -183,7 +183,9 @@ def _content_to_message_param(
     )
 
 
-def _get_content(parts: Iterable[types.Part]) -> OpenAIMessageContent | str:
+def _get_content(
+    parts: Iterable[types.Part],
+) -> Union[OpenAIMessageContent, str]:
   """Converts a list of parts to litellm content.
 
   Args:
