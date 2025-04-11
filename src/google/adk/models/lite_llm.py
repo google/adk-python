@@ -84,13 +84,19 @@ class LiteLLMClient:
     Returns:
       The model response as a message.
     """
-
-    return await acompletion(
-        model=model,
-        messages=messages,
-        tools=tools,
-        **kwargs,
-    )
+    try:
+      return await acompletion(
+          model=model,
+          messages=messages,
+          tools=tools,
+          **kwargs,
+      )
+    except Exception as e:
+      if "Internal Server Error" in str(e):
+        logger.error("Internal Server Error encountered: %s", e)
+        raise
+      else:
+        raise
 
   def completion(
       self, model, messages, tools, stream=False, **kwargs
@@ -478,7 +484,7 @@ def _build_function_declaration_log(
   if func_decl.parameters and func_decl.parameters.properties:
     param_str = str({
         k: v.model_dump(exclude_none=True)
-        for k, v in func_decl.parameters.properties.items()
+        for k, v in func_decl.parameters.properties
     })
   return_str = "None"
   if func_decl.response:
@@ -605,58 +611,68 @@ class LiteLlm(BaseLlm):
     }
     completion_args.update(self._additional_args)
 
-    if stream:
-      text = ""
-      function_name = ""
-      function_args = ""
-      function_id = None
-      completion_args["stream"] = True
-      for part in self.llm_client.completion(**completion_args):
-        for chunk, finish_reason in _model_response_to_chunk(part):
-          if isinstance(chunk, FunctionChunk):
-            if chunk.name:
-              function_name += chunk.name
-            if chunk.args:
-              function_args += chunk.args
-            function_id = chunk.id or function_id
-          elif isinstance(chunk, TextChunk):
-            text += chunk.text
-            yield _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(
-                    role="assistant",
-                    content=chunk.text,
-                ),
-                is_partial=True,
-            )
-          if finish_reason == "tool_calls" and function_id:
-            yield _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(
-                    role="assistant",
-                    content="",
-                    tool_calls=[
-                        ChatCompletionMessageToolCall(
-                            type="function",
-                            id=function_id,
-                            function=Function(
-                                name=function_name,
-                                arguments=function_args,
-                            ),
-                        )
-                    ],
+    retries = 3
+    for attempt in range(retries):
+      try:
+        if stream:
+          text = ""
+          function_name = ""
+          function_args = ""
+          function_id = None
+          completion_args["stream"] = True
+          for part in self.llm_client.completion(**completion_args):
+            for chunk, finish_reason in _model_response_to_chunk(part):
+              if isinstance(chunk, FunctionChunk):
+                if chunk.name:
+                  function_name += chunk.name
+                if chunk.args:
+                  function_args += chunk.args
+                function_id = chunk.id or function_id
+              elif isinstance(chunk, TextChunk):
+                text += chunk.text
+                yield _message_to_generate_content_response(
+                    ChatCompletionAssistantMessage(
+                        role="assistant",
+                        content=chunk.text,
+                    ),
+                    is_partial=True,
                 )
-            )
-            function_name = ""
-            function_args = ""
-            function_id = None
-          elif finish_reason == "stop" and text:
-            yield _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(role="assistant", content=text)
-            )
-            text = ""
-
-    else:
-      response = await self.llm_client.acompletion(**completion_args)
-      yield _model_response_to_generate_content_response(response)
+              if finish_reason == "tool_calls" and function_id:
+                yield _message_to_generate_content_response(
+                    ChatCompletionAssistantMessage(
+                        role="assistant",
+                        content="",
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                type="function",
+                                id=function_id,
+                                function=Function(
+                                    name=function_name,
+                                    arguments=function_args,
+                                ),
+                            )
+                        ],
+                    )
+                )
+                function_name = ""
+                function_args = ""
+                function_id = None
+              elif finish_reason == "stop" and text:
+                yield _message_to_generate_content_response(
+                    ChatCompletionAssistantMessage(role="assistant", content=text)
+                )
+                text = ""
+          break
+        else:
+          response = await self.llm_client.acompletion(**completion_args)
+          yield _model_response_to_generate_content_response(response)
+          break
+      except Exception as e:
+        if attempt < retries - 1:
+          logger.warning("Retrying due to error: %s", e)
+        else:
+          logger.error("Failed after %d attempts: %s", retries, e)
+          raise
 
   @staticmethod
   @override
