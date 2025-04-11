@@ -16,26 +16,26 @@
     </h3>
 </html>
 
-The Agent Development Kit (ADK) is designed for developers seeking fine-grained control and flexibility when building advanced AI agents that are tightly integrated with services in Google Cloud. It allows you to define agent behavior, orchestration, and tool use directly in code, enabling robust debugging, versioning, and deployment anywhere – from your laptop to the cloud.
+The Agent Development Kit (ADK) empowers developers to build sophisticated AI agents integrated with Google Cloud services. Define agent behavior, orchestration, and tool usage directly in Python code for enhanced control, testability, versioning, and deployment flexibility—from local development to cloud environments.
 
 ---
 
 ## ✨ Key Features
 
-* **Code-First Development:** Define agents, tools, and orchestration logic for maximum control, testability, and versioning.
-* **Multi-Agent Architecture:** Build modular and scalable applications by composing multiple specialized agents in flexible hierarchies.
-* **Rich Tool Ecosystem:** Equip agents with diverse capabilities using pre-built tools, custom Python functions, API specifications, or integrating existing tools.
-* **Flexible Orchestration:** Define workflows using built-in agents for predictable pipelines, or leverage LLM-driven dynamic routing for adaptive behavior.
-* **Integrated Developer Experience:** Develop, test, and debug locally with a CLI and visual web UI.
-* **Built-in Evaluation:** Measure agent performance by evaluating response quality and step-by-step execution trajectory.
-* **Deployment Ready:** Containerize and deploy your agents anywhere – scale with Vertex AI Agent Engine, Cloud Run, or Docker.
-* **Native Streaming Support:** Build real-time, interactive experiences with native support for bidirectional streaming (text and audio).
-* **State, Memory & Artifacts:** Manage short-term conversational context, configure long-term memory, and handle file uploads/downloads.
-* **Extensibility:** Customize agent behavior deeply with callbacks and easily integrate third-party tools and services.
+*   **Code-First Development:** Define agents, tools, and orchestration logic for maximum control, testability, and versioning.
+*   **Multi-Agent Architecture:** Build modular and scalable applications by composing multiple specialized agents in flexible hierarchies.
+*   **Rich Tool Ecosystem:** Equip agents with diverse capabilities using pre-built tools, custom Python functions, OpenAPI specifications, or by integrating existing tools.
+*   **Flexible Orchestration:** Define workflows using built-in agents for predictable pipelines, or leverage LLM-driven dynamic routing for adaptive behavior.
+*   **Integrated Developer Experience:** Develop, test, and debug locally with a CLI and visual web UI.
+*   **Built-in Evaluation:** Measure agent performance by evaluating response quality and step-by-step execution trajectory.
+*   **Deployment Ready:** Containerize and deploy your agents anywhere – scale with Vertex AI Agent Engine, Cloud Run, or Docker.
+*   **Native Streaming Support:** Build real-time, interactive experiences with native support for bidirectional streaming (text and audio).
+*   **State, Memory & Artifacts:** Manage short-term conversational context, configure long-term persistent memory, and handle file uploads/downloads seamlessly.
+*   **Extensibility:** Customize agent behavior deeply with callbacks and easily integrate third-party tools and services.
 
 ## 🚀 Installation
 
-You can install the ADK using `pip`:
+Install the ADK using `pip`:
 
 ```bash
 pip install google-adk
@@ -80,9 +80,9 @@ adk web
 
 For a full step-by-step guide, check out the [quickstart](https://google.github.io/adk-docs/get-started/quickstart/) or [sample agents](https://github.com/google/adk-samples).
 
-## 📚 Resources
+## 📚 Learn More
 
-Explore the full documentation for detailed guides on building, evaluating, and deploying agents:
+Explore the full documentation and resources for detailed guides:
 
 *   **[Get Started](https://google.github.io/adk-docs/get-started/)**
 *   **[Browse Sample Agents](https://github.com/google/adk-samples)**
