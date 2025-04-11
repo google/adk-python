@@ -93,6 +93,7 @@ class GoogleApiToolSet:
       cl: Type['GoogleApiToolSet'],
       api_name: str,
       api_version: str,
+      tool_name: str = None,
   ) -> 'GoogleApiToolSet':
     spec_dict = GoogleApiToOpenApiConverter(api_name, api_version).convert()
     scope = list(
@@ -100,8 +101,11 @@ class GoogleApiToolSet:
             'authorizationCode'
         ]['scopes'].keys()
     )[0]
-    return cl(
-        cl._load_tool_set_with_oidc_auth(
-            spec_dict=spec_dict, scopes=[scope]
-        ).get_tools()
+    tool_set = cl._load_tool_set_with_oidc_auth(
+        spec_dict=spec_dict, scopes=[scope]
     )
+    if tool_name:
+      tools = [tool_set.get_tool(tool_name)]
+    else:
+      tools = tool_set.get_tools()
+    return cl(tools)
