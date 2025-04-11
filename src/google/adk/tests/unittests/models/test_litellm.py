@@ -802,3 +802,47 @@ async def test_generate_content_async_stream(
       ]
       == "string"
   )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_retry_logic(mock_acompletion, lite_llm_instance):
+    mock_acompletion.side_effect = [Exception("Internal Server Error"), mock_response]
+
+    async for response in lite_llm_instance.generate_content_async(
+        LLM_REQUEST_WITH_FUNCTION_DECLARATION
+    ):
+        assert response.content.role == "model"
+        assert response.content.parts[0].text == "Test response"
+        assert response.content.parts[1].function_call.name == "test_function"
+        assert response.content.parts[1].function_call.args == {
+            "test_arg": "test_value"
+        }
+        assert response.content.parts[1].function_call.id == "test_tool_call_id"
+
+    assert mock_acompletion.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_retry_logic_exceeds_retries(mock_acompletion, lite_llm_instance):
+    mock_acompletion.side_effect = Exception("Internal Server Error")
+
+    with pytest.raises(Exception, match="Internal Server Error"):
+        async for _ in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION
+        ):
+            pass
+
+    assert mock_acompletion.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_handles_other_exceptions(mock_acompletion, lite_llm_instance):
+    mock_acompletion.side_effect = Exception("Some other error")
+
+    with pytest.raises(Exception, match="Some other error"):
+        async for _ in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION
+        ):
+            pass
+
+    assert mock_acompletion.call_count == 1
