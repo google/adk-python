@@ -37,3 +37,12 @@ class LongRunningFunctionTool(FunctionTool):
   def __init__(self, func: Callable):
     super().__init__(func)
     self.is_long_running = True
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    result = await super().run_async(args=args, tool_context=tool_context)
+    if isinstance(result, list):
+      return result
+    else:
+      return list(result)
