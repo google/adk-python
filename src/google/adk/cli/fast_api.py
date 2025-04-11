@@ -602,9 +602,11 @@ def get_fast_api_app(
 
     # Convert the events to properly formatted SSE
     async def event_generator():
+      agent = _get_root_agent(req.app_name)
       try:
         stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
-        runner = _get_runner(req.app_name)
+        await agent.connect_mcp_server()
+        runner = _get_runner(req.app_name, root_agent=agent)
         async for event in runner.run_async(
             user_id=req.user_id,
             session_id=req.session_id,
@@ -619,6 +621,8 @@ def get_fast_api_app(
         logger.exception("Error in event_generator: %s", e)
         # You might want to yield an error event here
         yield f'data: {{"error": "{str(e)}"}}\n\n'
+      finally:
+        await agent.disconnect_mcp_server()
 
     # Returns a streaming response with the proper media type for SSE
     return StreamingResponse(
@@ -752,11 +756,11 @@ def get_fast_api_app(
     root_agent_dict[app_name] = root_agent
     return root_agent
 
-  def _get_runner(app_name: str) -> Runner:
+  def _get_runner(app_name: str, root_agent: Agent = None) -> Runner:
     """Returns the runner for the given app."""
     if app_name in runner_dict:
       return runner_dict[app_name]
-    root_agent = _get_root_agent(app_name)
+    root_agent = _get_root_agent(app_name) if root_agent is None else root_agent
     runner = Runner(
         app_name=agent_engine_id if agent_engine_id else app_name,
         agent=root_agent,

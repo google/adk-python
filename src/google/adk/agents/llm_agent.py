@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import AsyncExitStack
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -45,6 +46,7 @@ from ..planners.base_planner import BasePlanner
 from ..tools.base_tool import BaseTool
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
+from ..tools.mcp_tool.mcp_toolset import MCPToolset, SseServerParams, StdioServerParameters
 from .base_agent import BaseAgent
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
@@ -73,6 +75,7 @@ InstructionProvider: TypeAlias = Callable[[ReadonlyContext], str]
 
 ToolUnion: TypeAlias = Union[Callable, BaseTool]
 ExamplesUnion = Union[list[Example], BaseExampleProvider]
+MCPServerParamsUnion = Union[SseServerParams, StdioServerParameters]
 
 
 def _convert_tool_union_to_tool(
@@ -108,6 +111,12 @@ class LlmAgent(BaseAgent):
 
   tools: list[ToolUnion] = Field(default_factory=list)
   """Tools available to this agent."""
+
+  mcp_server_params: list[MCPServerParamsUnion] = Field(default_factory=list)
+  """The MCP Server Params"""
+
+  exit_stack: Optional[AsyncExitStack] = None
+  """AsyncExitStack used for MCPToolset."""
 
   generate_content_config: Optional[types.GenerateContentConfig] = None
   """The additional content generation configurations.
@@ -224,6 +233,32 @@ class LlmAgent(BaseAgent):
     When present, the returned dict will be used as tool result.
   """
   # Callbacks - End
+
+  async def connect_mcp_server(self):
+    """
+    Connect to MCP Servers base on the `mcp_server_params` field.
+    """
+    if self.exit_stack is not None:
+      logger.warning(
+          'MCP connection already exists. Skipping reconnection.'
+      )
+      return
+    self.exit_stack = AsyncExitStack()
+    for params in self.mcp_server_params:
+      tools, _ = await MCPToolset.from_server(connection_params=params, async_exit_stack=self.exit_stack)
+      self.tools.extend(tools)
+
+  async def disconnect_mcp_server(self):
+    """
+    Disconnect from MCP Servers.
+    """
+    if self.exit_stack is None:
+      logger.warning(
+          'MCP connection does not exist. Skipping disconnection.'
+      )
+      return
+    await self.exit_stack.aclose()
+    self.exit_stack = None
 
   @override
   async def _run_async_impl(
