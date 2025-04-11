@@ -31,7 +31,7 @@ except ImportError as e:
     ) from e
   else:
     raise ImportError(
-        "Crewai Tools require pip install 'google-adk[extensions]'."
+        "Crewai Tools require python3 -m pip install 'google-adk[extensions]'."
     ) from e
 
 

@@ -246,7 +246,7 @@ class RestApiTool(BaseTool):
     """Initializes the RestApiTool from a dict.
 
     Args:
-        parsed: A dict representation of a ParsedOperation object.
+        parsed_operation_str: A dict representation of a ParsedOperation object.
 
     Returns:
         A RestApiTool object.

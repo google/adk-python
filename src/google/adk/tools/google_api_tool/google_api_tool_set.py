@@ -90,7 +90,7 @@ class GoogleApiToolSet:
 
   @classmethod
   def load_tool_set(
-      cl: Type['GoogleApiToolSet'],
+      cls: Type['GoogleApiToolSet'],
       api_name: str,
       api_version: str,
   ) -> 'GoogleApiToolSet':
@@ -100,8 +100,8 @@ class GoogleApiToolSet:
             'authorizationCode'
         ]['scopes'].keys()
     )[0]
-    return cl(
-        cl._load_tool_set_with_oidc_auth(
+    return cls(
+        cls._load_tool_set_with_oidc_auth(
             spec_dict=spec_dict, scopes=[scope]
         ).get_tools()
     )

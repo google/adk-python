@@ -56,7 +56,7 @@ class EvalResult(BaseModel):
 
 
 MISSING_EVAL_DEPENDENCIES_MESSAGE = (
-    "Eval module is not installed, please install via `pip install"
+    "Eval module is not installed, please install via `python3 -m pip install"
     " google-adk[eval]`."
 )
 TOOL_TRAJECTORY_SCORE_KEY = "tool_trajectory_avg_score"

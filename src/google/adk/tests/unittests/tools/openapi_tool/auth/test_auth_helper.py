@@ -472,8 +472,8 @@ def test_credential_to_param_openid_no_credential():
 
   param, kwargs = credential_to_param(auth_scheme, None)
 
-  assert param == None
-  assert kwargs == None
+  assert param is None
+  assert kwargs is None
 
 
 def test_credential_to_param_oauth2_no_credential():
@@ -481,8 +481,8 @@ def test_credential_to_param_oauth2_no_credential():
 
   param, kwargs = credential_to_param(auth_scheme, None)
 
-  assert param == None
-  assert kwargs == None
+  assert param is None
+  assert kwargs is None
 
 
 def test_dict_to_auth_scheme_api_key():

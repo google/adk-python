@@ -252,9 +252,8 @@ def update_user_info(user_id: str, email: str, name: str) -> str:
 
   Args:
       user_id (str): The unique identifier of the user.
-      new_info (dict): A dictionary containing the fields to be updated (e.g.,
-        {'email': 'new_email@example.com'}). Available field keys: 'email' and
-        'name'.
+      email (str): The email address of the user.
+      name (str): The new name of the user.
 
   Returns:
       str: A message indicating whether the user's information was successfully

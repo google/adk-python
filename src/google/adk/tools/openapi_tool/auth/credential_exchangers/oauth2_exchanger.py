@@ -61,7 +61,6 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
     """Generates an auth token from the authorization response.
 
     Args:
-        auth_scheme: The OpenID Connect or OAuth2 auth scheme.
         auth_credential: The auth credential.
 
     Returns:

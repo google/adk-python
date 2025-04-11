@@ -25,7 +25,7 @@ try:
 except ImportError:
   logger.debug(
       'The Vertex[eval] sdk is not installed. If you want to use the Vertex'
-      ' Evaluation with agents, please install it(pip install'
+      ' Evaluation with agents, please install it(python3 -m pip install'
       ' "google-cloud-aiplatform[evaluation]). If not, you can ignore this'
       ' warning.'
   )

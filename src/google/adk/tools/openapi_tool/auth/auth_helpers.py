@@ -93,7 +93,7 @@ def token_to_scheme_credential(
   ```
 
   Args:
-      type: 'apikey' or 'oauth2Token'.
+      token_type: 'apikey' or 'oauth2Token'.
       location: 'header', 'query', or 'cookie' (only 'header' for oauth2Token).
       name: The name of the header, query parameter, or cookie.
       credential_value:  The value of the API Key/ Token.
