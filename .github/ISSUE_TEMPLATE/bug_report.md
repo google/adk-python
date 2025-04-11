@@ -7,10 +7,8 @@ assignees: ''
 
 ---
 
-** Where should I file issues? **
-For ADK documentation, file issues or pull requests at https://github.com/google/adk-docs.
-For ADK samples, file issues or pull requests at https://github.com/google/adk-samples.
-For ADK itself, file issues or pull requests here.
+** Please make sure you read the contribution guide and file the issues in the rigth place. **
+[Contribution guide.](https://google.github.io/adk-docs/contributing-guide/)
 
 **Describe the bug**
 A clear and concise description of what the bug is.
