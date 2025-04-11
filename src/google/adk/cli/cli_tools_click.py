@@ -36,14 +36,14 @@ logger = logging.getLogger(__name__)
 
 @click.group(context_settings={"max_content_width": 240})
 def main():
-  """Agent Development Kit CLI tools."""
-  pass
+    """Agent Development Kit CLI tools."""
+    pass
 
 
 @main.group()
 def deploy():
-  """Deploy Agent."""
-  pass
+    """Deploy Agent."""
+    pass
 
 
 @main.command("run")
@@ -62,26 +62,26 @@ def deploy():
     ),
 )
 def cli_run(agent: str, save_session: bool):
-  """Run an interactive CLI for a certain agent.
+    """Run an interactive CLI for a certain agent.
 
-  AGENT: The path to the agent source code folder.
+    AGENT: The path to the agent source code folder.
 
-  Example:
+    Example:
 
-    adk run path/to/my_agent
-  """
-  logs.log_to_tmp_folder()
+      adk run path/to/my_agent
+    """
+    logs.log_to_tmp_folder()
 
-  agent_parent_folder = os.path.dirname(agent)
-  agent_folder_name = os.path.basename(agent)
+    agent_parent_folder = os.path.dirname(agent)
+    agent_folder_name = os.path.basename(agent)
 
-  asyncio.run(
-      run_cli(
-          agent_parent_dir=agent_parent_folder,
-          agent_folder_name=agent_folder_name,
-          save_session=save_session,
-      )
-  )
+    asyncio.run(
+        run_cli(
+            agent_parent_dir=agent_parent_folder,
+            agent_folder_name=agent_folder_name,
+            save_session=save_session,
+        )
+    )
 
 
 @main.command("eval")
@@ -106,89 +106,89 @@ def cli_eval(
     config_file_path: str,
     print_detailed_results: bool,
 ):
-  """Evaluates an agent given the eval sets.
+    """Evaluates an agent given the eval sets.
 
-  AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
-  module by the name "agent". "agent" module contains a root_agent.
+    AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
+    module by the name "agent". "agent" module contains a root_agent.
 
-  EVAL_SET_FILE_PATH: You can specify one or more eval set file paths.
+    EVAL_SET_FILE_PATH: You can specify one or more eval set file paths.
 
-  For each file, all evals will be run by default.
+    For each file, all evals will be run by default.
 
-  If you want to run only specific evals from a eval set, first create a comma
-  separated list of eval names and then add that as a suffix to the eval set
-  file name, demarcated by a `:`.
+    If you want to run only specific evals from a eval set, first create a comma
+    separated list of eval names and then add that as a suffix to the eval set
+    file name, demarcated by a `:`.
 
-  For example,
+    For example,
 
-  sample_eval_set_file.json:eval_1,eval_2,eval_3
+    sample_eval_set_file.json:eval_1,eval_2,eval_3
 
-  This will only run eval_1, eval_2 and eval_3 from sample_eval_set_file.json.
+    This will only run eval_1, eval_2 and eval_3 from sample_eval_set_file.json.
 
-  CONFIG_FILE_PATH: The path to config file.
+    CONFIG_FILE_PATH: The path to config file.
 
-  PRINT_DETAILED_RESULTS: Prints detailed results on the console.
-  """
-  envs.load_dotenv_for_agent(agent_module_file_path, ".")
+    PRINT_DETAILED_RESULTS: Prints detailed results on the console.
+    """
+    envs.load_dotenv_for_agent(agent_module_file_path, ".")
 
-  try:
-    from .cli_eval import EvalMetric
-    from .cli_eval import EvalResult
-    from .cli_eval import EvalStatus
-    from .cli_eval import get_evaluation_criteria_or_default
-    from .cli_eval import get_root_agent
-    from .cli_eval import parse_and_get_evals_to_run
-    from .cli_eval import run_evals
-    from .cli_eval import try_get_reset_func
-  except ModuleNotFoundError:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
+    try:
+        from .cli_eval import EvalMetric
+        from .cli_eval import EvalResult
+        from .cli_eval import EvalStatus
+        from .cli_eval import get_evaluation_criteria_or_default
+        from .cli_eval import get_root_agent
+        from .cli_eval import parse_and_get_evals_to_run
+        from .cli_eval import run_evals
+        from .cli_eval import try_get_reset_func
+    except ModuleNotFoundError:
+        raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
 
-  evaluation_criteria = get_evaluation_criteria_or_default(config_file_path)
-  eval_metrics = []
-  for metric_name, threshold in evaluation_criteria.items():
-    eval_metrics.append(
-        EvalMetric(metric_name=metric_name, threshold=threshold)
-    )
-
-  print(f"Using evaluation creiteria: {evaluation_criteria}")
-
-  root_agent = get_root_agent(agent_module_file_path)
-  reset_func = try_get_reset_func(agent_module_file_path)
-
-  eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
-
-  try:
-    eval_results = list(
-        run_evals(
-            eval_set_to_evals,
-            root_agent,
-            reset_func,
-            eval_metrics,
-            print_detailed_results=print_detailed_results,
+    evaluation_criteria = get_evaluation_criteria_or_default(config_file_path)
+    eval_metrics = []
+    for metric_name, threshold in evaluation_criteria.items():
+        eval_metrics.append(
+            EvalMetric(metric_name=metric_name, threshold=threshold)
         )
-    )
-  except ModuleNotFoundError:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
 
-  print("*********************************************************************")
-  eval_run_summary = {}
+    print(f"Using evaluation creiteria: {evaluation_criteria}")
 
-  for eval_result in eval_results:
-    eval_result: EvalResult
+    root_agent = get_root_agent(agent_module_file_path)
+    reset_func = try_get_reset_func(agent_module_file_path)
 
-    if eval_result.eval_set_file not in eval_run_summary:
-      eval_run_summary[eval_result.eval_set_file] = [0, 0]
+    eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
 
-    if eval_result.final_eval_status == EvalStatus.PASSED:
-      eval_run_summary[eval_result.eval_set_file][0] += 1
-    else:
-      eval_run_summary[eval_result.eval_set_file][1] += 1
-  print("Eval Run Summary")
-  for eval_set_file, pass_fail_count in eval_run_summary.items():
-    print(
-        f"{eval_set_file}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
-        f" failed: {pass_fail_count[1]}"
-    )
+    try:
+        eval_results = list(
+            run_evals(
+                eval_set_to_evals,
+                root_agent,
+                reset_func,
+                eval_metrics,
+                print_detailed_results=print_detailed_results,
+            )
+        )
+    except ModuleNotFoundError:
+        raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
+
+    print("*********************************************************************")
+    eval_run_summary = {}
+
+    for eval_result in eval_results:
+        eval_result: EvalResult
+
+        if eval_result.eval_set_file not in eval_run_summary:
+            eval_run_summary[eval_result.eval_set_file] = [0, 0]
+
+        if eval_result.final_eval_status == EvalStatus.PASSED:
+            eval_run_summary[eval_result.eval_set_file][0] += 1
+        else:
+            eval_run_summary[eval_result.eval_set_file][1] += 1
+    print("Eval Run Summary")
+    for eval_set_file, pass_fail_count in eval_run_summary.items():
+        print(
+            f"{eval_set_file}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
+            f" failed: {pass_fail_count[1]}"
+        )
 
 
 @main.command("web")
@@ -255,61 +255,61 @@ def cli_web(
     port: int = 8000,
     trace_to_cloud: bool = False,
 ):
-  """Start a FastAPI server with Web UI for agents.
+    """Start a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
-  agent, containing at least `__init__.py` and `agent.py` files.
+    AGENTS_DIR: The directory of agents, where each sub-directory is a single
+    agent, containing at least `__init__.py` and `agent.py` files.
 
-  Example:
+    Example:
 
-    adk web --session_db_url=[db_url] --port=[port] path/to/agents_dir
-  """
-  if log_to_tmp:
-    logs.log_to_tmp_folder()
-  else:
-    logs.log_to_stderr()
+      adk web --session_db_url=[db_url] --port=[port] path/to/agents_dir
+    """
+    if log_to_tmp:
+        logs.log_to_tmp_folder()
+    else:
+        logs.log_to_stderr()
 
-  logging.getLogger().setLevel(log_level)
+    logging.getLogger().setLevel(log_level)
 
-  @asynccontextmanager
-  async def _lifespan(app: FastAPI):
-    click.secho(
-        f"""\
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        click.secho(
+            f"""\
 +-----------------------------------------------------------------------------+
 | ADK Web Server started                                                      |
 |                                                                             |
 | For local testing, access at http://localhost:{port}.{" "*(29 - len(str(port)))}|
 +-----------------------------------------------------------------------------+
 """,
-        fg="green",
-    )
-    yield  # Startup is done, now app is running
-    click.secho(
-        """\
+            fg="green",
+        )
+        yield  # Startup is done, now app is running
+        click.secho(
+            """\
 +-----------------------------------------------------------------------------+
 | ADK Web Server shutting down...                                             |
 +-----------------------------------------------------------------------------+
 """,
-        fg="green",
+            fg="green",
+        )
+
+    app = get_fast_api_app(
+        agent_dir=agents_dir,
+        session_db_url=session_db_url,
+        allow_origins=allow_origins,
+        web=True,
+        trace_to_cloud=trace_to_cloud,
+        lifespan=_lifespan,
+    )
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",
+        port=port,
+        reload=True,
     )
 
-  app = get_fast_api_app(
-      agent_dir=agents_dir,
-      session_db_url=session_db_url,
-      allow_origins=allow_origins,
-      web=True,
-      trace_to_cloud=trace_to_cloud,
-      lifespan=_lifespan,
-  )
-  config = uvicorn.Config(
-      app,
-      host="0.0.0.0",
-      port=port,
-      reload=True,
-  )
-
-  server = uvicorn.Server(config)
-  server.run()
+    server = uvicorn.Server(config)
+    server.run()
 
 
 @main.command("api_server")
@@ -378,36 +378,36 @@ def cli_api_server(
     port: int = 8000,
     trace_to_cloud: bool = False,
 ):
-  """Start a FastAPI server for agents.
+    """Start a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
-  agent, containing at least `__init__.py` and `agent.py` files.
+    AGENTS_DIR: The directory of agents, where each sub-directory is a single
+    agent, containing at least `__init__.py` and `agent.py` files.
 
-  Example:
+    Example:
 
-    adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
-  """
-  if log_to_tmp:
-    logs.log_to_tmp_folder()
-  else:
-    logs.log_to_stderr()
+      adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
+    """
+    if log_to_tmp:
+        logs.log_to_tmp_folder()
+    else:
+        logs.log_to_stderr()
 
-  logging.getLogger().setLevel(log_level)
+    logging.getLogger().setLevel(log_level)
 
-  config = uvicorn.Config(
-      get_fast_api_app(
-          agent_dir=agents_dir,
-          session_db_url=session_db_url,
-          allow_origins=allow_origins,
-          web=False,
-          trace_to_cloud=trace_to_cloud,
-      ),
-      host="0.0.0.0",
-      port=port,
-      reload=True,
-  )
-  server = uvicorn.Server(config)
-  server.run()
+    config = uvicorn.Config(
+        get_fast_api_app(
+            agent_dir=agents_dir,
+            session_db_url=session_db_url,
+            allow_origins=allow_origins,
+            web=False,
+            trace_to_cloud=trace_to_cloud,
+        ),
+        host="0.0.0.0",
+        port=port,
+        reload=True,
+    )
+    server = uvicorn.Server(config)
+    server.run()
 
 
 @deploy.command("cloud_run")
@@ -500,25 +500,25 @@ def cli_deploy_cloud_run(
     with_cloud_trace: bool,
     with_ui: bool,
 ):
-  """Deploys an agent to Cloud Run.
+    """Deploys an agent to Cloud Run.
 
-  AGENT: The path to the agent source code folder.
+    AGENT: The path to the agent source code folder.
 
-  Example:
+    Example:
 
-    adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
-  """
-  try:
-    cli_deploy.to_cloud_run(
-        agent_folder=agent,
-        project=project,
-        region=region,
-        service_name=service_name,
-        app_name=app_name,
-        temp_folder=temp_folder,
-        port=port,
-        with_cloud_trace=with_cloud_trace,
-        with_ui=with_ui,
-    )
-  except Exception as e:
-    click.secho(f"Deploy failed: {e}", fg="red", err=True)
+      adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
+    """
+    try:
+        cli_deploy.to_cloud_run(
+            agent_folder=agent,
+            project=project,
+            region=region,
+            service_name=service_name,
+            app_name=app_name,
+            temp_folder=temp_folder,
+            port=port,
+            with_cloud_trace=with_cloud_trace,
+            with_ui=with_ui,
+        )
+    except Exception as e:
+        click.secho(f"Deploy failed: {e}", fg="red", err=True)
