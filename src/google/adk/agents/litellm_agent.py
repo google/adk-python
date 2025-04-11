@@ -61,6 +61,14 @@ class LiteLlmAgent(LlmAgent):
         after_model_callback: Callback after model execution.
         before_tool_callback: Callback before tool execution.
         after_tool_callback: Callback after tool execution.
+
+    Example usage:
+        ```
+        agent = Agent(
+            model="ollama/gemma3:12b",
+            ...
+        )
+        ```
     """
 
     def __init__(
