@@ -109,6 +109,10 @@ def _populate_values(
         else:
           raise KeyError(f'Context variable not found: `{var_name}`.')
 
+  def _replace_escaped(match) -> str:
+    return match.group().replace('{{', '{').replace('}}', '}')
+
+  instruction_template = re.sub(r'{{+[^{}]*}}+', _replace_escaped, instruction_template)
   return re.sub(r'{+[^{}]*}+', _replace_match, instruction_template)
 
 
