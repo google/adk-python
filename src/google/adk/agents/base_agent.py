@@ -82,6 +82,9 @@ class BaseAgent(BaseModel):
   One-line description is enough and preferred.
   """
 
+  display_name: str = ''
+  """The display name of the agent for human interaction."""
+
   parent_agent: Optional[BaseAgent] = Field(default=None, init=False)
   """The parent agent of this agent.
 
@@ -315,6 +318,7 @@ class BaseAgent(BaseModel):
   @override
   def model_post_init(self, __context: Any) -> None:
     self.__set_parent_agent_for_sub_agents()
+    self.__validate_name(self.name)
 
   @field_validator('name', mode='after')
   @classmethod
