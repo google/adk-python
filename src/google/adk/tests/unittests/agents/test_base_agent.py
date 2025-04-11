@@ -101,6 +101,11 @@ def test_invalid_agent_name():
     _ = _TestingAgent(name='not an identifier')
 
 
+def test_display_name():
+  agent = _TestingAgent(name='test_agent', display_name='Test Agent')
+  assert agent.display_name == 'Test Agent'
+
+
 @pytest.mark.asyncio
 async def test_run_async(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
