@@ -114,13 +114,16 @@ def _is_default_value_compatible(
 
 
 def _parse_schema_from_parameter(
-    variant: str, param: inspect.Parameter, func_name: str
+    variant: str, param: inspect.Parameter, func_name: str,
+    description: str | None = None
 ) -> types.Schema:
   """parse schema from parameter.
 
   from the simplest case to the most complex case.
   """
   schema = types.Schema()
+  if description is not None:
+    schema.description = description
   default_value_error_msg = (
       f'Default value {param.default} of parameter {param} of function'
       f' {func_name} is not compatible with the parameter annotation'
@@ -286,6 +289,7 @@ def _parse_schema_from_parameter(
               annotation=field_info.annotation,
           ),
           func_name,
+          description=field_info.description if field_info.description else None
       )
     _raise_if_schema_unsupported(variant, schema)
     return schema
