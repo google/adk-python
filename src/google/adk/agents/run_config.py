@@ -42,7 +42,7 @@ class RunConfig(BaseModel):
   """Speech configuration for the live agent."""
 
   response_modalities: Optional[list[str]] = None
-  """The output modalities. If not set, its default to AUDIO."""
+  """The output modalities. If not set, it's default to AUDIO."""
 
   save_input_blobs_as_artifacts: bool = False
   """Whether or not to save the input blobs as artifacts."""
