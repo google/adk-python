@@ -16,22 +16,30 @@
     </h3>
 </html>
 
-The Agent Development Kit (ADK) is designed for developers seeking fine-grained control and flexibility when building advanced AI agents that are tightly integrated with services in Google Cloud. It allows you to define agent behavior, orchestration, and tool use directly in code, enabling robust debugging, versioning, and deployment anywhere – from your laptop to the cloud.
+Agent Development Kit (ADK) is designed for developers seeking fine-grained
+control and flexibility when building advanced AI agents that are tightly
+integrated with services in Google Cloud. It allows you to define agent
+behavior, orchestration, and tool use directly in code, enabling robust
+debugging, versioning, and deployment anywhere – from your laptop to the cloud.
+
 
 ---
 
 ## ✨ Key Features
 
-* **Code-First Development:** Define agents, tools, and orchestration logic for maximum control, testability, and versioning.
-* **Multi-Agent Architecture:** Build modular and scalable applications by composing multiple specialized agents in flexible hierarchies.
-* **Rich Tool Ecosystem:** Equip agents with diverse capabilities using pre-built tools, custom Python functions, API specifications, or integrating existing tools.
-* **Flexible Orchestration:** Define workflows using built-in agents for predictable pipelines, or leverage LLM-driven dynamic routing for adaptive behavior.
-* **Integrated Developer Experience:** Develop, test, and debug locally with a CLI and visual web UI.
-* **Built-in Evaluation:** Measure agent performance by evaluating response quality and step-by-step execution trajectory.
-* **Deployment Ready:** Containerize and deploy your agents anywhere – scale with Vertex AI Agent Engine, Cloud Run, or Docker.
-* **Native Streaming Support:** Build real-time, interactive experiences with native support for bidirectional streaming (text and audio).
-* **State, Memory & Artifacts:** Manage short-term conversational context, configure long-term memory, and handle file uploads/downloads.
-* **Extensibility:** Customize agent behavior deeply with callbacks and easily integrate third-party tools and services.
+- **Rich Tool Ecosystem**: Utilize pre-built tools, custom functions,
+  OpenAPI specs, or integrate existing tools to give agents diverse
+  capabilities, all for tight integration with the Google ecosystem.
+
+- **Code-First Development**: Define agent logic, tools, and orchestration
+  directly in Python for ultimate flexibility, testability, and versioning.
+
+- **Modular Multi-Agent Systems**: Design scalable applications by composing
+  multiple specialized agents into flexible hierarchies.
+
+- **Deploy Anywhere**: Easily containerize and deploy agents on Cloud Run or
+  scale seamlessly with Vertex AI Agent Engine.
+
 
 ## 🚀 Installation
 
@@ -41,16 +49,10 @@ You can install the ADK using `pip`:
 pip install google-adk
 ```
 
-## 🔑 Setup API Key
+## 🏁 Feature Highlight
 
-Follow this [guide](https://google.github.io/adk-docs/agents/models/) to get and setup your key.
-
-## 🏁 Getting Started
-
-Create your first agent (`my_agent/agent.py`):
-
+### Define a single agent:
 ```python
-# my_agent/agent.py
 from google.adk.agents import Agent
 from google.adk.tools import google_search
 
@@ -63,36 +65,42 @@ root_agent = Agent(
 )
 ```
 
-Create `my_agent/__init__.py`:
-
+### Define a multi-agent system:
+Define a multi-agent system with cooridnator agent, greeter agent, and task execution agent.
 ```python
-# my_agent/__init__.py
-from . import agent
+from google.adk.agents import LlmAgent, BaseAgent
+
+# Define individual agents
+greeter = LlmAgent(name="Greeter", model="gemini-2.0-flash-exp")
+task_exectuor = BaseAgent(name="TaskExecutor") # Custom non-LLM agent
+
+# Create parent agent and assign children via sub_agents
+coordinator = LlmAgent(
+    name="Coordinator",
+    model="gemini-2.0-flash-exp",
+    description="I coordinate greetings and tasks.",
+    sub_agents=[ # Assign sub_agents here
+        greeter,
+        task_exectuor
+    ]
+)
+
 ```
 
-Run it via the CLI (from the directory *containing* `my_agent`):
+###  Evaluate Agents
 
 ```bash
-adk run my_agent
+adk eval \
+    samples_for_testing/hello_world \
+    samples_for_testing/hello_world/hello_world_eval_set_001.evalset.json
 ```
 
-Or launch the Web UI from the folder that contains `my_agent` folder:
+## 📚 Documentation
 
-```bash
-adk web
-```
+Explore the full documentation for detailed guides on building, evaluating, and
+deploying agents:
 
-For a full step-by-step guide, check out the [quickstart](https://google.github.io/adk-docs/get-started/quickstart/) or [sample agents](https://github.com/google/adk-samples).
-
-## 📚 Resources
-
-Explore the full documentation for detailed guides on building, evaluating, and deploying agents:
-
-*   **[Get Started](https://google.github.io/adk-docs/get-started/)**
-*   **[Browse Sample Agents](https://github.com/google/adk-samples)**
-*   **[Evaluate Agents](https://google.github.io/adk-docs/evaluate/)**
-*   **[Deploy Agents](https://google.github.io/adk-docs/deploy/)**
-*   **[API Reference](https://google.github.io/adk-docs/api-reference/)**
+* **[Documentation](https://google.github.io/adk-docs)**
 
 ## 🤝 Contributing
 
@@ -101,6 +109,10 @@ We welcome contributions from the community! Whether it's bug reports, feature r
 ## 📄 License
 
 This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
+
+## Preview
+
+This feature is subject to the "Pre-GA Offerings Terms" in the General Service Terms section of the [Service Specific Terms](https://cloud.google.com/terms/service-terms#1). Pre-GA features are available "as is" and might have limited support. For more information, see the [launch stage descriptions](https://cloud.google.com/products?hl=en#product-launch-stages).
 
 ---
 
