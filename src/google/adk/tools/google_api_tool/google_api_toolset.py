@@ -28,6 +28,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth import OpenIdConnectWithConfig
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
+from ...auth.auth_credential import ServiceAccount
 from ..openapi_tool import OpenAPIToolset
 from .google_api_tool import GoogleApiTool
 from .googleapi_to_openapi_converter import GoogleApiToOpenApiConverter
@@ -105,6 +106,10 @@ class GoogleApiToolset(BaseToolset):
   def configure_auth(self, client_id: str, client_secret: str):
     self._client_id = client_id
     self._client_secret = client_secret
+
+  def configure_sa_auth(self, service_account: ServiceAccount):
+    for tool in self.tools:
+      tool.configure_sa_auth(service_account)
 
   @override
   async def close(self):

@@ -23,7 +23,9 @@ from .. import BaseTool
 from ...auth import AuthCredential
 from ...auth import AuthCredentialTypes
 from ...auth import OAuth2Auth
+from ...auth.auth_credential import ServiceAccount
 from ..openapi_tool import RestApiTool
+from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from ..tool_context import ToolContext
 
 
@@ -63,3 +65,10 @@ class GoogleApiTool(BaseTool):
             client_secret=client_secret,
         ),
     )
+
+  def configure_sa_auth(self, service_account: ServiceAccount):
+    auth_scheme, auth_credential = service_account_scheme_credential(
+        service_account
+    )
+    self.rest_api_tool.auth_scheme = auth_scheme
+    self.rest_api_tool.auth_credential = auth_credential
