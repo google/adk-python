@@ -16,8 +16,8 @@
 #
 #    We expect that the underlying GenAI SDK will provide a certain
 #    level of tracing and logging telemetry aligned with Open Telemetry
-#    Semantic Conventions (such as logging prompts, respones, request
-#    properties, etc.) and so the information that is recorded by the
+#    Semantic Conventions (such as logging prompts, responses,
+#    request properties, etc.) and so the information that is recorded by the
 #    Agent Development Kit should be focused on the higher-level
 #    constructs of the framework that are not observable by the SDK.
 

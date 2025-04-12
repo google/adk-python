@@ -120,7 +120,7 @@ class BaseAgent(BaseModel):
       self,
       parent_context: InvocationContext,
   ) -> AsyncGenerator[Event, None]:
-    """Entry method to run an agent via text-based conversaction.
+    """Entry method to run an agent via text-based conversation.
 
     Args:
       parent_context: InvocationContext, the invocation context of the parent
@@ -152,7 +152,7 @@ class BaseAgent(BaseModel):
       self,
       parent_context: InvocationContext,
   ) -> AsyncGenerator[Event, None]:
-    """Entry method to run an agent via video/audio-based conversaction.
+    """Entry method to run an agent via video/audio-based conversation.
 
     Args:
       parent_context: InvocationContext, the invocation context of the parent
@@ -171,7 +171,7 @@ class BaseAgent(BaseModel):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    """Core logic to run this agent via text-based conversaction.
+    """Core logic to run this agent via text-based conversation.
 
     Args:
       ctx: InvocationContext, the invocation context for this agent.
@@ -187,7 +187,7 @@ class BaseAgent(BaseModel):
   async def _run_live_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    """Core logic to run this agent via video/audio-based conversaction.
+    """Core logic to run this agent via video/audio-based conversation.
 
     Args:
       ctx: InvocationContext, the invocation context for this agent.
