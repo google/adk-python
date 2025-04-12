@@ -70,7 +70,7 @@ class Event(LlmResponse):
   agent_2, and agent_2 is the parent of agent_3.
 
   Branch is used when multiple sub-agent shouldn't see their peer agents'
-  conversaction history.
+  conversation history.
   """
 
   # The following are computed fields.
@@ -94,7 +94,7 @@ class Event(LlmResponse):
         not self.get_function_calls()
         and not self.get_function_responses()
         and not self.partial
-        and not self.has_trailing_code_exeuction_result()
+        and not self.has_trailing_code_execution_result()
     )
 
   def get_function_calls(self) -> list[types.FunctionCall]:
@@ -115,7 +115,7 @@ class Event(LlmResponse):
           func_response.append(part.function_response)
     return func_response
 
-  def has_trailing_code_exeuction_result(
+  def has_trailing_code_execution_result(
       self,
   ) -> bool:
     """Returns whether the event has a trailing code execution result."""

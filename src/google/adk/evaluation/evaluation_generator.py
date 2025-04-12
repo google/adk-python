@@ -42,10 +42,10 @@ class EvaluationGenerator:
     """Returns evaluation responses for the given dataset and agent.
 
     Args:
-      eval_dataset: The dataset that needs to be scraped for resposnes.
+      eval_dataset: The dataset that needs to be scraped for responses.
       agent_module_path: Path to the module that contains the root agent.
       repeat_num: Number of time the eval dataset should be repeated. This is
-        usually done to remove uncertainity that a single run may bring.
+        usually done to remove uncertainty that a single run may bring.
       agent_name: The name of the agent that should be evaluated. This is
         usually the sub-agent.
       initial_session: Initial session for the eval data.
