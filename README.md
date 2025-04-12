@@ -43,7 +43,20 @@ pip install google-adk
 
 ## 🏁 Getting Started
 
+Create a new directory for your agent:
+
+```bash
+# On Unix/Linux/macOS:
+mkdir my_agent
+
+# On Windows:
+# Create the directory using File Explorer or:
+md my_agent
+```
+
 Create your first agent (`my_agent/agent.py`):
+
+> ⚠️ **Important Note for Windows Users**: Do not use `echo` or redirection (`>`) to create Python files as this can cause encoding issues. Instead, use a text editor like VS Code, PyCharm, or Notepad++ and ensure files are saved with UTF-8 encoding.
 
 ```python
 # my_agent/agent.py
