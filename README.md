@@ -78,7 +78,7 @@ from google.adk.agents import LlmAgent, BaseAgent
 
 # Define individual agents
 greeter = LlmAgent(name="Greeter", model="gemini-2.0-flash")
-task_exectuor = BaseAgent(name="TaskExecutor") # Custom non-LLM agent
+task_exectuor = CustomAgent(name="TaskExecutor") # A subclass of BaseAgent, as a Non-LLM agent.
 
 # Create parent agent and assign children via sub_agents
 coordinator = LlmAgent(
