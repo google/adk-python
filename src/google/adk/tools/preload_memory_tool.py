@@ -75,6 +75,7 @@ class PreloadMemoryTool(BaseTool):
             
         if parts_text:
           memory_text += f'{event.author}: {" ".join(parts_text)}\n'
+          
     
     si = f"""The following content is from your previous conversations with the user.
 They may be useful for answering the user's current query.
