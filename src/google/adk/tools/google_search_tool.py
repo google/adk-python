@@ -27,10 +27,9 @@ if TYPE_CHECKING:
 
 
 class GoogleSearchTool(BaseTool):
-  """A built-in tool that is automatically invoked by Gemini 2 models to retrieve search results from Google Search.
-
-  This tool operates internally within the model and does not require or perform
-  local code execution.
+  """Tool that adds Google Search capability to any model.
+  
+  Uses the google_search API to provide web search functionality.
   """
 
   def __init__(self):
@@ -46,23 +45,11 @@ class GoogleSearchTool(BaseTool):
   ) -> None:
     llm_request.config = llm_request.config or types.GenerateContentConfig()
     llm_request.config.tools = llm_request.config.tools or []
-    if llm_request.model and llm_request.model.startswith('gemini-1'):
-      if llm_request.config.tools:
-        print(llm_request.config.tools)
-        raise ValueError(
-            'Google search tool can not be used with other tools in Gemini 1.x.'
-        )
-      llm_request.config.tools.append(
-          types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())
-      )
-    elif llm_request.model and llm_request.model.startswith('gemini-2'):
-      llm_request.config.tools.append(
-          types.Tool(google_search=types.GoogleSearch())
-      )
-    else:
-      raise ValueError(
-          f'Google search tool is not supported for model {llm_request.model}'
-      )
+    
+    # use google_search for all models
+    llm_request.config.tools.append(
+        types.Tool(google_search=types.GoogleSearch())
+    )
 
 
 google_search = GoogleSearchTool()
