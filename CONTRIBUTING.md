@@ -30,7 +30,6 @@ This project follows
 1. All Python files must be saved with UTF-8 encoding
 2. Line endings should be LF (Unix-style), not CRLF
 3. Avoid creating Python files using command-line tools (especially on Windows)
-4. Use a proper text editor (VS Code, PyCharm, etc.) for file creation and editing
 
 ### Code reviews
 
