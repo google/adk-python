@@ -48,6 +48,12 @@ You can install the ADK using `pip`:
 ```bash
 pip install google-adk
 ```
+## 📚 Documentation
+
+Explore the full documentation for detailed guides on building, evaluating, and
+deploying agents:
+
+* **[Documentation](https://google.github.io/adk-docs)**
 
 ## 🏁 Feature Highlight
 
@@ -66,7 +72,7 @@ root_agent = Agent(
 ```
 
 ### Define a multi-agent system:
-Define a multi-agent system with cooridnator agent, greeter agent, and task execution agent.
+Define a multi-agent system with cooridnator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents works together to accomplish the task.
 ```python
 from google.adk.agents import LlmAgent, BaseAgent
 
@@ -87,6 +93,12 @@ coordinator = LlmAgent(
 
 ```
 
+### Development UI
+
+A built-in development UI to help you test, evaluate, debug, and showcase your agent(s).
+
+<img src="assets/adk-web-dev-ui-function-call.png"/>
+
 ###  Evaluate Agents
 
 ```bash
@@ -95,12 +107,6 @@ adk eval \
     samples_for_testing/hello_world/hello_world_eval_set_001.evalset.json
 ```
 
-## 📚 Documentation
-
-Explore the full documentation for detailed guides on building, evaluating, and
-deploying agents:
-
-* **[Documentation](https://google.github.io/adk-docs)**
 
 ## 🤝 Contributing
 
