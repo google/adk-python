@@ -253,8 +253,8 @@ class EvaluationGenerator:
       all_mock_tools: set[str],
   ):
     """Recursively apply the before_tool_callback to the root agent and all its subagents."""
-    # check if the agent has tools that defined by evalset
-    # We use function name to check if tools match
+    # Check if the agent has tools that are defined by evalset.
+    # We use function names to check if tools match
     if not isinstance(agent, Agent) and not isinstance(agent, LlmAgent):
       return
 

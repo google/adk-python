@@ -49,7 +49,7 @@ class State:
     return key in self._value or key in self._delta
 
   def has_delta(self) -> bool:
-    """Whether the state has pending detla."""
+    """Whether the state has pending delta."""
     return bool(self._delta)
 
   def get(self, key: str, default: Any = None) -> Any:

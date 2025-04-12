@@ -267,11 +267,11 @@ def test_basemodel_list():
 # TODO: comment out this test for now as crewai requires python 3.10 as minimum
 # def test_crewai_tool():
 #   docs_tool = CrewaiTool(
-#       name='direcotry_read_tool',
+#       name='directory_read_tool',
 #       description='use this to find files for you.',
 #       tool=FileReadTool(),
 #   )
 #   function_decl = docs_tool.get_declaration()
-#   assert function_decl.name == 'direcotry_read_tool'
+#   assert function_decl.name == 'directory_read_tool'
 #   assert function_decl.parameters.type == 'OBJECT'
 #   assert function_decl.parameters.properties['file_path'].type == 'STRING'
