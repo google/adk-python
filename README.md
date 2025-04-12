@@ -64,7 +64,7 @@ from google.adk.tools import google_search
 
 root_agent = Agent(
     name="search_assistant",
-    model="gemini-2.0-flash-exp", # Or your preferred Gemini model
+    model="gemini-2.0-flash", # Or your preferred Gemini model
     instruction="You are a helpful assistant. Answer user questions using Google Search when needed.",
     description="An assistant that can search the web.",
     tools=[google_search]
@@ -77,13 +77,13 @@ Define a multi-agent system with cooridnator agent, greeter agent, and task exec
 from google.adk.agents import LlmAgent, BaseAgent
 
 # Define individual agents
-greeter = LlmAgent(name="Greeter", model="gemini-2.0-flash-exp")
+greeter = LlmAgent(name="Greeter", model="gemini-2.0-flash")
 task_exectuor = BaseAgent(name="TaskExecutor") # Custom non-LLM agent
 
 # Create parent agent and assign children via sub_agents
 coordinator = LlmAgent(
     name="Coordinator",
-    model="gemini-2.0-flash-exp",
+    model="gemini-2.0-flash",
     description="I coordinate greetings and tasks.",
     sub_agents=[ # Assign sub_agents here
         greeter,
