@@ -603,26 +603,24 @@ def get_fast_api_app(
     # Convert the events to properly formatted SSE
     async def event_generator():
       agent = _get_root_agent(req.app_name)
-      try:
-        stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
-        await agent.connect_mcp_server()
-        runner = _get_runner(req.app_name, root_agent=agent)
-        async for event in runner.run_async(
-            user_id=req.user_id,
-            session_id=req.session_id,
-            new_message=req.new_message,
-            run_config=RunConfig(streaming_mode=stream_mode),
-        ):
-          # Format as SSE data
-          sse_event = event.model_dump_json(exclude_none=True, by_alias=True)
-          logger.info("Generated event in agent run streaming: %s", sse_event)
-          yield f"data: {sse_event}\n\n"
-      except Exception as e:
-        logger.exception("Error in event_generator: %s", e)
-        # You might want to yield an error event here
-        yield f'data: {{"error": "{str(e)}"}}\n\n'
-      finally:
-        await agent.disconnect_mcp_server()
+      async with agent:
+        try:
+          stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
+          runner = _get_runner(req.app_name, root_agent=agent)
+          async for event in runner.run_async(
+              user_id=req.user_id,
+              session_id=req.session_id,
+              new_message=req.new_message,
+              run_config=RunConfig(streaming_mode=stream_mode),
+          ):
+            # Format as SSE data
+            sse_event = event.model_dump_json(exclude_none=True, by_alias=True)
+            logger.info("Generated event in agent run streaming: %s", sse_event)
+            yield f"data: {sse_event}\n\n"
+        except Exception as e:
+          logger.exception("Error in event_generator: %s", e)
+          # You might want to yield an error event here
+          yield f'data: {{"error": "{str(e)}"}}\n\n'
 
     # Returns a streaming response with the proper media type for SSE
     return StreamingResponse(

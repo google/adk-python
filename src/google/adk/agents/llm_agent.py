@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import AsyncExitStack
-from typing import Any
+from typing import Any, Awaitable
 from typing import AsyncGenerator
 from typing import Callable
 from typing import Literal
@@ -111,9 +111,6 @@ class LlmAgent(BaseAgent):
 
   tools: list[ToolUnion] = Field(default_factory=list)
   """Tools available to this agent."""
-
-  mcp_server_params: list[MCPServerParamsUnion] = Field(default_factory=list)
-  """The MCP Server Params"""
 
   exit_stack: Optional[AsyncExitStack] = None
   """AsyncExitStack used for MCPToolset."""
@@ -234,31 +231,34 @@ class LlmAgent(BaseAgent):
   """
   # Callbacks - End
 
-  async def connect_mcp_server(self):
-    """
-    Connect to MCP Servers base on the `mcp_server_params` field.
-    """
-    if self.exit_stack is not None:
-      logger.warning(
-          'MCP connection already exists. Skipping reconnection.'
-      )
-      return
-    self.exit_stack = AsyncExitStack()
-    for params in self.mcp_server_params:
-      tools, _ = await MCPToolset.from_server(connection_params=params, async_exit_stack=self.exit_stack)
-      self.tools.extend(tools)
+  async_setup: Optional[Callable[[LlmAgent], Awaitable[Optional[AsyncExitStack]]]] = None
+  """
+  An asynchronous setup hook to initialize resources or connections during the agent's startup phase. 
+  For example, the following function can be used to initialize MCP server tools and manage connections:"
+  ```
+  async def get_mcp_server_tools(agent: LlmAgent) -> AsyncExitStack:
+      stack = AsyncExitStack()
+      tools, _ = await MCPToolset.from_server(connection_params=parameters, async_exit_stack=stack)
+      agent.tools.extend(tools)
+      return stack
+  
+  # Example usage of async_setup in LlmAgent
+  root_agent = LlmAgent(
+      model="You model",
+      name="my_agent",
+      instruction="You are a helpful assistant",
+      async_setup=get_mcp_server_tools
+  )
+  ```
+  """
 
-  async def disconnect_mcp_server(self):
-    """
-    Disconnect from MCP Servers.
-    """
-    if self.exit_stack is None:
-      logger.warning(
-          'MCP connection does not exist. Skipping disconnection.'
-      )
-      return
-    await self.exit_stack.aclose()
-    self.exit_stack = None
+  async def __aenter__(self):
+    self.exit_stack = await self.async_setup(self)
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    if self.exit_stack is not None:
+      await self.exit_stack.aclose()
 
   @override
   async def _run_async_impl(
