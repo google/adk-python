@@ -76,7 +76,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
 
     for i in range(len(events) - 2, -1, -1):
       event = events[i]
-      # looking for the system long running reqeust euc function call
+      # looking for the system long running request euc function call
       function_calls = event.get_function_calls()
       if not function_calls:
         continue
@@ -92,7 +92,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
       if not tools_to_resume:
         continue
 
-      # found the the system long running reqeust euc function call
+      # found the the system long running request euc function call
       # looking for original function call that requests euc
       for j in range(i - 1, -1, -1):
         event = events[j]
