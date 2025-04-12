@@ -179,7 +179,7 @@ def _content_to_message_param(
     return ChatCompletionAssistantMessage(
         role=role,
         content=_get_content(content.parts),
-        tool_calls=tool_calls or None,
+        tool_calls=tool_calls or [],
     )
 
 
