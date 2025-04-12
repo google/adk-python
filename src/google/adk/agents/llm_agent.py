@@ -244,7 +244,7 @@ class LlmAgent(BaseAgent):
   
   # Example usage of async_setup in LlmAgent
   root_agent = LlmAgent(
-      model="You model",
+      model="your model",
       name="my_agent",
       instruction="You are a helpful assistant",
       async_setup=get_mcp_server_tools
