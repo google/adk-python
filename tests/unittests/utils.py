@@ -231,7 +231,7 @@ class MockModel(BaseLlm):
     if not responses:
       return cls(responses=[])
     elif isinstance(responses[0], LlmResponse):
-      # reponses is list[LlmResponse]
+      # responses is list[LlmResponse]
       return cls(responses=responses)
     else:
       responses = [
