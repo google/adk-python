@@ -41,6 +41,10 @@ You can install the ADK using `pip`:
 pip install google-adk
 ```
 
+## 🔑 Setup API Key
+
+Follow this [guide](https://google.github.io/adk-docs/agents/models/) to get and setup your key.
+
 ## 🏁 Getting Started
 
 Create your first agent (`my_agent/agent.py`):
