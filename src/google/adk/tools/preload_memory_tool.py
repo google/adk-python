@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from google.genai import types
 from typing_extensions import override
 
 from .base_tool import BaseTool
@@ -53,13 +54,28 @@ class PreloadMemoryTool(BaseTool):
       time_str = datetime.fromtimestamp(memory.events[0].timestamp).isoformat()
       memory_text += f'Time: {time_str}\n'
       for event in memory.events:
-        # TODO: support multi-part content.
-        if (
-            event.content
-            and event.content.parts
-            and event.content.parts[0].text
-        ):
-          memory_text += f'{event.author}: {event.content.parts[0].text}\n'
+        if not event.content or not event.content.parts:
+          continue
+          
+        parts_text = []
+        for part in event.content.parts:
+          if part.text:
+            parts_text.append(part.text)
+          elif part.function_call:
+            func_name = part.function_call.name or "unknown_function"
+            args = str(part.function_call.args or {})
+            parts_text.append(f"[Function Call: {func_name}({args})]")
+          elif part.function_response:
+            func_name = part.function_response.name or "unknown_function"
+            response = str(part.function_response.response or {})
+            parts_text.append(f"[Function Response: {func_name} -> {response}]")
+          elif part.inline_data:
+            mime_type = part.inline_data.mime_type or "unknown type"
+            parts_text.append(f"[Data: {mime_type}]")
+            
+        if parts_text:
+          memory_text += f'{event.author}: {" ".join(parts_text)}\n'
+    
     si = f"""The following content is from your previous conversations with the user.
 They may be useful for answering the user's current query.
 <PAST_CONVERSATIONS>
