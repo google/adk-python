@@ -72,7 +72,7 @@ root_agent = Agent(
 ```
 
 ### Define a multi-agent system:
-Define a multi-agent system with cooridnator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents works together to accomplish the task.
+Define a multi-agent system with coordinator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents works together to accomplish the task.
 ```python
 from google.adk.agents import LlmAgent, BaseAgent
 
