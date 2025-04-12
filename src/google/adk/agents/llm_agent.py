@@ -46,7 +46,6 @@ from ..planners.base_planner import BasePlanner
 from ..tools.base_tool import BaseTool
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
-from ..tools.mcp_tool.mcp_toolset import MCPToolset, SseServerParams, StdioServerParameters
 from .base_agent import BaseAgent
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
@@ -75,7 +74,6 @@ InstructionProvider: TypeAlias = Callable[[ReadonlyContext], str]
 
 ToolUnion: TypeAlias = Union[Callable, BaseTool]
 ExamplesUnion = Union[list[Example], BaseExampleProvider]
-MCPServerParamsUnion = Union[SseServerParams, StdioServerParameters]
 
 
 def _convert_tool_union_to_tool(
@@ -113,7 +111,9 @@ class LlmAgent(BaseAgent):
   """Tools available to this agent."""
 
   exit_stack: Optional[AsyncExitStack] = None
-  """AsyncExitStack used for MCPToolset."""
+  """An AsyncExitStack instance used within the async_setup hook to manage 
+  asynchronous resources and connections during the agent's setup phase.
+  """
 
   generate_content_config: Optional[types.GenerateContentConfig] = None
   """The additional content generation configurations.
