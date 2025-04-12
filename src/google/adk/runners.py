@@ -108,7 +108,7 @@ class Runner:
     """Runs the agent.
 
     NOTE: This sync interface is only for local testing and convenience purpose.
-    Consider to use `run_async` for production usage.
+    Consider using `run_async` for production usage.
 
     Args:
       user_id: The user ID of the session.

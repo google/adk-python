@@ -31,9 +31,9 @@ FINAL_ANSWER_TAG = '/*FINAL_ANSWER*/'
 
 
 class PlanReActPlanner(BasePlanner):
-  """Plan-Re-Act planner that constraints the LLM response to generate a plan before any action/observation.
+  """Plan-Re-Act planner that constrains the LLM response to generate a plan before any action/observation.
 
-  Note: this planner does not require the model to support buil-in thinking
+  Note: this planner does not require the model to support built-in thinking
   features or setting the thinking config.
   """
 

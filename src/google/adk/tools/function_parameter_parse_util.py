@@ -53,7 +53,7 @@ def _raise_for_any_of_if_mldev(schema: types.Schema):
 
 def _update_for_default_if_mldev(schema: types.Schema):
   if schema.default is not None:
-    # TODO(kech): Remove this walkaround once mldev supports default value.
+    # TODO(kech): Remove this workaround once mldev supports default value.
     schema.default = None
     logger.warning(
         'Default value is not supported in function declaration schema for'
