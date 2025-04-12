@@ -124,7 +124,7 @@ class InvocationContext(BaseModel):
   agent_2, and agent_2 is the parent of agent_3.
 
   Branch is used when multiple sub-agents shouldn't see their peer agents'
-  conversaction history.
+  conversation history.
   """
   agent: BaseAgent
   """The current agent of this invocation context. Readonly."""

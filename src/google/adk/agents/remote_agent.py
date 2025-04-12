@@ -32,7 +32,7 @@ class RemoteAgent(BaseAgent):
   sub_agents: list[BaseAgent] = Field(
       default_factory=list, init=False, frozen=True
   )
-  """Sub-agent is dsiabled in RemoteAgent."""
+  """Sub-agent is disabled in RemoteAgent."""
 
   @override
   async def _run_async_impl(

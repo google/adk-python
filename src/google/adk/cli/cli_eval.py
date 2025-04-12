@@ -112,14 +112,14 @@ def get_evaluation_criteria_or_default(
 
 
 def get_root_agent(agent_module_file_path: str) -> Agent:
-  """Returns root agent given the agetn module."""
+  """Returns root agent given the agent module."""
   agent_module = _get_agent_module(agent_module_file_path)
   root_agent = agent_module.agent.root_agent
   return root_agent
 
 
 def try_get_reset_func(agent_module_file_path: str) -> Any:
-  """Returns reset function for the agent, if present, given the agetn module."""
+  """Returns reset function for the agent, if present, given the agent module."""
   agent_module = _get_agent_module(agent_module_file_path)
   reset_func = getattr(agent_module.agent, "reset_data", None)
   return reset_func
