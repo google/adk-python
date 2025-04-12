@@ -150,7 +150,7 @@ def cli_eval(
         EvalMetric(metric_name=metric_name, threshold=threshold)
     )
 
-  print(f"Using evaluation creiteria: {evaluation_criteria}")
+  print(f"Using evaluation criteria: {evaluation_criteria}")
 
   root_agent = get_root_agent(agent_module_file_path)
   reset_func = try_get_reset_func(agent_module_file_path)
