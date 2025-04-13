@@ -41,7 +41,8 @@ def _convert_content_to_ollama_message(content: types.Content | str) -> OllamaMe
         return {"role": "user", "content": content}
 
     # Map ADK roles to Ollama roles
-    role = "assistant" if content.role == types.Role.MODEL else "user"
+    # Use string comparison for role, as types.Role doesn't exist
+    role = "assistant" if content.role == 'model' else "user"
     # Assuming simple text parts for Ollama
     text_content = "".join(part.text for part in content.parts if part.text)
     return {"role": role, "content": text_content}
