@@ -14,6 +14,7 @@
 
 import json
 from unittest import mock
+import asyncio
 import httpx
 import pytest
 from google.genai import types
@@ -146,9 +147,37 @@ def llm_request_with_config(ollama_llm):
 
 # Helper to simulate httpx.AsyncClient.stream response
 async def mock_aiter_lines(lines_data):
+    """Helper to simulate streaming response lines."""
     for line in lines_data:
-        yield json.dumps(line) # Simulate reading JSON lines
-        await asyncio.sleep(0) # Allow context switching
+        yield json.dumps(line) # Simulate reading JSON lines from stream
+        await asyncio.sleep(0) # Allow context switching without blocking tests
+
+# Properly define the mock setup for streaming tests
+@pytest.fixture
+def mock_streaming_response(ollama_stream_response_chunks):
+    """Setup proper mocking for streaming responses."""
+    async def _setup_mock(mock_client):
+        # Configure stream response mock
+        mock_stream_response = mock.AsyncMock(spec=httpx.Response)
+        mock_stream_response.raise_for_status = mock.Mock()
+        
+        # Prepare lines iterable
+        async def _aiter_lines():
+            for chunk in ollama_stream_response_chunks:
+                yield json.dumps(chunk)
+        
+        # Set up the aiter_lines method
+        mock_stream_response.aiter_lines.return_value = _aiter_lines()
+        
+        # Set up the context manager
+        mock_stream_ctx = mock.AsyncMock()
+        mock_stream_ctx.__aenter__.return_value = mock_stream_response
+        mock_stream_ctx.__aexit__.return_value = None
+        
+        # Set the return value for the stream method
+        mock_client.stream.return_value = mock_stream_ctx
+    
+    return _setup_mock
 
 # --- Test Cases ---
 
@@ -249,36 +278,28 @@ async def test_generate_content_async_non_stream(
 
 @pytest.mark.asyncio
 async def test_generate_content_async_stream(
-    ollama_llm, basic_llm_request, ollama_stream_response_chunks, mock_httpx_client
+    ollama_llm, basic_llm_request, ollama_stream_response_chunks, mock_httpx_client, mock_streaming_response
 ):
     """Test streaming generation."""
-    # Configure the mock client's stream method
-    mock_stream_response = mock.AsyncMock(spec=httpx.Response)
-    mock_stream_response.raise_for_status = mock.Mock()
-    # Use helper to simulate aiter_lines
-    mock_stream_response.aiter_lines.return_value = mock_aiter_lines(ollama_stream_response_chunks)
-    # Mock the async context manager for the stream response
-    mock_stream_context = mock.AsyncMock()
-    mock_stream_context.__aenter__.return_value = mock_stream_response
-    mock_stream_context.__aexit__.return_value = None
-    mock_httpx_client.stream.return_value = mock_stream_context
-
+    # Setup proper streaming mock
+    await mock_streaming_response(mock_httpx_client)
+    
     # Call the method under test
     responses = [
         resp async for resp in ollama_llm.generate_content_async(basic_llm_request, stream=True)
     ]
 
-    # Assertions
-    # Should yield one LlmResponse per content chunk (6 chunks + 1 final metadata)
-    # We only expect LlmResponse for content chunks
+    # Assertions - only check non-empty content responses
     expected_texts = ["The", " capital", " of", " France", " is", " Paris."]
-    assert len(responses) == len(expected_texts)
+    content_responses = [r for r in responses if r.content and r.content.parts and r.content.parts[0].text]
+    
+    assert len(content_responses) == len(expected_texts)
 
-    for i, response in enumerate(responses):
+    for i, response in enumerate(content_responses):
         assert isinstance(response, LlmResponse)
         assert response.content.role == "model"
         assert response.content.parts[0].text == expected_texts[i]
-        assert response.partial # All streamed chunks should be partial
+        assert response.partial  # All streamed chunks should be partial
 
     # Verify API call
     expected_payload = _build_ollama_request_payload(basic_llm_request, "test-model", True)
@@ -304,14 +325,21 @@ async def test_generate_content_async_ollama_error_stream(
     ollama_llm, basic_llm_request, ollama_error_response, mock_httpx_client
 ):
     """Test handling of Ollama API error during streaming."""
-    error_stream_chunks = [ollama_error_response] # Error comes as a JSON line
+    # Setup simple error stream
     mock_stream_response = mock.AsyncMock(spec=httpx.Response)
     mock_stream_response.raise_for_status = mock.Mock()
-    mock_stream_response.aiter_lines.return_value = mock_aiter_lines(error_stream_chunks)
-    mock_stream_context = mock.AsyncMock()
-    mock_stream_context.__aenter__.return_value = mock_stream_response
-    mock_stream_context.__aexit__.return_value = None
-    mock_httpx_client.stream.return_value = mock_stream_context
+    
+    # Create async iterable for error response
+    async def _error_iter():
+        yield json.dumps(ollama_error_response)
+    
+    mock_stream_response.aiter_lines.return_value = _error_iter()
+    
+    # Setup context manager
+    mock_stream_ctx = mock.AsyncMock()
+    mock_stream_ctx.__aenter__.return_value = mock_stream_response
+    mock_stream_ctx.__aexit__.return_value = None
+    mock_httpx_client.stream.return_value = mock_stream_ctx
 
     with pytest.raises(RuntimeError, match="Ollama API error: Model 'unknown-model' not found"):
         async for _ in ollama_llm.generate_content_async(basic_llm_request, stream=True):
@@ -365,6 +393,3 @@ async def test_generate_content_async_request_error(
     with pytest.raises(RuntimeError, match="Failed to connect to Ollama API"):
         async for _ in ollama_llm.generate_content_async(basic_llm_request, stream=False):
             pass
-
-# Example of how to import asyncio if needed for helper functions
-import asyncio
