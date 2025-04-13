@@ -35,6 +35,7 @@ dependencies = [
   "google-cloud-storage>=2.18.0, <3.0.0",    # For GCS Artifact service
   "google-genai>=1.9.0",                     # Google GenAI SDK
   "graphviz>=0.20.2",                        # Graphviz for graph rendering
+  "httpx>=0.27.0",                           # For async HTTP requests (e.g., Ollama)
   "mcp>=1.5.0;python_version>='3.10'",       # For MCP Toolset
   "opentelemetry-api>=1.31.0",               # OpenTelemetry
   "opentelemetry-exporter-gcp-trace>=1.9.0",
@@ -80,6 +81,7 @@ eval = [
 test = [
   # go/keep-sorted start
   "anthropic>=0.43.0",               # For anthropic model tests
+  "httpx>=0.27.0",                   # Required for Ollama tests
   "langchain-community>=0.3.17",
   "langgraph>=0.2.60",               # For LangGraphAgent
   "litellm>=1.63.11",                # For LiteLLM tests
@@ -106,6 +108,7 @@ extensions = [
   "beautifulsoup4>=3.2.2",                # For load_web_page tool.
   "crewai[tools];python_version>='3.10'", # For CrewaiTool
   "docker>=7.0.0",                        # For ContainerCodeExecutor
+  "httpx>=0.27.0",                        # Required for Ollama support
   "langgraph>=0.2.60",                    # For LangGraphAgent
   "litellm>=1.63.11",                     # For LiteLLM support
   "llama-index-readers-file>=0.4.0",      # for retrieval usings LlamaIndex.
