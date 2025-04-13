@@ -19,11 +19,13 @@ from .google_llm import Gemini
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 from .registry import LLMRegistry
+from .ollama_llm import OllamaLlm
 
 __all__ = [
     'BaseLlm',
     'Gemini',
     'LLMRegistry',
+    'OllamaLlm',
 ]
 
 
