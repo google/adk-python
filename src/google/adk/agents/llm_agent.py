@@ -253,7 +253,8 @@ class LlmAgent(BaseAgent):
   """
 
   async def __aenter__(self):
-    self.exit_stack = await self.async_setup(self)
+    if callable(self.async_setup):
+      self.exit_stack = await self.async_setup(self)
     return self
 
   async def __aexit__(self, exc_type, exc_val, exc_tb):
