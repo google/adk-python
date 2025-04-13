@@ -34,6 +34,8 @@ Key is the regex that matches the model name.
 Value is the class that implements the model.
 """
 
+from .ollama_llm import OllamaLlm
+
 
 class LLMRegistry:
   """Registry for LLMs."""
