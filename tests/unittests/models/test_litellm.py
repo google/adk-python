@@ -536,7 +536,7 @@ def test_content_to_message_param_function_call():
   content.parts[0].function_call.id = "test_tool_call_id"
   message = _content_to_message_param(content)
   assert message["role"] == "assistant"
-  assert message["content"] == []
+  assert message["content"] == None
   assert message["tool_calls"][0].type == "function"
   assert message["tool_calls"][0].id == "test_tool_call_id"
   assert message["tool_calls"][0].function.name == "test_function"
