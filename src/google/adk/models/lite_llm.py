@@ -178,12 +178,14 @@ def _content_to_message_param(
 
     return ChatCompletionAssistantMessage(
         role=role,
-        content=_get_content(content.parts),
+        content=_get_content(content.parts) or None,
         tool_calls=tool_calls or None,
     )
 
 
-def _get_content(parts: Iterable[types.Part]) -> OpenAIMessageContent | str:
+def _get_content(
+    parts: Iterable[types.Part],
+) -> Union[OpenAIMessageContent, str]:
   """Converts a list of parts to litellm content.
 
   Args:

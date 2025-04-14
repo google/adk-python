@@ -19,7 +19,7 @@ from .auth_schemes import AuthScheme
 
 
 class AuthConfig(BaseModel):
-  """The auth config sent by tool asking client to collect auth credentails and
+  """The auth config sent by tool asking client to collect auth credentials and
 
   adk and client will help to fill in the response
   """
