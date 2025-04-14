@@ -391,11 +391,17 @@ def _model_response_to_generate_content_response(
 
   if not message:
     raise ValueError("No message in response")
-  return _message_to_generate_content_response(message)
+  
+  response_cost = None
+  if hasattr(response, "_hidden_params") and isinstance(response._hidden_params, dict):
+      response_cost = response._hidden_params.get("response_cost")
+      response_cost = response_cost*86
+
+  return _message_to_generate_content_response(message, response_cost=response_cost)
 
 
 def _message_to_generate_content_response(
-    message: Message, is_partial: bool = False
+    message: Message, is_partial: bool = False, response_cost: float = None
 ) -> LlmResponse:
   """Converts a litellm message to LlmResponse.
 
@@ -422,7 +428,9 @@ def _message_to_generate_content_response(
         parts.append(part)
 
   return LlmResponse(
-      content=types.Content(role="model", parts=parts), partial=is_partial
+      content=types.Content(role="model", parts=parts), 
+      partial=is_partial, 
+      response_cost=response_cost
   )
 
 
@@ -596,7 +604,7 @@ class LiteLlm(BaseLlm):
       LlmResponse: The model response.
     """
 
-    logger.info(_build_request_log(llm_request))
+    # logger.info(_build_request_log(llm_request))
 
     messages, tools = _get_completion_inputs(llm_request)
 
