@@ -80,7 +80,7 @@ from google.adk.agents import LlmAgent, BaseAgent
 
 # Define individual agents
 greeter = LlmAgent(name="Greeter", model="gemini-2.0-flash")
-task_exectuor = CustomAgent(name="TaskExecutor") # A subclass of BaseAgent, as a Non-LLM agent.
+task_executor = CustomAgent(name="TaskExecutor") # A subclass of BaseAgent, as a Non-LLM agent.
 
 # Create parent agent and assign children via sub_agents
 coordinator = LlmAgent(
@@ -89,7 +89,7 @@ coordinator = LlmAgent(
     description="I coordinate greetings and tasks.",
     sub_agents=[ # Assign sub_agents here
         greeter,
-        task_exectuor
+        task_executor
     ]
 )
 
