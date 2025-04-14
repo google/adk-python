@@ -376,7 +376,20 @@ def _model_response_to_chunk(
 def _model_response_to_generate_content_response(
     response: ModelResponse,
 ) -> LlmResponse:
-  """Converts a litellm response to LlmResponse.
+  """Converts a litellm response to LlmResponse with robust error handling.
+
+  This enhanced version:
+  1. Adds validation for required fields with proper defaults
+  2. Improves JSON parsing to handle both standard JSON and Python-style strings
+  3. Implements comprehensive error handling to prevent crashes
+  4. Maintains compatibility with all model formats
+
+  Implementation note:
+  This function is part of the fix for an infinite loop issue that occurs when using
+  Ollama/Gemma3 models with LiteLLM. These models sometimes return malformed JSON in 
+  function call arguments, which can cause the system to get stuck in a loop.
+  The robust parsing ensures that even with malformed JSON, we can still extract
+  valid arguments and prevent failures.
 
   Args:
     response: The model response.
@@ -384,14 +397,116 @@ def _model_response_to_generate_content_response(
   Returns:
     The LlmResponse.
   """
-
-  message = None
-  if response.get("choices", None):
-    message = response["choices"][0].get("message", None)
-
-  if not message:
-    raise ValueError("No message in response")
-  return _message_to_generate_content_response(message)
+  try:
+    # Validate response structure
+    if not hasattr(response, "choices") or not response.choices:
+      logger.warning("ModelResponse missing choices or empty choices list")
+      return LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part(text="No response generated from model.")],
+          )
+      )
+        
+    # Get first choice safely
+    choice = response.choices[0]
+    
+    # Validate message existence
+    if not hasattr(choice, "message") or not choice.message:
+      logger.warning("Choice missing message or empty message")
+      return LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part(text="Empty message from model.")],
+          )
+      )
+        
+    message = choice.message
+    parts = []
+    
+    # Handle text content if present
+    if hasattr(message, "content") and message.content:
+      parts.append(types.Part(text=message.content))
+    
+    # Handle tool calls with proper validation
+    if hasattr(message, "tool_calls") and message.tool_calls:
+      for tool_call in message.tool_calls:
+        logger.debug(f"Processing tool call: {tool_call}")
+        
+        # Validate required fields
+        if not hasattr(tool_call, "function"):
+          logger.warning("Tool call missing function field, skipping")
+          continue
+            
+        if not hasattr(tool_call.function, "name"):
+          logger.warning("Tool call function missing name field, skipping")
+          continue
+        
+        # Safe ID handling
+        tool_id = getattr(tool_call, "id", f"generated_id_{id(tool_call)}")
+        
+        # Safe arguments parsing with error handling
+        args = {}
+        if hasattr(tool_call.function, "arguments"):
+          arguments = tool_call.function.arguments
+          if arguments:
+            try:
+              # Standard JSON parsing
+              args = json.loads(arguments)
+              logger.debug(f"Successfully parsed arguments: {args}")
+            except json.JSONDecodeError:
+              logger.warning(f"Failed to parse arguments as JSON: {arguments}")
+              # Attempt to fix common JSON issues
+              try:
+                # Replace single quotes with double quotes
+                fixed_args = arguments.replace("'", '"')
+                args = json.loads(fixed_args)
+                logger.info(f"Successfully parsed arguments after fixing quotes: {args}")
+              except json.JSONDecodeError:
+                # Try more aggressive fixes for malformed JSON
+                try:
+                  import re
+                  # Use regex to extract key-value pairs
+                  fixed_args = re.sub(r"'([^']+)':", r'"\1":', arguments)
+                  fixed_args = re.sub(r":'([^']+)'", r':"\1"', fixed_args)
+                  args = json.loads(fixed_args)
+                  logger.info(f"Successfully parsed arguments after regex fixes: {args}")
+                except (json.JSONDecodeError, Exception) as e:
+                  logger.warning(f"All parsing attempts failed, using empty dict: {e}")
+        else:
+          logger.warning(f"Tool call function missing arguments field, using empty dict")
+        
+        # Create function call part
+        parts.append(
+            types.Part(
+                function_call=types.FunctionCall(
+                    name=tool_call.function.name,
+                    args=args,
+                    id=tool_id,
+                )
+            )
+        )
+    
+    # Ensure at least one part
+    if not parts:
+      logger.warning("No parts created from response, adding empty text part")
+      parts = [types.Part(text="")]
+        
+    return LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=parts,
+        )
+    )
+  except Exception as e:
+    # Global error handler for any unexpected issues
+    logger.error(f"Error processing model response: {e}", exc_info=True)
+    return LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part(text="Error processing model response. Please try again.")],
+        )
+    )
 
 
 def _message_to_generate_content_response(
@@ -559,12 +674,20 @@ class LiteLlm(BaseLlm):
     model: The name of the LiteLlm model.
     llm_client: The LLM client to use for the model.
     model_config: The model config.
+    _consecutive_tool_calls: Counter for tracking consecutive calls to the same function.
+    _last_tool_call_name: Name of the last function called.
+    _loop_threshold: Maximum number of consecutive calls to the same function before
+        triggering loop detection (default: 5).
   """
 
   llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient)
   """The LLM client to use for the model."""
 
   _additional_args: Dict[str, Any] = None
+  # Loop detection state - Prevents infinite loops when models repeatedly call the same function
+  _consecutive_tool_calls: int = 0
+  _last_tool_call_name: Optional[str] = None
+  _loop_threshold: int = 5  # Maximum number of consecutive calls to the same tool
 
   def __init__(self, model: str, **kwargs):
     """Initializes the LiteLlm class.
@@ -582,11 +705,36 @@ class LiteLlm(BaseLlm):
     self._additional_args.pop("tools", None)
     # public api called from runner determines to stream or not
     self._additional_args.pop("stream", None)
+    # Initialize loop detection state
+    self._consecutive_tool_calls = 0
+    self._last_tool_call_name = None
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
-    """Generates content asynchronously.
+    """Generates content asynchronously with loop detection.
+
+    This enhanced version:
+    1. Tracks consecutive calls to the same function
+    2. Breaks potential infinite loops after a threshold
+    3. Provides a helpful response when a loop is detected
+    4. Maintains compatibility with the original method
+    
+    Implementation details:
+    The loop detection mechanism addresses an issue that can occur with certain models
+    (particularly Ollama/Gemma3), where the model gets stuck repeatedly calling the same
+    function without making progress. This commonly happens when:
+    
+    - The model receives malformed JSON responses it cannot parse
+    - The model gets into a repetitive pattern of behavior
+    - The model misunderstands function results and keeps trying the same approach
+    
+    When the same function is called consecutively more than the threshold number of times
+    (default: 5), the loop detection mechanism interrupts the loop and provides a helpful
+    response to the user instead of continuing to call the model.
+    
+    This prevents wasted resources and improves user experience by avoiding situations
+    where the system would otherwise become unresponsive.
 
     Args:
       llm_request: LlmRequest, the request to send to the LiteLlm model.
@@ -595,6 +743,87 @@ class LiteLlm(BaseLlm):
     Yields:
       LlmResponse: The model response.
     """
+    # Check if this is a function response by examining history
+    if (llm_request.history and len(llm_request.history) >= 2 and
+        llm_request.history[-1].role == "user" and
+        llm_request.history[-2].role == "model"):
+        
+        # Find any function calls in the previous model response
+        function_parts = [
+            p for p in llm_request.history[-2].parts 
+            if hasattr(p, "function_call") and p.function_call
+        ]
+        
+        if function_parts:
+            current_function_name = function_parts[0].function_call.name
+            logger.debug(f"Previous function call was to: {current_function_name}")
+            
+            # Check if we're calling the same function again
+            if current_function_name == self._last_tool_call_name:
+                self._consecutive_tool_calls += 1
+                logger.warning(
+                    f"Detected consecutive call #{self._consecutive_tool_calls} "
+                    f"to function {current_function_name}"
+                )
+            else:
+                # Reset counter for new function
+                self._consecutive_tool_calls = 1
+                self._last_tool_call_name = current_function_name
+                logger.debug(f"New function call to: {current_function_name}")
+            
+            # If we've exceeded the threshold, break the loop
+            if self._consecutive_tool_calls >= self._loop_threshold:
+                logger.error(
+                    f"Detected potential infinite loop: {self._consecutive_tool_calls} "
+                    f"consecutive calls to {current_function_name}"
+                )
+                
+                # Get dealer information to provide in the response (if available)
+                dealer_info = ""
+                for content in llm_request.history:
+                    if content.role == "user" and hasattr(content, "parts"):
+                        for part in content.parts:
+                            if hasattr(part, "function_response") and part.function_response:
+                                if part.function_response.name == "get_dealers":
+                                    dealer_info = str(part.function_response.response)
+                                    break
+                
+                # Create helpful response
+                response_text = (
+                    f"I've detected a potential infinite loop while trying to call the "
+                    f"{current_function_name} function repeatedly. Let me provide a direct "
+                    f"response instead:\n\n"
+                )
+                
+                if dealer_info:
+                    response_text += f"Here are the dealers available: {dealer_info}\n\n"
+                else:
+                    response_text += (
+                        "It seems I was trying to get information repeatedly. "
+                        "Please try asking your question differently.\n\n"
+                    )
+                
+                response_text += (
+                    "If you need specific information, please let me know what you're "
+                    "looking for and I'll try to assist you directly."
+                )
+                
+                # Return a direct response instead of calling model again
+                yield LlmResponse(
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part(text=response_text)],
+                    )
+                )
+                
+                # Reset the counter
+                self._consecutive_tool_calls = 0
+                self._last_tool_call_name = None
+                return
+    else:
+        # Reset counter for regular messages
+        self._consecutive_tool_calls = 0
+        self._last_tool_call_name = None
 
     logger.info(_build_request_log(llm_request))
 

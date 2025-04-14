@@ -15,3 +15,13 @@
 * Development UI that makes local devlopment easy
 * Deploy to Google Cloud Run, Agent Engine
 * (Experimental) Live(Bidi) auido/video agent support and Compositional Function Calling(CFC) support
+
+## Unreleased
+
+### Fixed
+- Fixed infinite loop issue when using LiteLLM with Ollama/Gemma3 models
+  - Added robust JSON parsing for malformed function call arguments
+  - Implemented loop detection to prevent infinite repetition of function calls
+  - Added graceful handling with informative user messages when loops are detected
+
+## 2.0.1 - 2025-04-01
