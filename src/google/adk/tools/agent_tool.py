@@ -45,11 +45,10 @@ class AgentTool(BaseTool):
     skip_summarization: Whether to skip summarization of the agent output.
   """
 
-  def __init__(self, agent: BaseAgent):
+  def __init__(self, agent: BaseAgent, skip_summarization: bool = False):
+    """Initialize the AgentTool with an agent and optional skip_summarization value."""
     self.agent = agent
-    self.skip_summarization: bool = False
-    """Whether to skip summarization of the agent output."""
-
+    self.skip_summarization = skip_summarization
     super().__init__(name=agent.name, description=agent.description)
 
   @model_validator(mode='before')
