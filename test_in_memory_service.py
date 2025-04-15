@@ -7,7 +7,8 @@ import asyncio
 import logging
 import os
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.agents import LlmAgent, SequentialAgent
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents import SequentialAgent, SequentialAgent
 from google.adk.runners import Runner
 
 from google.adk.events.event import Event
@@ -21,7 +22,7 @@ os.environ['DEBUG'] = '1'
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class SetterAgent(LlmAgent):
+class SetterAgent(BaseAgent):
     """An agent that sets values in the session state."""
     
     async def _process_event(self, context: InvocationContext, event: Event) -> Event:
@@ -39,7 +40,7 @@ class SetterAgent(LlmAgent):
         )
 
 
-class GetterAgent(LlmAgent):
+class GetterAgent(BaseAgent):
     """An agent that reads values from the session state."""
     
     async def _process_event(self, context: InvocationContext, event: Event) -> Event:
@@ -118,10 +119,12 @@ class StatePersistenceTest:
         
         # Process the message
         event = Event(author="user", content=types.Content(parts=[types.Part(text=test_message)]))
-        result = await self.runner.process_event(user_id=user_id, session_id=session_id, event=event)
+        result = []
+        async for event in self.runner.run_async(user_id=user_id, session_id=session_id, new_message=event.content):
+            result.append(event)
         
         # Log the result
-        for agent_event in result.events:
+        for agent_event in result:
             print(f"Agent [{agent_event.agent_name}]: {agent_event.content}\n")
         
         # Verify final state
