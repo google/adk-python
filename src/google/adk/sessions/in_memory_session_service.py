@@ -98,7 +98,7 @@ class EnhancedStateDict(Dict[str, Any]):
     def __getitem__(self, key: str) -> Any:
         """Get item with fallback to global cache."""
         # First try local state
-        if key in super().__dict__:
+        if super().__contains__(key):
             value = super().__getitem__(key)
             # Ensure consistency with global cache
             if key not in _GLOBAL_STATE_CACHE or _GLOBAL_STATE_CACHE[key] != value:
