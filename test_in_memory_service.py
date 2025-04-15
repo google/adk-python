@@ -1,3 +1,4 @@
+from google.genai import types
 #!/usr/bin/env python3
 """
 Test the fixed InMemorySessionService in the ADK to verify state persistence.
@@ -8,10 +9,10 @@ import os
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.agents import LlmAgent, SequentialAgent
 from google.adk.runners import Runner
-from google.genai import types
+
 from google.adk.events.event import Event
-from google.adk.agents.invocation_context import InvocationContext as ApplicationContext
-from google.adk.orchestrators import SequentialConversationOrchestrator
+from google.adk.agents.invocation_context import InvocationContext
+
 
 # Set DEBUG environment variable for verbose logging
 os.environ['DEBUG'] = '1'
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 class SetterAgent(LlmAgent):
     """An agent that sets values in the session state."""
     
-    async def _process_event(self, context: ApplicationContext, event: Event) -> Event:
+    async def _process_event(self, context: InvocationContext, event: Event) -> Event:
         # Set values in the session state
         logger.info(f"SetterAgent processing event: {event.content}")
         
@@ -41,7 +42,7 @@ class SetterAgent(LlmAgent):
 class GetterAgent(LlmAgent):
     """An agent that reads values from the session state."""
     
-    async def _process_event(self, context: ApplicationContext, event: Event) -> Event:
+    async def _process_event(self, context: InvocationContext, event: Event) -> Event:
         # Read values from the session state
         logger.info(f"GetterAgent processing event")
         state_keys = list(context.session.state.keys())
@@ -80,7 +81,7 @@ class StatePersistenceTest:
         # Create sequential agent
         self.agent = SequentialAgent(
             name="TestSequentialAgent",
-            agents=[setter_agent, getter_agent],
+            sub_agents=[setter_agent, getter_agent],
             description="Tests state persistence between agents"
         )
         
@@ -116,7 +117,7 @@ class StatePersistenceTest:
         print(f"\nRunning sequential agent with message: {test_message}\n")
         
         # Process the message
-        event = Event(content=test_message)
+        event = Event(author="user", content=types.Content(parts=[types.Part(text=test_message)]))
         result = await self.runner.process_event(user_id=user_id, session_id=session_id, event=event)
         
         # Log the result
