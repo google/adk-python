@@ -30,6 +30,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
@@ -189,13 +190,20 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Create all tables based on schema
     # 3. Initialize all properies
 
-    supported_dialects = ["postgresql", "mysql", "sqlite"]
-    dialect = db_url.split("://")[0]
-
-    if dialect in supported_dialects:
+    try:
       db_engine = create_engine(db_url)
-    else:
-      raise ValueError(f"Unsupported database URL: {db_url}")
+    except Exception as e:
+      if isinstance(e, ArgumentError):
+        raise ValueError(
+            f"Invalid database URL format or argument '{db_url}'."
+        ) from e
+      if isinstance(e, ImportError):
+        raise ValueError(
+            f"Database related module not found for URL '{db_url}'."
+        ) from e
+      raise ValueError(
+          f"Failed to create database engine for URL '{db_url}'"
+      ) from e
 
     # Get the local timezone
     local_timezone = get_localzone()
