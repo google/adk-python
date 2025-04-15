@@ -23,6 +23,9 @@ from typing_extensions import override
 from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from .base_agent import BaseAgent
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class SequentialAgent(BaseAgent):
@@ -32,9 +35,43 @@ class SequentialAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    for sub_agent in self.sub_agents:
+    # Log that we're executing the sequential agent with multiple sub-agents
+    logger.debug(f"SequentialAgent running with {len(self.sub_agents)} sub-agents")
+    
+    # Ensure context session state is using EnhancedStateDict 
+    if hasattr(ctx, 'session') and hasattr(ctx.session, 'state'):
+      try:
+        from ..sessions.in_memory_session_service import EnhancedStateDict
+        if not isinstance(ctx.session.state, dict) and not type(ctx.session.state).__name__ == 'EnhancedStateDict':
+          # Convert existing state to EnhancedStateDict to ensure persistence
+          existing_state = ctx.session.state
+          ctx.session.state = EnhancedStateDict(existing_state)
+          logger.debug(f"SequentialAgent: Upgraded session state to EnhancedStateDict")
+      except (ImportError, AttributeError) as e:
+        logger.warning(f"SequentialAgent: Could not upgrade session state: {e}")
+    
+    # Run each sub-agent with the SAME context object, preserving state
+    for idx, sub_agent in enumerate(self.sub_agents):
+      logger.debug(f"SequentialAgent running sub-agent {idx+1}/{len(self.sub_agents)}: {sub_agent.name}")
+      
+      # Log state keys to help debug
+      if hasattr(ctx, 'session') and hasattr(ctx.session, 'state'):
+        logger.debug(f"Context state keys before agent {sub_agent.name}: {list(ctx.session.state.keys())}")
+      
+      # Run the sub-agent with the SAME context object
       async for event in sub_agent.run_async(ctx):
         yield event
+      
+      # Log state keys after agent ran
+      if hasattr(ctx, 'session') and hasattr(ctx.session, 'state'):
+        logger.debug(f"Context state keys after agent {sub_agent.name}: {list(ctx.session.state.keys())}")
+        
+        # Print global cache status if in debug mode
+        try:
+          from ..sessions.in_memory_session_service import _print_global_cache
+          _print_global_cache()
+        except ImportError:
+          pass
 
   @override
   async def _run_live_impl(
