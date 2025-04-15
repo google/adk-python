@@ -407,7 +407,6 @@ def _model_response_to_generate_content_response(
   response_cost = None
   if hasattr(response, "_hidden_params") and isinstance(response._hidden_params, dict):
       response_cost = response._hidden_params.get("response_cost")
-      response_cost = response_cost*86
 
   return _message_to_generate_content_response(message, response_cost=response_cost)
 
