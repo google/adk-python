@@ -1,4 +1,3 @@
-from google.genai import types
 #!/usr/bin/env python3
 """
 Test the fixed InMemorySessionService in the ADK to verify state persistence.
@@ -8,12 +7,12 @@ import logging
 import os
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.agents.base_agent import BaseAgent
-from google.adk.agents import SequentialAgent, SequentialAgent
+from google.adk.agents import SequentialAgent
 from google.adk.runners import Runner
-
+from google.genai import types
 from google.adk.events.event import Event
 from google.adk.agents.invocation_context import InvocationContext
-
+from typing import AsyncGenerator
 
 # Set DEBUG environment variable for verbose logging
 os.environ['DEBUG'] = '1'
@@ -25,28 +24,56 @@ logger = logging.getLogger(__name__)
 class SetterAgent(BaseAgent):
     """An agent that sets values in the session state."""
     
-    async def _process_event(self, context: InvocationContext, event: Event) -> Event:
+    async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
+        """Implement the required method."""
         # Set values in the session state
-        logger.info(f"SetterAgent processing event: {event.content}")
+        logger.info(f"SetterAgent processing event")
+        
+        # Get message content from context
+        message = None
+        if hasattr(context, 'events'):
+            for event in context.events:
+                if event.author == "user":
+                    message = event.content
+                    break
+        elif hasattr(context, 'event'):
+            message = context.event.content
+        elif hasattr(context, 'history') and context.history:
+            for event in context.history:
+                if event.author == "user":
+                    message = event.content
+                    break
+        elif hasattr(context, 'new_message'):
+            message = context.new_message
+        
+        if not message:
+            logger.warning("No user message found")
+            message = types.Content(parts=[types.Part(text="No message content")])
         
         # Accessing state through context.session.state
-        context.session.state["user_input"] = event.content
+        message_text = message.parts[0].text if hasattr(message, 'parts') and message.parts else "No text"
+        context.session.state["user_input"] = message_text
         context.session.state["test_key"] = "test_value"
         
+        # Log state keys after setting values
+        logger.debug(f"SetterAgent: State keys after setting values: {list(context.session.state.keys())}")
+        
         # Return response
-        return Event(
-            content=f"I've stored '{event.content}' as 'user_input' and 'test_value' as 'test_key'.\nState keys: {list(context.session.state.keys())}",
-            agent_name="SetterAgent"
+        yield Event(
+            author=self.name,
+            content=types.Content(parts=[types.Part(text=f"I've stored '{message_text}' as 'user_input' and 'test_value' as 'test_key'.\nState keys: {list(context.session.state.keys())}")])
         )
 
 
 class GetterAgent(BaseAgent):
     """An agent that reads values from the session state."""
     
-    async def _process_event(self, context: InvocationContext, event: Event) -> Event:
+    async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
+        """Implement the required method."""
         # Read values from the session state
         logger.info(f"GetterAgent processing event")
         state_keys = list(context.session.state.keys())
+        logger.debug(f"GetterAgent: State keys: {state_keys}")
         
         response = f"Session state contains {len(state_keys)} keys: {state_keys}\n"
         
@@ -61,9 +88,9 @@ class GetterAgent(BaseAgent):
             response += "test_key: NOT FOUND\n"
         
         # Return response
-        return Event(
-            content=response,
-            agent_name="GetterAgent"
+        yield Event(
+            author=self.name,
+            content=types.Content(parts=[types.Part(text=response)])
         )
 
 
@@ -86,7 +113,7 @@ class StatePersistenceTest:
             description="Tests state persistence between agents"
         )
         
-        # Initialize runner with sequential orchestrator
+        # Initialize runner
         self.runner = Runner(
             app_name="TestApp",
             agent=self.agent,
@@ -117,15 +144,17 @@ class StatePersistenceTest:
         
         print(f"\nRunning sequential agent with message: {test_message}\n")
         
+        # Create message content
+        content = types.Content(parts=[types.Part(text=test_message)])
         # Process the message
-        event = Event(author="user", content=types.Content(parts=[types.Part(text=test_message)]))
         result = []
-        async for event in self.runner.run_async(user_id=user_id, session_id=session_id, new_message=event.content):
+        async for event in self.runner.run_async(
+            user_id=user_id, 
+            session_id=session_id, 
+            new_message=content
+        ):
             result.append(event)
-        
-        # Log the result
-        for agent_event in result:
-            print(f"Agent [{agent_event.agent_name}]: {agent_event.content}\n")
+            print(f"Agent [{event.author}]: {event.content}\n")
         
         # Verify final state
         final_session = self.session_service.get_session(
