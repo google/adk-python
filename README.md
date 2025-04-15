@@ -79,8 +79,8 @@ Define a multi-agent system with coordinator agent, greeter agent, and task exec
 from google.adk.agents import LlmAgent, BaseAgent
 
 # Define individual agents
-greeter = LlmAgent(name="Greeter", model="gemini-2.0-flash")
-task_exectuor = CustomAgent(name="TaskExecutor") # A subclass of BaseAgent, as a Non-LLM agent.
+greeter = LlmAgent(name="greeter", model="gemini-2.0-flash", ...)
+task_executor = LlmAgent(name="task_executor", model="gemini-2.0-flash", ...)
 
 # Create parent agent and assign children via sub_agents
 coordinator = LlmAgent(
@@ -89,7 +89,7 @@ coordinator = LlmAgent(
     description="I coordinate greetings and tasks.",
     sub_agents=[ # Assign sub_agents here
         greeter,
-        task_exectuor
+        task_executor
     ]
 )
 
