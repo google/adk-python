@@ -73,7 +73,7 @@ class BaseTool(ABC):
 
     Args:
       args: The LLM-filled arguments.
-      ctx: The context of the tool.
+      tool_context: The context of the tool.
 
     Returns:
       The result of running the tool.
