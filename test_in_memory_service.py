@@ -9,8 +9,8 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.agents import LlmAgent, SequentialAgent
 from google.adk.runners import Runner
 from google.genai import types
-from google.adk.typing import Event
-from google.adk.agents.agent import Context as ApplicationContext
+from google.adk.events.event import Event
+from google.adk.agents.invocation_context import InvocationContext as ApplicationContext
 from google.adk.orchestrators import SequentialConversationOrchestrator
 
 # Set DEBUG environment variable for verbose logging
