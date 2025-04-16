@@ -19,37 +19,12 @@ from .google_api_tool_set import GoogleApiToolSet
 
 logger = logging.getLogger(__name__)
 
-calendar_tool_set = GoogleApiToolSet.load_tool_set(
-    api_name="calendar",
-    api_version="v3",
-)
+_tool_sets = {}
 
-bigquery_tool_set = GoogleApiToolSet.load_tool_set(
-    api_name="bigquery",
-    api_version="v2",
-)
-
-gmail_tool_set = GoogleApiToolSet.load_tool_set(
-    api_name="gmail",
-    api_version="v1",
-)
-
-youtube_tool_set = GoogleApiToolSet.load_tool_set(
-    api_name="youtube",
-    api_version="v3",
-)
-
-slides_tool_set = GoogleApiToolSet.load_tool_set(
-    api_name="slides",
-    api_version="v1",
-)
-
-sheets_tool_set = GoogleApiToolSet.load_tool_set(
-    api_name="sheets",
-    api_version="v4",
-)
-
-docs_tool_set = GoogleApiToolSet.load_tool_set(
-    api_name="docs",
-    api_version="v1",
-)
+def load_tool_set(tool_name):
+    if tool_name not in _tool_sets:
+        _tool_sets[tool_name] = GoogleApiToolSet.load_tool_set(
+            api_name=tool_name,
+            api_version="v1",
+        )
+    return _tool_sets[tool_name]
