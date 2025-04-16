@@ -515,6 +515,36 @@ def test_content_to_message_param_user_message():
   assert message["content"] == "Test prompt"
 
 
+def test_content_to_message_param_multi_part_function_response():
+  part1 = types.Part.from_function_response(
+      name="function_one",
+      response={"result": "result_one"},
+  )
+  part1.function_response.id = "tool_call_1"
+
+  part2 = types.Part.from_function_response(
+      name="function_two",
+      response={"value": 123},
+  )
+  part2.function_response.id = "tool_call_2"
+
+  content = types.Content(
+      role="tool",
+      parts=[part1, part2],
+  )
+  messages = _content_to_message_param(content)
+  assert isinstance(messages, list)
+  assert len(messages) == 2
+
+  assert messages[0]["role"] == "tool"
+  assert messages[0]["tool_call_id"] == "tool_call_1"
+  assert messages[0]["content"] == '{"result": "result_one"}'
+
+  assert messages[1]["role"] == "tool"
+  assert messages[1]["tool_call_id"] == "tool_call_2"
+  assert messages[1]["content"] == '{"value": 123}'
+
+
 def test_content_to_message_param_assistant_message():
   content = types.Content(
       role="assistant", parts=[types.Part.from_text(text="Test response")]
