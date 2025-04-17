@@ -225,3 +225,76 @@ def test_create_new_session_will_merge_states(service_type):
   assert session_2.state.get('user:key1') == 'value1'
   assert not session_2.state.get('key1')
   assert not session_2.state.get('temp:key')
+
+
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+)
+def test_append_event_bytes(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = session_service.create_session(app_name=app_name, user_id=user_id)
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part.from_bytes(
+                  data=b'test_image_data', mime_type='image/png'
+              ),
+          ],
+      ),
+  )
+  session_service.append_event(session=session, event=event)
+
+  assert session.events[0].content.parts[0] == types.Part.from_bytes(
+      data=b'test_image_data', mime_type='image/png'
+  )
+
+  events = session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  ).events
+  assert len(events) == 1
+  assert events[0].content.parts[0] == types.Part.from_bytes(
+      data=b'test_image_data', mime_type='image/png'
+  )
+
+
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+)
+def test_append_event_complete(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = session_service.create_session(app_name=app_name, user_id=user_id)
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      content=types.Content(role='user', parts=[types.Part(text='test_text')]),
+      turn_complete=True,
+      partial=False,
+      actions=EventActions(
+          artifact_delta={
+              'file': 0,
+          },
+          transfer_to_agent='agent',
+          escalate=True,
+      ),
+      long_running_tool_ids={'tool1'},
+      error_code='error_code',
+      error_message='error_message',
+      interrupted=True,
+  )
+  session_service.append_event(session=session, event=event)
+
+  assert (
+      session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session.id
+      )
+      == session
+  )

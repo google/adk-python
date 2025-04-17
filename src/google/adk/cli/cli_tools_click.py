@@ -24,6 +24,7 @@ import click
 from fastapi import FastAPI
 import uvicorn
 
+from . import cli_create
 from . import cli_deploy
 from .cli import run_cli
 from .cli_eval import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -42,8 +43,57 @@ def main():
 
 @main.group()
 def deploy():
-  """Deploy Agent."""
+  """Deploys agent to hosted environments."""
   pass
+
+
+@main.command("create")
+@click.option(
+    "--model",
+    type=str,
+    help="Optional. The model used for the root agent.",
+)
+@click.option(
+    "--api_key",
+    type=str,
+    help=(
+        "Optional. The API Key needed to access the model, e.g. Google AI API"
+        " Key."
+    ),
+)
+@click.option(
+    "--project",
+    type=str,
+    help="Optional. The Google Cloud Project for using VertexAI as backend.",
+)
+@click.option(
+    "--region",
+    type=str,
+    help="Optional. The Google Cloud Region for using VertexAI as backend.",
+)
+@click.argument("app_name", type=str, required=True)
+def cli_create_cmd(
+    app_name: str,
+    model: Optional[str],
+    api_key: Optional[str],
+    project: Optional[str],
+    region: Optional[str],
+):
+  """Creates a new app in the current folder with prepopulated agent template.
+
+  APP_NAME: required, the folder of the agent source code.
+
+  Example:
+
+    adk create path/to/my_app
+  """
+  cli_create.run_cmd(
+      app_name,
+      model=model,
+      google_api_key=api_key,
+      google_cloud_project=project,
+      google_cloud_region=region,
+  )
 
 
 @main.command("run")
@@ -62,7 +112,7 @@ def deploy():
     ),
 )
 def cli_run(agent: str, save_session: bool):
-  """Run an interactive CLI for a certain agent.
+  """Runs an interactive CLI for a certain agent.
 
   AGENT: The path to the agent source code folder.
 
@@ -150,7 +200,7 @@ def cli_eval(
         EvalMetric(metric_name=metric_name, threshold=threshold)
     )
 
-  print(f"Using evaluation criteria: {evaluation_criteria}")
+  print(f"Using evaluation creiteria: {evaluation_criteria}")
 
   root_agent = get_root_agent(agent_module_file_path)
   reset_func = try_get_reset_func(agent_module_file_path)
@@ -244,7 +294,7 @@ def cli_eval(
     type=click.Path(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
-    default=os.getcwd(),
+    default=os.getcwd,
 )
 def cli_web(
     agents_dir: str,
@@ -255,7 +305,7 @@ def cli_web(
     port: int = 8000,
     trace_to_cloud: bool = False,
 ):
-  """Start a FastAPI server with Web UI for agents.
+  """Starts a FastAPI server with Web UI for agents.
 
   AGENTS_DIR: The directory of agents, where each sub-directory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
@@ -274,7 +324,7 @@ def cli_web(
   @asynccontextmanager
   async def _lifespan(app: FastAPI):
     click.secho(
-        f"""\
+        f"""
 +-----------------------------------------------------------------------------+
 | ADK Web Server started                                                      |
 |                                                                             |
@@ -285,7 +335,7 @@ def cli_web(
     )
     yield  # Startup is done, now app is running
     click.secho(
-        """\
+        """
 +-----------------------------------------------------------------------------+
 | ADK Web Server shutting down...                                             |
 +-----------------------------------------------------------------------------+
@@ -378,7 +428,7 @@ def cli_api_server(
     port: int = 8000,
     trace_to_cloud: bool = False,
 ):
-  """Start a FastAPI server for agents.
+  """Starts a FastAPI server for agents.
 
   AGENTS_DIR: The directory of agents, where each sub-directory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
@@ -452,7 +502,7 @@ def cli_api_server(
     help="Optional. The port of the ADK API server (default: 8000).",
 )
 @click.option(
-    "--with_cloud_trace",
+    "--trace_to_cloud",
     type=bool,
     is_flag=True,
     show_default=True,
@@ -483,6 +533,14 @@ def cli_api_server(
         " (default: a timestamped folder in the system temp directory)."
     ),
 )
+@click.option(
+    "--verbosity",
+    type=click.Choice(
+        ["debug", "info", "warning", "error", "critical"], case_sensitive=False
+    ),
+    default="WARNING",
+    help="Optional. Override the default verbosity level.",
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -497,8 +555,9 @@ def cli_deploy_cloud_run(
     app_name: str,
     temp_folder: str,
     port: int,
-    with_cloud_trace: bool,
+    trace_to_cloud: bool,
     with_ui: bool,
+    verbosity: str,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -517,8 +576,9 @@ def cli_deploy_cloud_run(
         app_name=app_name,
         temp_folder=temp_folder,
         port=port,
-        with_cloud_trace=with_cloud_trace,
+        trace_to_cloud=trace_to_cloud,
         with_ui=with_ui,
+        verbosity=verbosity,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

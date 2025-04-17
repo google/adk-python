@@ -5,9 +5,9 @@
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
 
 <html>
-    <h1 align="center">
-      <img src="assets/agent-development-kit.png" width="256"/>
-    </h1>
+    <h2 align="center">
+      <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/agent-development-kit.png" width="256"/>
+    </h2>
     <h3 align="center">
       An open-source, code-first Python toolkit for building, evaluating, and deploying sophisticated AI agents with flexibility and control.
     </h3>
@@ -50,6 +50,7 @@ You can install the ADK using `pip`:
 ```bash
 pip install google-adk
 ```
+
 ## 📚 Documentation
 
 Explore the full documentation for detailed guides on building, evaluating, and
@@ -60,6 +61,7 @@ deploying agents:
 ## 🏁 Feature Highlight
 
 ### Define a single agent:
+
 ```python
 from google.adk.agents import Agent
 from google.adk.tools import google_search
@@ -74,7 +76,9 @@ root_agent = Agent(
 ```
 
 ### Define a multi-agent system:
+
 Define a multi-agent system with coordinator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents works together to accomplish the task.
+
 ```python
 from google.adk.agents import LlmAgent, BaseAgent
 
@@ -92,14 +96,13 @@ coordinator = LlmAgent(
         task_executor
     ]
 )
-
 ```
 
 ### Development UI
 
 A built-in development UI to help you test, evaluate, debug, and showcase your agent(s).
 
-<img src="assets/adk-web-dev-ui-function-call.png"/>
+<img src="https://raw.githubusercontent.com/google/adk-python/main/assets/adk-web-dev-ui-function-call.png"/>
 
 ###  Evaluate Agents
 

@@ -87,15 +87,21 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
       return
 
     # Postprocess the LLM response.
+    callback_context = CallbackContext(invocation_context)
     processed_parts = planner.process_planning_response(
-        CallbackContext(invocation_context), llm_response.content.parts
+        callback_context, llm_response.content.parts
     )
     if processed_parts:
       llm_response.content.parts = processed_parts
 
-    # Maintain async generator behavior
-    if False:  # Ensures it behaves as a generator
-      yield  # This is a no-op but maintains generator structure
+    if callback_context.state.has_delta():
+      state_update_event = Event(
+          invocation_id=invocation_context.invocation_id,
+          author=invocation_context.agent.name,
+          branch=invocation_context.branch,
+          actions=callback_context._event_actions,
+      )
+      yield state_update_event
 
 
 response_processor = _NlPlanningResponse()
