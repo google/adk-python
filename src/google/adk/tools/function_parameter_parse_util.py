@@ -15,6 +15,7 @@
 
 import inspect
 import logging
+import re # Ensure re is imported
 import types as typing_types
 from typing import _GenericAlias
 from typing import Any
@@ -53,7 +54,7 @@ def _raise_for_any_of_if_mldev(schema: types.Schema):
 
 def _update_for_default_if_mldev(schema: types.Schema):
   if schema.default is not None:
-    # TODO(kech): Remove this workaround once mldev supports default value.
+    # TODO(kech): Remove this walkaround once mldev supports default value.
     schema.default = None
     logger.warning(
         'Default value is not supported in function declaration schema for'
@@ -134,7 +135,82 @@ def _parse_schema_from_parameter(
     schema.type = _py_builtin_type_to_schema_type[param.annotation]
     _raise_if_schema_unsupported(variant, schema)
     return schema
-  if (
+  # >>> ANFANG DES NEUEN PATCH-TEILS für Optional[str] etc. <<<
+  elif isinstance(param.annotation, str):
+      # Attempt to handle string annotations, common with `from __future__ import annotations`
+      cleaned_annotation_str = param.annotation.strip("'\"") # Entfernt äußere Anführungszeichen
+      is_optional = False
+      base_type_str = None
+
+      # 1. Check for Optional[T] pattern
+      optional_match = re.match(r'^Optional\[(.+)\]$', cleaned_annotation_str, re.IGNORECASE)
+      if optional_match:
+          is_optional = True
+          base_type_str = optional_match.group(1).strip()
+
+      # 2. Check for Union[T, None] or Union[None, T] pattern
+      union_match = re.match(r'^Union\[(.+)\]$', cleaned_annotation_str, re.IGNORECASE)
+      if union_match:
+          parts = [p.strip() for p in union_match.group(1).split(',')]
+          if 'None' in parts or 'NoneType' in parts: # auch NoneType prüfen
+              is_optional = True
+              # Find the non-None type string
+              non_none_parts = [p for p in parts if p not in ('None', 'NoneType')]
+              if len(non_none_parts) == 1:
+                 base_type_str = non_none_parts[0]
+              # else: more complex Union, let it fall through for now
+
+      # 3. Check if the extracted base_type_str is a known primitive/builtin
+      actual_base_type = None
+      if base_type_str:
+          # Try direct match first (e.g., 'str', 'int')
+          for type_obj in _py_builtin_type_to_schema_type.keys():
+             if type_obj.__name__ == base_type_str:
+                 actual_base_type = type_obj
+                 break
+          # TODO: Add checks for list, dict if needed, e.g., if base_type_str == 'list'
+
+      # 4. If we successfully identified Optional[KnownPrimitiveType]
+      if actual_base_type and is_optional:
+          # We found Optional[PrimitiveType] like Optional[str]
+          schema.type = _py_builtin_type_to_schema_type[actual_base_type]
+          schema.nullable = True # Mark as nullable
+
+          if param.default is not inspect.Parameter.empty:
+              # Default value check needs careful handling for Optional
+              if param.default is not None and not _is_default_value_compatible(param.default, actual_base_type):
+                   raise ValueError(default_value_error_msg + f" (for base type {actual_base_type.__name__})")
+              # If default is None, it's compatible with Optional
+              schema.default = param.default
+
+          _raise_if_schema_unsupported(variant, schema)
+          # print(f"DEBUG: Handled Optional string annotation '{param.annotation}' -> {schema}") # Debug-Ausgabe
+          return schema
+      # If it's not a simple Optional[Primitive] pattern recognised here,
+      # let it fall through to the next elif (simple string type) or the final error.
+
+      # 5. Fallback: Check if the string is just a simple type name (previous patch logic)
+      elif cleaned_annotation_str in [t.__name__ for t in _py_builtin_type_to_schema_type.keys()]:
+          actual_type = None
+          for type_obj in _py_builtin_type_to_schema_type.keys():
+              if type_obj.__name__ == cleaned_annotation_str:
+                  actual_type = type_obj
+                  break
+
+          if actual_type:
+              if param.default is not inspect.Parameter.empty:
+                  if not _is_default_value_compatible(param.default, actual_type):
+                      raise ValueError(default_value_error_msg)
+                  schema.default = param.default
+              schema.type = _py_builtin_type_to_schema_type[actual_type]
+              _raise_if_schema_unsupported(variant, schema)
+              # print(f"DEBUG: Handled simple string annotation '{param.annotation}' -> {schema}") # Debug-Ausgabe
+              return schema
+      # else: Fall through to other checks or the final error
+
+  # >>> ENDE DES NEUEN PATCH-TEILS <<<
+
+  elif ( # Bestehender Code für Union-Typen (nicht Strings)
       get_origin(param.annotation) is Union
       # only parse simple UnionType, example int | str | float | bool
       # complex types.UnionType will be invoked in raise branch
@@ -289,10 +365,12 @@ def _parse_schema_from_parameter(
       )
     _raise_if_schema_unsupported(variant, schema)
     return schema
+
+  # Letzter Ausweg: Fehler (Originaler Fehlerfall, jetzt mit detaillierterer Meldung)
   raise ValueError(
-      f'Failed to parse the parameter {param} of function {func_name} for'
-      ' automatic function calling.Automatic function calling works best with'
-      ' simpler function signature schema,consider manually parse your'
+      f'Failed to parse the parameter {param.name}: {param.annotation!r} = {param.default!r} (Annotation Type: {type(param.annotation).__name__}) of function {func_name} for' # Detailliertere Fehlermeldung
+      ' automatic function calling. Automatic function calling works best with'
+      ' simpler function signature schema, consider manually parse your'
       f' function declaration for function {func_name}.'
   )
 
