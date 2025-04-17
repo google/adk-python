@@ -28,6 +28,7 @@ from typing import Literal
 from typing import Optional
 
 import click
+from contextlib import AsyncExitStack
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
@@ -602,23 +603,29 @@ def get_fast_api_app(
 
     # Convert the events to properly formatted SSE
     async def event_generator():
-      try:
-        stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
-        runner = _get_runner(req.app_name)
-        async for event in runner.run_async(
-            user_id=req.user_id,
-            session_id=req.session_id,
-            new_message=req.new_message,
-            run_config=RunConfig(streaming_mode=stream_mode),
-        ):
-          # Format as SSE data
-          sse_event = event.model_dump_json(exclude_none=True, by_alias=True)
-          logger.info("Generated event in agent run streaming: %s", sse_event)
-          yield f"data: {sse_event}\n\n"
-      except Exception as e:
-        logger.exception("Error in event_generator: %s", e)
-        # You might want to yield an error event here
-        yield f'data: {{"error": "{str(e)}"}}\n\n'
+      async with AsyncExitStack() as stack:
+        try:
+          agent = _get_root_agent(req.app_name)
+          await stack.enter_async_context(agent)
+          for sub_agent in agent.sub_agents:
+            if isinstance(sub_agent, Agent):
+              await stack.enter_async_context(sub_agent)
+          stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
+          runner = _get_runner(req.app_name, root_agent=agent)
+          async for event in runner.run_async(
+              user_id=req.user_id,
+              session_id=req.session_id,
+              new_message=req.new_message,
+              run_config=RunConfig(streaming_mode=stream_mode),
+          ):
+            # Format as SSE data
+            sse_event = event.model_dump_json(exclude_none=True, by_alias=True)
+            logger.info("Generated event in agent run streaming: %s", sse_event)
+            yield f"data: {sse_event}\n\n"
+        except Exception as e:
+          logger.exception("Error in event_generator: %s", e)
+          # You might want to yield an error event here
+          yield f'data: {{"error": "{str(e)}"}}\n\n'
 
     # Returns a streaming response with the proper media type for SSE
     return StreamingResponse(
@@ -752,11 +759,11 @@ def get_fast_api_app(
     root_agent_dict[app_name] = root_agent
     return root_agent
 
-  def _get_runner(app_name: str) -> Runner:
+  def _get_runner(app_name: str, root_agent: Agent = None) -> Runner:
     """Returns the runner for the given app."""
     if app_name in runner_dict:
       return runner_dict[app_name]
-    root_agent = _get_root_agent(app_name)
+    root_agent = _get_root_agent(app_name) if root_agent is None else root_agent
     runner = Runner(
         app_name=agent_engine_id if agent_engine_id else app_name,
         agent=root_agent,

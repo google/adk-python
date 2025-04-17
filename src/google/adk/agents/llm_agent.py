@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from contextlib import AsyncExitStack
+from typing import Any, Awaitable
 from typing import AsyncGenerator
 from typing import Callable
 from typing import Literal
@@ -108,6 +109,11 @@ class LlmAgent(BaseAgent):
 
   tools: list[ToolUnion] = Field(default_factory=list)
   """Tools available to this agent."""
+
+  exit_stack: Optional[AsyncExitStack] = None
+  """An AsyncExitStack instance used within the async_setup hook to manage 
+  asynchronous resources and connections during the agent's setup phase.
+  """
 
   generate_content_config: Optional[types.GenerateContentConfig] = None
   """The additional content generation configurations.
@@ -224,6 +230,36 @@ class LlmAgent(BaseAgent):
     When present, the returned dict will be used as tool result.
   """
   # Callbacks - End
+
+  async_setup: Optional[Callable[[LlmAgent], Awaitable[Optional[AsyncExitStack]]]] = None
+  """
+  An asynchronous setup hook to initialize resources or connections during the agent's startup phase. 
+  For example, the following function can be used to initialize MCP server tools and manage connections:"
+  ```
+  async def get_mcp_server_tools(agent: LlmAgent) -> AsyncExitStack:
+      stack = AsyncExitStack()
+      tools, _ = await MCPToolset.from_server(connection_params=parameters, async_exit_stack=stack)
+      agent.tools.extend(tools)
+      return stack
+  
+  # Example usage of async_setup in LlmAgent
+  root_agent = LlmAgent(
+      model="your model",
+      name="my_agent",
+      instruction="You are a helpful assistant",
+      async_setup=get_mcp_server_tools
+  )
+  ```
+  """
+
+  async def __aenter__(self):
+    if callable(self.async_setup):
+      self.exit_stack = await self.async_setup(self)
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    if self.exit_stack is not None:
+      await self.exit_stack.aclose()
 
   @override
   async def _run_async_impl(
