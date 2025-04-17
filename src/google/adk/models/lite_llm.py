@@ -453,22 +453,22 @@ def _get_completion_inputs(
 
   for content in llm_request.contents or []:
     is_tool_response_content = (
-      content.role == 'user' and content.parts and any(part.function_response for part in content.parts)
+        content.role == 'user' and content.parts and any(part.function_response for part in content.parts)
     )
     if is_tool_response_content:
-        for part in content.parts:
-            if part.function_response:
-                tool_message = ChatCompletionToolMessage(
-                    role="tool",
-                    tool_call_id=part.function_response.id,
-                    content=_safe_json_serialize(
-                        part.function_response.response
-                    ),
-                )
-                messages.append(tool_message)
+      for part in content.parts:
+        if part.function_response:
+          tool_message = ChatCompletionToolMessage(
+              role="tool",
+              tool_call_id=part.function_response.id,
+              content=_safe_json_serialize(
+                  part.function_response.response
+              ),
+          )
+          messages.append(tool_message)
     else:
-        message = _content_to_message_param(content)
-        messages.append(message)
+      message = _content_to_message_param(content)
+      messages.append(message)
 
   if llm_request.config.system_instruction:
     messages.insert(
