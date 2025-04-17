@@ -184,10 +184,35 @@ def _map_pydantic_type_to_schema_type(schema: Dict):
 
 
 def _get_return_type(func: Callable) -> Any:
-  return _py_type_2_schema_type.get(
-      inspect.signature(func).return_annotation.__name__,
-      inspect.signature(func).return_annotation.__name__,
-  )
+    raw_annotation = inspect.signature(func).return_annotation
+
+    # Patch: handle 'list[MemoryResult]' etc. as strings
+    if isinstance(raw_annotation, str):
+        cleaned = raw_annotation.strip("'\"")
+
+        # Pattern: list[SomeType] oder List[SomeType]
+        if cleaned.lower().startswith("list[") or cleaned.lower().startswith("List["):
+            return types.Type.ARRAY
+
+        # Pattern: dict[...] oder Dict[...]
+        if cleaned.lower().startswith("dict[") or cleaned.lower().startswith("Dict["):
+            return types.Type.OBJECT
+
+        # Primitive?
+        for type_str, schema_type in _py_type_2_schema_type.items():
+            if cleaned.lower() == type_str.lower():
+                return schema_type
+
+        return types.Type.TYPE_UNSPECIFIED
+
+    # Normalfall (wenn kein from __future__ import annotations)
+    if isinstance(raw_annotation, type):
+        return _py_type_2_schema_type.get(
+            raw_annotation.__name__,
+            types.Type.TYPE_UNSPECIFIED
+        )
+
+    return types.Type.TYPE_UNSPECIFIED
 
 
 def build_function_declaration(
@@ -332,8 +357,8 @@ def from_function_with_options(
   if return_annotation is inspect._empty:
     return declaration
 
-  declaration.response = (
-      function_parameter_parse_util._parse_schema_from_parameter(
+  try:
+      declaration.response = function_parameter_parse_util._parse_schema_from_parameter(
           variant,
           inspect.Parameter(
               'return_value',
@@ -342,5 +367,32 @@ def from_function_with_options(
           ),
           func.__name__,
       )
-  )
+  except ValueError as e:
+      # Fallback: nur Typ setzen, keine komplexe Schema-Erzeugung
+      if isinstance(return_annotation, str):
+          cleaned_annotation = return_annotation.strip("'\"").lower()
+          if cleaned_annotation.startswith("list"):
+              declaration.response = types.Schema(type=types.Type.ARRAY)
+          elif cleaned_annotation.startswith("dict"):
+              declaration.response = types.Schema(type=types.Type.OBJECT)
+          # Use the mapping dictionary directly for primitive types
+          elif cleaned_annotation in _py_type_2_schema_type:
+               declaration.response = types.Schema(
+                   type=_py_type_2_schema_type[cleaned_annotation]
+               )
+          # Check against type object names if cleaned_annotation wasn't found directly
+          else:
+              found = False
+              for type_obj, schema_type in function_parameter_parse_util._py_builtin_type_to_schema_type.items():
+                   if type_obj.__name__.lower() == cleaned_annotation:
+                       declaration.response = types.Schema(type=schema_type)
+                       found = True
+                       break
+              if not found:
+                   declaration.response = types.Schema(type=types.Type.TYPE_UNSPECIFIED)
+                   print(f"[ADK PATCH WARNING] Could not determine fallback schema type for return annotation string: {return_annotation!r}") # Add warning
+      else:
+          # If it's not a string annotation causing the ValueError, re-raise it
+          print(f"[ADK PATCH ERROR] Non-string annotation caused ValueError in return type parsing: {return_annotation!r}") # Add error log
+          raise e
   return declaration
