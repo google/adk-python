@@ -1,6 +1,8 @@
 # Agent Development Kit (ADK)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
+[![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
 
 <html>
     <h1 align="center">
@@ -72,13 +74,13 @@ root_agent = Agent(
 ```
 
 ### Define a multi-agent system:
-Define a multi-agent system with cooridnator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents works together to accomplish the task.
+Define a multi-agent system with coordinator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents works together to accomplish the task.
 ```python
 from google.adk.agents import LlmAgent, BaseAgent
 
 # Define individual agents
-greeter = LlmAgent(name="Greeter", model="gemini-2.0-flash")
-task_exectuor = CustomAgent(name="TaskExecutor") # A subclass of BaseAgent, as a Non-LLM agent.
+greeter = LlmAgent(name="greeter", model="gemini-2.0-flash", ...)
+task_executor = LlmAgent(name="task_executor", model="gemini-2.0-flash", ...)
 
 # Create parent agent and assign children via sub_agents
 coordinator = LlmAgent(
@@ -87,7 +89,7 @@ coordinator = LlmAgent(
     description="I coordinate greetings and tasks.",
     sub_agents=[ # Assign sub_agents here
         greeter,
-        task_exectuor
+        task_executor
     ]
 )
 

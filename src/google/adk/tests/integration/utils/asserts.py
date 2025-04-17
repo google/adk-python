@@ -36,21 +36,21 @@ def assert_agent_says(
 
 
 def assert_agent_says_in_order(
-    expected_conversaction: list[Message], agent_runner: TestRunner
+    expected_conversation: list[Message], agent_runner: TestRunner
 ):
-  expected_conversaction_idx = len(expected_conversaction) - 1
+  expected_conversation_idx = len(expected_conversation) - 1
   for event in reversed(agent_runner.get_events()):
     if event.content.parts and event.content.parts[0].text:
       assert (
           event.author
-          == expected_conversaction[expected_conversaction_idx]['agent_name']
+          == expected_conversation[expected_conversation_idx]['agent_name']
       )
       assert (
           event.content.parts[0].text.strip()
-          == expected_conversaction[expected_conversaction_idx]['expected_text']
+          == expected_conversation[expected_conversation_idx]['expected_text']
       )
-      expected_conversaction_idx -= 1
-      if expected_conversaction_idx < 0:
+      expected_conversation_idx -= 1
+      if expected_conversation_idx < 0:
         return
 
 
