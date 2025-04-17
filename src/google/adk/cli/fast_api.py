@@ -28,6 +28,7 @@ from typing import Literal
 from typing import Optional
 
 import click
+from contextlib import AsyncExitStack
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
@@ -602,9 +603,13 @@ def get_fast_api_app(
 
     # Convert the events to properly formatted SSE
     async def event_generator():
-      agent = _get_root_agent(req.app_name)
-      async with agent:
+      async with AsyncExitStack() as stack:
         try:
+          agent = _get_root_agent(req.app_name)
+          await stack.enter_async_context(agent)
+          for sub_agent in agent.sub_agents:
+            if isinstance(sub_agent, Agent):
+              await stack.enter_async_context(sub_agent)
           stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
           runner = _get_runner(req.app_name, root_agent=agent)
           async for event in runner.run_async(
