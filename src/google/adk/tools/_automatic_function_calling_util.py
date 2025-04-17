@@ -195,7 +195,7 @@ def build_function_declaration(
     ignore_params: Optional[list[str]] = None,
     variant: Literal['GOOGLE_AI', 'VERTEX_AI', 'DEFAULT'] = 'GOOGLE_AI',
 ) -> types.FunctionDeclaration:
-  signature = inspect.signature(func)
+  signature = inspect.signature(func, eval_str=True)
   should_update_signature = False
   new_func = None
   if not ignore_params:
