@@ -119,7 +119,7 @@ def calendar_api_spec():
               "methods": {
                   "get": {
                       "id": "calendar.calendars.get",
-                      "path": "calendars/{calendarId}",
+                      "flatPath": "calendars/{calendarId}",
                       "httpMethod": "GET",
                       "description": "Returns metadata for a calendar.",
                       "parameters": {
@@ -151,7 +151,7 @@ def calendar_api_spec():
                       "methods": {
                           "list": {
                               "id": "calendar.events.list",
-                              "path": "calendars/{calendarId}/events",
+                              "flatPath": "calendars/{calendarId}/events",
                               "httpMethod": "GET",
                               "description": (
                                   "Returns events on the specified calendar."

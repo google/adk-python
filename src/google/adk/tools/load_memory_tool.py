@@ -16,18 +16,26 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from google.genai import types
 from typing_extensions import override
 
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
-  from ..models import LlmRequest
   from ..memory.base_memory_service import MemoryResult
+  from ..models import LlmRequest
 
 
 def load_memory(query: str, tool_context: ToolContext) -> 'list[MemoryResult]':
-  """Loads the memory for the current user."""
+  """Loads the memory for the current user.
+
+  Args:
+    query: The query to load the memory for.
+
+  Returns:
+    A list of memory results.
+  """
   response = tool_context.search_memory(query)
   return response.memories
 
@@ -37,6 +45,21 @@ class LoadMemoryTool(FunctionTool):
 
   def __init__(self):
     super().__init__(load_memory)
+
+  @override
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                'query': types.Schema(
+                    type=types.Type.STRING,
+                )
+            },
+        ),
+    )
 
   @override
   async def process_llm_request(

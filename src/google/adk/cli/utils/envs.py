@@ -50,8 +50,5 @@ def load_dotenv_for_agent(
         agent_name,
         dotenv_file_path,
     )
-    logger.info(
-        'Reloaded %s file for %s at %s', filename, agent_name, dotenv_file_path
-    )
   else:
     logger.info('No %s file found for %s', filename, agent_name)

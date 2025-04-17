@@ -196,11 +196,12 @@ class IntegrationClient:
       action_details = connections_client.get_action_schema(action)
       input_schema = action_details["inputSchema"]
       output_schema = action_details["outputSchema"]
-      action_display_name = action_details["displayName"]
+      # Remove spaces from the display name to generate valid spec
+      action_display_name = action_details["displayName"].replace(" ", "")
       operation = "EXECUTE_ACTION"
       if action == "ExecuteCustomQuery":
         connector_spec["components"]["schemas"][
-            f"{action}_Request"
+            f"{action_display_name}_Request"
         ] = connections_client.execute_custom_query_request()
         operation = "EXECUTE_QUERY"
       else:
