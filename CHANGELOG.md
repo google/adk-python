@@ -3,6 +3,7 @@
 ## 0.1.0
 
 ### Features
+
 * Initial release of the Agent Development Kit (ADK).
 * Multi-agent, agent-as-workflow, and custom agent support
 * Tool authentication support
