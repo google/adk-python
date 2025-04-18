@@ -13,15 +13,16 @@
 # limitations under the License.
 
 from contextlib import AsyncExitStack
+import sys
 from types import TracebackType
-from typing import Any, List, Optional, Tuple, Type
+from typing import List, Optional, TextIO, Tuple, Type
+
+from .mcp_session_manager import MCPSessionManager, SseServerParams, retry_on_closed_resource
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
 try:
   from mcp import ClientSession, StdioServerParameters
-  from mcp.client.sse import sse_client
-  from mcp.client.stdio import stdio_client
   from mcp.types import ListToolsResult
 except ImportError as e:
   import sys
@@ -34,16 +35,7 @@ except ImportError as e:
   else:
     raise e
 
-from pydantic import BaseModel
-
 from .mcp_tool import MCPTool
-
-
-class SseServerParams(BaseModel):
-  url: str
-  headers: dict[str, Any] | None = None
-  timeout: float = 5
-  sse_read_timeout: float = 60 * 5
 
 
 class MCPToolset:
@@ -110,7 +102,11 @@ class MCPToolset:
   """
 
   def __init__(
-      self, *, connection_params: StdioServerParameters | SseServerParams
+      self,
+      *,
+      connection_params: StdioServerParameters | SseServerParams,
+      errlog: TextIO = sys.stderr,
+      exit_stack=AsyncExitStack(),
   ):
     """Initializes the MCPToolset.
 
@@ -175,7 +171,14 @@ class MCPToolset:
     if not connection_params:
       raise ValueError('Missing connection params in MCPToolset.')
     self.connection_params = connection_params
-    self.exit_stack = AsyncExitStack()
+    self.errlog = errlog
+    self.exit_stack = exit_stack
+
+    self.session_manager = MCPSessionManager(
+        connection_params=self.connection_params,
+        exit_stack=self.exit_stack,
+        errlog=self.errlog,
+    )
 
   @classmethod
   async def from_server(
@@ -183,6 +186,7 @@ class MCPToolset:
       *,
       connection_params: StdioServerParameters | SseServerParams,
       async_exit_stack: Optional[AsyncExitStack] = None,
+      errlog: TextIO = sys.stderr,
   ) -> Tuple[List[MCPTool], AsyncExitStack]:
     """Retrieve all tools from the MCP connection.
 
@@ -209,41 +213,27 @@ class MCPToolset:
         the MCP server. Use `await async_exit_stack.aclose()` to close the
         connection when server shuts down.
     """
-    toolset = cls(connection_params=connection_params)
     async_exit_stack = async_exit_stack or AsyncExitStack()
+    toolset = cls(
+        connection_params=connection_params,
+        exit_stack=async_exit_stack,
+        errlog=errlog,
+    )
+
     await async_exit_stack.enter_async_context(toolset)
     tools = await toolset.load_tools()
     return (tools, async_exit_stack)
 
   async def _initialize(self) -> ClientSession:
     """Connects to the MCP Server and initializes the ClientSession."""
-    if isinstance(self.connection_params, StdioServerParameters):
-      client = stdio_client(self.connection_params)
-    elif isinstance(self.connection_params, SseServerParams):
-      client = sse_client(
-          url=self.connection_params.url,
-          headers=self.connection_params.headers,
-          timeout=self.connection_params.timeout,
-          sse_read_timeout=self.connection_params.sse_read_timeout,
-      )
-    else:
-      raise ValueError(
-          'Unable to initialize connection. Connection should be'
-          ' StdioServerParameters or SseServerParams, but got'
-          f' {self.connection_params}'
-      )
-
-    transports = await self.exit_stack.enter_async_context(client)
-    self.session = await self.exit_stack.enter_async_context(
-        ClientSession(*transports)
-    )
-    await self.session.initialize()
+    self.session = await self.session_manager.create_session()
     return self.session
 
   async def _exit(self):
     """Closes the connection to MCP Server."""
     await self.exit_stack.aclose()
 
+  @retry_on_closed_resource('_initialize')
   async def load_tools(self) -> List[MCPTool]:
     """Loads all tools from the MCP Server.
 
@@ -252,7 +242,11 @@ class MCPToolset:
     """
     tools_response: ListToolsResult = await self.session.list_tools()
     return [
-        MCPTool(mcp_tool=tool, mcp_session=self.session)
+        MCPTool(
+            mcp_tool=tool,
+            mcp_session=self.session,
+            mcp_session_manager=self.session_manager,
+        )
         for tool in tools_response.tools
     ]
 

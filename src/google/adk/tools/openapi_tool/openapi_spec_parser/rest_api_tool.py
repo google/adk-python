@@ -28,7 +28,7 @@ from typing_extensions import override
 
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
-from ....tools import BaseTool
+from ....tools.base_tool import BaseTool
 from ...tool_context import ToolContext
 from ..auth.auth_helpers import credential_to_param
 from ..auth.auth_helpers import dict_to_auth_scheme

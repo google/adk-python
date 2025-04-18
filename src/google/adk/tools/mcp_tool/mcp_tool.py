@@ -17,6 +17,8 @@ from typing import Optional
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
+from .mcp_session_manager import MCPSessionManager, retry_on_closed_resource
+
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
 try:
@@ -32,6 +34,7 @@ except ImportError as e:
     ) from e
   else:
     raise e
+
 
 from ..base_tool import BaseTool
 from ...auth.auth_credential import AuthCredential
@@ -51,6 +54,7 @@ class MCPTool(BaseTool):
       self,
       mcp_tool: McpBaseTool,
       mcp_session: ClientSession,
+      mcp_session_manager: MCPSessionManager,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] | None = None,
   ):
@@ -79,9 +83,13 @@ class MCPTool(BaseTool):
     self.description = mcp_tool.description if mcp_tool.description else ""
     self.mcp_tool = mcp_tool
     self.mcp_session = mcp_session
+    self.mcp_session_manager = mcp_session_manager
     # TODO(cheliu): Support passing auth to MCP Server.
     self.auth_scheme = auth_scheme
     self.auth_credential = auth_credential
+
+  async def _reinitialize_session(self):
+    self.mcp_session = await self.mcp_session_manager.create_session()
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -98,6 +106,7 @@ class MCPTool(BaseTool):
     return function_decl
 
   @override
+  @retry_on_closed_resource("_reinitialize_session")
   async def run_async(self, *, args, tool_context: ToolContext):
     """Runs the tool asynchronously.
 
@@ -109,5 +118,9 @@ class MCPTool(BaseTool):
         Any: The response from the tool.
     """
     # TODO(cheliu): Support passing tool context to MCP Server.
-    response = await self.mcp_session.call_tool(self.name, arguments=args)
-    return response
+    try:
+      response = await self.mcp_session.call_tool(self.name, arguments=args)
+      return response
+    except Exception as e:
+      print(e)
+      raise e
