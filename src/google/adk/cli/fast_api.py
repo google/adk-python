@@ -763,7 +763,6 @@ def get_fast_api_app(
 
   async def _get_root_agent_async(app_name: str) -> Agent:
     """Returns the root agent for the given app."""
-    logger.info("----------------- Checking root agent for app:", app_name)
     if app_name in root_agent_dict:
       return root_agent_dict[app_name]
     agent_module = importlib.import_module(app_name)
