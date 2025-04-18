@@ -227,6 +227,7 @@ def get_fast_api_app(
         x
         for x in os.listdir(base_path)
         if os.path.isdir(os.path.join(base_path, x))
+        and os.path.isfile(os.path.join(base_path, x, '__init__.py'))
         and not x.startswith(".")
         and x != "__pycache__"
     ]
@@ -762,6 +763,7 @@ def get_fast_api_app(
 
   async def _get_root_agent_async(app_name: str) -> Agent:
     """Returns the root agent for the given app."""
+    logger.info("----------------- Checking root agent for app:", app_name)
     if app_name in root_agent_dict:
       return root_agent_dict[app_name]
     agent_module = importlib.import_module(app_name)
