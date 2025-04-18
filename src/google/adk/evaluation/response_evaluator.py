@@ -106,9 +106,11 @@ class ResponseEvaluator:
     eval_dataset = pd.DataFrame(flattened_queries).rename(
         columns={"query": "prompt", "expected_tool_use": "reference_trajectory"}
     )
-    eval_task = EvalTask(dataset=eval_dataset, metrics=metrics)
 
-    eval_result = eval_task.evaluate()
+    eval_result = ResponseEvaluator._perform_eval(
+        dataset=eval_dataset, metrics=metrics
+    )
+
     if print_detailed_results:
       ResponseEvaluator._print_results(eval_result)
     return eval_result.summary_metrics
@@ -128,6 +130,16 @@ class ResponseEvaluator:
     ):
       metrics.append("rouge_1")
     return metrics
+
+  @staticmethod
+  def _perform_eval(dataset, metrics):
+    """This method hides away the call to external service.
+
+    Primarily helps with unit testing.
+    """
+    eval_task = EvalTask(dataset=dataset, metrics=metrics)
+
+    return eval_task.evaluate()
 
   @staticmethod
   def _print_results(eval_result):

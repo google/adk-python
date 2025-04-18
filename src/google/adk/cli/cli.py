@@ -82,6 +82,8 @@ async def run_interactively(
   )
   while True:
     query = input('user: ')
+    if not query or not query.strip():
+      continue
     if query == 'exit':
       break
     async for event in runner.run_async(
