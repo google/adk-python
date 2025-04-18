@@ -7,7 +7,7 @@
 * Initial release of the Agent Development Kit (ADK).
 * Multi-agent, agent-as-workflow, and custom agent support
 * Tool authentication support
-* Rich tool support, e.g. bult-in tools, google-cloud tools, thir-party tools, and MCP tools
+* Rich tool support, e.g. bult-in tools, google-cloud tools, third-party tools, and MCP tools
 * Rich callback support
 * Built-in code execution capability
 * Asynchronous runtime and execution
