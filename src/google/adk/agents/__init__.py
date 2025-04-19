@@ -21,11 +21,13 @@ from .loop_agent import LoopAgent
 from .parallel_agent import ParallelAgent
 from .run_config import RunConfig
 from .sequential_agent import SequentialAgent
+from .litellm_agent import LiteLlmAgent
 
 __all__ = [
     'Agent',
     'BaseAgent',
     'LlmAgent',
+    'LiteLlmAgent',
     'LoopAgent',
     'ParallelAgent',
     'SequentialAgent',
