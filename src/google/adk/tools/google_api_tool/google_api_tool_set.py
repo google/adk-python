@@ -21,6 +21,7 @@ from typing import Optional
 from typing import Type
 
 from ...auth import OpenIdConnectWithConfig
+from ...auth.auth_credential import ServiceAccount
 from ..openapi_tool import OpenAPIToolset
 from ..openapi_tool import RestApiTool
 from .google_api_tool import GoogleApiTool
@@ -87,6 +88,10 @@ class GoogleApiToolSet:
   def configure_auth(self, client_id: str, client_secret: str):
     for tool in self.tools:
       tool.configure_auth(client_id, client_secret)
+
+  def configure_sa_auth(self, service_account: ServiceAccount):
+    for tool in self.tools:
+      tool.configure_sa_auth(service_account)
 
   @classmethod
   def load_tool_set(
