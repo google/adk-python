@@ -100,6 +100,7 @@ class ApiParameter(BaseModel):
   py_name: Optional[str] = ''
   type_value: type[Any] = Field(default=None, init_var=False)
   type_hint: str = Field(default=None, init_var=False)
+  required: Optional[bool] = None
 
   def model_post_init(self, _: Any):
     self.py_name = (
