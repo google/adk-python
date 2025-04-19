@@ -17,10 +17,10 @@ import copy
 from datetime import datetime
 import json
 import logging
-from typing import Any
-from typing import Optional
+from typing import Any, Optional
 import uuid
 
+from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
@@ -136,7 +136,7 @@ class StorageEvent(Base):
   author: Mapped[str] = mapped_column(String)
   branch: Mapped[str] = mapped_column(String, nullable=True)
   timestamp: Mapped[DateTime] = mapped_column(DateTime(), default=func.now())
-  content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON)
+  content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
   actions: Mapped[MutableDict[str, Any]] = mapped_column(PickleType)
 
   long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
@@ -576,8 +576,12 @@ def _merge_state(app_state, user_state, session_state):
   return merged_state
 
 
-def _decode_content(content: dict[str, Any]) -> dict[str, Any]:
+def _decode_content(
+    content: Optional[dict[str, Any]],
+) -> Optional[types.Content]:
+  if not content:
+    return None
   for p in content["parts"]:
     if "inline_data" in p:
       p["inline_data"]["data"] = base64.b64decode(p["inline_data"]["data"][0])
-  return content
+  return types.Content.model_validate(content)
