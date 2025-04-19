@@ -37,7 +37,7 @@ class EvaluationGenerator:
       agent_module_path,
       repeat_num=3,
       agent_name=None,
-      initial_session={},
+      initial_session=None,
   ):
     """Returns evaluation responses for the given dataset and agent.
 
@@ -51,7 +51,7 @@ class EvaluationGenerator:
       initial_session: Initial session for the eval data.
     """
     results = []
-
+    initial_session = initial_session or {}
     for _ in range(repeat_num):
       for data in eval_dataset:
         results.append(
@@ -89,8 +89,9 @@ class EvaluationGenerator:
     return results
 
   @staticmethod
-  def _process_query(data, module_name, agent_name=None, initial_session={}):
+  def _process_query(data, module_name, agent_name=None, initial_session=None):
     """Process a query using the agent and evaluation dataset."""
+    initial_session = initial_session or {}
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
     root_agent = agent_module.agent.root_agent
@@ -111,13 +112,13 @@ class EvaluationGenerator:
       data,
       root_agent,
       reset_func,
-      initial_session={},
+      initial_session=None,
       session_id=None,
       session_service=None,
       artifact_service=None,
   ):
     """Process a query using the agent and evaluation dataset."""
-
+    initial_session = initial_session or {}
     # we don't know which tools belong to which agent
     # so we just apply to any agents that has certain tool outputs
     all_mock_tools = set()

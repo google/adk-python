@@ -17,6 +17,7 @@ import os
 from os import path
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Union
 
 from .evaluation_generator import EvaluationGenerator
@@ -247,7 +248,11 @@ class AgentEvaluator:
 
   @staticmethod
   def _generate_responses(
-      agent_module, eval_dataset, num_runs, agent_name=None, initial_session={}
+      agent_module,
+      eval_dataset,
+      num_runs,
+      agent_name=None,
+      initial_session: Optional[Dict] = None,
   ):
     """Generates evaluation responses by running the agent module multiple times."""
     return EvaluationGenerator.generate_responses(
@@ -255,7 +260,7 @@ class AgentEvaluator:
         agent_module,
         repeat_num=num_runs,
         agent_name=agent_name,
-        initial_session=initial_session,
+        initial_session=initial_session or {},
     )
 
   @staticmethod
