@@ -96,6 +96,9 @@ If another agent is better for answering the question according to its
 description, call `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` function to transfer the
 question to that agent. When transfering, do not generate any text other than
 the function call.
+
+If you can answer any part of the question then you must do that first,
+and then transfer to another agent if necessary to answer other parts.
 """
 
   if agent.parent_agent:
