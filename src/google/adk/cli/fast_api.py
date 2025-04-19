@@ -227,6 +227,7 @@ def get_fast_api_app(
         x
         for x in os.listdir(base_path)
         if os.path.isdir(os.path.join(base_path, x))
+        and os.path.isfile(os.path.join(base_path, x, '__init__.py'))
         and not x.startswith(".")
         and x != "__pycache__"
     ]
