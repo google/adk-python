@@ -55,7 +55,7 @@ def load_json(file_path: str) -> Union[Dict, List]:
 
 
 class AgentEvaluator:
-  """An evaluator for Agents, mainly intented for helping with test cases."""
+  """An evaluator for Agents, mainly intended for helping with test cases."""
 
   @staticmethod
   def find_config_for_test_file(test_file: str):
@@ -91,7 +91,7 @@ class AgentEvaluator:
         look for 'root_agent' in the loaded module.
       eval_dataset: The eval data set. This can be either a string representing
         full path to the file containing eval dataset, or a directory that is
-        recusively explored for all files that have a `.test.json` suffix.
+        recursively explored for all files that have a `.test.json` suffix.
       num_runs: Number of times all entries in the eval dataset should be
         assessed.
       agent_name: The name of the agent.
