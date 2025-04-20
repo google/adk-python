@@ -178,6 +178,18 @@ class Runner:
       if not session:
         raise ValueError(f'Session not found: {session_id}')
 
+      # Ensure session state is using EnhancedStateDict if possible
+      if hasattr(session, 'state'):
+        try:
+          from .sessions.in_memory_session_service import EnhancedStateDict
+          if not isinstance(session.state, dict) and not type(session.state).__name__ == 'EnhancedStateDict':
+            # Convert existing state to EnhancedStateDict for persistence
+            existing_state = session.state
+            session.state = EnhancedStateDict(existing_state)
+            logger.debug(f"Runner: Upgraded session state to EnhancedStateDict")
+        except (ImportError, AttributeError) as e:
+          logger.warning(f"Runner: Could not upgrade session state: {e}")
+
       invocation_context = self._new_invocation_context(
           session,
           new_message=new_message,
