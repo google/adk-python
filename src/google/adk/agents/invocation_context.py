@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Dict
 import uuid
 
 from google.genai import types
@@ -30,6 +30,7 @@ from .base_agent import BaseAgent
 from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
 from .transcription_entry import TranscriptionEntry
+from ..auth.auth_credential import AuthCredential
 
 
 class LlmCallsLimitExceededError(Exception):
@@ -149,6 +150,9 @@ class InvocationContext(BaseModel):
 
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""
+
+  requested_auth_configs: Optional[Dict[str, AuthCredential]] = None
+  """Authentication configurations requested by the client and passed to tools."""
 
   _invocation_cost_manager: _InvocationCostManager = _InvocationCostManager()
   """A container to keep track of different kinds of costs incurred as a part

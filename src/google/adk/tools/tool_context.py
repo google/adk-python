@@ -67,6 +67,28 @@ class ToolContext(CallbackContext):
     )
 
   def get_auth_response(self, auth_config: AuthConfig) -> AuthCredential:
+    """Gets the authentication response.
+    
+    This method first attempts to retrieve an authentication token from
+    InvocationContext.requested_auth_configs if available, otherwise it uses
+    the standard method of retrieving the token from the session state.
+
+    Args:
+        auth_config: The authentication configuration.
+
+    Returns:
+        An AuthCredential object containing authentication information.
+    """
+    # First check if a Bearer token is available in requested_auth_configs
+    if (
+        hasattr(self._invocation_context, "requested_auth_configs") and
+        self._invocation_context.requested_auth_configs and
+        "bearer" in self._invocation_context.requested_auth_configs
+    ):
+      # Use the token provided by the API
+      return self._invocation_context.requested_auth_configs["bearer"]
+    
+    # Otherwise, use the standard method
     return AuthHandler(auth_config).get_auth_response(self.state)
 
   def list_artifacts(self) -> list[str]:
