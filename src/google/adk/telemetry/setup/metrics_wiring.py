@@ -45,17 +45,17 @@ _logger = logging.getLogger(__name__)
 def _create_gcp_exporter():
     if optional_otel_metrics is None:
         _logger.warning('Missing "opentelemetry-sdk" dependency; cannot initialize metrics export.')
-        return
+        return None
     if optional_cloud_monitoring_exporter is None:
         _logger.warning('Missing "opentelemetry-exporter-gcp-monitoring" dependency; cannot initialize metrics export.')
-        return
+        return None
     project_id = gcloud_project.get_metrics_project()
     if not project_id:
         _logger.warning(
             'Insufficient project information; cannot initialize metrics export. '
             'Set OTEL_GCLOUD_PROJECT_FOR_LOGS, OTEL_GCLOUD_PROJECT, or GOOGLE_CLOUD_PROJECT. '
             'Alternatively, setup Application Default Credentials with a Service Account associated with a project.')
-        return
+        return None
     return optional_otlp_metric_exporter.CloudMonitoringMetricsExporter(
         project_id=project_id,
         add_unique_identifier=True)
@@ -64,9 +64,10 @@ def _create_gcp_exporter():
 def _create_otlp_exporter():
     if optional_otel_metrics is None:
         _logger.warning('Missing "opentelemetry-sdk" dependency; cannot initialize metrics export.')
-        return
+        return None
     if optional_otlp_metric_exporter is None:
         _logger.warning('Missing "opentelemetry-exporter-otlp-proto-grpc" dependency; cannot initialize metrics export.')
+        return None
     address = env_utils.get_metrics_otlp_endpoint()
     creds = credentials.create_credentials_for_address(address)
     return optional_otlp_metric_exporter.OTLPMetricExporter(credentials=creds)
@@ -105,8 +106,6 @@ def _setup_metrics_with_readers(readers):
     if optional_otel_metrics is None:
         _logger.warning('Missing "opentelemetry-sdk" dependency; cannot initialize metrics export.')
         return
-    if optional_otlp_metric_exporter is None:
-        _logger.warning('Missing "opentelemetry-exporter-otlp-proto-grpc" dependency; cannot initialize metrics export.')
     project_id = gcloud_project.get_metrics_project()
     resource = otel_resource.get_resource(project_id=project_id)
     meter_provider = optional_otel_metrics.MeterProvider(metric_readers=readers, resource=resource)

@@ -32,9 +32,9 @@ from ...agents.invocation_context import InvocationContext
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
-from ...telemetry import trace_tool_call
-from ...telemetry import trace_tool_response
-from ...telemetry import tracer
+from ...telemetry.recording import trace_tool_call
+from ...telemetry.recording import trace_tool_response
+from ...telemetry.recording import tracer
 from ...tools.base_tool import BaseTool
 from ...tools.tool_context import ToolContext
 

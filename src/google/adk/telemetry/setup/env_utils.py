@@ -91,7 +91,7 @@ def get_metrics_exporter_type():
     return None
 
 
-def get_trace_exporter_type():
+def get_traces_exporter_type():
     exporter_type = get_first_non_empty([
         # Based on https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/
         'OTLP_TRACES_EXPORTER',

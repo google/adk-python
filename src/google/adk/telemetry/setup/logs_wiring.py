@@ -58,17 +58,17 @@ def _get_default_log_name():
 def _create_gcp_exporter():
     if optional_otel_logs is None:
         _logger.warning('Missing "opentelemetry-sdk" dependency; cannot initialize logs export.')
-        return
+        return None
     if optional_cloud_logging_exporter is None:
         _logger.warning('Missing "opentelemetry-exporter-gcp-logging" dependency; cannot initialize logs export.')
-        return
+        return None
     project_id = gcloud_project.get_logs_project()
     if not project_id:
         _logger.warning(
             'Insufficient project information; cannot initialize logs export. '
             'Set OTEL_GCLOUD_PROJECT_FOR_LOGS, OTEL_GCLOUD_PROJECT, or GOOGLE_CLOUD_PROJECT. '
             'Alternatively, setup Application Default Credentials with a Service Account associated with a project.')
-        return
+        return None
     return optional_cloud_logging_exporter.CloudLoggingExporter(
         project_id=project_id,
         default_log_name=_get_default_log_name())
@@ -77,9 +77,10 @@ def _create_gcp_exporter():
 def _create_otlp_exporter():
     if optional_otel_logs is None:
         _logger.warning('Missing "opentelemetry-sdk" dependency; cannot initialize logs export.')
-        return
+        return None
     if optional_otlp_log_exporter is None:
         _logger.warning('Missing "opentelemetry-exporter-otlp-proto-grpc" dependency; cannot initialize logs export.')
+        return None
     address = env_utils.get_logs_otlp_endpoint()
     creds = credentials.create_credentials_for_address(address)
     return optional_otlp_log_exporter.OTLPLogExporter(credentials=creds)
@@ -118,8 +119,6 @@ def _setup_logs_with_processors(processors):
     if optional_otel_logs is None:
         _logger.warning('Missing "opentelemetry-sdk" dependency; cannot initialize logs export.')
         return
-    if optional_otlp_log_exporter is None:
-        _logger.warning('Missing "opentelemetry-exporter-otlp-proto-grpc" dependency; cannot initialize logs export.')
     project_id = gcloud_project.get_logs_project()
     resource = otel_resource.get_resource(project_id=project_id)
     logger_provider = optional_otel_logs.LoggerProvider(resource=resource)

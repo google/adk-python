@@ -22,20 +22,19 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from opentelemetry import trace
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 from typing_extensions import override
 
+from ..telemetry.recording import tracer
 from ..events.event import Event
 from .callback_context import CallbackContext
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
 
-tracer = trace.get_tracer('gcp.vertex.agent')
 
 BeforeAgentCallback = Callable[[CallbackContext], Optional[types.Content]]
 """Callback signature that is invoked before the agent run.

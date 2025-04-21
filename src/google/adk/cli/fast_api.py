@@ -44,8 +44,7 @@ from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
 import graphviz
 from opentelemetry import trace
-from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
-from opentelemetry.sdk.trace import export
+from opentelemetry.sdk.trace import export as otel_trace_export
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import BaseModel
@@ -65,6 +64,7 @@ from ..sessions.database_session_service import DatabaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
+from ..telemetry.setup import telemetry_setup
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .cli_eval import EvalMetric
 from .cli_eval import EvalMetricResult
@@ -78,14 +78,14 @@ logger = logging.getLogger(__name__)
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 
 
-class ApiServerSpanExporter(export.SpanExporter):
+class ApiServerSpanExporter(otel_trace_export.SpanExporter):
 
   def __init__(self, trace_dict):
     self.trace_dict = trace_dict
 
   def export(
       self, spans: typing.Sequence[ReadableSpan]
-  ) -> export.SpanExportResult:
+  ) -> otel_trace_export.SpanExportResult:
     for span in spans:
       if (
           span.name == "call_llm"
@@ -97,7 +97,7 @@ class ApiServerSpanExporter(export.SpanExporter):
         attributes["span_id"] = span.get_span_context().span_id
         if attributes.get("gcp.vertex.agent.event_id", None):
           self.trace_dict[attributes["gcp.vertex.agent.event_id"]] = attributes
-    return export.SpanExportResult.SUCCESS
+    return otel_trace_export.SpanExportResult.SUCCESS
 
   def force_flush(self, timeout_millis: int = 30000) -> bool:
     return True
@@ -139,28 +139,14 @@ def get_fast_api_app(
     trace_to_cloud: bool = False,
     lifespan: Optional[Lifespan[FastAPI]] = None,
 ) -> FastAPI:
-  # InMemory tracing dict.
-  trace_dict: dict[str, Any] = {}
-
-  # Set up tracing in the FastAPI server.
-  provider = TracerProvider()
-  provider.add_span_processor(
-      export.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict))
-  )
+  # Reflect options to the environment
   if trace_to_cloud:
-    envs.load_dotenv_for_agent("", agent_dir)
-    if project_id := os.environ.get("GOOGLE_CLOUD_PROJECT", None):
-      processor = export.BatchSpanProcessor(
-          CloudTraceSpanExporter(project_id=project_id)
-      )
-      provider.add_span_processor(processor)
-    else:
-      logging.warning(
-          "GOOGLE_CLOUD_PROJECT environment variable is not set. Tracing will"
-          " not be enabled."
-      )
+    os.environ['ADK_TRACE_TO_CLOUD'] = 'true'
 
-  trace.set_tracer_provider(provider)
+  # Setup telemetry
+  trace_dict: dict[str, Any] = {}
+  trace_processor = otel_trace_export.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict))
+  telemetry_setup.setup_telemetry(extra_trace_processors=[trace_processor])
 
   exit_stacks = []
 
