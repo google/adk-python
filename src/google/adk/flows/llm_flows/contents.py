@@ -111,7 +111,7 @@ def _rearrange_events_for_latest_function_response(
   """Rearrange the events for the latest function_response.
 
   If the latest function_response is for an async function_call, all events
-  bewteen the initial function_call and the latest function_response will be
+  between the initial function_call and the latest function_response will be
   removed.
 
   Args:

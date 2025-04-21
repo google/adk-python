@@ -26,7 +26,7 @@ class State:
     """
     Args:
       value: The current value of the state dict.
-      delta: The delta change to the current value that hasn't been commited.
+      delta: The delta change to the current value that hasn't been committed.
     """
     self._value = value
     self._delta = delta

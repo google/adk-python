@@ -94,7 +94,7 @@ can answer it.
 
 If another agent is better for answering the question according to its
 description, call `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` function to transfer the
-question to that agent. When transfering, do not generate any text other than
+question to that agent. When transferring, do not generate any text other than
 the function call.
 """
 

@@ -256,7 +256,7 @@ def run_evals(
         )
 
         if final_eval_status == EvalStatus.PASSED:
-          result = "✅ Passsed"
+          result = "✅ Passed"
         else:
           result = "❌ Failed"
 

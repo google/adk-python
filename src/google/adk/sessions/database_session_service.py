@@ -217,7 +217,7 @@ class DatabaseSessionService(BaseSessionService):
     """
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
-    # 3. Initialize all properies
+    # 3. Initialize all properties
 
     try:
       db_engine = create_engine(db_url)
