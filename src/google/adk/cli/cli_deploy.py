@@ -82,8 +82,9 @@ def to_cloud_run(
     app_name: str,
     temp_folder: str,
     port: int,
-    with_cloud_trace: bool,
+    trace_to_cloud: bool,
     with_ui: bool,
+    verbosity: str,
 ):
   """Deploys an agent to Google Cloud Run.
 
@@ -108,8 +109,9 @@ def to_cloud_run(
     app_name: The name of the app, by default, it's basename of `agent_folder`.
     temp_folder: The temp folder for the generated Cloud Run source files.
     port: The port of the ADK api server.
-    with_cloud_trace: Whether to enable Cloud Trace.
+    trace_to_cloud: Whether to enable Cloud Trace.
     with_ui: Whether to deploy with UI.
+    verbosity: The verbosity level of the CLI.
   """
   app_name = app_name or os.path.basename(agent_folder)
 
@@ -142,7 +144,7 @@ def to_cloud_run(
         port=port,
         command='web' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
-        trace_to_cloud_option='--trace_to_cloud' if with_cloud_trace else '',
+        trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -169,6 +171,8 @@ def to_cloud_run(
             *region_options,
             '--port',
             str(port),
+            '--verbosity',
+            verbosity,
             '--labels',
             'created-by=adk',
         ],

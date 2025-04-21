@@ -310,9 +310,7 @@ async def _process_function_live_helper(
       function_response = {
           'status': f'No active streaming function named {function_name} found'
       }
-  elif inspect.isasyncgenfunction(tool.func):
-    print('is async')
-
+  elif hasattr(tool, "func") and inspect.isasyncgenfunction(tool.func):
     # for streaming tool use case
     # we require the function to be a async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
