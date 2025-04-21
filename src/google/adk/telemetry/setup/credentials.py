@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import urllib.parse
+
+
 try:
     import grpc as optional_grpc
 except ImportError:
@@ -27,7 +30,7 @@ except ImportError:
     optional_google_auth_grpc = None
 
 
-def create_gcp_telemetry_api_creds():
+def create_gcp_api_grpc_creds():
     if optional_google_auth is None:
         return None
     if optional_grpc is None:
@@ -40,3 +43,16 @@ def create_gcp_telemetry_api_creds():
         optional_grpc.ssl_channel_credentials(),
         optional_grpc.metadata_call_credentials(auth_metadata_plugin),
     )
+
+
+def _should_use_gcp_api_grpc_creds(parsed):
+    return (
+        (parsed.scheme == 'https') and
+        (parsed.netloc.endswith('.googleapis.com')))
+
+
+def create_credentials_for_address(address):
+    parsed = urllib.parse.urlparse(address)
+    if _should_use_gcp_api_grpc_creds(parsed):
+        return create_gcp_api_grpc_creds()
+    return None

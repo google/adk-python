@@ -37,6 +37,7 @@ dependencies = [
   "graphviz>=0.20.2",                        # Graphviz for graph rendering
   "mcp>=1.5.0;python_version>='3.10'",       # For MCP Toolset
   "opentelemetry-api>=1.31.0",               # OpenTelemetry
+  "opentelemetry-sdk>=1.31.0",               # ... and SDK (some built-in debug features built on it).
   "pydantic>=2.0, <3.0.0",                   # For data validation/models
   "python-dotenv>=1.0.0",                    # To manage environment variables
   "PyYAML>=6.0.2",                           # For APIHubToolset.
@@ -95,6 +96,7 @@ gcp_o11y = [
   "opentelemetry-exporter-otlp-proto-grpc>=1.31.0",
   "opentelemetry-instrumentation-google-genai>=0.1b0",
   "opentelemetry-instrumentation-requests>=0.53b1",
+  "opentelemetry-resourcedetector-gcp>=1.9.0a0",
   "opentelemetry-sdk>=1.31.0",
   # go/keep-sorted end
 ]

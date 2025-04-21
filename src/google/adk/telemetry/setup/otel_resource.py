@@ -13,8 +13,6 @@
 # limitations under the License.
 
 from typing import Optional
-
-import functools
 import os
 
 
@@ -24,47 +22,9 @@ except ImportError:
     optional_otel_resources = None
 
 try:
-    from google import auth as optional_google_auth
+    from opentelemetry.resourcedetector import gcp_resource_detector as optional_gcp_resource_detector
 except ImportError:
-    optional_google_auth = None
-
-
-_PROJECT_ENV_VARS = [
-    'OTEL_GCLOUD_PROJECT',
-    'GOOGLE_CLOUD_PROJECT',
-    'GCLOUD_PROJECT',
-    'GCP_PROJECT',
-]
-
-@functools.cache
-def _get_project_id() -> Optional[str]:
-    for env_var in _PROJECT_ENV_VARS:
-        from_env = os.getenv(env_var)
-        if from_env:
-            return from_env
-    if optional_google_auth is not None:
-        _, project = optional_google_auth.default()
-        return project
-    return None
-
-
-def _get_project_with_override(override_env_var) -> Optional[str]:
-    project_override = os.getenv(override_env_var)
-    if project_override is not None:
-        return project_override
-    return _get_project_id()
-
-
-def _get_metrics_project() -> Optional[str]:
-    return _get_project_with_override('OTEL_GCLOUD_PROJECT_FOR_METRICS')
-
-
-def _get_logs_project() -> Optional[str]:
-    return _get_project_with_override('OTEL_GCLOUD_PROJECT_FOR_LOGS')
-
-
-def _get_traces_project() -> Optional[str]:
-    return _get_project_with_override('OTEL_GCLOUD_PROJECT_FOR_TRACES')
+    optional_gcp_resource_detector = None
 
 
 def _get_service_namespace() -> Optional[str]:
@@ -103,14 +63,20 @@ def _to_project_attributes(project_id: Optional[str]) -> dict[str, str]:
 def _get_resource_detectors():
     if optional_otel_resources is None:
         return []
-    return [
+    result = [
         optional_otel_resources.OTELResourceDetector(),
         optional_otel_resources.ProcessResourceDetector(),
         optional_otel_resources.OsResourceDetector()
     ]
+    if optional_gcp_resource_detector is not None:
+        result.append(optional_gcp_resource_detector.GoogleCloudResourceDetector())
+    return result
 
 
-def _create_resource(project_id: Optional[str]):
+def get_resource(project_id: Optional[str] = None):
+    """Returns the resource to use with Open Telemetry."""
+    if optional_otel_resources is None:
+        return None
     resource_attributes = {}
     resource_attributes.update(_get_service_attributes())
     resource_attributes.update(_to_project_attributes(project_id=project_id))
@@ -120,25 +86,3 @@ def _create_resource(project_id: Optional[str]):
             attributes=resource_attributes,
         )
     )
-
-
-def get_logs_resource():
-    """Returns the Open Telemetry resource to use for logs."""
-    if optional_otel_resources is None:
-        return None
-    return _create_resource(_get_logs_project())
-
-
-def get_metrics_resource():
-    """Returns the Open Telemetry resource to use for metrics."""
-    if optional_otel_resources is None:
-        return None
-    return _create_resource(_get_metrics_project())
-
-
-def get_trace_resource():
-    """Returns the Open Telemetry resource to use for traces."""
-    if optional_otel_resources is None:
-        return None
-    return _create_resource(_get_traces_project())
-

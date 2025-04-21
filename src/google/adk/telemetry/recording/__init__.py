@@ -33,7 +33,11 @@ from .models.llm_request import LlmRequest
 from .models.llm_response import LlmResponse
 
 
-tracer = trace.get_tracer('gcp.vertex.agent')
+# https://github.com/open-telemetry/semantic-conventions/blob/main/model/gen-ai/registry.yaml
+# https://opentelemetry.io/docs/specs/semconv/attributes-registry/gen-ai/#gen-ai-system
+_GENAI_SYSTEM = 'gcp.gen_ai'
+
+tracer = trace.get_tracer('gcp.google_adk')
 
 
 def trace_tool_call(
@@ -45,7 +49,7 @@ def trace_tool_call(
     args: The arguments to the tool call.
   """
   span = trace.get_current_span()
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
+  span.set_attribute('gen_ai.system', _GENAI_SYSTEM)
   span.set_attribute('gcp.vertex.agent.tool_call_args', json.dumps(args))
 
 
@@ -67,7 +71,7 @@ def trace_tool_response(
       function response for sequential function calls.
   """
   span = trace.get_current_span()
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
+  span.set_attribute('gen_ai.system', _GENAI_SYSTEM)
   span.set_attribute(
       'gcp.vertex.agent.invocation_id', invocation_context.invocation_id
   )
@@ -106,7 +110,7 @@ def trace_call_llm(
   span = trace.get_current_span()
   # Special standard Open Telemetry GenaI attributes that indicate
   # that this is a span related to a Generative AI system.
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
+  span.set_attribute('gen_ai.system', _GENAI_SYSTEM)
   span.set_attribute('gen_ai.request.model', llm_request.model)
   span.set_attribute(
       'gcp.vertex.agent.invocation_id', invocation_context.invocation_id
