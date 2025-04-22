@@ -756,6 +756,12 @@ def get_fast_api_app(
     except Exception as e:
       logger.exception("Error during live websocket communication: %s", e)
       traceback.print_exc()
+      WEBSOCKET_INTERNAL_ERROR_CODE = 1011
+      WEBSOCKET_MAX_BYTES_FOR_REASON = 123
+      await websocket.close(
+          code=WEBSOCKET_INTERNAL_ERROR_CODE,
+          reason=str(e)[:WEBSOCKET_MAX_BYTES_FOR_REASON],
+      )
     finally:
       for task in pending:
         task.cancel()
