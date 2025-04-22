@@ -14,20 +14,12 @@
 
 import inspect
 from textwrap import dedent
-from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi.encoders import jsonable_encoder
-from fastapi.openapi.models import Operation
-from fastapi.openapi.models import Parameter
-from fastapi.openapi.models import Schema
+from fastapi.openapi.models import Operation, Parameter, Schema
 
-from ..common.common import ApiParameter
-from ..common.common import PydocHelper
-from ..common.common import to_snake_case
+from ..common.common import ApiParameter, PydocHelper, to_snake_case
 
 
 class OperationParser:
@@ -110,7 +102,8 @@ class OperationParser:
       description = request_body.description or ''
 
       if schema and schema.type == 'object':
-        for prop_name, prop_details in schema.properties.items():
+        properties = schema.properties or {}
+        for prop_name, prop_details in properties.items():
           self.params.append(
               ApiParameter(
                   original_name=prop_name,
