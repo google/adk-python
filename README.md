@@ -112,6 +112,12 @@ adk eval \
     samples_for_testing/hello_world/hello_world_eval_set_001.evalset.json
 ```
 
+## 🤖 A2A and ADK integration
+
+For remote agent-to-agent communication, ADK integrates with the
+[A2A protocol](https://github.com/google/A2A/).
+See this [example](https://github.com/google/A2A/tree/main/samples/python/agents/google_adk)
+for how they can work together.
 
 ## 🤝 Contributing
 
