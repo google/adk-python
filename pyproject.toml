@@ -33,7 +33,7 @@ dependencies = [
   "google-cloud-secret-manager>=2.22.0",     # Fetching secrets in RestAPI Tool
   "google-cloud-speech>=2.30.0",             # For Audo Transcription
   "google-cloud-storage>=2.18.0, <3.0.0",    # For GCS Artifact service
-  "google-genai>=1.9.0",                     # Google GenAI SDK
+  "google-genai>=1.11.0",                    # Google GenAI SDK
   "graphviz>=0.20.2",                        # Graphviz for graph rendering
   "mcp>=1.5.0;python_version>='3.10'",       # For MCP Toolset
   "opentelemetry-api>=1.31.0",               # OpenTelemetry
