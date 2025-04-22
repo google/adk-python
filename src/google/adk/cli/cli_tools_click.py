@@ -541,6 +541,11 @@ def cli_api_server(
     default="WARNING",
     help="Optional. Override the default verbosity level.",
 )
+@click.option(
+    "--agent_engine_id",
+    type=str,
+    help="Optional. The Vertex AI Agent Engine ID to use. if set, the agent will be deployed to a managed session service.",
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -553,6 +558,7 @@ def cli_deploy_cloud_run(
     region: Optional[str],
     service_name: str,
     app_name: str,
+    agent_engine_id: str,
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
@@ -574,6 +580,7 @@ def cli_deploy_cloud_run(
         region=region,
         service_name=service_name,
         app_name=app_name,
+        agent_engine_id=agent_engine_id,
         temp_folder=temp_folder,
         port=port,
         trace_to_cloud=trace_to_cloud,
