@@ -54,7 +54,7 @@ COPY "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {trace_to_cloud_option} "/app/agents"
+CMD adk {command} {agent_engine_id_option} --port={port} {trace_to_cloud_option} "/app/agents"
 """
 
 
@@ -80,6 +80,7 @@ def to_cloud_run(
     region: Optional[str],
     service_name: str,
     app_name: str,
+    agent_engine_id: str,
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
@@ -145,6 +146,7 @@ def to_cloud_run(
         command='web' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        agent_engine_id_option=f'--session_db_url=agentengine://{agent_engine_id}' if agent_engine_id else '',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
