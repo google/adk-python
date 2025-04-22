@@ -27,6 +27,7 @@ This project follows
 
 ### Requirement for PRs
 
+- All PRs, other than small documentation or typo fixes, should have a Issue assoicated. If not, please create one. 
 - Small, focused PRs. Keep changes minimal—one concern per PR.
 - For bug fixes or features, please provide logs or screenshot after the fix is applied to help reviewers better understand the fix.
 - Please add corresponding testing for your code change if it's not covered by existing tests.
