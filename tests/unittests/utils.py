@@ -172,13 +172,15 @@ class InMemoryRunner:
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
     )
+    self.session_id = None
 
 
   @property
   async def session(self) -> Session:
-    self.session_id = (await self.runner.session_service.create_session(
-        app_name='test_app', user_id='test_user'
-    )).id
+    if not self.session_id:
+        self.session_id = (await self.runner.session_service.create_session(
+            app_name='test_app', user_id='test_user'
+        )).id
     return await self.runner.session_service.get_session(
         app_name='test_app', user_id='test_user', session_id=self.session_id
     )

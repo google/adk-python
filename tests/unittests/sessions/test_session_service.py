@@ -63,7 +63,7 @@ async def test_create_get_session(service_type):
   assert session.id
   assert session.state == state
   assert (
-      session_service.get_session(
+      await session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session.id
       )
       == session

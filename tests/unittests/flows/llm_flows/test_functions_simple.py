@@ -231,7 +231,7 @@ async def test_update_state():
   agent = Agent(name='root_agent', model=mock_model, tools=[update_state])
   runner = utils.InMemoryRunner(agent)
   await runner.run('test')
-  assert runner.session.state['x'] == 1
+  assert (await runner.session).state['x'] == 1
 
 
 async def test_function_call_id():

@@ -309,7 +309,7 @@ async def test_function_get_auth_response():
   )
   runner = utils.InMemoryRunner(agent)
   await runner.run('test')
-  request_euc_function_call_event = runner.session.events[-3]
+  request_euc_function_call_event = (await runner.session).events[-3]
   function_response1 = types.FunctionResponse(
       name=request_euc_function_call_event.content.parts[0].function_call.name,
       response=auth_response1.model_dump(),

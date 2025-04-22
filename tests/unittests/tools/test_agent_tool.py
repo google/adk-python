@@ -103,13 +103,13 @@ async def test_update_state():
   )
 
   runner = utils.InMemoryRunner(root_agent)
-  runner.session.state['state_1'] = 'state1_value'
+  (await runner.session).state['state_1'] = 'state1_value'
 
   await runner.run('test1')
   assert (
       'input: changed_value' in mock_model.requests[1].config.system_instruction
   )
-  assert runner.session.state['state_1'] == 'changed_value'
+  assert (await runner.session).state['state_1'] == 'changed_value'
 
 
 @mark.parametrize(
@@ -151,7 +151,7 @@ async def test_custom_schema():
   )
 
   runner = utils.InMemoryRunner(root_agent)
-  runner.session.state['state_1'] = 'state1_value'
+  (await runner.session).state['state_1'] = 'state1_value'
 
   assert utils.simplify_events(await runner.run('test1')) == [
       ('root_agent', function_call_custom),
