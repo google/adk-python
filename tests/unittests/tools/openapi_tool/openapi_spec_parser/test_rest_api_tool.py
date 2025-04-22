@@ -14,11 +14,9 @@
 
 
 import json
-from unittest.mock import MagicMock
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from fastapi.openapi.models import MediaType
-from fastapi.openapi.models import Operation
+from fastapi.openapi.models import MediaType, Operation
 from fastapi.openapi.models import Parameter as OpenAPIParameter
 from fastapi.openapi.models import RequestBody
 from fastapi.openapi.models import Schema as OpenAPISchema
@@ -27,13 +25,13 @@ from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_cred
 from google.adk.tools.openapi_tool.common.common import ApiParameter
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
 from google.adk.tools.openapi_tool.openapi_spec_parser.operation_parser import OperationParser
-from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
-from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import snake_to_lower_camel
-from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import (
+    RestApiTool,
+    snake_to_lower_camel,
+    to_gemini_schema,
+)
 from google.adk.tools.tool_context import ToolContext
-from google.genai.types import FunctionDeclaration
-from google.genai.types import Schema
-from google.genai.types import Type
+from google.genai.types import FunctionDeclaration, Schema, Type
 import pytest
 
 
@@ -790,13 +788,13 @@ class TestToGeminiSchema:
     result = to_gemini_schema({})
     assert isinstance(result, Schema)
     assert result.type == Type.OBJECT
-    assert result.properties == {"dummy_DO_NOT_GENERATE": Schema(type="string")}
+    assert result.properties is None
 
   def test_to_gemini_schema_dict_with_only_object_type(self):
     result = to_gemini_schema({"type": "object"})
     assert isinstance(result, Schema)
     assert result.type == Type.OBJECT
-    assert result.properties == {"dummy_DO_NOT_GENERATE": Schema(type="string")}
+    assert result.properties is None
 
   def test_to_gemini_schema_basic_types(self):
     openapi_schema = {
@@ -813,6 +811,42 @@ class TestToGeminiSchema:
     assert gemini_schema.properties["name"].type == Type.STRING
     assert gemini_schema.properties["age"].type == Type.INTEGER
     assert gemini_schema.properties["is_active"].type == Type.BOOLEAN
+
+  def test_to_gemini_schema_array_string_types(self):
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "boolean_field": {"type": "boolean"},
+            "nonnullable_string": {"type": ["string"]},
+            "nullable_string": {"type": ["string", "null"]},
+            "nullable_number": {"type": ["null", "integer"]},
+            "object_nullable": {"type": "null"},
+            "multi_types_nullable": {"type": ["string", "null", "integer"]},
+            "empty_default_object": {},
+        },
+    }
+    gemini_schema = to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties["boolean_field"].type == Type.BOOLEAN
+
+    assert gemini_schema.properties["nonnullable_string"].type == Type.STRING
+    assert not gemini_schema.properties["nonnullable_string"].nullable
+
+    assert gemini_schema.properties["nullable_string"].type == Type.STRING
+    assert gemini_schema.properties["nullable_string"].nullable
+
+    assert gemini_schema.properties["nullable_number"].type == Type.INTEGER
+    assert gemini_schema.properties["nullable_number"].nullable
+
+    assert gemini_schema.properties["object_nullable"].type == Type.OBJECT
+    assert gemini_schema.properties["object_nullable"].nullable
+
+    assert gemini_schema.properties["multi_types_nullable"].type == Type.STRING
+    assert gemini_schema.properties["multi_types_nullable"].nullable
+
+    assert gemini_schema.properties["empty_default_object"].type == Type.OBJECT
+    assert not gemini_schema.properties["empty_default_object"].nullable
 
   def test_to_gemini_schema_nested_objects(self):
     openapi_schema = {
@@ -895,7 +929,15 @@ class TestToGeminiSchema:
   def test_to_gemini_schema_nested_dict(self):
     openapi_schema = {
         "type": "object",
-        "properties": {"metadata": {"key1": "value1", "key2": 123}},
+        "properties": {
+            "metadata": {
+                "type": "object",
+                "properties": {
+                    "key1": {"type": "object"},
+                    "key2": {"type": "string"},
+                },
+            }
+        },
     }
     gemini_schema = to_gemini_schema(openapi_schema)
     # Since metadata is not properties nor item, it will call to_gemini_schema recursively.
@@ -903,9 +945,15 @@ class TestToGeminiSchema:
     assert (
         gemini_schema.properties["metadata"].type == Type.OBJECT
     )  # add object type by default
-    assert gemini_schema.properties["metadata"].properties == {
-        "dummy_DO_NOT_GENERATE": Schema(type="string")
-    }
+    assert len(gemini_schema.properties["metadata"].properties) == 2
+    assert (
+        gemini_schema.properties["metadata"].properties["key1"].type
+        == Type.OBJECT
+    )
+    assert (
+        gemini_schema.properties["metadata"].properties["key2"].type
+        == Type.STRING
+    )
 
   def test_to_gemini_schema_ignore_title_default_format(self):
     openapi_schema = {

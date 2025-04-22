@@ -164,6 +164,18 @@ def test_process_request_body_no_name():
   assert parser.params[0].param_location == 'body'
 
 
+def test_process_request_body_empty_object():
+  """Test _process_request_body with a schema that is of type object but with no properties."""
+  operation = Operation(
+      requestBody=RequestBody(
+          content={'application/json': MediaType(schema=Schema(type='object'))}
+      )
+  )
+  parser = OperationParser(operation, should_parse=False)
+  parser._process_request_body()
+  assert len(parser.params) == 0
+
+
 def test_dedupe_param_names(sample_operation):
   """Test _dedupe_param_names method."""
   parser = OperationParser(sample_operation, should_parse=False)
