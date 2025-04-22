@@ -245,12 +245,13 @@ def cli_eval(
 @click.option(
     "--session_db_url",
     help=(
-        "Optional. The database URL to store the session.\n\n  - Use"
-        " 'agentengine://<agent_engine_resource_id>' to connect to Vertex"
-        " managed session service.\n\n  - Use 'sqlite://<path_to_sqlite_file>'"
-        " to connect to a SQLite DB.\n\n  - See"
-        " https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls"
-        " for more details on supported DB URLs."
+        """Optional. The database URL to store the session.
+
+  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+
+  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+
+  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
 )
 @click.option(
@@ -366,12 +367,13 @@ def cli_web(
 @click.option(
     "--session_db_url",
     help=(
-        "Optional. The database URL to store the session.\n\n  - Use"
-        " 'agentengine://<agent_engine_resource_id>' to connect to Vertex"
-        " managed session service.\n\n  - Use 'sqlite://<path_to_sqlite_file>'"
-        " to connect to a SQLite DB.\n\n  - See"
-        " https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls"
-        " for more details on supported DB URLs."
+        """Optional. The database URL to store the session.
+
+  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+
+  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+
+  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
 )
 @click.option(
@@ -541,6 +543,18 @@ def cli_api_server(
     default="WARNING",
     help="Optional. Override the default verbosity level.",
 )
+@click.option(
+    "--session_db_url",
+    help=(
+        """Optional. The database URL to store the session.
+
+  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+
+  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+
+  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -558,6 +572,7 @@ def cli_deploy_cloud_run(
     trace_to_cloud: bool,
     with_ui: bool,
     verbosity: str,
+    session_db_url: str,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -579,6 +594,7 @@ def cli_deploy_cloud_run(
         trace_to_cloud=trace_to_cloud,
         with_ui=with_ui,
         verbosity=verbosity,
+        session_db_url=session_db_url,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
