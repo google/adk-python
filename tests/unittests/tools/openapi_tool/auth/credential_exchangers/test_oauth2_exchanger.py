@@ -110,7 +110,7 @@ def test_generate_auth_token_success(
           client_secret="test_secret",
           redirect_uri="http://localhost:8080",
           auth_response_uri="https://example.com/callback?code=test_code",
-          token={"access_token": "test_access_token"},
+          access_token="test_access_token",
       ),
   )
   updated_credential = oauth2_exchanger.generate_auth_token(auth_credential)
@@ -131,7 +131,7 @@ def test_exchange_credential_generate_auth_token(
           client_secret="test_secret",
           redirect_uri="http://localhost:8080",
           auth_response_uri="https://example.com/callback?code=test_code",
-          token={"access_token": "test_access_token"},
+          access_token="test_access_token",
       ),
   )
 
