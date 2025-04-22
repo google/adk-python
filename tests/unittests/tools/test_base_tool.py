@@ -37,9 +37,9 @@ class _TestingTool(BaseTool):
     return self.declaration
 
 
-def _create_tool_context() -> ToolContext:
+async def _create_tool_context() -> ToolContext:
   session_service = InMemorySessionService()
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name='test_app', user_id='test_user'
   )
   agent = SequentialAgent(name='test_agent')

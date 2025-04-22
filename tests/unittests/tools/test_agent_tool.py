@@ -49,7 +49,7 @@ def change_state_callback(callback_context: CallbackContext):
   print('change_state_callback: ', callback_context.state)
 
 
-def test_no_schema():
+async def test_no_schema():
   mock_model = utils.MockModel.create(
       responses=[
           function_call_no_schema,
@@ -71,14 +71,14 @@ def test_no_schema():
 
   runner = utils.InMemoryRunner(root_agent)
 
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert utils.simplify_events(await runner.run('test1')) == [
       ('root_agent', function_call_no_schema),
       ('root_agent', function_response_no_schema),
       ('root_agent', 'response2'),
   ]
 
 
-def test_update_state():
+async def test_update_state():
   """The agent tool can read and change parent state."""
 
   mock_model = utils.MockModel.create(
@@ -105,7 +105,7 @@ def test_update_state():
   runner = utils.InMemoryRunner(root_agent)
   runner.session.state['state_1'] = 'state1_value'
 
-  runner.run('test1')
+  await runner.run('test1')
   assert (
       'input: changed_value' in mock_model.requests[1].config.system_instruction
   )
@@ -121,7 +121,7 @@ def test_update_state():
     ],
     indirect=True,
 )
-def test_custom_schema():
+async def test_custom_schema():
   class CustomInput(BaseModel):
     custom_input: str
 
@@ -153,7 +153,7 @@ def test_custom_schema():
   runner = utils.InMemoryRunner(root_agent)
   runner.session.state['state_1'] = 'state1_value'
 
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert utils.simplify_events(await runner.run('test1')) == [
       ('root_agent', function_call_custom),
       ('root_agent', function_response_custom),
       ('root_agent', 'response2'),

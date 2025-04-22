@@ -17,7 +17,7 @@ import shutil
 import subprocess
 from typing import Optional
 
-import click
+import asyncclick as click
 
 _DOCKERFILE_TEMPLATE = """
 FROM python:3.11-slim

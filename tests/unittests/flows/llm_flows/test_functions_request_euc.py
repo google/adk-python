@@ -37,7 +37,7 @@ def function_call(function_call_id, name, args: dict[str, Any]) -> types.Part:
   return part
 
 
-def test_function_request_euc():
+async def test_function_request_euc():
   responses = [
       [
           types.Part.from_function_call(name='call_external_api1', args={}),
@@ -109,7 +109,7 @@ def test_function_request_euc():
       tools=[call_external_api1, call_external_api2],
   )
   runner = utils.InMemoryRunner(agent)
-  events = runner.run('test')
+  events = await runner.run('test')
   assert events[0].content.parts[0].function_call is not None
   assert events[0].content.parts[1].function_call is not None
   auth_configs = list(events[2].actions.requested_auth_configs.values())
@@ -153,7 +153,7 @@ def test_function_request_euc():
     )
 
 
-def test_function_get_auth_response():
+async def test_function_get_auth_response():
   id_1 = 'id_1'
   id_2 = 'id_2'
   responses = [
@@ -308,7 +308,7 @@ def test_function_get_auth_response():
       tools=[call_external_api1, call_external_api2],
   )
   runner = utils.InMemoryRunner(agent)
-  runner.run('test')
+  await runner.run('test')
   request_euc_function_call_event = runner.session.events[-3]
   function_response1 = types.FunctionResponse(
       name=request_euc_function_call_event.content.parts[0].function_call.name,
@@ -325,7 +325,7 @@ def test_function_get_auth_response():
   function_response2.id = request_euc_function_call_event.content.parts[
       1
   ].function_call.id
-  runner.run(
+  await runner.run(
       new_message=types.Content(
           role='user',
           parts=[

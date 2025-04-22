@@ -60,7 +60,7 @@ def noop_callback(**kwargs) -> Optional[LlmResponse]:
   pass
 
 
-def test_before_model_callback():
+async def test_before_model_callback():
   responses = ['model_response']
   mock_model = utils.MockModel.create(responses=responses)
   agent = Agent(
@@ -72,12 +72,12 @@ def test_before_model_callback():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       ('root_agent', 'before_model_callback'),
   ]
 
 
-def test_before_model_callback_noop():
+async def test_before_model_callback_noop():
   responses = ['model_response']
   mock_model = utils.MockModel.create(responses=responses)
   agent = Agent(
@@ -87,12 +87,12 @@ def test_before_model_callback_noop():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       ('root_agent', 'model_response'),
   ]
 
 
-def test_before_model_callback_end():
+async def test_before_model_callback_end():
   responses = ['model_response']
   mock_model = utils.MockModel.create(responses=responses)
   agent = Agent(
@@ -104,12 +104,12 @@ def test_before_model_callback_end():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       ('root_agent', 'before_model_callback'),
   ]
 
 
-def test_after_model_callback():
+async def test_after_model_callback():
   responses = ['model_response']
   mock_model = utils.MockModel.create(responses=responses)
   agent = Agent(
@@ -121,7 +121,7 @@ def test_after_model_callback():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       ('root_agent', 'after_model_callback'),
   ]
 

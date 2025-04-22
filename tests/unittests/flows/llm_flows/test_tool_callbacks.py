@@ -71,7 +71,7 @@ def noop_callback(
   pass
 
 
-def test_before_tool_callback():
+async def test_before_tool_callback():
   responses = [
       types.Part.from_function_call(name='simple_function', args={}),
       'response1',
@@ -87,7 +87,7 @@ def test_before_tool_callback():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       ('root_agent', Part.from_function_call(name='simple_function', args={})),
       (
           'root_agent',
@@ -99,7 +99,7 @@ def test_before_tool_callback():
   ]
 
 
-def test_before_tool_callback_noop():
+async def test_before_tool_callback_noop():
   responses = [
       types.Part.from_function_call(
           name='simple_function', args={'input_str': 'simple_function_call'}
@@ -115,7 +115,7 @@ def test_before_tool_callback_noop():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       (
           'root_agent',
           Part.from_function_call(
@@ -133,7 +133,7 @@ def test_before_tool_callback_noop():
   ]
 
 
-def test_before_tool_callback_modify_tool_request():
+async def test_before_tool_callback_modify_tool_request():
   responses = [
       types.Part.from_function_call(name='simple_function', args={}),
       'response1',
@@ -150,7 +150,7 @@ def test_before_tool_callback_modify_tool_request():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       ('root_agent', Part.from_function_call(name='simple_function', args={})),
       (
           'root_agent',
@@ -163,7 +163,7 @@ def test_before_tool_callback_modify_tool_request():
   ]
 
 
-def test_after_tool_callback():
+async def test_after_tool_callback():
   responses = [
       types.Part.from_function_call(
           name='simple_function', args={'input_str': 'simple_function_call'}
@@ -181,7 +181,7 @@ def test_after_tool_callback():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       (
           'root_agent',
           Part.from_function_call(
@@ -198,7 +198,7 @@ def test_after_tool_callback():
   ]
 
 
-def test_after_tool_callback_noop():
+async def test_after_tool_callback_noop():
   responses = [
       types.Part.from_function_call(
           name='simple_function', args={'input_str': 'simple_function_call'}
@@ -214,7 +214,7 @@ def test_after_tool_callback_noop():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       (
           'root_agent',
           Part.from_function_call(
@@ -232,7 +232,7 @@ def test_after_tool_callback_noop():
   ]
 
 
-def test_after_tool_callback_modify_tool_response():
+async def test_after_tool_callback_modify_tool_response():
   responses = [
       types.Part.from_function_call(
           name='simple_function', args={'input_str': 'simple_function_call'}
@@ -251,7 +251,7 @@ def test_after_tool_callback_modify_tool_response():
   )
 
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       (
           'root_agent',
           Part.from_function_call(

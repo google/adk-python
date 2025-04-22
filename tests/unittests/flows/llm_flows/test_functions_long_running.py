@@ -20,7 +20,7 @@ from google.genai.types import Part
 from ... import utils
 
 
-def test_async_function():
+async def test_async_function():
   responses = [
       Part.from_function_call(name='increase_by_one', args={'x': 1}),
       'response1',
@@ -44,7 +44,7 @@ def test_async_function():
       tools=[LongRunningFunctionTool(func=increase_by_one)],
   )
   runner = utils.InMemoryRunner(agent)
-  events = runner.run('test1')
+  events = await runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 2
@@ -88,7 +88,7 @@ def test_async_function():
   still_waiting_response = Part.from_function_response(
       name='increase_by_one', response={'status': 'still waiting'}
   )
-  events = runner.run(utils.UserContent(still_waiting_response))
+  events = await runner.run(utils.UserContent(still_waiting_response))
   # We have one new request.
   assert len(mockModel.requests) == 3
   assert utils.simplify_contents(mockModel.requests[2].contents) == [
@@ -103,7 +103,7 @@ def test_async_function():
   result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 2}
   )
-  events = runner.run(utils.UserContent(result_response))
+  events = await runner.run(utils.UserContent(result_response))
   # We have one new request.
   assert len(mockModel.requests) == 4
   assert utils.simplify_contents(mockModel.requests[3].contents) == [
@@ -118,7 +118,7 @@ def test_async_function():
   another_result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 3}
   )
-  events = runner.run(utils.UserContent(another_result_response))
+  events = await runner.run(utils.UserContent(another_result_response))
   # We have one new request.
   assert len(mockModel.requests) == 5
   assert utils.simplify_contents(mockModel.requests[4].contents) == [
@@ -132,7 +132,7 @@ def test_async_function():
   assert function_called == 1
 
 
-def test_async_function_with_none_response():
+async def test_async_function_with_none_response():
   responses = [
       Part.from_function_call(name='increase_by_one', args={'x': 1}),
       'response1',
@@ -155,7 +155,7 @@ def test_async_function_with_none_response():
       tools=[LongRunningFunctionTool(func=increase_by_one)],
   )
   runner = utils.InMemoryRunner(agent)
-  events = runner.run('test1')
+  events = await runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 2
@@ -200,7 +200,7 @@ def test_async_function_with_none_response():
   still_waiting_response = Part.from_function_response(
       name='increase_by_one', response={'status': 'still waiting'}
   )
-  events = runner.run(utils.UserContent(still_waiting_response))
+  events = await runner.run(utils.UserContent(still_waiting_response))
   # We have one new request.
   assert len(mockModel.requests) == 3
   assert utils.simplify_contents(mockModel.requests[2].contents) == [
@@ -215,7 +215,7 @@ def test_async_function_with_none_response():
   result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 2}
   )
-  events = runner.run(utils.UserContent(result_response))
+  events = await runner.run(utils.UserContent(result_response))
   # We have one new request.
   assert len(mockModel.requests) == 4
   assert utils.simplify_contents(mockModel.requests[3].contents) == [
@@ -230,7 +230,7 @@ def test_async_function_with_none_response():
   another_result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 3}
   )
-  events = runner.run(utils.UserContent(another_result_response))
+  events = await runner.run(utils.UserContent(another_result_response))
   # We have one new request.
   assert len(mockModel.requests) == 5
   assert utils.simplify_contents(mockModel.requests[4].contents) == [

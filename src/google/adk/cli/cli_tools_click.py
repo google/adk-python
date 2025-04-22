@@ -20,7 +20,7 @@ import os
 import tempfile
 from typing import Optional
 
-import click
+import asyncclick as click
 from fastapi import FastAPI
 import uvicorn
 
@@ -150,7 +150,7 @@ def cli_run(agent: str, save_session: bool):
     default=False,
     help="Optional. Whether to print detailed results on console or not.",
 )
-def cli_eval(
+async def cli_eval(
     agent_module_file_path: str,
     eval_set_file_path: tuple[str],
     config_file_path: str,
@@ -209,7 +209,7 @@ def cli_eval(
 
   try:
     eval_results = list(
-        run_evals(
+        await run_evals(
             eval_set_to_evals,
             root_agent,
             reset_func,

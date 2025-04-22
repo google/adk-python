@@ -22,24 +22,24 @@ class Message(TypedDict):
   expected_text: str
 
 
-def assert_current_agent_is(agent_name: str, *, agent_runner: TestRunner):
-  assert agent_runner.get_current_agent_name() == agent_name
+async def assert_current_agent_is(agent_name: str, *, agent_runner: TestRunner):
+  assert await agent_runner.get_current_agent_name() == agent_name
 
 
-def assert_agent_says(
+async def assert_agent_says(
     expected_text: str, *, agent_name: str, agent_runner: TestRunner
 ):
-  for event in reversed(agent_runner.get_events()):
+  for event in reversed(await agent_runner.get_events()):
     if event.author == agent_name and event.content.parts[0].text:
       assert event.content.parts[0].text.strip() == expected_text
       return
 
 
-def assert_agent_says_in_order(
+async def assert_agent_says_in_order(
     expected_conversation: list[Message], agent_runner: TestRunner
 ):
   expected_conversation_idx = len(expected_conversation) - 1
-  for event in reversed(agent_runner.get_events()):
+  for event in reversed(await agent_runner.get_events()):
     if event.content.parts and event.content.parts[0].text:
       assert (
           event.author
@@ -54,10 +54,10 @@ def assert_agent_says_in_order(
         return
 
 
-def assert_agent_transfer_path(
+async def assert_agent_transfer_path(
     expected_path: list[str], *, agent_runner: TestRunner
 ):
-  events = agent_runner.get_events()
+  events = await agent_runner.get_events()
   idx_in_expected_path = len(expected_path) - 1
   # iterate events in reverse order
   for event in reversed(events):

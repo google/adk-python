@@ -32,7 +32,7 @@ TRANSFER_RESPONSE_PART = Part.from_function_response(
 )
 
 
-def test_auto_to_auto():
+async def test_auto_to_auto():
   response = [
       transfer_call_part('sub_agent_1'),
       'response1',
@@ -50,19 +50,19 @@ def test_auto_to_auto():
   runner = utils.InMemoryRunner(root_agent)
 
   # Asserts the transfer.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert utils.simplify_events(await runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1', 'response1'),
   ]
 
   # sub_agent_1 should still be the current agent.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert utils.simplify_events(await runner.run('test2')) == [
       ('sub_agent_1', 'response2'),
   ]
 
 
-def test_auto_to_single():
+async def test_auto_to_single():
   response = [
       transfer_call_part('sub_agent_1'),
       'response1',
@@ -83,19 +83,19 @@ def test_auto_to_single():
   runner = utils.InMemoryRunner(root_agent)
 
   # Asserts the responses.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert utils.simplify_events(await runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1', 'response1'),
   ]
 
   # root_agent should still be the current agent, becaues sub_agent_1 is single.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert utils.simplify_events(await runner.run('test2')) == [
       ('root_agent', 'response2'),
   ]
 
 
-def test_auto_to_auto_to_single():
+async def test_auto_to_auto_to_single():
   response = [
       transfer_call_part('sub_agent_1'),
       # sub_agent_1 transfers to sub_agent_1_1.
@@ -121,7 +121,7 @@ def test_auto_to_auto_to_single():
   runner = utils.InMemoryRunner(root_agent)
 
   # Asserts the responses.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert utils.simplify_events(await runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1', transfer_call_part('sub_agent_1_1')),
@@ -132,12 +132,12 @@ def test_auto_to_auto_to_single():
   # sub_agent_1 should still be the current agent. sub_agent_1_1 is single so it should
   # not be the current agent, otherwise the conversation will be tied to
   # sub_agent_1_1 forever.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert utils.simplify_events(await runner.run('test2')) == [
       ('sub_agent_1', 'response2'),
   ]
 
 
-def test_auto_to_sequential():
+async def test_auto_to_sequential():
   response = [
       transfer_call_part('sub_agent_1'),
       # sub_agent_1 responds directly instead of transfering.
@@ -173,7 +173,7 @@ def test_auto_to_sequential():
   runner = utils.InMemoryRunner(root_agent)
 
   # Asserts the transfer.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert utils.simplify_events(await runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1_1', 'response1'),
@@ -181,12 +181,12 @@ def test_auto_to_sequential():
   ]
 
   # root_agent should still be the current agent because sub_agent_1 is sequential.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert utils.simplify_events(await runner.run('test2')) == [
       ('root_agent', 'response3'),
   ]
 
 
-def test_auto_to_sequential_to_auto():
+async def test_auto_to_sequential_to_auto():
   response = [
       transfer_call_part('sub_agent_1'),
       # sub_agent_1 responds directly instead of transfering.
@@ -231,7 +231,7 @@ def test_auto_to_sequential_to_auto():
   runner = utils.InMemoryRunner(root_agent)
 
   # Asserts the transfer.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert utils.simplify_events(await runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1_1', 'response1'),
@@ -242,12 +242,12 @@ def test_auto_to_sequential_to_auto():
   ]
 
   # root_agent should still be the current agent because sub_agent_1 is sequential.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert utils.simplify_events(await runner.run('test2')) == [
       ('root_agent', 'response4'),
   ]
 
 
-def test_auto_to_loop():
+async def test_auto_to_loop():
   response = [
       transfer_call_part('sub_agent_1'),
       # sub_agent_1 responds directly instead of transfering.
@@ -287,7 +287,7 @@ def test_auto_to_loop():
   runner = utils.InMemoryRunner(root_agent)
 
   # Asserts the transfer.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert utils.simplify_events(await runner.run('test1')) == [
       # Transfers to sub_agent_1.
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
@@ -306,6 +306,6 @@ def test_auto_to_loop():
   ]
 
   # root_agent should still be the current agent because sub_agent_1 is loop.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert utils.simplify_events(await runner.run('test2')) == [
       ('root_agent', 'response5'),
   ]

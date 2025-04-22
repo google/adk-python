@@ -210,46 +210,46 @@ def mock_vertex_ai_session_service():
   return service
 
 
-def test_get_empty_session():
+async def test_get_empty_session():
   session_service = mock_vertex_ai_session_service()
   with pytest.raises(ValueError) as excinfo:
-    assert session_service.get_session(
+    assert await session_service.get_session(
         app_name='123', user_id='user', session_id='0'
     )
     assert str(excinfo.value) == 'Session not found: 0'
 
 
-def test_get_and_delete_session():
+async def test_get_and_delete_session():
   session_service = mock_vertex_ai_session_service()
 
   assert (
-      session_service.get_session(
+      await session_service.get_session(
           app_name='123', user_id='user', session_id='1'
       )
       == MOCK_SESSION
   )
 
-  session_service.delete_session(app_name='123', user_id='user', session_id='1')
+  await session_service.delete_session(app_name='123', user_id='user', session_id='1')
   with pytest.raises(ValueError) as excinfo:
-    assert session_service.get_session(
+    assert await session_service.get_session(
         app_name='123', user_id='user', session_id='1'
     )
     assert str(excinfo.value) == 'Session not found: 1'
 
 
-def test_list_sessions():
+async def test_list_sessions():
   session_service = mock_vertex_ai_session_service()
-  sessions = session_service.list_sessions(app_name='123', user_id='user')
+  sessions = await session_service.list_sessions(app_name='123', user_id='user')
   assert len(sessions.sessions) == 2
   assert sessions.sessions[0].id == '1'
   assert sessions.sessions[1].id == '2'
 
 
-def test_create_session():
+async def test_create_session():
   session_service = mock_vertex_ai_session_service()
 
   state = {'key': 'value'}
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name='123', user_id='user', state=state
   )
   assert session.state == state
@@ -258,6 +258,6 @@ def test_create_session():
   assert session.last_update_time is not None
 
   session_id = session.id
-  assert session == session_service.get_session(
+  assert session == await session_service.get_session(
       app_name='123', user_id='user', session_id=session_id
   )

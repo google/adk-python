@@ -146,7 +146,7 @@ def parse_and_get_evals_to_run(
   return eval_set_to_evals
 
 
-def run_evals(
+async def run_evals(
     eval_set_to_evals: dict[str, list[str]],
     root_agent: Agent,
     reset_func: Optional[Any],
@@ -181,7 +181,7 @@ def run_evals(
         print(f"Running Eval: {eval_set_file}:{eval_name}")
         session_id = f"{EVAL_SESSION_ID_PREFIX}{str(uuid.uuid4())}"
 
-        scrape_result = EvaluationGenerator._process_query_with_root_agent(
+        scrape_result = await EvaluationGenerator._process_query_with_root_agent(
             data=eval_data,
             root_agent=root_agent,
             reset_func=reset_func,

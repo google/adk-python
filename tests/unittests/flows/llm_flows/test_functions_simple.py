@@ -25,7 +25,7 @@ import pytest
 from ... import utils
 
 
-def test_simple_function():
+async def test_simple_function():
   function_call_1 = types.Part.from_function_call(
       name='increase_by_one', args={'x': 1}
   )
@@ -49,7 +49,7 @@ def test_simple_function():
 
   agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
   runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  assert utils.simplify_events(await runner.run('test')) == [
       ('root_agent', function_call_1),
       ('root_agent', function_respones_2),
       ('root_agent', 'response1'),
@@ -217,7 +217,7 @@ async def test_function_tool():
   assert function_called == 3
 
 
-def test_update_state():
+async def test_update_state():
   mock_model = utils.MockModel.create(
       responses=[
           types.Part.from_function_call(name='update_state', args={}),
@@ -230,11 +230,11 @@ def test_update_state():
 
   agent = Agent(name='root_agent', model=mock_model, tools=[update_state])
   runner = utils.InMemoryRunner(agent)
-  runner.run('test')
+  await runner.run('test')
   assert runner.session.state['x'] == 1
 
 
-def test_function_call_id():
+async def test_function_call_id():
   responses = [
       types.Part.from_function_call(name='increase_by_one', args={'x': 1}),
       'response1',
@@ -246,7 +246,7 @@ def test_function_call_id():
 
   agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
   runner = utils.InMemoryRunner(agent)
-  events = runner.run('test')
+  events = await runner.run('test')
   for reqeust in mock_model.requests:
     for content in reqeust.contents:
       for part in content.parts:

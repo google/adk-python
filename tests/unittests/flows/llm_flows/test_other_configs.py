@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from ... import utils
 
 
-def test_output_schema():
+async def test_output_schema():
   class CustomOutput(BaseModel):
     custom_field: str
 
@@ -38,7 +38,7 @@ def test_output_schema():
 
   runner = utils.InMemoryRunner(root_agent)
 
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert utils.simplify_events(await runner.run('test1')) == [
       ('root_agent', 'response1'),
   ]
   assert len(mockModel.requests) == 1

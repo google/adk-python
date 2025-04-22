@@ -15,9 +15,9 @@
 from google.adk.evaluation import AgentEvaluator
 
 
-def test_eval_agent():
+async def test_eval_agent():
   """Test hotel sub agent in a multi-agent system."""
-  AgentEvaluator.evaluate(
+  await AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.trip_planner_agent",
       eval_dataset_file_path_or_dir="tests/integration/fixture/trip_planner_agent/test_files/trip_inquiry_sub_agent.test.json",
       initial_session_file="tests/integration/fixture/trip_planner_agent/test_files/initial.session.json",

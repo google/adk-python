@@ -39,9 +39,9 @@ def get_session_service(
 @pytest.mark.parametrize(
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
-def test_get_empty_session(service_type):
+async def test_get_empty_session(service_type):
   session_service = get_session_service(service_type)
-  assert not session_service.get_session(
+  assert not await session_service.get_session(
       app_name='my_app', user_id='test_user', session_id='123'
   )
 
@@ -49,13 +49,13 @@ def test_get_empty_session(service_type):
 @pytest.mark.parametrize(
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
-def test_create_get_session(service_type):
+async def test_create_get_session(service_type):
   session_service = get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'test_user'
   state = {'key': 'value'}
 
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name=app_name, user_id=user_id, state=state
   )
   assert session.app_name == app_name
@@ -70,12 +70,12 @@ def test_create_get_session(service_type):
   )
 
   session_id = session.id
-  session_service.delete_session(
+  await session_service.delete_session(
       app_name=app_name, user_id=user_id, session_id=session_id
   )
 
   assert (
-      not session_service.get_session(
+      not await session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session.id
       )
       == session
@@ -85,20 +85,20 @@ def test_create_get_session(service_type):
 @pytest.mark.parametrize(
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
-def test_create_and_list_sessions(service_type):
+async def test_create_and_list_sessions(service_type):
   session_service = get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'test_user'
 
   session_ids = ['session' + str(i) for i in range(5)]
   for session_id in session_ids:
-    session_service.create_session(
+    await session_service.create_session(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
 
-  sessions = session_service.list_sessions(
+  sessions = (await session_service.list_sessions(
       app_name=app_name, user_id=user_id
-  ).sessions
+  )).sessions
   for i in range(len(sessions)):
     assert sessions[i].id == session_ids[i]
 
@@ -106,7 +106,7 @@ def test_create_and_list_sessions(service_type):
 @pytest.mark.parametrize(
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
-def test_session_state(service_type):
+async def test_session_state(service_type):
   session_service = get_session_service(service_type)
   app_name = 'my_app'
   user_id_1 = 'user1'
@@ -117,19 +117,19 @@ def test_session_state(service_type):
   state_11 = {'key11': 'value11'}
   state_12 = {'key12': 'value12'}
 
-  session_11 = session_service.create_session(
+  session_11 = await session_service.create_session(
       app_name=app_name,
       user_id=user_id_1,
       state=state_11,
       session_id=session_id_11,
   )
-  session_service.create_session(
+  await session_service.create_session(
       app_name=app_name,
       user_id=user_id_1,
       state=state_12,
       session_id=session_id_12,
   )
-  session_service.create_session(
+  await session_service.create_session(
       app_name=app_name, user_id=user_id_2, session_id=session_id_2
   )
 
@@ -148,7 +148,7 @@ def test_session_state(service_type):
           }
       ),
   )
-  session_service.append_event(session=session_11, event=event)
+  await session_service.append_event(session=session_11, event=event)
 
   # User and app state is stored, temp state is filtered.
   assert session_11.state.get('app:key') == 'value'
@@ -156,7 +156,7 @@ def test_session_state(service_type):
   assert session_11.state.get('user:key1') == 'value1'
   assert not session_11.state.get('temp:key')
 
-  session_12 = session_service.get_session(
+  session_12 = await session_service.get_session(
       app_name=app_name, user_id=user_id_1, session_id=session_id_12
   )
   # After getting a new instance, the session_12 got the user and app state,
@@ -165,7 +165,7 @@ def test_session_state(service_type):
   assert not session_12.state.get('temp:key')
 
   # The user1's state is not visible to user2, app state is visible
-  session_2 = session_service.get_session(
+  session_2 = await session_service.get_session(
       app_name=app_name, user_id=user_id_2, session_id=session_id_2
   )
   assert session_2.state.get('app:key') == 'value'
@@ -174,7 +174,7 @@ def test_session_state(service_type):
   assert not session_2.state.get('user:key1')
 
   # The change to session_11 is persisted
-  session_11 = session_service.get_session(
+  session_11 = await session_service.get_session(
       app_name=app_name, user_id=user_id_1, session_id=session_id_11
   )
   assert session_11.state.get('key11') == 'value11_new'
@@ -185,7 +185,7 @@ def test_session_state(service_type):
 @pytest.mark.parametrize(
     "service_type", [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
-def test_create_new_session_will_merge_states(service_type):
+async def test_create_new_session_will_merge_states(service_type):
   session_service = get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'user'
@@ -193,7 +193,7 @@ def test_create_new_session_will_merge_states(service_type):
   session_id_2 = 'session2'
   state_1 = {'key1': 'value1'}
 
-  session_1 = session_service.create_session(
+  session_1 = await session_service.create_session(
       app_name=app_name, user_id=user_id, state=state_1, session_id=session_id_1
   )
 
@@ -209,7 +209,7 @@ def test_create_new_session_will_merge_states(service_type):
           }
       ),
   )
-  session_service.append_event(session=session_1, event=event)
+  await session_service.append_event(session=session_1, event=event)
 
   # User and app state is stored, temp state is filtered.
   assert session_1.state.get('app:key') == 'value'
@@ -217,7 +217,7 @@ def test_create_new_session_will_merge_states(service_type):
   assert session_1.state.get('user:key1') == 'value1'
   assert not session_1.state.get('temp:key')
 
-  session_2 = session_service.create_session(
+  session_2 = await session_service.create_session(
       app_name=app_name, user_id=user_id, state={}, session_id=session_id_2
   )
   # Session 2 has the persisted states
@@ -230,12 +230,12 @@ def test_create_new_session_will_merge_states(service_type):
 @pytest.mark.parametrize(
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
-def test_append_event_bytes(service_type):
+async def test_append_event_bytes(service_type):
   session_service = get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'user'
 
-  session = session_service.create_session(app_name=app_name, user_id=user_id)
+  session = await session_service.create_session(app_name=app_name, user_id=user_id)
   event = Event(
       invocation_id='invocation',
       author='user',
@@ -248,15 +248,15 @@ def test_append_event_bytes(service_type):
           ],
       ),
   )
-  session_service.append_event(session=session, event=event)
+  await session_service.append_event(session=session, event=event)
 
   assert session.events[0].content.parts[0] == types.Part.from_bytes(
       data=b'test_image_data', mime_type='image/png'
   )
 
-  events = session_service.get_session(
+  events = (await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
-  ).events
+  )).events
   assert len(events) == 1
   assert events[0].content.parts[0] == types.Part.from_bytes(
       data=b'test_image_data', mime_type='image/png'
@@ -266,12 +266,12 @@ def test_append_event_bytes(service_type):
 @pytest.mark.parametrize(
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
-def test_append_event_complete(service_type):
+async def test_append_event_complete(service_type):
   session_service = get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'user'
 
-  session = session_service.create_session(app_name=app_name, user_id=user_id)
+  session = await session_service.create_session(app_name=app_name, user_id=user_id)
   event = Event(
       invocation_id='invocation',
       author='user',
@@ -290,10 +290,10 @@ def test_append_event_complete(service_type):
       error_message='error_message',
       interrupted=True,
   )
-  session_service.append_event(session=session, event=event)
+  await session_service.append_event(session=session, event=event)
 
   assert (
-      session_service.get_session(
+      await session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session.id
       )
       == session
