@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.3.0
+
+### ⚠ BREAKING CHANGES
+
+* Auth: expose `access_token` and `refresh_token` at top level of auth
+  credentails, instead of a `dict`
+  ([commit](https://github.com/google/adk-python/commit/956fb912e8851b139668b1ccb8db10fd252a6990)).
+
+### Features
+
+* Added support for running agents with MCPToolset easily on `adk web`.
+* Added `custom_metadata` field to `LlmResponse`, which can be used to tag
+  LlmResponse via `after_model_callback`.
+* Added `--session_db_url` to `adk deploy cloud_run` option.
+* Many Dev UI improvements:
+  * Better google search result rendering.
+  * Show websocket close reason in Dev UI.
+  * Better error message showing for audio/video.
+
+### Bug Fixes
+
+* Fixed MCP tool json schema parsing issue.
+* Fixed issues in DatabaseSessionService that leads to crash.
+* Fixed functions.py.
+* Fixed `skip_summarization` behavior in `AgentTool`.
+
+### Miscellaneous Chores
+
+* README.md impprovements.
+* Various code improvements.
+* Various typo fixes.
+* Bump min version of google-genai to 1.11.0.
+
 ## 0.2.0
 
 ### ⚠ BREAKING CHANGES
