@@ -45,11 +45,26 @@ debugging, versioning, and deployment anywhere – from your laptop to the cloud
 
 ## 🚀 Installation
 
-You can install the ADK using `pip`:
+### Stable Release (Recommended)
+
+You can install the latest stable version of ADK using `pip`:
 
 ```bash
 pip install google-adk
 ```
+
+The release cadence is weekly.
+
+This version is recommended for most users as it represents the most recent official release.
+
+### Development Version
+Bug fixes and new features are merged into the main branch on GitHub first. If you need access to changes that haven't been included in an official PyPI release yet, you can install directly from the main branch:
+
+```bash
+pip install git+https://github.com/google/adk-python.git@main
+```
+
+Note: The development version is built directly from the latest code commits. While it includes the newest fixes and features, it may also contain experimental changes or bugs not present in the stable release. Use it primarily for testing upcoming changes or accessing critical fixes before they are officially released.
 
 ## 📚 Documentation
 
@@ -121,7 +136,9 @@ for how they can work together.
 
 ## 🤝 Contributing
 
-We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our [**Contributing Guidelines**](./CONTRIBUTING.md) to get started.
+We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our 
+- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/#questions).
+- Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
 
 ## 📄 License
 
