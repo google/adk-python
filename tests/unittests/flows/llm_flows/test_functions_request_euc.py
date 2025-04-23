@@ -246,7 +246,7 @@ def test_function_get_auth_response():
           oauth2=OAuth2Auth(
               client_id='oauth_client_id_1',
               client_secret='oauth_client_secret1',
-              token={'access_token': 'token1'},
+              access_token='token1',
           ),
       ),
   )
@@ -277,7 +277,7 @@ def test_function_get_auth_response():
           oauth2=OAuth2Auth(
               client_id='oauth_client_id_2',
               client_secret='oauth_client_secret2',
-              token={'access_token': 'token2'},
+              access_token='token2',
           ),
       ),
   )
