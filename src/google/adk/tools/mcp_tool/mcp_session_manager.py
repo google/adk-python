@@ -2,6 +2,7 @@ from contextlib import AsyncExitStack
 import functools
 import sys
 from typing import Any, TextIO
+from datetime import timedelta
 import anyio
 from pydantic import BaseModel
 
@@ -133,6 +134,7 @@ class MCPSessionManager:
         connection_params=self.connection_params,
         exit_stack=self.exit_stack,
         errlog=self.errlog,
+
     )
 
   @classmethod
@@ -142,6 +144,7 @@ class MCPSessionManager:
       connection_params: StdioServerParameters | SseServerParams,
       exit_stack: AsyncExitStack,
       errlog: TextIO = sys.stderr,
+      timeout: int = 5,
   ) -> ClientSession:
     """Initializes an MCP client session.
 
@@ -150,6 +153,7 @@ class MCPSessionManager:
         exit_stack: AsyncExitStack to manage the session lifecycle.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
+        timeout: (Optional) Timeout for the session communication.
 
     Returns:
         ClientSession: The initialized MCP client session.
@@ -171,6 +175,7 @@ class MCPSessionManager:
       )
 
     transports = await exit_stack.enter_async_context(client)
-    session = await exit_stack.enter_async_context(ClientSession(*transports))
+
+    session = await exit_stack.enter_async_context(ClientSession(*transports, read_timeout_seconds=timedelta(seconds=timeout)))
     await session.initialize()
     return session
