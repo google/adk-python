@@ -25,6 +25,19 @@ This project follows
 
 ## Contribution process
 
+### Requirement for PRs
+
+- All PRs, other than small documentation or typo fixes, should have a Issue assoicated. If not, please create one. 
+- Small, focused PRs. Keep changes minimal—one concern per PR.
+- For bug fixes or features, please provide logs or screenshot after the fix is applied to help reviewers better understand the fix.
+- Please add corresponding testing for your code change if it's not covered by existing tests.
+
+### Large or Complex Changes
+For substantial features or architectural revisions:
+
+- Open an Issue First: Outline your proposal, including design considerations and impact.
+- Gather Feedback: Discuss with maintainers and the community to ensure alignment and avoid duplicate work
+
 ### Code reviews
 
 All submissions, including submissions by project members, require review. We
