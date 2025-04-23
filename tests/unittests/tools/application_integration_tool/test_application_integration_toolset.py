@@ -14,10 +14,12 @@
 
 import json
 from unittest import mock
-
+from fastapi.openapi.models import Operation
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.tools.application_integration_tool.application_integration_toolset import ApplicationIntegrationToolset
-from google.adk.tools.openapi_tool.openapi_spec_parser import rest_api_tool
+from google.adk.tools.application_integration_tool.integration_connector_tool import IntegrationConnectorTool
+from google.adk.tools.openapi_tool.openapi_spec_parser import ParsedOperation, rest_api_tool
+from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
 import pytest
 
 
@@ -50,6 +52,59 @@ def mock_openapi_toolset():
     yield mock_toolset
 
 
+def get_mocked_parsed_operation(operation_id, attributes):
+  mock_openapi_spec_parser_instance = mock.MagicMock()
+  mock_parsed_operation = mock.MagicMock(spec=ParsedOperation)
+  mock_parsed_operation.name = "list_issues"
+  mock_parsed_operation.description = "list_issues_description"
+  mock_parsed_operation.endpoint = OperationEndpoint(
+      base_url="http://localhost:8080",
+      path="/v1/issues",
+      method="GET",
+  )
+  mock_parsed_operation.auth_scheme = None
+  mock_parsed_operation.auth_credential = None
+  mock_parsed_operation.additional_context = {}
+  mock_parsed_operation.parameters = []
+  mock_operation = mock.MagicMock(spec=Operation)
+  mock_operation.operationId = operation_id
+  mock_operation.description = "list_issues_description"
+  mock_operation.parameters = []
+  mock_operation.requestBody = None
+  mock_operation.responses = {}
+  mock_operation.callbacks = {}
+  for key, value in attributes.items():
+    setattr(mock_operation, key, value)
+  mock_parsed_operation.operation = mock_operation
+  mock_openapi_spec_parser_instance.parse.return_value = [mock_parsed_operation]
+  return mock_openapi_spec_parser_instance
+
+
+@pytest.fixture
+def mock_openapi_entity_spec_parser():
+  with mock.patch(
+      "google.adk.tools.application_integration_tool.application_integration_toolset.OpenApiSpecParser"
+  ) as mock_spec_parser:
+    mock_openapi_spec_parser_instance = get_mocked_parsed_operation(
+        "list_issues", {"x-entity": "Issues", "x-operation": "LIST_ENTITIES"}
+    )
+    mock_spec_parser.return_value = mock_openapi_spec_parser_instance
+    yield mock_spec_parser
+
+
+@pytest.fixture
+def mock_openapi_action_spec_parser():
+  with mock.patch(
+      "google.adk.tools.application_integration_tool.application_integration_toolset.OpenApiSpecParser"
+  ) as mock_spec_parser:
+    mock_openapi_action_spec_parser_instance = get_mocked_parsed_operation(
+        "list_issues_operation",
+        {"x-action": "CustomAction", "x-operation": "EXECUTE_ACTION"},
+    )
+    mock_spec_parser.return_value = mock_openapi_action_spec_parser_instance
+    yield mock_spec_parser
+
+
 @pytest.fixture
 def project():
   return "test-project"
@@ -72,7 +127,11 @@ def connection_spec():
 
 @pytest.fixture
 def connection_details():
-  return {"serviceName": "test-service", "host": "test.host"}
+  return {
+      "serviceName": "test-service",
+      "host": "test.host",
+      "name": "test-connection",
+  }
 
 
 def test_initialization_with_integration_and_trigger(
@@ -102,7 +161,7 @@ def test_initialization_with_connection_and_entity_operations(
     location,
     mock_integration_client,
     mock_connections_client,
-    mock_openapi_toolset,
+    mock_openapi_entity_spec_parser,
     connection_details,
 ):
   connection_name = "test-connection"
@@ -133,19 +192,17 @@ def test_initialization_with_connection_and_entity_operations(
   mock_connections_client.assert_called_once_with(
       project, location, connection_name, None
   )
+  mock_openapi_entity_spec_parser.return_value.parse.assert_called_once()
   mock_connections_client.return_value.get_connection_details.assert_called_once()
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
       tool_name,
-      tool_instructions
-      + f"ALWAYS use serviceName = {connection_details['serviceName']}, host ="
-      f" {connection_details['host']} and the connection name ="
-      f" projects/{project}/locations/{location}/connections/{connection_name} when"
-      " using this tool. DONOT ask the user for these values as you already"
-      " have those.",
+      tool_instructions,
   )
-  mock_openapi_toolset.assert_called_once()
   assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "Test Tool"
+  assert toolset.get_tools()[0].name == "list_issues"
+  assert isinstance(toolset.get_tools()[0], IntegrationConnectorTool)
+  assert toolset.get_tools()[0].entity == "Issues"
+  assert toolset.get_tools()[0].operation == "LIST_ENTITIES"
 
 
 def test_initialization_with_connection_and_actions(
@@ -153,7 +210,7 @@ def test_initialization_with_connection_and_actions(
     location,
     mock_integration_client,
     mock_connections_client,
-    mock_openapi_toolset,
+    mock_openapi_action_spec_parser,
     connection_details,
 ):
   connection_name = "test-connection"
@@ -181,15 +238,13 @@ def test_initialization_with_connection_and_actions(
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
       tool_name,
       tool_instructions
-      + f"ALWAYS use serviceName = {connection_details['serviceName']}, host ="
-      f" {connection_details['host']} and the connection name ="
-      f" projects/{project}/locations/{location}/connections/{connection_name} when"
-      " using this tool. DONOT ask the user for these values as you already"
-      " have those.",
   )
-  mock_openapi_toolset.assert_called_once()
+  mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
   assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "Test Tool"
+  assert toolset.get_tools()[0].name == "list_issues_operation"
+  assert isinstance(toolset.get_tools()[0], IntegrationConnectorTool)
+  assert toolset.get_tools()[0].action == "CustomAction"
+  assert toolset.get_tools()[0].operation == "EXECUTE_ACTION"
 
 
 def test_initialization_without_required_params(project, location):
@@ -337,9 +392,4 @@ def test_initialization_with_connection_details(
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
       tool_name,
       tool_instructions
-      + "ALWAYS use serviceName = custom-service, host = custom.host and the"
-      " connection name ="
-      " projects/test-project/locations/us-central1/connections/test-connection"
-      " when using this tool. DONOT ask the user for these values as you"
-      " already have those.",
   )
