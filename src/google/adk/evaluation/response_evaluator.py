@@ -35,7 +35,7 @@ class ResponseEvaluator:
     Args:
       raw_eval_dataset: The dataset that will be evaluated.
       evaluation_criteria: The evaluation criteria to be used. This method
-        support two criterias, `response_evaluation_score` and
+        support two criteria, `response_evaluation_score` and
         `response_match_score`.
       print_detailed_results: Prints detailed results on the console. This is
         usually helpful during debugging.
@@ -56,7 +56,7 @@ class ResponseEvaluator:
         Value range: [0, 5], where 0 means that the agent's response is not
         coherent, while 5 means it is . High values are good.
     A note on raw_eval_dataset:
-      The dataset should be a list session, where each sesssion is represented
+      The dataset should be a list session, where each session is represented
       as a list of interaction that need evaluation. Each evaluation is
       represented as a dictionary that is expected to have values for the
       following keys:
@@ -106,9 +106,11 @@ class ResponseEvaluator:
     eval_dataset = pd.DataFrame(flattened_queries).rename(
         columns={"query": "prompt", "expected_tool_use": "reference_trajectory"}
     )
-    eval_task = EvalTask(dataset=eval_dataset, metrics=metrics)
 
-    eval_result = eval_task.evaluate()
+    eval_result = ResponseEvaluator._perform_eval(
+        dataset=eval_dataset, metrics=metrics
+    )
+
     if print_detailed_results:
       ResponseEvaluator._print_results(eval_result)
     return eval_result.summary_metrics
@@ -128,6 +130,16 @@ class ResponseEvaluator:
     ):
       metrics.append("rouge_1")
     return metrics
+
+  @staticmethod
+  def _perform_eval(dataset, metrics):
+    """This method hides away the call to external service.
+
+    Primarily helps with unit testing.
+    """
+    eval_task = EvalTask(dataset=dataset, metrics=metrics)
+
+    return eval_task.evaluate()
 
   @staticmethod
   def _print_results(eval_result):

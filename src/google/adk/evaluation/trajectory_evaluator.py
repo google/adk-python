@@ -31,10 +31,9 @@ class TrajectoryEvaluator:
   ):
     r"""Returns the mean tool use accuracy of the eval dataset.
 
-    Tool use accuracy is calculated by comparing the expected and actuall tool
-    use trajectories. An exact match scores a 1, 0 otherwise. The final number
-    is an
-    average of these individual scores.
+    Tool use accuracy is calculated by comparing the expected and the actual
+    tool use trajectories. An exact match scores a 1, 0 otherwise. The final
+    number is an average of these individual scores.
 
     Value range: [0, 1], where 0 is means none of the too use entries aligned,
     and 1 would mean all of them aligned. Higher value is good.
@@ -45,7 +44,7 @@ class TrajectoryEvaluator:
         usually helpful during debugging.
 
     A note on eval_dataset:
-      The dataset should be a list session, where each sesssion is represented
+      The dataset should be a list session, where each session is represented
       as a list of interaction that need evaluation. Each evaluation is
       represented as a dictionary that is expected to have values for the
       following keys:

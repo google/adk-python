@@ -311,7 +311,9 @@ class GoogleApiToOpenApiConverter:
 
       # Determine the actual endpoint path
       # Google often has the format something like 'users.messages.list'
-      rest_path = method_data.get("path", "/")
+      # flatPath is preferred as it provides the actual path, while path
+      # might contain variables like {+projectId}
+      rest_path = method_data.get("flatPath", method_data.get("path", "/"))
       if not rest_path.startswith("/"):
         rest_path = "/" + rest_path
 
