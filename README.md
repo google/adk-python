@@ -47,7 +47,7 @@ debugging, versioning, and deployment anywhere – from your laptop to the cloud
 
 ### Stable Release (Recommended)
 
-You can install the latest stable version of ADK released on PyPI using `pip`:
+You can install the latest stable version of ADK using `pip`:
 
 ```bash
 pip install google-adk
