@@ -234,6 +234,55 @@ def test_update_state():
   assert runner.session.state['x'] == 1
 
 
+@pytest.mark.asyncio
+async def test_mcp_tool_in_live_mode_raises_error():
+    """Tests that using MCPTool in live mode raises NotImplementedError."""
+    # Import the MCPTool and McpBaseTool classes.
+    from google.adk.tools.mcp_tool import MCPTool
+    from mcp.types import Tool as McpBaseTool
+    from google.adk.flows.llm_flows.functions import _process_function_live_helper
+    from google.adk.tools import ToolContext
+    
+    # Create a minimal MCPTool instance.
+    mock_mcp_base_tool = McpBaseTool(name="mock_mcp_tool", description="A mock MCP tool", inputSchema={})
+    
+    class MockMCPSession:
+        async def call_tool(self, name, arguments):
+            return {"result": "mock_result"}
+
+    class MockMCPSessionManager:
+        pass
+
+    mcp_tool = MCPTool(
+        mcp_tool=mock_mcp_base_tool,
+        mcp_session=MockMCPSession(),
+        mcp_session_manager=MockMCPSessionManager()
+    )
+
+    # Create a Mock Agent for InvocationContext.
+    mock_agent = Agent(name="mock_agent", model="mock_model")
+    
+    # Use utils.create_invocation_context to create InvocationContext.
+    invocation_context = utils.create_invocation_context(agent=mock_agent)
+    
+    # Create ToolContext.
+    tool_context = ToolContext(invocation_context)
+    function_call = {"name": "mock_mcp_tool", "arguments": {}}
+    
+    # Assert that the expected exception is raised.
+    with pytest.raises(
+        NotImplementedError,
+        match="MCPTool is not yet supported in live/streaming mode."
+    ):
+        await _process_function_live_helper(
+            tool=mcp_tool,
+            tool_context=tool_context,
+            function_call=function_call,
+            function_args={},
+            invocation_context=invocation_context
+        )
+
+
 def test_function_call_id():
   responses = [
       types.Part.from_function_call(name='increase_by_one', args={'x': 1}),

@@ -36,6 +36,7 @@ from ...telemetry import trace_tool_call
 from ...telemetry import trace_tool_response
 from ...telemetry import tracer
 from ...tools.base_tool import BaseTool
+from ...tools.mcp_tool import MCPTool
 from ...tools.tool_context import ToolContext
 
 AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
@@ -268,6 +269,13 @@ async def _process_function_live_helper(
     tool, tool_context, function_call, function_args, invocation_context
 ):
   function_response = None
+
+  # Check if the tool is an MCPTool before attempting to access 'func'.
+  if isinstance(tool, MCPTool):
+      raise NotImplementedError(
+          "MCPTool is not yet supported in live/streaming mode."
+      )
+
   # Check if this is a stop_streaming function call
   if (
       function_call.name == 'stop_streaming'
