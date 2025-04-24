@@ -5,9 +5,9 @@
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
 
 <html>
-    <h1 align="center">
-      <img src="assets/agent-development-kit.png" width="256"/>
-    </h1>
+    <h2 align="center">
+      <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/agent-development-kit.png" width="256"/>
+    </h2>
     <h3 align="center">
       An open-source, code-first Python toolkit for building, evaluating, and deploying sophisticated AI agents with flexibility and control.
     </h3>
@@ -45,11 +45,27 @@ debugging, versioning, and deployment anywhere – from your laptop to the cloud
 
 ## 🚀 Installation
 
-You can install the ADK using `pip`:
+### Stable Release (Recommended)
+
+You can install the latest stable version of ADK using `pip`:
 
 ```bash
 pip install google-adk
 ```
+
+The release cadence is weekly.
+
+This version is recommended for most users as it represents the most recent official release.
+
+### Development Version
+Bug fixes and new features are merged into the main branch on GitHub first. If you need access to changes that haven't been included in an official PyPI release yet, you can install directly from the main branch:
+
+```bash
+pip install git+https://github.com/google/adk-python.git@main
+```
+
+Note: The development version is built directly from the latest code commits. While it includes the newest fixes and features, it may also contain experimental changes or bugs not present in the stable release. Use it primarily for testing upcoming changes or accessing critical fixes before they are officially released.
+
 ## 📚 Documentation
 
 Explore the full documentation for detailed guides on building, evaluating, and
@@ -60,6 +76,7 @@ deploying agents:
 ## 🏁 Feature Highlight
 
 ### Define a single agent:
+
 ```python
 from google.adk.agents import Agent
 from google.adk.tools import google_search
@@ -74,7 +91,9 @@ root_agent = Agent(
 ```
 
 ### Define a multi-agent system:
+
 Define a multi-agent system with coordinator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents works together to accomplish the task.
+
 ```python
 from google.adk.agents import LlmAgent, BaseAgent
 
@@ -92,14 +111,13 @@ coordinator = LlmAgent(
         task_executor
     ]
 )
-
 ```
 
 ### Development UI
 
 A built-in development UI to help you test, evaluate, debug, and showcase your agent(s).
 
-<img src="assets/adk-web-dev-ui-function-call.png"/>
+<img src="https://raw.githubusercontent.com/google/adk-python/main/assets/adk-web-dev-ui-function-call.png"/>
 
 ###  Evaluate Agents
 
@@ -109,10 +127,18 @@ adk eval \
     samples_for_testing/hello_world/hello_world_eval_set_001.evalset.json
 ```
 
+## 🤖 A2A and ADK integration
+
+For remote agent-to-agent communication, ADK integrates with the
+[A2A protocol](https://github.com/google/A2A/).
+See this [example](https://github.com/google/A2A/tree/main/samples/python/agents/google_adk)
+for how they can work together.
 
 ## 🤝 Contributing
 
-We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our [**Contributing Guidelines**](./CONTRIBUTING.md) to get started.
+We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our 
+- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/#questions).
+- Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
 
 ## 📄 License
 

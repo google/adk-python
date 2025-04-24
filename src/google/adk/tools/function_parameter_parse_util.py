@@ -291,7 +291,7 @@ def _parse_schema_from_parameter(
     return schema
   raise ValueError(
       f'Failed to parse the parameter {param} of function {func_name} for'
-      ' automatic function calling.Automatic function calling works best with'
+      ' automatic function calling. Automatic function calling works best with'
       ' simpler function signature schema,consider manually parse your'
       f' function declaration for function {func_name}.'
   )
