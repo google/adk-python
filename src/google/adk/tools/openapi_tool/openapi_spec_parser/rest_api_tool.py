@@ -17,6 +17,7 @@ from typing import Dict
 from typing import List
 from typing import Literal
 from typing import Optional
+from typing import Sequence
 from typing import Tuple
 from typing import Union
 
@@ -59,6 +60,40 @@ def snake_to_lower_camel(snake_case_string: str):
   ])
 
 
+# TODO: Switch to Gemini `from_json_schema` util when it is released
+# in Gemini SDK.
+def normalize_json_schema_type(
+    json_schema_type: Optional[Union[str, Sequence[str]]],
+) -> tuple[Optional[str], bool]:
+  """Converts a JSON Schema Type into Gemini Schema type.
+
+  Adopted and modified from Gemini SDK. This gets the first available schema
+  type from JSON Schema, and use it to mark Gemini schema type. If JSON Schema
+  contains a list of types, the first non null type is used.
+
+  Remove this after switching to Gemini `from_json_schema`.
+  """
+  if json_schema_type is None:
+    return None, False
+  if isinstance(json_schema_type, str):
+    if json_schema_type == "null":
+      return None, True
+    return json_schema_type, False
+
+  non_null_types = []
+  nullable = False
+  # If json schema type is an array, pick the first non null type.
+  for type_value in json_schema_type:
+    if type_value == "null":
+      nullable = True
+    else:
+      non_null_types.append(type_value)
+  non_null_type = non_null_types[0] if non_null_types else None
+  return non_null_type, nullable
+
+
+# TODO: Switch to Gemini `from_json_schema` util when it is released
+# in Gemini SDK.
 def to_gemini_schema(openapi_schema: Optional[Dict[str, Any]] = None) -> Schema:
   """Converts an OpenAPI schema dictionary to a Gemini Schema object.
 
@@ -82,13 +117,6 @@ def to_gemini_schema(openapi_schema: Optional[Dict[str, Any]] = None) -> Schema:
   if not openapi_schema.get("type"):
     openapi_schema["type"] = "object"
 
-  # Adding this to avoid "properties: should be non-empty for OBJECT type" error
-  # See b/385165182
-  if openapi_schema.get("type", "") == "object" and not openapi_schema.get(
-      "properties"
-  ):
-    openapi_schema["properties"] = {"dummy_DO_NOT_GENERATE": {"type": "string"}}
-
   for key, value in openapi_schema.items():
     snake_case_key = to_snake_case(key)
     # Check if the snake_case_key exists in the Schema model's fields.
@@ -99,7 +127,17 @@ def to_gemini_schema(openapi_schema: Optional[Dict[str, Any]] = None) -> Schema:
         # Format: properties[expiration].format: only 'enum' and 'date-time' are
         # supported for STRING type
         continue
-      if snake_case_key == "properties" and isinstance(value, dict):
+      elif snake_case_key == "type":
+        schema_type, nullable = normalize_json_schema_type(
+            openapi_schema.get("type", None)
+        )
+        # Adding this to force adding a type to an empty dict
+        # This avoid "... one_of or any_of must specify a type" error
+        pydantic_schema_data["type"] = schema_type if schema_type else "object"
+        pydantic_schema_data["type"] = pydantic_schema_data["type"].upper()
+        if nullable:
+          pydantic_schema_data["nullable"] = True
+      elif snake_case_key == "properties" and isinstance(value, dict):
         pydantic_schema_data[snake_case_key] = {
             k: to_gemini_schema(v) for k, v in value.items()
         }

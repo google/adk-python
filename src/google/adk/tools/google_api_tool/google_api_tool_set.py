@@ -11,10 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
+
 import inspect
 import os
 from typing import Any
-from typing import Dict
 from typing import Final
 from typing import List
 from typing import Optional
@@ -28,6 +30,7 @@ from .googleapi_to_openapi_converter import GoogleApiToOpenApiConverter
 
 
 class GoogleApiToolSet:
+  """Google API Tool Set."""
 
   def __init__(self, tools: List[RestApiTool]):
     self.tools: Final[List[GoogleApiTool]] = [
@@ -45,10 +48,10 @@ class GoogleApiToolSet:
 
   @staticmethod
   def _load_tool_set_with_oidc_auth(
-      spec_file: str = None,
-      spec_dict: Dict[str, Any] = None,
-      scopes: list[str] = None,
-  ) -> Optional[OpenAPIToolset]:
+      spec_file: Optional[str] = None,
+      spec_dict: Optional[dict[str, Any]] = None,
+      scopes: Optional[list[str]] = None,
+  ) -> OpenAPIToolset:
     spec_str = None
     if spec_file:
       # Get the frame of the caller
@@ -90,18 +93,18 @@ class GoogleApiToolSet:
 
   @classmethod
   def load_tool_set(
-      cl: Type['GoogleApiToolSet'],
+      cls: Type[GoogleApiToolSet],
       api_name: str,
       api_version: str,
-  ) -> 'GoogleApiToolSet':
+  ) -> GoogleApiToolSet:
     spec_dict = GoogleApiToOpenApiConverter(api_name, api_version).convert()
     scope = list(
         spec_dict['components']['securitySchemes']['oauth2']['flows'][
             'authorizationCode'
         ]['scopes'].keys()
     )[0]
-    return cl(
-        cl._load_tool_set_with_oidc_auth(
+    return cls(
+        cls._load_tool_set_with_oidc_auth(
             spec_dict=spec_dict, scopes=[scope]
         ).get_tools()
     )

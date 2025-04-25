@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from .application_integration_toolset import ApplicationIntegrationToolset
+from .integration_connector_tool import IntegrationConnectorTool
 
 __all__ = [
     'ApplicationIntegrationToolset',
+    'IntegrationConnectorTool',
 ]

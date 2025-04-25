@@ -72,7 +72,7 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
         HTTP bearer token cannot be generated, return the original credential.
     """
 
-    if "access_token" not in auth_credential.oauth2.token:
+    if not auth_credential.oauth2.access_token:
       return auth_credential
 
     # Return the access token as a bearer token.
@@ -81,7 +81,7 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
         http=HttpAuth(
             scheme="bearer",
             credentials=HttpCredentials(
-                token=auth_credential.oauth2.token["access_token"]
+                token=auth_credential.oauth2.access_token
             ),
         ),
     )
