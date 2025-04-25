@@ -89,7 +89,7 @@ class LoadArtifactsTool(BaseTool):
   than the function call.
   """])
 
-    # Attache the content of the artifacts if the model requests them.
+    # Attach the content of the artifacts if the model requests them.
     # This only adds the content to the model request, instead of the session.
     if llm_request.contents and llm_request.contents[-1].parts:
       function_response = llm_request.contents[-1].parts[0].function_response

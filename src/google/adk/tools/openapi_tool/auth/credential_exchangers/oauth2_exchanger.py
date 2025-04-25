@@ -69,7 +69,7 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
 
     Returns:
         An AuthCredential object containing the HTTP bearer access token. If the
-        HTTP bearer token cannot be generated, return the original credential
+        HTTP bearer token cannot be generated, return the original credential.
     """
 
     if "access_token" not in auth_credential.oauth2.token:

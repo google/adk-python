@@ -52,7 +52,7 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
     # Appends global instructions if set.
     if (
         isinstance(root_agent, LlmAgent) and root_agent.global_instruction
-    ):  # not emtpy str
+    ):  # not empty str
       raw_si = root_agent.canonical_global_instruction(
           ReadonlyContext(invocation_context)
       )
@@ -60,7 +60,7 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
       llm_request.append_instructions([si])
 
     # Appends agent instructions if set.
-    if agent.instruction:  # not emtpy str
+    if agent.instruction:  # not empty str
       raw_si = agent.canonical_instruction(ReadonlyContext(invocation_context))
       si = _populate_values(raw_si, invocation_context)
       llm_request.append_instructions([si])

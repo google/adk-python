@@ -53,7 +53,7 @@ def _raise_for_any_of_if_mldev(schema: types.Schema):
 
 def _update_for_default_if_mldev(schema: types.Schema):
   if schema.default is not None:
-    # TODO(kech): Remove this walkaround once mldev supports default value.
+    # TODO(kech): Remove this workaround once mldev supports default value.
     schema.default = None
     logger.warning(
         'Default value is not supported in function declaration schema for'
@@ -291,7 +291,7 @@ def _parse_schema_from_parameter(
     return schema
   raise ValueError(
       f'Failed to parse the parameter {param} of function {func_name} for'
-      ' automatic function calling.Automatic function calling works best with'
+      ' automatic function calling. Automatic function calling works best with'
       ' simpler function signature schema,consider manually parse your'
       f' function declaration for function {func_name}.'
   )
