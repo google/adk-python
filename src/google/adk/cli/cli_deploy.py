@@ -22,7 +22,7 @@ from .config.dockerfile_template import _DOCKERFILE_TEMPLATE
 def to_cloud_run(
     *,
     agent_folder: str,
-	cloud_provider: str,
+    cloud_provider: str,
     project: Optional[str],
     region: Optional[str],
     service_name: str,
@@ -33,8 +33,8 @@ def to_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
-	provider_args: Tuple[str],
-	env: Tuple[str],
+    provider_args: Tuple[str],
+    env: Tuple[str],
 ):
   """Deploys an agent to Google Cloud Run.
 
@@ -64,8 +64,8 @@ def to_cloud_run(
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     session_db_url: The database URL to connect the session.
-	provider_args: The arguments specific to cloud provider
-	env: The environment valriables provided
+    provider_args: The arguments specific to cloud provider
+    env: The environment valriables provided
   """
   app_name = app_name or os.path.basename(agent_folder)
   mode = 'web' if with_ui else 'api_server'
