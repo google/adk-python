@@ -56,8 +56,11 @@ def auth_credential_with_refresh():
             client_id="test_client",
             client_secret="test_secret",
             redirect_uri="http://localhost:8080",
-            refresh_token="test_refresh_token",
-            token={"access_token": "old_access_token", "expires_in": 3600},
+            token={
+                "access_token": "old_access_token",
+                "refresh_token": "test_refresh_token",
+                "expires_in": 3600
+            },
         ),
     )
 

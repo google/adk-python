@@ -104,7 +104,7 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
     Raises:
         ValueError: If refresh token is missing or refresh fails.
     """
-    if not auth_credential.oauth2.refresh_token:
+    if not auth_credential.oauth2.token or "refresh_token" not in auth_credential.oauth2.token:
       raise ValueError("No refresh token available for token refresh")
 
     # Get token URL from either OpenID Connect or OAuth2 configuration
@@ -125,7 +125,7 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
       )
       new_token = client.refresh_token(
           token_url,
-          refresh_token=auth_credential.oauth2.refresh_token,
+          refresh_token=auth_credential.oauth2.token["refresh_token"],
       )
       return new_token
     except Exception as e:
@@ -161,7 +161,7 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
         # Continue to refresh flow
 
     # Try to refresh the token if we have a refresh token
-    if auth_credential.oauth2.refresh_token:
+    if auth_credential.oauth2.token and "refresh_token" in auth_credential.oauth2.token:
       try:
         new_token = self._refresh_token(auth_credential, auth_scheme)
         auth_credential.oauth2.token = new_token
