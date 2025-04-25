@@ -18,7 +18,7 @@ from datetime import datetime
 import logging
 import os
 import tempfile
-from typing import Optional
+from typing import Optional, Tuple
 
 import click
 from fastapi import FastAPI
@@ -464,6 +464,24 @@ def cli_api_server(
 
 @deploy.command("cloud_run")
 @click.option(
+    "--cloud-provider",
+    type=str,
+    help=(
+        "Optional. Name of cloud provider where to deploy the agent. When absent,"
+        " default the agent will be deployed locally as a docker container."
+    ),
+)
+@click.option(
+    "--env",
+    multiple=True,
+    help="Optional. Environment variables as multiple --env key=value pairs.",
+)
+@click.option(
+    "--provider-args",
+    multiple=True,
+    help="Optional. Provider-specific arguments as multiple --provider-args key=value pairs.",
+)
+@click.option(
     "--project",
     type=str,
     help=(
@@ -563,6 +581,7 @@ def cli_api_server(
 )
 def cli_deploy_cloud_run(
     agent: str,
+    cloud_provider: Optional[str],
     project: Optional[str],
     region: Optional[str],
     service_name: str,
@@ -573,6 +592,8 @@ def cli_deploy_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    provider_args: Tuple[str],
+    env: Tuple[str],
 ):
   """Deploys an agent to Cloud Run.
 
@@ -585,6 +606,7 @@ def cli_deploy_cloud_run(
   try:
     cli_deploy.to_cloud_run(
         agent_folder=agent,
+        cloud_provider=cloud_provider,
         project=project,
         region=region,
         service_name=service_name,
@@ -595,6 +617,8 @@ def cli_deploy_cloud_run(
         with_ui=with_ui,
         verbosity=verbosity,
         session_db_url=session_db_url,
+        provider_args=provider_args,
+        env=env,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
