@@ -396,7 +396,7 @@ class Runner:
 
     if not isinstance(self.agent, BaseAgent):
       raise ValueError(
-          'Your root_agent must be of type BaseAgent or a class that inherits from BaseAgent.'
+          'Your parent agent must be of type BaseAgent or a class that inherits from BaseAgent.'
       )
 
     return InvocationContext(
