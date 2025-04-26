@@ -1295,7 +1295,7 @@ wheels = [
 
 [[package]]
 name = "google-adk"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "asyncclick" },
@@ -1383,7 +1383,7 @@ requires-dist = [
     { name = "google-cloud-secret-manager", specifier = ">=2.22.0" },
     { name = "google-cloud-speech", specifier = ">=2.30.0" },
     { name = "google-cloud-storage", specifier = ">=2.18.0,<3.0.0" },
-    { name = "google-genai", specifier = ">=1.9.0" },
+    { name = "google-genai", specifier = ">=1.11.0" },
     { name = "graphviz", specifier = ">=0.20.2" },
     { name = "isort", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "langchain-community", marker = "extra == 'test'", specifier = ">=0.3.17" },

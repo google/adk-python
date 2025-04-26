@@ -54,7 +54,7 @@ COPY "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {trace_to_cloud_option} "/app/agents"
+CMD adk {command} --port={port} {session_db_option} {trace_to_cloud_option} "/app/agents"
 """
 
 
@@ -85,6 +85,7 @@ def to_cloud_run(
     trace_to_cloud: bool,
     with_ui: bool,
     verbosity: str,
+    session_db_url: str,
 ):
   """Deploys an agent to Google Cloud Run.
 
@@ -112,6 +113,7 @@ def to_cloud_run(
     trace_to_cloud: Whether to enable Cloud Trace.
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
+    session_db_url: The database URL to connect the session.
   """
   app_name = app_name or os.path.basename(agent_folder)
 
@@ -144,6 +146,9 @@ def to_cloud_run(
         port=port,
         command='web' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
+        session_db_option=f'--session_db_url={session_db_url}'
+        if session_db_url
+        else '',
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
