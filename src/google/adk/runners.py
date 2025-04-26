@@ -394,6 +394,11 @@ class Runner:
       if built_in_code_execution not in self.agent.canonical_tools:
         self.agent.tools.append(built_in_code_execution)
 
+    if not isinstance(self.agent, BaseAgent):
+      raise ValueError(
+          'Your root_agent must be of type BaseAgent or a class that inherits from BaseAgent.'
+      )
+
     return InvocationContext(
         artifact_service=self.artifact_service,
         session_service=self.session_service,
