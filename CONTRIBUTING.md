@@ -24,6 +24,30 @@ This project follows
 [Google's Open Source Community Guidelines](https://opensource.google/conduct/).
 
 ## Contribution process
+1.  **Clone the repository:**
+
+    ```shell
+    git clone git@github.com:google/adk-python.git
+    cd adk-python
+    ```
+2.  **Create and activate a virtual environment:**
+
+    ```shell
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install uv
+    ```
+
+3.  **Install dependencies:**
+
+    ```shell
+    uv pip install -r pyproject.toml --extra dev --extra test --extra eval
+    ```
+4.  **Run unit tests:**
+
+    ```shell
+    uv run pytest ./tests/unittests
+    ```
 
 ### Requirement for PRs
 
