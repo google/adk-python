@@ -152,27 +152,35 @@ async def handle_function_calls_async(
     # in python debugger.
     function_args = function_call.args or {}
     function_response = None
-    # Calls the tool if before_tool_callback does not exist or returns None.
+    # # Calls the tool if before_tool_callback does not exist or returns None.
+    # if agent.before_tool_callback:
+    #   function_response = agent.before_tool_callback(
+    #       tool=tool, args=function_args, tool_context=tool_context
+    #   )
+    # Short-circuit via before_tool_callback (sync *or* async)
     if agent.before_tool_callback:
-      function_response = agent.before_tool_callback(
+      _maybe = agent.before_tool_callback(
           tool=tool, args=function_args, tool_context=tool_context
       )
-
+      if inspect.isawaitable(_maybe):
+          _maybe = await _maybe
+      function_response = _maybe
     if not function_response:
       function_response = await __call_tool_async(
           tool, args=function_args, tool_context=tool_context
       )
-
     # Calls after_tool_callback if it exists.
     if agent.after_tool_callback:
-      new_response = agent.after_tool_callback(
-          tool=tool,
-          args=function_args,
-          tool_context=tool_context,
-          tool_response=function_response,
+      _maybe2 = agent.after_tool_callback(
+        tool=tool,
+        args=function_args,
+        tool_context=tool_context,
+        tool_response=function_response,
       )
-      if new_response:
-        function_response = new_response
+      if inspect.isawaitable(_maybe2):
+        _maybe2 = await _maybe2
+      if _maybe2 is not None:
+        function_response = _maybe2
 
     if tool.is_long_running:
       # Allow long running function to return None to not provide function response.
@@ -223,11 +231,18 @@ async def handle_function_calls_live(
     # in python debugger.
     function_args = function_call.args or {}
     function_response = None
-    # Calls the tool if before_tool_callback does not exist or returns None.
+    # # Calls the tool if before_tool_callback does not exist or returns None.
+    # if agent.before_tool_callback:
+    #   function_response = agent.before_tool_callback(
+    #       tool, function_args, tool_context
+    #   )
     if agent.before_tool_callback:
-      function_response = agent.before_tool_callback(
-          tool, function_args, tool_context
-      )
+      _maybe = agent.before_tool_callback(
+        tool=tool, args=function_args, tool_context=tool_context
+        )
+      if inspect.isawaitable(_maybe):
+        _maybe = await _maybe
+        function_response = _maybe
 
     if not function_response:
       function_response = await _process_function_live_helper(
@@ -235,15 +250,26 @@ async def handle_function_calls_live(
       )
 
     # Calls after_tool_callback if it exists.
+    # if agent.after_tool_callback:
+    #   new_response = agent.after_tool_callback(
+    #       tool,
+    #       function_args,
+    #       tool_context,
+    #       function_response,
+    #   )
+    #   if new_response:
+    #     function_response = new_response
     if agent.after_tool_callback:
-      new_response = agent.after_tool_callback(
-          tool,
-          function_args,
-          tool_context,
-          function_response,
-      )
-      if new_response:
-        function_response = new_response
+      _maybe2 = agent.after_tool_callback(
+        tool=tool,
+        args=function_args,
+        tool_context=tool_context,
+        tool_response=function_response,
+        )
+      if inspect.isawaitable(_maybe2):
+        _maybe2 = await _maybe2
+      if _maybe2 is not None:
+        function_response = _maybe2
 
     if tool.is_long_running:
       # Allow async function to return None to not provide function response.
