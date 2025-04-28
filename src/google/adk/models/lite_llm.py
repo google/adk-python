@@ -611,6 +611,7 @@ class LiteLlm(BaseLlm):
       LlmResponse: The model response.
     """
 
+    self._maybe_append_user_content(llm_request)
     logger.info(_build_request_log(llm_request))
 
     messages, tools = _get_completion_inputs(llm_request)
