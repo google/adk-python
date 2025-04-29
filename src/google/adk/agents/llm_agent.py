@@ -57,11 +57,11 @@ AfterModelCallback: TypeAlias = Callable[
 ]
 BeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
-    Awaitable[Optional[dict]],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
 ]
 AfterToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext, dict],
-    Awaitable[Optional[dict]],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
 ]
 
 InstructionProvider: TypeAlias = Callable[[ReadonlyContext], str]
