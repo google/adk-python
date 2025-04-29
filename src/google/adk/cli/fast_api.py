@@ -350,7 +350,7 @@ def get_fast_api_app(
     if not os.path.exists(new_eval_set_path):
       # Write the JSON string to the file
       logger.info("Eval set file doesn't exist, we will create a new one.")
-      with open(new_eval_set_path, "w") as f:
+      with open(new_eval_set_path, "w", encoding="utf-8") as f:
         empty_content = json.dumps([], indent=2)
         f.write(empty_content)
 
@@ -393,7 +393,7 @@ def get_fast_api_app(
     eval_set_file_path = _get_eval_set_file_path(
         app_name, agent_dir, eval_set_id
     )
-    with open(eval_set_file_path, "r") as file:
+    with open(eval_set_file_path, "r", encoding="utf-8") as file:
       eval_set_data = json.load(file)  # Load JSON into a list
 
     if [x for x in eval_set_data if x["name"] == req.eval_id]:
@@ -423,7 +423,7 @@ def get_fast_api_app(
         },
     })
     # Serialize the test data to JSON and write to the eval set file.
-    with open(eval_set_file_path, "w") as f:
+    with open(eval_set_file_path, "w", encoding="utf-8") as f:
       f.write(json.dumps(eval_set_data, indent=2))
 
   @app.get(
@@ -439,7 +439,7 @@ def get_fast_api_app(
     eval_set_file_path = _get_eval_set_file_path(
         app_name, agent_dir, eval_set_id
     )
-    with open(eval_set_file_path, "r") as file:
+    with open(eval_set_file_path, "r", encoding="utf-8") as file:
       eval_set_data = json.load(file)  # Load JSON into a list
 
     return sorted([x["name"] for x in eval_set_data])

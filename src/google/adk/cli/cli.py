@@ -137,7 +137,7 @@ async def run_cli(
           input_path=json_file_path,
       )
     elif json_file_path.endswith('.session.json'):
-      with open(json_file_path, 'r') as f:
+      with open(json_file_path, 'r', encoding="utf-8") as f:
         session = Session.model_validate_json(f.read())
       for content in session.get_contents():
         if content.role == 'user':
@@ -177,7 +177,7 @@ async def run_cli(
         user_id=session.user_id,
         session_id=session.id,
     )
-    with open(session_path, 'w') as f:
+    with open(session_path, 'w', encoding="utf-8") as f:
       f.write(session.model_dump_json(indent=2, exclude_none=True))
 
     print('Session saved to', session_path)

@@ -50,7 +50,7 @@ DEFAULT_CRITERIA = {
 
 
 def load_json(file_path: str) -> Union[Dict, List]:
-  with open(file_path, "r") as f:
+  with open(file_path, "r", encoding="utf-8") as f:
     return json.load(f)
 
 
@@ -111,7 +111,7 @@ class AgentEvaluator:
 
     initial_session_state = {}
     if initial_session_file:
-      with open(initial_session_file, "r") as f:
+      with open(initial_session_file, "r", encoding="utf-8") as f:
         initial_session_state = json.loads(f.read())["state"]
 
     for test_file in test_files:
