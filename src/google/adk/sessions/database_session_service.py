@@ -353,6 +353,7 @@ class DatabaseSessionService(BaseSessionService):
               else True
           )
           .limit(config.num_recent_events if config else None)
+          .order_by(StorageEvent.timestamp.asc())
           .all()
       )
 
