@@ -18,7 +18,7 @@ import os
 import sys
 from typing import Optional
 
-import click
+import asyncclick as click
 from google.genai import types
 from pydantic import BaseModel
 

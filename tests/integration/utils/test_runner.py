@@ -46,17 +46,16 @@ class TestRunner:
         session_service=session_service,
     )
     self.session_service = session_service
-    self.current_session_id = session_service.create_session(
-        app_name=self.app_name, user_id=self.user_id
-    ).id
 
-  def new_session(self, session_id: Optional[str] = None) -> None:
-    self.current_session_id = self.session_service.create_session(
+  async def new_session(self, session_id: Optional[str] = None) -> None:
+    self.current_session_id = (await self.session_service.create_session(
         app_name=self.app_name, user_id=self.user_id, session_id=session_id
-    ).id
+    )).id
 
-  def run(self, prompt: str) -> list[Event]:
-    current_session = self.session_service.get_session(
+  async def run(self, prompt: str) -> list[Event]:
+    await self.new_session()
+
+    current_session = await self.session_service.get_session(
         app_name=self.app_name,
         user_id=self.user_id,
         session_id=self.current_session_id,
@@ -74,15 +73,15 @@ class TestRunner:
         )
     )
 
-  def get_current_session(self) -> Optional[Session]:
-    return self.session_service.get_session(
+  async def get_current_session(self) -> Optional[Session]:
+    return await self.session_service.get_session(
         app_name=self.app_name,
         user_id=self.user_id,
         session_id=self.current_session_id,
     )
 
-  def get_events(self) -> list[Event]:
-    return self.get_current_session().events
+  async def get_events(self) -> list[Event]:
+    return (await self.get_current_session()).events
 
   @classmethod
   def from_agent_name(cls, agent_name: str):
@@ -91,7 +90,7 @@ class TestRunner:
     agent: Agent = agent_module.agent.root_agent
     return cls(agent)
 
-  def get_current_agent_name(self) -> str:
+  async def get_current_agent_name(self) -> str:
     return self.agent_client._find_agent_to_run(
-        self.get_current_session(), self.agent
+        await self.get_current_session(), self.agent
     ).name

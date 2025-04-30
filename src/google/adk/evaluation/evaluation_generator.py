@@ -32,7 +32,7 @@ class EvaluationGenerator:
   """Generates evaluation responses for agents."""
 
   @staticmethod
-  def generate_responses(
+  async def generate_responses(
       eval_dataset,
       agent_module_path,
       repeat_num=3,
@@ -55,7 +55,7 @@ class EvaluationGenerator:
     for _ in range(repeat_num):
       for data in eval_dataset:
         results.append(
-            EvaluationGenerator._process_query(
+            await EvaluationGenerator._process_query(
                 data, agent_module_path, agent_name, initial_session
             )
         )
@@ -89,7 +89,7 @@ class EvaluationGenerator:
     return results
 
   @staticmethod
-  def _process_query(data, module_name, agent_name=None, initial_session={}):
+  async def _process_query(data, module_name, agent_name=None, initial_session={}):
     """Process a query using the agent and evaluation dataset."""
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
@@ -102,12 +102,12 @@ class EvaluationGenerator:
       agent_to_evaluate = root_agent.find_agent(agent_name)
       assert agent_to_evaluate, f"Sub-Agent `{agent_name}` not found."
 
-    return EvaluationGenerator._process_query_with_root_agent(
+    return await EvaluationGenerator._process_query_with_root_agent(
         data, agent_to_evaluate, reset_func, initial_session
     )
 
   @staticmethod
-  def _process_query_with_root_agent(
+  async def _process_query_with_root_agent(
       data,
       root_agent,
       reset_func,
@@ -143,7 +143,7 @@ class EvaluationGenerator:
     user_id = initial_session.get("user_id", "test_user_id")
     session_id = session_id if session_id else str(uuid.uuid4())
 
-    _ = session_service.create_session(
+    _ = await session_service.create_session(
         app_name=app_name,
         user_id=user_id,
         state=initial_session.get("state", {}),

@@ -30,7 +30,7 @@ def function_response(response: dict[str, Any]) -> types.Part:
   )
 
 
-def test_sequential_calls():
+async def test_sequential_calls():
   responses = [
       function_call({'x': 1}),
       function_call({'x': 2}),
@@ -47,7 +47,7 @@ def test_sequential_calls():
 
   agent = Agent(name='root_agent', model=mockModel, tools=[increase_by_one])
   runner = utils.InMemoryRunner(agent)
-  result = utils.simplify_events(runner.run('test'))
+  result = utils.simplify_events(await runner.run('test'))
   assert result == [
       ('root_agent', function_call({'x': 1})),
       ('root_agent', function_response({'result': 2})),
