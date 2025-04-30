@@ -22,7 +22,7 @@ def adk_to_mcp_tool_type(tool: BaseTool) -> mcp_types.Tool:
   """Convert a Tool in ADK into MCP tool type.
 
   This function transforms an ADK tool definition into its equivalent
-  MCP (Model Context Protocol) representation.
+  representation in the MCP (Model Control Plane) system.
 
   Args:
       tool: The ADK tool to convert. It should be an instance of a class derived
