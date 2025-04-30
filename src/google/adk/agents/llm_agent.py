@@ -15,12 +15,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
-from typing import AsyncGenerator
-from typing import Callable
-from typing import Literal
-from typing import Optional
-from typing import Union
+from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, Optional, Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -62,11 +57,11 @@ AfterModelCallback: TypeAlias = Callable[
 ]
 BeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
-    Optional[dict],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
 ]
 AfterToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext, dict],
-    Optional[dict],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
 ]
 
 InstructionProvider: TypeAlias = Callable[[ReadonlyContext], str]
