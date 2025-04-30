@@ -16,6 +16,6 @@ from .tool_context import ToolContext
 
 
 # TODO: make this internal, since user doesn't need to use this tool directly.
-def transfer_to_agent(agent_name: str, tool_context: ToolContext):
+def transfer_to_agent(agent_name: str, tool_context: ToolContext, **kwargs):
   """Transfer the question to another agent."""
   tool_context.actions.transfer_to_agent = agent_name
