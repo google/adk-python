@@ -312,9 +312,7 @@ class ConnectionsClient:
                 "content": {
                     "application/json": {
                         "schema": {
-                            "$ref": (
-                                f"#/components/schemas/{action_display_name}_Request"
-                            )
+                            "$ref": f"#/components/schemas/{action_display_name}_Request"
                         }
                     }
                 }
@@ -325,9 +323,7 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": (
-                                    f"#/components/schemas/{action_display_name}_Response"
-                                ),
+                                "$ref": f"#/components/schemas/{action_display_name}_Response",
                             }
                         }
                     },
@@ -346,11 +342,9 @@ class ConnectionsClient:
     return {
         "post": {
             "summary": f"List {entity}",
-            "description": (
-                f"""Returns the list of {entity} data. If the page token was available in the response, let users know there are more records available. Ask if the user wants to fetch the next page of results. When passing filter use the
+            "description": f"""Returns the list of {entity} data. If the page token was available in the response, let users know there are more records available. Ask if the user wants to fetch the next page of results. When passing filter use the
                 following format: `field_name1='value1' AND field_name2='value2'
-                `. {tool_instructions}"""
-            ),
+                `. {tool_instructions}""",
             "x-operation": "LIST_ENTITIES",
             "x-entity": f"{entity}",
             "operationId": f"{tool_name}_list_{entity}",
@@ -375,9 +369,7 @@ class ConnectionsClient:
                                     f"Returns a list of {entity} of json"
                                     f" schema: {schema_as_string}"
                                 ),
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                ),
+                                "$ref": "#/components/schemas/execute-connector_Response",
                             }
                         }
                     },
@@ -421,9 +413,7 @@ class ConnectionsClient:
                                     f"Returns {entity} of json schema:"
                                     f" {schema_as_string}"
                                 ),
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                ),
+                                "$ref": "#/components/schemas/execute-connector_Response",
                             }
                         }
                     },
@@ -460,9 +450,7 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                )
+                                "$ref": "#/components/schemas/execute-connector_Response"
                             }
                         }
                     },
@@ -499,9 +487,7 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                )
+                                "$ref": "#/components/schemas/execute-connector_Response"
                             }
                         }
                     },
@@ -538,9 +524,7 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                )
+                                "$ref": "#/components/schemas/execute-connector_Response"
                             }
                         }
                     },
@@ -873,3 +857,42 @@ class ConnectionsClient:
       operation_done = operation_response.get("done", False)
       time.sleep(1)
     return operation_response
+
+
+def execute_connection(
+    self,
+    connection_name: str,
+    operation_id: str,
+    inputs: Dict[str, Any],
+    dynamic_auth_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+  """Executes an operation on the specified connection, with optional auth override.
+
+  Args:
+  connection_name: Full resource name of the connection.
+  operation_id: Operation to perform (e.g. EXECUTE_ACTION).
+  inputs: Payload for 'connectorInputPayload'.
+  dynamic_auth_config: If provided, sent under 'dynamicAuthConfig' for override.
+
+  Returns:
+  The JSON-decoded response from the connector API.
+
+  Raises:
+  requests.exceptions.RequestException: If the HTTP request fails.
+  """
+  url = f"{self.connector_url}/v1/{connection_name}:execute"
+  headers = {
+      "Content-Type": "application/json",
+      "Authorization": f"Bearer {self._get_access_token()}",
+  }
+  body: Dict[str, Any] = {
+      "connectionName": connection_name,
+      "operation": operation_id,
+      "connectorInputPayload": inputs,
+  }
+  if dynamic_auth_config is not None:
+    body["dynamicAuthConfig"] = dynamic_auth_config
+
+  response = requests.post(url, headers=headers, json=body)
+  response.raise_for_status()
+  return response.json()

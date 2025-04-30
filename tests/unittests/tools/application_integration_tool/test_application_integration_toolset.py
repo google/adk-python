@@ -236,8 +236,7 @@ def test_initialization_with_connection_and_actions(
   )
   mock_connections_client.return_value.get_connection_details.assert_called_once()
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
-      tool_name,
-      tool_instructions
+      tool_name, tool_instructions
   )
   mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
   assert len(toolset.get_tools()) == 1
@@ -390,6 +389,68 @@ def test_initialization_with_connection_details(
       tool_instructions=tool_instructions,
   )
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
-      tool_name,
-      tool_instructions
+      tool_name, tool_instructions
   )
+
+
+@pytest.mark.usefixtures("mock_openapi_entity_spec_parser")
+def test_tool_has_dynamic_auth_config_when_override_enabled(
+    project,
+    location,
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_toolset,
+    connection_details,
+):
+  # simulate authOverrideEnabled = True coming from ConnectionsClient
+  connection_details["authOverrideEnabled"] = True
+  mock_connections_client.return_value.get_connection_details.return_value = (
+      connection_details
+  )
+
+  toolset = ApplicationIntegrationToolset(
+      project,
+      location,
+      connection=connection_details["name"],
+      entity_operations=["E"],
+  )
+  tool = toolset.get_tools()[0]
+  # should have picked up the flag and defaulted to {"userToken": None}
+  assert isinstance(tool, IntegrationConnectorTool)
+  assert tool.dynamic_auth_config == {"userToken": None}
+
+
+@pytest.mark.asyncio
+async def test_integration_connector_injects_dynamic_authConfig(monkeypatch):
+  # build a single IntegrationConnectorTool manually
+  parser = get_mocked_parsed_operation(
+      "op", {"x-action": "A", "x-operation": "EXECUTE_ACTION"}
+  )
+  parsed_op = parser.parse.return_value[0]
+  rest = rest_api_tool.RestApiTool.from_parsed_operation(parsed_op)
+  tool = IntegrationConnectorTool(
+      name="t",
+      description="d",
+      connection_name="c",
+      connection_host="h",
+      connection_service_name="s",
+      entity="Issues",
+      operation="EXECUTE_ACTION",
+      action="A",
+      rest_api_tool=rest,
+      dynamic_auth_config={"userToken": "XYZ"},
+  )
+
+  # stub out RestApiTool.call to capture args
+  seen = {}
+
+  async def fake_call(self, args, tool_context):
+    seen.update(args)
+    return {"ok": True}
+
+  monkeypatch.setattr(rest_api_tool.RestApiTool, "call", fake_call)
+
+  out = await tool.run_async(args={}, tool_context=None)
+  assert out == {"ok": True}
+  # verifies the camel-case key went into the final args
+  assert seen["dynamicAuthConfig"] == {"userToken": "XYZ"}
