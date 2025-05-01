@@ -234,7 +234,8 @@ def build_graph(graph: graphviz.Digraph, agent: BaseAgent, highlight_pairs, pare
           graph.edge(from_name, to_name, color=light_green, dir='back')
           return
     # if no need to highlight, color gray
-    if (should_build_agent_cluster(agent)):
+    if (should_build_agent_cluster(agent)): 
+      
       graph.edge(from_name, to_name, color=light_gray, )
     else:
       graph.edge(from_name, to_name, arrowhead='none', color=light_gray)
