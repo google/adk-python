@@ -210,6 +210,7 @@ class Gemini(BaseLlm):
     ) as live_session:
       yield GeminiLlmConnection(live_session)
 
+
 def _build_function_declaration_log(
     func_decl: types.FunctionDeclaration,
 ) -> str:

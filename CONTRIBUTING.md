@@ -41,12 +41,17 @@ This project follows
 3.  **Install dependencies:**
 
     ```shell
-    uv pip install -r pyproject.toml --extra dev --extra test --extra eval
+    uv pip install -e .[dev,test,extensions,eval]
     ```
 4.  **Run unit tests:**
 
     ```shell
     uv run pytest ./tests/unittests
+    ```
+5.  **Run pyink to format codebase:**
+
+    ```shell
+    uv run pyink  --config pyproject.toml ./src
     ```
 
 ### Requirement for PRs
