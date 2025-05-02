@@ -29,13 +29,13 @@ class InMemoryMemoryService(BaseMemoryService):
     self.session_events: dict[str, list[Event]] = {}
     """keys are app_name/user_id/session_id"""
 
-  def add_session_to_memory(self, session: Session):
+  async def add_session_to_memory(self, session: Session):
     key = f'{session.app_name}/{session.user_id}/{session.id}'
     self.session_events[key] = [
         event for event in session.events if event.content
     ]
 
-  def search_memory(
+  async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Prototyping purpose only."""

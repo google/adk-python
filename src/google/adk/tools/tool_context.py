@@ -79,11 +79,11 @@ class ToolContext(CallbackContext):
         session_id=self._invocation_context.session.id,
     )
 
-  def search_memory(self, query: str) -> 'SearchMemoryResponse':
+  async def search_memory(self, query: str) -> SearchMemoryResponse:
     """Searches the memory of the current user."""
     if self._invocation_context.memory_service is None:
       raise ValueError('Memory service is not available.')
-    return self._invocation_context.memory_service.search_memory(
+    return await self._invocation_context.memory_service.search_memory(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         query=query,

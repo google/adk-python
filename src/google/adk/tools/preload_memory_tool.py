@@ -45,7 +45,7 @@ class PreloadMemoryTool(BaseTool):
     if not parts or not parts[0].text:
       return
     query = parts[0].text
-    response = tool_context.search_memory(query)
+    response = await tool_context.search_memory(query)
     if not response.memories:
       return
     memory_text = ''

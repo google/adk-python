@@ -27,7 +27,9 @@ if TYPE_CHECKING:
   from ..models import LlmRequest
 
 
-def load_memory(query: str, tool_context: ToolContext) -> 'list[MemoryResult]':
+async def load_memory(
+    query: str, tool_context: ToolContext
+) -> 'list[MemoryResult]':
   """Loads the memory for the current user.
 
   Args:
@@ -36,7 +38,7 @@ def load_memory(query: str, tool_context: ToolContext) -> 'list[MemoryResult]':
   Returns:
     A list of memory results.
   """
-  response = tool_context.search_memory(query)
+  response = await tool_context.search_memory(query)
   return response.memories
 
 
