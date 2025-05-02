@@ -450,12 +450,25 @@ def _get_completion_inputs(
     The litellm inputs (message list and tool dictionary).
   """
   messages = []
+
   for content in llm_request.contents or []:
-    message_param_or_list = _content_to_message_param(content)
-    if isinstance(message_param_or_list, list):
-        messages.extend(message_param_or_list)
-    elif message_param_or_list: # Ensure it's not None before appending
-        messages.append(message_param_or_list)
+    is_tool_response_content = (
+        content.role == 'user' and content.parts and any(part.function_response for part in content.parts)
+    )
+    if is_tool_response_content:
+      for part in content.parts:
+        if part.function_response:
+          tool_message = ChatCompletionToolMessage(
+              role="tool",
+              tool_call_id=part.function_response.id,
+              content=_safe_json_serialize(
+                  part.function_response.response
+              ),
+          )
+          messages.append(tool_message)
+    else:
+      message = _content_to_message_param(content)
+      messages.append(message)
 
   if llm_request.config.system_instruction:
     messages.insert(
