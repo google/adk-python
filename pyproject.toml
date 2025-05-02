@@ -119,6 +119,15 @@ line-length = 80
 unstable = true
 pyink-indentation = 2
 pyink-use-majority-quotes = true
+pyink-annotation-pragmas = [
+  "noqa",
+  "pylint:",
+  "type: ignore",
+  "pytype:",
+  "mypy:",
+  "pyright:",
+  "pyre-",
+]
 
 
 [build-system]
