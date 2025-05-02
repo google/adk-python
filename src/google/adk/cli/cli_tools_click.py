@@ -96,6 +96,23 @@ def cli_create_cmd(
   )
 
 
+def validate_exclusive(ctx, param, value):
+  # Store the validated parameters in the context
+  if not hasattr(ctx, "exclusive_opts"):
+    ctx.exclusive_opts = {}
+
+  # If this option has a value and we've already seen another exclusive option
+  if value is not None and any(ctx.exclusive_opts.values()):
+    exclusive_opt = next(key for key, val in ctx.exclusive_opts.items() if val)
+    raise click.UsageError(
+        f"Options '{param.name}' and '{exclusive_opt}' cannot be set together."
+    )
+
+  # Record this option's value
+  ctx.exclusive_opts[param.name] = value is not None
+  return value
+
+
 @main.command("run")
 @click.option(
     "--save_session",
@@ -105,13 +122,43 @@ def cli_create_cmd(
     default=False,
     help="Optional. Whether to save the session to a json file on exit.",
 )
+@click.option(
+    "--replay",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help=(
+        "The json file that contains the initial state of the session and user"
+        " queries. A new session will be created using this state. And user"
+        " queries are run againt the newly created session. Users cannot"
+        " continue to interact with the agent."
+    ),
+    callback=validate_exclusive,
+)
+@click.option(
+    "--resume",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help=(
+        "The json file that contains a previously saved session (by"
+        "--save_session option). The previous session will be re-displayed. And"
+        " user can continue to interact with the agent."
+    ),
+    callback=validate_exclusive,
+)
 @click.argument(
     "agent",
     type=click.Path(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
-def cli_run(agent: str, save_session: bool):
+def cli_run(
+    agent: str,
+    save_session: bool,
+    replay: Optional[str],
+    resume: Optional[str],
+):
   """Runs an interactive CLI for a certain agent.
 
   AGENT: The path to the agent source code folder.
@@ -129,6 +176,8 @@ def cli_run(agent: str, save_session: bool):
       run_cli(
           agent_parent_dir=agent_parent_folder,
           agent_folder_name=agent_folder_name,
+          input_file=replay,
+          saved_session_file=resume,
           save_session=save_session,
       )
   )
@@ -245,12 +294,13 @@ def cli_eval(
 @click.option(
     "--session_db_url",
     help=(
-        "Optional. The database URL to store the session.\n\n  - Use"
-        " 'agentengine://<agent_engine_resource_id>' to connect to Vertex"
-        " managed session service.\n\n  - Use 'sqlite://<path_to_sqlite_file>'"
-        " to connect to a SQLite DB.\n\n  - See"
-        " https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls"
-        " for more details on supported DB URLs."
+        """Optional. The database URL to store the session.
+
+  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+
+  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+
+  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
 )
 @click.option(
@@ -366,12 +416,13 @@ def cli_web(
 @click.option(
     "--session_db_url",
     help=(
-        "Optional. The database URL to store the session.\n\n  - Use"
-        " 'agentengine://<agent_engine_resource_id>' to connect to Vertex"
-        " managed session service.\n\n  - Use 'sqlite://<path_to_sqlite_file>'"
-        " to connect to a SQLite DB.\n\n  - See"
-        " https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls"
-        " for more details on supported DB URLs."
+        """Optional. The database URL to store the session.
+
+  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+
+  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+
+  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
 )
 @click.option(
@@ -541,6 +592,18 @@ def cli_api_server(
     default="WARNING",
     help="Optional. Override the default verbosity level.",
 )
+@click.option(
+    "--session_db_url",
+    help=(
+        """Optional. The database URL to store the session.
+
+  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+
+  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+
+  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -558,6 +621,7 @@ def cli_deploy_cloud_run(
     trace_to_cloud: bool,
     with_ui: bool,
     verbosity: str,
+    session_db_url: str,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -579,6 +643,7 @@ def cli_deploy_cloud_run(
         trace_to_cloud=trace_to_cloud,
         with_ui=with_ui,
         verbosity=verbosity,
+        session_db_url=session_db_url,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

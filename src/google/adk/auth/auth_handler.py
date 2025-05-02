@@ -82,7 +82,8 @@ class AuthHandler:
         or not auth_credential.oauth2
         or not auth_credential.oauth2.client_id
         or not auth_credential.oauth2.client_secret
-        or auth_credential.oauth2.token
+        or auth_credential.oauth2.access_token
+        or auth_credential.oauth2.refresh_token
     ):
       return self.auth_config.exchanged_auth_credential
 
@@ -93,7 +94,7 @@ class AuthHandler:
         redirect_uri=auth_credential.oauth2.redirect_uri,
         state=auth_credential.oauth2.state,
     )
-    token = client.fetch_token(
+    tokens = client.fetch_token(
         token_endpoint,
         authorization_response=auth_credential.oauth2.auth_response_uri,
         code=auth_credential.oauth2.auth_code,
@@ -102,7 +103,10 @@ class AuthHandler:
 
     updated_credential = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(token=dict(token)),
+        oauth2=OAuth2Auth(
+            access_token=tokens.get("access_token"),
+            refresh_token=tokens.get("refresh_token"),
+        ),
     )
     return updated_credential
 

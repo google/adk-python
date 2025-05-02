@@ -241,7 +241,7 @@ def test_langchain_tool_success(agent_runner: TestRunner):
 def test_crewai_tool_success(agent_runner: TestRunner):
   _call_function_and_assert(
       agent_runner,
-      "direcotry_read_tool",
+      "directory_read_tool",
       "Find all the file paths",
       "file",
   )

@@ -66,10 +66,10 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
 
     Returns:
         An AuthCredential object containing the HTTP bearer access token. If the
-        HTTO bearer token cannot be generated, return the origianl credential
+        HTTP bearer token cannot be generated, return the original credential.
     """
 
-    if "access_token" not in auth_credential.oauth2.token:
+    if not auth_credential.oauth2.access_token:
       return auth_credential
 
     # Return the access token as a bearer token.
@@ -78,7 +78,7 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
         http=HttpAuth(
             scheme="bearer",
             credentials=HttpCredentials(
-                token=auth_credential.oauth2.token["access_token"]
+                token=auth_credential.oauth2.access_token
             ),
         ),
     )
@@ -111,7 +111,7 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
       return auth_credential
 
     # If access token is exchanged, exchange a HTTPBearer token.
-    if auth_credential.oauth2.token:
+    if auth_credential.oauth2.access_token:
       return self.generate_auth_token(auth_credential)
 
     return None

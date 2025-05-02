@@ -44,7 +44,7 @@ Args:
   callback_context: MUST be named 'callback_context' (enforced).
 
 Returns:
-  The content to return to the user. When set, the agent run will skipped and
+  The content to return to the user. When set, the agent run will be skipped and
   the provided content will be returned to user.
 """
 
@@ -55,8 +55,8 @@ Args:
   callback_context: MUST be named 'callback_context' (enforced).
 
 Returns:
-  The content to return to the user. When set, the agent run will skipped and
-  the provided content will be appended to event history as agent response.
+  The content to return to the user. When set, the provided content will be
+  appended to event history as agent response.
 """
 
 
@@ -101,8 +101,8 @@ class BaseAgent(BaseModel):
     callback_context: MUST be named 'callback_context' (enforced).
 
   Returns:
-    The content to return to the user. When set, the agent run will skipped and
-    the provided content will be returned to user.
+    The content to return to the user. When set, the agent run will be skipped
+    and the provided content will be returned to user.
   """
   after_agent_callback: Optional[AfterAgentCallback] = None
   """Callback signature that is invoked after the agent run.
@@ -111,8 +111,8 @@ class BaseAgent(BaseModel):
     callback_context: MUST be named 'callback_context' (enforced).
 
   Returns:
-    The content to return to the user. When set, the agent run will skipped and
-    the provided content will be appended to event history as agent response.
+    The content to return to the user. When set, the provided content will be
+    appended to event history as agent response.
   """
 
   @final

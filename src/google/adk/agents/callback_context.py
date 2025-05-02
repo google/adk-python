@@ -23,7 +23,6 @@ from .readonly_context import ReadonlyContext
 if TYPE_CHECKING:
   from google.genai import types
 
-  from ..events.event import Event
   from ..events.event_actions import EventActions
   from ..sessions.state import State
   from .invocation_context import InvocationContext
