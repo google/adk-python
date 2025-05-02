@@ -71,6 +71,7 @@ class LlmResponse(BaseModel):
   """Flag indicating that LLM was interrupted when generating the content.
   Usually it's due to user interruption during a bidi streaming.
   """
+  response_cost: Optional[float] = None
 
   custom_metadata: Optional[dict[str, Any]] = None
   """The custom metadata of the LlmResponse.
