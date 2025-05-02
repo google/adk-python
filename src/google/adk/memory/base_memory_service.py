@@ -28,6 +28,7 @@ class MemoryResult(BaseModel):
       session_id: The session id associated with the memory.
       events: A list of events in the session.
   """
+
   session_id: str
   events: list[Event]
 
@@ -38,6 +39,7 @@ class SearchMemoryResponse(BaseModel):
   Attributes:
       memories: A list of memory results matching the search query.
   """
+
   memories: list[MemoryResult] = Field(default_factory=list)
 
 
