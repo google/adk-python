@@ -16,6 +16,20 @@ from .tool_context import ToolContext
 
 
 # TODO: make this internal, since user doesn't need to use this tool directly.
-def transfer_to_agent(agent_name: str, tool_context: ToolContext, **kwargs):
-  """Transfer the question to another agent."""
+def transfer_to_agent(agent_name: str, tool_context: ToolContext):
+  """Transfer the current conversation to another agent.
+
+  This tool hands off control of the conversation to a different agent by
+  setting `tool_context.actions.transfer_to_agent`. It accepts exactly two
+  parameters and will ignore any others. Parameters such as `query`, 
+  `temperature`, etc. belong in the LLM prompt, not here.
+
+  Args:
+    agent_name (str): The name of the agent to transfer control to.
+    tool_context (ToolContext): The current tool‐context whose
+      `actions.transfer_to_agent` field will be set.
+
+  Returns:
+    None
+  """
   tool_context.actions.transfer_to_agent = agent_name
