@@ -19,6 +19,7 @@ from __future__ import annotations
 from functools import cached_property
 import logging
 import os
+from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
 from typing import Iterable
@@ -151,6 +152,24 @@ def message_to_generate_content_response(
   )
 
 
+def _update_type_string(value_dict: dict[str, Any]):
+  """Updates 'type' field to expected JSON schema format."""
+  if "type" in value_dict:
+    value_dict["type"] = value_dict["type"].lower()
+
+  if "items" in value_dict:
+    # 'type' field could exist for items as well, this would be the case if
+    # items represent primitive types.
+    _update_type_string(value_dict["items"])
+
+    if "properties" in value_dict["items"]:
+      # There could be properties as well on the items, especially if the items
+      # are complex object themselves. We recursively traverse each individual
+      # property as well and fix the "type" value.
+      for _, value in value_dict["items"]["properties"].items():
+        _update_type_string(value)
+
+
 def function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
 ) -> anthropic_types.ToolParam:
@@ -163,8 +182,7 @@ def function_declaration_to_tool_param(
   ):
     for key, value in function_declaration.parameters.properties.items():
       value_dict = value.model_dump(exclude_none=True)
-      if "type" in value_dict:
-        value_dict["type"] = value_dict["type"].lower()
+      _update_type_string(value_dict)
       properties[key] = value_dict
 
   return anthropic_types.ToolParam(

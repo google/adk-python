@@ -26,6 +26,7 @@ from .state import State
 
 class GetSessionConfig(BaseModel):
   """The configuration of getting a session."""
+
   num_recent_events: Optional[int] = None
   after_timestamp: Optional[float] = None
 
@@ -35,11 +36,13 @@ class ListSessionsResponse(BaseModel):
 
   The events and states are not set within each Session object.
   """
+
   sessions: list[Session] = Field(default_factory=list)
 
 
 class ListEventsResponse(BaseModel):
   """The response of listing events in a session."""
+
   events: list[Event] = Field(default_factory=list)
   next_page_token: Optional[str] = None
 

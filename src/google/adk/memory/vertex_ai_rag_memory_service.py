@@ -54,7 +54,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
     )
 
   @override
-  def add_session_to_memory(self, session: Session):
+  async def add_session_to_memory(self, session: Session):
     with tempfile.NamedTemporaryFile(
         mode="w", delete=False, suffix=".txt"
     ) as temp_file:
@@ -91,7 +91,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
     os.remove(temp_file_path)
 
   @override
-  def search_memory(
+  async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query using rag.retrieval_query."""

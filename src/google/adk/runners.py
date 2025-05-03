@@ -297,14 +297,14 @@ class Runner:
       self.session_service.append_event(session=session, event=event)
       yield event
 
-  def close_session(self, session: Session):
+  async def close_session(self, session: Session):
     """Closes a session and adds it to the memory service (experimental feature).
 
     Args:
         session: The session to close.
     """
     if self.memory_service:
-      self.memory_service.add_session_to_memory(session)
+      await self.memory_service.add_session_to_memory(session)
     self.session_service.close_session(session=session)
 
   def _find_agent_to_run(

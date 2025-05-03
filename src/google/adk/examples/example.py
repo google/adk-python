@@ -23,5 +23,6 @@ class Example(BaseModel):
     input: The input content for the example.
     output: The expected output content for the example.
   """
+
   input: types.Content
   output: list[types.Content]
