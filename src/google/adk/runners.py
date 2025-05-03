@@ -395,7 +395,7 @@ class Runner:
         self.agent.tools.append(built_in_code_execution)
 
     if not isinstance(self.agent, BaseAgent):
-      raise ValueError('Your parent agent must be of type BaseAgent or a class that inherits from BaseAgent.')
+      raise ValueError("Invalid parent agent: The provided 'agent' must be an instance of 'BaseAgent' or a subclass of 'BaseAgent'.")
 
     return InvocationContext(
         artifact_service=self.artifact_service,
