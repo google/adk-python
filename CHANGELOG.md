@@ -1,11 +1,33 @@
 # Changelog
 
+## 0.4.0
+
+### ⚠ BREAKING CHANGES
+* Set the max size of strings in database columns. MySQL mandates that all VARCHAR-type fields must specify their lengths.
+* Extract content encode/decode logic to a shared util, resolve issues with JSON serialization, and update key length for DB table to avoid key too long issue in mysql.
+* Enhance `FunctionTool` to verify if the model is providing all the mandatory arguments.
+
+### Features
+* Update ADK setup guide to improve onboarding experience.
+* feat: add ordering to recent events in database session service.
+* feat(llm_flows): support async before/after tool callbacks.
+* feat: Added --replay and --resume options to adk run cli. Check adk run --help for more details.
+* Created a new Integration Connector Tool (underlying of the ApplicationIntegrationToolSet) so that we do not force LLM to provide default value.
+
+### Bug Fixes
+
+* Don't send content with empty text to LLM.
+* Fix google search reading undefined for `renderedContent`.
+
+### Miscellaneous Chores
+* Docstring improvements, typo fixings, github action to enfore code styles on formatting and imports, etc.
+
 ## 0.3.0
 
 ### ⚠ BREAKING CHANGES
 
 * Auth: expose `access_token` and `refresh_token` at top level of auth
-  credentails, instead of a `dict`
+  credentials, instead of a `dict`
   ([commit](https://github.com/google/adk-python/commit/956fb912e8851b139668b1ccb8db10fd252a6990)).
 
 ### Features
@@ -28,7 +50,7 @@
 
 ### Miscellaneous Chores
 
-* README.md impprovements.
+* README.md improvements.
 * Various code improvements.
 * Various typo fixes.
 * Bump min version of google-genai to 1.11.0.
@@ -86,4 +108,4 @@
 * Built-in evaluation support
 * Development UI that makes local development easy
 * Deploy to Google Cloud Run, Agent Engine
-* (Experimental) Live(Bidi) auido/video agent support and Compositional Function Calling(CFC) support
+* (Experimental) Live(Bidi) audio/video agent support and Compositional Function Calling(CFC) support

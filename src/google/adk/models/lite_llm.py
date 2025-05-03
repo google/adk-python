@@ -172,19 +172,19 @@ def _content_to_message_param(
     tool_calls = []
     content_present = False
     for part in content.parts:
-        if part.function_call:
-            tool_calls.append(
-                ChatCompletionMessageToolCall(
-                    type="function",
-                    id=part.function_call.id,
-                    function=Function(
-                        name=part.function_call.name,
-                        arguments=part.function_call.args,
-                    ),
-                )
+      if part.function_call:
+        tool_calls.append(
+            ChatCompletionMessageToolCall(
+                type="function",
+                id=part.function_call.id,
+                function=Function(
+                    name=part.function_call.name,
+                    arguments=part.function_call.args,
+                ),
             )
-        elif part.text or part.inline_data:
-            content_present = True
+        )
+      elif part.text or part.inline_data:
+        content_present = True
 
     final_content = message_content if content_present else None
 
@@ -453,9 +453,9 @@ def _get_completion_inputs(
   for content in llm_request.contents or []:
     message_param_or_list = _content_to_message_param(content)
     if isinstance(message_param_or_list, list):
-        messages.extend(message_param_or_list)
-    elif message_param_or_list: # Ensure it's not None before appending
-        messages.append(message_param_or_list)
+      messages.extend(message_param_or_list)
+    elif message_param_or_list:  # Ensure it's not None before appending
+      messages.append(message_param_or_list)
 
   if llm_request.config.system_instruction:
     messages.insert(
@@ -611,6 +611,7 @@ class LiteLlm(BaseLlm):
       LlmResponse: The model response.
     """
 
+    self._maybe_append_user_content(llm_request)
     logger.info(_build_request_log(llm_request))
 
     messages, tools = _get_completion_inputs(llm_request)
