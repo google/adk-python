@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0
+
+### ⚠ BREAKING CHANGES
+* Set the max size of strings in database columns. MySQL mandates that all VARCHAR-type fields must specify their lengths.
+* Extract content encode/decode logic to a shared util, resolve issues with JSON serialization, and update key length for DB table to avoid key too long issue in mysql.
+* Enhance `FunctionTool` to verify if the model is providing all the mandatory arguments.
+
+### Features
+* Update ADK setup guide to improve onboarding experience.
+* feat: add ordering to recent events in database session service.
+* feat(llm_flows): support async before/after tool callbacks.
+* feat: Added --replay and --resume options to adk run cli. Check adk run --help for more details.
+* Created a new Integration Connector Tool (underlying of the ApplicationIntegrationToolSet) so that we do not force LLM to provide default value.
+
+### Bug Fixes
+
+* Don't send content with empty text to LLM.
+* Fix google search reading undefined for `renderedContent`.
+
+### Miscellaneous Chores
+* Docstring improvements, typo fixings, github action to enfore code styles on formatting and imports, etc.
+
 ## 0.3.0
 
 ### ⚠ BREAKING CHANGES
