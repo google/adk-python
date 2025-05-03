@@ -38,26 +38,9 @@ if TYPE_CHECKING:
 tracer = trace.get_tracer('gcp.vertex.agent')
 
 BeforeAgentCallback = Callable[[CallbackContext], Optional[types.Content]]
-"""Callback signature that is invoked before the agent run.
 
-Args:
-  callback_context: MUST be named 'callback_context' (enforced).
-
-Returns:
-  The content to return to the user. When set, the agent run will be skipped and
-  the provided content will be returned to user.
-"""
 
 AfterAgentCallback = Callable[[CallbackContext], Optional[types.Content]]
-"""Callback signature that is invoked after the agent run.
-
-Args:
-  callback_context: MUST be named 'callback_context' (enforced).
-
-Returns:
-  The content to return to the user. When set, the provided content will be
-  appended to event history as agent response.
-"""
 
 
 class BaseAgent(BaseModel):
@@ -101,8 +84,9 @@ class BaseAgent(BaseModel):
     callback_context: MUST be named 'callback_context' (enforced).
 
   Returns:
-    The content to return to the user. When set, the agent run will be skipped
-    and the provided content will be returned to user.
+    Optional[types.Content]: The content to return to the user.
+      When the content is present, the agent run will be skipped and the
+      provided content will be returned to user.
   """
   after_agent_callback: Optional[AfterAgentCallback] = None
   """Callback signature that is invoked after the agent run.
@@ -111,8 +95,9 @@ class BaseAgent(BaseModel):
     callback_context: MUST be named 'callback_context' (enforced).
 
   Returns:
-    The content to return to the user. When set, the provided content will be
-    appended to event history as agent response.
+    Optional[types.Content]: The content to return to the user.
+      When the content is present, the provided content will be used as agent
+      response and appended to event history as agent response.
   """
 
   @final
