@@ -28,7 +28,7 @@ class ResponseEvaluator:
       raw_eval_dataset: list[list[dict[str, Any]]],
       evaluation_criteria: list[str],
       *,
-      print_detailed_results: bool = False
+      print_detailed_results: bool = False,
   ):
     r"""Returns the value of requested evaluation metrics.
 
