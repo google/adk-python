@@ -15,8 +15,35 @@
 from typing import Any
 
 
+class StateValue:
+  """A wrapper for state values."""
+
+  def __init__(self, value: Any, mutable: bool = True):
+    self._value = value
+    self._mutable = mutable
+
+  @property
+  def value(self):
+    return self._value
+
+  @property
+  def mutable(self):
+    return self._mutable
+
+  def __repr__(self):
+    return repr(self._value)
+
+  def __eq__(self, other):
+    if isinstance(other, StateValue):
+      return self._value == other._value
+    return self._value == other
+
+  def __str__(self):
+    return str(self._value)
+
+
 class State:
-  """A state dict that maintain the current value and the pending-commit delta."""
+  """A state dict that maintains the current value and the pending-commit delta."""
 
   APP_PREFIX = "app:"
   USER_PREFIX = "user:"
@@ -28,21 +55,56 @@ class State:
       value: The current value of the state dict.
       delta: The delta change to the current value that hasn't been committed.
     """
-    self._value = value
-    self._delta = delta
+    self._value = {k: self._wrap(v) for k, v in value.items()}
+    self._delta = {k: self._wrap(v) for k, v in delta.items()}
+
+  def _wrap(self, v: Any) -> StateValue:
+    """Returns the value wrapped in StateValue if not already."""
+    return v if isinstance(v, StateValue) else StateValue(v)
 
   def __getitem__(self, key: str) -> Any:
     """Returns the value of the state dict for the given key."""
     if key in self._delta:
-      return self._delta[key]
-    return self._value[key]
+      ret = self._delta[key]
+    else:
+      ret = self._value[key]
+    return ret.value if isinstance(ret, StateValue) else ret
 
-  def __setitem__(self, key: str, value: Any):
-    """Sets the value of the state dict for the given key."""
+  def __setitem__(self, key: str, value: Any, force: bool = False):
+    """
+    Sets the value of the state dict for the given key.
+
+    Args:
+        key (str): The key to set.
+        value (Any): The value to associate with the key.
+        force (bool): If True, override immutability.
+    """
     # TODO: make new change only store in delta, so that self._value is only
     #   updated at the storage commit time.
-    self._value[key] = value
-    self._delta[key] = value
+
+    existing_val = self._delta.get(key, self._value.get(key))
+
+    # Keep current mutability if key already exists and new value isn't wrapped
+    if existing_val and not isinstance(value, StateValue):
+        new_val = StateValue(value, mutable=existing_val.mutable)
+    else:
+        new_val = self._wrap(value)
+
+    if (
+      not force and
+      existing_val and
+      isinstance(existing_val, StateValue) and
+      not existing_val.mutable
+    ):
+      print(f"Cannot modify immutable key: {key}")
+      return
+
+    self._value[key] = new_val
+    self._delta[key] = new_val
+
+  def set_immutable(self, key: str, value: Any):
+    """Sets the value of the state dict for the given key even if immutable."""
+    self.__setitem__(key, value, force=True)
 
   def __contains__(self, key: str) -> bool:
     """Whether the state dict contains the given key."""
@@ -60,12 +122,13 @@ class State:
 
   def update(self, delta: dict[str, Any]):
     """Updates the state dict with the given delta."""
-    self._value.update(delta)
-    self._delta.update(delta)
+    for key, value in delta.items():
+      self[key] = value
 
   def to_dict(self) -> dict[str, Any]:
     """Returns the state dict."""
     result = {}
-    result.update(self._value)
-    result.update(self._delta)
+    for d in [self._value, self._delta]:
+      for k, v in d.items():
+        result[k] = v.value if isinstance(v, StateValue) else v
     return result
