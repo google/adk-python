@@ -44,7 +44,7 @@ This project follows
 3.  **Install dependencies:**
 
     ```shell
-    uv pip install -e ".[dev,test,extensions,eval]"
+    uv pip install -e .[dev,test,extensions,eval]
     ```
 4.  **Run unit tests:**
 
@@ -55,6 +55,19 @@ This project follows
 
     ```shell
     uv run pyink  --config pyproject.toml ./src
+    ```
+
+6. **Build the package**
+    ```shell
+    uv build
+    ```
+
+7. **Local Testing**
+    Have a simple testing folder setup as mentioned in the [quickstart](https://google.github.io/adk-docs/get-started/quickstart/)
+    then install the local package with changes after building it using the below command to test the changes.
+
+    ```shell
+    uv pip install <YOUR_PATH>/dist/google_adk-0.4.0-py3-none-any.whl
     ```
 
 ### Requirement for PRs
