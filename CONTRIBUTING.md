@@ -34,14 +34,17 @@ This project follows
 
     ```shell
     python -m venv .venv
+    
     source .venv/bin/activate
+    source .\.venv\Scripts\activate [windows]
+
     pip install uv
     ```
 
 3.  **Install dependencies:**
 
     ```shell
-    uv pip install -e .[dev,test,extensions,eval]
+    uv pip install -e ".[dev,test,extensions,eval]"
     ```
 4.  **Run unit tests:**
 

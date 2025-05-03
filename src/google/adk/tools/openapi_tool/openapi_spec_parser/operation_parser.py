@@ -76,7 +76,11 @@ class OperationParser:
         description = param.description or ''
         location = param.in_ or ''
         schema = param.schema_ or {}  # Use schema_ instead of .schema
-        schema.description = description if schema.description is None and description != '' else schema.description
+        schema.description = (
+            description
+            if schema.description is None and description != ''
+            else schema.description
+        )
         required = param.required
 
         self.params.append(
@@ -85,7 +89,7 @@ class OperationParser:
                 param_location=location,
                 param_schema=schema,
                 description=description,
-                required=required
+                required=required,
             )
         )
 
