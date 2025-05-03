@@ -56,16 +56,16 @@ This project follows
 
 ### Requirement for PRs
 
-- All PRs, other than small documentation or typo fixes, should have a Issue assoicated. If not, please create one. 
-- Small, focused PRs. Keep changes minimal—one concern per PR.
-- For bug fixes or features, please provide logs or screenshot after the fix is applied to help reviewers better understand the fix.
-- Please add corresponding testing for your code change if it's not covered by existing tests.
+- All PRs, other than small documentation or typo fixes, should have an issue associated. If not, please create one. 
+- Submit small, focused PRs. Keep changes minimal—one concern per PR.
+- For bug fixes or features, please provide logs or screenshots after the fix is applied to help reviewers better understand the change.
+- Please add corresponding tests for your code change if it is not covered by existing tests.
 
 ### Large or Complex Changes
 For substantial features or architectural revisions:
 
-- Open an Issue First: Outline your proposal, including design considerations and impact.
-- Gather Feedback: Discuss with maintainers and the community to ensure alignment and avoid duplicate work
+- Open an issue first: Outline your proposal, including design considerations and impact.
+- Gather feedback: Discuss with maintainers and the community to ensure alignment and avoid duplicate work.
 
 ### Code reviews
 
