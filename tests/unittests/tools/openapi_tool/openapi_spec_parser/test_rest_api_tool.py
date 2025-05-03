@@ -61,7 +61,7 @@ class TestRestApiTool:
     return mock_parser
 
   @pytest.fixture
-  def sample_endpiont(self):
+  def sample_endpoint(self):
     return OperationEndpoint(
         base_url="https://example.com", path="/test", method="GET"
     )
