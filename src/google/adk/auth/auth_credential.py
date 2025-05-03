@@ -66,7 +66,8 @@ class OAuth2Auth(BaseModelWithConfig):
   redirect_uri: Optional[str] = None
   auth_response_uri: Optional[str] = None
   auth_code: Optional[str] = None
-  token: Optional[Dict[str, Any]] = None
+  access_token: Optional[str] = None
+  refresh_token: Optional[str] = None
 
 
 class ServiceAccountCredential(BaseModelWithConfig):

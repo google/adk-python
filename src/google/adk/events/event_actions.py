@@ -48,8 +48,13 @@ class EventActions(BaseModel):
   """The agent is escalating to a higher level agent."""
 
   requested_auth_configs: dict[str, AuthConfig] = Field(default_factory=dict)
-  """Will only be set by a tool response indicating tool request euc.
-  dict key is the function call id since one function call response (from model)
-  could correspond to multiple function calls.
-  dict value is the required auth config.
+  """Authentication configurations requested by tool responses.
+
+  This field will only be set by a tool response event indicating tool request
+  auth credential.
+  - Keys: The function call id. Since one function response event could contain
+  multiple function responses that correspond to multiple function calls. Each
+  function call could request different auth configs. This id is used to
+  identify the function call.
+  - Values: The requested auth config.
   """

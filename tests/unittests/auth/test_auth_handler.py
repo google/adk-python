@@ -126,12 +126,8 @@ def oauth2_credentials_with_token():
           client_id="mock_client_id",
           client_secret="mock_client_secret",
           redirect_uri="https://example.com/callback",
-          token={
-              "access_token": "mock_access_token",
-              "token_type": "bearer",
-              "expires_in": 3600,
-              "refresh_token": "mock_refresh_token",
-          },
+          access_token="mock_access_token",
+          refresh_token="mock_refresh_token",
       ),
   )
 
@@ -458,7 +454,7 @@ class TestParseAndStoreAuthResponse:
     """Test with an OAuth auth scheme."""
     mock_exchange_token.return_value = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(token={"access_token": "exchanged_token"}),
+        oauth2=OAuth2Auth(access_token="exchanged_token"),
     )
 
     handler = AuthHandler(auth_config_with_exchanged)
@@ -573,6 +569,6 @@ class TestExchangeAuthToken:
     handler = AuthHandler(auth_config_with_auth_code)
     result = handler.exchange_auth_token()
 
-    assert result.oauth2.token["access_token"] == "mock_access_token"
-    assert result.oauth2.token["refresh_token"] == "mock_refresh_token"
+    assert result.oauth2.access_token == "mock_access_token"
+    assert result.oauth2.refresh_token == "mock_refresh_token"
     assert result.auth_type == AuthCredentialTypes.OAUTH2

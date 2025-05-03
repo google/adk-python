@@ -15,9 +15,7 @@
 from __future__ import annotations
 
 import copy
-from typing import AsyncGenerator
-from typing import Generator
-from typing import Optional
+from typing import AsyncGenerator, Generator, Optional
 
 from google.genai import types
 from typing_extensions import override
@@ -111,7 +109,7 @@ def _rearrange_events_for_latest_function_response(
   """Rearrange the events for the latest function_response.
 
   If the latest function_response is for an async function_call, all events
-  bewteen the initial function_call and the latest function_response will be
+  between the initial function_call and the latest function_response will be
   removed.
 
   Args:
@@ -202,8 +200,14 @@ def _get_contents(
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
   for event in events:
-    if not event.content or not event.content.role:
-      # Skip events without content, or generated neither by user nor by model.
+    if (
+        not event.content
+        or not event.content.role
+        or not event.content.parts
+        or event.content.parts[0].text == ''
+    ):
+      # Skip events without content, or generated neither by user nor by model
+      # or has empty text.
       # E.g. events purely for mutating session states.
       continue
     if not _is_event_belongs_to_branch(current_branch, event):

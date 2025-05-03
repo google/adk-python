@@ -24,6 +24,48 @@ This project follows
 [Google's Open Source Community Guidelines](https://opensource.google/conduct/).
 
 ## Contribution process
+1.  **Clone the repository:**
+
+    ```shell
+    git clone git@github.com:google/adk-python.git
+    cd adk-python
+    ```
+2.  **Create and activate a virtual environment:**
+
+    ```shell
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install uv
+    ```
+
+3.  **Install dependencies:**
+
+    ```shell
+    uv pip install -e .[dev,test,extensions,eval]
+    ```
+4.  **Run unit tests:**
+
+    ```shell
+    uv run pytest ./tests/unittests
+    ```
+5.  **Run pyink to format codebase:**
+
+    ```shell
+    uv run pyink  --config pyproject.toml ./src
+    ```
+
+### Requirement for PRs
+
+- All PRs, other than small documentation or typo fixes, should have a Issue assoicated. If not, please create one. 
+- Small, focused PRs. Keep changes minimal—one concern per PR.
+- For bug fixes or features, please provide logs or screenshot after the fix is applied to help reviewers better understand the fix.
+- Please add corresponding testing for your code change if it's not covered by existing tests.
+
+### Large or Complex Changes
+For substantial features or architectural revisions:
+
+- Open an Issue First: Outline your proposal, including design considerations and impact.
+- Gather Feedback: Discuss with maintainers and the community to ensure alignment and avoid duplicate work
 
 ### Code reviews
 

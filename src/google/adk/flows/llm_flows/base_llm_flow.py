@@ -115,7 +115,7 @@ class BaseLlmFlow(ABC):
           yield event
           # send back the function response
           if event.get_function_responses():
-            logger.debug('Sending back last function resonse event: %s', event)
+            logger.debug('Sending back last function response event: %s', event)
             invocation_context.live_request_queue.send_content(event.content)
           if (
               event.content

@@ -28,14 +28,14 @@ class ResponseEvaluator:
       raw_eval_dataset: list[list[dict[str, Any]]],
       evaluation_criteria: list[str],
       *,
-      print_detailed_results: bool = False
+      print_detailed_results: bool = False,
   ):
     r"""Returns the value of requested evaluation metrics.
 
     Args:
       raw_eval_dataset: The dataset that will be evaluated.
       evaluation_criteria: The evaluation criteria to be used. This method
-        support two criterias, `response_evaluation_score` and
+        support two criteria, `response_evaluation_score` and
         `response_match_score`.
       print_detailed_results: Prints detailed results on the console. This is
         usually helpful during debugging.
@@ -56,7 +56,7 @@ class ResponseEvaluator:
         Value range: [0, 5], where 0 means that the agent's response is not
         coherent, while 5 means it is . High values are good.
     A note on raw_eval_dataset:
-      The dataset should be a list session, where each sesssion is represented
+      The dataset should be a list session, where each session is represented
       as a list of interaction that need evaluation. Each evaluation is
       represented as a dictionary that is expected to have values for the
       following keys:

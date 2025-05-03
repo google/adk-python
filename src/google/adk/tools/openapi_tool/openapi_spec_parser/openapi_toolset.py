@@ -124,7 +124,7 @@ class OpenAPIToolset:
   def _load_spec(
       self, spec_str: str, spec_type: Literal["json", "yaml"]
   ) -> Dict[str, Any]:
-    """Loads the OpenAPI spec string into adictionary."""
+    """Loads the OpenAPI spec string into a dictionary."""
     if spec_type == "json":
       return json.loads(spec_str)
     elif spec_type == "yaml":

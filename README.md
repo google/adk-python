@@ -18,11 +18,7 @@
     </h3>
 </html>
 
-Agent Development Kit (ADK) is designed for developers seeking fine-grained
-control and flexibility when building advanced AI agents that are tightly
-integrated with services in Google Cloud. It allows you to define agent
-behavior, orchestration, and tool use directly in code, enabling robust
-debugging, versioning, and deployment anywhere – from your laptop to the cloud.
+Agent Development Kit (ADK) is a flexible and modular framework for developing and deploying AI agents. While optimized for Gemini and the Google ecosystem, ADK is model-agnostic, deployment-agnostic, and is built for compatibility with other frameworks. ADK was designed to make agent development feel more like software development, to make it easier for developers to create, deploy, and orchestrate agentic architectures that range from simple tasks to complex workflows.
 
 
 ---
@@ -45,11 +41,26 @@ debugging, versioning, and deployment anywhere – from your laptop to the cloud
 
 ## 🚀 Installation
 
-You can install the ADK using `pip`:
+### Stable Release (Recommended)
+
+You can install the latest stable version of ADK using `pip`:
 
 ```bash
 pip install google-adk
 ```
+
+The release cadence is weekly.
+
+This version is recommended for most users as it represents the most recent official release.
+
+### Development Version
+Bug fixes and new features are merged into the main branch on GitHub first. If you need access to changes that haven't been included in an official PyPI release yet, you can install directly from the main branch:
+
+```bash
+pip install git+https://github.com/google/adk-python.git@main
+```
+
+Note: The development version is built directly from the latest code commits. While it includes the newest fixes and features, it may also contain experimental changes or bugs not present in the stable release. Use it primarily for testing upcoming changes or accessing critical fixes before they are officially released.
 
 ## 📚 Documentation
 
@@ -112,10 +123,18 @@ adk eval \
     samples_for_testing/hello_world/hello_world_eval_set_001.evalset.json
 ```
 
+## 🤖 A2A and ADK integration
+
+For remote agent-to-agent communication, ADK integrates with the
+[A2A protocol](https://github.com/google/A2A/).
+See this [example](https://github.com/google/A2A/tree/main/samples/python/agents/google_adk)
+for how they can work together.
 
 ## 🤝 Contributing
 
-We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our [**Contributing Guidelines**](./CONTRIBUTING.md) to get started.
+We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our 
+- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/#questions).
+- Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
 
 ## 📄 License
 
