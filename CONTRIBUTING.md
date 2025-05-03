@@ -41,7 +41,7 @@ This project follows
 3.  **Install dependencies:**
 
     ```shell
-    uv pip install -e ".[dev,test,extensions,eval]"
+    uv sync --all-extras
     ```
 4.  **Run unit tests:**
 
