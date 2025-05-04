@@ -484,9 +484,11 @@ class DatabaseSessionService(BaseSessionService):
 
       if storage_session.update_time.timestamp() > session.last_update_time:
         raise ValueError(
-            f"Session last_update_time {session.last_update_time} is later than"
-            f" the upate_time in storage {storage_session.update_time}"
-        )
+          f"Session last_update_time "
+          f"{datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} "
+          f"is later than the update_time in storage "
+          f"{storage_session.update_time:%Y-%m-%d %H:%M:%S}"
+      )
 
       # Fetch states from storage
       storage_app_state = sessionFactory.get(
