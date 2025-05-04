@@ -83,8 +83,7 @@ class OperationParser:
         schema.description = (
             description if not schema.description else schema.description
         )
-        # param.required can be None
-        required = param.required if param.required is not None else False
+        required = param.required
 
         self.params.append(
             ApiParameter(
