@@ -219,6 +219,7 @@ class StorageAppState(Base):
       DateTime(), default=func.now(), onupdate=func.now()
   )
 
+
 class StorageUserState(Base):
   """Represents a user state stored in the database."""
 
@@ -483,9 +484,11 @@ class DatabaseSessionService(BaseSessionService):
 
       if storage_session.update_time.timestamp() > session.last_update_time:
         raise ValueError(
-            f"Session last_update_time {session.last_update_time} is later than"
-            f" the upate_time in storage {storage_session.update_time}"
-        )
+          f"Session last_update_time "
+          f"{datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} "
+          f"is later than the update_time in storage "
+          f"{storage_session.update_time:%Y-%m-%d %H:%M:%S}"
+      )
 
       # Fetch states from storage
       storage_app_state = sessionFactory.get(
@@ -561,6 +564,7 @@ class DatabaseSessionService(BaseSessionService):
       session_id: str,
   ) -> ListEventsResponse:
     raise NotImplementedError()
+
 
 def convert_event(event: StorageEvent) -> Event:
   """Converts a storage event to an event."""

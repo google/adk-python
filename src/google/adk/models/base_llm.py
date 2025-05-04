@@ -17,6 +17,8 @@ from abc import abstractmethod
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from google.genai import types
+
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -72,6 +74,48 @@ class BaseLlm(BaseModel):
         f'Async generation is not supported for {self.model}.'
     )
     yield  # AsyncGenerator requires a yield statement in function body.
+
+  def _maybe_append_user_content(self, llm_request: LlmRequest):
+    """Appends a user content, so that model can continue to output.
+
+    Args:
+      llm_request: LlmRequest, the request to send to the Gemini model.
+    """
+    # If no content is provided, append a user content to hint model response
+    # using system instruction.
+    if not llm_request.contents:
+      llm_request.contents.append(
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      text=(
+                          'Handle the requests as specified in the System'
+                          ' Instruction.'
+                      )
+                  )
+              ],
+          )
+      )
+      return
+
+    # Insert a user content to preserve user intent and to avoid empty
+    # model response.
+    if llm_request.contents[-1].role != 'user':
+      llm_request.contents.append(
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      text=(
+                          'Continue processing previous requests as instructed.'
+                          ' Exit or provide a summary if no more outputs are'
+                          ' needed.'
+                      )
+                  )
+              ],
+          )
+      )
 
   def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
     """Creates a live connection to the LLM.
