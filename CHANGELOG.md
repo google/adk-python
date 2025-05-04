@@ -27,7 +27,7 @@
 ### ⚠ BREAKING CHANGES
 
 * Auth: expose `access_token` and `refresh_token` at top level of auth
-  credentails, instead of a `dict`
+  credentials, instead of a `dict`
   ([commit](https://github.com/google/adk-python/commit/956fb912e8851b139668b1ccb8db10fd252a6990)).
 
 ### Features
@@ -50,7 +50,7 @@
 
 ### Miscellaneous Chores
 
-* README.md impprovements.
+* README.md improvements.
 * Various code improvements.
 * Various typo fixes.
 * Bump min version of google-genai to 1.11.0.
@@ -108,4 +108,4 @@
 * Built-in evaluation support
 * Development UI that makes local development easy
 * Deploy to Google Cloud Run, Agent Engine
-* (Experimental) Live(Bidi) auido/video agent support and Compositional Function Calling(CFC) support
+* (Experimental) Live(Bidi) audio/video agent support and Compositional Function Calling(CFC) support
