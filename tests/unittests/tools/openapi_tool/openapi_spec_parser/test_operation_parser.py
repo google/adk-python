@@ -350,6 +350,7 @@ def test_get_json_schema(sample_operation):
   # By default nothing is required unless explicitly stated
   assert 'required' not in json_schema or json_schema['required'] == []
 
+
 def test_get_signature_parameters(sample_operation):
   """Test get_signature_parameters method."""
   parser = OperationParser(sample_operation)
