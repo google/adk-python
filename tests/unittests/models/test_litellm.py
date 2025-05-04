@@ -262,6 +262,67 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
   )
 
 
+litellm_append_user_content_test_cases = [
+  pytest.param(
+    LlmRequest(
+      contents=[
+        types.Content(
+          role="developer",
+          parts=[types.Part.from_text(text="Test prompt")]
+        )
+      ]
+    ),
+    2,
+    id="litellm request without user content"
+  ),
+  pytest.param(
+    LlmRequest(
+      contents=[
+        types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="user prompt")]
+        )
+      ]
+    ),
+    1,
+    id="litellm request with user content"
+  ),
+  pytest.param(
+    LlmRequest(
+      contents=[
+        types.Content(
+          role="model",
+          parts=[types.Part.from_text(text="model prompt")]
+        ),
+        types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="user prompt")]
+        ),
+        types.Content(
+          role="model",
+          parts=[types.Part.from_text(text="model prompt")]
+        )
+      ]
+    ),
+    4,
+    id="user content is not the last message scenario"
+  )
+]
+
+@pytest.mark.parametrize(
+    "llm_request, expected_output",
+    litellm_append_user_content_test_cases
+)
+def test_maybe_append_user_content(lite_llm_instance, llm_request, expected_output):
+        
+    lite_llm_instance._maybe_append_user_content(
+      llm_request
+    )
+    
+    assert len(llm_request.contents) == expected_output
+
+
+
 function_declaration_test_cases = [
     (
         "simple_function",
