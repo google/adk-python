@@ -484,11 +484,11 @@ class DatabaseSessionService(BaseSessionService):
 
       if storage_session.update_time.timestamp() > session.last_update_time:
         raise ValueError(
-          f"Session last_update_time "
-          f"{datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} "
-          f"is later than the update_time in storage "
-          f"{storage_session.update_time:%Y-%m-%d %H:%M:%S}"
-      )
+            "Session last_update_time"
+            f" {datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} is"
+            " later than the update_time in storage"
+            f" {storage_session.update_time:%Y-%m-%d %H:%M:%S}"
+        )
 
       # Fetch states from storage
       storage_app_state = sessionFactory.get(
@@ -533,7 +533,11 @@ class DatabaseSessionService(BaseSessionService):
           user_id=session.user_id,
           timestamp=datetime.fromtimestamp(event.timestamp),
           long_running_tool_ids=event.long_running_tool_ids,
-          grounding_metadata=event.grounding_metadata,
+          grounding_metadata=(
+              event.grounding_metadata.model_dump(exclude_none=True)
+              if event.grounding_metadata
+              else None
+          ),
           partial=event.partial,
           turn_complete=event.turn_complete,
           error_code=event.error_code,
