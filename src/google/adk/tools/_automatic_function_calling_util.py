@@ -227,6 +227,10 @@ def build_function_declaration(
           func.__closure__,
       )
       new_func.__signature__ = new_sig
+      # --- BEGIN SUGGESTED FIX ---
+      # Manually copy the docstring
+      new_func.__doc__ = func.__doc__
+      # --- END SUGGESTED FIX ---
 
   return (
       from_function_with_options(func, variant)
