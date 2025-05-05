@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from google.genai import types
 from typing import AsyncGenerator
 from typing import Optional
 
@@ -48,9 +49,29 @@ class LoopAgent(BaseAgent):
     while not self.max_iterations or times_looped < self.max_iterations:
       for sub_agent in self.sub_agents:
         async for event in sub_agent.run_async(ctx):
-          yield event
+          yield event  # Yield the event immediately
           if event.actions.escalate:
-            return
+            # Ensure the escalation message is processed immediately
+            if event.content and event.content.parts:
+              for part in event.content.parts:
+                if part.function_response:
+                  # Yield the escalation message as a new event
+                  yield Event(
+                      invocation_id=ctx.invocation_id,
+                      author=sub_agent.name,
+                      branch=ctx.branch,
+                      content=types.Content(
+                          role='assistant',
+                          parts=[
+                              types.Part(
+                                  text=part.function_response.response[
+                                      'message'
+                                  ]
+                              )
+                          ],
+                      ),
+                  )
+            return  # Exit the loop after escalation
       times_looped += 1
     return
 

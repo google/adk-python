@@ -445,7 +445,8 @@ class BaseLlmFlow(ABC):
 
     # Calls the LLM.
     llm = self.__get_llm(invocation_context)
-    with tracer.start_as_current_span('call_llm'):
+    span = tracer.start_span(f'call_llm')  # Start the span explicitly
+    try:
       if invocation_context.run_config.support_cfc:
         invocation_context.live_request_queue = LiveRequestQueue()
         async for llm_response in self.run_live(invocation_context):
@@ -485,6 +486,8 @@ class BaseLlmFlow(ABC):
             llm_response = altered_llm_response
 
           yield llm_response
+    finally:
+      span.end()  # End the span explicitly
 
   def _handle_before_model_callback(
       self,
