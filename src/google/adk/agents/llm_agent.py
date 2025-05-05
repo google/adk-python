@@ -348,8 +348,17 @@ class LlmAgent(BaseAgent):
         and event.content
         and event.content.parts
     ):
-      result = ''.join(
+      result = (
+          ''.join(
           [part.text if part.text else '' for part in event.content.parts]
+          )
+          or ''.join([
+              json.dumps(part.function_response.response)
+              for part in event.content.parts
+              if part.function_response
+          ])
+          if event.actions.skip_summarization
+          else ''
       )
       if self.output_schema:
         result = self.output_schema.model_validate_json(result).model_dump(
