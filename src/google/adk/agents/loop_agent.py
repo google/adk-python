@@ -54,7 +54,7 @@ class LoopAgent(BaseAgent):
             # Ensure the escalation message is processed immediately
             if event.content and event.content.parts:
               for part in event.content.parts:
-                if part.function_response:
+                if part.function_response.response:
                   # Yield the escalation message as a new event
                   yield Event(
                       invocation_id=ctx.invocation_id,
@@ -64,9 +64,9 @@ class LoopAgent(BaseAgent):
                           role='assistant',
                           parts=[
                               types.Part(
-                                  text=part.function_response.response[
+                                  text=part.function_response.response.get(
                                       'message'
-                                  ]
+                                  ),
                               )
                           ],
                       ),
