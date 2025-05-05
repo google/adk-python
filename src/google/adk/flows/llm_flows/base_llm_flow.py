@@ -34,9 +34,9 @@ from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
-from ...telemetry import trace_call_llm
-from ...telemetry import trace_send_data
-from ...telemetry import tracer
+from ...telemetry.recording import trace_call_llm
+from ...telemetry.recording import trace_send_data
+from ...telemetry.recording import tracer
 from ...tools.tool_context import ToolContext
 from . import functions
 
