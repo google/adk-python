@@ -41,7 +41,7 @@ class LlmResponse(BaseModel):
   """
 
   model_config = ConfigDict(extra='forbid')
-  """The model config."""
+  """The pydantic model config."""
 
   content: Optional[types.Content] = None
   """The content of the response."""

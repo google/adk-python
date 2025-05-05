@@ -573,7 +573,6 @@ class LiteLlm(BaseLlm):
   Attributes:
     model: The name of the LiteLlm model.
     llm_client: The LLM client to use for the model.
-    model_config: The model config.
   """
 
   llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient)

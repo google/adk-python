@@ -50,6 +50,7 @@ class BaseAgent(BaseModel):
       arbitrary_types_allowed=True,
       extra='forbid',
   )
+  """The pydantic model config."""
 
   name: str
   """The agent's name.

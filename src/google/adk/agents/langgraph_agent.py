@@ -53,6 +53,7 @@ class LangGraphAgent(BaseAgent):
   model_config = ConfigDict(
       arbitrary_types_allowed=True,
   )
+  """The pydantic model config."""
 
   graph: CompiledGraph
 
