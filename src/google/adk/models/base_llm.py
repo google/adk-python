@@ -14,11 +14,9 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import AsyncGenerator, TYPE_CHECKING
 
 from google.genai import types
-
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -34,14 +32,13 @@ class BaseLlm(BaseModel):
 
   Attributes:
     model: The name of the LLM, e.g. gemini-1.5-flash or gemini-1.5-flash-001.
-    model_config: The model config
   """
 
   model_config = ConfigDict(
       # This allows us to use arbitrary types in the model. E.g. PIL.Image.
       arbitrary_types_allowed=True,
   )
-  """The model config."""
+  """The pydantic model config."""
 
   model: str
   """The name of the LLM, e.g. gemini-1.5-flash or gemini-1.5-flash-001."""
