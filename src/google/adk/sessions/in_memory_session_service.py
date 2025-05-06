@@ -95,14 +95,14 @@ class InMemorySessionService(BaseSessionService):
         copied_session.events = copied_session.events[
             -config.num_recent_events :
         ]
-      elif config.after_timestamp:
-        i = len(session.events) - 1
+      if config.after_timestamp:
+        i = len(copied_session.events) - 1
         while i >= 0:
           if copied_session.events[i].timestamp < config.after_timestamp:
             break
           i -= 1
         if i >= 0:
-          copied_session.events = copied_session.events[i:]
+          copied_session.events = copied_session.events[i + 1:]
 
     return self._merge_state(app_name, user_id, copied_session)
 
