@@ -193,7 +193,7 @@ class Runner:
       root_agent = self.agent
 
       if new_message:
-        self._append_new_message_to_session(
+        await self._append_new_message_to_session(
             session,
             new_message,
             invocation_context,
@@ -206,7 +206,7 @@ class Runner:
           self.session_service.append_event(session=session, event=event)
         yield event
 
-  def _append_new_message_to_session(
+  async def _append_new_message_to_session(
       self,
       session: Session,
       new_message: types.Content,
@@ -232,7 +232,7 @@ class Runner:
         if part.inline_data is None:
           continue
         file_name = f'artifact_{invocation_context.invocation_id}_{i}'
-        self.artifact_service.save_artifact(
+        await self.artifact_service.save_artifact(
             app_name=self.app_name,
             user_id=session.user_id,
             session_id=session.id,
@@ -307,14 +307,14 @@ class Runner:
       self.session_service.append_event(session=session, event=event)
       yield event
 
-  def close_session(self, session: Session):
+  async def close_session(self, session: Session):
     """Closes a session and adds it to the memory service (experimental feature).
 
     Args:
         session: The session to close.
     """
     if self.memory_service:
-      self.memory_service.add_session_to_memory(session)
+      await self.memory_service.add_session_to_memory(session)
     self.session_service.close_session(session=session)
 
   def _find_agent_to_run(
