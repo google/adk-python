@@ -65,6 +65,9 @@ class RunConfig(BaseModel):
   output_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
   """Output transcription for live agents with audio response."""
 
+  input_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
+  """Input transcription for live agents with audio input from user."""
+
   max_llm_calls: int = 500
   """
   A limit on the total number of llm calls for a given run.
