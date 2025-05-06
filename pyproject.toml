@@ -145,6 +145,7 @@ name = "google.adk"
 
 [tool.isort]
 profile = "google"
+single_line_exclusions = []
 
 
 [tool.pytest.ini_options]
