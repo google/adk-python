@@ -236,8 +236,7 @@ def test_initialization_with_connection_and_actions(
   )
   mock_connections_client.return_value.get_connection_details.assert_called_once()
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
-      tool_name,
-      tool_instructions
+      tool_name, tool_instructions
   )
   mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
   assert len(toolset.get_tools()) == 1
@@ -390,6 +389,5 @@ def test_initialization_with_connection_details(
       tool_instructions=tool_instructions,
   )
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
-      tool_name,
-      tool_instructions
+      tool_name, tool_instructions
   )

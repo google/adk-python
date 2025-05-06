@@ -49,11 +49,12 @@ logger = logging.getLogger(__name__)
 
 
 BeforeModelCallback: TypeAlias = Callable[
-    [CallbackContext, LlmRequest], Optional[LlmResponse]
+    [CallbackContext, LlmRequest],
+    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
 ]
 AfterModelCallback: TypeAlias = Callable[
     [CallbackContext, LlmResponse],
-    Optional[LlmResponse],
+    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
 ]
 BeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
