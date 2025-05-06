@@ -489,7 +489,7 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
       response_model_exclude_none=True,
   )
-  def load_artifact(
+  async def load_artifact(
       app_name: str,
       user_id: str,
       session_id: str,
@@ -497,7 +497,7 @@ def get_fast_api_app(
       version: Optional[int] = Query(None),
   ) -> Optional[types.Part]:
     app_name = agent_engine_id if agent_engine_id else app_name
-    artifact = artifact_service.load_artifact(
+    artifact = await artifact_service.load_artifact(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -512,7 +512,7 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
       response_model_exclude_none=True,
   )
-  def load_artifact_version(
+  async def load_artifact_version(
       app_name: str,
       user_id: str,
       session_id: str,
@@ -520,7 +520,7 @@ def get_fast_api_app(
       version_id: int,
   ) -> Optional[types.Part]:
     app_name = agent_engine_id if agent_engine_id else app_name
-    artifact = artifact_service.load_artifact(
+    artifact = await artifact_service.load_artifact(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -535,11 +535,11 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
       response_model_exclude_none=True,
   )
-  def list_artifact_names(
+  async def list_artifact_names(
       app_name: str, user_id: str, session_id: str
   ) -> list[str]:
     app_name = agent_engine_id if agent_engine_id else app_name
-    return artifact_service.list_artifact_keys(
+    return await artifact_service.list_artifact_keys(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
 
@@ -547,11 +547,11 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions",
       response_model_exclude_none=True,
   )
-  def list_artifact_versions(
+  async def list_artifact_versions(
       app_name: str, user_id: str, session_id: str, artifact_name: str
   ) -> list[int]:
     app_name = agent_engine_id if agent_engine_id else app_name
-    return artifact_service.list_versions(
+    return await artifact_service.list_versions(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -561,11 +561,11 @@ def get_fast_api_app(
   @app.delete(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
   )
-  def delete_artifact(
+  async def delete_artifact(
       app_name: str, user_id: str, session_id: str, artifact_name: str
   ):
     app_name = agent_engine_id if agent_engine_id else app_name
-    artifact_service.delete_artifact(
+    await artifact_service.delete_artifact(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
