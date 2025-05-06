@@ -14,6 +14,7 @@
 
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from datetime import datetime
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -67,6 +68,7 @@ class OAuth2Auth(BaseModelWithConfig):
   auth_code: Optional[str] = None
   access_token: Optional[str] = None
   refresh_token: Optional[str] = None
+  expiry: Optional[datetime] = None  # UTC expiration time for access_token
 
 
 class ServiceAccountCredential(BaseModelWithConfig):
