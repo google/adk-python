@@ -112,10 +112,18 @@ For any changes that impact user-facing documentation (guides, API reference, tu
 
     ```shell
     python -m venv .venv
-    
-    source .venv/bin/activate
-    source .\.venv\Scripts\activate [windows]
+    ```
 
+    ```shell
+    source .venv/bin/activate
+    ```
+    
+    **windows**
+    ```shell
+    source .\.venv\Scripts\activate
+    ```
+
+    ```shell
     pip install uv
     ```
 
