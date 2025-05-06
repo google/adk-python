@@ -48,6 +48,7 @@ class Event(LlmResponse):
   model_config = ConfigDict(
       extra='forbid', ser_json_bytes='base64', val_json_bytes='base64'
   )
+  """The pydantic model config."""
 
   # TODO: revert to be required after spark migration
   invocation_id: str = ''

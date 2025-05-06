@@ -37,6 +37,7 @@ class RunConfig(BaseModel):
   model_config = ConfigDict(
       extra='forbid',
   )
+  """The pydantic model config."""
 
   speech_config: Optional[types.SpeechConfig] = None
   """Speech configuration for the live agent."""
