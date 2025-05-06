@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Abstract base class for artifact services."""
 
 from abc import ABC
 from abc import abstractmethod
@@ -78,7 +77,6 @@ class BaseArtifactService(ABC):
     Returns:
       The artifact or None if not found.
     """
-    pass
 
   @abstractmethod
   async def list_artifact_keys(
@@ -94,7 +92,6 @@ class BaseArtifactService(ABC):
     Returns:
         A list of all artifact filenames within a session.
     """
-    pass
 
   @abstractmethod
   async def delete_artifact(
@@ -108,7 +105,6 @@ class BaseArtifactService(ABC):
         session_id: The ID of the session.
         filename: The name of the artifact file.
     """
-    pass
 
   @abstractmethod
   async def list_versions(
@@ -125,4 +121,3 @@ class BaseArtifactService(ABC):
     Returns:
         A list of all available versions of the artifact.
     """
-    pass
