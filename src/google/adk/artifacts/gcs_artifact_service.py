@@ -22,14 +22,14 @@ from google.genai import types
 from typing_extensions import override
 
 from .base_artifact_service import BaseArtifactService
+from google.cloud.storage import Client
 
 logger = logging.getLogger(__name__)
-
 
 class GcsArtifactService(BaseArtifactService):
   """An artifact service implementation using Google Cloud Storage (GCS)."""
 
-  def __init__(self, bucket_name: str, **kwargs):
+  def __init__(self, bucket_name: str,storage_client=Optional[Client], **kwargs):
     """Initializes the GcsArtifactService.
 
     Args:
@@ -37,7 +37,10 @@ class GcsArtifactService(BaseArtifactService):
         **kwargs: Keyword arguments to pass to the Google Cloud Storage client.
     """
     self.bucket_name = bucket_name
-    self.storage_client = storage.Client(**kwargs)
+    if storage_client is None:
+      self.storage_client = storage.Client(**kwargs)
+    else:
+      self.storage_client = storage_client
     self.bucket = self.storage_client.bucket(self.bucket_name)
 
   def _file_has_user_namespace(self, filename: str) -> bool:
