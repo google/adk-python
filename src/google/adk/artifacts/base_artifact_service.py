@@ -25,7 +25,7 @@ class BaseArtifactService(ABC):
   """Abstract base class for artifact services."""
 
   @abstractmethod
-  def save_artifact(
+  async def save_artifact(
       self,
       *,
       app_name: str,
@@ -53,7 +53,7 @@ class BaseArtifactService(ABC):
     """
 
   @abstractmethod
-  def load_artifact(
+  async def load_artifact(
       self,
       *,
       app_name: str,
@@ -81,7 +81,7 @@ class BaseArtifactService(ABC):
     pass
 
   @abstractmethod
-  def list_artifact_keys(
+  async def list_artifact_keys(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> list[str]:
     """Lists all the artifact filenames within a session.
@@ -97,7 +97,7 @@ class BaseArtifactService(ABC):
     pass
 
   @abstractmethod
-  def delete_artifact(
+  async def delete_artifact(
       self, *, app_name: str, user_id: str, session_id: str, filename: str
   ) -> None:
     """Deletes an artifact.
@@ -111,7 +111,7 @@ class BaseArtifactService(ABC):
     pass
 
   @abstractmethod
-  def list_versions(
+  async def list_versions(
       self, *, app_name: str, user_id: str, session_id: str, filename: str
   ) -> list[int]:
     """Lists all versions of an artifact.
