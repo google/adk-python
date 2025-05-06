@@ -122,7 +122,7 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
     if not invocation_context.agent.code_executor:
       return
 
-    for event in _run_pre_processor(invocation_context, llm_request):
+    async for event in _run_pre_processor(invocation_context, llm_request):
       yield event
 
     # Convert the code execution parts to text parts.
@@ -159,10 +159,10 @@ class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):
 response_processor = _CodeExecutionResponseProcessor()
 
 
-def _run_pre_processor(
+async def _run_pre_processor(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
-) -> Generator[Event, None, None]:
+) -> AsyncGenerator[Event, None]:
   """Pre-process the user message by adding the user message to the Colab notebook."""
   from ...agents.llm_agent import LlmAgent
 
@@ -242,7 +242,7 @@ def _run_pre_processor(
     code_executor_context.add_processed_file_names([file.name])
 
     # Emit the execution result, and add it to the LLM request.
-    execution_result_event = _post_process_code_execution_result(
+    execution_result_event = await _post_process_code_execution_result(
         invocation_context, code_executor_context, code_execution_result
     )
     yield execution_result_event
@@ -375,7 +375,7 @@ def _get_or_set_execution_id(
   return execution_id
 
 
-def _post_process_code_execution_result(
+async def _post_process_code_execution_result(
     invocation_context: InvocationContext,
     code_executor_context: CodeExecutorContext,
     code_execution_result: CodeExecutionResult,
@@ -406,7 +406,7 @@ def _post_process_code_execution_result(
 
   # Handle output files.
   for output_file in code_execution_result.output_files:
-    version = invocation_context.artifact_service.save_artifact(
+    version = await invocation_context.artifact_service.save_artifact(
         app_name=invocation_context.app_name,
         user_id=invocation_context.user_id,
         session_id=invocation_context.session.id,
