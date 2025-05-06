@@ -56,13 +56,13 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
       raw_si = root_agent.canonical_global_instruction(
           ReadonlyContext(invocation_context)
       )
-      si = _populate_values(raw_si, invocation_context)
+      si = await _populate_values(raw_si, invocation_context)
       llm_request.append_instructions([si])
 
     # Appends agent instructions if set.
     if agent.instruction:  # not empty str
       raw_si = agent.canonical_instruction(ReadonlyContext(invocation_context))
-      si = _populate_values(raw_si, invocation_context)
+      si = await _populate_values(raw_si, invocation_context)
       llm_request.append_instructions([si])
 
     # Maintain async generator behavior
@@ -73,13 +73,24 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
 request_processor = _InstructionsLlmRequestProcessor()
 
 
-def _populate_values(
+async def _populate_values(
     instruction_template: str,
     context: InvocationContext,
 ) -> str:
   """Populates values in the instruction template, e.g. state, artifact, etc."""
 
-  def _replace_match(match) -> str:
+  async def _async_sub(pattern, repl_async_fn, string) -> str:
+    result = []
+    last_end = 0
+    for match in re.finditer(pattern, string):
+      result.append(string[last_end : match.start()])
+      replacement = await repl_async_fn(match)
+      result.append(replacement)
+      last_end = match.end()
+    result.append(string[last_end:])
+    return ''.join(result)
+
+  async def _replace_match(match) -> str:
     var_name = match.group().lstrip('{').rstrip('}').strip()
     optional = False
     if var_name.endswith('?'):
@@ -89,7 +100,7 @@ def _populate_values(
       var_name = var_name.removeprefix('artifact.')
       if context.artifact_service is None:
         raise ValueError('Artifact service is not initialized.')
-      artifact = context.artifact_service.load_artifact(
+      artifact = await context.artifact_service.load_artifact(
           app_name=context.session.app_name,
           user_id=context.session.user_id,
           session_id=context.session.id,
@@ -109,7 +120,7 @@ def _populate_values(
         else:
           raise KeyError(f'Context variable not found: `{var_name}`.')
 
-  return re.sub(r'{+[^{}]*}+', _replace_match, instruction_template)
+  return await _async_sub(r'{+[^{}]*}+', _replace_match, instruction_template)
 
 
 def _is_valid_state_name(var_name):
