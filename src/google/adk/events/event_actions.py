@@ -21,7 +21,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from ..auth.auth_tool import AuthConfig
-from ..sessions import StateValue
+from ..states import StateValue
 
 
 class EventActions(BaseModel):

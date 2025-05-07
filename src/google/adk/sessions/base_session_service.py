@@ -20,8 +20,8 @@ from pydantic import BaseModel
 from pydantic import Field
 
 from ..events.event import Event
+from ..states import State
 from .session import Session
-from .state import State
 
 
 class GetSessionConfig(BaseModel):

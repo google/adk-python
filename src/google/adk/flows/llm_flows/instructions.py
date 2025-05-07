@@ -25,7 +25,7 @@ from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ...events.event import Event
-from ...sessions.state import State
+from ...states.state import State
 from ._base_llm_processor import BaseLlmRequestProcessor
 
 if TYPE_CHECKING:

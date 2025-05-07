@@ -19,7 +19,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from ..events.event import Event
-from . import StateValue
+from ..states import StateValue
 
 
 class Session(BaseModel):

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
   from google.genai import types
 
   from ..events.event_actions import EventActions
-  from ..sessions.state import State
+  from ..states.state import State
   from .invocation_context import InvocationContext
 
 
@@ -40,7 +40,7 @@ class CallbackContext(ReadonlyContext):
     super().__init__(invocation_context)
 
     from ..events.event_actions import EventActions
-    from ..sessions.state import State
+    from ..states.state import State
 
     # TODO(weisun): make this public for Agent Development Kit, but private for
     # users.
