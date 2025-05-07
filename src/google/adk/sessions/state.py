@@ -55,8 +55,14 @@ class State:
       value: The current value of the state dict.
       delta: The delta change to the current value that hasn't been committed.
     """
-    self._value = {k: self._wrap(v) for k, v in value.items()}
-    self._delta = {k: self._wrap(v) for k, v in delta.items()}
+    for k, v in value.items():
+      value[k] = self._wrap(v)
+
+    for k, v in delta.items():
+      delta[k] = self._wrap(v)
+
+    self._value = value
+    self._delta = delta
 
   def _wrap(self, v: Any) -> StateValue:
     """Returns the value wrapped in StateValue if not already."""
@@ -86,15 +92,15 @@ class State:
 
     # Keep current mutability if key already exists and new value isn't wrapped
     if existing_val and not isinstance(value, StateValue):
-        new_val = StateValue(value, mutable=existing_val.mutable)
+      new_val = StateValue(value, mutable=existing_val.mutable)
     else:
-        new_val = self._wrap(value)
+      new_val = self._wrap(value)
 
     if (
-      not force and
-      existing_val and
-      isinstance(existing_val, StateValue) and
-      not existing_val.mutable
+        not force
+        and existing_val
+        and isinstance(existing_val, StateValue)
+        and not existing_val.mutable
     ):
       print(f"Cannot modify immutable key: {key}")
       return
