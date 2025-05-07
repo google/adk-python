@@ -13,10 +13,13 @@
 # limitations under the License.
 
 from typing import Any
+from pydantic_core import core_schema
+from pydantic.json_schema import JsonSchemaValue
+from pydantic._internal._schema_generation_shared import GetCoreSchemaHandler, GetJsonSchemaHandler
 
 
 class StateValue:
-  """A wrapper for state values."""
+  """A wrapper for state values of any JSON-serializable type."""
 
   def __init__(self, value: Any, mutable: bool = True):
     self._value = value
@@ -40,6 +43,32 @@ class StateValue:
 
   def __str__(self):
     return str(self._value)
+
+  # Pydantic v2: full schema override
+  @classmethod
+  def __get_pydantic_core_schema__(
+      cls,
+      _source_type: Any,
+      _handler: GetCoreSchemaHandler,
+  ) -> core_schema.CoreSchema:
+    def _serialize(instance: Any, info: core_schema.SerializationInfo) -> Any:
+      if info.mode == "json":
+        return instance.value  # serialize just the wrapped value
+      return instance
+
+    return core_schema.json_or_python_schema(
+        python_schema=core_schema.any_schema(),
+        json_schema=core_schema.any_schema(),
+        serialization=core_schema.plain_serializer_function_ser_schema(
+            _serialize, info_arg=True
+        ),
+    )
+
+  @classmethod
+  def __get_pydantic_json_schema__(
+      cls, _core_schema: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+  ) -> JsonSchemaValue:
+    return handler(core_schema.any_schema())
 
 
 class State:

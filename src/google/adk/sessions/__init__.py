@@ -16,7 +16,7 @@ import logging
 from .base_session_service import BaseSessionService
 from .in_memory_session_service import InMemorySessionService
 from .session import Session
-from .state import State
+from .state import State, StateValue
 from .vertex_ai_session_service import VertexAiSessionService
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ __all__ = [
     'InMemorySessionService',
     'Session',
     'State',
+    'StateValue',
     'VertexAiSessionService',
 ]
 
