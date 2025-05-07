@@ -76,7 +76,7 @@ class ApplicationIntegrationToolset:
       project: str,
       location: str,
       integration: Optional[str] = None,
-      trigger: Optional[str] = None,
+      triggers: Optional[List[str]] = None,
       connection: Optional[str] = None,
       entity_operations: Optional[str] = None,
       actions: Optional[str] = None,
@@ -98,7 +98,7 @@ class ApplicationIntegrationToolset:
         project="test-project",
         location="us-central1"
         integration="test-integration",
-        trigger="api_trigger/test_trigger",
+        triggers=["api_trigger/test_trigger"],
         service_account_credentials={...},
     )
 
@@ -130,7 +130,7 @@ class ApplicationIntegrationToolset:
         project: The GCP project ID.
         location: The GCP location.
         integration: The integration name.
-        trigger: The trigger name.
+        triggers: The list of trigger names in the integration.
         connection: The connection name.
         entity_operations: The entity operations supported by the connection.
         actions: The actions supported by the connection.
@@ -149,7 +149,7 @@ class ApplicationIntegrationToolset:
     self.project = project
     self.location = location
     self.integration = integration
-    self.trigger = trigger
+    self.triggers = triggers
     self.connection = connection
     self.entity_operations = entity_operations
     self.actions = actions
@@ -162,14 +162,14 @@ class ApplicationIntegrationToolset:
         project,
         location,
         integration,
-        trigger,
+        triggers,
         connection,
         entity_operations,
         actions,
         service_account_json,
     )
     connection_details = {}
-    if integration and trigger:
+    if integration:
       spec = integration_client.get_openapi_spec_for_integration()
     elif connection and (entity_operations or actions):
       connections_client = ConnectionsClient(
@@ -210,7 +210,7 @@ class ApplicationIntegrationToolset:
       )
       auth_scheme = HTTPBearer(bearerFormat="JWT")
 
-    if self.integration and self.trigger:
+    if self.integration:
       tools = OpenAPIToolset(
           spec_dict=spec_dict,
           auth_credential=auth_credential,
