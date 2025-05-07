@@ -152,7 +152,7 @@ class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):
     if llm_response.partial:
       return
 
-    for event in _run_post_processor(invocation_context, llm_response):
+    async for event in _run_post_processor(invocation_context, llm_response):
       yield event
 
 
@@ -249,10 +249,10 @@ async def _run_pre_processor(
     llm_request.contents.append(copy.deepcopy(execution_result_event.content))
 
 
-def _run_post_processor(
+async def _run_post_processor(
     invocation_context: InvocationContext,
     llm_response,
-) -> Generator[Event, None, None]:
+) -> AsyncGenerator[Event, None]:
   """Post-process the model response by extracting and executing the first code block."""
   agent = invocation_context.agent
   code_executor = agent.code_executor
@@ -305,7 +305,7 @@ def _run_post_processor(
       code_execution_result.stdout,
       code_execution_result.stderr,
   )
-  yield _post_process_code_execution_result(
+  yield await _post_process_code_execution_result(
       invocation_context, code_executor_context, code_execution_result
   )
 
