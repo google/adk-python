@@ -24,6 +24,7 @@ class LiveRequest(BaseModel):
   """Request send to live agents."""
 
   model_config = ConfigDict(ser_json_bytes='base64', val_json_bytes='base64')
+  """The pydantic model config."""
 
   content: Optional[types.Content] = None
   """If set, send the content to the model in turn-by-turn mode."""
