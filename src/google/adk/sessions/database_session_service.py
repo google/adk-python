@@ -15,7 +15,8 @@ import copy
 from datetime import datetime
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
+from typing import Optional
 import uuid
 
 from sqlalchemy import Boolean
@@ -45,15 +46,14 @@ from sqlalchemy.types import TypeDecorator
 from typing_extensions import override
 from tzlocal import get_localzone
 
-from ..events.event import Event
 from . import _session_util
+from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 from .state import State
-
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +474,12 @@ class DatabaseSessionService(BaseSessionService):
     if event.partial:
       return event
 
+    session = self.get_session(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+    )
+
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config
     # 3. Store event to table
@@ -482,13 +488,13 @@ class DatabaseSessionService(BaseSessionService):
           StorageSession, (session.app_name, session.user_id, session.id)
       )
 
-      if storage_session.update_time.timestamp() > session.last_update_time:
+      if storage_session.update_time.timestamp() != session.last_update_time:
         raise ValueError(
-          f"Session last_update_time "
-          f"{datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} "
-          f"is later than the update_time in storage "
-          f"{storage_session.update_time:%Y-%m-%d %H:%M:%S}"
-      )
+            "Session last_update_time"
+            f" {datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} is"
+            " not equal to update_time in storage"
+            f" {storage_session.update_time:%Y-%m-%d %H:%M:%S}"
+        )
 
       # Fetch states from storage
       storage_app_state = sessionFactory.get(
