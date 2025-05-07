@@ -15,6 +15,8 @@
 from google.adk.states import State
 from google.adk.states import StateValue
 import pytest
+import json
+from pydantic import BaseModel
 
 
 @pytest.fixture
@@ -77,3 +79,19 @@ def test_to_dict_outputs_raw_values(empty_state):
     assert isinstance(flat["theme"], str)
     assert flat["theme"] == "light"
     assert flat["booking_id"] == "NEW456"
+
+
+def test_statevalue_in_pydantic_model():
+    class Wrapper(BaseModel):
+        item: StateValue
+
+    data = {"item": StateValue([1, 2, 3])}
+    model = Wrapper(**data)
+    assert model.item.value == [1, 2, 3]
+
+    serialized = model.model_dump_json()
+    assert '"item":[1,2,3]' in serialized.replace(" ", "")
+
+    raw_data = json.loads(serialized)
+    wrapped = Wrapper(**raw_data)
+    assert wrapped.item == StateValue([1, 2, 3])
