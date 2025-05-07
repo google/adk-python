@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import inspect
+from typing import Any, Awaitable, Union
 from typing import AsyncGenerator
 from typing import Callable
 from typing import final
@@ -37,10 +38,15 @@ if TYPE_CHECKING:
 
 tracer = trace.get_tracer('gcp.vertex.agent')
 
-BeforeAgentCallback = Callable[[CallbackContext], Optional[types.Content]]
+BeforeAgentCallback = Callable[
+    [CallbackContext],
+    Union[Awaitable[Optional[types.Content]], Optional[types.Content]],
+]
 
-
-AfterAgentCallback = Callable[[CallbackContext], Optional[types.Content]]
+AfterAgentCallback = Callable[
+    [CallbackContext],
+    Union[Awaitable[Optional[types.Content]], Optional[types.Content]],
+]
 
 
 class BaseAgent(BaseModel):
@@ -121,7 +127,7 @@ class BaseAgent(BaseModel):
     try:
       ctx = self._create_invocation_context(parent_context)
 
-      if event := self.__handle_before_agent_callback(ctx):
+      if event := await self.__handle_before_agent_callback(ctx):
         yield event
       if ctx.end_invocation:
         return
@@ -132,7 +138,7 @@ class BaseAgent(BaseModel):
       if ctx.end_invocation:
         return
 
-      if event := self.__handle_after_agent_callback(ctx):
+      if event := await self.__handle_after_agent_callback(ctx):
         yield event
     finally:
       span.end()  # End the span explicitly
@@ -234,7 +240,7 @@ class BaseAgent(BaseModel):
       invocation_context.branch = f'{parent_context.branch}.{self.name}'
     return invocation_context
 
-  def __handle_before_agent_callback(
+  async def __handle_before_agent_callback(
       self, ctx: InvocationContext
   ) -> Optional[Event]:
     """Runs the before_agent_callback if it exists.
@@ -251,6 +257,9 @@ class BaseAgent(BaseModel):
     before_agent_callback_content = self.before_agent_callback(
         callback_context=callback_context
     )
+
+    if inspect.isawaitable(before_agent_callback_content):
+      before_agent_callback_content = await before_agent_callback_content
 
     if before_agent_callback_content:
       ret_event = Event(
@@ -273,7 +282,7 @@ class BaseAgent(BaseModel):
 
     return ret_event
 
-  def __handle_after_agent_callback(
+  async def __handle_after_agent_callback(
       self, invocation_context: InvocationContext
   ) -> Optional[Event]:
     """Runs the after_agent_callback if it exists.
@@ -290,6 +299,9 @@ class BaseAgent(BaseModel):
     after_agent_callback_content = self.after_agent_callback(
         callback_context=callback_context
     )
+
+    if inspect.isawaitable(after_agent_callback_content):
+      after_agent_callback_content = await after_agent_callback_content
 
     if after_agent_callback_content or callback_context.state.has_delta():
       ret_event = Event(
