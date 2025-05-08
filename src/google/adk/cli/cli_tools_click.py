@@ -258,12 +258,14 @@ def cli_eval(
 
   try:
     eval_results = list(
-        run_evals(
-            eval_set_to_evals,
-            root_agent,
-            reset_func,
-            eval_metrics,
-            print_detailed_results=print_detailed_results,
+        asyncio.run(
+            run_evals(
+                eval_set_to_evals,
+                root_agent,
+                reset_func,
+                eval_metrics,
+                print_detailed_results=print_detailed_results,
+            )
         )
     )
   except ModuleNotFoundError:
