@@ -112,7 +112,18 @@ For any changes that impact user-facing documentation (guides, API reference, tu
 
     ```shell
     python -m venv .venv
+    ```
+
+    ```shell
     source .venv/bin/activate
+    ```
+    
+    **windows**
+    ```shell
+    source .\.venv\Scripts\activate
+    ```
+
+    ```shell
     pip install uv
     ```
 
@@ -131,8 +142,23 @@ For any changes that impact user-facing documentation (guides, API reference, tu
     ```shell
     uv run pyink  --config pyproject.toml ./src
     ```
-    
-## Code reviews
+
+6. **Build the package**
+    ```shell
+    uv build
+    ```
+
+7. **Local Testing**
+    Have a simple testing folder setup as mentioned in the [quickstart](https://google.github.io/adk-docs/get-started/quickstart/)
+    then install the local package with changes after building it using the below command to test the changes.
+
+    ```shell
+    uv pip install <YOUR_WHL_FILE_PATH>
+
+    [eg]: uv pip install <ADK_PROJECT_PATH>/dist/google_adk-0.4.0-py3-none-any.whl
+    ```
+
+### Code reviews
 
 All submissions, including submissions by project members, require review. We
 use GitHub pull requests for this purpose. Consult
