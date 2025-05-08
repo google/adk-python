@@ -195,6 +195,7 @@ class TestConnectionsClient:
           "serviceName": "tls_test_service",
           "host": "test.host",
           "authOverrideEnabled": True,
+          "name": "",
       }
 
   def test_get_connection_details_success_without_host(
@@ -217,6 +218,7 @@ class TestConnectionsClient:
           "serviceName": "test_service",
           "host": "",
           "authOverrideEnabled": False,
+          "name": "",
       }
 
   def test_get_connection_details_error(
@@ -431,21 +433,21 @@ class TestConnectionsClient:
   def test_create_operation(self):
     operation = ConnectionsClient.create_operation("Entity1", "test_tool")
     assert "post" in operation
-    assert operation["post"]["summary"] == "Create Entity1"
+    assert operation["post"]["summary"] == "Creates a new Entity1"
     assert "operationId" in operation["post"]
     assert operation["post"]["operationId"] == "test_tool_create_Entity1"
 
   def test_update_operation(self):
     operation = ConnectionsClient.update_operation("Entity1", "test_tool")
     assert "post" in operation
-    assert operation["post"]["summary"] == "Update Entity1"
+    assert operation["post"]["summary"] == "Updates the Entity1"
     assert "operationId" in operation["post"]
     assert operation["post"]["operationId"] == "test_tool_update_Entity1"
 
   def test_delete_operation(self):
     operation = ConnectionsClient.delete_operation("Entity1", "test_tool")
     assert "post" in operation
-    assert operation["post"]["summary"] == "Delete Entity1"
+    assert operation["post"]["summary"] == "Delete the Entity1"
     assert operation["post"]["operationId"] == "test_tool_delete_Entity1"
 
   def test_create_operation_request(self):

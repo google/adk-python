@@ -611,7 +611,7 @@ class LiteLlm(BaseLlm):
     """
 
     self._maybe_append_user_content(llm_request)
-    logger.info(_build_request_log(llm_request))
+    logger.debug(_build_request_log(llm_request))
 
     messages, tools = _get_completion_inputs(llm_request)
 
