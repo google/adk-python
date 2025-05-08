@@ -347,8 +347,8 @@ def test_get_json_schema(sample_operation):
   assert json_schema['type'] == 'object'
   assert 'param1' in json_schema['properties']
   assert 'prop1' in json_schema['properties']
-  assert 'param1' in json_schema['required']
-  assert 'prop1' in json_schema['required']
+  # By default nothing is required unless explicitly stated
+  assert 'required' not in json_schema or json_schema['required'] == []
 
 
 def test_get_signature_parameters(sample_operation):

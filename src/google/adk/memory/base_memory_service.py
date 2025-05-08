@@ -28,6 +28,7 @@ class MemoryResult(BaseModel):
       session_id: The session id associated with the memory.
       events: A list of events in the session.
   """
+
   session_id: str
   events: list[Event]
 
@@ -38,6 +39,7 @@ class SearchMemoryResponse(BaseModel):
   Attributes:
       memories: A list of memory results matching the search query.
   """
+
   memories: list[MemoryResult] = Field(default_factory=list)
 
 
@@ -49,7 +51,7 @@ class BaseMemoryService(abc.ABC):
   """
 
   @abc.abstractmethod
-  def add_session_to_memory(self, session: Session):
+  async def add_session_to_memory(self, session: Session):
     """Adds a session to the memory service.
 
     A session may be added multiple times during its lifetime.
@@ -59,7 +61,7 @@ class BaseMemoryService(abc.ABC):
     """
 
   @abc.abstractmethod
-  def search_memory(
+  async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query.
