@@ -51,12 +51,13 @@ def agent_eval_artifacts_in_fixture():
   return agent_eval_artifacts
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'agent_name, evalfile, initial_session_file',
     agent_eval_artifacts_in_fixture(),
     ids=[agent_name for agent_name, _, _ in agent_eval_artifacts_in_fixture()],
 )
-def test_evaluate_agents_long_running_4_runs_per_eval_item(
+async def test_evaluate_agents_long_running_4_runs_per_eval_item(
     agent_name, evalfile, initial_session_file
 ):
   """Test agents evaluation in fixture folder.
@@ -66,7 +67,7 @@ def test_evaluate_agents_long_running_4_runs_per_eval_item(
 
   A single eval item is a session that can have multiple queries in it.
   """
-  AgentEvaluator.evaluate(
+  await AgentEvaluator.evaluate(
       agent_module=agent_name,
       eval_dataset_file_path_or_dir=evalfile,
       initial_session_file=initial_session_file,

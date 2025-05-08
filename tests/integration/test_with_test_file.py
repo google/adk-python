@@ -15,7 +15,8 @@
 from google.adk.evaluation import AgentEvaluator
 
 
-def test_with_single_test_file():
+@pytest.mark.asyncio
+async def test_with_single_test_file():
   """Test the agent's basic ability via session file."""
   AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.home_automation_agent",
@@ -23,7 +24,8 @@ def test_with_single_test_file():
   )
 
 
-def test_with_folder_of_test_files_long_running():
+@pytest.mark.asyncio
+async def test_with_folder_of_test_files_long_running():
   """Test the agent's basic ability via a folder of session files."""
   AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.home_automation_agent",

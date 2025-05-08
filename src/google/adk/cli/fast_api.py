@@ -467,7 +467,7 @@ def get_fast_api_app(
       )
     root_agent = await _get_root_agent_async(app_name)
     eval_results = list(
-        run_evals(
+        await run_evals(
             eval_set_to_evals,
             root_agent,
             getattr(root_agent, "reset_data", None),
