@@ -44,6 +44,7 @@ from .base_agent import BaseAgent
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
 from .readonly_context import ReadonlyContext
+from .content_config import ContentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -133,11 +134,13 @@ class LlmAgent(BaseAgent):
   """Disallows LLM-controlled transferring to the peer agents."""
   # LLM-based agent transfer configs - End
 
-  include_contents: Literal['default', 'none'] = 'default'
-  """Whether to include contents in the model request.
+  include_contents: Union[str, ContentConfig] = 'default'
+  """Whether and how to include contents in the model request.
 
-  When set to 'none', the model request will not include any contents, such as
-  user messages, tool results, etc.
+  Accepts:
+    - 'default': include all history (equivalent to ContentConfig(enabled=True))
+    - 'none': exclude all history (equivalent to ContentConfig(enabled=False))
+    - ContentConfig: advanced content management
   """
 
   # Controlled input/output configurations - Start
@@ -411,6 +414,19 @@ class LlmAgent(BaseAgent):
           'Response schema must be set via LlmAgent.output_schema.'
       )
     return generate_content_config
+
+  @property
+  def canonical_content_config(self) -> ContentConfig:
+    """
+    Returns a ContentConfig object, handling backward compatibility for string values.
+    """
+    if isinstance(self.include_contents, ContentConfig):
+      return self.include_contents
+    if self.include_contents == 'default':
+      return ContentConfig(enabled=True)
+    if self.include_contents == 'none':
+      return ContentConfig(enabled=False)
+    raise ValueError(f"Invalid include_contents value: {self.include_contents}")
 
 
 Agent: TypeAlias = LlmAgent
