@@ -14,11 +14,7 @@
 
 import keyword
 import re
-from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi.openapi.models import Response
 from fastapi.openapi.models import Schema
@@ -100,6 +96,7 @@ class ApiParameter(BaseModel):
   py_name: Optional[str] = ''
   type_value: type[Any] = Field(default=None, init_var=False)
   type_hint: str = Field(default=None, init_var=False)
+  required: bool = False
 
   def model_post_init(self, _: Any):
     self.py_name = (

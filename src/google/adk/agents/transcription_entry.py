@@ -26,6 +26,7 @@ class TranscriptionEntry(BaseModel):
       arbitrary_types_allowed=True,
       extra='forbid',
   )
+  """The pydantic model config."""
 
   role: str
   """The role that created this data, typically "user" or "model"""
