@@ -191,14 +191,19 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:
     """Receive data from model and process events using BaseLlmConnection."""
+
     def get_author(llm_response):
       """Get the author of the event.
 
       When the model returns transcription, the author is "user". Otherwise, the
       author is the agent.
       """
-      if llm_response and llm_response.content and llm_response.content.role == "user":
-        return "user"
+      if (
+          llm_response
+          and llm_response.content
+          and llm_response.content.role == 'user'
+      ):
+        return 'user'
       else:
         return invocation_context.agent.name
 
@@ -261,7 +266,6 @@ class BaseLlmFlow(ABC):
 
     # Calls the LLM.
     model_response_event = Event(
-        id=Event.new_id(),
         invocation_id=invocation_context.invocation_id,
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
@@ -273,6 +277,8 @@ class BaseLlmFlow(ABC):
       async for event in self._postprocess_async(
           invocation_context, llm_request, llm_response, model_response_event
       ):
+        # Use a new id for every event.
+        event.id = Event.new_id()
         yield event
 
   async def _preprocess_async(
