@@ -15,7 +15,8 @@
 from google.adk.evaluation import AgentEvaluator
 
 
-def test_eval_agent():
+@pytest.mark.asyncio
+async def test_eval_agent():
   AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.home_automation_agent",
       eval_dataset_file_path_or_dir="tests/integration/fixture/home_automation_agent/simple_test.test.json",
