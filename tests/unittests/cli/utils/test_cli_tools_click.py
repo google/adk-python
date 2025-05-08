@@ -233,6 +233,8 @@ def test_cli_eval_success_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         [_EvalResult("set1.json", "PASSED"), _EvalResult("set1.json", "FAILED")]
     )
 
+    monkeypatch.setattr(cli_tools_click.asyncio, "run", lambda coro: list(coro))
+
     # inject stub
     sys.modules["google.adk.cli.cli_eval"] = stub
 
