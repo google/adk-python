@@ -20,7 +20,7 @@ import os
 import sys
 import traceback
 from typing import Any
-from typing import Generator
+from typing import AsyncGenerator
 from typing import Optional
 import uuid
 
@@ -146,7 +146,7 @@ def parse_and_get_evals_to_run(
   return eval_set_to_evals
 
 
-def run_evals(
+async def run_evals(
     eval_set_to_evals: dict[str, list[str]],
     root_agent: Agent,
     reset_func: Optional[Any],
@@ -154,7 +154,7 @@ def run_evals(
     session_service=None,
     artifact_service=None,
     print_detailed_results=False,
-) -> Generator[EvalResult, None, None]:
+) -> AsyncGenerator[EvalResult, None]:
   try:
     from ..evaluation.agent_evaluator import EvaluationGenerator
     from ..evaluation.response_evaluator import ResponseEvaluator
@@ -181,14 +181,16 @@ def run_evals(
         print(f"Running Eval: {eval_set_file}:{eval_name}")
         session_id = f"{EVAL_SESSION_ID_PREFIX}{str(uuid.uuid4())}"
 
-        scrape_result = EvaluationGenerator._process_query_with_root_agent(
-            data=eval_data,
-            root_agent=root_agent,
-            reset_func=reset_func,
-            initial_session=initial_session,
-            session_id=session_id,
-            session_service=session_service,
-            artifact_service=artifact_service,
+        scrape_result = (
+            await EvaluationGenerator._process_query_with_root_agent(
+                data=eval_data,
+                root_agent=root_agent,
+                reset_func=reset_func,
+                initial_session=initial_session,
+                session_id=session_id,
+                session_service=session_service,
+                artifact_service=artifact_service,
+            )
         )
 
         eval_metric_results = []
