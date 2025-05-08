@@ -170,9 +170,14 @@ class AgentTool(BaseTool):
     ):
       return ''
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
+      merged_text = "\n".join(
+          [p.text for p in last_event.content.parts if getattr(p, "text", None)]
+      )
       tool_result = self.agent.output_schema.model_validate_json(
-          last_event.content.parts[0].text
+          merged_text
       ).model_dump(exclude_none=True)
     else:
-      tool_result = last_event.content.parts[0].text
+        tool_result = "\n".join(
+            [p.text for p in last_event.content.parts if getattr(p, "text", None)]
+        )
     return tool_result
