@@ -38,6 +38,7 @@ class Session(BaseModel):
       extra='forbid',
       arbitrary_types_allowed=True,
   )
+  """The pydantic model config."""
 
   id: str
   """The unique identifier of the session."""

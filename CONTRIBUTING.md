@@ -119,7 +119,7 @@ For any changes that impact user-facing documentation (guides, API reference, tu
 3.  **Install dependencies:**
 
     ```shell
-    uv pip install -e .[dev,test,extensions,eval]
+    uv sync --all-extras
     ```
 4.  **Run unit tests:**
 

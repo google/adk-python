@@ -110,6 +110,7 @@ class InvocationContext(BaseModel):
       arbitrary_types_allowed=True,
       extra="forbid",
   )
+  """The pydantic model config."""
 
   artifact_service: Optional[BaseArtifactService] = None
   session_service: BaseSessionService
