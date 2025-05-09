@@ -60,11 +60,6 @@ class CallbackContext(ReadonlyContext):
     """
     return self._state
 
-  @property
-  def user_content(self) -> Optional[types.Content]:
-    """The user content that started this invocation. READONLY field."""
-    return self._invocation_context.user_content
-
   async def load_artifact(
       self, filename: str, version: Optional[int] = None
   ) -> Optional[types.Part]:

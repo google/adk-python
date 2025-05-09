@@ -29,6 +29,7 @@ from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
+from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...agents.transcription_entry import TranscriptionEntry
 from ...events.event import Event
@@ -296,7 +297,9 @@ class BaseLlmFlow(ABC):
         yield event
 
     # Run processors for tools.
-    for tool in agent.canonical_tools:
+    for tool in await agent.canonical_tools(
+        ReadonlyContext(invocation_context)
+    ):
       tool_context = ToolContext(invocation_context)
       await tool.process_llm_request(
           tool_context=tool_context, llm_request=llm_request
