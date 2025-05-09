@@ -197,7 +197,6 @@ class TestConnectionsClient:
           "serviceName": "tls_test_service",
           "host": "test.host",
           "authOverrideEnabled": True,
-          "name": "",
       }
 
   def test_get_connection_details_success_without_host(
@@ -245,7 +244,6 @@ class TestConnectionsClient:
           "serviceName": "test_service",
           "host": "",
           "authOverrideEnabled": False,
-          "name": "",
       }
       
   def test_get_connection_details_error(
