@@ -16,29 +16,26 @@
 import os
 
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import StdioServerParameters
 
-
-async def create_agent():
-  """Gets tools from MCP Server."""
-  tools, exit_stack = await MCPToolset.from_server(
-      connection_params=StdioServerParameters(
-          command='npx',
-          args=[
-              '-y',  # Arguments for the command
-              '@modelcontextprotocol/server-filesystem',
-              os.path.dirname(os.path.abspath(__file__)),
-          ],
-      )
-  )
-
-  agent = LlmAgent(
-      model='gemini-2.0-flash',
-      name='enterprise_assistant',
-      instruction='Help user accessing their file systems',
-      tools=tools,
-  )
-  return agent, exit_stack
-
-
-root_agent = create_agent()
+root_agent = LlmAgent(
+    model='gemini-2.0-flash',
+    name='enterprise_assistant',
+    instruction='Help user accessing their file systems',
+    tools=[
+        MCPToolset(
+            connection_params=StdioServerParameters(
+                command='npx',
+                args=[
+                    '-y',  # Arguments for the command
+                    '@modelcontextprotocol/server-filesystem',
+                    os.path.dirname(os.path.abspath(__file__)),
+                ],
+            ),
+            # don't want agent to do write operation
+            tool_predicate=lambda tool, ctx=None: tool.name
+            not in ('write_file', 'edit_file', 'create_directory', 'move_file'),
+        )
+    ],
+)
