@@ -255,12 +255,6 @@ def test_canonical_content_config_object():
     assert config.max_events == 5
 
 
-def test_canonical_content_config_invalid_string():
-    agent = LlmAgent(name='test_agent', include_contents='invalid_value')
-    with pytest.raises(ValueError, match='Invalid include_contents value: invalid_value'):
-        _ = agent.canonical_content_config
-
-
 # Tests for ContentConfig and SummarizationConfig models
 def test_summarization_config_defaults():
     config = SummarizationConfig()

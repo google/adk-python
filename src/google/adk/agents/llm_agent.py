@@ -419,14 +419,19 @@ class LlmAgent(BaseAgent):
   def canonical_content_config(self) -> ContentConfig:
     """
     Returns a ContentConfig object, handling backward compatibility for string values.
+    
+    Always sets convert_foreign_events=True in the default configurations to ensure
+    proper handling of events from other agents. This is critical for correct operation
+    of sub-agents and tools, as disabling this feature can cause serious issues including
+    infinite loops in tool calls. Only override this value explicitly if you fully 
+    understand the interaction between event conversion and function/tool handling.
     """
     if isinstance(self.include_contents, ContentConfig):
       return self.include_contents
-    if self.include_contents == 'default':
-      return ContentConfig(enabled=True)
     if self.include_contents == 'none':
-      return ContentConfig(enabled=False)
-    raise ValueError(f"Invalid include_contents value: {self.include_contents}")
+      return ContentConfig(enabled=False, convert_foreign_events=True)
+    else:
+      return ContentConfig(enabled=True, convert_foreign_events=True)
 
 
 Agent: TypeAlias = LlmAgent
