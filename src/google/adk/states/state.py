@@ -55,6 +55,9 @@ class StateValue(dict):
   def __str__(self):
     return str(self["value"])
 
+  def to_json(self) -> dict:
+    return dict(self)
+
   @classmethod
   def from_dict(cls, dict_value: dict):
     if dict_value.keys() == {"value", "mutable"} or dict_value.keys() == {
@@ -76,15 +79,6 @@ class StateValue(dict):
       return cls.from_dict(value)
     return cls(value=value)
 
-  def to_json(self) -> dict:
-    return {"value": self["value"], "mutable": self["mutable"]}
-
-  def __json__(self):
-    return self.to_json()
-
-  def __getstate__(self):
-    return self.to_json()
-
   @classmethod
   def validate(cls, value: Any):
     if isinstance(value, cls):
@@ -98,22 +92,10 @@ class StateValue(dict):
       _source_type: Any,
       _handler: GetCoreSchemaHandler,
   ) -> core_schema.CoreSchema:
-    def serialize(value: Any) -> dict:
-      if isinstance(value, cls):
-        return value.to_json()
-      else:
-        return value
-
-    schema = core_schema.union_schema([
-        core_schema.any_schema(),
-    ])
-
     return core_schema.no_info_after_validator_function(
         cls.validate,
-        schema,
-        serialization=core_schema.plain_serializer_function_ser_schema(
-            serialize, when_used="json"
-        ),
+        core_schema.any_schema(),
+        serialization=core_schema.any_schema(),
     )
 
   @classmethod
