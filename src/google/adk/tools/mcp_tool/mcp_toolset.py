@@ -14,16 +14,14 @@
 
 from contextlib import AsyncExitStack
 import sys
-from types import TracebackType
 from typing import List
 from typing import Optional
 from typing import override
 from typing import TextIO
-from typing import Type
 
 from ...agents.readonly_context import ReadonlyContext
-from ..base_toolset import BaseToolPredicate
 from ..base_toolset import BaseToolset
+from ..base_toolset import ToolPredicate
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
 from .mcp_session_manager import SseServerParams
@@ -69,7 +67,7 @@ class MCPToolset(BaseToolset):
       *,
       connection_params: StdioServerParameters | SseServerParams,
       errlog: TextIO = sys.stderr,
-      tool_predicate: Optional[BaseToolPredicate] = None,
+      tool_predicate: Optional[ToolPredicate] = None,
   ):
     """Initializes the MCPToolset.
 
