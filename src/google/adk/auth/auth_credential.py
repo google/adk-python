@@ -13,17 +13,16 @@
 # limitations under the License.
 
 from enum import Enum
-from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 
 
 class BaseModelWithConfig(BaseModel):
-  model_config = {"extra": "allow"}
+  model_config = ConfigDict(extra="allow")
+  """The pydantic model config."""
 
 
 class HttpCredentials(BaseModelWithConfig):

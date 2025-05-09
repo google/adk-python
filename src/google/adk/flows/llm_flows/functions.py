@@ -153,22 +153,22 @@ async def handle_function_calls_async(
     function_args = function_call.args or {}
     function_response: Optional[dict] = None
 
-    # before_tool_callback (sync or async)
-    if agent.before_tool_callback:
-      function_response = agent.before_tool_callback(
+    for callback in agent.canonical_before_tool_callbacks:
+      function_response = callback(
           tool=tool, args=function_args, tool_context=tool_context
       )
       if inspect.isawaitable(function_response):
         function_response = await function_response
+      if function_response:
+        break
 
     if not function_response:
       function_response = await __call_tool_async(
           tool, args=function_args, tool_context=tool_context
       )
 
-    # after_tool_callback (sync or async)
-    if agent.after_tool_callback:
-      altered_function_response = agent.after_tool_callback(
+    for callback in agent.canonical_after_tool_callbacks:
+      altered_function_response = callback(
           tool=tool,
           args=function_args,
           tool_context=tool_context,
@@ -178,6 +178,7 @@ async def handle_function_calls_async(
         altered_function_response = await altered_function_response
       if altered_function_response is not None:
         function_response = altered_function_response
+        break
 
     if tool.is_long_running:
       # Allow long running function to return None to not provide function response.

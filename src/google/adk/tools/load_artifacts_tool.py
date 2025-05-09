@@ -69,14 +69,14 @@ class LoadArtifactsTool(BaseTool):
         tool_context=tool_context,
         llm_request=llm_request,
     )
-    self._append_artifacts_to_llm_request(
+    await self._append_artifacts_to_llm_request(
         tool_context=tool_context, llm_request=llm_request
     )
 
-  def _append_artifacts_to_llm_request(
+  async def _append_artifacts_to_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ):
-    artifact_names = tool_context.list_artifacts()
+    artifact_names = await tool_context.list_artifacts()
     if not artifact_names:
       return
 
@@ -96,7 +96,7 @@ class LoadArtifactsTool(BaseTool):
       if function_response and function_response.name == 'load_artifacts':
         artifact_names = function_response.response['artifact_names']
         for artifact_name in artifact_names:
-          artifact = tool_context.load_artifact(artifact_name)
+          artifact = await tool_context.load_artifact(artifact_name)
           llm_request.contents.append(
               types.Content(
                   role='user',

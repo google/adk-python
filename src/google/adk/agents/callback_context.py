@@ -60,12 +60,7 @@ class CallbackContext(ReadonlyContext):
     """
     return self._state
 
-  @property
-  def user_content(self) -> Optional[types.Content]:
-    """The user content that started this invocation. READONLY field."""
-    return self._invocation_context.user_content
-
-  def load_artifact(
+  async def load_artifact(
       self, filename: str, version: Optional[int] = None
   ) -> Optional[types.Part]:
     """Loads an artifact attached to the current session.
@@ -80,7 +75,7 @@ class CallbackContext(ReadonlyContext):
     """
     if self._invocation_context.artifact_service is None:
       raise ValueError("Artifact service is not initialized.")
-    return self._invocation_context.artifact_service.load_artifact(
+    return await self._invocation_context.artifact_service.load_artifact(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,
@@ -88,7 +83,7 @@ class CallbackContext(ReadonlyContext):
         version=version,
     )
 
-  def save_artifact(self, filename: str, artifact: types.Part) -> int:
+  async def save_artifact(self, filename: str, artifact: types.Part) -> int:
     """Saves an artifact and records it as delta for the current session.
 
     Args:
@@ -100,7 +95,7 @@ class CallbackContext(ReadonlyContext):
     """
     if self._invocation_context.artifact_service is None:
       raise ValueError("Artifact service is not initialized.")
-    version = self._invocation_context.artifact_service.save_artifact(
+    version = await self._invocation_context.artifact_service.save_artifact(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,

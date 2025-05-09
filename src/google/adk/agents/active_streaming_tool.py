@@ -30,6 +30,7 @@ class ActiveStreamingTool(BaseModel):
       arbitrary_types_allowed=True,
       extra='forbid',
   )
+  """The pydantic model config."""
 
   task: Optional[asyncio.Task] = None
   """The active task of this streaming tool."""

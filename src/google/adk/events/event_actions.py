@@ -27,6 +27,7 @@ class EventActions(BaseModel):
   """Represents the actions attached to an event."""
 
   model_config = ConfigDict(extra='forbid')
+  """The pydantic model config."""
 
   skip_summarization: Optional[bool] = None
   """If true, it won't call model to summarize function response.

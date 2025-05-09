@@ -15,7 +15,8 @@
 from google.adk.evaluation import AgentEvaluator
 
 
-def test_eval_agent():
+@pytest.mark.asyncio
+async def test_eval_agent():
   """Test hotel sub agent in a multi-agent system."""
   AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.trip_planner_agent",

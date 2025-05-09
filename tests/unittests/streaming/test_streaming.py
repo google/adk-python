@@ -21,7 +21,6 @@ import pytest
 from .. import utils
 
 
-@pytest.mark.skip(reason='Streaming is hanging.')
 def test_streaming():
   response1 = LlmResponse(
       turn_complete=True,
