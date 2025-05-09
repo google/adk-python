@@ -29,6 +29,7 @@ from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
+from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...agents.transcription_entry import TranscriptionEntry
 from ...events.event import Event
@@ -191,14 +192,19 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:
     """Receive data from model and process events using BaseLlmConnection."""
+
     def get_author(llm_response):
       """Get the author of the event.
 
       When the model returns transcription, the author is "user". Otherwise, the
       author is the agent.
       """
-      if llm_response and llm_response.content and llm_response.content.role == "user":
-        return "user"
+      if (
+          llm_response
+          and llm_response.content
+          and llm_response.content.role == 'user'
+      ):
+        return 'user'
       else:
         return invocation_context.agent.name
 
@@ -291,7 +297,9 @@ class BaseLlmFlow(ABC):
         yield event
 
     # Run processors for tools.
-    for tool in agent.canonical_tools:
+    for tool in await agent.canonical_tools(
+        ReadonlyContext(invocation_context)
+    ):
       tool_context = ToolContext(invocation_context)
       await tool.process_llm_request(
           tool_context=tool_context, llm_request=llm_request

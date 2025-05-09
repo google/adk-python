@@ -258,7 +258,7 @@ class EvaluationGenerator:
     if not isinstance(agent, Agent) and not isinstance(agent, LlmAgent):
       return
 
-    for tool in agent.canonical_tools:
+    for tool in await agent.canonical_tools():
       tool_name = tool.name
       if tool_name in all_mock_tools:
         agent.before_tool_callback = callback
