@@ -121,7 +121,7 @@ def test_statevalue_equality_and_str_repr():
     assert sv1 == "foo"
     assert sv1 != sv2
     assert sv1 != sv3
-    assert repr(sv2) == "'foo'"
+    assert repr(sv2).replace(" ", "") == "StateValue({'value':'foo','mutable':True})"
     assert str(sv3) == "bar"
 
 

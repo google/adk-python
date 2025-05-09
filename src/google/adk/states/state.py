@@ -42,7 +42,7 @@ class StateValue(dict):
     self["mutable"] = val
 
   def __repr__(self):
-    return repr(self["value"])
+    return f"StateValue({self.to_json()})"
 
   def __eq__(self, other):
     if isinstance(other, StateValue):
