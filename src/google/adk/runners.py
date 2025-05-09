@@ -18,9 +18,7 @@ import asyncio
 import logging
 import queue
 import threading
-from typing import AsyncGenerator
-from typing import Generator
-from typing import Optional
+from typing import AsyncGenerator, Generator, Optional
 
 from deprecated import deprecated
 from google.genai import types
@@ -391,7 +389,7 @@ class Runner:
             f'CFC is not supported for model: {model_name} in agent:'
             f' {self.agent.name}'
         )
-      if built_in_code_execution not in self.agent.canonical_tools:
+      if built_in_code_execution not in self.agent.canonical_tools():
         self.agent.tools.append(built_in_code_execution)
 
     return InvocationContext(
