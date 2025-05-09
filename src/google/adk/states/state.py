@@ -12,55 +12,107 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from typing import Any
 from pydantic_core import core_schema
 from pydantic.json_schema import JsonSchemaValue
 from pydantic._internal._schema_generation_shared import GetCoreSchemaHandler, GetJsonSchemaHandler
 
 
-class StateValue:
+class StateValue(dict):
   """A wrapper for state values of any JSON-serializable type."""
 
   def __init__(self, value: Any, mutable: bool = True):
-    self._value = value
-    self._mutable = mutable
+    super().__init__({"value": value, "mutable": mutable})
 
   @property
   def value(self):
-    return self._value
+    return self["value"]
+
+  @value.setter
+  def value(self, val):
+    self["value"] = val
 
   @property
   def mutable(self):
-    return self._mutable
+    return self["mutable"]
+
+  @mutable.setter
+  def mutable(self, val):
+    self["mutable"] = val
 
   def __repr__(self):
-    return repr(self._value)
+    return repr(self["value"])
 
   def __eq__(self, other):
     if isinstance(other, StateValue):
-      return self._value == other._value
-    return self._value == other
+      return (
+          self["value"] == other["value"]
+          and self["mutable"] == other["mutable"]
+      )
+    return self["value"] == other
 
   def __str__(self):
-    return str(self._value)
+    return str(self["value"])
 
-  # Pydantic v2: full schema override
+  @classmethod
+  def from_dict(cls, dict_value: dict):
+    if dict_value.keys() == {"value", "mutable"} or dict_value.keys() == {
+        "value"
+    }:
+      return cls(
+          value=dict_value["value"], mutable=dict_value.get("mutable", True)
+      )
+    return cls(value=dict_value)
+
+  @classmethod
+  def from_value(cls, value: Any):
+    if isinstance(value, str):
+      try:
+        value = json.loads(value)
+      except json.decoder.JSONDecodeError:
+        pass
+    if isinstance(value, dict):
+      return cls.from_dict(value)
+    return cls(value=value)
+
+  def to_json(self) -> dict:
+    return {"value": self["value"], "mutable": self["mutable"]}
+
+  def __json__(self):
+    return self.to_json()
+
+  def __getstate__(self):
+    return self.to_json()
+
+  @classmethod
+  def validate(cls, value: Any):
+    if isinstance(value, cls):
+      return value
+    else:
+      return cls.from_value(value)
+
   @classmethod
   def __get_pydantic_core_schema__(
       cls,
       _source_type: Any,
       _handler: GetCoreSchemaHandler,
   ) -> core_schema.CoreSchema:
-    def _serialize(instance: Any, info: core_schema.SerializationInfo) -> Any:
-      if info.mode == "json":
-        return instance.value  # serialize just the wrapped value
-      return instance
+    def serialize(value: Any) -> dict:
+      if isinstance(value, cls):
+        return value.to_json()
+      else:
+        return value
 
-    return core_schema.json_or_python_schema(
-        python_schema=core_schema.any_schema(),
-        json_schema=core_schema.any_schema(),
+    schema = core_schema.union_schema([
+        core_schema.any_schema(),
+    ])
+
+    return core_schema.no_info_after_validator_function(
+        cls.validate,
+        schema,
         serialization=core_schema.plain_serializer_function_ser_schema(
-            _serialize, info_arg=True
+            serialize, when_used="json"
         ),
     )
 
