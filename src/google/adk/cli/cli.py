@@ -105,6 +105,7 @@ async def run_cli(
     input_file: Optional[str] = None,
     saved_session_file: Optional[str] = None,
     save_session: bool,
+    session_id: Optional[str] = None,
 ) -> None:
   """Runs an interactive CLI for a certain agent.
 
@@ -118,6 +119,7 @@ async def run_cli(
     saved_session_file: Optional[str], the absolute path to the json file that
       contains a previously saved session, exclusive with input_file.
     save_session: bool, whether to save the session on exit.
+    session_id: Optional[str], the session ID to save the session to on exit.
   """
   if agent_parent_dir not in sys.path:
     sys.path.append(agent_parent_dir)
@@ -175,7 +177,7 @@ async def run_cli(
     )
 
   if save_session:
-    session_id = input('Session ID to save: ')
+    session_id = session_id or input('Session ID to save: ')
     session_path = f'{agent_module_path}/{session_id}.session.json'
 
     # Fetch the session again to get all the details.

@@ -580,6 +580,7 @@ class ConnectionsClient:
             "serviceName": {"$ref": "#/components/schemas/serviceName"},
             "host": {"$ref": "#/components/schemas/host"},
             "entity": {"$ref": "#/components/schemas/entity"},
+            "filterClause": {"$ref": "#/components/schemas/filterClause"},
         },
     }
 
@@ -624,6 +625,7 @@ class ConnectionsClient:
             "serviceName": {"$ref": "#/components/schemas/serviceName"},
             "host": {"$ref": "#/components/schemas/host"},
             "entity": {"$ref": "#/components/schemas/entity"},
+            "filterClause": {"$ref": "#/components/schemas/filterClause"},
         },
     }
 

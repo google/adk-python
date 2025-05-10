@@ -13,4 +13,4 @@
 # limitations under the License.
 
 # version: date+base_cl
-__version__ = "0.4.0"
+__version__ = "0.5.0"

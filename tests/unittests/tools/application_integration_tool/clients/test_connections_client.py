@@ -463,6 +463,7 @@ class TestConnectionsClient:
     assert schema["type"] == "object"
     assert "properties" in schema
     assert "entityId" in schema["properties"]
+    assert "filterClause" in schema["properties"]
 
   def test_get_operation_request_static(self):
     schema = ConnectionsClient.get_operation_request()
@@ -477,6 +478,7 @@ class TestConnectionsClient:
     assert schema["type"] == "object"
     assert "properties" in schema
     assert "entityId" in schema["properties"]
+    assert "filterClause" in schema["properties"]
 
   def test_list_operation_request(self):
     schema = ConnectionsClient.list_operation_request()
