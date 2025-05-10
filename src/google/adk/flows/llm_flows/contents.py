@@ -27,8 +27,6 @@ from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import remove_client_function_call_id
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...agents.content_config import ContentConfig, SummarizationConfig
-import asyncio
-import logging
 
 class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   """Builds the contents for the LLM request."""
@@ -42,16 +40,16 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     agent = invocation_context.agent
     if not isinstance(agent, LlmAgent):
       return
-
+    
     config = agent.canonical_content_config
-    if config.enabled:
+    if agent.include_contents != 'none':
       llm_request.contents = await _get_contents(
           config,
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
-          invocation_context.session.state,
-          agent
+          session_state=invocation_context.session.state,
+          current_invocation_id=invocation_context.invocation_id
       )
 
     # Maintain async generator behavior
@@ -189,265 +187,123 @@ def _rearrange_events_for_latest_function_response(
   return result_events
 
 
-async def summarize_events_with_llm(
-    agent: "LlmAgent",
-    events: list[Event],
-    summarization_config: Optional[SummarizationConfig] = None,
-    summary_template: Optional[str] = None,
-    model_name_for_request: Optional[str] = None,
-) -> str:
+def _normalize_limits(
+    max_events: Optional[int], 
+    always_include_last_n: Optional[int], 
+    total: int
+) -> tuple[Optional[int], int]:
     """
-    Summarize a list of events using the agent's LLM or a model specified in SummarizationConfig.
-    The model name MUST be provided via model_name_for_request for the LlmRequest.
-    Returns the summary string.
-    agent: LlmAgent (type as string to avoid circular import)
+    Normalize the values of max_events and always_include_last_n for robust slicing logic.
+
+    - None means "no limit" for max_events.
+    - always_include_last_n is never greater than max_events (if both are set).
+    - always_include_last_n is never greater than the total number of contents.
+    - Negative or zero values are treated as no limit (for max_events) or zero (for always_include_last_n).
+
+    Args:
+        max_events: Optional maximum number of events to include (None means unlimited).
+        always_include_last_n: Optional number of most recent events to always include in full (None or 0 means none).
+        total: The total number of available content items.
+
+    Returns:
+        A tuple (max_events, always_include_last_n) with normalized, safe values for downstream logic.
     """
-    logger = logging.getLogger(__name__)
-
-    if not events:
-        return ""
-    if not model_name_for_request:
-        logger.error("Model name for request is required for summarization LLM call.")
-        return "[Summary unavailable: Missing model name]"
-
-    event_texts = []
-    for event_item in events:
-        if event_item.content and event_item.content.parts:
-            for part in event_item.content.parts:
-                if part.text:
-                    event_texts.append(f"[{event_item.author}] {part.text}")
-    history_text = "\n".join(event_texts)
-
-    # Build the instruction
-    instruction_text = "Summarize the following conversation history as concisely and informatively as possible."
-    if summarization_config and summarization_config.instruction:
-        instruction_text = summarization_config.instruction
-
-    # Build the LLM request content for summarization
-    from google.genai import types as GoogleGenAITypes
-    combined_prompt_text = f"\nConversation History:\\n{history_text}"
-    summarization_contents = [GoogleGenAITypes.Content(role="user", parts=[GoogleGenAITypes.Part(text=combined_prompt_text)])]
-
-    summarization_llm_obj = agent.canonical_model
-    # Determine which model object to call based on config, fallback to agent's
-    # Note: We use model_name_for_request (string) IN the LlmRequest below.
-    if summarization_config and summarization_config.model:
-        if summarization_config.model != model_name_for_request:
-             # This case should ideally not happen if logic in _get_contents is correct,
-             # but log if config model and requested model name differ.
-             logger.warning(f"Summarization config model '{summarization_config.model}' differs from requested model name '{model_name_for_request}'. Using object for '{summarization_config.model}'.")
-        try:
-            from ...models.registry import LLMRegistry
-            summarization_llm_obj = LLMRegistry.new_llm(summarization_config.model)
-            logger.info(f"Using custom model object '{summarization_config.model}' for summarization call.")
-        except Exception as e:
-            logger.warning(f"Failed to instantiate custom summarization model object '{summarization_config.model}', falling back to agent's default model object. Error: {e}")
-            summarization_llm_obj = agent.canonical_model
-    else:
-         logger.info(f"Using agent's default model object for summarization call (model name for request: '{model_name_for_request}').")
-         summarization_llm_obj = agent.canonical_model
-
-    # Prepare generation_config
-    final_generation_config = GoogleGenAITypes.GenerateContentConfig(
-        system_instruction=instruction_text,
-        temperature=0.1,
-        max_output_tokens=1000
-    )
-
-    # Construct LlmRequest and Call the LLM by passing the request object
-    try:
-        from ...models.llm_request import LlmRequest
-        llm_summary_request = LlmRequest(
-            model=model_name_for_request,
-            contents=summarization_contents,
-            config=final_generation_config, 
-            tools=[],                            
-        )
-        
-        logger.info(f"Sending summarization request object via {summarization_llm_obj.__class__.__name__}: {llm_summary_request.model_dump(exclude_none=True)}")
-
-        response_parts = []
-        # Call generate_content_async passing the LlmRequest object positionally
-        async for response_chunk in summarization_llm_obj.generate_content_async(llm_summary_request):
-            if response_chunk and response_chunk.content and response_chunk.content.parts:
-                for part in response_chunk.content.parts:
-                    if part.text:
-                        response_parts.append(part.text)
-        
-        summary = "".join(response_parts)
-        
-        if summary.strip():
-            if summary_template:
-                return summary_template.format(summary=summary)
-            return summary
-        
-        logger.warning("Summarization produced an empty or whitespace-only result.")
-        return "[Summary produced no content]"
-
-    except Exception as e:
-        logger.error(f"Summarization LLM call failed: {e}", exc_info=True)
-        return "[Summary unavailable due to error]"
+    if max_events is not None and max_events <= 0:
+        max_events = None
+    if always_include_last_n is None or always_include_last_n <= 0:
+        always_include_last_n = 0
+    if max_events is not None and always_include_last_n > max_events:
+        always_include_last_n = max_events
+    if always_include_last_n > total:
+        always_include_last_n = total
+    return max_events, always_include_last_n
 
 
-async def _get_contents(
-    config: ContentConfig,
-    current_branch: Optional[str],
-    events: list[Event],
-    agent_name: str = '',
-    session_state: Optional[dict] = None,
-    agent: "LlmAgent" = None,
+def _apply_max_events_with_always_include(
+    contents: list[types.Content], 
+    max_events: Optional[int], 
+    always_include_last_n: Optional[int]
 ) -> list[types.Content]:
-  """Get the contents for the LLM request, using ContentConfig-driven pipeline."""
-  logger = logging.getLogger(__name__)
-  
-  initial_filtered_events = []
-  for event in events:
-    if (
-        not event.content
-        or not event.content.role
-        or not event.content.parts
-        or (hasattr(event.content.parts[0], 'text') and not event.content.parts[0].text)
-    ): continue # Skip empty/invalid events
-    if not _is_event_belongs_to_branch(current_branch, event): continue
-    if _is_auth_event(event): continue
-    if config.include_authors and event.author not in config.include_authors: continue
-    if config.exclude_authors and event.author in config.exclude_authors: continue
-    initial_filtered_events.append(event)
-  if config.max_events is not None and len(initial_filtered_events) > config.max_events:
-    initial_filtered_events = initial_filtered_events[-config.max_events:]
+    """
+    Apply max_events and always_include_last_n slicing to the content list in a consistent, robust way.
 
-  # Isolate events for 'always_include_last_n' (Y)
-  Y = config.always_include_last_n or 0
-  events_to_always_include_in_full: list[Event] = []
-  events_for_further_processing: list[Event] = [] # Declare here
+    - If max_events is set, returns at most max_events items from the end of the list.
+    - If always_include_last_n is set and greater than max_events, always returns that many from the end.
+    - If neither is set, returns the full list.
 
-  if Y > 0 and len(initial_filtered_events) >= Y:
-      events_to_always_include_in_full = initial_filtered_events[-Y:]
-      events_for_further_processing = initial_filtered_events[:-Y]
-  elif Y > 0: # Less total events than Y, all are "always_include"
-      events_to_always_include_in_full = initial_filtered_events[:] # Use a copy
-      events_for_further_processing = [] # Explicitly empty
-  else: # Y is 0 or None
-      events_for_further_processing = initial_filtered_events[:] # Use a copy
-      # events_to_always_include_in_full remains empty as initialized
+    This ensures that the always_include_last_n constraint takes precedence if it is more restrictive than max_events.
 
-  # Apply summarization_window (N) to the remaining events (events_for_further_processing)
-  N = config.summarization_window
-  events_from_window_to_consider: list[Event] = events_for_further_processing
+    Args:
+        contents: The list of content items to slice.
+        max_events: Optional maximum number of events to include.
+        always_include_last_n: Optional number of most recent events to always include in full.
 
-  if N is not None and len(events_for_further_processing) > N:
-      events_from_window_to_consider = events_for_further_processing[-N:]
-  # If N is None or larger/equal, all events_for_further_processing are considered.
+    Returns:
+        The sliced list of content items, respecting the constraints.
+    """
+    total = len(contents)
+    max_events, always_include_last_n = _normalize_limits(max_events, always_include_last_n, total)
+    if max_events is not None:
+        if always_include_last_n > max_events:
+            return contents[-always_include_last_n:]
+        return contents[-max_events:]
+    if always_include_last_n > 0:
+        return contents[-always_include_last_n:]
+    return contents
 
-  processed_summary_event: Optional[Event] = None
-  final_events_before_always_include: list[Event] = [] 
 
-  if config.summarize and agent and events_from_window_to_consider:
-      logger.info(f"Summarizing {len(events_from_window_to_consider)} events (from window before last {Y})...")
-      
-      summarization_model_name_str: Optional[str] = None
-      if config.summarization_config and config.summarization_config.model:
-          summarization_model_name_str = config.summarization_config.model
-      elif isinstance(agent.model, str) and agent.model:
-            summarization_model_name_str = agent.model
-      elif hasattr(agent.canonical_model, 'model_name'):
-            try: summarization_model_name_str = agent.canonical_model.model_name
-            except: pass # Keep as None if attribute exists but fails to retrieve
-      elif hasattr(agent.canonical_model, '_model_id'): # Gemini specific, attempt if model_name wasn't found
-            try: summarization_model_name_str = agent.canonical_model._model_id
-            except: pass # Keep as None
+def _get_contents_to_summarize(contents: list[types.Content], always_include_last_n: int) -> list[types.Content]:
+    """
+    Returns the contents that should be summarized (all except the always-include tail).
 
-      if summarization_model_name_str:
-          summary_text = await summarize_events_with_llm(
-              agent=agent,
-              events=events_from_window_to_consider,
-              summarization_config=config.summarization_config,
-              summary_template=config.summary_template,
-              model_name_for_request=summarization_model_name_str
-          )
-          if summary_text.strip() and not summary_text.startswith("[Summary unavailable") and not summary_text.startswith("[Summary produced no content"):
-              summary_part = types.Part(text=summary_text)
-              content_for_summary_event = types.Content(role='user', parts=[summary_part])
-              processed_summary_event = Event(
-                  author='system_summary', 
-                  content=content_for_summary_event, 
-                  branch=current_branch,
-                  id=Event.new_id()
-              )
-              final_events_before_always_include.append(processed_summary_event)
-              logger.debug(f"Created summary event.")
-          else:
-              logger.warning(f"Summarization did not produce valid text: {summary_text}. Including original events from window.")
-              final_events_before_always_include.extend(events_from_window_to_consider)
-      else:
-          logger.error("Could not determine model name for summarization. Skipping summarization and including original events from window.")
-          final_events_before_always_include.extend(events_from_window_to_consider)
-  else: 
-      final_events_before_always_include.extend(events_from_window_to_consider)
+    Args:
+        contents: The full list of content items.
+        always_include_last_n: The number of most recent items to always include in full.
 
-  # State/context injection (if configured)
-  context_event: Optional[Event] = None
-  if config.context_from_state and session_state:
-    context_values = {k: session_state.get(k, "") for k in config.context_from_state}
-    context_str = ""
-    if config.state_template:
-      try: context_str = config.state_template.format(context=context_values)
-      except Exception as e: 
-          logger.warning(f"Failed state template format: {e}. Defaulting."); 
-          context_str = "\n".join(f"{k}: {v}" for k, v in context_values.items())
-    else: context_str = "\n".join(f"{k}: {v}" for k, v in context_values.items())
-    
-    if context_str.strip():
-      context_part = types.Part(text=context_str)
-      content_for_context_event = types.Content(role='user', parts=[context_part])
-      context_event = Event(
-          author='system_context',
-          content=content_for_context_event,
-          branch=current_branch,
-          id=Event.new_id()
-      )
-      logger.debug("Created context injection event.")
-      
-  # Recombination
-  final_event_list: list[Event] = []
-  if context_event:
-      final_event_list.append(context_event)
+    Returns:
+        The list of content items to be summarized (all except the last N).
+    """
+    if always_include_last_n < len(contents):
+        return contents[:-always_include_last_n]
+    return []
 
-  final_event_list.extend(final_events_before_always_include)
-  final_event_list.extend(events_to_always_include_in_full)
 
-  # Convert foreign events (if enabled)
-  if config.convert_foreign_events:
-    converted_final_event_list: list[Event] = []
-    for event_item in final_event_list:
-      if _is_other_agent_reply(agent_name, event_item):
-        converted_final_event_list.append(_convert_foreign_event(event_item))
-      else:
-        converted_final_event_list.append(event_item)
-    final_event_list = converted_final_event_list # Update list with converted events
+def _get_always_include_contents(contents: list[types.Content], always_include_last_n: int) -> list[types.Content]:
+    """
+    Returns the last always_include_last_n contents, or the full list if N is zero.
 
-  # Final processing: Rearrangement and Conversion to types.Content
-  final_model_contents: list[types.Content] = []
-  if final_event_list:
-      rearranged_events = _rearrange_events_for_latest_function_response(final_event_list)
-      rearranged_events = _rearrange_events_for_async_function_responses_in_history(rearranged_events)
-      
-      for event_item in rearranged_events:
-        if event_item.content:
-            content_copy = copy.deepcopy(event_item.content)
-            remove_client_function_call_id(content_copy)
-            final_model_contents.append(content_copy)
-      logger.debug(f"Final processed content count: {len(final_model_contents)}")
-  else:
-       logger.debug("No events generated for the final content list.")
-       
-  return final_model_contents
+    Args:
+        contents: The full list of content items.
+        always_include_last_n: The number of most recent items to always include in full.
+
+    Returns:
+        The list of content items to always include (the last N, or all if N is zero).
+    """
+    if always_include_last_n > 0:
+        return contents[-always_include_last_n:]
+    return contents
+
+
+def _prepare_final_contents(contents: list[types.Content], always_include_last_n: int) -> tuple[list[types.Content], list[types.Content]]:
+    """
+    Groups the logic for splitting contents into those to summarize and those to always include.
+
+    Args:
+        contents: The full list of content items.
+        always_include_last_n: The number of most recent items to always include in full.
+
+    Returns:
+        A tuple (to_summarize, always_include) where:
+            - to_summarize: list of content items to be summarized
+            - always_include: list of content items to always include in full
+    """
+    to_summarize = _get_contents_to_summarize(contents, always_include_last_n)
+    always_include = _get_always_include_contents(contents, always_include_last_n)
+    return to_summarize, always_include
 
 
 def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
   """Whether the event is a reply from another agent."""
-  if event.author in ['system_context', 'system_summary']: # Ignore system-generated events
-      return False
   return bool(
       current_agent_name
       and event.author != current_agent_name
@@ -602,3 +458,324 @@ def _is_auth_event(event: Event) -> bool:
     ):
       return True
   return False
+
+
+async def _summarize_contents_with_llm(
+    events: list[Event],
+    summarization_config: Optional[SummarizationConfig] = None,
+    summary_template: Optional[str] = None,
+    model_name_for_request: Optional[str] = None,
+) -> str:
+    """
+    Summarize a list of events using the agent's LLM or a model specified in SummarizationConfig.
+    The model name MUST be provided via model_name_for_request for the LlmRequest.
+    Returns the summary string.
+    """
+     #in future permit to use any agent
+     #Type str to avoid circular import with LlmAgent
+    agent: str =  "LlmAgent",
+    if not events:
+        return ""
+    if not model_name_for_request:
+        logger.error("Model name for request is required for summarization LLM call.")
+        return "[Summary unavailable: Missing model name]"
+
+    event_texts = []
+    for event_item in events:
+        if event_item.content and event_item.content.parts:
+            for part in event_item.content.parts:
+                if part.text:
+                    event_texts.append(f"[{event_item.author}] {part.text}")
+    history_text = "\n".join(event_texts)
+
+    # Build the instruction
+    instruction_text = "Summarize the following conversation history as concisely and informatively as possible."
+    if summarization_config and summarization_config.instruction:
+        instruction_text = summarization_config.instruction
+
+    # Build the LLM request content for summarization
+    from google.genai import types as GoogleGenAITypes
+    combined_prompt_text = f"\nConversation History:\\n{history_text}"
+    summarization_contents = [GoogleGenAITypes.Content(role="user", parts=[GoogleGenAITypes.Part(text=combined_prompt_text)])]
+
+    summarization_llm_obj = agent.canonical_model
+    # Determine which model object to call based on config, fallback to agent's
+    # Note: We use model_name_for_request (string) IN the LlmRequest below.
+    if summarization_config and summarization_config.model:
+        if summarization_config.model != model_name_for_request:
+             # This case should ideally not happen if logic in _get_contents is correct,
+             # but log if config model and requested model name differ.
+             logger.warning(f"Summarization config model '{summarization_config.model}' differs from requested model name '{model_name_for_request}'. Using object for '{summarization_config.model}'.")
+        try:
+            from ...models.registry import LLMRegistry
+            summarization_llm_obj = LLMRegistry.new_llm(summarization_config.model)
+            logger.info(f"Using custom model object '{summarization_config.model}' for summarization call.")
+        except Exception as e:
+            logger.warning(f"Failed to instantiate custom summarization model object '{summarization_config.model}', falling back to agent's default model object. Error: {e}")
+            summarization_llm_obj = agent.canonical_model
+    else:
+         logger.info(f"Using agent's default model object for summarization call (model name for request: '{model_name_for_request}').")
+         summarization_llm_obj = agent.canonical_model
+
+    # Prepare generation_config
+    final_generation_config = GoogleGenAITypes.GenerateContentConfig(
+        system_instruction=instruction_text,
+        temperature=0.1,
+        max_output_tokens=1000
+    )
+
+    # Construct LlmRequest and Call the LLM by passing the request object
+    try:
+        from ...models.llm_request import LlmRequest
+        llm_summary_request = LlmRequest(
+            model=model_name_for_request,
+            contents=summarization_contents,
+            config=final_generation_config, 
+            tools=[],                            
+        )
+        
+        logger.info(f"Sending summarization request object via {summarization_llm_obj.__class__.__name__}: {llm_summary_request.model_dump(exclude_none=True)}")
+
+        response_parts = []
+        # Call generate_content_async passing the LlmRequest object positionally
+        async for response_chunk in summarization_llm_obj.generate_content_async(llm_summary_request):
+            if response_chunk and response_chunk.content and response_chunk.content.parts:
+                for part in response_chunk.content.parts:
+                    if part.text:
+                        response_parts.append(part.text)
+        
+        summary = "".join(response_parts)
+        
+        if summary.strip():
+            if summary_template:
+                return summary_template.format(summary=summary)
+            return summary
+        
+        logger.warning("Summarization produced an empty or whitespace-only result.")
+        return "[Summary produced no content]"
+
+    except Exception as e:
+        logger.error(f"Summarization LLM call failed: {e}", exc_info=True)
+        return "[Summary unavailable due to error]"
+
+
+def _get_state_context_content(
+    state: dict,
+    context_keys: Optional[list[str]],
+    state_template: Optional[str] = None
+) -> Optional[types.Content]:
+    """
+    Extracts and formats session state as a Content object for LLM context injection.
+
+    Args:
+        state: The full session state dictionary.
+        context_keys: List of keys to extract from the state.
+        state_template: Optional template string for formatting.
+
+    Returns:
+        A types.Content object with the formatted state, or None if no keys found.
+    """
+    if not context_keys:
+        return None
+    context_data = {k: state.get(k) for k in context_keys if k in state}
+    if not context_data:
+        return None
+    template = state_template or "Session Information:\n{context}"
+    try:
+        context_str = "\n".join(f"{k}: {v}" for k, v in context_data.items())
+        formatted = template.format(context=context_str)
+    except Exception:
+        # Fallback to simple key-value listing
+        formatted = f"Session Information:\n" + "\n".join(f"{k}: {v}" for k, v in context_data.items())
+    from google.genai import types as GoogleGenAITypes
+    return GoogleGenAITypes.Content(role='user', parts=[GoogleGenAITypes.Part(text=formatted)])
+
+
+def _is_event_from_agent_flow(event, current_agent_name, current_branch, current_invocation_id):
+    """
+    Returns True if the event is from the current agent's direct flow (same agent, branch is prefix, and invocation_id matches).
+    """
+    return (
+        event.author == current_agent_name
+        and event.branch
+        and current_branch
+        and current_branch.startswith(event.branch)
+        and getattr(event, 'invocation_id', '') == current_invocation_id
+    )
+
+
+def _should_exclude_event(event: Event, config: ContentConfig, current_agent_name: str, current_branch: str, current_invocation_id: str):
+    """
+    Returns True if the event should be excluded based on exclude_authors, unless it is from the agent's own flow.
+    """
+    if config.exclude_authors and event.author in config.exclude_authors:
+        if not _is_event_from_agent_flow(event, current_agent_name, current_branch, current_invocation_id):
+            return True
+    return False
+
+
+def _should_include_event(event: Event, config: ContentConfig, current_agent_name: str, current_branch: str, current_invocation_id: str):
+    """
+    Returns True if the event should be included based on include_authors, or if it is from the agent's own flow.
+    """
+    if config.include_authors:
+        if event.author not in config.include_authors:
+            if not _is_event_from_agent_flow(event, current_agent_name, current_branch, current_invocation_id):
+                return False
+    return True
+
+
+async def _get_contents(
+    config: ContentConfig,
+    current_branch: Optional[str], 
+    events: list[Event], 
+    agent_name: str = '',     
+    session_state: Optional[dict] = None,  # new argument for state injection
+    current_invocation_id: Optional[str] = None,  # new argument for invocation_id
+) -> list[types.Content]:
+    """
+    Get the contents for the LLM request, applying all filtering, slicing, summarization, and state context injection logic.
+
+    This function:
+    - Optionally injects formatted session state as the first content item.
+    - Filters events to only those relevant for the current branch and agent.
+    - Converts foreign agent events to user-readable context if needed.
+    - Applies max_events and always_include_last_n constraints in a robust, consistent way.
+    - Splits the result into contents to summarize and those to always include in full.
+    - Optionally summarizes older history if configured.
+
+    Args:
+        config: The ContentConfig object with all content window settings.
+        current_branch: The current branch of the agent (for event filtering).
+        events: The full list of session events.
+        agent_name: The name of the current agent (for foreign event conversion).
+        session_state: The session state dictionary (for context injection).
+        current_invocation_id: The current invocation ID (for invocation-specific filtering).
+
+    Returns:
+        The final list of content items to send to the LLM, with state, summarization, and always-include logic applied.
+    """
+
+    # A. Se config.enabled for False, retorna apenas contexto de estado (se houver) ou lista vazia
+    if not config.enabled:
+        state_content = None
+        if config.context_from_state and session_state is not None:
+            state_content = _get_state_context_content(
+                session_state,
+                config.context_from_state,
+                config.state_template
+            )
+        return [state_content] if state_content else []
+
+    # 1. Filter and process events as before
+    filtered_events = []
+    for event in events:
+        if (
+            not event.content
+            or not event.content.role
+            or not event.content.parts
+            or event.content.parts[0].text == ''
+        ):
+            continue
+        if not _is_event_belongs_to_branch(current_branch, event):
+            continue
+        if _is_auth_event(event):
+            continue
+        # Author filtering logic
+        if _should_exclude_event(event, config, agent_name, current_branch, current_invocation_id):
+            continue
+        if not _should_include_event(event, config, agent_name, current_branch, current_invocation_id):
+            continue
+        # B. Respeitar convert_foreign_events
+        if _is_other_agent_reply(agent_name, event):
+            if config.convert_foreign_events:
+                filtered_events.append(_convert_foreign_event(event))
+            else:
+                filtered_events.append(event)
+        else:
+            filtered_events.append(event)
+
+    print("-- Teste de filtro: filtered_events")
+    for e in filtered_events:
+        try:
+            print(f"author={e.author}, branch={e.branch}, invocation_id={getattr(e, 'invocation_id', None)}, text={e.content.parts[0].text if e.content and e.content.parts else None}")
+        except Exception as ex:
+            print(f"Erro ao imprimir evento: {ex}")
+
+    # 2. Rearrange events for function call/response consistency
+    result_events = _rearrange_events_for_latest_function_response(filtered_events)
+    print("-- Teste de filtro: result_events após _rearrange_events_for_latest_function_response")
+    for e in result_events:
+        try:
+            print(f"author={e.author}, branch={e.branch}, invocation_id={getattr(e, 'invocation_id', None)}, text={e.content.parts[0].text if e.content and e.content.parts else None}")
+        except Exception as ex:
+            print(f"Erro ao imprimir evento: {ex}")
+
+    result_events = _rearrange_events_for_async_function_responses_in_history(result_events)
+    print("-- Teste de filtro: result_events após _rearrange_events_for_async_function_responses_in_history")
+    for e in result_events:
+        try:
+            print(f"author={e.author}, branch={e.branch}, invocation_id={getattr(e, 'invocation_id', None)}, text={e.content.parts[0].text if e.content and e.content.parts else None}")
+        except Exception as ex:
+            print(f"Erro ao imprimir evento: {ex}")
+
+    contents = []
+    for event in result_events:
+        content = copy.deepcopy(event.content)
+        remove_client_function_call_id(content)
+        contents.append(content)
+    
+    print("-- Teste de filtro: contents finais antes de state/summary")
+    for c in contents:
+        try:
+            print(f"role={c.role}, text={repr(c.parts[0].text) if c.parts else None}")
+        except Exception as ex:
+            print(f"Erro ao imprimir content: {ex}")
+
+    # 3. Optionally inject state context as the first content item
+    state_content = None
+    if config.context_from_state and session_state is not None:
+        state_content = _get_state_context_content(
+            session_state,
+            config.context_from_state,
+            config.state_template
+        )
+
+    # 4. Apply max_events and always_include_last_n constraints
+    max_events = config.max_events
+    n_always = config.always_include_last_n
+    contents = _apply_max_events_with_always_include(contents, max_events, n_always)
+
+    # 5. Normalize n_always for downstream splitting
+    _, n_always = _normalize_limits(max_events, n_always, len(contents))
+    contents_to_summarize, always_include_contents = _prepare_final_contents(contents, n_always)
+
+    # C. Implementar uso de summarization_window
+    summarization_window = config.summarization_window
+    if summarization_window is not None and summarization_window > 0:
+        if len(contents_to_summarize) > summarization_window:
+            contents_to_summarize = contents_to_summarize[-summarization_window:]
+
+    summarized_contents = []
+    if config.summarize and n_always > 0 and contents_to_summarize:
+        summary = await _summarize_contents_with_llm(
+            contents_to_summarize,
+            config.summarization_config,
+            config.summary_template,
+            agent_name
+        )
+        if summary:
+            if isinstance(summary, list):
+                summarized_contents = summary
+            else:
+                from google.genai import types as GoogleGenAITypes
+                summarized_contents = [GoogleGenAITypes.Content(role="user", parts=[GoogleGenAITypes.Part(text=summary)])]
+
+    # 6. Compose the final content list: [state] + [summary] + [always_include]
+    filtered_contents = []
+    if state_content:
+        filtered_contents.append(state_content)
+    if summarized_contents:
+        filtered_contents.extend(summarized_contents)
+    filtered_contents.extend(always_include_contents)
+    return filtered_contents

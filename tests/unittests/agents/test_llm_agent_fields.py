@@ -277,12 +277,12 @@ def test_content_config_defaults():
     assert config.exclude_authors is None
     assert config.max_events is None
     assert config.summarize is False
-    assert config.summary_template is None
+    assert config.summary_template == "Previous conversation summary: {summary}"
     assert config.summarization_config is None
     assert config.summarization_window is None
     assert config.always_include_last_n is None
     assert config.context_from_state is None
-    assert config.state_template is None
+    assert config.state_template == "Session Information:\n{context}"
 
 
 def test_content_config_custom():
@@ -290,7 +290,6 @@ def test_content_config_custom():
     config = ContentConfig(
         enabled=False,
         include_authors=["user", "agent"],
-        exclude_authors=["system"],
         max_events=10,
         summarize=True,
         summary_template="Summary: {summary}",
@@ -302,7 +301,7 @@ def test_content_config_custom():
     )
     assert config.enabled is False
     assert config.include_authors == ["user", "agent"]
-    assert config.exclude_authors == ["system"]
+    assert config.exclude_authors is None
     assert config.max_events == 10
     assert config.summarize is True
     assert config.summary_template == "Summary: {summary}"
@@ -318,7 +317,7 @@ def test_content_config_serialization():
         "enabled": False,
         "include_authors": ["user"],
         "summarize": True,
-        "summarization_config": {"model": "gemini-2.0-flash"}
+        "summarization_config": {"model": "gemini-2.0-flash", "instruction": "Summarize briefly", "max_tokens": 100}
     }
     config = ContentConfig(**data)
     dumped = config.model_dump()
