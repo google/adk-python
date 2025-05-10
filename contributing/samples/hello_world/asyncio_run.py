@@ -83,7 +83,7 @@ async def main():
   print('------------------------------------')
   await run_prompt(session_11, 'Hi')
   await run_prompt(session_11, 'Roll a die with 100 sides')
-  await run_prompt(session_11, 'Roll a die again.')
+  await run_prompt(session_11, 'Roll a die again with 100 sides.')
   await run_prompt(session_11, 'What numbers did I got?')
   await run_prompt_bytes(session_11, 'Hi bytes')
   print(
@@ -130,7 +130,7 @@ def main_sync():
   print('------------------------------------')
   run_prompt(session_11, 'Hi')
   run_prompt(session_11, 'Roll a die with 100 sides.')
-  run_prompt(session_11, 'Roll a die again.')
+  run_prompt(session_11, 'Roll a die again with 100 sides.')
   run_prompt(session_11, 'What numbers did I got?')
   end_time = time.time()
   print('------------------------------------')
