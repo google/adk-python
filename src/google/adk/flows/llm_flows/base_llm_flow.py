@@ -231,7 +231,7 @@ class BaseLlmFlow(ABC):
       async for event in self._run_one_step_async(invocation_context):
         last_event = event
         yield event
-      if not last_event or last_event.is_final_response():
+      if not last_event or last_event.is_final_response() or last_event.partial:
         break
 
   async def _run_one_step_async(
