@@ -656,7 +656,7 @@ async def _get_contents(
         The final list of content items to send to the LLM, with state, summarization, and always-include logic applied.
     """
 
-    # A. Se config.enabled for False, retorna apenas contexto de estado (se houver) ou lista vazia
+    # A. If config.enabled is False, return only state context (if any) or an empty list
     if not config.enabled:
         state_content = None
         if config.context_from_state and session_state is not None:
@@ -686,7 +686,7 @@ async def _get_contents(
             continue
         if not _should_include_event(event, config, agent_name, current_branch, current_invocation_id):
             continue
-        # B. Respeitar convert_foreign_events
+        # B. Respect convert_foreign_events
         if _is_other_agent_reply(agent_name, event):
             if config.convert_foreign_events:
                 filtered_events.append(_convert_foreign_event(event))
@@ -695,29 +695,10 @@ async def _get_contents(
         else:
             filtered_events.append(event)
 
-    print("-- Teste de filtro: filtered_events")
-    for e in filtered_events:
-        try:
-            print(f"author={e.author}, branch={e.branch}, invocation_id={getattr(e, 'invocation_id', None)}, text={e.content.parts[0].text if e.content and e.content.parts else None}")
-        except Exception as ex:
-            print(f"Erro ao imprimir evento: {ex}")
-
     # 2. Rearrange events for function call/response consistency
     result_events = _rearrange_events_for_latest_function_response(filtered_events)
-    print("-- Teste de filtro: result_events após _rearrange_events_for_latest_function_response")
-    for e in result_events:
-        try:
-            print(f"author={e.author}, branch={e.branch}, invocation_id={getattr(e, 'invocation_id', None)}, text={e.content.parts[0].text if e.content and e.content.parts else None}")
-        except Exception as ex:
-            print(f"Erro ao imprimir evento: {ex}")
 
     result_events = _rearrange_events_for_async_function_responses_in_history(result_events)
-    print("-- Teste de filtro: result_events após _rearrange_events_for_async_function_responses_in_history")
-    for e in result_events:
-        try:
-            print(f"author={e.author}, branch={e.branch}, invocation_id={getattr(e, 'invocation_id', None)}, text={e.content.parts[0].text if e.content and e.content.parts else None}")
-        except Exception as ex:
-            print(f"Erro ao imprimir evento: {ex}")
 
     contents = []
     for event in result_events:
@@ -725,13 +706,6 @@ async def _get_contents(
         remove_client_function_call_id(content)
         contents.append(content)
     
-    print("-- Teste de filtro: contents finais antes de state/summary")
-    for c in contents:
-        try:
-            print(f"role={c.role}, text={repr(c.parts[0].text) if c.parts else None}")
-        except Exception as ex:
-            print(f"Erro ao imprimir content: {ex}")
-
     # 3. Optionally inject state context as the first content item
     state_content = None
     if config.context_from_state and session_state is not None:
@@ -750,7 +724,7 @@ async def _get_contents(
     _, n_always = _normalize_limits(max_events, n_always, len(contents))
     contents_to_summarize, always_include_contents = _prepare_final_contents(contents, n_always)
 
-    # C. Implementar uso de summarization_window
+    # C. Implement use of summarization_window
     summarization_window = config.summarization_window
     if summarization_window is not None and summarization_window > 0:
         if len(contents_to_summarize) > summarization_window:

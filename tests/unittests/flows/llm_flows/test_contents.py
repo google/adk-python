@@ -192,8 +192,6 @@ async def test_exclude_authors_does_not_exclude_own_flow(event_with_author, samp
         current_invocation_id="abc",
     )
     texts = [c.parts[0].text for c in out]
-    print("-- Teste de filtro: texts =", texts)
-    print("-- Teste de filtro: any('hello' in t for t in texts) =", any("hello" in t for t in texts))
     assert any("hello" in t for t in texts)
     assert any("For context:" in t for t in texts)
     assert "hello" in texts and "For context:" in texts
@@ -218,8 +216,6 @@ async def test_exclude_authors_excludes_other(event_with_author, sample_config):
         current_invocation_id="abc",
     )
     texts = [c.parts[0].text for c in out]
-    print("-- Teste de filtro: texts =", texts)
-    print("-- Teste de filtro: any('hello' in t for t in texts) =", any("hello" in t for t in texts))
     assert any("hello" in t for t in texts)
     assert all("For context:" not in t for t in texts)
     assert texts == ["hello"]
@@ -244,8 +240,6 @@ async def test_include_authors_includes_own_flow(event_with_author, sample_confi
         current_invocation_id="abc",
     )
     texts = [c.parts[0].text for c in out]
-    print("-- Teste de filtro: texts =", texts)
-    print("-- Teste de filtro: any('hello' in t for t in texts) =", any("hello" in t for t in texts))
     assert any("hello" in t for t in texts)
     assert any("For context:" in t for t in texts)
     assert len(out) == 2
@@ -291,8 +285,6 @@ async def test_exclude_and_include_none(event_with_author, sample_config):
         current_invocation_id="abc",
     )
     texts = [c.parts[0].text for c in out]
-    print("-- Teste de filtro: texts =", texts)
-    print("-- Teste de filtro: any('hello' in t for t in texts) =", any("hello" in t for t in texts))
     assert any("hello" in t for t in texts)
     assert any("For context:" in t for t in texts)
     assert len(out) == 2
@@ -355,7 +347,7 @@ def test_should_include_event_always_include_own_flow():
 
 @pytest.mark.asyncio
 def test_get_contents_enabled_false(sample_event, sample_state, sample_config):
-    # Deve retornar apenas o contexto de estado (se configurado) ou lista vazia
+    # Should return only state context (if configured) or an empty list
     config = copy.deepcopy(sample_config)
     config.enabled = False
     events = [copy.deepcopy(sample_event) for _ in range(3)]
@@ -366,14 +358,13 @@ def test_get_contents_enabled_false(sample_event, sample_state, sample_config):
         agent_name="user",
         session_state=sample_state,
     ))
-    print("-- Teste de filtro: enabled=False, out =", [c.parts[0].text for c in out])
     assert len(out) == 1
     assert "user_profile" in out[0].parts[0].text
     assert "current_task" in out[0].parts[0].text
 
 @pytest.mark.asyncio
 def test_get_contents_convert_foreign_events_false(event_with_author, sample_config):
-    # Eventos de outros agentes não devem ser convertidos para contexto
+    # Events from other agents should not be converted to context
     config = copy.deepcopy(sample_config)
     config.convert_foreign_events = False
     config.always_include_last_n = 2
@@ -390,25 +381,24 @@ def test_get_contents_convert_foreign_events_false(event_with_author, sample_con
         current_invocation_id="abc",
     ))
     texts = [c.parts[0].text for c in out]
-    print("-- Teste de filtro: convert_foreign_events=False, texts =", texts)
     assert any("hello" in t for t in texts)
     assert all("For context:" not in t for t in texts)
     assert len(out) == 2
 
 @pytest.mark.asyncio
 def test_get_contents_summarization_window(event_with_author, sample_config):
-    # Só os eventos mais recentes (dentro da janela) devem ser resumidos
+    # Only the most recent events (within the window) should be summarized
     from google.adk.agents.content_config import SummarizationConfig
     config = copy.deepcopy(sample_config)
     config.summarize = True
     config.summarization_config = SummarizationConfig(model="dummy-model")
     config.always_include_last_n = 2
     config.summarization_window = 3
-    # Cria 7 eventos: 2 always_include, 3 para sumarizar, 2 antigos (devem ser descartados)
-    events = [event_with_author("user", "main", "id") for _ in range(2)]  # antigos
-    events += [event_with_author("user", "main", "id") for _ in range(3)] # para sumarizar
+    # Create 7 events: 2 old (should be discarded), 3 to summarize, 2 always_include
+    events = [event_with_author("user", "main", "id") for _ in range(2)]  # old
+    events += [event_with_author("user", "main", "id") for _ in range(3)] # to summarize
     events += [event_with_author("user", "main", "id") for _ in range(2)] # always_include
-    # Mock do summarizer para não chamar LLM real
+    # Mock summarizer to avoid real LLM call
     async def fake_summarize(*args, **kwargs):
         return "RESUMO"
     contents_mod._summarize_contents_with_llm = fake_summarize
@@ -420,6 +410,5 @@ def test_get_contents_summarization_window(event_with_author, sample_config):
         session_state=None,
     ))
     texts = [c.parts[0].text for c in out]
-    print("-- Teste de filtro: summarization_window, texts =", texts)
     assert any("RESUMO" in t for t in texts)
-    assert len(out) == 3  # 1 resumo + 2 always_include
+    assert len(out) == 3  # 1 summary + 2 always_include
