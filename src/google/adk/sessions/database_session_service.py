@@ -482,7 +482,7 @@ class DatabaseSessionService(BaseSessionService):
           StorageSession, (session.app_name, session.user_id, session.id)
       )
 
-      if storage_session.update_time.timestamp() > session.last_update_time:
+      if session.last_update_time > storage_session.update_time.timestamp():
         raise ValueError(
           f"Session last_update_time "
           f"{datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} "
