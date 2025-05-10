@@ -18,6 +18,8 @@ from datetime import datetime
 import logging
 import os
 import tempfile
+from typing import AsyncGenerator
+from typing import Coroutine
 from typing import Optional
 
 import click
@@ -267,9 +269,16 @@ def cli_eval(
 
   eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
 
+  async def _collect_async_gen(
+      async_gen_coroutine: Coroutine[
+          AsyncGenerator[EvalResult, None], None, None
+      ],
+  ) -> list[EvalResult]:
+    return [result async for result in async_gen_coroutine]
+
   try:
-    eval_results = list(
-        asyncio.run(
+    eval_results = asyncio.run(
+        _collect_async_gen(
             run_evals(
                 eval_set_to_evals,
                 root_agent,
