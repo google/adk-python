@@ -46,13 +46,13 @@ from typing_extensions import override
 from tzlocal import get_localzone
 
 from ..events.event import Event
+from ..states import State
 from . import _session_util
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
-from .state import State
 
 
 logger = logging.getLogger(__name__)
