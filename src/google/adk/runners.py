@@ -392,6 +392,9 @@ class Runner:
       if built_in_code_execution not in self.agent.canonical_tools():
         self.agent.tools.append(built_in_code_execution)
 
+    if not isinstance(self.agent, BaseAgent):
+      raise ValueError("Invalid parent agent: The provided 'agent' must be an instance of 'BaseAgent' or a subclass of 'BaseAgent'.")
+
     return InvocationContext(
         artifact_service=self.artifact_service,
         session_service=self.session_service,
