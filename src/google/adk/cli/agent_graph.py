@@ -141,7 +141,7 @@ async def build_graph(graph, agent: BaseAgent, highlight_pairs):
 async def get_agent_graph(root_agent, highlights_pairs, image=False):
   print('build graph')
   graph = graphviz.Digraph(graph_attr={'rankdir': 'LR', 'bgcolor': '#333537'})
-  build_graph(graph, root_agent, highlights_pairs)
+  await build_graph(graph, root_agent, highlights_pairs)
   if image:
     return graph.pipe(format='png')
   else:

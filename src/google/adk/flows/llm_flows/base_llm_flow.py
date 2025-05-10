@@ -267,6 +267,7 @@ class BaseLlmFlow(ABC):
 
     # Calls the LLM.
     model_response_event = Event(
+        id=Event.new_id(),
         invocation_id=invocation_context.invocation_id,
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
@@ -278,8 +279,8 @@ class BaseLlmFlow(ABC):
       async for event in self._postprocess_async(
           invocation_context, llm_request, llm_response, model_response_event
       ):
-        # Use a new id for every event.
-        event.id = Event.new_id()
+        # Update the mutable event id to avoid conflict
+        model_response_event.id = Event.new_id()
         yield event
 
   async def _preprocess_async(
