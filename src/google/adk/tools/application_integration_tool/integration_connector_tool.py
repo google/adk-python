@@ -14,6 +14,7 @@
 
 
 import logging
+import asyncio
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -75,6 +76,7 @@ class IntegrationConnectorTool(BaseTool):
       operation: str,
       action: str,
       rest_api_tool: RestApiTool,
+      dynamic_auth_config: Optional[Dict[str, Any]] = None,
   ):
     """Initializes the ApplicationIntegrationTool.
 
@@ -108,6 +110,7 @@ class IntegrationConnectorTool(BaseTool):
     self.operation = operation
     self.action = action
     self.rest_api_tool = rest_api_tool
+    self.dynamic_auth_config = dynamic_auth_config
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -136,8 +139,16 @@ class IntegrationConnectorTool(BaseTool):
     args['entity'] = self.entity
     args['operation'] = self.operation
     args['action'] = self.action
+
+    # if an override config was set on this tool, include it
+    if self.dynamic_auth_config is not None:
+      args['dynamicAuthConfig'] = self.dynamic_auth_config
+
     logger.info('Running tool: %s with args: %s', self.name, args)
-    return self.rest_api_tool.call(args=args, tool_context=tool_context)
+    result = self.rest_api_tool.call(args=args, tool_context=tool_context)
+    if asyncio.iscoroutine(result):
+      result = await result
+    return result
 
   def __str__(self):
     return (

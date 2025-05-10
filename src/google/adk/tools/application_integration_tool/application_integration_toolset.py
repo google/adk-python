@@ -245,6 +245,11 @@ class ApplicationIntegrationToolset:
           action=action,
           operation=operation,
           rest_api_tool=rest_api_tool,
+          dynamic_auth_config=(
+              {"userToken": None}
+              if connection_details.get("authOverrideEnabled")
+              else None
+          ),
       )
       self.generated_tools[tool.name] = tool
 
