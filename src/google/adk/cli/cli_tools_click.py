@@ -18,6 +18,8 @@ from datetime import datetime
 import logging
 import os
 import tempfile
+from typing import AsyncGenerator
+from typing import Coroutine
 from typing import Optional
 
 import click
@@ -96,6 +98,23 @@ def cli_create_cmd(
   )
 
 
+def validate_exclusive(ctx, param, value):
+  # Store the validated parameters in the context
+  if not hasattr(ctx, "exclusive_opts"):
+    ctx.exclusive_opts = {}
+
+  # If this option has a value and we've already seen another exclusive option
+  if value is not None and any(ctx.exclusive_opts.values()):
+    exclusive_opt = next(key for key, val in ctx.exclusive_opts.items() if val)
+    raise click.UsageError(
+        f"Options '{param.name}' and '{exclusive_opt}' cannot be set together."
+    )
+
+  # Record this option's value
+  ctx.exclusive_opts[param.name] = value is not None
+  return value
+
+
 @main.command("run")
 @click.option(
     "--save_session",
@@ -105,13 +124,53 @@ def cli_create_cmd(
     default=False,
     help="Optional. Whether to save the session to a json file on exit.",
 )
+@click.option(
+    "--session_id",
+    type=str,
+    help=(
+        "Optional. The session ID to save the session to on exit when"
+        " --save_session is set to true. User will be prompted to enter a"
+        " session ID if not set."
+    ),
+)
+@click.option(
+    "--replay",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help=(
+        "The json file that contains the initial state of the session and user"
+        " queries. A new session will be created using this state. And user"
+        " queries are run againt the newly created session. Users cannot"
+        " continue to interact with the agent."
+    ),
+    callback=validate_exclusive,
+)
+@click.option(
+    "--resume",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help=(
+        "The json file that contains a previously saved session (by"
+        "--save_session option). The previous session will be re-displayed. And"
+        " user can continue to interact with the agent."
+    ),
+    callback=validate_exclusive,
+)
 @click.argument(
     "agent",
     type=click.Path(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
-def cli_run(agent: str, save_session: bool):
+def cli_run(
+    agent: str,
+    save_session: bool,
+    session_id: Optional[str],
+    replay: Optional[str],
+    resume: Optional[str],
+):
   """Runs an interactive CLI for a certain agent.
 
   AGENT: The path to the agent source code folder.
@@ -129,7 +188,10 @@ def cli_run(agent: str, save_session: bool):
       run_cli(
           agent_parent_dir=agent_parent_folder,
           agent_folder_name=agent_folder_name,
+          input_file=replay,
+          saved_session_file=resume,
           save_session=save_session,
+          session_id=session_id,
       )
   )
 
@@ -207,14 +269,23 @@ def cli_eval(
 
   eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
 
+  async def _collect_async_gen(
+      async_gen_coroutine: Coroutine[
+          AsyncGenerator[EvalResult, None], None, None
+      ],
+  ) -> list[EvalResult]:
+    return [result async for result in async_gen_coroutine]
+
   try:
-    eval_results = list(
-        run_evals(
-            eval_set_to_evals,
-            root_agent,
-            reset_func,
-            eval_metrics,
-            print_detailed_results=print_detailed_results,
+    eval_results = asyncio.run(
+        _collect_async_gen(
+            run_evals(
+                eval_set_to_evals,
+                root_agent,
+                reset_func,
+                eval_metrics,
+                print_detailed_results=print_detailed_results,
+            )
         )
     )
   except ModuleNotFoundError:
@@ -290,6 +361,11 @@ def cli_eval(
     default=False,
     help="Optional. Whether to enable cloud trace for telemetry.",
 )
+@click.option(
+    "--reload/--no-reload",
+    default=True,
+    help="Optional. Whether to enable auto reload for server.",
+)
 @click.argument(
     "agents_dir",
     type=click.Path(
@@ -305,6 +381,7 @@ def cli_web(
     allow_origins: Optional[list[str]] = None,
     port: int = 8000,
     trace_to_cloud: bool = False,
+    reload: bool = True,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -356,7 +433,7 @@ def cli_web(
       app,
       host="0.0.0.0",
       port=port,
-      reload=True,
+      reload=reload,
   )
 
   server = uvicorn.Server(config)
@@ -412,6 +489,11 @@ def cli_web(
     default=False,
     help="Optional. Whether to enable cloud trace for telemetry.",
 )
+@click.option(
+    "--reload/--no-reload",
+    default=True,
+    help="Optional. Whether to enable auto reload for server.",
+)
 # The directory of agents, where each sub-directory is a single agent.
 # By default, it is the current working directory
 @click.argument(
@@ -429,6 +511,7 @@ def cli_api_server(
     allow_origins: Optional[list[str]] = None,
     port: int = 8000,
     trace_to_cloud: bool = False,
+    reload: bool = True,
 ):
   """Starts a FastAPI server for agents.
 
@@ -456,7 +539,7 @@ def cli_api_server(
       ),
       host="0.0.0.0",
       port=port,
-      reload=True,
+      reload=reload,
   )
   server = uvicorn.Server(config)
   server.run()

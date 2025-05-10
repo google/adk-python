@@ -19,6 +19,7 @@ from google.adk.events import Event
 from google.adk.events import EventActions
 from google.adk.sessions import DatabaseSessionService
 from google.adk.sessions import InMemorySessionService
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai import types
 
 
@@ -183,7 +184,7 @@ def test_session_state(service_type):
 
 
 @pytest.mark.parametrize(
-    "service_type", [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 def test_create_new_session_will_merge_states(service_type):
   session_service = get_session_service(service_type)
@@ -298,3 +299,57 @@ def test_append_event_complete(service_type):
       )
       == session
   )
+
+@pytest.mark.parametrize('service_type', [SessionServiceType.IN_MEMORY])
+def test_get_session_with_config(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id = 'user'
+
+  num_test_events = 5
+  session = session_service.create_session(app_name=app_name, user_id=user_id)
+  for i in range(1, num_test_events + 1):
+    event = Event(author='user', timestamp=i)
+    session_service.append_event(session, event)
+
+  # No config, expect all events to be returned.
+  events = session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  ).events
+  assert len(events) == num_test_events
+
+  # Only expect the most recent 3 events.
+  num_recent_events = 3
+  config = GetSessionConfig(num_recent_events=num_recent_events)
+  events = session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  ).events
+  assert len(events) == num_recent_events
+  assert events[0].timestamp == num_test_events - num_recent_events + 1
+
+  # Only expect events after timestamp 4.0 (inclusive), i.e., 2 events.
+  after_timestamp = 4.0
+  config = GetSessionConfig(after_timestamp=after_timestamp)
+  events = session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  ).events
+  assert len(events) == num_test_events - after_timestamp + 1
+  assert events[0].timestamp == after_timestamp
+
+  # Expect no events if none are > after_timestamp.
+  way_after_timestamp = num_test_events * 10
+  config = GetSessionConfig(after_timestamp=way_after_timestamp)
+  events = session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  ).events
+  assert len(events) == 0
+
+  # Both filters applied, i.e., of 3 most recent events, only 2 are after
+  # timestamp 4.0, so expect 2 events.
+  config = GetSessionConfig(
+      after_timestamp=after_timestamp, num_recent_events=num_recent_events
+  )
+  events = session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  ).events
+  assert len(events) == num_test_events - after_timestamp + 1

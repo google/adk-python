@@ -14,21 +14,23 @@
 import logging
 import re
 import time
-from typing import Any
-from typing import Optional
+from typing import Any, Optional
 
-from dateutil.parser import isoparse
+from dateutil import parser
 from google import genai
 from typing_extensions import override
 
 from ..events.event import Event
 from ..events.event_actions import EventActions
+from . import _session_util
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 
+
+isoparse = parser.isoparse
 logger = logging.getLogger(__name__)
 
 
@@ -289,7 +291,7 @@ def _convert_event_to_json(event: Event):
     }
     event_json['actions'] = actions_json
   if event.content:
-    event_json['content'] = event.content.model_dump(exclude_none=True)
+    event_json['content'] = _session_util.encode_content(event.content)
   if event.error_code:
     event_json['error_code'] = event.error_code
   if event.error_message:
@@ -316,7 +318,7 @@ def _from_api_event(api_event: dict) -> Event:
       invocation_id=api_event['invocationId'],
       author=api_event['author'],
       actions=event_actions,
-      content=api_event.get('content', None),
+      content=_session_util.decode_content(api_event.get('content', None)),
       timestamp=isoparse(api_event['timestamp']).timestamp(),
       error_code=api_event.get('errorCode', None),
       error_message=api_event.get('errorMessage', None),

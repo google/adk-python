@@ -18,9 +18,7 @@ import asyncio
 import logging
 import queue
 import threading
-from typing import AsyncGenerator
-from typing import Generator
-from typing import Optional
+from typing import AsyncGenerator, Generator, Optional
 
 from deprecated import deprecated
 from google.genai import types
@@ -186,7 +184,7 @@ class Runner:
       root_agent = self.agent
 
       if new_message:
-        self._append_new_message_to_session(
+        await self._append_new_message_to_session(
             session,
             new_message,
             invocation_context,
@@ -199,7 +197,7 @@ class Runner:
           self.session_service.append_event(session=session, event=event)
         yield event
 
-  def _append_new_message_to_session(
+  async def _append_new_message_to_session(
       self,
       session: Session,
       new_message: types.Content,
@@ -225,7 +223,7 @@ class Runner:
         if part.inline_data is None:
           continue
         file_name = f'artifact_{invocation_context.invocation_id}_{i}'
-        self.artifact_service.save_artifact(
+        await self.artifact_service.save_artifact(
             app_name=self.app_name,
             user_id=session.user_id,
             session_id=session.id,
@@ -297,14 +295,14 @@ class Runner:
       self.session_service.append_event(session=session, event=event)
       yield event
 
-  def close_session(self, session: Session):
+  async def close_session(self, session: Session):
     """Closes a session and adds it to the memory service (experimental feature).
 
     Args:
         session: The session to close.
     """
     if self.memory_service:
-      self.memory_service.add_session_to_memory(session)
+      await self.memory_service.add_session_to_memory(session)
     self.session_service.close_session(session=session)
 
   def _find_agent_to_run(
@@ -391,7 +389,7 @@ class Runner:
             f'CFC is not supported for model: {model_name} in agent:'
             f' {self.agent.name}'
         )
-      if built_in_code_execution not in self.agent.canonical_tools:
+      if built_in_code_execution not in self.agent.canonical_tools():
         self.agent.tools.append(built_in_code_execution)
 
     return InvocationContext(

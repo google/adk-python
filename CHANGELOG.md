@@ -1,11 +1,66 @@
 # Changelog
 
+## 0.5.0
+
+### ⚠ BREAKING CHANGES
+
+* Updated artifact and memory service interface to be async. Agents that
+  interact with these services through callbacks or tools will now need to
+  adjust their invocation methods to be async (using await), or ensure calls
+  are wrapped in an asynchronous executor like asyncio.run(). Any service that
+  extends the base interface must also be updated.
+
+### Features
+
+* Introduced the ability to chain model callbacks.
+* Added support for async agent and model callbacks.
+* Added input transcription support for live/streaming.
+* Captured all agent code error and display on UI.
+* Set param required tag to False by default in openapi_tool.
+* Updated evaluation functions to be asynchronous.
+
+### Bug Fixes
+
+* Ensured a unique ID is generated for every event.
+* Fixed the issue when openapi_specparser has parameter.required as None.
+* Updated the 'type' value on the items/properties nested structures for Anthropic models to adhere to JSON schema.
+* Fix litellm error issues.
+
+### Miscellaneous Chores
+
+* Regenerated API docs.
+* Created a `developer` folder and added samples.
+* Updated the contributing guide.
+* Docstring improvements, typo fixings, GitHub action to enforce code styles on formatting and imports, etc.
+
+## 0.4.0
+
+### ⚠ BREAKING CHANGES
+* Set the max size of strings in database columns. MySQL mandates that all VARCHAR-type fields must specify their lengths.
+* Extract content encode/decode logic to a shared util, resolve issues with JSON serialization, and update key length for DB table to avoid key too long issue in mysql.
+* Enhance `FunctionTool` to verify if the model is providing all the mandatory arguments.
+
+### Features
+* Update ADK setup guide to improve onboarding experience.
+* feat: add ordering to recent events in database session service.
+* feat(llm_flows): support async before/after tool callbacks.
+* feat: Added --replay and --resume options to adk run cli. Check adk run --help for more details.
+* Created a new Integration Connector Tool (underlying of the ApplicationIntegrationToolSet) so that we do not force LLM to provide default value.
+
+### Bug Fixes
+
+* Don't send content with empty text to LLM.
+* Fix google search reading undefined for `renderedContent`.
+
+### Miscellaneous Chores
+* Docstring improvements, typo fixings, github action to enfore code styles on formatting and imports, etc.
+
 ## 0.3.0
 
 ### ⚠ BREAKING CHANGES
 
 * Auth: expose `access_token` and `refresh_token` at top level of auth
-  credentails, instead of a `dict`
+  credentials, instead of a `dict`
   ([commit](https://github.com/google/adk-python/commit/956fb912e8851b139668b1ccb8db10fd252a6990)).
 
 ### Features
@@ -28,7 +83,7 @@
 
 ### Miscellaneous Chores
 
-* README.md impprovements.
+* README.md improvements.
 * Various code improvements.
 * Various typo fixes.
 * Bump min version of google-genai to 1.11.0.
@@ -86,4 +141,4 @@
 * Built-in evaluation support
 * Development UI that makes local development easy
 * Deploy to Google Cloud Run, Agent Engine
-* (Experimental) Live(Bidi) auido/video agent support and Compositional Function Calling(CFC) support
+* (Experimental) Live(Bidi) audio/video agent support and Compositional Function Calling(CFC) support
