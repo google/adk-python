@@ -82,7 +82,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=integration_name,
-        trigger=trigger_name,
+        triggers=[trigger_name],
         connection=connection_name,
         entity_operations={"entity": ["LIST"]},
         actions=["action1"],
@@ -91,7 +91,7 @@ class TestIntegrationClient:
     assert client.project == project
     assert client.location == location
     assert client.integration == integration_name
-    assert client.trigger == trigger_name
+    assert client.triggers == [trigger_name]
     assert client.connection == connection_name
     assert client.entity_operations == {"entity": ["LIST"]}
     assert client.actions == ["action1"]
@@ -126,7 +126,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=[trigger_name],
           connection=None,
           entity_operations=None,
           actions=None,
@@ -169,7 +169,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=[trigger_name],
           connection=None,
           entity_operations=None,
           actions=None,
@@ -217,7 +217,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=[trigger_name],
           connection=None,
           entity_operations=None,
           actions=None,
@@ -229,7 +229,7 @@ class TestIntegrationClient:
               "Invalid request. Please check the provided values of"
               f" project\\({project}\\), location\\({location}\\),"
               f" integration\\({integration_name}\\) and"
-              f" trigger\\({trigger_name}\\)."
+              f" trigger\\(\\['{trigger_name}'\\]\\)."
           ),
       ):
         client.get_openapi_spec_for_integration()
@@ -261,7 +261,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=[trigger_name],
           connection=None,
           entity_operations=None,
           actions=None,
@@ -293,7 +293,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=[trigger_name],
           connection=None,
           entity_operations=None,
           actions=None,
@@ -311,7 +311,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=None,
         actions=None,
@@ -356,7 +356,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=entity_operations,
         actions=None,
@@ -425,7 +425,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=None,
         actions=actions,
@@ -476,7 +476,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=entity_operations,
         actions=None,
@@ -509,7 +509,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=[trigger_name],
           connection=connection_name,
           entity_operations=None,
           actions=None,
@@ -544,7 +544,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=[trigger_name],
           connection=connection_name,
           entity_operations=None,
           actions=None,
@@ -570,7 +570,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=[trigger_name],
           connection=connection_name,
           entity_operations=None,
           actions=None,
@@ -601,7 +601,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=integration_name,
-        trigger=trigger_name,
+        triggers=[trigger_name],
         connection=connection_name,
         entity_operations=None,
         actions=None,
@@ -642,7 +642,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=[trigger_name],
           connection=connection_name,
           entity_operations=None,
           actions=None,
