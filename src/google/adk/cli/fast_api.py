@@ -28,9 +28,9 @@ from typing import Any
 from typing import List
 from typing import Literal
 from typing import Optional
+from typing import Union
 
 import click
-from click import Tuple
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
@@ -53,9 +53,11 @@ from pydantic import ValidationError
 from starlette.types import Lifespan
 
 from ..agents import RunConfig
+from ..agents.base_agent import BaseAgent
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
+from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
 from ..artifacts import InMemoryArtifactService
 from ..events.event import Event
@@ -65,6 +67,7 @@ from ..sessions.database_session_service import DatabaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
+from ..tools.base_toolset import BaseToolset
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .cli_eval import EvalMetric
 from .cli_eval import EvalMetricResult
@@ -163,6 +166,7 @@ def get_fast_api_app(
   trace.set_tracer_provider(provider)
 
   exit_stacks = []
+  toolsets_to_close: set[BaseToolset] = set()
 
   @asynccontextmanager
   async def internal_lifespan(app: FastAPI):
@@ -173,6 +177,8 @@ def get_fast_api_app(
         if exit_stacks:
           for stack in exit_stacks:
             await stack.aclose()
+        for toolset in toolsets_to_close:
+          await toolset.close()
     else:
       yield
 
@@ -456,6 +462,7 @@ def get_fast_api_app(
     """Runs an eval given the details in the eval request."""
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
+    envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
     eval_set_file_path = _get_eval_set_file_path(
         app_name, agent_dir, eval_set_id
     )
@@ -466,8 +473,16 @@ def get_fast_api_app(
           "Eval ids to run list is empty. We will all evals in the eval set."
       )
     root_agent = await _get_root_agent_async(app_name)
-    eval_results = list(
-        run_evals(
+    return [
+        RunEvalResult(
+            app_name=app_name,
+            eval_set_id=eval_set_id,
+            eval_id=eval_result.eval_id,
+            final_eval_status=eval_result.final_eval_status,
+            eval_metric_results=eval_result.eval_metric_results,
+            session_id=eval_result.session_id,
+        )
+        async for eval_result in run_evals(
             eval_set_to_evals,
             root_agent,
             getattr(root_agent, "reset_data", None),
@@ -475,21 +490,7 @@ def get_fast_api_app(
             session_service=session_service,
             artifact_service=artifact_service,
         )
-    )
-
-    run_eval_results = []
-    for eval_result in eval_results:
-      run_eval_results.append(
-          RunEvalResult(
-              app_name=app_name,
-              eval_set_id=eval_set_id,
-              eval_id=eval_result.eval_id,
-              final_eval_status=eval_result.final_eval_status,
-              eval_metric_results=eval_result.eval_metric_results,
-              session_id=eval_result.session_id,
-          )
-      )
-    return run_eval_results
+    ]
 
   @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
   def delete_session(app_name: str, user_id: str, session_id: str):
@@ -673,7 +674,7 @@ def get_fast_api_app(
         from_name = event.author
         to_name = function_call.name
         function_call_highlights.append((from_name, to_name))
-        dot_graph = agent_graph.get_agent_graph(
+        dot_graph = await agent_graph.get_agent_graph(
             root_agent, function_call_highlights
         )
     elif function_responses:
@@ -682,13 +683,13 @@ def get_fast_api_app(
         from_name = function_response.name
         to_name = event.author
         function_responses_highlights.append((from_name, to_name))
-        dot_graph = agent_graph.get_agent_graph(
+        dot_graph = await agent_graph.get_agent_graph(
             root_agent, function_responses_highlights
         )
     else:
       from_name = event.author
       to_name = ""
-      dot_graph = agent_graph.get_agent_graph(
+      dot_graph = await agent_graph.get_agent_graph(
           root_agent, [(from_name, to_name)]
       )
     if dot_graph and isinstance(dot_graph, graphviz.Digraph):
@@ -766,6 +767,16 @@ def get_fast_api_app(
       for task in pending:
         task.cancel()
 
+  def _get_all_toolsets(agent: BaseAgent) -> set[BaseToolset]:
+    toolsets = set()
+    if isinstance(agent, LlmAgent):
+      for tool_union in agent.tools:
+        if isinstance(tool_union, BaseToolset):
+          toolsets.add(tool_union)
+    for sub_agent in agent.sub_agents:
+      toolsets.update(_get_all_toolsets(sub_agent))
+    return toolsets
+
   async def _get_root_agent_async(app_name: str) -> Agent:
     """Returns the root agent for the given app."""
     if app_name in root_agent_dict:
@@ -786,6 +797,7 @@ def get_fast_api_app(
         raise RuntimeError(f"error getting root agent, {e}") from e
 
     root_agent_dict[app_name] = root_agent
+    toolsets_to_close.update(_get_all_toolsets(root_agent))
     return root_agent
 
   async def _get_runner_async(app_name: str) -> Runner:

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.0
+
+### ⚠ BREAKING CHANGES
+
+* Updated artifact and memory service interface to be async. Agents that
+  interact with these services through callbacks or tools will now need to
+  adjust their invocation methods to be async (using await), or ensure calls
+  are wrapped in an asynchronous executor like asyncio.run(). Any service that
+  extends the base interface must also be updated.
+
+### Features
+
+* Introduced the ability to chain model callbacks.
+* Added support for async agent and model callbacks.
+* Added input transcription support for live/streaming.
+* Captured all agent code error and display on UI.
+* Set param required tag to False by default in openapi_tool.
+* Updated evaluation functions to be asynchronous.
+
+### Bug Fixes
+
+* Ensured a unique ID is generated for every event.
+* Fixed the issue when openapi_specparser has parameter.required as None.
+* Updated the 'type' value on the items/properties nested structures for Anthropic models to adhere to JSON schema.
+* Fix litellm error issues.
+
+### Miscellaneous Chores
+
+* Regenerated API docs.
+* Created a `developer` folder and added samples.
+* Updated the contributing guide.
+* Docstring improvements, typo fixings, GitHub action to enforce code styles on formatting and imports, etc.
+
 ## 0.4.0
 
 ### ⚠ BREAKING CHANGES
