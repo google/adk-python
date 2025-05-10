@@ -462,6 +462,7 @@ def get_fast_api_app(
     """Runs an eval given the details in the eval request."""
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
+    envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
     eval_set_file_path = _get_eval_set_file_path(
         app_name, agent_dir, eval_set_id
     )
