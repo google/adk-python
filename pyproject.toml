@@ -32,6 +32,7 @@ dependencies = [
   "google-cloud-aiplatform>=1.87.0",         # For VertexAI integrations, e.g. example store.
   "google-cloud-secret-manager>=2.22.0",     # Fetching secrets in RestAPI Tool
   "google-cloud-speech>=2.30.0",             # For Audio Transcription
+
   "google-cloud-storage>=2.18.0, <3.0.0",    # For GCS Artifact service
   "google-genai>=1.14.0",                    # Google GenAI SDK
   "graphviz>=0.20.2",                        # Graphviz for graph rendering
@@ -84,6 +85,7 @@ test = [
   "langgraph>=0.2.60",               # For LangGraphAgent
   "litellm>=1.63.11",                # For LiteLLM tests
   "llama-index-readers-file>=0.4.0", # For retrieval tests
+
   "pytest-asyncio>=0.25.0",
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
@@ -112,6 +114,7 @@ extensions = [
   "lxml>=5.3.0",                          # For load_web_page tool.
 ]
 
+
 [tool.pyink]
 # Format py files following Google style-guide
 line-length = 80
@@ -127,6 +130,7 @@ pyink-annotation-pragmas = [
   "pyright:",
   "pyre-",
 ]
+
 
 [build-system]
 # Build system specify which backend is used to build/install the project (flit,
@@ -144,6 +148,7 @@ name = "google.adk"
 [tool.isort]
 profile = "google"
 single_line_exclusions = []
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
