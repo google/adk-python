@@ -628,7 +628,8 @@ class LiteLlm(BaseLlm):
       function_args = ""
       function_id = None
       completion_args["stream"] = True
-      for part in self.llm_client.completion(**completion_args):
+      response = await self.llm_client.acompletion(**completion_args)
+      async for part in response:
         for chunk, finish_reason in _model_response_to_chunk(part):
           if isinstance(chunk, FunctionChunk):
             if chunk.name:
