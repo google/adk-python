@@ -1,5 +1,6 @@
 from abc import ABC
 from abc import abstractmethod
+from typing import Optional
 from typing import Protocol
 
 from google.adk.agents.readonly_context import ReadonlyContext
@@ -33,7 +34,7 @@ class BaseToolset(ABC):
 
   @abstractmethod
   async def get_tools(
-      self, readony_context: ReadonlyContext = None
+      self, readonly_context: Optional[ReadonlyContext] = None
   ) -> list[BaseTool]:
     """Return all tools in the toolset based on the provided context.
 
