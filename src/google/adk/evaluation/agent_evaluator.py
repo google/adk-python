@@ -76,7 +76,7 @@ class AgentEvaluator:
     return DEFAULT_CRITERIA
 
   @staticmethod
-  def evaluate(
+  async def evaluate(
       agent_module,
       eval_dataset_file_path_or_dir,
       num_runs=NUM_RUNS,
@@ -120,7 +120,7 @@ class AgentEvaluator:
 
       AgentEvaluator._validate_input([dataset], criteria)
 
-      evaluation_response = AgentEvaluator._generate_responses(
+      evaluation_response = await AgentEvaluator._generate_responses(
           agent_module,
           [dataset],
           num_runs,
@@ -246,7 +246,7 @@ class AgentEvaluator:
     return inferred_criteria
 
   @staticmethod
-  def _generate_responses(
+  async def _generate_responses(
       agent_module, eval_dataset, num_runs, agent_name=None, initial_session={}
   ):
     """Generates evaluation responses by running the agent module multiple times."""

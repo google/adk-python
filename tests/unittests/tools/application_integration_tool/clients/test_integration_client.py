@@ -114,11 +114,14 @@ class TestIntegrationClient:
     mock_response.status_code = 200
     mock_response.json.return_value = {"openApiSpec": json.dumps(expected_spec)}
 
-    with mock.patch.object(
-        IntegrationClient,
-        "_get_access_token",
-        return_value=mock_credentials.token,
-    ), mock.patch("requests.post", return_value=mock_response):
+    with (
+        mock.patch.object(
+            IntegrationClient,
+            "_get_access_token",
+            return_value=mock_credentials.token,
+        ),
+        mock.patch("requests.post", return_value=mock_response),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
@@ -202,11 +205,14 @@ class TestIntegrationClient:
         f"HTTP error {status_code}: {response_text}"
     )
 
-    with mock.patch.object(
-        IntegrationClient,
-        "_get_access_token",
-        return_value=mock_credentials.token,
-    ), mock.patch("requests.post", return_value=mock_response):
+    with (
+        mock.patch.object(
+            IntegrationClient,
+            "_get_access_token",
+            return_value=mock_credentials.token,
+        ),
+        mock.patch("requests.post", return_value=mock_response),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
@@ -243,11 +249,14 @@ class TestIntegrationClient:
         "Internal Server Error"
     )
 
-    with mock.patch.object(
-        IntegrationClient,
-        "_get_access_token",
-        return_value=mock_credentials.token,
-    ), mock.patch("requests.post", return_value=mock_response):
+    with (
+        mock.patch.object(
+            IntegrationClient,
+            "_get_access_token",
+            return_value=mock_credentials.token,
+        ),
+        mock.patch("requests.post", return_value=mock_response),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
@@ -270,12 +279,15 @@ class TestIntegrationClient:
       mock_credentials,
       mock_connections_client,
   ):
-    with mock.patch.object(
-        IntegrationClient,
-        "_get_access_token",
-        return_value=mock_credentials.token,
-    ), mock.patch(
-        "requests.post", side_effect=Exception("Something went wrong")
+    with (
+        mock.patch.object(
+            IntegrationClient,
+            "_get_access_token",
+            return_value=mock_credentials.token,
+        ),
+        mock.patch(
+            "requests.post", side_effect=Exception("Something went wrong")
+        ),
     ):
       client = IntegrationClient(
           project=project,
@@ -486,10 +498,13 @@ class TestIntegrationClient:
     mock_creds.token = "sa_token"
     mock_creds.expired = False
 
-    with mock.patch(
-        "google.oauth2.service_account.Credentials.from_service_account_info",
-        return_value=mock_creds,
-    ), mock.patch.object(mock_creds, "refresh", return_value=None):
+    with (
+        mock.patch(
+            "google.oauth2.service_account.Credentials.from_service_account_info",
+            return_value=mock_creds,
+        ),
+        mock.patch.object(mock_creds, "refresh", return_value=None),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
@@ -518,10 +533,13 @@ class TestIntegrationClient:
       mock_credentials,
   ):
     mock_credentials.expired = False
-    with mock.patch(
-        "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
-        return_value=(mock_credentials, "test_project_id"),
-    ), mock.patch.object(mock_credentials, "refresh", return_value=None):
+    with (
+        mock.patch(
+            "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
+            return_value=(mock_credentials, "test_project_id"),
+        ),
+        mock.patch.object(mock_credentials, "refresh", return_value=None),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
@@ -538,12 +556,15 @@ class TestIntegrationClient:
   def test_get_access_token_no_valid_credentials(
       self, project, location, integration_name, trigger_name, connection_name
   ):
-    with mock.patch(
-        "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
-        return_value=(None, None),
-    ), mock.patch(
-        "google.oauth2.service_account.Credentials.from_service_account_info",
-        return_value=None,
+    with (
+        mock.patch(
+            "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
+            return_value=(None, None),
+        ),
+        mock.patch(
+            "google.oauth2.service_account.Credentials.from_service_account_info",
+            return_value=None,
+        ),
     ):
       client = IntegrationClient(
           project=project,
@@ -587,9 +608,12 @@ class TestIntegrationClient:
         service_account_json=None,
     )
     client.credential_cache = mock_credentials  # Simulate a cached credential
-    with mock.patch("google.auth.default") as mock_default, mock.patch(
-        "google.oauth2.service_account.Credentials.from_service_account_info"
-    ) as mock_sa:
+    with (
+        mock.patch("google.auth.default") as mock_default,
+        mock.patch(
+            "google.oauth2.service_account.Credentials.from_service_account_info"
+        ) as mock_sa,
+    ):
       token = client._get_access_token()
       assert token == "cached_token"
       mock_default.assert_not_called()

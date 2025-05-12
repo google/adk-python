@@ -146,11 +146,12 @@ class AgentTool(BaseTool):
 
     if runner.artifact_service:
       # Forward all artifacts to parent session.
-      async for artifact_name in runner.artifact_service.list_artifact_keys(
+      artifact_names = await runner.artifact_service.list_artifact_keys(
           app_name=session.app_name,
           user_id=session.user_id,
           session_id=session.id,
-      ):
+      )
+      for artifact_name in artifact_names:
         if artifact := await runner.artifact_service.load_artifact(
             app_name=session.app_name,
             user_id=session.user_id,
