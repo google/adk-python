@@ -54,7 +54,7 @@ class BaseSessionService(abc.ABC):
   """
 
   @abc.abstractmethod
-  def create_session(
+  async def create_session(
       self,
       *,
       app_name: str,
@@ -77,7 +77,7 @@ class BaseSessionService(abc.ABC):
     pass
 
   @abc.abstractmethod
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
@@ -89,21 +89,21 @@ class BaseSessionService(abc.ABC):
     pass
 
   @abc.abstractmethod
-  def list_sessions(
+  async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     """Lists all the sessions."""
     pass
 
   @abc.abstractmethod
-  def delete_session(
+  async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     """Deletes a session."""
     pass
 
   @abc.abstractmethod
-  def list_events(
+  async def list_events(
       self,
       *,
       app_name: str,
@@ -118,7 +118,7 @@ class BaseSessionService(abc.ABC):
     # TODO: determine whether we want to finalize the session here.
     pass
 
-  def append_event(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     """Appends an event to a session object."""
     if event.partial:
       return event

@@ -181,16 +181,14 @@ async def run_evals(
         print(f"Running Eval: {eval_set_file}:{eval_name}")
         session_id = f"{EVAL_SESSION_ID_PREFIX}{str(uuid.uuid4())}"
 
-        scrape_result = (
-            await EvaluationGenerator._process_query_with_root_agent(
-                data=eval_data,
-                root_agent=root_agent,
-                reset_func=reset_func,
-                initial_session=initial_session,
-                session_id=session_id,
-                session_service=session_service,
-                artifact_service=artifact_service,
-            )
+        scrape_result = await EvaluationGenerator._process_query_with_root_agent(
+            data=eval_data,
+            root_agent=root_agent,
+            reset_func=reset_func,
+            initial_session=initial_session,
+            session_id=session_id,
+            session_service=session_service,
+            artifact_service=artifact_service,
         )
 
         eval_metric_results = []

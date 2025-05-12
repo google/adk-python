@@ -24,7 +24,7 @@ def noop_tool(x: str) -> str:
   return x
 
 
-def test_vertex_rag_retrieval_for_gemini_1_x():
+async def test_vertex_rag_retrieval_for_gemini_1_x():
   responses = [
       'response1',
   ]
@@ -46,7 +46,7 @@ def test_vertex_rag_retrieval_for_gemini_1_x():
       ],
   )
   runner = utils.InMemoryRunner(agent)
-  events = runner.run('test1')
+  events = await runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 1
@@ -61,7 +61,7 @@ def test_vertex_rag_retrieval_for_gemini_1_x():
   assert mockModel.requests[0].tools_dict['rag_retrieval'] is not None
 
 
-def test_vertex_rag_retrieval_for_gemini_1_x_with_another_function_tool():
+async def test_vertex_rag_retrieval_for_gemini_1_x_with_another_function_tool():
   responses = [
       'response1',
   ]
@@ -84,7 +84,7 @@ def test_vertex_rag_retrieval_for_gemini_1_x_with_another_function_tool():
       ],
   )
   runner = utils.InMemoryRunner(agent)
-  events = runner.run('test1')
+  events = await runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 1
@@ -103,7 +103,7 @@ def test_vertex_rag_retrieval_for_gemini_1_x_with_another_function_tool():
   assert mockModel.requests[0].tools_dict['rag_retrieval'] is not None
 
 
-def test_vertex_rag_retrieval_for_gemini_2_x():
+async def test_vertex_rag_retrieval_for_gemini_2_x():
   responses = [
       'response1',
   ]
@@ -125,7 +125,7 @@ def test_vertex_rag_retrieval_for_gemini_2_x():
       ],
   )
   runner = utils.InMemoryRunner(agent)
-  events = runner.run('test1')
+  events = await runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 1

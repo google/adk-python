@@ -19,10 +19,9 @@ import logging
 import os
 import tempfile
 from typing import AsyncGenerator
-from typing import Coroutine
 from typing import Optional
 
-import click
+import asyncclick as click
 from fastapi import FastAPI
 import uvicorn
 
@@ -212,7 +211,7 @@ def cli_run(
     default=False,
     help="Optional. Whether to print detailed results on console or not.",
 )
-def cli_eval(
+async def cli_eval(
     agent_module_file_path: str,
     eval_set_file_path: tuple[str],
     config_file_path: str,
@@ -270,22 +269,18 @@ def cli_eval(
   eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
 
   async def _collect_async_gen(
-      async_gen_coroutine: Coroutine[
-          AsyncGenerator[EvalResult, None], None, None
-      ],
+      async_gen_coroutine:
+          AsyncGenerator[EvalResult, None],
   ) -> list[EvalResult]:
     return [result async for result in async_gen_coroutine]
 
   try:
-    eval_results = asyncio.run(
-        _collect_async_gen(
-            run_evals(
-                eval_set_to_evals,
-                root_agent,
-                reset_func,
-                eval_metrics,
-                print_detailed_results=print_detailed_results,
-            )
+    eval_results = await _collect_async_gen(run_evals(
+            eval_set_to_evals,
+            root_agent,
+            reset_func,
+            eval_metrics,
+            print_detailed_results=print_detailed_results,
         )
     )
   except ModuleNotFoundError:

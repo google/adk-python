@@ -195,7 +195,7 @@ async def test_run_interactively_whitespace_and_exit(tmp_path: Path, monkeypatch
     """run_interactively should skip blank input, echo once, then exit."""
     # make a session that belongs to dummy agent
     svc = cli.InMemorySessionService()
-    sess = svc.create_session(app_name="dummy", user_id="u")
+    sess = await svc.create_session(app_name="dummy", user_id="u")
     artifact_service = cli.InMemoryArtifactService()
     root_agent = types.SimpleNamespace(name="root")
 

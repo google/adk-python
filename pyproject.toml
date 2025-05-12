@@ -25,6 +25,7 @@ classifiers = [ # List of https://pypi.org/classifiers/
 ]
 dependencies = [
   # go/keep-sorted start
+  "asyncclick>=8.1.8",
   "authlib>=1.5.1",                          # For RestAPI Tool
   "click>=8.1.8",                            # For CLI tools
   "fastapi>=0.115.0",                        # FastAPI framework
@@ -40,12 +41,12 @@ dependencies = [
   "opentelemetry-api>=1.31.0",               # OpenTelemetry
   "opentelemetry-exporter-gcp-trace>=1.9.0",
   "opentelemetry-sdk>=1.31.0",
-  "pydantic>=2.0, <3.0.0",                   # For data validation/models
-  "python-dotenv>=1.0.0",                    # To manage environment variables
-  "PyYAML>=6.0.2",                           # For APIHubToolset.
-  "sqlalchemy>=2.0",                         # SQL database ORM
-  "tzlocal>=5.3",                            # Time zone utilities
-  "uvicorn>=0.34.0",                         # ASGI server for FastAPI
+  "pydantic>=2.0, <3.0.0", # For data validation/models
+  "python-dotenv>=1.0.0", # To manage environment variables
+  "PyYAML>=6.0.2", # For APIHubToolset.
+  "sqlalchemy>=2.0", # SQL database ORM
+  "tzlocal>=5.3", # Time zone utilities
+  "uvicorn>=0.34.0", # ASGI server for FastAPI
   # go/keep-sorted end
 ]
 dynamic = ["version"]

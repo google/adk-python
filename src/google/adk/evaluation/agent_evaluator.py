@@ -250,7 +250,7 @@ class AgentEvaluator:
       agent_module, eval_dataset, num_runs, agent_name=None, initial_session={}
   ):
     """Generates evaluation responses by running the agent module multiple times."""
-    return EvaluationGenerator.generate_responses(
+    return await EvaluationGenerator.generate_responses(
         eval_dataset,
         agent_module,
         repeat_num=num_runs,

@@ -41,7 +41,7 @@ async def main():
       artifact_service=artifact_service,
       session_service=session_service,
   )
-  session_11 = session_service.create_session(app_name, user_id_1)
+  session_11 = await session_service.create_session(app_name=app_name, user_id=user_id_1)
 
   async def run_prompt(session: Session, new_message: str):
     content = types.Content(
