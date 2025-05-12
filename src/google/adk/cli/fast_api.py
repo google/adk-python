@@ -22,13 +22,13 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 import traceback
 import typing
 from typing import Any
 from typing import List
 from typing import Literal
 from typing import Optional
-from typing import Union
 
 import click
 from fastapi import FastAPI
@@ -71,8 +71,10 @@ from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
 from ..tools.base_toolset import BaseToolset
 from .cli_eval import EVAL_SESSION_ID_PREFIX
+from .cli_eval import EvalCaseResult
 from .cli_eval import EvalMetric
 from .cli_eval import EvalMetricResult
+from .cli_eval import EvalSetResult
 from .cli_eval import EvalStatus
 from .utils import create_empty_state
 from .utils import envs
@@ -81,6 +83,7 @@ from .utils import evals
 logger = logging.getLogger(__name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+_EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
 
 
 class ApiServerSpanExporter(export.SpanExporter):
@@ -137,10 +140,12 @@ class RunEvalResult(BaseModel):
       populate_by_name=True,
   )
 
+  eval_set_file: str
   eval_set_id: str
   eval_id: str
   final_eval_status: EvalStatus
   eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]]
+  user_id: str
   session_id: str
 
 
@@ -484,24 +489,117 @@ def get_fast_api_app(
           "Eval ids to run list is empty. We will all evals in the eval set."
       )
     root_agent = await _get_root_agent_async(app_name)
-    return [
-        RunEvalResult(
-            app_name=app_name,
-            eval_set_id=eval_set_id,
-            eval_id=eval_result.eval_id,
-            final_eval_status=eval_result.final_eval_status,
-            eval_metric_results=eval_result.eval_metric_results,
-            session_id=eval_result.session_id,
+    run_eval_results = []
+    eval_case_results = []
+    async for eval_result in run_evals(
+        eval_set_to_evals,
+        root_agent,
+        getattr(root_agent, "reset_data", None),
+        req.eval_metrics,
+        session_service=session_service,
+        artifact_service=artifact_service,
+    ):
+      run_eval_results.append(
+          RunEvalResult(
+              app_name=app_name,
+              eval_set_file=eval_result.eval_set_file,
+              eval_set_id=eval_set_id,
+              eval_id=eval_result.eval_id,
+              final_eval_status=eval_result.final_eval_status,
+              eval_metric_results=eval_result.eval_metric_results,
+              user_id=eval_result.user_id,
+              session_id=eval_result.session_id,
+          )
+      )
+      session = session_service.get_session(
+          app_name=app_name,
+          user_id=eval_result.user_id,
+          session_id=eval_result.session_id,
+      )
+      eval_case_results.append(
+          EvalCaseResult(
+              eval_set_file=eval_result.eval_set_file,
+              eval_id=eval_result.eval_id,
+              final_eval_status=eval_result.final_eval_status,
+              eval_metric_results=eval_result.eval_metric_results,
+              session_id=eval_result.session_id,
+              session_details=session,
+              user_id=eval_result.user_id,
+          )
+      )
+
+    timestamp = time.time()
+    eval_set_result_name = app_name + "_" + eval_set_id + "_" + str(timestamp)
+    eval_set_result = EvalSetResult(
+        eval_set_result_id=eval_set_result_name,
+        eval_set_result_name=eval_set_result_name,
+        eval_set_id=eval_set_id,
+        eval_case_results=eval_case_results,
+        creation_timestamp=timestamp,
+    )
+
+    # Write eval result file, with eval_set_result_name.
+    app_eval_history_dir = os.path.join(
+        agent_dir, app_name, ".adk", "eval_history"
+    )
+    if not os.path.exists(app_eval_history_dir):
+      os.makedirs(app_eval_history_dir)
+    # Convert to json and write to file.
+    eval_set_result_json = eval_set_result.model_dump_json()
+    eval_set_result_file_path = os.path.join(
+        app_eval_history_dir,
+        eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
+    )
+    logger.info("Writing eval result to file: %s", eval_set_result_file_path)
+    with open(eval_set_result_file_path, "w") as f:
+      f.write(json.dumps(eval_set_result_json, indent=2))
+
+    return run_eval_results
+
+  @app.get(
+      "/apps/{app_name}/eval_results/{eval_result_id}",
+      response_model_exclude_none=True,
+  )
+  def get_eval_result(
+      app_name: str,
+      eval_result_id: str,
+  ) -> EvalSetResult:
+    """Gets the eval result for the given eval id."""
+    # Load the eval set file data
+    maybe_eval_result_file_path = (
+        os.path.join(
+            agent_dir, app_name, ".adk", "eval_history", eval_result_id
         )
-        async for eval_result in run_evals(
-            eval_set_to_evals,
-            root_agent,
-            getattr(root_agent, "reset_data", None),
-            req.eval_metrics,
-            session_service=session_service,
-            artifact_service=artifact_service,
-        )
+        + _EVAL_SET_RESULT_FILE_EXTENSION
+    )
+    if not os.path.exists(maybe_eval_result_file_path):
+      raise HTTPException(
+          status_code=404,
+          detail=f"Eval result `{eval_result_id}` not found.",
+      )
+    with open(maybe_eval_result_file_path, "r") as file:
+      eval_result_data = json.load(file)  # Load JSON into a list
+    try:
+      eval_result = EvalSetResult.model_validate_json(eval_result_data)
+      return eval_result
+    except ValidationError as e:
+      logger.exception("get_eval_result validation error: %s", e)
+
+  @app.get(
+      "/apps/{app_name}/eval_results",
+      response_model_exclude_none=True,
+  )
+  def list_eval_results(app_name: str) -> list[str]:
+    """Lists all eval results for the given app."""
+    app_eval_history_directory = os.path.join(
+        agent_dir, app_name, ".adk", "eval_history"
+    )
+    eval_result_files = [
+        file.removesuffix(_EVAL_SET_RESULT_FILE_EXTENSION)
+        for file in os.listdir(app_eval_history_directory)
+        if file.endswith(_EVAL_SET_RESULT_FILE_EXTENSION)
     ]
+    return eval_result_files
 
   @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
   def delete_session(app_name: str, user_id: str, session_id: str):

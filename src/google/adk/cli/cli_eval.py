@@ -57,6 +57,7 @@ class EvalCaseResult(BaseModel):
   eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]]
   session_id: str
   session_details: Optional[Session] = None
+  user_id: Optional[str] = None
 
 
 class EvalSetResult(BaseModel):
@@ -185,6 +186,7 @@ async def run_evals(
       eval_name = eval_item["name"]
       eval_data = eval_item["data"]
       initial_session = eval_item.get("initial_session", {})
+      user_id = initial_session.get("user_id", "test_user_id")
 
       if evals_to_run and eval_name not in evals_to_run:
         continue
@@ -267,6 +269,7 @@ async def run_evals(
             final_eval_status=final_eval_status,
             eval_metric_results=eval_metric_results,
             session_id=session_id,
+            user_id=user_id,
         )
 
         if final_eval_status == EvalStatus.PASSED:
