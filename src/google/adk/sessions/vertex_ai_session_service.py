@@ -57,6 +57,12 @@ class VertexAiSessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
+    if session_id:
+      raise ValueError(
+          'User-provided Session id is not supported for'
+          ' VertexAISessionService.'
+      )
+
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
     session_json_dict = {'user_id': user_id}
