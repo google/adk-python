@@ -16,8 +16,9 @@ from contextlib import AsyncExitStack
 import sys
 from typing import List
 from typing import Optional
-from typing import override
 from typing import TextIO
+
+from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ..base_toolset import BaseToolset
