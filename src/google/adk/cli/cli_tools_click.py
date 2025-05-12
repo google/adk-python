@@ -269,25 +269,20 @@ def cli_eval(
 
   eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
 
-  async def _collect_async_gen(
-      async_gen_coroutine: Coroutine[
-          AsyncGenerator[EvalResult, None], None, None
-      ],
-  ) -> list[EvalResult]:
-    return [result async for result in async_gen_coroutine]
+  async def _collect_eval_results() -> list[EvalResult]:
+    return [
+        result
+        async for result in run_evals(
+            eval_set_to_evals,
+            root_agent,
+            reset_func,
+            eval_metrics,
+            print_detailed_results=print_detailed_results,
+        )
+    ]
 
   try:
-    eval_results = asyncio.run(
-        _collect_async_gen(
-            run_evals(
-                eval_set_to_evals,
-                root_agent,
-                reset_func,
-                eval_metrics,
-                print_detailed_results=print_detailed_results,
-            )
-        )
-    )
+    eval_results = asyncio.run(_collect_eval_results())
   except ModuleNotFoundError:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
 
