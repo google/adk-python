@@ -76,6 +76,7 @@ from .cli_eval import EvalMetric
 from .cli_eval import EvalMetricResult
 from .cli_eval import EvalSetResult
 from .cli_eval import EvalStatus
+from .utils import common
 from .utils import create_empty_state
 from .utils import envs
 from .utils import evals
@@ -119,27 +120,18 @@ class AgentRunRequest(BaseModel):
   streaming: bool = False
 
 
-class AddSessionToEvalSetRequest(BaseModel):
+class AddSessionToEvalSetRequest(common.BaseModel):
   eval_id: str
   session_id: str
   user_id: str
 
 
-class RunEvalRequest(BaseModel):
-  model_config = ConfigDict(
-      alias_generator=alias_generators.to_camel,
-  )
-
+class RunEvalRequest(common.BaseModel):
   eval_ids: list[str]  # if empty, then all evals in the eval set are run.
   eval_metrics: list[EvalMetric]
 
 
-class RunEvalResult(BaseModel):
-  model_config = ConfigDict(
-      alias_generator=alias_generators.to_camel,
-      populate_by_name=True,
-  )
-
+class RunEvalResult(common.BaseModel):
   eval_set_file: str
   eval_set_id: str
   eval_id: str
