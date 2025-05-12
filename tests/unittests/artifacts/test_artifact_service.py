@@ -21,6 +21,8 @@ from typing import Union
 from google.adk.artifacts import GcsArtifactService
 from google.adk.artifacts import InMemoryArtifactService
 from google.genai import types
+
+from unittest import mock
 import pytest
 
 Enum = enum.Enum
@@ -136,11 +138,10 @@ class MockClient:
 
 
 def mock_gcs_artifact_service():
-  """Creates a mock GCS artifact service for testing."""
-  service = GcsArtifactService(bucket_name="test_bucket")
-  service.storage_client = MockClient()
-  service.bucket = service.storage_client.bucket("test_bucket")
-  return service
+  with mock.patch("google.cloud.storage.Client", return_value=MockClient()):
+    service = GcsArtifactService(bucket_name="test_bucket")
+    service.bucket = service.storage_client.bucket("test_bucket")
+    return service
 
 
 def get_artifact_service(
@@ -152,13 +153,14 @@ def get_artifact_service(
   return InMemoryArtifactService()
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
-def test_load_empty(service_type):
+async def test_load_empty(service_type):
   """Tests loading an artifact when none exists."""
   artifact_service = get_artifact_service(service_type)
-  assert not artifact_service.load_artifact(
+  assert not await artifact_service.load_artifact(
       app_name="test_app",
       user_id="test_user",
       session_id="session_id",
@@ -166,10 +168,11 @@ def test_load_empty(service_type):
   )
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
-def test_save_load_delete(service_type):
+async def test_save_load_delete(service_type):
   """Tests saving, loading, and deleting an artifact."""
   artifact_service = get_artifact_service(service_type)
   artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
@@ -178,7 +181,7 @@ def test_save_load_delete(service_type):
   session_id = "123"
   filename = "file456"
 
-  artifact_service.save_artifact(
+  await artifact_service.save_artifact(
       app_name=app_name,
       user_id=user_id,
       session_id=session_id,
@@ -186,7 +189,7 @@ def test_save_load_delete(service_type):
       artifact=artifact,
   )
   assert (
-      artifact_service.load_artifact(
+      await artifact_service.load_artifact(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
@@ -195,13 +198,13 @@ def test_save_load_delete(service_type):
       == artifact
   )
 
-  artifact_service.delete_artifact(
+  await artifact_service.delete_artifact(
       app_name=app_name,
       user_id=user_id,
       session_id=session_id,
       filename=filename,
   )
-  assert not artifact_service.load_artifact(
+  assert not await artifact_service.load_artifact(
       app_name=app_name,
       user_id=user_id,
       session_id=session_id,
@@ -209,10 +212,11 @@ def test_save_load_delete(service_type):
   )
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
-def test_list_keys(service_type):
+async def test_list_keys(service_type):
   """Tests listing keys in the artifact service."""
   artifact_service = get_artifact_service(service_type)
   artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
@@ -223,7 +227,7 @@ def test_list_keys(service_type):
   filenames = [filename + str(i) for i in range(5)]
 
   for f in filenames:
-    artifact_service.save_artifact(
+    await artifact_service.save_artifact(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -232,17 +236,18 @@ def test_list_keys(service_type):
     )
 
   assert (
-      artifact_service.list_artifact_keys(
+      await artifact_service.list_artifact_keys(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       == filenames
   )
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
-def test_list_versions(service_type):
+async def test_list_versions(service_type):
   """Tests listing versions of an artifact."""
   artifact_service = get_artifact_service(service_type)
 
@@ -258,7 +263,7 @@ def test_list_versions(service_type):
   ]
 
   for i in range(3):
-    artifact_service.save_artifact(
+    await artifact_service.save_artifact(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -266,7 +271,7 @@ def test_list_versions(service_type):
         artifact=versions[i],
     )
 
-  response_versions = artifact_service.list_versions(
+  response_versions = await artifact_service.list_versions(
       app_name=app_name,
       user_id=user_id,
       session_id=session_id,

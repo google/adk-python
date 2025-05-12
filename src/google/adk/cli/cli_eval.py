@@ -20,7 +20,7 @@ import os
 import sys
 import traceback
 from typing import Any
-from typing import Generator
+from typing import AsyncGenerator
 from typing import Optional
 import uuid
 
@@ -154,7 +154,7 @@ async def run_evals(
     session_service=None,
     artifact_service=None,
     print_detailed_results=False,
-) -> Generator[EvalResult, None, None]:
+) -> AsyncGenerator[EvalResult, None]:
   try:
     from ..evaluation.agent_evaluator import EvaluationGenerator
     from ..evaluation.response_evaluator import ResponseEvaluator

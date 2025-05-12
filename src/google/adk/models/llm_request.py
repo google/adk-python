@@ -37,7 +37,7 @@ class LlmRequest(BaseModel):
   """
 
   model_config = ConfigDict(arbitrary_types_allowed=True)
-  """The model config."""
+  """The pydantic model config."""
 
   model: Optional[str] = None
   """The model name."""

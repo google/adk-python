@@ -128,7 +128,7 @@ class EvaluationGenerator:
           all_mock_tools.add(expected[EvalConstants.TOOL_NAME])
 
     eval_data_copy = data.copy()
-    EvaluationGenerator.apply_before_tool_callback(
+    await EvaluationGenerator.apply_before_tool_callback(
         root_agent,
         lambda *args: EvaluationGenerator.before_tool_callback(
             *args, eval_dataset=eval_data_copy
@@ -247,7 +247,7 @@ class EvaluationGenerator:
     return None
 
   @staticmethod
-  def apply_before_tool_callback(
+  async def apply_before_tool_callback(
       agent: BaseAgent,
       callback: BeforeToolCallback,
       all_mock_tools: set[str],
@@ -258,13 +258,13 @@ class EvaluationGenerator:
     if not isinstance(agent, Agent) and not isinstance(agent, LlmAgent):
       return
 
-    for tool in agent.canonical_tools:
+    for tool in await agent.canonical_tools():
       tool_name = tool.name
       if tool_name in all_mock_tools:
         agent.before_tool_callback = callback
 
     # Apply recursively to subagents if they exist
     for sub_agent in agent.sub_agents:
-      EvaluationGenerator.apply_before_tool_callback(
+      await EvaluationGenerator.apply_before_tool_callback(
           sub_agent, callback, all_mock_tools
       )

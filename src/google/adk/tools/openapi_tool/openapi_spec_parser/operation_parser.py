@@ -17,9 +17,13 @@ from textwrap import dedent
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi.encoders import jsonable_encoder
-from fastapi.openapi.models import Operation, Parameter, Schema
+from fastapi.openapi.models import Operation
+from fastapi.openapi.models import Parameter
+from fastapi.openapi.models import Schema
 
-from ..common.common import ApiParameter, PydocHelper, to_snake_case
+from ..common.common import ApiParameter
+from ..common.common import PydocHelper
+from ..common.common import to_snake_case
 
 
 class OperationParser:
@@ -76,6 +80,11 @@ class OperationParser:
         description = param.description or ''
         location = param.in_ or ''
         schema = param.schema_ or {}  # Use schema_ instead of .schema
+        schema.description = (
+            description if not schema.description else schema.description
+        )
+        # param.required can be None
+        required = param.required if param.required is not None else False
 
         self.params.append(
             ApiParameter(
@@ -83,6 +92,7 @@ class OperationParser:
                 param_location=location,
                 param_schema=schema,
                 description=description,
+                required=required,
             )
         )
 
@@ -230,7 +240,7 @@ class OperationParser:
     }
     return {
         'properties': properties,
-        'required': [p.py_name for p in self.params],
+        'required': [p.py_name for p in self.params if p.required],
         'title': f"{self.operation.operationId or 'unnamed'}_Arguments",
         'type': 'object',
     }

@@ -25,11 +25,11 @@ from .utils import TestRunner
     [{"agent": callback_agent.agent.before_agent_callback_agent}],
     indirect=True,
 )
-def test_before_agent_call(agent_runner: TestRunner):
-  agent_runner.run("Hi.")
+async def test_before_agent_call(agent_runner: TestRunner):
+  await agent_runner.run("Hi.")
 
   # Assert the response content
-  assert_agent_says(
+  await assert_agent_says(
       "End invocation event before agent call.",
       agent_name="before_agent_callback_agent",
       agent_runner=agent_runner,
@@ -41,11 +41,11 @@ def test_before_agent_call(agent_runner: TestRunner):
     [{"agent": callback_agent.agent.before_model_callback_agent}],
     indirect=True,
 )
-def test_before_model_call(agent_runner: TestRunner):
-  agent_runner.run("Hi.")
+async def test_before_model_call(agent_runner: TestRunner):
+  await agent_runner.run("Hi.")
 
   # Assert the response content
-  assert_agent_says(
+  await assert_agent_says(
       "End invocation event before model call.",
       agent_name="before_model_callback_agent",
       agent_runner=agent_runner,
@@ -59,8 +59,8 @@ def test_before_model_call(agent_runner: TestRunner):
     [{"agent": callback_agent.agent.after_model_callback_agent}],
     indirect=True,
 )
-def test_after_model_call(agent_runner: TestRunner):
-  events = agent_runner.run("Hi.")
+async def test_after_model_call(agent_runner: TestRunner):
+  events = await agent_runner.run("Hi.")
 
   # Assert the response content
   simplified_events = simplify_events(events)

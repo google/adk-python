@@ -32,7 +32,6 @@ async def test_dependent_tool_calls():
       num_runs=4,
   )
 
-
 async def test_memorizing_past_events():
   """Test memorizing past events."""
   await AgentEvaluator.evaluate(
