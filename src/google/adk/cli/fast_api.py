@@ -48,7 +48,9 @@ from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
+from pydantic import alias_generators
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import ValidationError
 from starlette.types import Lifespan
 
@@ -121,11 +123,20 @@ class AddSessionToEvalSetRequest(BaseModel):
 
 
 class RunEvalRequest(BaseModel):
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+  )
+
   eval_ids: list[str]  # if empty, then all evals in the eval set are run.
   eval_metrics: list[EvalMetric]
 
 
 class RunEvalResult(BaseModel):
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+
   eval_set_id: str
   eval_id: str
   final_eval_status: EvalStatus
