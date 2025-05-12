@@ -250,7 +250,7 @@ def test_cli_eval_success_path(
     def __init__(self, metric_name: str, threshold: float) -> None:
       ...
 
-  class _EvalResult:
+  class _EvalCaseResult:
 
     def __init__(self, eval_set_file: str, final_eval_status: str) -> None:
       self.eval_set_file = eval_set_file
@@ -261,7 +261,7 @@ def test_cli_eval_success_path(
 
   # helper funcs
   stub.EvalMetric = _EvalMetric
-  stub.EvalResult = _EvalResult
+  stub.EvalCaseResult = _EvalCaseResult
   stub.EvalStatus = _EvalStatus
   stub.MISSING_EVAL_DEPENDENCIES_MESSAGE = "stub msg"
 
@@ -272,8 +272,8 @@ def test_cli_eval_success_path(
 
   # Create an async generator function for run_evals
   async def mock_run_evals(*_a, **_k):
-    yield _EvalResult("set1.json", "PASSED")
-    yield _EvalResult("set1.json", "FAILED")
+    yield _EvalCaseResult("set1.json", "PASSED")
+    yield _EvalCaseResult("set1.json", "FAILED")
 
   stub.run_evals = mock_run_evals
 

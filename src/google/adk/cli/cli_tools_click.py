@@ -245,7 +245,7 @@ def cli_eval(
 
   try:
     from .cli_eval import EvalMetric
-    from .cli_eval import EvalResult
+    from .cli_eval import EvalCaseResult
     from .cli_eval import EvalStatus
     from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
@@ -269,7 +269,7 @@ def cli_eval(
 
   eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
 
-  async def _collect_eval_results() -> list[EvalResult]:
+  async def _collect_eval_results() -> list[EvalCaseResult]:
     return [
         result
         async for result in run_evals(
@@ -290,7 +290,7 @@ def cli_eval(
   eval_run_summary = {}
 
   for eval_result in eval_results:
-    eval_result: EvalResult
+    eval_result: EvalCaseResult
 
     if eval_result.eval_set_file not in eval_run_summary:
       eval_run_summary[eval_result.eval_set_file] = [0, 0]
