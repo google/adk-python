@@ -113,6 +113,26 @@ def test_dict_input():
   assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
 
 
+def test_enum_input():
+  from enum import Enum
+
+  class Color(str, Enum):
+    RED = "red"
+    GREEN = "green"
+    BLUE = "blue"
+
+  def simple_function(input_str: Color) -> str:
+    return {'result': input_str}
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input_str'].type == 'STRING'
+
+
 def test_basemodel_input():
   class CustomInput(BaseModel):
     input_str: str
