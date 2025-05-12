@@ -31,7 +31,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.inspection import inspect
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeMeta
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
@@ -93,10 +94,17 @@ class DynamicJSON(TypeDecorator):
     return value
 
 
-class Base(DeclarativeBase):
-  """Base class for database tables."""
+class PrefixerMeta(DeclarativeMeta):
 
-  pass
+  def __init__(cls, name, bases, dct):
+    table_prefix = "adk_"
+    tablename = dct.get("__tablename__")
+    if tablename:
+      cls.__tablename__ = f"{table_prefix}{tablename}"
+    super().__init__(name, bases, dct)
+
+
+Base = declarative_base(metaclass=PrefixerMeta)
 
 
 class StorageSession(Base):
@@ -183,7 +191,11 @@ class StorageEvent(Base):
   __table_args__ = (
       ForeignKeyConstraint(
           ["app_name", "user_id", "session_id"],
-          ["sessions.app_name", "sessions.user_id", "sessions.id"],
+          [
+              f"{StorageSession.__tablename__}.app_name",
+              f"{StorageSession.__tablename__}.user_id",
+              f"{StorageSession.__tablename__}.id",
+          ],
           ondelete="CASCADE",
       ),
   )
@@ -484,11 +496,11 @@ class DatabaseSessionService(BaseSessionService):
 
       if storage_session.update_time.timestamp() > session.last_update_time:
         raise ValueError(
-          f"Session last_update_time "
-          f"{datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} "
-          f"is later than the update_time in storage "
-          f"{storage_session.update_time:%Y-%m-%d %H:%M:%S}"
-      )
+            "Session last_update_time"
+            f" {datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} is"
+            " later than the update_time in storage"
+            f" {storage_session.update_time:%Y-%m-%d %H:%M:%S}"
+        )
 
       # Fetch states from storage
       storage_app_state = sessionFactory.get(
