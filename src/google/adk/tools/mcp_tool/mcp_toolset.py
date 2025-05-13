@@ -97,6 +97,18 @@ class MCPToolset(BaseToolset):
     self.session = await self.session_manager.create_session()
     return self.session
 
+  def _is_selected(
+      self, tool: ..., readonly_context: Optional[ReadonlyContext]
+  ) -> bool:
+    """Checks if a tool should be selected based on the tool filter."""
+    if self.tool_filter is None:
+      return True
+    if isinstance(self.tool_filter, ToolPredicate):
+      return self.tool_filter(tool, readonly_context)
+    if isinstance(self.tool_filter, list):
+      return tool.name in self.tool_filter
+    return False
+
   @override
   async def close(self):
     """Closes the connection to MCP Server."""
@@ -123,5 +135,5 @@ class MCPToolset(BaseToolset):
             mcp_session_manager=self.session_manager,
         )
         for tool in tools_response.tools
-        if self.tool_filter is None or self.tool_filter(tool, readonly_context)
+        if self._is_selected(tool, readonly_context)
     ]
