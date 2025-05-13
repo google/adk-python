@@ -53,13 +53,14 @@ class PreloadMemoryTool(BaseTool):
       time_str = datetime.fromtimestamp(memory.events[0].timestamp).isoformat()
       memory_text += f'Time: {time_str}\n'
       for event in memory.events:
-        # TODO: support multi-part content.
-        if (
-            event.content
-            and event.content.parts
-            and event.content.parts[0].text
-        ):
-          memory_text += f'{event.author}: {event.content.parts[0].text}\n'
+        if not event.content or not event.content.parts:
+          continue
+        text_parts = []
+        for part in event.content.parts:
+          if part.text:
+            text_parts.append(part.text)
+        if text_parts:
+          memory_text += f'{event.author}: {" ".join(text_parts)}\n'
     si = f"""The following content is from your previous conversations with the user.
 They may be useful for answering the user's current query.
 <PAST_CONVERSATIONS>

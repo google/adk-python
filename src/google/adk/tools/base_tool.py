@@ -45,6 +45,16 @@ class BaseTool(ABC):
     self.name = name
     self.description = description
     self.is_long_running = is_long_running
+    
+    # Auto-register with the registry if it exists and hasn't been done already
+    try:
+      from .tool_registry import registry
+      registry_tool_class = registry.get_tool_class(name)
+      if not registry_tool_class or not isinstance(self, registry_tool_class):
+        registry.register_tool(self.__class__)
+    except ImportError:
+      # Registry not available, skip registration
+      pass
 
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool in the form of a FunctionDeclaration.
