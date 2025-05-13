@@ -15,17 +15,17 @@
 
 import logging
 
-from .google_api_tool_set import GoogleApiToolset
+from .google_api_toolset import GoogleApiToolset
 
 logger = logging.getLogger(__name__)
 
-_bigquery_tool_set = None
-_calendar_tool_set = None
-_gmail_tool_set = None
-_youtube_tool_set = None
-_slides_tool_set = None
-_sheets_tool_set = None
-_docs_tool_set = None
+_bigquery_toolset = None
+_calendar_toolset = None
+_gmail_toolset = None
+_youtube_toolset = None
+_slides_toolset = None
+_sheets_toolset = None
+_docs_toolset = None
 
 
 def __getattr__(name):
@@ -37,7 +37,7 @@ def __getattr__(name):
 
   Args:
       name (str): The name of the tool set to retrieve (e.g.,
-        "bigquery_tool_set").
+        "bigquery_toolset").
 
   Returns:
       GoogleApiToolSet: The requested tool set instance.
@@ -45,68 +45,68 @@ def __getattr__(name):
   Raises:
       AttributeError: If the requested tool set name is not recognized.
   """
-  global _bigquery_tool_set, _calendar_tool_set, _gmail_tool_set, _youtube_tool_set, _slides_tool_set, _sheets_tool_set, _docs_tool_set
+  global _bigquery_toolset, _calendar_toolset, _gmail_toolset, _youtube_toolset, _slides_toolset, _sheets_toolset, _docs_toolset
 
   match name:
-    case "bigquery_tool_set":
-      if _bigquery_tool_set is None:
-        _bigquery_tool_set = GoogleApiToolset.load_toolset(
+    case "bigquery_toolset":
+      if _bigquery_toolset is None:
+        _bigquery_toolset = GoogleApiToolset.load_toolset(
             api_name="bigquery",
             api_version="v2",
         )
 
-      return _bigquery_tool_set
+      return _bigquery_toolset
 
-    case "calendar_tool_set":
-      if _calendar_tool_set is None:
-        _calendar_tool_set = GoogleApiToolset.load_toolset(
+    case "calendar_toolset":
+      if _calendar_toolset is None:
+        _calendar_toolset = GoogleApiToolset.load_toolset(
             api_name="calendar",
             api_version="v3",
         )
 
-      return _calendar_tool_set
+      return _calendar_toolset
 
-    case "gmail_tool_set":
-      if _gmail_tool_set is None:
-        _gmail_tool_set = GoogleApiToolset.load_toolset(
+    case "gmail_toolset":
+      if _gmail_toolset is None:
+        _gmail_toolset = GoogleApiToolset.load_toolset(
             api_name="gmail",
             api_version="v1",
         )
 
-      return _gmail_tool_set
+      return _gmail_toolset
 
-    case "youtube_tool_set":
-      if _youtube_tool_set is None:
-        _youtube_tool_set = GoogleApiToolset.load_toolset(
+    case "youtube_toolset":
+      if _youtube_toolset is None:
+        _youtube_toolset = GoogleApiToolset.load_toolset(
             api_name="youtube",
             api_version="v3",
         )
 
-      return _youtube_tool_set
+      return _youtube_toolset
 
-    case "slides_tool_set":
-      if _slides_tool_set is None:
-        _slides_tool_set = GoogleApiToolset.load_toolset(
+    case "slides_toolset":
+      if _slides_toolset is None:
+        _slides_toolset = GoogleApiToolset.load_toolset(
             api_name="slides",
             api_version="v1",
         )
 
-      return _slides_tool_set
+      return _slides_toolset
 
-    case "sheets_tool_set":
-      if _sheets_tool_set is None:
-        _sheets_tool_set = GoogleApiToolset.load_toolset(
+    case "sheets_toolset":
+      if _sheets_toolset is None:
+        _sheets_toolset = GoogleApiToolset.load_toolset(
             api_name="sheets",
             api_version="v4",
         )
 
-      return _sheets_tool_set
+      return _sheets_toolset
 
-    case "docs_tool_set":
-      if _docs_tool_set is None:
-        _docs_tool_set = GoogleApiToolset.load_toolset(
+    case "docs_toolset":
+      if _docs_toolset is None:
+        _docs_toolset = GoogleApiToolset.load_toolset(
             api_name="docs",
             api_version="v1",
         )
 
-      return _docs_tool_set
+      return _docs_toolset
