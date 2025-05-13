@@ -378,7 +378,7 @@ class DatabaseSessionService(BaseSessionService):
       
       if config and config.after_timestamp:
         after_dt = datetime.fromtimestamp(config.after_timestamp)
-        timestamp_filter = StorageEvent.timestamp < after_dt
+        timestamp_filter = StorageEvent.timestamp > after_dt
       else:
         timestamp_filter = True
 
