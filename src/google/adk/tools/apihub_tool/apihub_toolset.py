@@ -15,9 +15,9 @@
 
 from typing import List
 from typing import Optional
-from typing import override
 from typing import Union
 
+from typing_extensions import override
 import yaml
 
 from ...agents.readonly_context import ReadonlyContext
