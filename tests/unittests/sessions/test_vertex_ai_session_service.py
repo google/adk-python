@@ -261,3 +261,15 @@ def test_create_session():
   assert session == session_service.get_session(
       app_name='123', user_id='user', session_id=session_id
   )
+
+
+def test_create_session_with_custom_session_id():
+  session_service = mock_vertex_ai_session_service()
+
+  with pytest.raises(ValueError) as excinfo:
+    session_service.create_session(
+        app_name='123', user_id='user', session_id='1'
+    )
+    assert str(excinfo.value) == (
+        'User-provided Session id is not supported for VertexAISessionService.'
+    )

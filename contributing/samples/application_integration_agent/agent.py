@@ -20,7 +20,6 @@ from dotenv import load_dotenv
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.application_integration_tool import ApplicationIntegrationToolset
 
-
 # Load environment variables from .env file
 load_dotenv()
 
@@ -29,7 +28,7 @@ connection_project = os.getenv("CONNECTION_PROJECT")
 connection_location = os.getenv("CONNECTION_LOCATION")
 
 
-jira_tool = ApplicationIntegrationToolset(
+jira_toolset = ApplicationIntegrationToolset(
     project=connection_project,
     location=connection_location,
     connection=connection_name,
@@ -46,5 +45,5 @@ root_agent = LlmAgent(
     If there is an error in the tool response, understand the error and try and see if you can fix the error and then  and execute the tool again. For example if a variable or parameter is missing, try and see if you can find it in the request or user query or default it and then execute the tool again or check for other tools that could give you the details.
     If there are any math operations like count or max, min in the user request, call the tool to get the data and perform the math operations and then return the result in the response. For example for maximum, fetch the list and then do the math operation.
     """,
-    tools=jira_tool.get_tools(),
+    tools=[jira_toolset],
 )
