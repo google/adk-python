@@ -47,7 +47,7 @@ def mock_openapi_toolset():
     mock_toolset_instance = mock.MagicMock()
     mock_rest_api_tool = mock.MagicMock(spec=rest_api_tool.RestApiTool)
     mock_rest_api_tool.name = "Test Tool"
-    mock_toolset_instance.get_tools.return_value = [mock_rest_api_tool]
+    mock_toolset_instance.get_tools = mock.AsyncMock(return_value=[mock_rest_api_tool])
     mock_toolset.return_value = mock_toolset_instance
     yield mock_toolset
 
@@ -134,7 +134,8 @@ def connection_details():
   }
 
 
-def test_initialization_with_integration_and_trigger(
+@pytest.mark.asyncio
+async def test_initialization_with_integration_and_trigger(
     project,
     location,
     mock_integration_client,
@@ -152,11 +153,12 @@ def test_initialization_with_integration_and_trigger(
   mock_integration_client.return_value.get_openapi_spec_for_integration.assert_called_once()
   mock_connections_client.assert_not_called()
   mock_openapi_toolset.assert_called_once()
-  assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "Test Tool"
+  assert len(await toolset.get_tools()) == 1
+  assert (await toolset.get_tools())[0].name == "Test Tool"
 
 
-def test_initialization_with_connection_and_entity_operations(
+@pytest.mark.asyncio
+async def test_initialization_with_connection_and_entity_operations(
     project,
     location,
     mock_integration_client,
@@ -198,14 +200,16 @@ def test_initialization_with_connection_and_entity_operations(
       tool_name,
       tool_instructions,
   )
-  assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "list_issues"
-  assert isinstance(toolset.get_tools()[0], IntegrationConnectorTool)
-  assert toolset.get_tools()[0].entity == "Issues"
-  assert toolset.get_tools()[0].operation == "LIST_ENTITIES"
+  tools = await toolset.get_tools()
+  assert len(tools) == 1
+  assert tools[0].name == "list_issues"
+  assert isinstance(tools[0], IntegrationConnectorTool)
+  assert tools[0].entity == "Issues"
+  assert tools[0].operation == "LIST_ENTITIES"
 
 
-def test_initialization_with_connection_and_actions(
+@pytest.mark.asyncio
+async def test_initialization_with_connection_and_actions(
     project,
     location,
     mock_integration_client,
@@ -239,11 +243,12 @@ def test_initialization_with_connection_and_actions(
       tool_name, tool_instructions
   )
   mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
-  assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "list_issues_operation"
-  assert isinstance(toolset.get_tools()[0], IntegrationConnectorTool)
-  assert toolset.get_tools()[0].action == "CustomAction"
-  assert toolset.get_tools()[0].operation == "EXECUTE_ACTION"
+  tools = await toolset.get_tools()
+  assert len(tools) == 1
+  assert tools[0].name == "list_issues_operation"
+  assert isinstance(tools[0], IntegrationConnectorTool)
+  assert tools[0].action == "CustomAction"
+  assert tools[0].operation == "EXECUTE_ACTION"
 
 
 def test_initialization_without_required_params(project, location):
@@ -351,7 +356,8 @@ def test_initialization_without_explicit_service_account_credentials(
   assert kwargs["auth_credential"].service_account.use_default_credential
 
 
-def test_get_tools(
+@pytest.mark.asyncio
+async def test_get_tools(
     project, location, mock_integration_client, mock_openapi_toolset
 ):
   integration_name = "test-integration"
@@ -359,7 +365,7 @@ def test_get_tools(
   toolset = ApplicationIntegrationToolset(
       project, location, integration=integration_name, trigger=trigger_name
   )
-  tools = toolset.get_tools()
+  tools = await toolset.get_tools()
   assert len(tools) == 1
   assert isinstance(tools[0], rest_api_tool.RestApiTool)
   assert tools[0].name == "Test Tool"
