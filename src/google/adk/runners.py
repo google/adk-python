@@ -456,6 +456,9 @@ class Runner:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()
           )
+      if not run_config.input_audio_transcription:
+        # need this input transcription for agent transferring in live mode.
+        run_config.input_audio_transcription = types.AudioTranscriptionConfig()
     return self._new_invocation_context(
         session,
         live_request_queue=live_request_queue,
