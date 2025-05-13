@@ -133,19 +133,19 @@ class APIHubToolset(BaseToolset):
     """
     self.name = name
     self.description = description
-    self.apihub_resource_name = apihub_resource_name
-    self.lazy_load_spec = lazy_load_spec
-    self.apihub_client = apihub_client or APIHubClient(
+    self._apihub_resource_name = apihub_resource_name
+    self._lazy_load_spec = lazy_load_spec
+    self._apihub_client = apihub_client or APIHubClient(
         access_token=access_token,
         service_account_json=service_account_json,
     )
 
-    self.openapi_toolset = None
-    self.auth_scheme = auth_scheme
-    self.auth_credential = auth_credential
+    self._openapi_toolset = None
+    self._auth_scheme = auth_scheme
+    self._auth_credential = auth_credential
     self.tool_filter = tool_filter
 
-    if not self.lazy_load_spec:
+    if not self._lazy_load_spec:
       self._prepare_toolset()
 
   @override
@@ -157,16 +157,16 @@ class APIHubToolset(BaseToolset):
     Returns:
         A list of all available RestApiTool objects.
     """
-    if not self.openapi_toolset:
+    if not self._openapi_toolset:
       self._prepare_toolset()
-    if not self.openapi_toolset:
+    if not self._openapi_toolset:
       return []
-    return await self.openapi_toolset.get_tools(readonly_context)
+    return await self._openapi_toolset.get_tools(readonly_context)
 
   def _prepare_toolset(self) -> None:
     """Fetches the spec from API Hub and generates the toolset."""
     # For each API, get the first version and the first spec of that version.
-    spec_str = self.apihub_client.get_spec_content(self.apihub_resource_name)
+    spec_str = self._apihub_client.get_spec_content(self._apihub_resource_name)
     spec_dict = yaml.safe_load(spec_str)
     if not spec_dict:
       return
@@ -177,14 +177,14 @@ class APIHubToolset(BaseToolset):
     self.description = self.description or spec_dict.get('info', {}).get(
         'description', ''
     )
-    self.openapi_toolset = OpenAPIToolset(
+    self._openapi_toolset = OpenAPIToolset(
         spec_dict=spec_dict,
-        auth_credential=self.auth_credential,
-        auth_scheme=self.auth_scheme,
+        auth_credential=self._auth_credential,
+        auth_scheme=self._auth_scheme,
         tool_filter=self.tool_filter,
     )
 
   @override
   async def close(self):
-    if self.openapi_toolset:
-      await self.openapi_toolset.close()
+    if self._openapi_toolset:
+      await self._openapi_toolset.close()
