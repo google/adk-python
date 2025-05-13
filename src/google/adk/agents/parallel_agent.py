@@ -94,3 +94,10 @@ class ParallelAgent(BaseAgent):
     agent_runs = [agent.run_async(ctx) for agent in self.sub_agents]
     async for event in _merge_agent_run(agent_runs):
       yield event
+
+  @override
+  async def _run_live_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    raise NotImplementedError("This is not supported yet for ParallelAgent.")
+    yield  # AsyncGenerator requires having at least one yield statement

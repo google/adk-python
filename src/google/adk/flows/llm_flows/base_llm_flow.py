@@ -135,6 +135,18 @@ class BaseLlmFlow(ABC):
             # cancel the tasks that belongs to the closed connection.
             send_task.cancel()
             await llm_connection.close()
+          if (
+              event.content
+              and event.content.parts
+              and event.content.parts[0].function_response
+              and event.content.parts[0].function_response.name
+              == 'task_completed'
+          ):
+            # this is used for sequential agent to signal the end of the agent.
+            await asyncio.sleep(1)
+            # cancel the tasks that belongs to the closed connection.
+            send_task.cancel()
+            return
       finally:
         # Clean up
         if not send_task.done():
@@ -237,7 +249,7 @@ class BaseLlmFlow(ABC):
             if (
                 event.content
                 and event.content.parts
-                and event.content.parts[0].text
+                and event.content.parts[0].inline_data is None
                 and not event.partial
             ):
               # This can be either user data or transcription data.

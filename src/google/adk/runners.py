@@ -254,13 +254,13 @@ class Runner:
     """Runs the agent in live mode (experimental feature).
 
     Args:
-        session: The session to use. This parameter is deprecated, please use
-          `user_id` and `session_id` instead.
         user_id: The user ID for the session. Required if `session` is None.
         session_id: The session ID for the session. Required if `session` is
           None.
         live_request_queue: The queue for live requests.
         run_config: The run config for the agent.
+        session: The session to use. This parameter is deprecated, please use
+          `user_id` and `session_id` instead.
 
     Yields:
         AsyncGenerator[Event, None]: An asynchronous generator that yields
@@ -302,22 +302,24 @@ class Runner:
 
     invocation_context.active_streaming_tools = {}
     # TODO(hangfei): switch to use canonical_tools.
-    for tool in invocation_context.agent.tools:
-      # replicate a LiveRequestQueue for streaming tools that relis on
-      # LiveRequestQueue
-      from typing import get_type_hints
+    # for shell agents, there is no tools associated with it so we should skip.
+    if hasattr(invocation_context.agent, 'tools'):
+      for tool in invocation_context.agent.tools:
+        # replicate a LiveRequestQueue for streaming tools that relis on
+        # LiveRequestQueue
+        from typing import get_type_hints
 
-      type_hints = get_type_hints(tool)
-      for arg_type in type_hints.values():
-        if arg_type is LiveRequestQueue:
-          if not invocation_context.active_streaming_tools:
-            invocation_context.active_streaming_tools = {}
-          active_streaming_tools = ActiveStreamingTool(
-              stream=LiveRequestQueue()
-          )
-          invocation_context.active_streaming_tools[tool.__name__] = (
-              active_streaming_tools
-          )
+        type_hints = get_type_hints(tool)
+        for arg_type in type_hints.values():
+          if arg_type is LiveRequestQueue:
+            if not invocation_context.active_streaming_tools:
+              invocation_context.active_streaming_tools = {}
+            active_streaming_tools = ActiveStreamingTool(
+                stream=LiveRequestQueue()
+            )
+            invocation_context.active_streaming_tools[tool.__name__] = (
+                active_streaming_tools
+            )
 
     async for event in invocation_context.agent.run_live(invocation_context):
       self.session_service.append_event(session=session, event=event)
