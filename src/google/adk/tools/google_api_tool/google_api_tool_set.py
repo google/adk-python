@@ -19,9 +19,10 @@ import os
 from typing import Any
 from typing import List
 from typing import Optional
-from typing import override
 from typing import Type
 from typing import Union
+
+from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ...auth import OpenIdConnectWithConfig

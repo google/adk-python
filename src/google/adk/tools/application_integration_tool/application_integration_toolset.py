@@ -14,10 +14,10 @@
 
 from typing import List
 from typing import Optional
-from typing import override
 from typing import Union
 
 from fastapi.openapi.models import HTTPBearer
+from typing_extensions import override
 
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes

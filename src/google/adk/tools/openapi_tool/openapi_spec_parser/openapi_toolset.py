@@ -20,9 +20,9 @@ from typing import Final
 from typing import List
 from typing import Literal
 from typing import Optional
-from typing import override
 from typing import Union
 
+from typing_extensions import override
 import yaml
 
 from ....agents.readonly_context import ReadonlyContext
@@ -101,7 +101,7 @@ class OpenAPIToolset(BaseToolset):
         AuthCredential or use helpers in
         `google.adk.tools.openapi_tool.auth.auth_helpers`
       tool_filter: The filter used to filter the tools in the toolset. It can be
-        either a tool predicate or a list of tool names of the tools to expose
+        either a tool predicate or a list of tool names of the tools to expose.
     """
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
