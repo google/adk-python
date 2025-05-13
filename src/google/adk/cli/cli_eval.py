@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 from enum import Enum
 import importlib.util
 import json
@@ -25,8 +26,10 @@ from typing import Optional
 import uuid
 
 from pydantic import BaseModel
+from pydantic import Field
 
 from ..agents import Agent
+from ..sessions.session import Session
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +46,26 @@ class EvalMetric(BaseModel):
 
 
 class EvalMetricResult(BaseModel):
-  score: Optional[float]
+  score: Optional[float] = None
   eval_status: EvalStatus
 
 
-class EvalResult(BaseModel):
+class EvalCaseResult(BaseModel):
   eval_set_file: str
   eval_id: str
   final_eval_status: EvalStatus
   eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]]
   session_id: str
+  session_details: Optional[Session] = None
+  user_id: Optional[str] = None
+
+
+class EvalSetResult(BaseModel):
+  eval_set_result_id: str
+  eval_set_result_name: str
+  eval_set_id: str
+  eval_case_results: list[EvalCaseResult] = Field(default_factory=list)
+  creation_timestamp: float = 0.0
 
 
 MISSING_EVAL_DEPENDENCIES_MESSAGE = (
@@ -154,7 +167,7 @@ async def run_evals(
     session_service=None,
     artifact_service=None,
     print_detailed_results=False,
-) -> AsyncGenerator[EvalResult, None]:
+) -> AsyncGenerator[EvalCaseResult, None]:
   try:
     from ..evaluation.agent_evaluator import EvaluationGenerator
     from ..evaluation.response_evaluator import ResponseEvaluator
@@ -173,6 +186,7 @@ async def run_evals(
       eval_name = eval_item["name"]
       eval_data = eval_item["data"]
       initial_session = eval_item.get("initial_session", {})
+      user_id = initial_session.get("user_id", "test_user_id")
 
       if evals_to_run and eval_name not in evals_to_run:
         continue
@@ -249,12 +263,13 @@ async def run_evals(
           else:
             raise ValueError("Unknown eval status.")
 
-        yield EvalResult(
+        yield EvalCaseResult(
             eval_set_file=eval_set_file,
             eval_id=eval_name,
             final_eval_status=final_eval_status,
             eval_metric_results=eval_metric_results,
             session_id=session_id,
+            user_id=user_id,
         )
 
         if final_eval_status == EvalStatus.PASSED:

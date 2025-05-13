@@ -15,7 +15,7 @@
 
 import logging
 
-from .google_api_tool_set import GoogleApiToolSet
+from .google_api_tool_set import GoogleApiToolset
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def __getattr__(name):
   match name:
     case "bigquery_tool_set":
       if _bigquery_tool_set is None:
-        _bigquery_tool_set = GoogleApiToolSet.load_tool_set(
+        _bigquery_tool_set = GoogleApiToolset.load_toolset(
             api_name="bigquery",
             api_version="v2",
         )
@@ -59,7 +59,7 @@ def __getattr__(name):
 
     case "calendar_tool_set":
       if _calendar_tool_set is None:
-        _calendar_tool_set = GoogleApiToolSet.load_tool_set(
+        _calendar_tool_set = GoogleApiToolset.load_toolset(
             api_name="calendar",
             api_version="v3",
         )
@@ -68,7 +68,7 @@ def __getattr__(name):
 
     case "gmail_tool_set":
       if _gmail_tool_set is None:
-        _gmail_tool_set = GoogleApiToolSet.load_tool_set(
+        _gmail_tool_set = GoogleApiToolset.load_toolset(
             api_name="gmail",
             api_version="v1",
         )
@@ -77,7 +77,7 @@ def __getattr__(name):
 
     case "youtube_tool_set":
       if _youtube_tool_set is None:
-        _youtube_tool_set = GoogleApiToolSet.load_tool_set(
+        _youtube_tool_set = GoogleApiToolset.load_toolset(
             api_name="youtube",
             api_version="v3",
         )
@@ -86,7 +86,7 @@ def __getattr__(name):
 
     case "slides_tool_set":
       if _slides_tool_set is None:
-        _slides_tool_set = GoogleApiToolSet.load_tool_set(
+        _slides_tool_set = GoogleApiToolset.load_toolset(
             api_name="slides",
             api_version="v1",
         )
@@ -95,7 +95,7 @@ def __getattr__(name):
 
     case "sheets_tool_set":
       if _sheets_tool_set is None:
-        _sheets_tool_set = GoogleApiToolSet.load_tool_set(
+        _sheets_tool_set = GoogleApiToolset.load_toolset(
             api_name="sheets",
             api_version="v4",
         )
@@ -104,7 +104,7 @@ def __getattr__(name):
 
     case "docs_tool_set":
       if _docs_tool_set is None:
-        _docs_tool_set = GoogleApiToolSet.load_tool_set(
+        _docs_tool_set = GoogleApiToolset.load_toolset(
             api_name="docs",
             api_version="v1",
         )
