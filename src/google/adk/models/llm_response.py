@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from google.genai import types
+from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -40,7 +41,11 @@ class LlmResponse(BaseModel):
     custom_metadata: The custom metadata of the LlmResponse.
   """
 
-  model_config = ConfigDict(extra='forbid')
+  model_config = ConfigDict(
+      extra='forbid',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
   """The pydantic model config."""
 
   content: Optional[types.Content] = None
