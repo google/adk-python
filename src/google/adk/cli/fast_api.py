@@ -63,6 +63,7 @@ from ..agents.llm_agent import Agent
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
 from ..artifacts import InMemoryArtifactService
+from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
@@ -252,6 +253,8 @@ def get_fast_api_app(
   artifact_service = InMemoryArtifactService()
   memory_service = InMemoryMemoryService()
 
+  eval_sets_manager = LocalEvalSetsManager(agent_dir=agent_dir)
+
   # Build the Session service
   agent_engine_id = ""
   if session_db_url:
@@ -401,28 +404,13 @@ def get_fast_api_app(
       eval_set_id: str,
   ):
     """Creates an eval set, given the id."""
-    pattern = r"^[a-zA-Z0-9_]+$"
-    if not bool(re.fullmatch(pattern, eval_set_id)):
+    try:
+      eval_sets_manager.create_eval_set(app_name, eval_set_id)
+    except ValueError as ve:
       raise HTTPException(
           status_code=400,
-          detail=(
-              f"Invalid eval set id. Eval set id should have the `{pattern}`"
-              " format"
-          ),
-      )
-    # Define the file path
-    new_eval_set_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-
-    logger.info("Creating eval set file `%s`", new_eval_set_path)
-
-    if not os.path.exists(new_eval_set_path):
-      # Write the JSON string to the file
-      logger.info("Eval set file doesn't exist, we will create a new one.")
-      with open(new_eval_set_path, "w") as f:
-        empty_content = json.dumps([], indent=2)
-        f.write(empty_content)
+          detail=str(ve),
+      ) from ve
 
   @app.get(
       "/apps/{app_name}/eval_sets",
@@ -430,15 +418,7 @@ def get_fast_api_app(
   )
   def list_eval_sets(app_name: str) -> list[str]:
     """Lists all eval sets for the given app."""
-    eval_set_file_path = os.path.join(agent_dir, app_name)
-    eval_sets = []
-    for file in os.listdir(eval_set_file_path):
-      if file.endswith(_EVAL_SET_FILE_EXTENSION):
-        eval_sets.append(
-            os.path.basename(file).removesuffix(_EVAL_SET_FILE_EXTENSION)
-        )
-
-    return sorted(eval_sets)
+    return eval_sets_manager.list_eval_sets(app_name)
 
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
@@ -447,33 +427,11 @@ def get_fast_api_app(
   async def add_session_to_eval_set(
       app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
   ):
-    pattern = r"^[a-zA-Z0-9_]+$"
-    if not bool(re.fullmatch(pattern, req.eval_id)):
-      raise HTTPException(
-          status_code=400,
-          detail=f"Invalid eval id. Eval id should have the `{pattern}` format",
-      )
-
     # Get the session
     session = session_service.get_session(
         app_name=app_name, user_id=req.user_id, session_id=req.session_id
     )
     assert session, "Session not found."
-    # Load the eval set file data
-    eval_set_file_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-    with open(eval_set_file_path, "r") as file:
-      eval_set_data = json.load(file)  # Load JSON into a list
-
-    if [x for x in eval_set_data if x["name"] == req.eval_id]:
-      raise HTTPException(
-          status_code=400,
-          detail=(
-              f"Eval id `{req.eval_id}` already exists in `{eval_set_id}`"
-              " eval set."
-          ),
-      )
 
     # Convert the session data to evaluation format
     test_data = evals.convert_session_to_eval_format(session)
@@ -483,7 +441,7 @@ def get_fast_api_app(
         await _get_root_agent_async(app_name)
     )
 
-    eval_set_data.append({
+    eval_case = {
         "name": req.eval_id,
         "data": test_data,
         "initial_session": {
@@ -491,10 +449,11 @@ def get_fast_api_app(
             "app_name": app_name,
             "user_id": req.user_id,
         },
-    })
-    # Serialize the test data to JSON and write to the eval set file.
-    with open(eval_set_file_path, "w") as f:
-      f.write(json.dumps(eval_set_data, indent=2))
+    }
+    try:
+      eval_sets_manager.add_eval_case(app_name, eval_set_id, eval_case)
+    except ValueError as ve:
+      raise HTTPException(status_code=400, detail=str(ve)) from ve
 
   @app.get(
       "/apps/{app_name}/eval_sets/{eval_set_id}/evals",
@@ -505,12 +464,7 @@ def get_fast_api_app(
       eval_set_id: str,
   ) -> list[str]:
     """Lists all evals in an eval set."""
-    # Load the eval set file data
-    eval_set_file_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-    with open(eval_set_file_path, "r") as file:
-      eval_set_data = json.load(file)  # Load JSON into a list
+    eval_set_data = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
     return sorted([x["name"] for x in eval_set_data])
 
