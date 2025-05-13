@@ -150,7 +150,7 @@ class InMemoryExporter(export.SpanExporter):
     self._spans.clear()
 
 
-class AgentRunRequest(BaseModel):
+class AgentRunRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
@@ -177,6 +177,10 @@ class RunEvalResult(common.BaseModel):
   eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]]
   user_id: str
   session_id: str
+
+
+class GetEventGraphResult(common.BaseModel):
+  dot_src: str
 
 
 def get_fast_api_app(
@@ -804,7 +808,7 @@ def get_fast_api_app(
           root_agent, [(from_name, to_name)]
       )
     if dot_graph and isinstance(dot_graph, graphviz.Digraph):
-      return {"dot_src": dot_graph.source}
+      return GetEventGraphResult(dot_src=dot_graph.source)
     else:
       return {}
 
