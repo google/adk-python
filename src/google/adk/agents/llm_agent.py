@@ -273,6 +273,25 @@ class LlmAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    # Ensure context session state is using EnhancedStateDict
+    if (hasattr(ctx, 'session') and hasattr(ctx.session, 'state') and 
+        not isinstance(ctx.session.state, dict) and 
+        not type(ctx.session.state).__name__ == 'EnhancedStateDict'):
+      # Import the EnhancedStateDict from in_memory_session_service 
+      try:
+        from ..sessions.in_memory_session_service import EnhancedStateDict
+        # Convert existing state to EnhancedStateDict to ensure persistence
+        existing_state = ctx.session.state
+        ctx.session.state = EnhancedStateDict(existing_state)
+        logging.debug(f"LlmAgent {self.name}: Upgraded session state to EnhancedStateDict")
+      except (ImportError, AttributeError) as e:
+        logging.warning(f"LlmAgent {self.name}: Could not upgrade session state: {e}")
+    
+    # Log useful information for debugging
+    if hasattr(ctx, 'session') and hasattr(ctx.session, 'state'):
+      logging.debug(f"LlmAgent {self.name} running with state keys: {list(ctx.session.state.keys())}")
+    
+    # Run the LLM flow
     async for event in self._llm_flow.run_async(ctx):
       self.__maybe_save_output_to_state(event)
       yield event
@@ -423,7 +442,20 @@ class LlmAgent(BaseAgent):
         result = self.output_schema.model_validate_json(result).model_dump(
             exclude_none=True
         )
+      
+      # Store in the event's state_delta to be processed by the session service
       event.actions.state_delta[self.output_key] = result
+      
+      # For debugging
+      logging.debug(f"LlmAgent {self.name}: Stored output in state with key '{self.output_key}'")
+      
+      # Explicitly update global cache if possible
+      try:
+        from ..sessions.in_memory_session_service import _set_in_global_cache
+        _set_in_global_cache(self.output_key, result)
+        logging.debug(f"LlmAgent {self.name}: Explicitly stored output in global cache")
+      except ImportError:
+        pass
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
