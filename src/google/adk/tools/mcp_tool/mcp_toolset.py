@@ -14,10 +14,11 @@
 
 from contextlib import AsyncExitStack
 import sys
-from typing import List
+from typing import List, Union
 from typing import Optional
-from typing import override
 from typing import TextIO
+
+from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ..base_toolset import BaseToolset
@@ -67,7 +68,7 @@ class MCPToolset(BaseToolset):
       *,
       connection_params: StdioServerParameters | SseServerParams,
       errlog: TextIO = sys.stderr,
-      tool_predicate: Optional[ToolPredicate] = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
     """Initializes the MCPToolset.
 
@@ -89,12 +90,24 @@ class MCPToolset(BaseToolset):
         errlog=self.errlog,
     )
     self.session = None
-    self.tool_predicate = tool_predicate
+    self.tool_filter = tool_filter
 
   async def _initialize(self) -> ClientSession:
     """Connects to the MCP Server and initializes the ClientSession."""
     self.session = await self.session_manager.create_session()
     return self.session
+
+  def _is_selected(
+      self, tool: ..., readonly_context: Optional[ReadonlyContext]
+  ) -> bool:
+    """Checks if a tool should be selected based on the tool filter."""
+    if self.tool_filter is None:
+      return True
+    if isinstance(self.tool_filter, ToolPredicate):
+      return self.tool_filter(tool, readonly_context)
+    if isinstance(self.tool_filter, list):
+      return tool.name in self.tool_filter
+    return False
 
   @override
   async def close(self):
@@ -105,7 +118,7 @@ class MCPToolset(BaseToolset):
   @override
   async def get_tools(
       self,
-      readony_context: ReadonlyContext = None,
+      readonly_context: Optional[ReadonlyContext] = None,
   ) -> List[MCPTool]:
     """Loads all tools from the MCP Server.
 
@@ -122,6 +135,5 @@ class MCPToolset(BaseToolset):
             mcp_session_manager=self.session_manager,
         )
         for tool in tools_response.tools
-        if self.tool_predicate is None
-        or self.tool_predicate(tool, readony_context)
+        if self._is_selected(tool, readonly_context)
     ]

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import (
     Any,
@@ -96,7 +97,9 @@ AfterToolCallback: TypeAlias = Union[
     list[_SingleAfterToolCallback],
 ]
 
-InstructionProvider: TypeAlias = Callable[[ReadonlyContext], str]
+InstructionProvider: TypeAlias = Callable[
+    [ReadonlyContext], Union[str, Awaitable[str]]
+]
 
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
 ExamplesUnion = Union[list[Example], BaseExampleProvider]
@@ -302,7 +305,7 @@ class LlmAgent(BaseAgent):
         ancestor_agent = ancestor_agent.parent_agent
       raise ValueError(f'No model found for {self.name}.')
 
-  def canonical_instruction(self, ctx: ReadonlyContext) -> str:
+  async def canonical_instruction(self, ctx: ReadonlyContext) -> str:
     """The resolved self.instruction field to construct instruction for this agent.
 
     This method is only for use by Agent Development Kit.
@@ -310,9 +313,12 @@ class LlmAgent(BaseAgent):
     if isinstance(self.instruction, str):
       return self.instruction
     else:
-      return self.instruction(ctx)
+      instruction = self.instruction(ctx)
+      if inspect.isawaitable(instruction):
+        instruction = await instruction
+      return instruction
 
-  def canonical_global_instruction(self, ctx: ReadonlyContext) -> str:
+  async def canonical_global_instruction(self, ctx: ReadonlyContext) -> str:
     """The resolved self.instruction field to construct global instruction.
 
     This method is only for use by Agent Development Kit.
@@ -320,7 +326,10 @@ class LlmAgent(BaseAgent):
     if isinstance(self.global_instruction, str):
       return self.global_instruction
     else:
-      return self.global_instruction(ctx)
+      global_instruction = self.global_instruction(ctx)
+      if inspect.isawaitable(global_instruction):
+        global_instruction = await global_instruction
+      return global_instruction
 
   async def canonical_tools(
       self, ctx: ReadonlyContext = None

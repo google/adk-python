@@ -12,14 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List, Optional
+from typing import List
+from typing import Optional
+from typing import Union
 
 from fastapi.openapi.models import HTTPBearer
+from typing_extensions import override
 
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes
 from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
+from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from ..openapi_tool.openapi_spec_parser.openapi_spec_parser import OpenApiSpecParser
 from ..openapi_tool.openapi_spec_parser.openapi_toolset import OpenAPIToolset
@@ -42,7 +46,7 @@ class ApplicationIntegrationToolset:
       project="test-project",
       location="us-central1"
       integration="test-integration",
-      trigger="api_trigger/test_trigger",
+      triggers=["api_trigger/test_trigger"],
       service_account_credentials={...},
   )
 
@@ -63,10 +67,10 @@ class ApplicationIntegrationToolset:
       service_account_credentials={...},
   )
 
-  # Get all available tools
+  # Feed the toolset to agent
   agent = LlmAgent(tools=[
-      ...
-      *application_integration_toolset.get_tools(),
+      ...,
+      application_integration_toolset,
   ])
   ```
   """
@@ -76,7 +80,7 @@ class ApplicationIntegrationToolset:
       project: str,
       location: str,
       integration: Optional[str] = None,
-      trigger: Optional[str] = None,
+      triggers: Optional[List[str]] = None,
       connection: Optional[str] = None,
       entity_operations: Optional[str] = None,
       actions: Optional[str] = None,
@@ -87,50 +91,15 @@ class ApplicationIntegrationToolset:
       # tool/python function description.
       tool_instructions: Optional[str] = "",
       service_account_json: Optional[str] = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
-    """Initializes the ApplicationIntegrationToolset.
-
-    Example Usage:
-    ```
-    # Get all available tools for an integration with api trigger
-    application_integration_toolset = ApplicationIntegrationToolset(
-
-        project="test-project",
-        location="us-central1"
-        integration="test-integration",
-        trigger="api_trigger/test_trigger",
-        service_account_credentials={...},
-    )
-
-    # Get all available tools for a connection using entity operations and
-    # actions
-    # Note: Find the list of supported entity operations and actions for a
-    connection
-    # using integration connector apis:
-    #
-    https://cloud.google.com/integration-connectors/docs/reference/rest/v1/projects.locations.connections.connectionSchemaMetadata
-    application_integration_toolset = ApplicationIntegrationToolset(
-        project="test-project",
-        location="us-central1"
-        connection="test-connection",
-        entity_operations=["EntityId1": ["LIST","CREATE"], "EntityId2": []],
-        #empty list for actions means all operations on the entity are supported
-        actions=["action1"],
-        service_account_credentials={...},
-    )
-
-    # Get all available tools
-    agent = LlmAgent(tools=[
-        ...
-        *application_integration_toolset.get_tools(),
-    ])
-    ```
+    """Args:
 
     Args:
         project: The GCP project ID.
         location: The GCP location.
         integration: The integration name.
-        trigger: The trigger name.
+        triggers: The list of trigger names in the integration.
         connection: The connection name.
         entity_operations: The entity operations supported by the connection.
         actions: The actions supported by the connection.
@@ -139,37 +108,42 @@ class ApplicationIntegrationToolset:
         service_account_json: The service account configuration as a dictionary.
           Required if not using default service credential. Used for fetching
           the Application Integration or Integration Connector resource.
+        tool_filter: The filter used to filter the tools in the toolset. It can
+          be either a tool predicate or a list of tool names of the tools to
+          expose.
 
     Raises:
-        ValueError: If neither integration and trigger nor connection and
-            (entity_operations or actions) is provided.
+        ValueError: If none of the following conditions are met:
+            - `integration` is provided.
+            - `connection` is provided and at least one of `entity_operations`
+              or `actions` is provided.
         Exception: If there is an error during the initialization of the
             integration or connection client.
     """
     self.project = project
     self.location = location
     self.integration = integration
-    self.trigger = trigger
+    self.triggers = triggers
     self.connection = connection
     self.entity_operations = entity_operations
     self.actions = actions
     self.tool_name = tool_name
     self.tool_instructions = tool_instructions
     self.service_account_json = service_account_json
-    self.generated_tools: Dict[str, RestApiTool] = {}
+    self.tool_filter = tool_filter
 
     integration_client = IntegrationClient(
         project,
         location,
         integration,
-        trigger,
+        triggers,
         connection,
         entity_operations,
         actions,
         service_account_json,
     )
     connection_details = {}
-    if integration and trigger:
+    if integration:
       spec = integration_client.get_openapi_spec_for_integration()
     elif connection and (entity_operations or actions):
       connections_client = ConnectionsClient(
@@ -182,13 +156,15 @@ class ApplicationIntegrationToolset:
       )
     else:
       raise ValueError(
-          "Either (integration and trigger) or (connection and"
+          "Invalid request, Either integration or (connection and"
           " (entity_operations or actions)) should be provided."
       )
-    self._parse_spec_to_tools(spec, connection_details)
+    self.openapi_toolset = None
+    self.tool = None
+    self._parse_spec_to_toolset(spec, connection_details)
 
-  def _parse_spec_to_tools(self, spec_dict, connection_details):
-    """Parses the spec dict to a list of RestApiTool."""
+  def _parse_spec_to_toolset(self, spec_dict, connection_details):
+    """Parses the spec dict to OpenAPI toolset."""
     if self.service_account_json:
       sa_credential = ServiceAccountCredential.model_validate_json(
           self.service_account_json
@@ -210,14 +186,13 @@ class ApplicationIntegrationToolset:
       )
       auth_scheme = HTTPBearer(bearerFormat="JWT")
 
-    if self.integration and self.trigger:
-      tools = OpenAPIToolset(
+    if self.integration:
+      self.openapi_toolset = OpenAPIToolset(
           spec_dict=spec_dict,
           auth_credential=auth_credential,
           auth_scheme=auth_scheme,
-      ).get_tools()
-      for tool in tools:
-        self.generated_tools[tool.name] = tool
+          tool_filter=self.tool_filter,
+      )
       return
 
     operations = OpenApiSpecParser().parse(spec_dict)
@@ -235,7 +210,7 @@ class ApplicationIntegrationToolset:
         rest_api_tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         rest_api_tool.configure_auth_credential(auth_credential)
-      tool = IntegrationConnectorTool(
+      self.tool = IntegrationConnectorTool(
           name=rest_api_tool.name,
           description=rest_api_tool.description,
           connection_name=connection_details["name"],
@@ -246,7 +221,12 @@ class ApplicationIntegrationToolset:
           operation=operation,
           rest_api_tool=rest_api_tool,
       )
-      self.generated_tools[tool.name] = tool
 
-  def get_tools(self) -> List[RestApiTool]:
-    return list(self.generated_tools.values())
+  @override
+  async def get_tools(self) -> List[RestApiTool]:
+    return [self.tool] if self.tool else await self.openapi_toolset.get_tools()
+
+  @override
+  async def close(self) -> None:
+    if self.openapi_toolset:
+      await self.openapi_toolset.close()

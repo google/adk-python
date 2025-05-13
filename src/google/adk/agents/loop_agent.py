@@ -58,5 +58,5 @@ class LoopAgent(BaseAgent):
   async def _run_live_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    raise NotImplementedError('The behavior for run_live is not defined yet.')
+    raise NotImplementedError('This is not supported yet for LoopAgent.')
     yield  # AsyncGenerator requires having at least one yield statement

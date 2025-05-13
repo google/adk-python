@@ -89,7 +89,12 @@ class BaseLlmFlow(ABC):
           if invocation_context.transcription_cache:
             from . import audio_transcriber
 
-            audio_transcriber = audio_transcriber.AudioTranscriber()
+            audio_transcriber = audio_transcriber.AudioTranscriber(
+                init_client=True
+                if invocation_context.run_config.input_audio_transcription
+                is None
+                else False
+            )
             contents = audio_transcriber.transcribe_file(invocation_context)
             logger.debug('Sending history to model: %s', contents)
             await llm_connection.send_history(contents)
@@ -130,6 +135,18 @@ class BaseLlmFlow(ABC):
             # cancel the tasks that belongs to the closed connection.
             send_task.cancel()
             await llm_connection.close()
+          if (
+              event.content
+              and event.content.parts
+              and event.content.parts[0].function_response
+              and event.content.parts[0].function_response.name
+              == 'task_completed'
+          ):
+            # this is used for sequential agent to signal the end of the agent.
+            await asyncio.sleep(1)
+            # cancel the tasks that belongs to the closed connection.
+            send_task.cancel()
+            return
       finally:
         # Clean up
         if not send_task.done():
@@ -177,9 +194,12 @@ class BaseLlmFlow(ABC):
         # Cache audio data here for transcription
         if not invocation_context.transcription_cache:
           invocation_context.transcription_cache = []
-        invocation_context.transcription_cache.append(
-            TranscriptionEntry(role='user', data=live_request.blob)
-        )
+        if not invocation_context.run_config.input_audio_transcription:
+          # if the live model's input transcription is not enabled, then
+          # we use our onwn audio transcriber to achieve that.
+          invocation_context.transcription_cache.append(
+              TranscriptionEntry(role='user', data=live_request.blob)
+          )
         await llm_connection.send_realtime(live_request.blob)
       if live_request.content:
         await llm_connection.send_content(live_request.content)
@@ -193,11 +213,14 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[Event, None]:
     """Receive data from model and process events using BaseLlmConnection."""
 
-    def get_author(llm_response):
+    def get_author_for_event(llm_response):
       """Get the author of the event.
 
       When the model returns transcription, the author is "user". Otherwise, the
-      author is the agent.
+      author is the agent name(not 'model').
+      
+      Args:
+        llm_response: The LLM response from the LLM call.
       """
       if (
           llm_response
@@ -215,7 +238,7 @@ class BaseLlmFlow(ABC):
           model_response_event = Event(
               id=Event.new_id(),
               invocation_id=invocation_context.invocation_id,
-              author=get_author(llm_response),
+              author=get_author_for_event(llm_response),
           )
           async for event in self._postprocess_live(
               invocation_context,
@@ -226,13 +249,20 @@ class BaseLlmFlow(ABC):
             if (
                 event.content
                 and event.content.parts
-                and event.content.parts[0].text
+                and event.content.parts[0].inline_data is None
                 and not event.partial
             ):
+              # This can be either user data or transcription data.
+              # when output transcription enabled, it will contain model's
+              # transcription.
+              # when input transcription enabled, it will contain user
+              # transcription.
               if not invocation_context.transcription_cache:
                 invocation_context.transcription_cache = []
               invocation_context.transcription_cache.append(
-                  TranscriptionEntry(role='model', data=event.content)
+                  TranscriptionEntry(
+                      role=event.content.role, data=event.content
+                  )
               )
             yield event
         # Give opportunity for other tasks to run.

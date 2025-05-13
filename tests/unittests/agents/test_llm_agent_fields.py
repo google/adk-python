@@ -92,6 +92,16 @@ def test_canonical_instruction():
   assert agent.canonical_instruction(ctx) == 'instruction: state_value'
 
 
+def test_async_canonical_instruction():
+  async def _instruction_provider(ctx: ReadonlyContext) -> str:
+    return f'instruction: {ctx.state["state_var"]}'
+
+  agent = LlmAgent(name='test_agent', instruction=_instruction_provider)
+  ctx = _create_readonly_context(agent, state={'state_var': 'state_value'})
+
+  assert agent.canonical_instruction(ctx) == 'instruction: state_value'
+
+
 def test_canonical_global_instruction_str():
   agent = LlmAgent(name='test_agent', global_instruction='global instruction')
   ctx = _create_readonly_context(agent)
@@ -101,6 +111,21 @@ def test_canonical_global_instruction_str():
 
 def test_canonical_global_instruction():
   def _global_instruction_provider(ctx: ReadonlyContext) -> str:
+    return f'global instruction: {ctx.state["state_var"]}'
+
+  agent = LlmAgent(
+      name='test_agent', global_instruction=_global_instruction_provider
+  )
+  ctx = _create_readonly_context(agent, state={'state_var': 'state_value'})
+
+  assert (
+      agent.canonical_global_instruction(ctx)
+      == 'global instruction: state_value'
+  )
+
+
+def test_async_canonical_global_instruction():
+  async def _global_instruction_provider(ctx: ReadonlyContext) -> str:
     return f'global instruction: {ctx.state["state_var"]}'
 
   agent = LlmAgent(
