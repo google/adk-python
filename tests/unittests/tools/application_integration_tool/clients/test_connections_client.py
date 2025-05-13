@@ -620,3 +620,49 @@ class TestConnectionsClient:
         token = client._get_access_token()
         assert token == "new_token"
         mock_refresh.assert_called_once()
+
+
+def test_execute_connection_includes_dynamic_auth_config(monkeypatch):
+  # Arrange: a client with fake credentials
+  client = ConnectionsClient(
+      project="proj-id",
+      location="us-central1",
+      connection="conn-id",
+  )
+  # Stub out token fetch
+  monkeypatch.setattr(client, "_get_access_token", lambda: "fake-auth-token")
+
+  captured = {}
+
+  def fake_post(url, headers=None, json=None):
+    captured["url"] = url
+    captured["headers"] = headers
+    captured["json"] = json
+
+    class FakeResponse:
+
+      def raise_for_status(self):
+        pass
+
+      def json(self):
+        return {"success": True}
+
+    return FakeResponse()
+
+  # Replace requests.post
+  monkeypatch.setattr(requests, "post", fake_post)
+
+  # Act: call execute_connection with a dynamicAuthConfig
+  result = client.execute_connection(
+      connection_name=(
+          "projects/proj-id/locations/us-central1/connections/conn-id"
+      ),
+      operation_id="EXECUTE_ACTION",
+      inputs={"foo": "bar"},
+      dynamic_auth_config={"token": "end-user-token"},
+  )
+
+  # Assert: that the JSON body included our dynamicAuthConfig
+  assert "dynamicAuthConfig" in captured["json"]
+  assert captured["json"]["dynamicAuthConfig"] == {"token": "end-user-token"}
+  assert result == {"success": True}

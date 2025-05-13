@@ -859,3 +859,40 @@ class ConnectionsClient:
       operation_done = operation_response.get("done", False)
       time.sleep(1)
     return operation_response
+  def execute_connection(
+    self,
+    connection_name: str,
+    operation_id: str,
+    inputs: Dict[str, Any],
+    dynamic_auth_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+      """Executes an operation on the specified connection, with optional auth override.
+
+      Args:
+      connection_name: Full resource name of the connection.
+      operation_id: Operation to perform (e.g. EXECUTE_ACTION).
+      inputs: Payload for 'connectorInputPayload'.
+      dynamic_auth_config: If provided, sent under 'dynamicAuthConfig' for override.
+
+      Returns:
+      The JSON-decoded response from the connector API.
+
+      Raises:
+      requests.exceptions.RequestException: If the HTTP request fails.
+      """
+      url = f"{self.connector_url}/v1/{connection_name}:execute"
+      headers = {
+          "Content-Type": "application/json",
+          "Authorization": f"Bearer {self._get_access_token()}",
+      }
+      body: Dict[str, Any] = {
+          "connectionName": connection_name,
+          "operation": operation_id,
+          "connectorInputPayload": inputs,
+      }
+      if dynamic_auth_config is not None:
+        body["dynamicAuthConfig"] = dynamic_auth_config
+
+      response = requests.post(url, headers=headers, json=body)
+      response.raise_for_status()
+      return response.json()
