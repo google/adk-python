@@ -65,6 +65,83 @@ async def check_prime(nums: list[int]) -> str:
       else f"{', '.join(str(num) for num in primes)} are prime numbers."
   )
 
+
+async def before_agent_callback(callback_context):
+  print('@before_agent_callback')
+  return None
+
+
+async def after_agent_callback(callback_context):
+  print('@after_agent_callback')
+  return None
+
+
+async def before_model_callback(callback_context, llm_request):
+  print('@before_model_callback')
+  return None
+
+
+async def after_model_callback(callback_context, llm_response):
+  print('@after_model_callback')
+  return None
+
+
+def after_agent_cb1(callback_context):
+  print('@after_agent_cb1')
+
+
+def after_agent_cb2(callback_context):
+  print('@after_agent_cb2')
+  return types.Content(
+      parts=[
+          types.Part(
+              text='(stopped) after_agent_cb2',
+          ),
+      ],
+  )
+
+
+def after_agent_cb3(callback_context):
+  print('@after_agent_cb3')
+
+
+def before_agent_cb1(callback_context):
+  print('@before_agent_cb1')
+
+
+def before_agent_cb2(callback_context):
+  print('@before_agent_cb2')
+
+
+def before_agent_cb3(callback_context):
+  print('@before_agent_cb3')
+
+
+def before_tool_cb1(tool, args, tool_context):
+  print('@before_tool_cb1')
+
+
+def before_tool_cb2(tool, args, tool_context):
+  print('@before_tool_cb2')
+
+
+def before_tool_cb3(tool, args, tool_context):
+  print('@before_tool_cb3')
+
+
+def after_tool_cb1(tool, args, tool_context, tool_response):
+  print('@after_tool_cb1')
+
+
+def after_tool_cb2(tool, args, tool_context, tool_response):
+  print('@after_tool_cb2')
+  return {'test': 'after_tool_cb2', 'response': tool_response}
+
+
+def after_tool_cb3(tool, args, tool_context, tool_response):
+  print('@after_tool_cb3')
+
+
 root_agent = Agent(
     model='gemini-2.0-flash-exp',
     name='data_processing_agent',
@@ -106,4 +183,14 @@ root_agent = Agent(
             ),
         ]
     ),
+    before_agent_callback=[
+        before_agent_cb1,
+        before_agent_cb2,
+        before_agent_cb3,
+    ],
+    after_agent_callback=[after_agent_cb1, after_agent_cb2, after_agent_cb3],
+    before_model_callback=before_model_callback,
+    after_model_callback=after_model_callback,
+    before_tool_callback=[before_tool_cb1, before_tool_cb2, before_tool_cb3],
+    after_tool_callback=[after_tool_cb1, after_tool_cb2, after_tool_cb3],
 )

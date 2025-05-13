@@ -174,9 +174,11 @@ class Gemini(BaseLlm):
   @cached_property
   def _live_api_client(self) -> Client:
     if self._api_backend == 'vertex':
+      #use beta version for vertex api
+      api_version = 'v1beta1'
       # use default api version for vertex
       return Client(
-          http_options=types.HttpOptions(headers=self._tracking_headers)
+          http_options=types.HttpOptions(headers=self._tracking_headers,api_version=api_version)
       )
     else:
       # use v1alpha for ml_dev

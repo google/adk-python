@@ -45,12 +45,12 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 calendar_tool_set.configure_auth(
     client_id=oauth_client_id, client_secret=oauth_client_secret
 )
-
-get_calendar_events = calendar_tool_set.get_tool("calendar_events_get")
-# list_calendar_events = calendar_tool_set.get_tool("calendar_events_list")
-# you can replace below customized list_calendar_events tool with above ADK
-# build-in google calendar tool which is commented for now to acheive same
-# effect.
+calendar_tool_set.set_tool_filter(
+    # you can also replace below customized `list_calendar_events` with build-in
+    # google calendar tool by adding `calendar_events_list` in the filter list
+    lambda tool, ctx=None: tool.name
+    in ["calendar_events_get"]
+)
 
 
 def list_calendar_events(
@@ -210,6 +210,6 @@ root_agent = Agent(
 
       Currnet time: {_time}
 """,
-    tools=[list_calendar_events, get_calendar_events],
+    tools=[list_calendar_events, calendar_tool_set],
     before_agent_callback=update_time,
 )
