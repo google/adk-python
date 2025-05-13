@@ -46,7 +46,7 @@ class ApplicationIntegrationToolset:
       project="test-project",
       location="us-central1"
       integration="test-integration",
-      trigger="api_trigger/test_trigger",
+      triggers=["api_trigger/test_trigger"],
       service_account_credentials={...},
   )
 
@@ -80,7 +80,7 @@ class ApplicationIntegrationToolset:
       project: str,
       location: str,
       integration: Optional[str] = None,
-      trigger: Optional[str] = None,
+      triggers: Optional[List[str]] = None,
       connection: Optional[str] = None,
       entity_operations: Optional[str] = None,
       actions: Optional[str] = None,
@@ -95,10 +95,11 @@ class ApplicationIntegrationToolset:
   ):
     """Args:
 
+    Args:
         project: The GCP project ID.
         location: The GCP location.
         integration: The integration name.
-        trigger: The trigger name.
+        triggers: The list of trigger names in the integration.
         connection: The connection name.
         entity_operations: The entity operations supported by the connection.
         actions: The actions supported by the connection.
@@ -112,15 +113,17 @@ class ApplicationIntegrationToolset:
           expose.
 
     Raises:
-        ValueError: If neither integration and trigger nor connection and
-            (entity_operations or actions) is provided.
+        ValueError: If none of the following conditions are met:
+            - `integration` is provided.
+            - `connection` is provided and at least one of `entity_operations`
+              or `actions` is provided.
         Exception: If there is an error during the initialization of the
             integration or connection client.
     """
     self.project = project
     self.location = location
     self.integration = integration
-    self.trigger = trigger
+    self.triggers = triggers
     self.connection = connection
     self.entity_operations = entity_operations
     self.actions = actions
@@ -133,14 +136,14 @@ class ApplicationIntegrationToolset:
         project,
         location,
         integration,
-        trigger,
+        triggers,
         connection,
         entity_operations,
         actions,
         service_account_json,
     )
     connection_details = {}
-    if integration and trigger:
+    if integration:
       spec = integration_client.get_openapi_spec_for_integration()
     elif connection and (entity_operations or actions):
       connections_client = ConnectionsClient(
@@ -153,7 +156,7 @@ class ApplicationIntegrationToolset:
       )
     else:
       raise ValueError(
-          "Either (integration and trigger) or (connection and"
+          "Invalid request, Either integration or (connection and"
           " (entity_operations or actions)) should be provided."
       )
     self.openapi_toolset = None
@@ -183,7 +186,7 @@ class ApplicationIntegrationToolset:
       )
       auth_scheme = HTTPBearer(bearerFormat="JWT")
 
-    if self.integration and self.trigger:
+    if self.integration:
       self.openapi_toolset = OpenAPIToolset(
           spec_dict=spec_dict,
           auth_credential=auth_credential,

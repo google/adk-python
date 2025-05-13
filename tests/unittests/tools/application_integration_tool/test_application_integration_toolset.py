@@ -52,6 +52,24 @@ def mock_openapi_toolset():
     yield mock_toolset
 
 
+@pytest.fixture
+def mock_openapi_toolset_with_multiple_tools_and_no_tools():
+  with mock.patch(
+      "google.adk.tools.application_integration_tool.application_integration_toolset.OpenAPIToolset"
+  ) as mock_toolset:
+    mock_toolset_instance = mock.MagicMock()
+    mock_rest_api_tool = mock.MagicMock(spec=rest_api_tool.RestApiTool)
+    mock_rest_api_tool.name = "Test Tool"
+    mock_rest_api_tool_2 = mock.MagicMock(spec=rest_api_tool.RestApiTool)
+    mock_rest_api_tool_2.name = "Test Tool 2"
+    mock_toolset_instance.get_tools.return_value = [
+        mock_rest_api_tool,
+        mock_rest_api_tool_2,
+    ]
+    mock_toolset.return_value = mock_toolset_instance
+    yield mock_toolset
+
+
 def get_mocked_parsed_operation(operation_id, attributes):
   mock_openapi_spec_parser_instance = mock.MagicMock()
   mock_parsed_operation = mock.MagicMock(spec=ParsedOperation)
@@ -142,18 +160,70 @@ def test_initialization_with_integration_and_trigger(
     mock_openapi_toolset,
 ):
   integration_name = "test-integration"
-  trigger_name = "test-trigger"
+  triggers = ["test-trigger"]
   toolset = ApplicationIntegrationToolset(
-      project, location, integration=integration_name, trigger=trigger_name
+      project, location, integration=integration_name, triggers=triggers
   )
   mock_integration_client.assert_called_once_with(
-      project, location, integration_name, trigger_name, None, None, None, None
+      project, location, integration_name, triggers, None, None, None, None
   )
   mock_integration_client.return_value.get_openapi_spec_for_integration.assert_called_once()
   mock_connections_client.assert_not_called()
   mock_openapi_toolset.assert_called_once()
   assert len(toolset.get_tools()) == 1
   assert toolset.get_tools()[0].name == "Test Tool"
+
+
+def test_initialization_with_integration_and_list_of_triggers(
+    project,
+    location,
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_toolset_with_multiple_tools_and_no_tools,
+):
+  integration_name = "test-integration"
+  triggers = ["test-trigger1", "test-trigger2"]
+  toolset = ApplicationIntegrationToolset(
+      project, location, integration=integration_name, triggers=triggers
+  )
+  mock_integration_client.assert_called_once_with(
+      project,
+      location,
+      integration_name,
+      triggers,
+      None,
+      None,
+      None,
+      None,
+  )
+  mock_integration_client.return_value.get_openapi_spec_for_integration.assert_called_once()
+  mock_connections_client.assert_not_called()
+  mock_openapi_toolset_with_multiple_tools_and_no_tools.assert_called_once()
+  assert len(toolset.get_tools()) == 2
+  assert toolset.get_tools()[0].name == "Test Tool"
+  assert toolset.get_tools()[1].name == "Test Tool 2"
+
+
+def test_initialization_with_integration_and_empty_trigger_list(
+    project,
+    location,
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_toolset_with_multiple_tools_and_no_tools,
+):
+  integration_name = "test-integration"
+  toolset = ApplicationIntegrationToolset(
+      project, location, integration=integration_name
+  )
+  mock_integration_client.assert_called_once_with(
+      project, location, integration_name, None, None, None, None, None
+  )
+  mock_integration_client.return_value.get_openapi_spec_for_integration.assert_called_once()
+  mock_connections_client.assert_not_called()
+  mock_openapi_toolset_with_multiple_tools_and_no_tools.assert_called_once()
+  assert len(toolset.get_tools()) == 2
+  assert toolset.get_tools()[0].name == "Test Tool"
+  assert toolset.get_tools()[1].name == "Test Tool 2"
 
 
 def test_initialization_with_connection_and_entity_operations(
@@ -250,7 +320,7 @@ def test_initialization_without_required_params(project, location):
   with pytest.raises(
       ValueError,
       match=(
-          "Either \\(integration and trigger\\) or \\(connection and"
+          "Invalid request, Either integration or \\(connection and"
           " \\(entity_operations or actions\\)\\) should be provided."
       ),
   ):
@@ -259,25 +329,16 @@ def test_initialization_without_required_params(project, location):
   with pytest.raises(
       ValueError,
       match=(
-          "Either \\(integration and trigger\\) or \\(connection and"
+          "Invalid request, Either integration or \\(connection and"
           " \\(entity_operations or actions\\)\\) should be provided."
       ),
   ):
-    ApplicationIntegrationToolset(project, location, integration="test")
+    ApplicationIntegrationToolset(project, location, triggers=["test"])
 
   with pytest.raises(
       ValueError,
       match=(
-          "Either \\(integration and trigger\\) or \\(connection and"
-          " \\(entity_operations or actions\\)\\) should be provided."
-      ),
-  ):
-    ApplicationIntegrationToolset(project, location, trigger="test")
-
-  with pytest.raises(
-      ValueError,
-      match=(
-          "Either \\(integration and trigger\\) or \\(connection and"
+          "Invalid request, Either integration or \\(connection and"
           " \\(entity_operations or actions\\)\\) should be provided."
       ),
   ):
@@ -305,19 +366,19 @@ def test_initialization_with_service_account_credentials(
       "universe_domain": "googleapis.com",
   })
   integration_name = "test-integration"
-  trigger_name = "test-trigger"
+  triggers = ["test-trigger"]
   toolset = ApplicationIntegrationToolset(
       project,
       location,
       integration=integration_name,
-      trigger=trigger_name,
+      triggers=triggers,
       service_account_json=service_account_json,
   )
   mock_integration_client.assert_called_once_with(
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       None,
       None,
       None,
@@ -338,12 +399,12 @@ def test_initialization_without_explicit_service_account_credentials(
     project, location, mock_integration_client, mock_openapi_toolset
 ):
   integration_name = "test-integration"
-  trigger_name = "test-trigger"
+  triggers = "test-trigger"
   toolset = ApplicationIntegrationToolset(
-      project, location, integration=integration_name, trigger=trigger_name
+      project, location, integration=integration_name, triggers=triggers
   )
   mock_integration_client.assert_called_once_with(
-      project, location, integration_name, trigger_name, None, None, None, None
+      project, location, integration_name, triggers, None, None, None, None
   )
   mock_openapi_toolset.assert_called_once()
   _, kwargs = mock_openapi_toolset.call_args
@@ -355,9 +416,9 @@ def test_get_tools(
     project, location, mock_integration_client, mock_openapi_toolset
 ):
   integration_name = "test-integration"
-  trigger_name = "test-trigger"
+  triggers = ["test-trigger"]
   toolset = ApplicationIntegrationToolset(
-      project, location, integration=integration_name, trigger=trigger_name
+      project, location, integration=integration_name, triggers=triggers
   )
   tools = toolset.get_tools()
   assert len(tools) == 1
