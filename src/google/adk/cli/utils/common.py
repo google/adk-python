@@ -12,5 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: date+base_cl
-__version__ = "0.5.0"
+import pydantic
+from pydantic import alias_generators
+
+
+class BaseModel(pydantic.BaseModel):
+  model_config = pydantic.ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )

@@ -18,6 +18,8 @@ from datetime import datetime
 import logging
 import os
 import tempfile
+from typing import AsyncGenerator
+from typing import Coroutine
 from typing import Optional
 
 import click
@@ -123,6 +125,15 @@ def validate_exclusive(ctx, param, value):
     help="Optional. Whether to save the session to a json file on exit.",
 )
 @click.option(
+    "--session_id",
+    type=str,
+    help=(
+        "Optional. The session ID to save the session to on exit when"
+        " --save_session is set to true. User will be prompted to enter a"
+        " session ID if not set."
+    ),
+)
+@click.option(
     "--replay",
     type=click.Path(
         exists=True, dir_okay=False, file_okay=True, resolve_path=True
@@ -156,6 +167,7 @@ def validate_exclusive(ctx, param, value):
 def cli_run(
     agent: str,
     save_session: bool,
+    session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
 ):
@@ -179,6 +191,7 @@ def cli_run(
           input_file=replay,
           saved_session_file=resume,
           save_session=save_session,
+          session_id=session_id,
       )
   )
 
@@ -232,7 +245,7 @@ def cli_eval(
 
   try:
     from .cli_eval import EvalMetric
-    from .cli_eval import EvalResult
+    from .cli_eval import EvalCaseResult
     from .cli_eval import EvalStatus
     from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
@@ -256,16 +269,20 @@ def cli_eval(
 
   eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
 
-  try:
-    eval_results = list(
-        run_evals(
+  async def _collect_eval_results() -> list[EvalCaseResult]:
+    return [
+        result
+        async for result in run_evals(
             eval_set_to_evals,
             root_agent,
             reset_func,
             eval_metrics,
             print_detailed_results=print_detailed_results,
         )
-    )
+    ]
+
+  try:
+    eval_results = asyncio.run(_collect_eval_results())
   except ModuleNotFoundError:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
 
@@ -273,7 +290,7 @@ def cli_eval(
   eval_run_summary = {}
 
   for eval_result in eval_results:
-    eval_result: EvalResult
+    eval_result: EvalCaseResult
 
     if eval_result.eval_set_file not in eval_run_summary:
       eval_run_summary[eval_result.eval_set_file] = [0, 0]
@@ -339,6 +356,11 @@ def cli_eval(
     default=False,
     help="Optional. Whether to enable cloud trace for telemetry.",
 )
+@click.option(
+    "--reload/--no-reload",
+    default=True,
+    help="Optional. Whether to enable auto reload for server.",
+)
 @click.argument(
     "agents_dir",
     type=click.Path(
@@ -354,6 +376,7 @@ def cli_web(
     allow_origins: Optional[list[str]] = None,
     port: int = 8000,
     trace_to_cloud: bool = False,
+    reload: bool = True,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -405,7 +428,7 @@ def cli_web(
       app,
       host="0.0.0.0",
       port=port,
-      reload=True,
+      reload=reload,
   )
 
   server = uvicorn.Server(config)
@@ -461,6 +484,11 @@ def cli_web(
     default=False,
     help="Optional. Whether to enable cloud trace for telemetry.",
 )
+@click.option(
+    "--reload/--no-reload",
+    default=True,
+    help="Optional. Whether to enable auto reload for server.",
+)
 # The directory of agents, where each sub-directory is a single agent.
 # By default, it is the current working directory
 @click.argument(
@@ -478,6 +506,7 @@ def cli_api_server(
     allow_origins: Optional[list[str]] = None,
     port: int = 8000,
     trace_to_cloud: bool = False,
+    reload: bool = True,
 ):
   """Starts a FastAPI server for agents.
 
@@ -505,7 +534,7 @@ def cli_api_server(
       ),
       host="0.0.0.0",
       port=port,
-      reload=True,
+      reload=reload,
   )
   server = uvicorn.Server(config)
   server.run()

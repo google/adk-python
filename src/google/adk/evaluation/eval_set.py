@@ -12,5 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: date+base_cl
-__version__ = "0.5.0"
+from typing import Optional
+from pydantic import BaseModel
+from .eval_case import EvalCase
+
+
+class EvalSet(BaseModel):
+  """A set of eval cases."""
+
+  eval_set_id: str
+  """Unique identifier for the eval set."""
+
+  name: Optional[str]
+  """Name of the dataset."""
+
+  description: Optional[str]
+  """Description of the dataset."""
+
+  eval_cases: list[EvalCase]
+  """List of eval cases in the dataset. Each case represents a single
+  interaction to be evaluated."""
+
+  creation_timestamp: float = 0.0
+  """The time at which this eval set was created."""

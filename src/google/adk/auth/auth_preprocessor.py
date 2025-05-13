@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
+from ..agents.readonly_context import ReadonlyContext
 from ..events.event import Event
 from ..flows.llm_flows import functions
 from ..flows.llm_flows._base_llm_processor import BaseLlmRequestProcessor
@@ -105,7 +106,12 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
             function_response_event = await functions.handle_function_calls_async(
                 invocation_context,
                 event,
-                {tool.name: tool for tool in agent.canonical_tools},
+                {
+                    tool.name: tool
+                    for tool in await agent.canonical_tools(
+                        ReadonlyContext(invocation_context)
+                    )
+                },
                 # there could be parallel function calls that require auth
                 # auth response would be a dict keyed by function call id
                 tools_to_resume,
