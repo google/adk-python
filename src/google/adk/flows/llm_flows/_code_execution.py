@@ -30,12 +30,12 @@ from typing_extensions import override
 
 from ...agents.invocation_context import InvocationContext
 from ...code_executors.base_code_executor import BaseCodeExecutor
+from ...code_executors.built_in_code_executor import BuiltInCodeExecutor
 from ...code_executors.code_execution_utils import CodeExecutionInput
 from ...code_executors.code_execution_utils import CodeExecutionResult
 from ...code_executors.code_execution_utils import CodeExecutionUtils
 from ...code_executors.code_execution_utils import File
 from ...code_executors.code_executor_context import CodeExecutorContext
-from ...code_executors.gemini_code_executor import GeminiCodeExecutor
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ...models.llm_response import LlmResponse
@@ -175,7 +175,7 @@ async def _run_pre_processor(
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
     return
 
-  if isinstance(code_executor, GeminiCodeExecutor):
+  if isinstance(code_executor, BuiltInCodeExecutor):
     code_executor.process_llm_request(llm_request)
     return
 
@@ -267,7 +267,7 @@ async def _run_post_processor(
   if not llm_response or not llm_response.content:
     return
 
-  if isinstance(code_executor, GeminiCodeExecutor):
+  if isinstance(code_executor, BuiltInCodeExecutor):
     return
 
   code_executor_context = CodeExecutorContext(invocation_context.session.state)
