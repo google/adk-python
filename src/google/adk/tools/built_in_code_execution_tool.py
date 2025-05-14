@@ -14,18 +14,26 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
+from deprecated import deprecated
 from google.genai import types
 from typing_extensions import override
 
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
+
 if TYPE_CHECKING:
   from ..models import LlmRequest
 
+logger = logging.getLogger(__name__)
 
+
+@deprecated(
+    'No longer supported. Please use the new BuiltInCodeExecutor instead.'
+)
 class BuiltInCodeExecutionTool(BaseTool):
   """A built-in code execution tool that is automatically invoked by Gemini 2 models.
 
@@ -44,6 +52,10 @@ class BuiltInCodeExecutionTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
+    logger.warning(
+        'BuiltInCodeExecutionTool is deprecated. Please use the new'
+        ' BuiltInCodeExecutor instead.'
+    )
     if llm_request.model and llm_request.model.startswith('gemini-2'):
       llm_request.config = llm_request.config or types.GenerateContentConfig()
       llm_request.config.tools = llm_request.config.tools or []
