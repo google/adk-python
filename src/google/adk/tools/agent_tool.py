@@ -162,17 +162,17 @@ class AgentTool(BaseTool):
               filename=artifact_name, artifact=artifact
           )
 
-    if (
-        not last_event
-        or not last_event.content
-        or not last_event.content.parts
-        or not last_event.content.parts[0].text
-    ):
+    if not last_event or not last_event.content or not last_event.content.parts:
       return ''
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
+      merged_text = '\n'.join(
+          [p.text for p in last_event.content.parts if p.text]
+      )
       tool_result = self.agent.output_schema.model_validate_json(
-          last_event.content.parts[0].text
+          merged_text
       ).model_dump(exclude_none=True)
     else:
-      tool_result = last_event.content.parts[0].text
+      tool_result = '\n'.join(
+          [p.text for p in last_event.content.parts if p.text]
+      )
     return tool_result

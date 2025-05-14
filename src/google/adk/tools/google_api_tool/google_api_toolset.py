@@ -48,10 +48,10 @@ class GoogleApiToolset(BaseToolset):
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
-    self.openapi_toolset = openapi_toolset
+    self._openapi_toolset = openapi_toolset
     self.tool_filter = tool_filter
-    self.client_id = client_id
-    self.client_secret = client_secret
+    self._client_id = client_id
+    self._client_secret = client_secret
 
   @override
   async def get_tools(
@@ -60,7 +60,7 @@ class GoogleApiToolset(BaseToolset):
     """Get all tools in the toolset."""
     tools = []
 
-    for tool in await self.openapi_toolset.get_tools(readonly_context):
+    for tool in await self._openapi_toolset.get_tools(readonly_context):
       if self.tool_filter and (
           isinstance(self.tool_filter, ToolPredicate)
           and not self.tool_filter(tool, readonly_context)
@@ -69,7 +69,7 @@ class GoogleApiToolset(BaseToolset):
       ):
         continue
       google_api_tool = GoogleApiTool(tool)
-      google_api_tool.configure_auth(self.client_id, self.client_secret)
+      google_api_tool.configure_auth(self._client_id, self._client_secret)
       tools.append(google_api_tool)
 
     return tools
@@ -119,8 +119,8 @@ class GoogleApiToolset(BaseToolset):
     return toolset
 
   def configure_auth(self, client_id: str, client_secret: str):
-    self.client_id = client_id
-    self.client_secret = client_secret
+    self._client_id = client_id
+    self._client_secret = client_secret
 
   @classmethod
   def load_toolset(
@@ -140,5 +140,5 @@ class GoogleApiToolset(BaseToolset):
 
   @override
   async def close(self):
-    if self.openapi_toolset:
-      await self.openapi_toolset.close()
+    if self._openapi_toolset:
+      await self._openapi_toolset.close()

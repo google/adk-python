@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import asyncio
 from contextlib import asynccontextmanager
 import importlib
@@ -20,7 +21,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 import sys
 import time
 import traceback
@@ -48,12 +48,9 @@ from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic import alias_generators
-from pydantic import BaseModel
-from pydantic import ConfigDict
 from pydantic import ValidationError
 from starlette.types import Lifespan
+from typing_extensions import override
 
 from ..agents import RunConfig
 from ..agents.base_agent import BaseAgent
@@ -63,6 +60,7 @@ from ..agents.llm_agent import Agent
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
 from ..artifacts import InMemoryArtifactService
+from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
@@ -120,6 +118,7 @@ class InMemoryExporter(export.SpanExporter):
     self._spans = []
     self.trace_dict = trace_dict
 
+  @override
   def export(
       self, spans: typing.Sequence[ReadableSpan]
   ) -> export.SpanExportResult:
@@ -136,20 +135,21 @@ class InMemoryExporter(export.SpanExporter):
     self._spans.extend(spans)
     return export.SpanExportResult.SUCCESS
 
+  @override
+  def force_flush(self, timeout_millis: int = 30000) -> bool:
+    return True
+
   def get_finished_spans(self, session_id: str):
     trace_ids = self.trace_dict.get(session_id, None)
     if trace_ids is None or not trace_ids:
       return []
     return [x for x in self._spans if x.context.trace_id in trace_ids]
 
-  def force_flush(self, timeout_millis: int = 30000) -> bool:
-    return True
-
   def clear(self):
     self._spans.clear()
 
 
-class AgentRunRequest(BaseModel):
+class AgentRunRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
@@ -176,6 +176,10 @@ class RunEvalResult(common.BaseModel):
   eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]]
   user_id: str
   session_id: str
+
+
+class GetEventGraphResult(common.BaseModel):
+  dot_src: str
 
 
 def get_fast_api_app(
@@ -251,6 +255,8 @@ def get_fast_api_app(
   # Build the Artifact service
   artifact_service = InMemoryArtifactService()
   memory_service = InMemoryMemoryService()
+
+  eval_sets_manager = LocalEvalSetsManager(agent_dir=agent_dir)
 
   # Build the Session service
   agent_engine_id = ""
@@ -401,28 +407,13 @@ def get_fast_api_app(
       eval_set_id: str,
   ):
     """Creates an eval set, given the id."""
-    pattern = r"^[a-zA-Z0-9_]+$"
-    if not bool(re.fullmatch(pattern, eval_set_id)):
+    try:
+      eval_sets_manager.create_eval_set(app_name, eval_set_id)
+    except ValueError as ve:
       raise HTTPException(
           status_code=400,
-          detail=(
-              f"Invalid eval set id. Eval set id should have the `{pattern}`"
-              " format"
-          ),
-      )
-    # Define the file path
-    new_eval_set_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-
-    logger.info("Creating eval set file `%s`", new_eval_set_path)
-
-    if not os.path.exists(new_eval_set_path):
-      # Write the JSON string to the file
-      logger.info("Eval set file doesn't exist, we will create a new one.")
-      with open(new_eval_set_path, "w") as f:
-        empty_content = json.dumps([], indent=2)
-        f.write(empty_content)
+          detail=str(ve),
+      ) from ve
 
   @app.get(
       "/apps/{app_name}/eval_sets",
@@ -430,15 +421,7 @@ def get_fast_api_app(
   )
   def list_eval_sets(app_name: str) -> list[str]:
     """Lists all eval sets for the given app."""
-    eval_set_file_path = os.path.join(agent_dir, app_name)
-    eval_sets = []
-    for file in os.listdir(eval_set_file_path):
-      if file.endswith(_EVAL_SET_FILE_EXTENSION):
-        eval_sets.append(
-            os.path.basename(file).removesuffix(_EVAL_SET_FILE_EXTENSION)
-        )
-
-    return sorted(eval_sets)
+    return eval_sets_manager.list_eval_sets(app_name)
 
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
@@ -447,33 +430,11 @@ def get_fast_api_app(
   async def add_session_to_eval_set(
       app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
   ):
-    pattern = r"^[a-zA-Z0-9_]+$"
-    if not bool(re.fullmatch(pattern, req.eval_id)):
-      raise HTTPException(
-          status_code=400,
-          detail=f"Invalid eval id. Eval id should have the `{pattern}` format",
-      )
-
     # Get the session
     session = session_service.get_session(
         app_name=app_name, user_id=req.user_id, session_id=req.session_id
     )
     assert session, "Session not found."
-    # Load the eval set file data
-    eval_set_file_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-    with open(eval_set_file_path, "r") as file:
-      eval_set_data = json.load(file)  # Load JSON into a list
-
-    if [x for x in eval_set_data if x["name"] == req.eval_id]:
-      raise HTTPException(
-          status_code=400,
-          detail=(
-              f"Eval id `{req.eval_id}` already exists in `{eval_set_id}`"
-              " eval set."
-          ),
-      )
 
     # Convert the session data to evaluation format
     test_data = evals.convert_session_to_eval_format(session)
@@ -483,7 +444,7 @@ def get_fast_api_app(
         await _get_root_agent_async(app_name)
     )
 
-    eval_set_data.append({
+    eval_case = {
         "name": req.eval_id,
         "data": test_data,
         "initial_session": {
@@ -491,10 +452,11 @@ def get_fast_api_app(
             "app_name": app_name,
             "user_id": req.user_id,
         },
-    })
-    # Serialize the test data to JSON and write to the eval set file.
-    with open(eval_set_file_path, "w") as f:
-      f.write(json.dumps(eval_set_data, indent=2))
+    }
+    try:
+      eval_sets_manager.add_eval_case(app_name, eval_set_id, eval_case)
+    except ValueError as ve:
+      raise HTTPException(status_code=400, detail=str(ve)) from ve
 
   @app.get(
       "/apps/{app_name}/eval_sets/{eval_set_id}/evals",
@@ -505,12 +467,7 @@ def get_fast_api_app(
       eval_set_id: str,
   ) -> list[str]:
     """Lists all evals in an eval set."""
-    # Load the eval set file data
-    eval_set_file_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-    with open(eval_set_file_path, "r") as file:
-      eval_set_data = json.load(file)  # Load JSON into a list
+    eval_set_data = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
     return sorted([x["name"] for x in eval_set_data])
 
@@ -642,6 +599,10 @@ def get_fast_api_app(
     app_eval_history_directory = os.path.join(
         agent_dir, app_name, ".adk", "eval_history"
     )
+
+    if not os.path.exists(app_eval_history_directory):
+      return []
+
     eval_result_files = [
         file.removesuffix(_EVAL_SET_RESULT_FILE_EXTENSION)
         for file in os.listdir(app_eval_history_directory)
@@ -850,7 +811,7 @@ def get_fast_api_app(
           root_agent, [(from_name, to_name)]
       )
     if dot_graph and isinstance(dot_graph, graphviz.Digraph):
-      return {"dot_src": dot_graph.source}
+      return GetEventGraphResult(dot_src=dot_graph.source)
     else:
       return {}
 

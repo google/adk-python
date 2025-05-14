@@ -12,20 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import random
+
+from datetime import datetime
 
 from google.adk import Agent
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.tools.load_memory_tool import load_memory_tool
 from google.adk.tools.preload_memory_tool import preload_memory_tool
-from google.genai import types
+
+
+def update_current_time(callback_context: CallbackContext):
+  callback_context.state['_time'] = datetime.now().isoformat()
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash-exp',
+    model='gemini-2.0-flash-001',
     name='memory_agent',
     description='agent that have access to memory tools.',
-    instruction="""
-      You are an agent that help user answer questions.
-    """,
-    tools=[load_memory_tool, preload_memory_tool],
+    before_agent_callback=update_current_time,
+    instruction="""\
+You are an agent that help user answer questions.
+
+Current time: {_time}
+""",
+    tools=[
+        load_memory_tool,
+        preload_memory_tool,
+    ],
 )
