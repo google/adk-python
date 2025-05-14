@@ -85,6 +85,9 @@ class LlmResponse(BaseModel):
   NOTE: the entire dict must be JSON serializable.
   """
 
+  usage_metadata: Optional[types.GenerateContentResponseUsageMetadata] = None
+  """The usage metadata of the LlmResponse"""
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
@@ -98,18 +101,20 @@ class LlmResponse(BaseModel):
     Returns:
       The LlmResponse.
     """
-
+    usage_metadata = generate_content_response.usage_metadata
     if generate_content_response.candidates:
       candidate = generate_content_response.candidates[0]
       if candidate.content and candidate.content.parts:
         return LlmResponse(
             content=candidate.content,
             grounding_metadata=candidate.grounding_metadata,
+            usage_metadata=usage_metadata,
         )
       else:
         return LlmResponse(
             error_code=candidate.finish_reason,
             error_message=candidate.finish_message,
+            usage_metadata=usage_metadata,
         )
     else:
       if generate_content_response.prompt_feedback:
@@ -117,9 +122,11 @@ class LlmResponse(BaseModel):
         return LlmResponse(
             error_code=prompt_feedback.block_reason,
             error_message=prompt_feedback.block_reason_message,
+            usage_metadata=usage_metadata,
         )
       else:
         return LlmResponse(
             error_code='UNKNOWN_ERROR',
             error_message='Unknown error.',
+            usage_metadata=usage_metadata,
         )
