@@ -36,52 +36,51 @@ _docs_toolset = None
 def __getattr__(name):
   global _bigquery_toolset, _calendar_toolset, _gmail_toolset, _youtube_toolset, _slides_toolset, _sheets_toolset, _docs_toolset
 
-  match name:
-    case 'bigquery_toolset':
-      if _bigquery_toolset is None:
-        from .google_api_toolsets import bigquery_toolset as bigquery
+  if name == 'bigquery_toolset':
+    if _bigquery_toolset is None:
+      from .google_api_toolsets import bigquery_toolset as bigquery
 
-        _bigquery_toolset = bigquery
-      return _bigquery_toolset
+      _bigquery_toolset = bigquery
+    return _bigquery_toolset
 
-    case 'calendar_toolset':
-      if _calendar_toolset is None:
-        from .google_api_toolsets import calendar_toolset as calendar
+  if name == 'calendar_toolset':
+    if _calendar_toolset is None:
+      from .google_api_toolsets import calendar_toolset as calendar
 
-        _calendar_toolset = calendar
-      return _calendar_toolset
+      _calendar_toolset = calendar
+    return _calendar_toolset
 
-    case 'gmail_toolset':
-      if _gmail_toolset is None:
-        from .google_api_toolsets import gmail_toolset as gmail
+  if name == 'gmail_toolset':
+    if _gmail_toolset is None:
+      from .google_api_toolsets import gmail_toolset as gmail
 
-        _gmail_toolset = gmail
-      return _gmail_toolset
+      _gmail_toolset = gmail
+    return _gmail_toolset
 
-    case 'youtube_toolset':
-      if _youtube_toolset is None:
-        from .google_api_toolsets import youtube_toolset as youtube
+  if name == 'youtube_toolset':
+    if _youtube_toolset is None:
+      from .google_api_toolsets import youtube_toolset as youtube
 
-        _youtube_toolset = youtube
-      return _youtube_toolset
+      _youtube_toolset = youtube
+    return _youtube_toolset
 
-    case 'slides_toolset':
-      if _slides_toolset is None:
-        from .google_api_toolsets import slides_toolset as slides
+  if name == 'slides_toolset':
+    if _slides_toolset is None:
+      from .google_api_toolsets import slides_toolset as slides
 
-        _slides_toolset = slides
-      return _slides_toolset
+      _slides_toolset = slides
+    return _slides_toolset
 
-    case 'sheets_toolset':
-      if _sheets_toolset is None:
-        from .google_api_toolsets import sheets_toolset as sheets
+  if name == 'sheets_toolset':
+    if _sheets_toolset is None:
+      from .google_api_toolsets import sheets_toolset as sheets
 
-        _sheets_toolset = sheets
-      return _sheets_toolset
+      _sheets_toolset = sheets
+    return _sheets_toolset
 
-    case 'docs_toolset':
-      if _docs_toolset is None:
-        from .google_api_toolsets import docs_toolset as docs
+  if name == 'docs_toolset':
+    if _docs_toolset is None:
+      from .google_api_toolsets import docs_toolset as docs
 
-        _docs_toolset = docs
-      return _docs_toolset
+      _docs_toolset = docs
+    return _docs_toolset
