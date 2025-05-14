@@ -241,7 +241,7 @@ class InMemorySessionService(BaseSessionService):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     if (
-        self.get_session(
+        self._get_session_impl(
             app_name=app_name, user_id=user_id, session_id=session_id
         )
         is None
