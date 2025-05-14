@@ -18,7 +18,9 @@ import asyncio
 import logging
 import queue
 import threading
-from typing import AsyncGenerator, Generator, Optional
+from typing import AsyncGenerator
+from typing import Generator
+from typing import Optional
 import warnings
 
 from deprecated import deprecated

@@ -262,7 +262,7 @@ async def test_initialization_with_connection_and_entity_operations(
       location,
       connection=connection_name,
       entity_operations=entity_operations_list,
-      tool_name=tool_name,
+      tool_name_prefix=tool_name,
       tool_instructions=tool_instructions,
   )
   mock_integration_client.assert_called_once_with(
@@ -289,8 +289,8 @@ async def test_initialization_with_connection_and_entity_operations(
   assert len(tools) == 1
   assert tools[0].name == "list_issues"
   assert isinstance(tools[0], IntegrationConnectorTool)
-  assert tools[0].entity == "Issues"
-  assert tools[0].operation == "LIST_ENTITIES"
+  assert tools[0]._entity == "Issues"
+  assert tools[0]._operation == "LIST_ENTITIES"
 
 
 @pytest.mark.asyncio
@@ -314,7 +314,7 @@ async def test_initialization_with_connection_and_actions(
       location,
       connection=connection_name,
       actions=actions_list,
-      tool_name=tool_name,
+      tool_name_prefix=tool_name,
       tool_instructions=tool_instructions,
   )
   mock_integration_client.assert_called_once_with(
@@ -332,8 +332,8 @@ async def test_initialization_with_connection_and_actions(
   assert len(tools) == 1
   assert tools[0].name == "list_issues_operation"
   assert isinstance(tools[0], IntegrationConnectorTool)
-  assert tools[0].action == "CustomAction"
-  assert tools[0].operation == "EXECUTE_ACTION"
+  assert tools[0]._action == "CustomAction"
+  assert tools[0]._operation == "EXECUTE_ACTION"
 
 
 def test_initialization_without_required_params(project, location):
@@ -467,7 +467,7 @@ def test_initialization_with_connection_details(
       location,
       connection=connection_name,
       entity_operations=entity_operations_list,
-      tool_name=tool_name,
+      tool_name_prefix=tool_name,
       tool_instructions=tool_instructions,
   )
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
