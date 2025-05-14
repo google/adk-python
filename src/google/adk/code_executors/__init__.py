@@ -15,16 +15,16 @@
 import logging
 
 from .base_code_executor import BaseCodeExecutor
+from .built_in_code_executor import BuiltInCodeExecutor
 from .code_executor_context import CodeExecutorContext
-from .gemini_code_executor import GeminiCodeExecutor
 from .unsafe_local_code_executor import UnsafeLocalCodeExecutor
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     'BaseCodeExecutor',
+    'BuiltInCodeExecutor',
     'CodeExecutorContext',
-    'GeminiCodeExecutor',
     'UnsafeLocalCodeExecutor',
 ]
 
