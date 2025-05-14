@@ -130,7 +130,7 @@ class ApplicationIntegrationToolset:
     self.tool_name = tool_name
     self.tool_instructions = tool_instructions
     self.service_account_json = service_account_json
-    self.tool_filter = tool_filter
+    self._tool_filter = tool_filter
 
     integration_client = IntegrationClient(
         project,
@@ -191,7 +191,7 @@ class ApplicationIntegrationToolset:
           spec_dict=spec_dict,
           auth_credential=auth_credential,
           auth_scheme=auth_scheme,
-          tool_filter=self.tool_filter,
+          tool_filter=self._tool_filter,
       )
       return
 
