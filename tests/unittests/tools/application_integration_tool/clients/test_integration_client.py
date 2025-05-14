@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import re
 from unittest import mock
 
 from google.adk.tools.application_integration_tool.clients.connections_client import ConnectionsClient
@@ -42,8 +43,8 @@ def integration_name():
 
 
 @pytest.fixture
-def trigger_name():
-  return "test-trigger"
+def triggers():
+  return ["test-trigger", "test-trigger2"]
 
 
 @pytest.fixture
@@ -76,13 +77,13 @@ def mock_connections_client():
 class TestIntegrationClient:
 
   def test_initialization(
-      self, project, location, integration_name, trigger_name, connection_name
+      self, project, location, integration_name, triggers, connection_name
   ):
     client = IntegrationClient(
         project=project,
         location=location,
         integration=integration_name,
-        trigger=trigger_name,
+        triggers=triggers,
         connection=connection_name,
         entity_operations={"entity": ["LIST"]},
         actions=["action1"],
@@ -91,7 +92,7 @@ class TestIntegrationClient:
     assert client.project == project
     assert client.location == location
     assert client.integration == integration_name
-    assert client.trigger == trigger_name
+    assert client.triggers == triggers
     assert client.connection == connection_name
     assert client.entity_operations == {"entity": ["LIST"]}
     assert client.actions == ["action1"]
@@ -105,7 +106,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_credentials,
       mock_connections_client,
   ):
@@ -126,7 +127,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -143,7 +144,7 @@ class TestIntegrationClient:
           json={
               "apiTriggerResources": [{
                   "integrationResource": integration_name,
-                  "triggerId": [trigger_name],
+                  "triggerId": triggers,
               }],
               "fileFormat": "JSON",
           },
@@ -154,7 +155,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_connections_client,
   ):
     with mock.patch.object(
@@ -169,7 +170,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -193,7 +194,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_credentials,
       status_code,
       response_text,
@@ -217,7 +218,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -226,10 +227,9 @@ class TestIntegrationClient:
       with pytest.raises(
           ValueError,
           match=(
-              "Invalid request. Please check the provided values of"
-              f" project\\({project}\\), location\\({location}\\),"
-              f" integration\\({integration_name}\\) and"
-              f" trigger\\({trigger_name}\\)."
+              r"Invalid request\. Please check the provided values of"
+              rf" project\({project}\), location\({location}\),"
+              rf" integration\({integration_name}\)."
           ),
       ):
         client.get_openapi_spec_for_integration()
@@ -239,7 +239,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_credentials,
       mock_connections_client,
   ):
@@ -261,7 +261,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -275,7 +275,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_credentials,
       mock_connections_client,
   ):
@@ -293,7 +293,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -311,7 +311,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=None,
         actions=None,
@@ -356,7 +356,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=entity_operations,
         actions=None,
@@ -425,7 +425,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=None,
         actions=actions,
@@ -476,7 +476,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=entity_operations,
         actions=None,
@@ -488,7 +488,7 @@ class TestIntegrationClient:
       client.get_openapi_spec_for_connection()
 
   def test_get_access_token_with_service_account_json(
-      self, project, location, integration_name, trigger_name, connection_name
+      self, project, location, integration_name, triggers, connection_name
   ):
     service_account_json = json.dumps({
         "client_email": "test@example.com",
@@ -509,7 +509,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=connection_name,
           entity_operations=None,
           actions=None,
@@ -528,7 +528,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       connection_name,
       mock_credentials,
   ):
@@ -544,7 +544,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=connection_name,
           entity_operations=None,
           actions=None,
@@ -554,7 +554,7 @@ class TestIntegrationClient:
       assert token == "test_token"
 
   def test_get_access_token_no_valid_credentials(
-      self, project, location, integration_name, trigger_name, connection_name
+      self, project, location, integration_name, triggers, connection_name
   ):
     with (
         mock.patch(
@@ -570,7 +570,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=connection_name,
           entity_operations=None,
           actions=None,
@@ -591,7 +591,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       connection_name,
       mock_credentials,
   ):
@@ -601,7 +601,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=integration_name,
-        trigger=trigger_name,
+        triggers=triggers,
         connection=connection_name,
         entity_operations=None,
         actions=None,
@@ -624,7 +624,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       connection_name,
       mock_credentials,
   ):
@@ -642,7 +642,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=connection_name,
           entity_operations=None,
           actions=None,
