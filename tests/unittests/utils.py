@@ -191,6 +191,16 @@ class InMemoryRunner:
         )
     )
 
+  async def run_async(self, new_message: types.ContentUnion) -> list[Event]:
+      events = []
+      async for event in self.runner.run_async(
+              user_id=self.session.user_id,
+              session_id=self.session.id,
+              new_message=new_message,
+      ):
+          events.append(event)
+      return events
+
   def run_live(self, live_request_queue: LiveRequestQueue) -> list[Event]:
     collected_responses = []
 

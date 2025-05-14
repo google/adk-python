@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from ..approval.approval_request import ApprovalRequest
 from ..auth.auth_tool import AuthConfig
 
 
@@ -63,4 +64,10 @@ class EventActions(BaseModel):
   function call could request different auth configs. This id is used to
   identify the function call.
   - Values: The requested auth config.
+  """
+
+  requested_approvals: list[ApprovalRequest] = Field(default_factory=list)
+  """Will only be set by a tool response indicating tool request approval.
+  Is a list since one function call response (from model) could correspond to multiple 
+  function calls. List value is the approval request.
   """

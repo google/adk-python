@@ -21,6 +21,7 @@ from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from .function_tool import FunctionTool
+from ..approval.approval_policy import FunctionToolPolicy, register_policy_for_tool
 
 
 class LangchainTool(FunctionTool):
@@ -33,13 +34,16 @@ class LangchainTool(FunctionTool):
   tool: Any
   """The wrapped langchain tool."""
 
-  def __init__(self, tool: Any):
+  def __init__(self, tool: Any, policies: list[FunctionToolPolicy] = None):
     super().__init__(tool._run)
     self.tool = tool
     if tool.name:
       self.name = tool.name
     if tool.description:
       self.description = tool.description
+    for policy in (policies or []):
+      register_policy_for_tool(self, policy)
+
 
   @model_validator(mode='before')
   @classmethod

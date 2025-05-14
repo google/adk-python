@@ -29,9 +29,12 @@ from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...agents.invocation_context import InvocationContext
+from ...approval.approval_handler import ApprovalHandler
+from ...approval.approval_request_processor import REQUEST_APPROVAL_FUNCTION_CALL_NAME
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
+from ...sessions import State
 from ...telemetry import trace_tool_call
 from ...telemetry import trace_tool_response
 from ...telemetry import tracer
@@ -123,6 +126,45 @@ def generate_auth_event(
   )
 
 
+def generate_approval_event(
+    invocation_context: InvocationContext,
+    function_response_event: Event,
+) -> Optional[Event]:
+  """Generate an approval request event.
+
+  Args:
+      invocation_context: The invocation context.
+      function_response_event: The function response event with approval requests.
+
+  Returns:
+      An approval request event if approval is needed, otherwise None.
+  """
+  if not function_response_event.actions.requested_approvals:
+    return None
+
+  parts = []
+  long_running_tool_ids = set()
+  for approval_request in function_response_event.actions.requested_approvals:
+
+    request_approval_function_call = types.FunctionCall(
+        name=REQUEST_APPROVAL_FUNCTION_CALL_NAME,
+        args=approval_request.model_dump(exclude_none=True),
+    )
+    request_approval_function_call.id = generate_client_function_call_id()
+    long_running_tool_ids.add(request_approval_function_call.id)
+    parts.append(types.Part(function_call=request_approval_function_call))
+
+  return Event(
+      invocation_id=invocation_context.invocation_id,
+      author=invocation_context.agent.name,
+      branch=invocation_context.branch,
+      content=types.Content(
+          parts=parts, role=function_response_event.content.role
+      ),
+      long_running_tool_ids=long_running_tool_ids,
+  )
+
+
 async def handle_function_calls_async(
     invocation_context: InvocationContext,
     function_call_event: Event,
@@ -151,6 +193,7 @@ async def handle_function_calls_async(
     # do not use "args" as the variable name, because it is a reserved keyword
     # in python debugger.
     function_args = function_call.args or {}
+
     function_response: Optional[dict] = None
 
     for callback in agent.canonical_before_tool_callbacks:
@@ -161,6 +204,11 @@ async def handle_function_calls_async(
         function_response = await function_response
       if function_response:
         break
+
+    if not function_response:
+      function_response = ApprovalHandler.get_approval_request(
+          function_call, invocation_context.session.state, tool_context, user_id=invocation_context.user_id, session_id=invocation_context.session.id,
+      )
 
     if not function_response:
       function_response = await __call_tool_async(
@@ -489,12 +537,32 @@ def merge_parallel_function_response_events(
 
   merged_actions = EventActions()
   merged_requested_auth_configs = {}
+  merged_requested_approvals = []
+  merged_state_delta_approvals_grants = []
+  merged_state_delta_approvals_suspended_function_calls = []
   for event in function_response_events:
     merged_requested_auth_configs.update(event.actions.requested_auth_configs)
+    merged_requested_approvals.extend(event.actions.requested_approvals)
+    merged_state_delta_approvals_grants.extend(
+        event.actions.state_delta.get("approvals", {}).get("grants", [])
+    )
+    merged_state_delta_approvals_suspended_function_calls.extend(
+        event.actions.state_delta.get("approvals", {}).get("suspended_function_calls", [])
+    )
     merged_actions = merged_actions.model_copy(
         update=event.actions.model_dump()
     )
   merged_actions.requested_auth_configs = merged_requested_auth_configs
+  merged_actions.requested_approvals = merged_requested_approvals
+  merged_state_delta_approvals_suspended_function_calls = list(
+      {
+          fc.id: fc for fc in merged_state_delta_approvals_suspended_function_calls
+      }.values()
+  )
+  merged_actions.state_delta['approvals'] = {
+      "grants": merged_state_delta_approvals_grants,
+      "suspended_function_calls": merged_state_delta_approvals_suspended_function_calls,
+  }
   # Create the new merged event
   merged_event = Event(
       invocation_id=Event.new_id(),
