@@ -1,11 +1,13 @@
 from abc import ABC
 from abc import abstractmethod
+from typing import Optional, runtime_checkable
 from typing import Protocol
 
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.base_tool import BaseTool
 
 
+@runtime_checkable
 class ToolPredicate(Protocol):
   """Base class for a predicate that defines the interface to decide whether a
 
@@ -33,7 +35,7 @@ class BaseToolset(ABC):
 
   @abstractmethod
   async def get_tools(
-      self, readony_context: ReadonlyContext = None
+      self, readonly_context: Optional[ReadonlyContext] = None
   ) -> list[BaseTool]:
     """Return all tools in the toolset based on the provided context.
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from google.genai import types
+from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -40,7 +41,11 @@ class LlmResponse(BaseModel):
     custom_metadata: The custom metadata of the LlmResponse.
   """
 
-  model_config = ConfigDict(extra='forbid')
+  model_config = ConfigDict(
+      extra='forbid',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
   """The pydantic model config."""
 
   content: Optional[types.Content] = None
@@ -80,6 +85,9 @@ class LlmResponse(BaseModel):
   NOTE: the entire dict must be JSON serializable.
   """
 
+  usage_metadata: Optional[types.GenerateContentResponseUsageMetadata] = None
+  """The usage metadata of the LlmResponse"""
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
@@ -93,18 +101,20 @@ class LlmResponse(BaseModel):
     Returns:
       The LlmResponse.
     """
-
+    usage_metadata = generate_content_response.usage_metadata
     if generate_content_response.candidates:
       candidate = generate_content_response.candidates[0]
       if candidate.content and candidate.content.parts:
         return LlmResponse(
             content=candidate.content,
             grounding_metadata=candidate.grounding_metadata,
+            usage_metadata=usage_metadata,
         )
       else:
         return LlmResponse(
             error_code=candidate.finish_reason,
             error_message=candidate.finish_message,
+            usage_metadata=usage_metadata,
         )
     else:
       if generate_content_response.prompt_feedback:
@@ -112,9 +122,11 @@ class LlmResponse(BaseModel):
         return LlmResponse(
             error_code=prompt_feedback.block_reason,
             error_message=prompt_feedback.block_reason_message,
+            usage_metadata=usage_metadata,
         )
       else:
         return LlmResponse(
             error_code='UNKNOWN_ERROR',
             error_message='Unknown error.',
+            usage_metadata=usage_metadata,
         )

@@ -34,6 +34,50 @@ from .fast_api import get_fast_api_app
 from .utils import envs
 from .utils import logs
 
+
+class HelpfulCommand(click.Command):
+  """Command that shows full help on error instead of just the error message.
+
+  A custom Click Command class that overrides the default error handling
+  behavior to display the full help text when a required argument is missing,
+  followed by the error message. This provides users with better context
+  about command usage without needing to run a separate --help command.
+
+  Args:
+    *args: Variable length argument list to pass to the parent class.
+    **kwargs: Arbitrary keyword arguments to pass to the parent class.
+
+  Returns:
+    None. Inherits behavior from the parent Click Command class.
+
+  Returns:
+  """
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+
+  def parse_args(self, ctx, args):
+    """Override the parse_args method to show help text on error.
+
+    Args:
+      ctx: Click context object for the current command.
+      args: List of command-line arguments to parse.
+
+    Returns:
+      The parsed arguments as returned by the parent class's parse_args method.
+
+    Raises:
+      click.MissingParameter: When a required parameter is missing, but this
+        is caught and handled by displaying the help text before exiting.
+    """
+    try:
+      return super().parse_args(ctx, args)
+    except click.MissingParameter as exc:
+      click.echo(ctx.get_help())
+      click.secho(f"\nError: {str(exc)}", fg="red", err=True)
+      ctx.exit(2)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +93,7 @@ def deploy():
   pass
 
 
-@main.command("create")
+@main.command("create", cls=HelpfulCommand)
 @click.option(
     "--model",
     type=str,
@@ -115,7 +159,7 @@ def validate_exclusive(ctx, param, value):
   return value
 
 
-@main.command("run")
+@main.command("run", cls=HelpfulCommand)
 @click.option(
     "--save_session",
     type=bool,
@@ -196,7 +240,7 @@ def cli_run(
   )
 
 
-@main.command("eval")
+@main.command("eval", cls=HelpfulCommand)
 @click.argument(
     "agent_module_file_path",
     type=click.Path(
@@ -245,7 +289,7 @@ def cli_eval(
 
   try:
     from .cli_eval import EvalMetric
-    from .cli_eval import EvalResult
+    from .cli_eval import EvalCaseResult
     from .cli_eval import EvalStatus
     from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
@@ -269,25 +313,20 @@ def cli_eval(
 
   eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
 
-  async def _collect_async_gen(
-      async_gen_coroutine: Coroutine[
-          AsyncGenerator[EvalResult, None], None, None
-      ],
-  ) -> list[EvalResult]:
-    return [result async for result in async_gen_coroutine]
+  async def _collect_eval_results() -> list[EvalCaseResult]:
+    return [
+        result
+        async for result in run_evals(
+            eval_set_to_evals,
+            root_agent,
+            reset_func,
+            eval_metrics,
+            print_detailed_results=print_detailed_results,
+        )
+    ]
 
   try:
-    eval_results = asyncio.run(
-        _collect_async_gen(
-            run_evals(
-                eval_set_to_evals,
-                root_agent,
-                reset_func,
-                eval_metrics,
-                print_detailed_results=print_detailed_results,
-            )
-        )
-    )
+    eval_results = asyncio.run(_collect_eval_results())
   except ModuleNotFoundError:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
 
@@ -295,7 +334,7 @@ def cli_eval(
   eval_run_summary = {}
 
   for eval_result in eval_results:
-    eval_result: EvalResult
+    eval_result: EvalCaseResult
 
     if eval_result.eval_set_file not in eval_run_summary:
       eval_run_summary[eval_result.eval_set_file] = [0, 0]

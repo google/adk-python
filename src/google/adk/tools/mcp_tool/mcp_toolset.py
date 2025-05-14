@@ -14,10 +14,11 @@
 
 from contextlib import AsyncExitStack
 import sys
-from typing import List
+from typing import List, Union
 from typing import Optional
-from typing import override
 from typing import TextIO
+
+from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ..base_toolset import BaseToolset
@@ -67,7 +68,7 @@ class MCPToolset(BaseToolset):
       *,
       connection_params: StdioServerParameters | SseServerParams,
       errlog: TextIO = sys.stderr,
-      tool_predicate: Optional[ToolPredicate] = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
     """Initializes the MCPToolset.
 
@@ -75,53 +76,66 @@ class MCPToolset(BaseToolset):
       connection_params: The connection parameters to the MCP server. Can be:
         `StdioServerParameters` for using local mcp server (e.g. using `npx` or
         `python3`); or `SseServerParams` for a local/remote SSE server.
+      errlog: (Optional) TextIO stream for error logging. Use only for
+        initializing a local stdio MCP session.
     """
 
     if not connection_params:
       raise ValueError('Missing connection params in MCPToolset.')
-    self.connection_params = connection_params
-    self.errlog = errlog
-    self.exit_stack = AsyncExitStack()
+    self._connection_params = connection_params
+    self._errlog = errlog
+    self._exit_stack = AsyncExitStack()
 
-    self.session_manager = MCPSessionManager(
-        connection_params=self.connection_params,
-        exit_stack=self.exit_stack,
-        errlog=self.errlog,
+    self._session_manager = MCPSessionManager(
+        connection_params=self._connection_params,
+        exit_stack=self._exit_stack,
+        errlogger=self._errlog,
     )
-    self.session = None
-    self.tool_predicate = tool_predicate
+    self._session = None
+    self.tool_filter = tool_filter
 
   async def _initialize(self) -> ClientSession:
     """Connects to the MCP Server and initializes the ClientSession."""
-    self.session = await self.session_manager.create_session()
-    return self.session
+    self._session = await self._session_manager.create_session()
+    return self._session
+
+  def _is_selected(
+      self, tool: ..., readonly_context: Optional[ReadonlyContext]
+  ) -> bool:
+    """Checks if a tool should be selected based on the tool filter."""
+    if self.tool_filter is None:
+      return True
+    if isinstance(self.tool_filter, ToolPredicate):
+      return self.tool_filter(tool, readonly_context)
+    if isinstance(self.tool_filter, list):
+      return tool.name in self.tool_filter
+    return False
 
   @override
   async def close(self):
     """Closes the connection to MCP Server."""
-    await self.exit_stack.aclose()
+    await self._exit_stack.aclose()
 
   @retry_on_closed_resource('_initialize')
   @override
   async def get_tools(
       self,
-      readony_context: ReadonlyContext = None,
+      readonly_context: Optional[ReadonlyContext] = None,
   ) -> List[MCPTool]:
     """Loads all tools from the MCP Server.
 
     Returns:
       A list of MCPTools imported from the MCP Server.
     """
-    if not self.session:
+    if not self._session:
       await self._initialize()
-    tools_response: ListToolsResult = await self.session.list_tools()
+    tools_response: ListToolsResult = await self._session.list_tools()
     return [
         MCPTool(
             mcp_tool=tool,
-            mcp_session=self.session,
-            mcp_session_manager=self.session_manager,
+            mcp_session=self._session,
+            mcp_session_manager=self._session_manager,
         )
         for tool in tools_response.tools
-        if self.tool_predicate is None
-        or self.tool_predicate(tool, readony_context)
+        if self._is_selected(tool, readonly_context)
     ]

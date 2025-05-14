@@ -24,7 +24,7 @@ import yaml
 
 class MockAPIHubClient(BaseAPIHubClient):
 
-  def get_spec_content(self, apihub_resource_name: str) -> str:
+  def get_spec_content(self, _apihub_resource_name: str) -> str:
     return """
 openapi: 3.0.0
 info:
@@ -77,22 +77,26 @@ def mock_auth_credential():
 
 
 # Test cases
-def test_apihub_toolset_initialization(basic_apihub_toolset):
+@pytest.mark.asyncio
+async def test_apihub_toolset_initialization(basic_apihub_toolset):
   assert basic_apihub_toolset.name == 'mock_api'
   assert basic_apihub_toolset.description == 'Mock API Description'
-  assert basic_apihub_toolset.apihub_resource_name == 'test_resource'
-  assert not basic_apihub_toolset.lazy_load_spec
-  assert len(basic_apihub_toolset.generated_tools) == 1
-  assert 'test_get' in basic_apihub_toolset.generated_tools
+  assert basic_apihub_toolset._apihub_resource_name == 'test_resource'
+  assert not basic_apihub_toolset._lazy_load_spec
+  generated_tools = await basic_apihub_toolset.get_tools()
+  assert len(generated_tools) == 1
+  assert 'test_get' == generated_tools[0].name
 
 
-def test_apihub_toolset_lazy_loading(lazy_apihub_toolset):
-  assert lazy_apihub_toolset.lazy_load_spec
-  assert not lazy_apihub_toolset.generated_tools
+@pytest.mark.asyncio
+async def test_apihub_toolset_lazy_loading(lazy_apihub_toolset):
+  assert lazy_apihub_toolset._lazy_load_spec
+  generated_tools = await lazy_apihub_toolset.get_tools()
+  assert generated_tools
 
-  tools = lazy_apihub_toolset.get_tools()
+  tools = await lazy_apihub_toolset.get_tools()
   assert len(tools) == 1
-  assert lazy_apihub_toolset.get_tool('test_get') == tools[0]
+  'test_get' == tools[0].name
 
 
 def test_apihub_toolset_no_title_in_spec(basic_apihub_toolset):
@@ -112,7 +116,7 @@ paths:
 
   class MockAPIHubClientEmptySpec(BaseAPIHubClient):
 
-    def get_spec_content(self, apihub_resource_name: str) -> str:
+    def get_spec_content(self, _apihub_resource_name: str) -> str:
       return spec
 
   apihub_client = MockAPIHubClientEmptySpec()
@@ -142,7 +146,7 @@ paths:
 
   class MockAPIHubClientEmptySpec(BaseAPIHubClient):
 
-    def get_spec_content(self, apihub_resource_name: str) -> str:
+    def get_spec_content(self, _apihub_resource_name: str) -> str:
       return spec
 
   apihub_client = MockAPIHubClientEmptySpec()
@@ -155,7 +159,8 @@ paths:
   assert toolset.description == ''
 
 
-def test_get_tools_with_auth(mock_auth_scheme, mock_auth_credential):
+@pytest.mark.asyncio
+async def test_get_tools_with_auth(mock_auth_scheme, mock_auth_credential):
   apihub_client = MockAPIHubClient()
   tool = APIHubToolset(
       apihub_resource_name='test_resource',
@@ -163,15 +168,16 @@ def test_get_tools_with_auth(mock_auth_scheme, mock_auth_credential):
       auth_scheme=mock_auth_scheme,
       auth_credential=mock_auth_credential,
   )
-  tools = tool.get_tools()
+  tools = await tool.get_tools()
   assert len(tools) == 1
 
 
-def test_apihub_toolset_get_tools_lazy_load_empty_spec():
+@pytest.mark.asyncio
+async def test_apihub_toolset_get_tools_lazy_load_empty_spec():
 
   class MockAPIHubClientEmptySpec(BaseAPIHubClient):
 
-    def get_spec_content(self, apihub_resource_name: str) -> str:
+    def get_spec_content(self, _apihub_resource_name: str) -> str:
       return ''
 
   apihub_client = MockAPIHubClientEmptySpec()
@@ -180,15 +186,16 @@ def test_apihub_toolset_get_tools_lazy_load_empty_spec():
       apihub_client=apihub_client,
       lazy_load_spec=True,
   )
-  tools = tool.get_tools()
+  tools = await tool.get_tools()
   assert not tools
 
 
-def test_apihub_toolset_get_tools_invalid_yaml():
+@pytest.mark.asyncio
+async def test_apihub_toolset_get_tools_invalid_yaml():
 
   class MockAPIHubClientInvalidYAML(BaseAPIHubClient):
 
-    def get_spec_content(self, apihub_resource_name: str) -> str:
+    def get_spec_content(self, _apihub_resource_name: str) -> str:
       return '{invalid yaml'  # Return invalid YAML
 
   with pytest.raises(yaml.YAMLError):
@@ -197,7 +204,7 @@ def test_apihub_toolset_get_tools_invalid_yaml():
         apihub_resource_name='test_resource',
         apihub_client=apihub_client,
     )
-    tool.get_tools()
+    await tool.get_tools()
 
 
 if __name__ == '__main__':

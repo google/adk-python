@@ -111,6 +111,9 @@ def trace_call_llm(
   span.set_attribute(
       'gcp.vertex.agent.invocation_id', invocation_context.invocation_id
   )
+  span.set_attribute(
+      'gcp.vertex.agent.session_id', invocation_context.session.id
+  )
   span.set_attribute('gcp.vertex.agent.event_id', event_id)
   # Consider removing once GenAI SDK provides a way to record this info.
   span.set_attribute(

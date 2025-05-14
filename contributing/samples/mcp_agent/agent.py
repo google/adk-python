@@ -34,8 +34,12 @@ root_agent = LlmAgent(
                 ],
             ),
             # don't want agent to do write operation
-            tool_predicate=lambda tool, ctx=None: tool.name
-            not in ('write_file', 'edit_file', 'create_directory', 'move_file'),
+            tool_filter=[
+                'write_file',
+                'edit_file',
+                'create_directory',
+                'move_file',
+            ],
         )
     ],
 )

@@ -12,76 +12,75 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 __all__ = [
-    'bigquery_tool_set',
-    'calendar_tool_set',
-    'gmail_tool_set',
-    'youtube_tool_set',
-    'slides_tool_set',
-    'sheets_tool_set',
-    'docs_tool_set',
+    'bigquery_toolset',
+    'calendar_toolset',
+    'gmail_toolset',
+    'youtube_toolset',
+    'slides_toolset',
+    'sheets_toolset',
+    'docs_toolset',
 ]
 
 # Nothing is imported here automatically
 # Each tool set will only be imported when accessed
 
-_bigquery_tool_set = None
-_calendar_tool_set = None
-_gmail_tool_set = None
-_youtube_tool_set = None
-_slides_tool_set = None
-_sheets_tool_set = None
-_docs_tool_set = None
+_bigquery_toolset = None
+_calendar_toolset = None
+_gmail_toolset = None
+_youtube_toolset = None
+_slides_toolset = None
+_sheets_toolset = None
+_docs_toolset = None
 
 
 def __getattr__(name):
-  global _bigquery_tool_set, _calendar_tool_set, _gmail_tool_set, _youtube_tool_set, _slides_tool_set, _sheets_tool_set, _docs_tool_set
+  global _bigquery_toolset, _calendar_toolset, _gmail_toolset, _youtube_toolset, _slides_toolset, _sheets_toolset, _docs_toolset
 
-  match name:
-    case 'bigquery_tool_set':
-      if _bigquery_tool_set is None:
-        from .google_api_tool_sets import bigquery_tool_set as bigquery
+  if name == 'bigquery_toolset':
+    if _bigquery_toolset is None:
+      from .google_api_toolsets import bigquery_toolset as bigquery
 
-        _bigquery_tool_set = bigquery
-      return _bigquery_tool_set
+      _bigquery_toolset = bigquery
+    return _bigquery_toolset
 
-    case 'calendar_tool_set':
-      if _calendar_tool_set is None:
-        from .google_api_tool_sets import calendar_tool_set as calendar
+  if name == 'calendar_toolset':
+    if _calendar_toolset is None:
+      from .google_api_toolsets import calendar_toolset as calendar
 
-        _calendar_tool_set = calendar
-      return _calendar_tool_set
+      _calendar_toolset = calendar
+    return _calendar_toolset
 
-    case 'gmail_tool_set':
-      if _gmail_tool_set is None:
-        from .google_api_tool_sets import gmail_tool_set as gmail
+  if name == 'gmail_toolset':
+    if _gmail_toolset is None:
+      from .google_api_toolsets import gmail_toolset as gmail
 
-        _gmail_tool_set = gmail
-      return _gmail_tool_set
+      _gmail_toolset = gmail
+    return _gmail_toolset
 
-    case 'youtube_tool_set':
-      if _youtube_tool_set is None:
-        from .google_api_tool_sets import youtube_tool_set as youtube
+  if name == 'youtube_toolset':
+    if _youtube_toolset is None:
+      from .google_api_toolsets import youtube_toolset as youtube
 
-        _youtube_tool_set = youtube
-      return _youtube_tool_set
+      _youtube_toolset = youtube
+    return _youtube_toolset
 
-    case 'slides_tool_set':
-      if _slides_tool_set is None:
-        from .google_api_tool_sets import slides_tool_set as slides
+  if name == 'slides_toolset':
+    if _slides_toolset is None:
+      from .google_api_toolsets import slides_toolset as slides
 
-        _slides_tool_set = slides
-      return _slides_tool_set
+      _slides_toolset = slides
+    return _slides_toolset
 
-    case 'sheets_tool_set':
-      if _sheets_tool_set is None:
-        from .google_api_tool_sets import sheets_tool_set as sheets
+  if name == 'sheets_toolset':
+    if _sheets_toolset is None:
+      from .google_api_toolsets import sheets_toolset as sheets
 
-        _sheets_tool_set = sheets
-      return _sheets_tool_set
+      _sheets_toolset = sheets
+    return _sheets_toolset
 
-    case 'docs_tool_set':
-      if _docs_tool_set is None:
-        from .google_api_tool_sets import docs_tool_set as docs
+  if name == 'docs_toolset':
+    if _docs_toolset is None:
+      from .google_api_toolsets import docs_toolset as docs
 
-        _docs_tool_set = docs
-      return _docs_tool_set
+      _docs_toolset = docs
+    return _docs_toolset

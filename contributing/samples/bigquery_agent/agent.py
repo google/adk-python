@@ -16,7 +16,7 @@ import os
 
 from dotenv import load_dotenv
 from google.adk import Agent
-from google.adk.tools.google_api_tool import bigquery_tool_set
+from google.adk.tools.google_api_tool import bigquery_toolset
 
 # Load environment variables from .env file
 load_dotenv()
@@ -24,18 +24,19 @@ load_dotenv()
 # Access the variable
 oauth_client_id = os.getenv("OAUTH_CLIENT_ID")
 oauth_client_secret = os.getenv("OAUTH_CLIENT_SECRET")
-bigquery_tool_set.configure_auth(oauth_client_id, oauth_client_secret)
+bigquery_toolset.configure_auth(oauth_client_id, oauth_client_secret)
 
-bigquery_datasets_list = bigquery_tool_set.get_tool("bigquery_datasets_list")
-bigquery_datasets_get = bigquery_tool_set.get_tool("bigquery_datasets_get")
-bigquery_datasets_insert = bigquery_tool_set.get_tool(
-    "bigquery_datasets_insert"
+tools_to_expose = [
+    "bigquery_datasets_list",
+    "bigquery_datasets_get",
+    "bigquery_datasets_insert",
+    "bigquery_tables_list",
+    "bigquery_tables_get",
+    "bigquery_tables_insert",
+]
+bigquery_toolset.set_tool_filter(
+    lambda tool, ctx=None: tool.name in tools_to_expose
 )
-
-bigquery_tables_list = bigquery_tool_set.get_tool("bigquery_tables_list")
-bigquery_tables_get = bigquery_tool_set.get_tool("bigquery_tables_get")
-bigquery_tables_insert = bigquery_tool_set.get_tool("bigquery_tables_insert")
-
 
 root_agent = Agent(
     model="gemini-2.0-flash",
@@ -73,12 +74,5 @@ root_agent = Agent(
       {userInfo?}
       </User>
 """,
-    tools=[
-        bigquery_datasets_list,
-        bigquery_datasets_get,
-        bigquery_datasets_insert,
-        bigquery_tables_list,
-        bigquery_tables_get,
-        bigquery_tables_insert,
-    ],
+    tools=[bigquery_toolset],
 )
