@@ -18,18 +18,12 @@ import logging
 from typing import Any
 from typing import Dict
 from typing import List
-from typing import Optional
-from typing import Union
 
 # Google API client
 from googleapiclient.discovery import build
-from googleapiclient.discovery import Resource
 from googleapiclient.errors import HttpError
 
 # Configure logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
