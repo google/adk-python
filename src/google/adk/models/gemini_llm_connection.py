@@ -149,16 +149,16 @@ class GeminiLlmConnection(BaseLlmConnection):
             message.server_content.input_transcription
             and message.server_content.input_transcription.text
         ):
-            user_text = message.server_content.input_transcription.text
-            parts = [
-                types.Part.from_text(
-                    text=user_text,
-                )
-            ]
-            llm_response = LlmResponse(
-                content=types.Content(role='user', parts=parts)
-            )
-            yield llm_response
+          user_text = message.server_content.input_transcription.text
+          parts = [
+              types.Part.from_text(
+                  text=user_text,
+              )
+          ]
+          llm_response = LlmResponse(
+              content=types.Content(role='user', parts=parts)
+          )
+          yield llm_response
         if (
             message.server_content.output_transcription
             and message.server_content.output_transcription.text

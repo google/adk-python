@@ -114,14 +114,17 @@ class MCPToolset(BaseToolset):
     """
     if not self.session:
       await self._initialize()
-    tools_response: ListToolsResult = await self.session.list_tools()
-    return [
-        MCPTool(
-            mcp_tool=tool,
-            mcp_session=self.session,
-            mcp_session_manager=self.session_manager,
-        )
-        for tool in tools_response.tools
-        if self.tool_predicate is None
-        or self.tool_predicate(tool, readony_context)
-    ]
+    try:
+      tools_response: ListToolsResult = await self.session.list_tools()
+      return [
+          MCPTool(
+              mcp_tool=tool,
+              mcp_session=self.session,
+              mcp_session_manager=self.session_manager,
+          )
+          for tool in tools_response.tools
+          if self.tool_predicate is None
+          or self.tool_predicate(tool, readony_context)
+      ]
+    finally:
+      await self.close()

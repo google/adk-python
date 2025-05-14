@@ -102,7 +102,7 @@ class InMemorySessionService(BaseSessionService):
             break
           i -= 1
         if i >= 0:
-          copied_session.events = copied_session.events[i + 1:]
+          copied_session.events = copied_session.events[i + 1 :]
 
     return self._merge_state(app_name, user_id, copied_session)
 
