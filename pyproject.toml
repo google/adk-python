@@ -148,6 +148,7 @@ name = "google.adk"
 [tool.isort]
 profile = "google"
 single_line_exclusions = []
+known_third_party = ["google.adk"]
 
 
 [tool.pytest.ini_options]
