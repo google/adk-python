@@ -105,7 +105,7 @@ class OpenAPIToolset(BaseToolset):
     """
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
-    self.tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
+    self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
     self.tool_filter = tool_filter
@@ -115,7 +115,7 @@ class OpenAPIToolset(BaseToolset):
   ):
     """Configure auth scheme and credential for all tools."""
 
-    for tool in self.tools:
+    for tool in self._tools:
       if auth_scheme:
         tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
@@ -128,7 +128,7 @@ class OpenAPIToolset(BaseToolset):
     """Get all tools in the toolset."""
     return [
         tool
-        for tool in self.tools
+        for tool in self._tools
         if self.tool_filter is None
         or (
             self.tool_filter(tool, readonly_context)
@@ -139,7 +139,7 @@ class OpenAPIToolset(BaseToolset):
 
   def get_tool(self, tool_name: str) -> Optional[RestApiTool]:
     """Get a tool by name."""
-    matching_tool = filter(lambda t: t.name == tool_name, self.tools)
+    matching_tool = filter(lambda t: t.name == tool_name, self._tools)
     return next(matching_tool, None)
 
   def _load_spec(

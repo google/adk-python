@@ -16,7 +16,7 @@ import os
 
 from dotenv import load_dotenv
 from google.adk import Agent
-from google.adk.tools.google_api_tool import bigquery_tool_set
+from google.adk.tools.google_api_tool import bigquery_toolset
 
 # Load environment variables from .env file
 load_dotenv()
@@ -24,7 +24,7 @@ load_dotenv()
 # Access the variable
 oauth_client_id = os.getenv("OAUTH_CLIENT_ID")
 oauth_client_secret = os.getenv("OAUTH_CLIENT_SECRET")
-bigquery_tool_set.configure_auth(oauth_client_id, oauth_client_secret)
+bigquery_toolset.configure_auth(oauth_client_id, oauth_client_secret)
 
 tools_to_expose = [
     "bigquery_datasets_list",
@@ -34,7 +34,7 @@ tools_to_expose = [
     "bigquery_tables_get",
     "bigquery_tables_insert",
 ]
-bigquery_tool_set.set_tool_filter(
+bigquery_toolset.set_tool_filter(
     lambda tool, ctx=None: tool.name in tools_to_expose
 )
 
@@ -74,5 +74,5 @@ root_agent = Agent(
       {userInfo?}
       </User>
 """,
-    tools=[bigquery_tool_set],
+    tools=[bigquery_toolset],
 )

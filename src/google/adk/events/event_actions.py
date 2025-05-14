@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -26,7 +27,11 @@ from ..auth.auth_tool import AuthConfig
 class EventActions(BaseModel):
   """Represents the actions attached to an event."""
 
-  model_config = ConfigDict(extra='forbid')
+  model_config = ConfigDict(
+      extra='forbid',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
   """The pydantic model config."""
 
   skip_summarization: Optional[bool] = None

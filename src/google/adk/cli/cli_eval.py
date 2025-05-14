@@ -30,6 +30,7 @@ from pydantic import Field
 
 from ..agents import Agent
 from ..sessions.session import Session
+from .utils import common
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ class EvalMetricResult(BaseModel):
   eval_status: EvalStatus
 
 
-class EvalCaseResult(BaseModel):
+class EvalCaseResult(common.BaseModel):
   eval_set_file: str
   eval_id: str
   final_eval_status: EvalStatus
@@ -60,7 +61,7 @@ class EvalCaseResult(BaseModel):
   user_id: Optional[str] = None
 
 
-class EvalSetResult(BaseModel):
+class EvalSetResult(common.BaseModel):
   eval_set_result_id: str
   eval_set_result_name: str
   eval_set_id: str

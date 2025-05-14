@@ -138,15 +138,15 @@ class MCPSessionManager:
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
     """
-    self.connection_params = connection_params
-    self.exit_stack = exit_stack
-    self.errlog = errlog
+    self._connection_params = connection_params
+    self._exit_stack = exit_stack
+    self._errlog = errlog
 
   async def create_session(self) -> ClientSession:
     return await MCPSessionManager.initialize_session(
-        connection_params=self.connection_params,
-        exit_stack=self.exit_stack,
-        errlog=self.errlog,
+        connection_params=self._connection_params,
+        exit_stack=self._exit_stack,
+        errlog=self._errlog,
     )
 
   @classmethod

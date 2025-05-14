@@ -33,7 +33,7 @@ jira_toolset = ApplicationIntegrationToolset(
     location=connection_location,
     connection=connection_name,
     entity_operations={"Issues": [], "Projects": []},
-    tool_name="jira_issue_manager",
+    tool_name_prefix="jira_issue_manager",
 )
 
 root_agent = LlmAgent(

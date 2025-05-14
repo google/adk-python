@@ -34,6 +34,50 @@ from .fast_api import get_fast_api_app
 from .utils import envs
 from .utils import logs
 
+
+class HelpfulCommand(click.Command):
+  """Command that shows full help on error instead of just the error message.
+
+  A custom Click Command class that overrides the default error handling
+  behavior to display the full help text when a required argument is missing,
+  followed by the error message. This provides users with better context
+  about command usage without needing to run a separate --help command.
+
+  Args:
+    *args: Variable length argument list to pass to the parent class.
+    **kwargs: Arbitrary keyword arguments to pass to the parent class.
+
+  Returns:
+    None. Inherits behavior from the parent Click Command class.
+
+  Returns:
+  """
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+
+  def parse_args(self, ctx, args):
+    """Override the parse_args method to show help text on error.
+
+    Args:
+      ctx: Click context object for the current command.
+      args: List of command-line arguments to parse.
+
+    Returns:
+      The parsed arguments as returned by the parent class's parse_args method.
+
+    Raises:
+      click.MissingParameter: When a required parameter is missing, but this
+        is caught and handled by displaying the help text before exiting.
+    """
+    try:
+      return super().parse_args(ctx, args)
+    except click.MissingParameter as exc:
+      click.echo(ctx.get_help())
+      click.secho(f"\nError: {str(exc)}", fg="red", err=True)
+      ctx.exit(2)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +93,7 @@ def deploy():
   pass
 
 
-@main.command("create")
+@main.command("create", cls=HelpfulCommand)
 @click.option(
     "--model",
     type=str,
@@ -115,7 +159,7 @@ def validate_exclusive(ctx, param, value):
   return value
 
 
-@main.command("run")
+@main.command("run", cls=HelpfulCommand)
 @click.option(
     "--save_session",
     type=bool,
@@ -196,7 +240,7 @@ def cli_run(
   )
 
 
-@main.command("eval")
+@main.command("eval", cls=HelpfulCommand)
 @click.argument(
     "agent_module_file_path",
     type=click.Path(
