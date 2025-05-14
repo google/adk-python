@@ -101,18 +101,18 @@ class IntegrationConnectorTool(BaseTool):
         name=name,
         description=description,
     )
-    self.connection_name = connection_name
-    self.connection_host = connection_host
-    self.connection_service_name = connection_service_name
-    self.entity = entity
-    self.operation = operation
-    self.action = action
-    self.rest_api_tool = rest_api_tool
+    self._connection_name = connection_name
+    self._connection_host = connection_host
+    self._connection_service_name = connection_service_name
+    self._entity = entity
+    self._operation = operation
+    self._action = action
+    self._rest_api_tool = rest_api_tool
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
     """Returns the function declaration in the Gemini Schema format."""
-    schema_dict = self.rest_api_tool._operation_parser.get_json_schema()
+    schema_dict = self._rest_api_tool._operation_parser.get_json_schema()
     for field in self.EXCLUDE_FIELDS:
       if field in schema_dict['properties']:
         del schema_dict['properties'][field]
@@ -130,30 +130,30 @@ class IntegrationConnectorTool(BaseTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
   ) -> Dict[str, Any]:
-    args['connection_name'] = self.connection_name
-    args['service_name'] = self.connection_service_name
-    args['host'] = self.connection_host
-    args['entity'] = self.entity
-    args['operation'] = self.operation
-    args['action'] = self.action
+    args['connection_name'] = self._connection_name
+    args['service_name'] = self._connection_service_name
+    args['host'] = self._connection_host
+    args['entity'] = self._entity
+    args['operation'] = self._operation
+    args['action'] = self._action
     logger.info('Running tool: %s with args: %s', self.name, args)
-    return self.rest_api_tool.call(args=args, tool_context=tool_context)
+    return self._rest_api_tool.call(args=args, tool_context=tool_context)
 
   def __str__(self):
     return (
         f'ApplicationIntegrationTool(name="{self.name}",'
         f' description="{self.description}",'
-        f' connection_name="{self.connection_name}", entity="{self.entity}",'
-        f' operation="{self.operation}", action="{self.action}")'
+        f' connection_name="{self._connection_name}", entity="{self._entity}",'
+        f' operation="{self._operation}", action="{self._action}")'
     )
 
   def __repr__(self):
     return (
         f'ApplicationIntegrationTool(name="{self.name}",'
         f' description="{self.description}",'
-        f' connection_name="{self.connection_name}",'
-        f' connection_host="{self.connection_host}",'
-        f' connection_service_name="{self.connection_service_name}",'
-        f' entity="{self.entity}", operation="{self.operation}",'
-        f' action="{self.action}", rest_api_tool={repr(self.rest_api_tool)})'
+        f' connection_name="{self._connection_name}",'
+        f' connection_host="{self._connection_host}",'
+        f' connection_service_name="{self._connection_service_name}",'
+        f' entity="{self._entity}", operation="{self._operation}",'
+        f' action="{self._action}", rest_api_tool={repr(self._rest_api_tool)})'
     )
