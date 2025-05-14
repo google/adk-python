@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import asyncio
 from contextlib import asynccontextmanager
 import importlib
@@ -20,7 +21,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 import sys
 import time
 import traceback
@@ -48,12 +48,9 @@ from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic import alias_generators
-from pydantic import BaseModel
-from pydantic import ConfigDict
 from pydantic import ValidationError
 from starlette.types import Lifespan
+from typing_extensions import override
 
 from ..agents import RunConfig
 from ..agents.base_agent import BaseAgent
@@ -121,6 +118,7 @@ class InMemoryExporter(export.SpanExporter):
     self._spans = []
     self.trace_dict = trace_dict
 
+  @override
   def export(
       self, spans: typing.Sequence[ReadableSpan]
   ) -> export.SpanExportResult:
@@ -137,14 +135,15 @@ class InMemoryExporter(export.SpanExporter):
     self._spans.extend(spans)
     return export.SpanExportResult.SUCCESS
 
+  @override
+  def force_flush(self, timeout_millis: int = 30000) -> bool:
+    return True
+
   def get_finished_spans(self, session_id: str):
     trace_ids = self.trace_dict.get(session_id, None)
     if trace_ids is None or not trace_ids:
       return []
     return [x for x in self._spans if x.context.trace_id in trace_ids]
-
-  def force_flush(self, timeout_millis: int = 30000) -> bool:
-    return True
 
   def clear(self):
     self._spans.clear()
@@ -600,6 +599,10 @@ def get_fast_api_app(
     app_eval_history_directory = os.path.join(
         agent_dir, app_name, ".adk", "eval_history"
     )
+
+    if not os.path.exists(app_eval_history_directory):
+      return []
+
     eval_result_files = [
         file.removesuffix(_EVAL_SET_RESULT_FILE_EXTENSION)
         for file in os.listdir(app_eval_history_directory)
