@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 from enum import Enum
 import importlib.util
 import json
@@ -20,13 +21,16 @@ import os
 import sys
 import traceback
 from typing import Any
-from typing import Generator
+from typing import AsyncGenerator
 from typing import Optional
 import uuid
 
 from pydantic import BaseModel
+from pydantic import Field
 
 from ..agents import Agent
+from ..sessions.session import Session
+from .utils import common
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +47,26 @@ class EvalMetric(BaseModel):
 
 
 class EvalMetricResult(BaseModel):
-  score: Optional[float]
+  score: Optional[float] = None
   eval_status: EvalStatus
 
 
-class EvalResult(BaseModel):
+class EvalCaseResult(common.BaseModel):
   eval_set_file: str
   eval_id: str
   final_eval_status: EvalStatus
   eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]]
   session_id: str
+  session_details: Optional[Session] = None
+  user_id: Optional[str] = None
+
+
+class EvalSetResult(common.BaseModel):
+  eval_set_result_id: str
+  eval_set_result_name: str
+  eval_set_id: str
+  eval_case_results: list[EvalCaseResult] = Field(default_factory=list)
+  creation_timestamp: float = 0.0
 
 
 MISSING_EVAL_DEPENDENCIES_MESSAGE = (
@@ -146,7 +160,7 @@ def parse_and_get_evals_to_run(
   return eval_set_to_evals
 
 
-def run_evals(
+async def run_evals(
     eval_set_to_evals: dict[str, list[str]],
     root_agent: Agent,
     reset_func: Optional[Any],
@@ -154,7 +168,7 @@ def run_evals(
     session_service=None,
     artifact_service=None,
     print_detailed_results=False,
-) -> Generator[EvalResult, None, None]:
+) -> AsyncGenerator[EvalCaseResult, None]:
   try:
     from ..evaluation.agent_evaluator import EvaluationGenerator
     from ..evaluation.response_evaluator import ResponseEvaluator
@@ -173,6 +187,7 @@ def run_evals(
       eval_name = eval_item["name"]
       eval_data = eval_item["data"]
       initial_session = eval_item.get("initial_session", {})
+      user_id = initial_session.get("user_id", "test_user_id")
 
       if evals_to_run and eval_name not in evals_to_run:
         continue
@@ -181,14 +196,16 @@ def run_evals(
         print(f"Running Eval: {eval_set_file}:{eval_name}")
         session_id = f"{EVAL_SESSION_ID_PREFIX}{str(uuid.uuid4())}"
 
-        scrape_result = EvaluationGenerator._process_query_with_root_agent(
-            data=eval_data,
-            root_agent=root_agent,
-            reset_func=reset_func,
-            initial_session=initial_session,
-            session_id=session_id,
-            session_service=session_service,
-            artifact_service=artifact_service,
+        scrape_result = (
+            await EvaluationGenerator._process_query_with_root_agent(
+                data=eval_data,
+                root_agent=root_agent,
+                reset_func=reset_func,
+                initial_session=initial_session,
+                session_id=session_id,
+                session_service=session_service,
+                artifact_service=artifact_service,
+            )
         )
 
         eval_metric_results = []
@@ -247,12 +264,13 @@ def run_evals(
           else:
             raise ValueError("Unknown eval status.")
 
-        yield EvalResult(
+        yield EvalCaseResult(
             eval_set_file=eval_set_file,
             eval_id=eval_name,
             final_eval_status=final_eval_status,
             eval_metric_results=eval_metric_results,
             session_id=session_id,
+            user_id=user_id,
         )
 
         if final_eval_status == EvalStatus.PASSED:

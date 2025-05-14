@@ -81,15 +81,15 @@ class MCPTool(BaseTool):
       raise ValueError("mcp_session cannot be None")
     self.name = mcp_tool.name
     self.description = mcp_tool.description if mcp_tool.description else ""
-    self.mcp_tool = mcp_tool
-    self.mcp_session = mcp_session
-    self.mcp_session_manager = mcp_session_manager
+    self._mcp_tool = mcp_tool
+    self._mcp_session = mcp_session
+    self._mcp_session_manager = mcp_session_manager
     # TODO(cheliu): Support passing auth to MCP Server.
-    self.auth_scheme = auth_scheme
-    self.auth_credential = auth_credential
+    self._auth_scheme = auth_scheme
+    self._auth_credential = auth_credential
 
   async def _reinitialize_session(self):
-    self.mcp_session = await self.mcp_session_manager.create_session()
+    self._mcp_session = await self._mcp_session_manager.create_session()
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -98,7 +98,7 @@ class MCPTool(BaseTool):
     Returns:
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
-    schema_dict = self.mcp_tool.inputSchema
+    schema_dict = self._mcp_tool.inputSchema
     parameters = to_gemini_schema(schema_dict)
     function_decl = FunctionDeclaration(
         name=self.name, description=self.description, parameters=parameters
@@ -119,7 +119,7 @@ class MCPTool(BaseTool):
     """
     # TODO(cheliu): Support passing tool context to MCP Server.
     try:
-      response = await self.mcp_session.call_tool(self.name, arguments=args)
+      response = await self._mcp_session.call_tool(self.name, arguments=args)
       return response
     except Exception as e:
       print(e)
