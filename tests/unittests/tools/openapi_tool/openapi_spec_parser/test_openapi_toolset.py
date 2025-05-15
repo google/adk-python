@@ -47,18 +47,18 @@ def openapi_spec() -> Dict:
 def test_openapi_toolset_initialization_from_dict(openapi_spec: Dict):
   """Test initialization of OpenAPIToolset with a dictionary."""
   toolset = OpenAPIToolset(spec_dict=openapi_spec)
-  assert isinstance(toolset.tools, list)
-  assert len(toolset.tools) == 5
-  assert all(isinstance(tool, RestApiTool) for tool in toolset.tools)
+  assert isinstance(toolset._tools, list)
+  assert len(toolset._tools) == 5
+  assert all(isinstance(tool, RestApiTool) for tool in toolset._tools)
 
 
 def test_openapi_toolset_initialization_from_yaml_string(openapi_spec: Dict):
   """Test initialization of OpenAPIToolset with a YAML string."""
   spec_str = yaml.dump(openapi_spec)
   toolset = OpenAPIToolset(spec_str=spec_str, spec_str_type="yaml")
-  assert isinstance(toolset.tools, list)
-  assert len(toolset.tools) == 5
-  assert all(isinstance(tool, RestApiTool) for tool in toolset.tools)
+  assert isinstance(toolset._tools, list)
+  assert len(toolset._tools) == 5
+  assert all(isinstance(tool, RestApiTool) for tool in toolset._tools)
 
 
 def test_openapi_toolset_tool_existing(openapi_spec: Dict):
@@ -134,6 +134,6 @@ def test_openapi_toolset_configure_auth_on_init(openapi_spec: Dict):
       auth_scheme=auth_scheme,
       auth_credential=auth_credential,
   )
-  for tool in toolset.tools:
+  for tool in toolset._tools:
     assert tool.auth_scheme == auth_scheme
     assert tool.auth_credential == auth_credential
