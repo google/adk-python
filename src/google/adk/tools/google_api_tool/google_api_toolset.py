@@ -36,22 +36,39 @@ from .googleapi_to_openapi_converter import GoogleApiToOpenApiConverter
 class GoogleApiToolset(BaseToolset):
   """Google API Toolset contains tools for interacting with Google APIs.
 
-  Usually one toolsets will contains tools only replated to one Google API, e.g.
+  Usually one toolsets will contains tools only related to one Google API, e.g.
   Google Bigquery API toolset will contains tools only related to Google
   Bigquery API, like list dataset tool, list table tool etc.
   """
 
   def __init__(
       self,
-      openapi_toolset: OpenAPIToolset,
+      api_name: str,
+      api_version: str,
       client_id: Optional[str] = None,
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
-    self._openapi_toolset = openapi_toolset
-    self.tool_filter = tool_filter
+    self.api_name = api_name
+    self.api_version = api_version
     self._client_id = client_id
     self._client_secret = client_secret
+    self._openapi_toolset = self._load_toolset_with_oidc_auth()
+    self.tool_filter = tool_filter
+
+  def _is_tool_selected(
+      self, tool: GoogleApiTool, readonly_context: ReadonlyContext
+  ) -> bool:
+    if not self.tool_filter:
+      return True
+
+    if isinstance(self.tool_filter, ToolPredicate):
+      return self.tool_filter(tool, readonly_context)
+
+    if isinstance(self.tool_filter, list):
+      return tool.name in self.tool_filter
+
+    return False
 
   @override
   async def get_tools(
@@ -60,44 +77,26 @@ class GoogleApiToolset(BaseToolset):
     """Get all tools in the toolset."""
     tools = []
 
-    for tool in await self._openapi_toolset.get_tools(readonly_context):
-      if self.tool_filter and (
-          isinstance(self.tool_filter, ToolPredicate)
-          and not self.tool_filter(tool, readonly_context)
-          or isinstance(self.tool_filter, list)
-          and tool.name not in self.tool_filter
-      ):
-        continue
-      google_api_tool = GoogleApiTool(tool)
-      google_api_tool.configure_auth(self._client_id, self._client_secret)
-      tools.append(google_api_tool)
-
-    return tools
+    return [
+        GoogleApiTool(tool, self._client_id, self._client_secret)
+        for tool in await self._openapi_toolset.get_tools(readonly_context)
+        if self._is_tool_selected(tool, readonly_context)
+    ]
 
   def set_tool_filter(self, tool_filter: Union[ToolPredicate, List[str]]):
     self.tool_filter = tool_filter
 
-  @staticmethod
-  def _load_toolset_with_oidc_auth(
-      spec_file: Optional[str] = None,
-      spec_dict: Optional[dict[str, Any]] = None,
-      scopes: Optional[list[str]] = None,
-  ) -> OpenAPIToolset:
-    spec_str = None
-    if spec_file:
-      # Get the frame of the caller
-      caller_frame = inspect.stack()[1]
-      # Get the filename of the caller
-      caller_filename = caller_frame.filename
-      # Get the directory of the caller
-      caller_dir = os.path.dirname(os.path.abspath(caller_filename))
-      # Join the directory path with the filename
-      yaml_path = os.path.join(caller_dir, spec_file)
-      with open(yaml_path, 'r', encoding='utf-8') as file:
-        spec_str = file.read()
-    toolset = OpenAPIToolset(
+  def _load_toolset_with_oidc_auth(self) -> OpenAPIToolset:
+    spec_dict = GoogleApiToOpenApiConverter(
+        self.api_name, self.api_version
+    ).convert()
+    scope = list(
+        spec_dict['components']['securitySchemes']['oauth2']['flows'][
+            'authorizationCode'
+        ]['scopes'].keys()
+    )[0]
+    return OpenAPIToolset(
         spec_dict=spec_dict,
-        spec_str=spec_str,
         spec_str_type='yaml',
         auth_scheme=OpenIdConnectWithConfig(
             authorization_endpoint=(
@@ -113,30 +112,13 @@ class GoogleApiToolset(BaseToolset):
                 'client_secret_basic',
             ],
             grant_types_supported=['authorization_code'],
-            scopes=scopes,
+            scopes=[scope],
         ),
     )
-    return toolset
 
   def configure_auth(self, client_id: str, client_secret: str):
     self._client_id = client_id
     self._client_secret = client_secret
-
-  @classmethod
-  def load_toolset(
-      cls: Type[GoogleApiToolset],
-      api_name: str,
-      api_version: str,
-  ) -> GoogleApiToolset:
-    spec_dict = GoogleApiToOpenApiConverter(api_name, api_version).convert()
-    scope = list(
-        spec_dict['components']['securitySchemes']['oauth2']['flows'][
-            'authorizationCode'
-        ]['scopes'].keys()
-    )[0]
-    return cls(
-        cls._load_toolset_with_oidc_auth(spec_dict=spec_dict, scopes=[scope])
-    )
 
   @override
   async def close(self):
