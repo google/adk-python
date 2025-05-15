@@ -47,10 +47,10 @@ class Invocation(BaseModel):
   user_content: genai_types.Content
   """Content provided by the user in this invocation."""
 
-  final_response: Optional[genai_types.Content]
+  final_response: Optional[genai_types.Content] = None
   """Final response from the agent that acts a reference or benchmark."""
 
-  intermediate_data: IntermediateData
+  intermediate_data: Optional[IntermediateData] = None
   """Reference intermediate steps generated as a part of Agent execution.
 
   For a multi-agent system, it is also helpful to inspect the route that
@@ -83,7 +83,7 @@ class EvalCase(BaseModel):
   conversation: list[Invocation]
   """A conversation between the user and the Agent. The conversation can have any number of invocations."""
 
-  session_input: SessionInput
+  session_input: Optional[SessionInput] = None
   """Session input that will be passed on to the Agent during eval.
      It is common for Agents state to be initialized to some initial/default value,
      for example, your agent may need to know today's date.

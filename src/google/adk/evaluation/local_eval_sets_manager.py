@@ -16,13 +16,142 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
+import uuid
+from google.genai import types as genai_types
+from pydantic import ValidationError
 from typing_extensions import override
+from .eval_case import EvalCase
+from .eval_case import IntermediateData
+from .eval_case import Invocation
+from .eval_case import SessionInput
+from .eval_set import EvalSet
 from .eval_sets_manager import EvalSetsManager
 
 logger = logging.getLogger(__name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+
+
+def _convert_invocation_to_pydantic_schema(
+    invocation_in_json_format: dict[str, Any],
+) -> Invocation:
+  """Converts an invocation from old json format to new Pydantic Schema"""
+  query = invocation_in_json_format["query"]
+  reference = invocation_in_json_format["reference"]
+  expected_tool_use = []
+  expected_intermediate_agent_responses = []
+
+  for old_tool_use in invocation_in_json_format["expected_tool_use"]:
+    expected_tool_use.append(
+        genai_types.FunctionCall(
+            name=old_tool_use["tool_name"], args=old_tool_use["tool_input"]
+        )
+    )
+
+  for old_intermediate_response in invocation_in_json_format[
+      "expected_intermediate_agent_responses"
+  ]:
+    expected_intermediate_agent_responses.append((
+        old_intermediate_response["author"],
+        [genai_types.Part.from_text(text=old_intermediate_response["text"])],
+    ))
+
+  return Invocation(
+      invocation_id=str(uuid.uuid4()),
+      user_content=genai_types.Content(
+          parts=[genai_types.Part.from_text(text=query)], role="user"
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part.from_text(text=reference)], role="model"
+      ),
+      intermediate_data=IntermediateData(
+          tool_uses=expected_tool_use,
+          intermediate_responses=expected_intermediate_agent_responses,
+      ),
+      creation_timestamp=time.time(),
+  )
+
+
+def convert_eval_set_to_pydanctic_schema(
+    eval_set_id: str,
+    eval_set_in_json_format: list[dict[str, Any]],
+) -> EvalSet:
+  r"""Returns an pydantic EvalSet generated from the json representation.
+
+    Args:
+      eval_set_id: Eval set id.
+      eval_set_in_json_format: Eval set specified in JSON format.
+
+    Here is a sample eval set in JSON format:
+  [
+    {
+      "name": "roll_17_sided_dice_twice",
+      "data": [
+        {
+          "query": "What can you do?",
+          "expected_tool_use": [],
+          "expected_intermediate_agent_responses": [],
+          "reference": "I can roll dice of different sizes and check if a number
+            is prime. I can also use multiple tools in parallel.\n"
+        },
+        {
+          "query": "Roll a 17 sided dice twice for me",
+          "expected_tool_use": [
+            {
+              "tool_name": "roll_die",
+              "tool_input": {
+                "sides": 17
+              }
+            },
+            {
+              "tool_name": "roll_die",
+              "tool_input": {
+                "sides": 17
+              }
+            }
+          ],
+          "expected_intermediate_agent_responses": [],
+          "reference": "I have rolled a 17 sided die twice. The first roll was
+            13 and the second roll was 4.\n"
+        }
+      ],
+      "initial_session": {
+        "state": {},
+        "app_name": "hello_world",
+        "user_id": "user"
+      }
+    }
+  ]
+  """
+  eval_cases = []
+  for old_eval_case in eval_set_in_json_format:
+    new_invocations = []
+
+    for old_invocation in old_eval_case["data"]:
+      new_invocations.append(
+          _convert_invocation_to_pydantic_schema(old_invocation)
+      )
+
+    new_eval_case = EvalCase(
+        eval_id=old_eval_case["name"],
+        conversation=new_invocations,
+        session_input=SessionInput(
+            app_name=old_eval_case["initial_session"]["app_name"],
+            user_id=old_eval_case["initial_session"]["user_id"],
+            state=old_eval_case["initial_session"]["state"],
+        ),
+        creation_timestamp=time.time(),
+    )
+    eval_cases.append(new_eval_case)
+
+  return EvalSet(
+      eval_set_id=eval_set_id,
+      name=eval_set_id,
+      creation_timestamp=time.time(),
+      eval_cases=eval_cases,
+  )
 
 
 class LocalEvalSetsManager(EvalSetsManager):
@@ -32,12 +161,20 @@ class LocalEvalSetsManager(EvalSetsManager):
     self._agent_dir = agent_dir
 
   @override
-  def get_eval_set(self, app_name: str, eval_set_id: str) -> Any:
+  def get_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
     """Returns an EvalSet identified by an app_name and eval_set_id."""
     # Load the eval set file data
     eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
-    with open(eval_set_file_path, "r") as file:
-      return json.load(file)  # Load JSON into a list
+    with open(eval_set_file_path, "r", encoding="utf-8") as f:
+      content = f.read()
+      try:
+        return EvalSet.model_validate_json(content)
+      except ValidationError:
+        # We assume that the eval data was specified in the old format and try
+        # to convert it to the new format.
+        return convert_eval_set_to_pydanctic_schema(
+            eval_set_id, json.loads(content)
+        )
 
   @override
   def create_eval_set(self, app_name: str, eval_set_id: str):
@@ -52,9 +189,13 @@ class LocalEvalSetsManager(EvalSetsManager):
     if not os.path.exists(new_eval_set_path):
       # Write the JSON string to the file
       logger.info("Eval set file doesn't exist, we will create a new one.")
-      with open(new_eval_set_path, "w") as f:
-        empty_content = json.dumps([], indent=2)
-        f.write(empty_content)
+      new_eval_set = EvalSet(
+          eval_set_id=eval_set_id,
+          name=eval_set_id,
+          eval_cases=[],
+          creation_timestamp=time.time(),
+      )
+      self._write_eval_set(new_eval_set_path, new_eval_set)
 
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
@@ -70,26 +211,23 @@ class LocalEvalSetsManager(EvalSetsManager):
     return sorted(eval_sets)
 
   @override
-  def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: Any):
+  def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: EvalCase):
     """Adds the given EvalCase to an existing EvalSet identified by app_name and eval_set_id."""
-    eval_case_id = eval_case["name"]
+    eval_case_id = eval_case.eval_id
     self._validate_id(id_name="Eval Case Id", id_value=eval_case_id)
 
-    # Load the eval set file data
-    eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
-    with open(eval_set_file_path, "r") as file:
-      eval_set_data = json.load(file)  # Load JSON into a list
+    eval_set = self.get_eval_set(app_name, eval_set_id)
 
-    if [x for x in eval_set_data if x["name"] == eval_case_id]:
+    if [x for x in eval_set.eval_cases if x.eval_id == eval_case_id]:
       raise ValueError(
           f"Eval id `{eval_case_id}` already exists in `{eval_set_id}`"
           " eval set.",
       )
 
-    eval_set_data.append(eval_case)
-    # Serialize the test data to JSON and write to the eval set file.
-    with open(eval_set_file_path, "w") as f:
-      f.write(json.dumps(eval_set_data, indent=2))
+    eval_set.eval_cases.append(eval_case)
+
+    eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
+    self._write_eval_set(eval_set_file_path, eval_set)
 
   def _get_eval_set_file_path(self, app_name: str, eval_set_id: str) -> str:
     return os.path.join(
@@ -104,3 +242,7 @@ class LocalEvalSetsManager(EvalSetsManager):
       raise ValueError(
           f"Invalid {id_name}. {id_name} should have the `{pattern}` format",
       )
+
+  def _write_eval_set(self, eval_set_path: str, eval_set: EvalSet):
+    with open(eval_set_path, "w") as f:
+      f.write(eval_set.model_dump_json(indent=2))

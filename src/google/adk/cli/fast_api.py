@@ -60,6 +60,8 @@ from ..agents.llm_agent import Agent
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
 from ..artifacts import InMemoryArtifactService
+from ..evaluation.eval_case import EvalCase
+from ..evaluation.eval_case import SessionInput
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
@@ -436,25 +438,25 @@ def get_fast_api_app(
     )
     assert session, "Session not found."
 
-    # Convert the session data to evaluation format
-    test_data = evals.convert_session_to_eval_format(session)
+    # Convert the session data to eval invocations
+    invocations = evals.convert_session_to_eval_invocations(session)
 
     # Populate the session with initial session state.
     initial_session_state = create_empty_state(
         await _get_root_agent_async(app_name)
     )
 
-    eval_case = {
-        "name": req.eval_id,
-        "data": test_data,
-        "initial_session": {
-            "state": initial_session_state,
-            "app_name": app_name,
-            "user_id": req.user_id,
-        },
-    }
+    new_eval_case = EvalCase(
+        eval_id=req.eval_id,
+        conversation=invocations,
+        session_input=SessionInput(
+            app_name=app_name, user_id=req.user_id, state=initial_session_state
+        ),
+        creation_timestamp=time.time(),
+    )
+
     try:
-      eval_sets_manager.add_eval_case(app_name, eval_set_id, eval_case)
+      eval_sets_manager.add_eval_case(app_name, eval_set_id, new_eval_case)
     except ValueError as ve:
       raise HTTPException(status_code=400, detail=str(ve)) from ve
 
@@ -469,7 +471,7 @@ def get_fast_api_app(
     """Lists all evals in an eval set."""
     eval_set_data = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
-    return sorted([x["name"] for x in eval_set_data])
+    return sorted([x.eval_id for x in eval_set_data.eval_cases])
 
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
