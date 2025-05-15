@@ -44,7 +44,7 @@ class InMemorySessionService(BaseSessionService):
     self.app_state: dict[str, dict[str, Any]] = {}
 
   @override
-  def create_session(
+  async def create_session(
       self,
       *,
       app_name: str,
@@ -106,7 +106,7 @@ class InMemorySessionService(BaseSessionService):
     return self._merge_state(app_name, user_id, copied_session)
 
   @override
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
@@ -193,7 +193,7 @@ class InMemorySessionService(BaseSessionService):
     return copied_session
 
   @override
-  def list_sessions(
+  async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     return self._list_sessions_impl(app_name=app_name, user_id=user_id)
@@ -221,7 +221,7 @@ class InMemorySessionService(BaseSessionService):
       sessions_without_events.append(copied_session)
     return ListSessionsResponse(sessions=sessions_without_events)
 
-  def delete_session(
+  async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     self._delete_session_impl(
@@ -250,16 +250,9 @@ class InMemorySessionService(BaseSessionService):
     self.sessions[app_name][user_id].pop(session_id)
 
   @override
-  def append_event(self, session: Session, event: Event) -> Event:
-    return self._append_event_impl(session=session, event=event)
-
-  def append_event_sync(self, session: Session, event: Event) -> Event:
-    logger.warning('Deprecated. Please migrate to the async method.')
-    return self._append_event_impl(session=session, event=event)
-
-  def _append_event_impl(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
-    super().append_event(session=session, event=event)
+    await super().append_event(session=session, event=event)
     session.last_update_time = event.timestamp
 
     # Update the storage session
@@ -286,7 +279,7 @@ class InMemorySessionService(BaseSessionService):
           ] = event.actions.state_delta[key]
 
     storage_session = self.sessions[app_name][user_id].get(session_id)
-    super().append_event(session=storage_session, event=event)
+    await super().append_event(session=storage_session, event=event)
 
     storage_session.last_update_time = event.timestamp
 

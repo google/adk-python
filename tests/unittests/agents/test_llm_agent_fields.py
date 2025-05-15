@@ -15,7 +15,7 @@
 """Unit tests for canonical_xxx fields in LlmAgent."""
 
 from typing import Any
-from typing import Optional
+from typing import Optional, cast
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
@@ -30,11 +30,11 @@ from pydantic import BaseModel
 import pytest
 
 
-def _create_readonly_context(
+async def _create_readonly_context(
     agent: LlmAgent, state: Optional[dict[str, Any]] = None
 ) -> ReadonlyContext:
   session_service = InMemorySessionService()
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name='test_app', user_id='test_user', state=state
   )
   invocation_context = InvocationContext(
@@ -77,7 +77,7 @@ def test_canonical_model_inherit():
 
 async def test_canonical_instruction_str():
   agent = LlmAgent(name='test_agent', instruction='instruction')
-  ctx = _create_readonly_context(agent)
+  ctx = await _create_readonly_context(agent)
 
   canonical_instruction = await agent.canonical_instruction(ctx)
   assert canonical_instruction == 'instruction'
@@ -88,7 +88,9 @@ async def test_canonical_instruction():
     return f'instruction: {ctx.state["state_var"]}'
 
   agent = LlmAgent(name='test_agent', instruction=_instruction_provider)
-  ctx = _create_readonly_context(agent, state={'state_var': 'state_value'})
+  ctx = await _create_readonly_context(
+      agent, state={'state_var': 'state_value'}
+  )
 
   canonical_instruction = await agent.canonical_instruction(ctx)
   assert canonical_instruction == 'instruction: state_value'
@@ -99,7 +101,9 @@ async def test_async_canonical_instruction():
     return f'instruction: {ctx.state["state_var"]}'
 
   agent = LlmAgent(name='test_agent', instruction=_instruction_provider)
-  ctx = _create_readonly_context(agent, state={'state_var': 'state_value'})
+  ctx = await _create_readonly_context(
+      agent, state={'state_var': 'state_value'}
+  )
 
   canonical_instruction = await agent.canonical_instruction(ctx)
   assert canonical_instruction == 'instruction: state_value'
@@ -107,10 +111,10 @@ async def test_async_canonical_instruction():
 
 async def test_canonical_global_instruction_str():
   agent = LlmAgent(name='test_agent', global_instruction='global instruction')
-  ctx = _create_readonly_context(agent)
+  ctx = await _create_readonly_context(agent)
 
-  canonical_global_instruction = await agent.canonical_global_instruction(ctx)
-  assert canonical_global_instruction == 'global instruction'
+  canonical_instruction = await agent.canonical_global_instruction(ctx)
+  assert canonical_instruction == 'global instruction'
 
 
 async def test_canonical_global_instruction():
@@ -120,7 +124,9 @@ async def test_canonical_global_instruction():
   agent = LlmAgent(
       name='test_agent', global_instruction=_global_instruction_provider
   )
-  ctx = _create_readonly_context(agent, state={'state_var': 'state_value'})
+  ctx = await _create_readonly_context(
+      agent, state={'state_var': 'state_value'}
+  )
 
   canonical_global_instruction = await agent.canonical_global_instruction(ctx)
   assert canonical_global_instruction == 'global instruction: state_value'
@@ -133,10 +139,14 @@ async def test_async_canonical_global_instruction():
   agent = LlmAgent(
       name='test_agent', global_instruction=_global_instruction_provider
   )
-  ctx = _create_readonly_context(agent, state={'state_var': 'state_value'})
+  ctx = await _create_readonly_context(
+      agent, state={'state_var': 'state_value'}
+  )
 
-  canonical_global_instruction = await agent.canonical_global_instruction(ctx)
-  assert canonical_global_instruction == 'global instruction: state_value'
+  assert (
+      await agent.canonical_global_instruction(ctx)
+      == 'global instruction: state_value'
+  )
 
 
 def test_output_schema_will_disable_transfer(caplog: pytest.LogCaptureFixture):
