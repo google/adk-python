@@ -16,11 +16,20 @@
 from typing import Any, Optional, Tuple
 
 from google.genai import types as genai_types
+from pydantic import alias_generators
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 
 
-class IntermediateData(BaseModel):
+class EvalBaseModel(BaseModel):
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+
+
+class IntermediateData(EvalBaseModel):
   """Container for intermediate data that an agent would generate as it responds with a final answer."""
 
   tool_uses: list[genai_types.FunctionCall] = []
@@ -38,7 +47,7 @@ class IntermediateData(BaseModel):
   """
 
 
-class Invocation(BaseModel):
+class Invocation(EvalBaseModel):
   """Represents a single invocation."""
 
   invocation_id: str = ''
@@ -61,7 +70,7 @@ class Invocation(BaseModel):
   """Timestamp for the current invocation, primarily intended for debugging purposes."""
 
 
-class SessionInput(BaseModel):
+class SessionInput(EvalBaseModel):
   """Values that help initialize a Session."""
 
   app_name: str
@@ -74,7 +83,7 @@ class SessionInput(BaseModel):
   """The state of the session."""
 
 
-class EvalCase(BaseModel):
+class EvalCase(EvalBaseModel):
   """An eval case."""
 
   eval_id: str

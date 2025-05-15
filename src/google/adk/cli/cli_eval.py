@@ -38,7 +38,7 @@ from .utils import common
 logger = logging.getLogger(__name__)
 
 
-class EvalMetric(BaseModel):
+class EvalMetric(common.BaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 
   metric_name: str
@@ -55,7 +55,7 @@ class EvalMetricResult(EvalMetric):
   eval_status: EvalStatus
 
 
-class EvalMetricResultPerInvocation(BaseModel):
+class EvalMetricResultPerInvocation(common.BaseModel):
   """Eval metric results per invocation."""
 
   actual_invocation: Invocation
