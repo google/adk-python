@@ -40,13 +40,6 @@ class ListSessionsResponse(BaseModel):
   sessions: list[Session] = Field(default_factory=list)
 
 
-class ListEventsResponse(BaseModel):
-  """The response of listing events in a session."""
-
-  events: list[Event] = Field(default_factory=list)
-  next_page_token: Optional[str] = None
-
-
 class BaseSessionService(abc.ABC):
   """Base class for session services.
 
@@ -100,17 +93,6 @@ class BaseSessionService(abc.ABC):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     """Deletes a session."""
-    pass
-
-  @abc.abstractmethod
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    """Lists events in a session."""
     pass
 
   def close_session(self, *, session: Session):

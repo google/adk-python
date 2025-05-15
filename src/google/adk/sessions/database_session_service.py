@@ -49,7 +49,6 @@ from ..events.event import Event
 from . import _session_util
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
-from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 from .state import State
@@ -555,17 +554,6 @@ class DatabaseSessionService(BaseSessionService):
     # Also update the in-memory session
     super().append_event(session=session, event=event)
     return event
-
-  @override
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    raise NotImplementedError()
-
 
 def convert_event(event: StorageEvent) -> Event:
   """Converts a storage event to an event."""

@@ -25,7 +25,6 @@ from ..events.event_actions import EventActions
 from . import _session_util
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
-from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 
@@ -211,33 +210,6 @@ class VertexAiSessionService(BaseSessionService):
         http_method='DELETE',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
-    )
-
-  @override
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    reasoning_engine_id = _parse_reasoning_engine_id(app_name)
-    api_response = self.api_client.request(
-        http_method='GET',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events',
-        request_dict={},
-    )
-
-    logger.info(f'List events response {api_response}')
-
-    # Handles empty response case
-    if api_response.get('httpHeaders', None):
-      return ListEventsResponse()
-
-    session_events = api_response['sessionEvents']
-
-    return ListEventsResponse(
-        events=[_from_api_event(event) for event in session_events]
     )
 
   @override

@@ -24,7 +24,6 @@ from typing_extensions import override
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
-from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 from .state import State
@@ -292,13 +291,3 @@ class InMemorySessionService(BaseSessionService):
     storage_session.last_update_time = event.timestamp
 
     return event
-
-  @override
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    raise NotImplementedError()
