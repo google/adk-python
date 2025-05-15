@@ -55,7 +55,7 @@ async def run_input_file(
     input_file = InputFile.model_validate_json(f.read())
   input_file.state['_time'] = datetime.now()
 
-  session = await session_service.create_session(
+  session = session_service.create_session(
       app_name=app_name, user_id=user_id, state=input_file.state
   )
   for query in input_file.queries:
@@ -130,7 +130,7 @@ async def run_cli(
   agent_module_path = os.path.join(agent_parent_dir, agent_folder_name)
   agent_module = importlib.import_module(agent_folder_name)
   user_id = 'test_user'
-  session = await session_service.create_session(
+  session = session_service.create_session(
       app_name=agent_folder_name, user_id=user_id
   )
   root_agent = agent_module.agent.root_agent
@@ -145,12 +145,14 @@ async def run_cli(
         input_path=input_file,
     )
   elif saved_session_file:
+
+    loaded_session = None
     with open(saved_session_file, 'r') as f:
       loaded_session = Session.model_validate_json(f.read())
 
     if loaded_session:
       for event in loaded_session.events:
-        await session_service.append_event(session, event)
+        session_service.append_event(session, event)
         content = event.content
         if not content or not content.parts or not content.parts[0].text:
           continue
@@ -179,7 +181,7 @@ async def run_cli(
     session_path = f'{agent_module_path}/{session_id}.session.json'
 
     # Fetch the session again to get all the details.
-    session = await session_service.get_session(
+    session = session_service.get_session(
         app_name=session.app_name,
         user_id=session.user_id,
         session_id=session.id,
