@@ -259,13 +259,6 @@ class AgentEvaluator:
     )
 
   @staticmethod
-  def _generate_responses_from_session(eval_dataset, session_path):
-    """Generates evaluation responses by running the agent module multiple times."""
-    return EvaluationGenerator.generate_responses_from_session(
-        session_path, eval_dataset
-    )
-
-  @staticmethod
   def _response_evaluation_required(criteria, eval_dataset):
     """Checks if response evaluation are needed."""
     return REFERENCE_COLUMN in eval_dataset[0][0] and any(
