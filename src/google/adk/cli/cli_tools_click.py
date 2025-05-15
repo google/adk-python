@@ -384,6 +384,13 @@ def cli_eval(
     ),
 )
 @click.option(
+    "--host",
+    type=str,
+    help="Optional. The binding host of the server",
+    default="127.0.0.1",
+    show_default=True,
+)
+@click.option(
     "--port",
     type=int,
     help="Optional. The port of the server",
@@ -437,6 +444,7 @@ def cli_web(
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
+    host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
     reload: bool = True,
@@ -489,7 +497,7 @@ def cli_web(
   )
   config = uvicorn.Config(
       app,
-      host="0.0.0.0",
+      host=host,
       port=port,
       reload=reload,
   )
@@ -510,6 +518,13 @@ def cli_web(
 
   - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
+)
+@click.option(
+    "--host",
+    type=str,
+    help="Optional. The binding host of the server",
+    default="127.0.0.1",
+    show_default=True,
 )
 @click.option(
     "--port",
@@ -567,6 +582,7 @@ def cli_api_server(
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
+    host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
     reload: bool = True,
@@ -595,7 +611,7 @@ def cli_api_server(
           web=False,
           trace_to_cloud=trace_to_cloud,
       ),
-      host="0.0.0.0",
+      host=host,
       port=port,
       reload=reload,
   )
