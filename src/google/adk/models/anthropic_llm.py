@@ -140,15 +140,15 @@ def message_to_generate_content_response(
           role="model",
           parts=[content_block_to_part(cb) for cb in message.content],
       ),
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=message.usage.input_tokens,
+          candidates_token_count=message.usage.output_tokens,
+          total_token_count=(
+              message.usage.input_tokens + message.usage.output_tokens
+          ),
+      ),
       # TODO: Deal with these later.
       # finish_reason=to_google_genai_finish_reason(message.stop_reason),
-      # usage_metadata=types.GenerateContentResponseUsageMetadata(
-      #     prompt_token_count=message.usage.input_tokens,
-      #     candidates_token_count=message.usage.output_tokens,
-      #     total_token_count=(
-      #         message.usage.input_tokens + message.usage.output_tokens
-      #     ),
-      # ),
   )
 
 
@@ -196,6 +196,12 @@ def function_declaration_to_tool_param(
 
 
 class Claude(BaseLlm):
+  """ "Integration with Claude models served from Vertex AI.
+
+  Attributes:
+    model: The name of the Claude model.
+  """
+
   model: str = "claude-3-5-sonnet-v2@20241022"
 
   @staticmethod
