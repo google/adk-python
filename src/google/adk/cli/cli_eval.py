@@ -17,10 +17,8 @@ import json
 import logging
 import os
 import sys
-import traceback
 from typing import Any
 from typing import AsyncGenerator
-from typing import cast
 from typing import Optional
 import uuid
 
@@ -350,7 +348,7 @@ def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
     return TrajectoryEvaluator(threshold=eval_metric.threshold)
   elif (
       eval_metric.metric_name == RESPONSE_MATCH_SCORE_KEY
-      or eval_metric == RESPONSE_EVALUATION_SCORE_KEY
+      or eval_metric.metric_name == RESPONSE_EVALUATION_SCORE_KEY
   ):
     return ResponseEvaluator(
         threshold=eval_metric.threshold, metric_name=eval_metric.metric_name

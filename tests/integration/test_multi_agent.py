@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from google.adk.evaluation import AgentEvaluator
+import pytest
 
 
 @pytest.mark.asyncio
