@@ -124,6 +124,20 @@ class MockApiClient:
     this.session_dict: dict[str, Any] = {}
     this.event_dict: dict[str, list[Any]] = {}
 
+  def request(self, http_method: str, path: str, request_dict: dict[str, Any]):
+    """Mocks the API Client request method."""
+    if http_method == 'GET':
+      if re.match(SESSIONS_REGEX, path):
+        match = re.match(SESSIONS_REGEX, path)
+        return {
+            'sessions': [
+                session
+                for session in self.session_dict.values()
+                if session['userId'] == match.group(2)
+            ],
+        }
+    raise ValueError(f'Unsupported sync path: {path}')
+
   async def async_request(
       self, http_method: str, path: str, request_dict: dict[str, Any]
   ):
