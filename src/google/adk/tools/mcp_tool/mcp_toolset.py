@@ -89,7 +89,7 @@ class MCPToolset(BaseToolset):
     self._session_manager = MCPSessionManager(
         connection_params=self._connection_params,
         exit_stack=self._exit_stack,
-        errlogger=self._errlog,
+        errlog=self._errlog,
     )
     self._session = None
     self.tool_filter = tool_filter

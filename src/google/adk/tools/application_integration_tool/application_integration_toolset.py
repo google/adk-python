@@ -19,10 +19,12 @@ from typing import Union
 from fastapi.openapi.models import HTTPBearer
 from typing_extensions import override
 
+from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes
 from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
+from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from ..openapi_tool.openapi_spec_parser.openapi_spec_parser import OpenApiSpecParser
@@ -34,7 +36,7 @@ from .integration_connector_tool import IntegrationConnectorTool
 
 
 # TODO(cheliu): Apply a common toolset interface
-class ApplicationIntegrationToolset:
+class ApplicationIntegrationToolset(BaseToolset):
   """ApplicationIntegrationToolset generates tools from a given Application
 
   Integration or Integration Connector resource.
@@ -223,9 +225,14 @@ class ApplicationIntegrationToolset:
       )
 
   @override
-  async def get_tools(self) -> List[RestApiTool]:
+  async def get_tools(
+      self,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> List[RestApiTool]:
     return (
-        [self._tool] if self._tool else await self._openapi_toolset.get_tools()
+        [self._tool]
+        if self._tool
+        else await self._openapi_toolset.get_tools(readonly_context)
     )
 
   @override
