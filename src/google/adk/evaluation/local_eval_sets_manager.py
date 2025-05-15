@@ -154,6 +154,22 @@ def convert_eval_set_to_pydanctic_schema(
   )
 
 
+def load_eval_set_from_file(
+    eval_set_file_path: str, eval_set_id: str
+) -> EvalSet:
+  """Returns an EvalSet that is read from the given file."""
+  with open(eval_set_file_path, "r", encoding="utf-8") as f:
+    content = f.read()
+    try:
+      return EvalSet.model_validate_json(content)
+    except ValidationError:
+      # We assume that the eval data was specified in the old format and try
+      # to convert it to the new format.
+      return convert_eval_set_to_pydanctic_schema(
+          eval_set_id, json.loads(content)
+      )
+
+
 class LocalEvalSetsManager(EvalSetsManager):
   """An EvalSets manager that stores eval sets locally on disk."""
 
@@ -165,16 +181,7 @@ class LocalEvalSetsManager(EvalSetsManager):
     """Returns an EvalSet identified by an app_name and eval_set_id."""
     # Load the eval set file data
     eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
-    with open(eval_set_file_path, "r", encoding="utf-8") as f:
-      content = f.read()
-      try:
-        return EvalSet.model_validate_json(content)
-      except ValidationError:
-        # We assume that the eval data was specified in the old format and try
-        # to convert it to the new format.
-        return convert_eval_set_to_pydanctic_schema(
-            eval_set_id, json.loads(content)
-        )
+    return load_eval_set_from_file(eval_set_file_path, eval_set_id)
 
   @override
   def create_eval_set(self, app_name: str, eval_set_id: str):

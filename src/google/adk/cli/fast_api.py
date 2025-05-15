@@ -48,6 +48,7 @@ from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
+from pydantic import Field
 from pydantic import ValidationError
 from starlette.types import Lifespan
 from typing_extensions import override
@@ -75,6 +76,7 @@ from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .cli_eval import EvalCaseResult
 from .cli_eval import EvalMetric
 from .cli_eval import EvalMetricResult
+from .cli_eval import EvalMetricResultPerInvocation
 from .cli_eval import EvalSetResult
 from .cli_eval import EvalStatus
 from .utils import common
@@ -175,7 +177,14 @@ class RunEvalResult(common.BaseModel):
   eval_set_id: str
   eval_id: str
   final_eval_status: EvalStatus
-  eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]]
+  eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]] = Field(
+      deprecated=True,
+      description=(
+          "This field is deprecated, use overall_eval_metric_results instead."
+      ),
+  )
+  overall_eval_metric_results: list[EvalMetricResult]
+  eval_metric_result_per_invocation: list[EvalMetricResultPerInvocation]
   user_id: str
   session_id: str
 
@@ -480,25 +489,26 @@ def get_fast_api_app(
   async def run_eval(
       app_name: str, eval_set_id: str, req: RunEvalRequest
   ) -> list[RunEvalResult]:
+    """Runs an eval given the details in the eval request."""
     from .cli_eval import run_evals
 
-    """Runs an eval given the details in the eval request."""
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
     envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
-    eval_set_file_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-    eval_set_to_evals = {eval_set_file_path: req.eval_ids}
 
-    if not req.eval_ids:
-      logger.info(
-          "Eval ids to run list is empty. We will all evals in the eval set."
-      )
+    eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
+
+    if req.eval_ids:
+      eval_cases = [e for e in eval_set.eval_cases if e.eval_id in req.eval_ids]
+      eval_set_to_evals = {eval_set_id: eval_cases}
+    else:
+      logger.info("Eval ids to run list is empty. We will run all eval cases.")
+      eval_set_to_evals = {eval_set_id: eval_set.eval_cases}
+
     root_agent = await _get_root_agent_async(app_name)
     run_eval_results = []
     eval_case_results = []
-    async for eval_result in run_evals(
+    async for eval_case_result in run_evals(
         eval_set_to_evals,
         root_agent,
         getattr(root_agent, "reset_data", None),
@@ -509,31 +519,23 @@ def get_fast_api_app(
       run_eval_results.append(
           RunEvalResult(
               app_name=app_name,
-              eval_set_file=eval_result.eval_set_file,
+              eval_set_file=eval_case_result.eval_set_file,
               eval_set_id=eval_set_id,
-              eval_id=eval_result.eval_id,
-              final_eval_status=eval_result.final_eval_status,
-              eval_metric_results=eval_result.eval_metric_results,
-              user_id=eval_result.user_id,
-              session_id=eval_result.session_id,
+              eval_id=eval_case_result.eval_id,
+              final_eval_status=eval_case_result.final_eval_status,
+              eval_metric_results=eval_case_result.eval_metric_results,
+              overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
+              eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
+              user_id=eval_case_result.user_id,
+              session_id=eval_case_result.session_id,
           )
       )
-      session = session_service.get_session(
+      eval_case_result.session_details = session_service.get_session(
           app_name=app_name,
-          user_id=eval_result.user_id,
-          session_id=eval_result.session_id,
+          user_id=eval_case_result.user_id,
+          session_id=eval_case_result.session_id,
       )
-      eval_case_results.append(
-          EvalCaseResult(
-              eval_set_file=eval_result.eval_set_file,
-              eval_id=eval_result.eval_id,
-              final_eval_status=eval_result.final_eval_status,
-              eval_metric_results=eval_result.eval_metric_results,
-              session_id=eval_result.session_id,
-              session_details=session,
-              user_id=eval_result.user_id,
-          )
-      )
+      eval_case_results.append(eval_case_result)
 
     timestamp = time.time()
     eval_set_result_name = app_name + "_" + eval_set_id + "_" + str(timestamp)
