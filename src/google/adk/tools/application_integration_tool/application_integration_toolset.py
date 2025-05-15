@@ -19,10 +19,12 @@ from typing import Union
 from fastapi.openapi.models import HTTPBearer
 from typing_extensions import override
 
+from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes
 from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
+from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from ..openapi_tool.openapi_spec_parser.openapi_spec_parser import OpenApiSpecParser
@@ -34,7 +36,7 @@ from .integration_connector_tool import IntegrationConnectorTool
 
 
 # TODO(cheliu): Apply a common toolset interface
-class ApplicationIntegrationToolset:
+class ApplicationIntegrationToolset(BaseToolset):
   """ApplicationIntegrationToolset generates tools from a given Application
 
   Integration or Integration Connector resource.
@@ -86,7 +88,7 @@ class ApplicationIntegrationToolset:
       actions: Optional[str] = None,
       # Optional parameter for the toolset. This is prepended to the generated
       # tool/python function name.
-      tool_name: Optional[str] = "",
+      tool_name_prefix: Optional[str] = "",
       # Optional parameter for the toolset. This is appended to the generated
       # tool/python function description.
       tool_instructions: Optional[str] = "",
@@ -103,7 +105,7 @@ class ApplicationIntegrationToolset:
         connection: The connection name.
         entity_operations: The entity operations supported by the connection.
         actions: The actions supported by the connection.
-        tool_name: The name of the tool.
+        tool_name_prefix: The name prefix of the generated tools.
         tool_instructions: The instructions for the tool.
         service_account_json: The service account configuration as a dictionary.
           Required if not using default service credential. Used for fetching
@@ -122,14 +124,14 @@ class ApplicationIntegrationToolset:
     """
     self.project = project
     self.location = location
-    self.integration = integration
-    self.triggers = triggers
-    self.connection = connection
-    self.entity_operations = entity_operations
-    self.actions = actions
-    self.tool_name = tool_name
-    self.tool_instructions = tool_instructions
-    self.service_account_json = service_account_json
+    self._integration = integration
+    self._triggers = triggers
+    self._connection = connection
+    self._entity_operations = entity_operations
+    self._actions = actions
+    self._tool_name_prefix = tool_name_prefix
+    self._tool_instructions = tool_instructions
+    self._service_account_json = service_account_json
     self.tool_filter = tool_filter
 
     integration_client = IntegrationClient(
@@ -151,7 +153,7 @@ class ApplicationIntegrationToolset:
       )
       connection_details = connections_client.get_connection_details()
       spec = integration_client.get_openapi_spec_for_connection(
-          tool_name,
+          tool_name_prefix,
           tool_instructions,
       )
     else:
@@ -159,15 +161,15 @@ class ApplicationIntegrationToolset:
           "Invalid request, Either integration or (connection and"
           " (entity_operations or actions)) should be provided."
       )
-    self.openapi_toolset = None
-    self.tool = None
+    self._openapi_toolset = None
+    self._tool = None
     self._parse_spec_to_toolset(spec, connection_details)
 
   def _parse_spec_to_toolset(self, spec_dict, connection_details):
     """Parses the spec dict to OpenAPI toolset."""
-    if self.service_account_json:
+    if self._service_account_json:
       sa_credential = ServiceAccountCredential.model_validate_json(
-          self.service_account_json
+          self._service_account_json
       )
       service_account = ServiceAccount(
           service_account_credential=sa_credential,
@@ -186,8 +188,8 @@ class ApplicationIntegrationToolset:
       )
       auth_scheme = HTTPBearer(bearerFormat="JWT")
 
-    if self.integration:
-      self.openapi_toolset = OpenAPIToolset(
+    if self._integration:
+      self._openapi_toolset = OpenAPIToolset(
           spec_dict=spec_dict,
           auth_credential=auth_credential,
           auth_scheme=auth_scheme,
@@ -210,7 +212,7 @@ class ApplicationIntegrationToolset:
         rest_api_tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         rest_api_tool.configure_auth_credential(auth_credential)
-      self.tool = IntegrationConnectorTool(
+      self._tool = IntegrationConnectorTool(
           name=rest_api_tool.name,
           description=rest_api_tool.description,
           connection_name=connection_details["name"],
@@ -223,10 +225,17 @@ class ApplicationIntegrationToolset:
       )
 
   @override
-  async def get_tools(self) -> List[RestApiTool]:
-    return [self.tool] if self.tool else await self.openapi_toolset.get_tools()
+  async def get_tools(
+      self,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> List[RestApiTool]:
+    return (
+        [self._tool]
+        if self._tool
+        else await self._openapi_toolset.get_tools(readonly_context)
+    )
 
   @override
   async def close(self) -> None:
-    if self.openapi_toolset:
-      await self.openapi_toolset.close()
+    if self._openapi_toolset:
+      await self._openapi_toolset.close()

@@ -15,6 +15,7 @@
 import json
 from unittest import mock
 from fastapi.openapi.models import Operation
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.tools.application_integration_tool.application_integration_toolset import ApplicationIntegrationToolset
 from google.adk.tools.application_integration_tool.integration_connector_tool import IntegrationConnectorTool
@@ -49,7 +50,7 @@ def mock_openapi_toolset():
     mock_rest_api_tool.name = "Test Tool"
 
     # Create an async mock for the get_tools method
-    async def mock_get_tools():
+    async def mock_get_tools(context: ReadonlyContext = None):
       return [mock_rest_api_tool]
 
     # Assign the async mock function to get_tools
@@ -71,7 +72,7 @@ def mock_openapi_toolset_with_multiple_tools_and_no_tools():
     mock_rest_api_tool_2.name = "Test Tool 2"
 
     # Create an async mock for the get_tools method
-    async def mock_get_tools():
+    async def mock_get_tools(context: ReadonlyContext = None):
       return [mock_rest_api_tool, mock_rest_api_tool_2]
 
     mock_toolset_instance.get_tools = mock_get_tools
@@ -262,7 +263,7 @@ async def test_initialization_with_connection_and_entity_operations(
       location,
       connection=connection_name,
       entity_operations=entity_operations_list,
-      tool_name=tool_name,
+      tool_name_prefix=tool_name,
       tool_instructions=tool_instructions,
   )
   mock_integration_client.assert_called_once_with(
@@ -289,8 +290,8 @@ async def test_initialization_with_connection_and_entity_operations(
   assert len(tools) == 1
   assert tools[0].name == "list_issues"
   assert isinstance(tools[0], IntegrationConnectorTool)
-  assert tools[0].entity == "Issues"
-  assert tools[0].operation == "LIST_ENTITIES"
+  assert tools[0]._entity == "Issues"
+  assert tools[0]._operation == "LIST_ENTITIES"
 
 
 @pytest.mark.asyncio
@@ -314,7 +315,7 @@ async def test_initialization_with_connection_and_actions(
       location,
       connection=connection_name,
       actions=actions_list,
-      tool_name=tool_name,
+      tool_name_prefix=tool_name,
       tool_instructions=tool_instructions,
   )
   mock_integration_client.assert_called_once_with(
@@ -332,8 +333,8 @@ async def test_initialization_with_connection_and_actions(
   assert len(tools) == 1
   assert tools[0].name == "list_issues_operation"
   assert isinstance(tools[0], IntegrationConnectorTool)
-  assert tools[0].action == "CustomAction"
-  assert tools[0].operation == "EXECUTE_ACTION"
+  assert tools[0]._action == "CustomAction"
+  assert tools[0]._operation == "EXECUTE_ACTION"
 
 
 def test_initialization_without_required_params(project, location):
@@ -467,7 +468,7 @@ def test_initialization_with_connection_details(
       location,
       connection=connection_name,
       entity_operations=entity_operations_list,
-      tool_name=tool_name,
+      tool_name_prefix=tool_name,
       tool_instructions=tool_instructions,
   )
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(

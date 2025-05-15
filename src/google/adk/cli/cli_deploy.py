@@ -54,7 +54,7 @@ COPY "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {session_db_option} {trace_to_cloud_option} "/app/agents"
+CMD adk {command} --port={port} --host=0.0.0.0 {session_db_option} {trace_to_cloud_option} "/app/agents"
 """
 
 

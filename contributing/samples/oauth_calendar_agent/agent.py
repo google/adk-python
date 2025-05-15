@@ -27,7 +27,7 @@ from google.adk.auth import AuthCredential
 from google.adk.auth import AuthCredentialTypes
 from google.adk.auth import OAuth2Auth
 from google.adk.tools import ToolContext
-from google.adk.tools.google_api_tool import calendar_tool_set
+from google.adk.tools.google_api_tool import CalendarToolset
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -42,14 +42,12 @@ oauth_client_secret = os.getenv("OAUTH_CLIENT_SECRET")
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-calendar_tool_set.configure_auth(
-    client_id=oauth_client_id, client_secret=oauth_client_secret
-)
-calendar_tool_set.set_tool_filter(
+calendar_toolset = CalendarToolset(
     # you can also replace below customized `list_calendar_events` with build-in
     # google calendar tool by adding `calendar_events_list` in the filter list
-    lambda tool, ctx=None: tool.name
-    in ["calendar_events_get"]
+    client_id=oauth_client_id,
+    client_secret=oauth_client_secret,
+    tool_filter=["calendar_events_get"],
 )
 
 
@@ -210,6 +208,6 @@ root_agent = Agent(
 
       Currnet time: {_time}
 """,
-    tools=[list_calendar_events, calendar_tool_set],
+    tools=[list_calendar_events, calendar_toolset],
     before_agent_callback=update_time,
 )
