@@ -135,7 +135,10 @@ def convert_eval_set_to_pydanctic_schema(
       )
 
     session_input = None
-    if "initial_session" in old_eval_case:
+    if (
+        "initial_session" in old_eval_case
+        and len(old_eval_case["initial_session"]) > 0
+    ):
       session_input = SessionInput(
           app_name=old_eval_case["initial_session"].get("app_name", ""),
           user_id=old_eval_case["initial_session"].get("user_id", ""),

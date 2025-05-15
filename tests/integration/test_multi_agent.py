@@ -18,13 +18,10 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_eval_agent():
-  AgentEvaluator.evaluate(
+  await AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.trip_planner_agent",
       eval_dataset_file_path_or_dir=(
           "tests/integration/fixture/trip_planner_agent/trip_inquiry.test.json"
-      ),
-      initial_session_file=(
-          "tests/integration/fixture/trip_planner_agent/initial.session.json"
       ),
       num_runs=4,
   )

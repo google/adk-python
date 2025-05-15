@@ -13,12 +13,18 @@
 # limitations under the License.
 
 import json
+import logging
 import os
 from os import path
+from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Union
 import uuid
+
+from pydantic import ValidationError
+
 from .eval_set import EvalSet
 from .evaluation_generator import EvaluationGenerator
 from .evaluator import EvalStatus
@@ -27,6 +33,9 @@ from .evaluator import Evaluator
 from .local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
 from .response_evaluator import ResponseEvaluator
 from .trajectory_evaluator import TrajectoryEvaluator
+
+logger = logging.getLogger(__name__)
+
 
 # Constants for default runs and evaluation criteria
 NUM_RUNS = 2
@@ -131,18 +140,17 @@ class AgentEvaluator:
         )
 
         assert evaluation_result.overall_eval_status == EvalStatus.PASSED, (
-            f"`{eval_case_responses.eval_case.eval_id}`: "
             f"{metric_name} for {agent_module} Failed. Expected {threshold},"
             f" but got {evaluation_result.overall_score}."
         )
 
   @staticmethod
   async def evaluate(
-      agent_module,
-      eval_dataset_file_path_or_dir,
-      num_runs=NUM_RUNS,
-      agent_name=None,
-      initial_session_file=None,
+      agent_module: str,
+      eval_dataset_file_path_or_dir: str,
+      num_runs: int = NUM_RUNS,
+      agent_name: Optional[str] = None,
+      initial_session_file: Optional[str] = None,
   ):
     """Evaluates an Agent given eval data.
 
@@ -170,25 +178,14 @@ class AgentEvaluator:
     else:
       test_files = [eval_dataset_file_path_or_dir]
 
-    initial_session = {}
-    if initial_session_file:
-      with open(initial_session_file, "r") as f:
-        initial_session = json.loads(f.read())
+    initial_session = AgentEvaluator._get_initial_session(initial_session_file)
 
     for test_file in test_files:
-      data = AgentEvaluator._load_dataset(test_file)[0]
       criteria = AgentEvaluator.find_config_for_test_file(test_file)
-      AgentEvaluator._validate_input([data], criteria)
-
-      eval_data = {
-          "name": test_file,
-          "data": data,
-          "initial_session": initial_session,
-      }
-
-      eval_set = convert_eval_set_to_pydanctic_schema(
-          eval_set_id=str(uuid.uuid4()), eval_set_in_json_format=[eval_data]
+      eval_set = AgentEvaluator._load_eval_set_from_file(
+          test_file, criteria, initial_session
       )
+
       await AgentEvaluator.evaluate_eval_set(
           agent_module=agent_module,
           eval_set=eval_set,
@@ -196,6 +193,86 @@ class AgentEvaluator:
           num_runs=num_runs,
           agent_name=agent_name,
       )
+
+  @staticmethod
+  def migrate_eval_data_to_new_schema(
+      old_eval_data_file: str,
+      new_eval_data_file: str,
+      initial_session_file: Optional[str] = None,
+  ):
+    """A utility for migrating eval data to new schema backed by EvalSet."""
+    if not old_eval_data_file or not new_eval_data_file:
+      raise ValueError(
+          "One of old_eval_data_file or new_eval_data_file is empty."
+      )
+
+    criteria = AgentEvaluator.find_config_for_test_file(old_eval_data_file)
+    initial_session = AgentEvaluator._get_initial_session(initial_session_file)
+
+    eval_set = AgentEvaluator._get_eval_set_from_old_format(
+        old_eval_data_file, criteria, initial_session
+    )
+
+    with open(new_eval_data_file, "w") as f:
+      f.write(eval_set.model_dump_json(indent=2))
+
+  @staticmethod
+  def _load_eval_set_from_file(
+      eval_set_file: str,
+      criteria: dict[str, float],
+      initial_session: dict[str, Any],
+  ) -> EvalSet:
+    """Loads an EvalSet from the given file."""
+    if os.path.isfile(eval_set_file):
+      with open(eval_set_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+      try:
+        eval_set = EvalSet.model_validate_json(content)
+        assert len(initial_session) == 0, (
+            "Intial session should be specified as a part of EvalSet file."
+            " Explicit initial session is only needed, when specifying data in"
+            " the older schema."
+        )
+        return eval_set
+      except ValidationError:
+        # We assume that the eval data was specified in the old format
+        logger.warning(
+            f"Contents of {eval_set_file} appear to be in older format.To avoid"
+            " this warning, please update your test files to contain data in"
+            " EvalSet schema. You can use `migrate_eval_data_to_new_schema`"
+            " for migrating your old test files."
+        )
+
+    # If we are here, the data must be specified in the older format.
+    return AgentEvaluator._get_eval_set_from_old_format(
+        eval_set_file, criteria, initial_session
+    )
+
+  @staticmethod
+  def _get_eval_set_from_old_format(
+      eval_set_file: str,
+      criteria: dict[str, float],
+      initial_session: dict[str, Any],
+  ) -> EvalSet:
+    data = AgentEvaluator._load_dataset(eval_set_file)[0]
+    AgentEvaluator._validate_input([data], criteria)
+    eval_data = {
+        "name": eval_set_file,
+        "data": data,
+        "initial_session": initial_session,
+    }
+    return convert_eval_set_to_pydanctic_schema(
+        eval_set_id=str(uuid.uuid4()), eval_set_in_json_format=[eval_data]
+    )
+
+  @staticmethod
+  def _get_initial_session(initial_session_file: Optional[str] = None):
+    initial_session = {}
+    if initial_session_file:
+      with open(initial_session_file, "r") as f:
+        initial_session = json.loads(f.read())
+    return initial_session
 
   @staticmethod
   def _load_dataset(
