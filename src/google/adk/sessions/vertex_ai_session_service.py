@@ -48,7 +48,7 @@ class VertexAiSessionService(BaseSessionService):
     self.api_client = client._api_client
 
   @override
-  def create_session(
+  async def create_session(
       self,
       *,
       app_name: str,
@@ -68,7 +68,7 @@ class VertexAiSessionService(BaseSessionService):
     if state:
       session_json_dict['session_state'] = state
 
-    api_response = self.api_client.request(
+    api_response = await self.api_client.async_request(
         http_method='POST',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions',
         request_dict=session_json_dict,
@@ -80,7 +80,7 @@ class VertexAiSessionService(BaseSessionService):
 
     max_retry_attempt = 5
     while max_retry_attempt >= 0:
-      lro_response = self.api_client.request(
+      lro_response = await self.api_client.async_request(
           http_method='GET',
           path=f'operations/{operation_id}',
           request_dict={},
@@ -93,7 +93,7 @@ class VertexAiSessionService(BaseSessionService):
       max_retry_attempt -= 1
 
     # Get session resource
-    get_session_api_response = self.api_client.request(
+    get_session_api_response = await self.api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
@@ -112,7 +112,7 @@ class VertexAiSessionService(BaseSessionService):
     return session
 
   @override
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
@@ -123,7 +123,7 @@ class VertexAiSessionService(BaseSessionService):
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
     # Get session resource
-    get_session_api_response = self.api_client.request(
+    get_session_api_response = await self.api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
@@ -141,7 +141,7 @@ class VertexAiSessionService(BaseSessionService):
         last_update_time=update_timestamp,
     )
 
-    list_events_api_response = self.api_client.request(
+    list_events_api_response = await self.api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events',
         request_dict={},
@@ -175,7 +175,7 @@ class VertexAiSessionService(BaseSessionService):
     return session
 
   @override
-  def list_sessions(
+  async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
@@ -202,23 +202,23 @@ class VertexAiSessionService(BaseSessionService):
       sessions.append(session)
     return ListSessionsResponse(sessions=sessions)
 
-  def delete_session(
+  async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
-    self.api_client.request(
+    await self.api_client.async_request(
         http_method='DELETE',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
     )
 
   @override
-  def append_event(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
-    super().append_event(session=session, event=event)
+    await super().append_event(session=session, event=event)
 
     reasoning_engine_id = _parse_reasoning_engine_id(session.app_name)
-    self.api_client.request(
+    await self.api_client.async_request(
         http_method='POST',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}:appendEvent',
         request_dict=_convert_event_to_json(event),

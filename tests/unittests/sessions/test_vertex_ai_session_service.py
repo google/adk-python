@@ -15,7 +15,7 @@
 import re
 import this
 from typing import Any
-import uuid
+
 from dateutil.parser import isoparse
 from google.adk.events import Event
 from google.adk.events import EventActions
@@ -124,7 +124,9 @@ class MockApiClient:
     this.session_dict: dict[str, Any] = {}
     this.event_dict: dict[str, list[Any]] = {}
 
-  def request(self, http_method: str, path: str, request_dict: dict[str, Any]):
+  async def async_request(
+      self, http_method: str, path: str, request_dict: dict[str, Any]
+  ):
     """Mocks the API Client request method."""
     if http_method == 'GET':
       if re.match(SESSION_REGEX, path):
@@ -210,46 +212,52 @@ def mock_vertex_ai_session_service():
   return service
 
 
-def test_get_empty_session():
+@pytest.mark.asyncio
+async def test_get_empty_session():
   session_service = mock_vertex_ai_session_service()
   with pytest.raises(ValueError) as excinfo:
-    assert session_service.get_session(
+    assert await session_service.get_session(
         app_name='123', user_id='user', session_id='0'
     )
     assert str(excinfo.value) == 'Session not found: 0'
 
 
-def test_get_and_delete_session():
+@pytest.mark.asyncio
+async def test_get_and_delete_session():
   session_service = mock_vertex_ai_session_service()
 
   assert (
-      session_service.get_session(
+      await session_service.get_session(
           app_name='123', user_id='user', session_id='1'
       )
       == MOCK_SESSION
   )
 
-  session_service.delete_session(app_name='123', user_id='user', session_id='1')
+  await session_service.delete_session(
+      app_name='123', user_id='user', session_id='1'
+  )
   with pytest.raises(ValueError) as excinfo:
-    assert session_service.get_session(
+    assert await session_service.get_session(
         app_name='123', user_id='user', session_id='1'
     )
     assert str(excinfo.value) == 'Session not found: 1'
 
 
-def test_list_sessions():
+@pytest.mark.asyncio
+async def test_list_sessions():
   session_service = mock_vertex_ai_session_service()
-  sessions = session_service.list_sessions(app_name='123', user_id='user')
+  sessions = await session_service.list_sessions(app_name='123', user_id='user')
   assert len(sessions.sessions) == 2
   assert sessions.sessions[0].id == '1'
   assert sessions.sessions[1].id == '2'
 
 
-def test_create_session():
+@pytest.mark.asyncio
+async def test_create_session():
   session_service = mock_vertex_ai_session_service()
 
   state = {'key': 'value'}
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name='123', user_id='user', state=state
   )
   assert session.state == state
@@ -258,16 +266,17 @@ def test_create_session():
   assert session.last_update_time is not None
 
   session_id = session.id
-  assert session == session_service.get_session(
+  assert session == await session_service.get_session(
       app_name='123', user_id='user', session_id=session_id
   )
 
 
-def test_create_session_with_custom_session_id():
+@pytest.mark.asyncio
+async def test_create_session_with_custom_session_id():
   session_service = mock_vertex_ai_session_service()
 
   with pytest.raises(ValueError) as excinfo:
-    session_service.create_session(
+    await session_service.create_session(
         app_name='123', user_id='user', session_id='1'
     )
     assert str(excinfo.value) == (

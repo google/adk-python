@@ -283,7 +283,7 @@ class DatabaseSessionService(BaseSessionService):
     Base.metadata.create_all(self.db_engine)
 
   @override
-  def create_session(
+  async def create_session(
       self,
       *,
       app_name: str,
@@ -357,7 +357,7 @@ class DatabaseSessionService(BaseSessionService):
       return session
 
   @override
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
@@ -431,7 +431,7 @@ class DatabaseSessionService(BaseSessionService):
     return session
 
   @override
-  def list_sessions(
+  async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     with self.DatabaseSessionFactory() as sessionFactory:
@@ -454,7 +454,7 @@ class DatabaseSessionService(BaseSessionService):
       return ListSessionsResponse(sessions=sessions)
 
   @override
-  def delete_session(
+  async def delete_session(
       self, app_name: str, user_id: str, session_id: str
   ) -> None:
     with self.DatabaseSessionFactory() as sessionFactory:
@@ -467,7 +467,7 @@ class DatabaseSessionService(BaseSessionService):
       sessionFactory.commit()
 
   @override
-  def append_event(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     logger.info(f"Append event: {event} to session {session.id}")
 
     if event.partial:
@@ -552,8 +552,9 @@ class DatabaseSessionService(BaseSessionService):
       session.last_update_time = storage_session.update_time.timestamp()
 
     # Also update the in-memory session
-    super().append_event(session=session, event=event)
+    await super().append_event(session=session, event=event)
     return event
+
 
 def convert_event(event: StorageEvent) -> Event:
   """Converts a storage event to an event."""
