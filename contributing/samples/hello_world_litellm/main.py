@@ -15,7 +15,6 @@
 
 import asyncio
 import time
-import warnings
 
 import agent
 from dotenv import load_dotenv
@@ -27,7 +26,6 @@ from google.adk.sessions import Session
 from google.genai import types
 
 load_dotenv(override=True)
-warnings.filterwarnings('ignore', category=UserWarning)
 logs.log_to_tmp_folder()
 
 
@@ -42,7 +40,7 @@ async def main():
       artifact_service=artifact_service,
       session_service=session_service,
   )
-  session_11 = session_service.create_session(
+  session_11 = await session_service.create_session(
       app_name=app_name, user_id=user_id_1
   )
 
