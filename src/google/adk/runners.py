@@ -481,6 +481,8 @@ class InMemoryRunner(Runner):
       agent: The root agent to run.
       app_name: The application name of the runner. Defaults to
         'InMemoryRunner'.
+      _in_memory_session_service: Deprecated. Please don't use. The in-memory
+        session service for the runner.
   """
 
   def __init__(self, agent: LlmAgent, *, app_name: str = 'InMemoryRunner'):
@@ -491,10 +493,11 @@ class InMemoryRunner(Runner):
         app_name: The application name of the runner. Defaults to
           'InMemoryRunner'.
     """
+    self._in_memory_session_service = InMemorySessionService()
     super().__init__(
         app_name=app_name,
         agent=agent,
         artifact_service=InMemoryArtifactService(),
-        session_service=InMemorySessionService(),
+        session_service=self._in_memory_session_service,
         memory_service=InMemoryMemoryService(),
     )
