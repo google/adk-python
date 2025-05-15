@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
-from google.adk.tools.mcp_tool import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 from google.adk.tools.mcp_tool import MCPTool
 
 @pytest.mark.asyncio
