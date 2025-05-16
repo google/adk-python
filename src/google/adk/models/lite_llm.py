@@ -470,7 +470,7 @@ def _get_completion_inputs(
   if (
       llm_request.config
       and llm_request.config.tools
-      and llm_request.config.tools[0].function_declarations
+      and isinstance(llm_request.config.tools, list) 
   ):
     tools = []
     for tool_group in llm_request.config.tools:
