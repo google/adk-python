@@ -162,7 +162,7 @@ class ApplicationIntegrationToolset(BaseToolset):
           " (entity_operations or actions)) should be provided."
       )
     self._openapi_toolset = None
-    self._tool = None
+    self._tools = []
     self._parse_spec_to_toolset(spec, connection_details)
 
   def _parse_spec_to_toolset(self, spec_dict, connection_details):
@@ -212,16 +212,18 @@ class ApplicationIntegrationToolset(BaseToolset):
         rest_api_tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         rest_api_tool.configure_auth_credential(auth_credential)
-      self._tool = IntegrationConnectorTool(
-          name=rest_api_tool.name,
-          description=rest_api_tool.description,
-          connection_name=connection_details["name"],
-          connection_host=connection_details["host"],
-          connection_service_name=connection_details["serviceName"],
-          entity=entity,
-          action=action,
-          operation=operation,
-          rest_api_tool=rest_api_tool,
+      self._tools.append(
+          IntegrationConnectorTool(
+              name=rest_api_tool.name,
+              description=rest_api_tool.description,
+              connection_name=connection_details["name"],
+              connection_host=connection_details["host"],
+              connection_service_name=connection_details["serviceName"],
+              entity=entity,
+              action=action,
+              operation=operation,
+              rest_api_tool=rest_api_tool,
+          )
       )
 
   @override
@@ -230,8 +232,8 @@ class ApplicationIntegrationToolset(BaseToolset):
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> List[RestApiTool]:
     return (
-        [self._tool]
-        if self._tool
+        self._tools
+        if self._openapi_toolset is None
         else await self._openapi_toolset.get_tools(readonly_context)
     )
 
