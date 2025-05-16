@@ -228,7 +228,6 @@ def get_fast_api_app(
 
   trace.set_tracer_provider(provider)
 
-  exit_stacks = []
   toolsets_to_close: set[BaseToolset] = set()
 
   @asynccontextmanager
@@ -237,9 +236,6 @@ def get_fast_api_app(
       async with lifespan(app) as lifespan_context:
         yield
 
-        if exit_stacks:
-          for stack in exit_stacks:
-            await stack.aclose()
         for toolset in toolsets_to_close:
           await toolset.close()
     else:
@@ -911,15 +907,6 @@ def get_fast_api_app(
       root_agent = agent_module.agent.root_agent
     else:
       raise ValueError(f'Unable to find "root_agent" from {app_name}.')
-
-    # Handle an awaitable root agent and await for the actual agent.
-    if inspect.isawaitable(root_agent):
-      try:
-        agent, exit_stack = await root_agent
-        exit_stacks.append(exit_stack)
-        root_agent = agent
-      except Exception as e:
-        raise RuntimeError(f"error getting root agent, {e}") from e
 
     root_agent_dict[app_name] = root_agent
     toolsets_to_close.update(_get_all_toolsets(root_agent))
