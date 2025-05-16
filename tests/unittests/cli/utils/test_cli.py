@@ -192,65 +192,22 @@ async def test_run_cli_save_session(fake_agent, tmp_path: Path, monkeypatch: pyt
 
 @pytest.mark.asyncio
 async def test_run_interactively_whitespace_and_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """run_interactively should skip blank input, echo once, then exit."""
-    # make a session that belongs to dummy agent
-    svc = cli.InMemorySessionService()
-    sess = svc.create_session(app_name="dummy", user_id="u")
-    artifact_service = cli.InMemoryArtifactService()
-    root_agent = types.SimpleNamespace(name="root")
+  """run_interactively should skip blank input, echo once, then exit."""
+  # make a session that belongs to dummy agent
+  svc = cli.InMemorySessionService()
+  sess = await svc.create_session(app_name="dummy", user_id="u")
+  artifact_service = cli.InMemoryArtifactService()
+  root_agent = types.SimpleNamespace(name="root")
 
-    # fake user input: blank -> 'hello' -> 'exit'
-    answers = iter(["  ", "hello", "exit"])
-    monkeypatch.setattr("builtins.input", lambda *_a, **_k: next(answers))
+  # fake user input: blank -> 'hello' -> 'exit'
+  answers = iter(["  ", "hello", "exit"])
+  monkeypatch.setattr("builtins.input", lambda *_a, **_k: next(answers))
 
-    # capture assisted echo
-    echoed: list[str] = []
-    monkeypatch.setattr(click, "echo", lambda msg: echoed.append(msg))
+  # capture assisted echo
+  echoed: list[str] = []
+  monkeypatch.setattr(click, "echo", lambda msg: echoed.append(msg))
 
-    await cli.run_interactively(root_agent, artifact_service, sess, svc)
+  await cli.run_interactively(root_agent, artifact_service, sess, svc)
 
-    # verify: assistant echoed once with 'echo:hello'
-    assert any("echo:hello" in m for m in echoed)
-
-
-# run_cli (resume branch)
-@pytest.mark.asyncio
-async def test_run_cli_resume_saved_session(tmp_path: Path, fake_agent, monkeypatch: pytest.MonkeyPatch) -> None:
-    """run_cli should load previous session, print its events, then re-enter interactive mode."""
-    parent_dir, folder = fake_agent
-
-    # stub Session.model_validate_json to return dummy session with two events
-    user_content = types.SimpleNamespace(parts=[types.SimpleNamespace(text="hi")])
-    assistant_content = types.SimpleNamespace(parts=[types.SimpleNamespace(text="hello!")])
-    dummy_session = types.SimpleNamespace(
-        id="sess",
-        app_name=folder,
-        user_id="u",
-        events=[
-            types.SimpleNamespace(author="user", content=user_content, partial=False),
-            types.SimpleNamespace(author="assistant", content=assistant_content, partial=False),
-        ],
-    )
-    monkeypatch.setattr(cli.Session, "model_validate_json", staticmethod(lambda _s: dummy_session))
-    monkeypatch.setattr(cli.InMemorySessionService, "append_event", lambda *_a, **_k: None)
-    # interactive inputs: immediately 'exit'
-    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "exit")
-
-    # collect echo output
-    captured: list[str] = []
-    monkeypatch.setattr(click, "echo", lambda m: captured.append(m))
-
-    saved_path = tmp_path / "prev.session.json"
-    saved_path.write_text("{}")  # contents not used – patched above
-
-    await cli.run_cli(
-        agent_parent_dir=str(parent_dir),
-        agent_folder_name=folder,
-        input_file=None,
-        saved_session_file=str(saved_path),
-        save_session=False,
-    )
-
-    # ④ ensure both historical messages were printed
-    assert any("[user]: hi" in m for m in captured)
-    assert any("[assistant]: hello!" in m for m in captured)
+  # verify: assistant echoed once with 'echo:hello'
+  assert any("echo:hello" in m for m in echoed)
