@@ -17,7 +17,7 @@ class ToolPredicate(Protocol):
   """
 
   def __call__(
-      self, tool: BaseTool, readonly_context: ReadonlyContext = None
+      self, tool: BaseTool, readonly_context: Optional[ReadonlyContext] = None
   ) -> bool:
     """Decide whether the passed-in tool should be exposed to LLM based on the
 
