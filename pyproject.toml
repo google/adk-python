@@ -32,7 +32,6 @@ dependencies = [
   "google-cloud-aiplatform>=1.87.0",         # For VertexAI integrations, e.g. example store.
   "google-cloud-secret-manager>=2.22.0",     # Fetching secrets in RestAPI Tool
   "google-cloud-speech>=2.30.0",             # For Audio Transcription
-
   "google-cloud-storage>=2.18.0, <3.0.0",    # For GCS Artifact service
   "google-genai>=1.14.0",                    # Google GenAI SDK
   "graphviz>=0.20.2",                        # Graphviz for graph rendering
@@ -67,6 +66,7 @@ dev = [
   "isort>=6.0.0",
   "pyink>=24.10.0",
   "pylint>=2.6.0",
+  "mypy>=1.15.0",
   # go/keep-sorted end
 ]
 
@@ -155,3 +155,9 @@ known_third_party = ["google.adk"]
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "auto"
+
+[tool.mypy]
+exclude = "tests/"
+plugins = ["pydantic.mypy"]
+strict = true
+disable_error_code = ["import-not-found", "import-untyped", "unused-ignore"]
