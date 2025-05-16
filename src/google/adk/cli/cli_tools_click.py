@@ -18,8 +18,6 @@ from datetime import datetime
 import logging
 import os
 import tempfile
-from typing import AsyncGenerator
-from typing import Coroutine
 from typing import Optional
 
 import click
@@ -28,6 +26,7 @@ import uvicorn
 
 from . import cli_create
 from . import cli_deploy
+from .. import version
 from .cli import run_cli
 from .cli_eval import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .fast_api import get_fast_api_app
@@ -712,6 +711,16 @@ def cli_api_server(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
+@click.option(
+    "--adk_version",
+    type=str,
+    default=version.__version__,
+    show_default=True,
+    help=(
+        "Optional. The ADK version used in Cloud Run deployment. (default: the"
+        " version in the dev environment)"
+    ),
+)
 def cli_deploy_cloud_run(
     agent: str,
     project: Optional[str],
@@ -724,6 +733,7 @@ def cli_deploy_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    adk_version: str,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -746,6 +756,7 @@ def cli_deploy_cloud_run(
         with_ui=with_ui,
         verbosity=verbosity,
         session_db_url=session_db_url,
+        adk_version=adk_version,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
