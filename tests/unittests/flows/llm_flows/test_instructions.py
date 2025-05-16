@@ -61,6 +61,8 @@ async def test_function_system_instruction():
   def build_function_instruction(readonly_context: ReadonlyContext) -> str:
     return (
         "This is the function agent instruction for invocation:"
+        " provider template intact { customerId }"
+        " provider template intact { customer_int }"
         f" {readonly_context.invocation_id}."
     )
 
@@ -88,9 +90,11 @@ async def test_function_system_instruction():
     pass
 
   assert request.config.system_instruction == (
-      "This is the function agent instruction for invocation: test_id."
+      "This is the function agent instruction for invocation:"
+      " provider template intact { customerId }"
+      " provider template intact { customer_int }"
+      " test_id."
   )
-
 
 @pytest.mark.asyncio
 async def test_async_function_system_instruction():
@@ -99,6 +103,8 @@ async def test_async_function_system_instruction():
   ) -> str:
     return (
         "This is the function agent instruction for invocation:"
+        " provider template intact { customerId }"
+        " provider template intact { customer_int }"
         f" {readonly_context.invocation_id}."
     )
 
@@ -126,7 +132,10 @@ async def test_async_function_system_instruction():
     pass
 
   assert request.config.system_instruction == (
-      "This is the function agent instruction for invocation: test_id."
+      "This is the function agent instruction for invocation:"
+      " provider template intact { customerId }"
+      " provider template intact { customer_int }"
+      " test_id."
   )
 
 
