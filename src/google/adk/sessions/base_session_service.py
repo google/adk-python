@@ -91,10 +91,6 @@ class BaseSessionService(abc.ABC):
   ) -> None:
     """Deletes a session."""
 
-  async def close_session(self, *, session: Session):
-    """Closes a session."""
-    # TODO: determine whether we want to finalize the session here.
-
   async def append_event(self, session: Session, event: Event) -> Event:
     """Appends an event to a session object."""
     if event.partial:
