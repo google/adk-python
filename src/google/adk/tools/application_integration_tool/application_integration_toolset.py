@@ -19,10 +19,12 @@ from typing import Union
 from fastapi.openapi.models import HTTPBearer
 from typing_extensions import override
 
+from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes
 from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
+from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from ..openapi_tool.openapi_spec_parser.openapi_spec_parser import OpenApiSpecParser
@@ -34,7 +36,7 @@ from .integration_connector_tool import IntegrationConnectorTool
 
 
 # TODO(cheliu): Apply a common toolset interface
-class ApplicationIntegrationToolset:
+class ApplicationIntegrationToolset(BaseToolset):
   """ApplicationIntegrationToolset generates tools from a given Application
 
   Integration or Integration Connector resource.
@@ -160,7 +162,7 @@ class ApplicationIntegrationToolset:
           " (entity_operations or actions)) should be provided."
       )
     self._openapi_toolset = None
-    self._tool = None
+    self._tools = []
     self._parse_spec_to_toolset(spec, connection_details)
 
   def _parse_spec_to_toolset(self, spec_dict, connection_details):
@@ -210,22 +212,29 @@ class ApplicationIntegrationToolset:
         rest_api_tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         rest_api_tool.configure_auth_credential(auth_credential)
-      self._tool = IntegrationConnectorTool(
-          name=rest_api_tool.name,
-          description=rest_api_tool.description,
-          connection_name=connection_details["name"],
-          connection_host=connection_details["host"],
-          connection_service_name=connection_details["serviceName"],
-          entity=entity,
-          action=action,
-          operation=operation,
-          rest_api_tool=rest_api_tool,
+      self._tools.append(
+          IntegrationConnectorTool(
+              name=rest_api_tool.name,
+              description=rest_api_tool.description,
+              connection_name=connection_details["name"],
+              connection_host=connection_details["host"],
+              connection_service_name=connection_details["serviceName"],
+              entity=entity,
+              action=action,
+              operation=operation,
+              rest_api_tool=rest_api_tool,
+          )
       )
 
   @override
-  async def get_tools(self) -> List[RestApiTool]:
+  async def get_tools(
+      self,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> List[RestApiTool]:
     return (
-        [self._tool] if self._tool else await self._openapi_toolset.get_tools()
+        self._tools
+        if self._openapi_toolset is None
+        else await self._openapi_toolset.get_tools(readonly_context)
     )
 
   @override
