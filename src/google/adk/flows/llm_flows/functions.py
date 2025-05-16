@@ -106,7 +106,7 @@ def generate_auth_event(
         args=AuthToolArguments(
             function_call_id=function_call_id,
             auth_config=auth_config,
-        ).model_dump(exclude_none=True),
+        ).model_dump(exclude_none=True, by_alias=True),
     )
     request_euc_function_call.id = generate_client_function_call_id()
     long_running_tool_ids.add(request_euc_function_call.id)
