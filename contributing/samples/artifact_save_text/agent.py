@@ -24,7 +24,7 @@ async def log_query(tool_context: ToolContext, query: str):
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash-exp',
+    model='gemini-2.0-flash',
     name='log_agent',
     description='Log user query.',
     instruction="""Always log the user query and reploy "kk, I've logged."
