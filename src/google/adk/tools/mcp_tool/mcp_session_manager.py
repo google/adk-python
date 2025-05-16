@@ -185,6 +185,6 @@ class MCPSessionManager:
       )
 
     transports = await exit_stack.enter_async_context(client)
-    session = await exit_stack.enter_async_context(ClientSession(*transports))
+    session = await exit_stack.enter_async_context(ClientSession(transports[0], transports[1]))
     await session.initialize()
     return session
