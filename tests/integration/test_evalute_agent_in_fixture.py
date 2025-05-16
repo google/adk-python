@@ -32,15 +32,9 @@ def agent_eval_artifacts_in_fixture():
       # Evaluation test files end with test.json
       if not filename.endswith('test.json'):
         continue
-      initial_session_file = (
-          f'tests/integration/fixture/{agent_name}/initial.session.json'
-      )
       agent_eval_artifacts.append((
           f'tests.integration.fixture.{agent_name}',
           f'tests/integration/fixture/{agent_name}/{filename}',
-          initial_session_file
-          if os.path.exists(initial_session_file)
-          else None,
       ))
 
   # This method gets invoked twice, sorting helps ensure that both the
@@ -53,12 +47,12 @@ def agent_eval_artifacts_in_fixture():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'agent_name, evalfile, initial_session_file',
+    'agent_name, evalfile',
     agent_eval_artifacts_in_fixture(),
-    ids=[agent_name for agent_name, _, _ in agent_eval_artifacts_in_fixture()],
+    ids=[agent_name for agent_name, _ in agent_eval_artifacts_in_fixture()],
 )
 async def test_evaluate_agents_long_running_4_runs_per_eval_item(
-    agent_name, evalfile, initial_session_file
+    agent_name, evalfile
 ):
   """Test agents evaluation in fixture folder.
 
@@ -70,7 +64,6 @@ async def test_evaluate_agents_long_running_4_runs_per_eval_item(
   await AgentEvaluator.evaluate(
       agent_module=agent_name,
       eval_dataset_file_path_or_dir=evalfile,
-      initial_session_file=initial_session_file,
       # Using a slightly higher value helps us manange the variances that may
       # happen in each eval.
       # This, of course, comes at a cost of incrased test run times.

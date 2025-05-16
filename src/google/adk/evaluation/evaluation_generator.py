@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import importlib
-from typing import Any, Optional
+from typing import Any
+from typing import Optional
 import uuid
+
+from pydantic import BaseModel
 
 from ..agents.llm_agent import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
@@ -23,9 +26,21 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
+from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
 from .eval_case import SessionInput
+from .eval_set import EvalSet
+
+
+class EvalCaseResponses(BaseModel):
+  """Contains multiple responses associated with an EvalCase.
+
+  Multiple responses are a result of repeated requests to genereate inferences.
+  """
+
+  eval_case: EvalCase
+  responses: list[list[Invocation]]
 
 
 class EvaluationGenerator:
@@ -33,12 +48,11 @@ class EvaluationGenerator:
 
   @staticmethod
   async def generate_responses(
-      eval_dataset,
-      agent_module_path,
-      repeat_num=3,
-      agent_name=None,
-      initial_session={},
-  ):
+      eval_set: EvalSet,
+      agent_module_path: str,
+      repeat_num: int = 3,
+      agent_name: str = None,
+  ) -> list[EvalCaseResponses]:
     """Returns evaluation responses for the given dataset and agent.
 
     Args:
@@ -48,17 +62,23 @@ class EvaluationGenerator:
         usually done to remove uncertainty that a single run may bring.
       agent_name: The name of the agent that should be evaluated. This is
         usually the sub-agent.
-      initial_session: Initial session for the eval data.
     """
     results = []
 
-    for _ in range(repeat_num):
-      for data in eval_dataset:
-        results.append(
-            EvaluationGenerator._process_query(
-                data, agent_module_path, agent_name, initial_session
-            )
+    for eval_case in eval_set.eval_cases:
+      responses = []
+      for _ in range(repeat_num):
+        response_invocations = await EvaluationGenerator._process_query(
+            eval_case.conversation,
+            agent_module_path,
+            agent_name,
+            eval_case.session_input,
         )
+        responses.append(response_invocations)
+
+      results.append(
+          EvalCaseResponses(eval_case=eval_case, responses=responses)
+      )
 
     return results
 
@@ -89,7 +109,12 @@ class EvaluationGenerator:
     return results
 
   @staticmethod
-  def _process_query(data, module_name, agent_name=None, initial_session={}):
+  async def _process_query(
+      invocations: list[Invocation],
+      module_name: str,
+      agent_name: Optional[str] = None,
+      initial_session: Optional[SessionInput] = None,
+  ) -> list[Invocation]:
     """Process a query using the agent and evaluation dataset."""
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
@@ -102,8 +127,8 @@ class EvaluationGenerator:
       agent_to_evaluate = root_agent.find_agent(agent_name)
       assert agent_to_evaluate, f"Sub-Agent `{agent_name}` not found."
 
-    return EvaluationGenerator._generate_inferences_from_root_agent(
-        data, agent_to_evaluate, reset_func, initial_session
+    return await EvaluationGenerator._generate_inferences_from_root_agent(
+        invocations, agent_to_evaluate, reset_func, initial_session
     )
 
   @staticmethod
@@ -126,7 +151,7 @@ class EvaluationGenerator:
     user_id = initial_session.user_id if initial_session else "test_user_id"
     session_id = session_id if session_id else str(uuid.uuid4())
 
-    _ = session_service.create_session(
+    _ = await session_service.create_session(
         app_name=app_name,
         user_id=user_id,
         state=initial_session.state if initial_session else {},
@@ -215,4 +240,6 @@ class EvaluationGenerator:
       # Update the results for the current query
       responses[index]["actual_tool_use"] = actual_tool_uses
       responses[index]["response"] = response
+    return responses
+    return responses
     return responses

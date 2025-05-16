@@ -43,16 +43,16 @@ def _convert_invocation_to_pydantic_schema(
   expected_tool_use = []
   expected_intermediate_agent_responses = []
 
-  for old_tool_use in invocation_in_json_format["expected_tool_use"]:
+  for old_tool_use in invocation_in_json_format.get("expected_tool_use", []):
     expected_tool_use.append(
         genai_types.FunctionCall(
             name=old_tool_use["tool_name"], args=old_tool_use["tool_input"]
         )
     )
 
-  for old_intermediate_response in invocation_in_json_format[
-      "expected_intermediate_agent_responses"
-  ]:
+  for old_intermediate_response in invocation_in_json_format.get(
+      "expected_intermediate_agent_responses", []
+  ):
     expected_intermediate_agent_responses.append((
         old_intermediate_response["author"],
         [genai_types.Part.from_text(text=old_intermediate_response["text"])],
@@ -134,14 +134,21 @@ def convert_eval_set_to_pydanctic_schema(
           _convert_invocation_to_pydantic_schema(old_invocation)
       )
 
+    session_input = None
+    if (
+        "initial_session" in old_eval_case
+        and len(old_eval_case["initial_session"]) > 0
+    ):
+      session_input = SessionInput(
+          app_name=old_eval_case["initial_session"].get("app_name", ""),
+          user_id=old_eval_case["initial_session"].get("user_id", ""),
+          state=old_eval_case["initial_session"].get("state", {}),
+      )
+
     new_eval_case = EvalCase(
         eval_id=old_eval_case["name"],
         conversation=new_invocations,
-        session_input=SessionInput(
-            app_name=old_eval_case["initial_session"]["app_name"],
-            user_id=old_eval_case["initial_session"]["user_id"],
-            state=old_eval_case["initial_session"]["state"],
-        ),
+        session_input=session_input,
         creation_timestamp=time.time(),
     )
     eval_cases.append(new_eval_case)

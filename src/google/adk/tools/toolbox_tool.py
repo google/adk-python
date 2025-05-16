@@ -14,7 +14,6 @@
 
 from typing import Any
 
-from . import _automatic_function_calling_util
 from .langchain_tool import LangchainTool
 
 
@@ -35,12 +34,12 @@ class ToolboxTool:
   def __init__(self, url: str):
     from toolbox_langchain import ToolboxClient
 
-    self.toolbox_client = ToolboxClient(url)
+    self._toolbox_client = ToolboxClient(url)
 
   def get_tool(self, tool_name: str) -> LangchainTool:
-    tool = self.toolbox_client.load_tool(tool_name)
+    tool = self._toolbox_client.load_tool(tool_name)
     return LangchainTool(tool)
 
   def get_toolset(self, toolset_name: str) -> list[LangchainTool]:
-    tools = self.toolbox_client.load_toolset(toolset_name)
+    tools = self._toolbox_client.load_toolset(toolset_name)
     return [LangchainTool(tool) for tool in tools]

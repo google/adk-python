@@ -121,6 +121,7 @@ class Gemini(BaseLlm):
               content=types.ModelContent(
                   parts=[types.Part.from_text(text=text)],
               ),
+              usage_metadata=llm_response.usage_metadata,
           )
           text = ''
         yield llm_response
@@ -174,7 +175,7 @@ class Gemini(BaseLlm):
   @cached_property
   def _live_api_client(self) -> Client:
     if self._api_backend == 'vertex':
-      #use beta version for vertex api
+      # use beta version for vertex api
       api_version = 'v1beta1'
       # use default api version for vertex
       return Client(

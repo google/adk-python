@@ -15,7 +15,7 @@
 """Data science agent."""
 
 from google.adk.agents.llm_agent import Agent
-from google.adk.tools import built_in_code_execution
+from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 
 
 def base_system_instruction():
@@ -96,5 +96,5 @@ When plotting trends, you should make sure to sort and order the data by the x-a
 
 
 """,
-    tools=[built_in_code_execution],
+    code_executor=BuiltInCodeExecutor(),
 )

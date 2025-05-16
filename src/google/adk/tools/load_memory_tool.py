@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from openai import BaseModel
+from pydantic import BaseModel
 from pydantic import Field
 from typing_extensions import override
 

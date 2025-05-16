@@ -70,11 +70,11 @@ class _TestingAgentWithEscalateAction(BaseAgent):
     )
 
 
-def _create_parent_invocation_context(
+async def _create_parent_invocation_context(
     test_name: str, agent: BaseAgent
 ) -> InvocationContext:
   session_service = InMemorySessionService()
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name='test_app', user_id='test_user'
   )
   return InvocationContext(
@@ -95,7 +95,7 @@ async def test_run_async(request: pytest.FixtureRequest):
           agent,
       ],
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, loop_agent
   )
   events = [e async for e in loop_agent.run_async(parent_ctx)]
@@ -119,7 +119,7 @@ async def test_run_async_with_escalate_action(request: pytest.FixtureRequest):
       name=f'{request.function.__name__}_test_loop_agent',
       sub_agents=[non_escalating_agent, escalating_agent],
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, loop_agent
   )
   events = [e async for e in loop_agent.run_async(parent_ctx)]

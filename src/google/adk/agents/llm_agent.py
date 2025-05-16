@@ -200,8 +200,7 @@ class LlmAgent(BaseAgent):
 
   Check out available code executions in `google.adk.code_executor` package.
 
-  NOTE: to use model's built-in code executor, don't set this field, add
-  `google.adk.tools.built_in_code_execution` to tools instead.
+  NOTE: to use model's built-in code executor, use the `BuiltInCodeExecutor`.
   """
   # Advance features - End
 

@@ -129,7 +129,7 @@ class AgentTool(BaseTool):
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
     )
-    session = runner.session_service.create_session(
+    session = await runner.session_service.create_session(
         app_name=self.agent.name,
         user_id='tmp_user',
         state=tool_context.state.to_dict(),

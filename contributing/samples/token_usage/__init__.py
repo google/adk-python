@@ -12,14 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.evaluation import AgentEvaluator
-import pytest
-
-
-@pytest.mark.asyncio
-async def test_eval_agent():
-  await AgentEvaluator.evaluate(
-      agent_module="tests.integration.fixture.home_automation_agent",
-      eval_dataset_file_path_or_dir="tests/integration/fixture/home_automation_agent/simple_test.test.json",
-      num_runs=4,
-  )
+from . import agent

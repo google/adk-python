@@ -37,9 +37,9 @@ class _TestingTool(BaseTool):
     return self.declaration
 
 
-def _create_tool_context() -> ToolContext:
+async def _create_tool_context() -> ToolContext:
   session_service = InMemorySessionService()
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name='test_app', user_id='test_user'
   )
   agent = SequentialAgent(name='test_agent')
@@ -55,7 +55,7 @@ def _create_tool_context() -> ToolContext:
 @pytest.mark.asyncio
 async def test_process_llm_request_no_declaration():
   tool = _TestingTool()
-  tool_context = _create_tool_context()
+  tool_context = await _create_tool_context()
   llm_request = LlmRequest()
 
   await tool.process_llm_request(
@@ -77,7 +77,7 @@ async def test_process_llm_request_with_declaration():
   )
   tool = _TestingTool(declaration)
   llm_request = LlmRequest()
-  tool_context = _create_tool_context()
+  tool_context = await _create_tool_context()
 
   await tool.process_llm_request(
       tool_context=tool_context, llm_request=llm_request
@@ -102,7 +102,7 @@ async def test_process_llm_request_with_builtin_tool():
           tools=[types.Tool(google_search=types.GoogleSearch())]
       )
   )
-  tool_context = _create_tool_context()
+  tool_context = await _create_tool_context()
 
   await tool.process_llm_request(
       tool_context=tool_context, llm_request=llm_request
@@ -131,7 +131,7 @@ async def test_process_llm_request_with_builtin_tool_and_another_declaration():
           ]
       )
   )
-  tool_context = _create_tool_context()
+  tool_context = await _create_tool_context()
 
   await tool.process_llm_request(
       tool_context=tool_context, llm_request=llm_request
