@@ -24,7 +24,7 @@ import yaml
 
 class MockAPIHubClient(BaseAPIHubClient):
 
-  def get_spec_content(self, apihub_resource_name: str) -> str:
+  def get_spec_content(self, _apihub_resource_name: str) -> str:
     return """
 openapi: 3.0.0
 info:
@@ -81,8 +81,8 @@ def mock_auth_credential():
 async def test_apihub_toolset_initialization(basic_apihub_toolset):
   assert basic_apihub_toolset.name == 'mock_api'
   assert basic_apihub_toolset.description == 'Mock API Description'
-  assert basic_apihub_toolset.apihub_resource_name == 'test_resource'
-  assert not basic_apihub_toolset.lazy_load_spec
+  assert basic_apihub_toolset._apihub_resource_name == 'test_resource'
+  assert not basic_apihub_toolset._lazy_load_spec
   generated_tools = await basic_apihub_toolset.get_tools()
   assert len(generated_tools) == 1
   assert 'test_get' == generated_tools[0].name
@@ -90,7 +90,7 @@ async def test_apihub_toolset_initialization(basic_apihub_toolset):
 
 @pytest.mark.asyncio
 async def test_apihub_toolset_lazy_loading(lazy_apihub_toolset):
-  assert lazy_apihub_toolset.lazy_load_spec
+  assert lazy_apihub_toolset._lazy_load_spec
   generated_tools = await lazy_apihub_toolset.get_tools()
   assert generated_tools
 
@@ -116,7 +116,7 @@ paths:
 
   class MockAPIHubClientEmptySpec(BaseAPIHubClient):
 
-    def get_spec_content(self, apihub_resource_name: str) -> str:
+    def get_spec_content(self, _apihub_resource_name: str) -> str:
       return spec
 
   apihub_client = MockAPIHubClientEmptySpec()
@@ -146,7 +146,7 @@ paths:
 
   class MockAPIHubClientEmptySpec(BaseAPIHubClient):
 
-    def get_spec_content(self, apihub_resource_name: str) -> str:
+    def get_spec_content(self, _apihub_resource_name: str) -> str:
       return spec
 
   apihub_client = MockAPIHubClientEmptySpec()
@@ -177,7 +177,7 @@ async def test_apihub_toolset_get_tools_lazy_load_empty_spec():
 
   class MockAPIHubClientEmptySpec(BaseAPIHubClient):
 
-    def get_spec_content(self, apihub_resource_name: str) -> str:
+    def get_spec_content(self, _apihub_resource_name: str) -> str:
       return ''
 
   apihub_client = MockAPIHubClientEmptySpec()
@@ -195,7 +195,7 @@ async def test_apihub_toolset_get_tools_invalid_yaml():
 
   class MockAPIHubClientInvalidYAML(BaseAPIHubClient):
 
-    def get_spec_content(self, apihub_resource_name: str) -> str:
+    def get_spec_content(self, _apihub_resource_name: str) -> str:
       return '{invalid yaml'  # Return invalid YAML
 
   with pytest.raises(yaml.YAMLError):
