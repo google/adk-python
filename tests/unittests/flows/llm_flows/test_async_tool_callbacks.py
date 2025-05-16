@@ -81,7 +81,7 @@ async def invoke_tool_with_callbacks(
       before_tool_callback=before_cb,
       after_tool_callback=after_cb,
   )
-  invocation_context = utils.create_invocation_context(
+  invocation_context = await utils.create_invocation_context(
       agent=agent, user_content=""
   )
   # Build function call event

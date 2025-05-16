@@ -228,7 +228,6 @@ def get_fast_api_app(
 
   trace.set_tracer_provider(provider)
 
-  exit_stacks = []
   toolsets_to_close: set[BaseToolset] = set()
 
   @asynccontextmanager
@@ -237,9 +236,6 @@ def get_fast_api_app(
       async with lifespan(app) as lifespan_context:
         yield
 
-        if exit_stacks:
-          for stack in exit_stacks:
-            await stack.aclose()
         for toolset in toolsets_to_close:
           await toolset.close()
     else:
@@ -333,10 +329,12 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
       response_model_exclude_none=True,
   )
-  def get_session(app_name: str, user_id: str, session_id: str) -> Session:
+  async def get_session(
+      app_name: str, user_id: str, session_id: str
+  ) -> Session:
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
     if not session:
@@ -347,14 +345,15 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions",
       response_model_exclude_none=True,
   )
-  def list_sessions(app_name: str, user_id: str) -> list[Session]:
+  async def list_sessions(app_name: str, user_id: str) -> list[Session]:
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
+    list_sessions_response = await session_service.list_sessions(
+        app_name=app_name, user_id=user_id
+    )
     return [
         session
-        for session in session_service.list_sessions(
-            app_name=app_name, user_id=user_id
-        ).sessions
+        for session in list_sessions_response.sessions
         # Remove sessions that were generated as a part of Eval.
         if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
     ]
@@ -363,7 +362,7 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
       response_model_exclude_none=True,
   )
-  def create_session_with_id(
+  async def create_session_with_id(
       app_name: str,
       user_id: str,
       session_id: str,
@@ -372,7 +371,7 @@ def get_fast_api_app(
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
     if (
-        session_service.get_session(
+        await session_service.get_session(
             app_name=app_name, user_id=user_id, session_id=session_id
         )
         is not None
@@ -382,7 +381,7 @@ def get_fast_api_app(
           status_code=400, detail=f"Session already exists: {session_id}"
       )
     logger.info("New session created: %s", session_id)
-    return session_service.create_session(
+    return await session_service.create_session(
         app_name=app_name, user_id=user_id, state=state, session_id=session_id
     )
 
@@ -390,7 +389,7 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions",
       response_model_exclude_none=True,
   )
-  def create_session(
+  async def create_session(
       app_name: str,
       user_id: str,
       state: Optional[dict[str, Any]] = None,
@@ -398,7 +397,7 @@ def get_fast_api_app(
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
     logger.info("New session created")
-    return session_service.create_session(
+    return await session_service.create_session(
         app_name=app_name, user_id=user_id, state=state
     )
 
@@ -442,7 +441,7 @@ def get_fast_api_app(
       app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
   ):
     # Get the session
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_name, user_id=req.user_id, session_id=req.session_id
     )
     assert session, "Session not found."
@@ -530,7 +529,7 @@ def get_fast_api_app(
               session_id=eval_case_result.session_id,
           )
       )
-      eval_case_result.session_details = session_service.get_session(
+      eval_case_result.session_details = await session_service.get_session(
           app_name=app_name,
           user_id=eval_case_result.user_id,
           session_id=eval_case_result.session_id,
@@ -615,10 +614,10 @@ def get_fast_api_app(
     return eval_result_files
 
   @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
-  def delete_session(app_name: str, user_id: str, session_id: str):
+  async def delete_session(app_name: str, user_id: str, session_id: str):
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
-    session_service.delete_session(
+    await session_service.delete_session(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
 
@@ -713,7 +712,7 @@ def get_fast_api_app(
   async def agent_run(req: AgentRunRequest) -> list[Event]:
     # Connect to managed session if agent_engine_id is set.
     app_id = agent_engine_id if agent_engine_id else req.app_name
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_id, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
@@ -735,7 +734,7 @@ def get_fast_api_app(
     # Connect to managed session if agent_engine_id is set.
     app_id = agent_engine_id if agent_engine_id else req.app_name
     # SSE endpoint
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_id, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
@@ -776,7 +775,7 @@ def get_fast_api_app(
   ):
     # Connect to managed session if agent_engine_id is set.
     app_id = agent_engine_id if agent_engine_id else app_name
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_id, user_id=user_id, session_id=session_id
     )
     session_events = session.events if session else []
@@ -833,7 +832,7 @@ def get_fast_api_app(
 
     # Connect to managed session if agent_engine_id is set.
     app_id = agent_engine_id if agent_engine_id else app_name
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_id, user_id=user_id, session_id=session_id
     )
     if not session:
@@ -908,15 +907,6 @@ def get_fast_api_app(
       root_agent = agent_module.agent.root_agent
     else:
       raise ValueError(f'Unable to find "root_agent" from {app_name}.')
-
-    # Handle an awaitable root agent and await for the actual agent.
-    if inspect.isawaitable(root_agent):
-      try:
-        agent, exit_stack = await root_agent
-        exit_stacks.append(exit_stack)
-        root_agent = agent
-      except Exception as e:
-        raise RuntimeError(f"error getting root agent, {e}") from e
 
     root_agent_dict[app_name] = root_agent
     toolsets_to_close.update(_get_all_toolsets(root_agent))

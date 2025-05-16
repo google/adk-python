@@ -17,10 +17,8 @@ import json
 import logging
 import os
 import sys
-import traceback
 from typing import Any
 from typing import AsyncGenerator
-from typing import cast
 from typing import Optional
 import uuid
 
@@ -40,7 +38,7 @@ from .utils import common
 logger = logging.getLogger(__name__)
 
 
-class EvalMetric(BaseModel):
+class EvalMetric(common.BaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 
   metric_name: str
@@ -57,7 +55,7 @@ class EvalMetricResult(EvalMetric):
   eval_status: EvalStatus
 
 
-class EvalMetricResultPerInvocation(BaseModel):
+class EvalMetricResultPerInvocation(common.BaseModel):
   """Eval metric results per invocation."""
 
   actual_invocation: Invocation
@@ -350,7 +348,7 @@ def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
     return TrajectoryEvaluator(threshold=eval_metric.threshold)
   elif (
       eval_metric.metric_name == RESPONSE_MATCH_SCORE_KEY
-      or eval_metric == RESPONSE_EVALUATION_SCORE_KEY
+      or eval_metric.metric_name == RESPONSE_EVALUATION_SCORE_KEY
   ):
     return ResponseEvaluator(
         threshold=eval_metric.threshold, metric_name=eval_metric.metric_name

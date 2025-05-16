@@ -110,11 +110,11 @@ class _TestingAgent(BaseAgent):
     )
 
 
-def _create_parent_invocation_context(
+async def _create_parent_invocation_context(
     test_name: str, agent: BaseAgent, branch: Optional[str] = None
 ) -> InvocationContext:
   session_service = InMemorySessionService()
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name='test_app', user_id='test_user'
   )
   return InvocationContext(
@@ -134,7 +134,7 @@ def test_invalid_agent_name():
 @pytest.mark.asyncio
 async def test_run_async(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
@@ -148,7 +148,7 @@ async def test_run_async(request: pytest.FixtureRequest):
 @pytest.mark.asyncio
 async def test_run_async_with_branch(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent, branch='parent_branch'
   )
 
@@ -170,7 +170,7 @@ async def test_run_async_before_agent_callback_noop(
       name=f'{request.function.__name__}_test_agent',
       before_agent_callback=_before_agent_callback_noop,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   spy_run_async_impl = mocker.spy(agent, BaseAgent._run_async_impl.__name__)
@@ -198,7 +198,7 @@ async def test_run_async_with_async_before_agent_callback_noop(
       name=f'{request.function.__name__}_test_agent',
       before_agent_callback=_async_before_agent_callback_noop,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   spy_run_async_impl = mocker.spy(agent, BaseAgent._run_async_impl.__name__)
@@ -226,7 +226,7 @@ async def test_run_async_before_agent_callback_bypass_agent(
       name=f'{request.function.__name__}_test_agent',
       before_agent_callback=_before_agent_callback_bypass_agent,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   spy_run_async_impl = mocker.spy(agent, BaseAgent._run_async_impl.__name__)
@@ -253,7 +253,7 @@ async def test_run_async_with_async_before_agent_callback_bypass_agent(
       name=f'{request.function.__name__}_test_agent',
       before_agent_callback=_async_before_agent_callback_bypass_agent,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   spy_run_async_impl = mocker.spy(agent, BaseAgent._run_async_impl.__name__)
@@ -394,7 +394,7 @@ async def test_before_agent_callbacks_chain(
       name=f'{request.function.__name__}_test_agent',
       before_agent_callback=[mock_cb for mock_cb in mock_cbs],
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   result = [e async for e in agent.run_async(parent_ctx)]
@@ -455,7 +455,7 @@ async def test_after_agent_callbacks_chain(
       name=f'{request.function.__name__}_test_agent',
       after_agent_callback=[mock_cb for mock_cb in mock_cbs],
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   result = [e async for e in agent.run_async(parent_ctx)]
@@ -494,7 +494,7 @@ async def test_run_async_after_agent_callback_noop(
       name=f'{request.function.__name__}_test_agent',
       after_agent_callback=_after_agent_callback_noop,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   spy_after_agent_callback = mocker.spy(agent, 'after_agent_callback')
@@ -520,7 +520,7 @@ async def test_run_async_with_async_after_agent_callback_noop(
       name=f'{request.function.__name__}_test_agent',
       after_agent_callback=_async_after_agent_callback_noop,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   spy_after_agent_callback = mocker.spy(agent, 'after_agent_callback')
@@ -545,7 +545,7 @@ async def test_run_async_after_agent_callback_append_reply(
       name=f'{request.function.__name__}_test_agent',
       after_agent_callback=_after_agent_callback_append_agent_reply,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
@@ -570,7 +570,7 @@ async def test_run_async_with_async_after_agent_callback_append_reply(
       name=f'{request.function.__name__}_test_agent',
       after_agent_callback=_async_after_agent_callback_append_agent_reply,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
@@ -589,7 +589,7 @@ async def test_run_async_with_async_after_agent_callback_append_reply(
 @pytest.mark.asyncio
 async def test_run_async_incomplete_agent(request: pytest.FixtureRequest):
   agent = _IncompleteAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
@@ -600,7 +600,7 @@ async def test_run_async_incomplete_agent(request: pytest.FixtureRequest):
 @pytest.mark.asyncio
 async def test_run_live(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
@@ -614,7 +614,7 @@ async def test_run_live(request: pytest.FixtureRequest):
 @pytest.mark.asyncio
 async def test_run_live_with_branch(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent, branch='parent_branch'
   )
 
@@ -629,7 +629,7 @@ async def test_run_live_with_branch(request: pytest.FixtureRequest):
 @pytest.mark.asyncio
 async def test_run_live_incomplete_agent(request: pytest.FixtureRequest):
   agent = _IncompleteAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
