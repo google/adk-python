@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+
 from __future__ import annotations
 
 import contextlib
@@ -179,7 +181,9 @@ class Gemini(BaseLlm):
       api_version = 'v1beta1'
       # use default api version for vertex
       return Client(
-          http_options=types.HttpOptions(headers=self._tracking_headers,api_version=api_version)
+          http_options=types.HttpOptions(
+              headers=self._tracking_headers, api_version=api_version
+          )
       )
     else:
       # use v1alpha for ml_dev
