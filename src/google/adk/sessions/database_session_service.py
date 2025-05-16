@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 from typing import Any, Optional
@@ -374,17 +374,19 @@ class DatabaseSessionService(BaseSessionService):
       )
       if storage_session is None:
         return None
+      
+      if config and config.after_timestamp:
+        after_dt = datetime.fromtimestamp(config.after_timestamp, tz=timezone.utc)
+        timestamp_filter = StorageEvent.timestamp > after_dt
+      else:
+        timestamp_filter = True
 
       storage_events = (
-          sessionFactory.query(StorageEvent)
+        sessionFactory.query(StorageEvent)
           .filter(StorageEvent.session_id == storage_session.id)
-          .filter(
-              StorageEvent.timestamp < config.after_timestamp
-              if config
-              else True
-          )
-          .limit(config.num_recent_events if config else None)
+          .filter(timestamp_filter) 
           .order_by(StorageEvent.timestamp.asc())
+          .limit(config.num_recent_events if config and config.num_recent_events else None)
           .all()
       )
 
