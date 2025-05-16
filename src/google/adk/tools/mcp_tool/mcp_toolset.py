@@ -21,6 +21,7 @@ from typing import TextIO
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
+from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from .mcp_session_manager import MCPSessionManager
@@ -100,7 +101,7 @@ class MCPToolset(BaseToolset):
     return self._session
 
   def _is_selected(
-      self, tool: ..., readonly_context: Optional[ReadonlyContext]
+      self, tool: BaseTool, readonly_context: Optional[ReadonlyContext]
   ) -> bool:
     """Checks if a tool should be selected based on the tool filter."""
     if self.tool_filter is None:
@@ -130,12 +131,14 @@ class MCPToolset(BaseToolset):
     if not self._session:
       await self._initialize()
     tools_response: ListToolsResult = await self._session.list_tools()
-    return [
-        MCPTool(
-            mcp_tool=tool,
-            mcp_session=self._session,
-            mcp_session_manager=self._session_manager,
-        )
-        for tool in tools_response.tools
-        if self._is_selected(tool, readonly_context)
-    ]
+    tools = []
+    for tool in tools_response.tools:
+      mcp_tool = MCPTool(
+          mcp_tool=tool,
+          mcp_session=self._session,
+          mcp_session_manager=self._session_manager,
+      )
+
+      if self._is_selected(mcp_tool, readonly_context):
+        tools.append(mcp_tool)
+    return tools
