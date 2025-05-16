@@ -472,10 +472,15 @@ def _get_completion_inputs(
       and llm_request.config.tools
       and llm_request.config.tools[0].function_declarations
   ):
-    tools = [
-        _function_declaration_to_tool_param(tool)
-        for tool in llm_request.config.tools[0].function_declarations
-    ]
+    tools = []
+    for tool_group in llm_request.config.tools:
+      if tool_group.function_declarations:
+        tools.extend(
+            [
+                _function_declaration_to_tool_param(tool)
+                for tool in tool_group.function_declarations
+            ]
+        )
   return messages, tools
 
 
