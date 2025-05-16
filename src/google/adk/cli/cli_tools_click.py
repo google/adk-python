@@ -34,6 +34,50 @@ from .fast_api import get_fast_api_app
 from .utils import envs
 from .utils import logs
 
+
+class HelpfulCommand(click.Command):
+  """Command that shows full help on error instead of just the error message.
+
+  A custom Click Command class that overrides the default error handling
+  behavior to display the full help text when a required argument is missing,
+  followed by the error message. This provides users with better context
+  about command usage without needing to run a separate --help command.
+
+  Args:
+    *args: Variable length argument list to pass to the parent class.
+    **kwargs: Arbitrary keyword arguments to pass to the parent class.
+
+  Returns:
+    None. Inherits behavior from the parent Click Command class.
+
+  Returns:
+  """
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+
+  def parse_args(self, ctx, args):
+    """Override the parse_args method to show help text on error.
+
+    Args:
+      ctx: Click context object for the current command.
+      args: List of command-line arguments to parse.
+
+    Returns:
+      The parsed arguments as returned by the parent class's parse_args method.
+
+    Raises:
+      click.MissingParameter: When a required parameter is missing, but this
+        is caught and handled by displaying the help text before exiting.
+    """
+    try:
+      return super().parse_args(ctx, args)
+    except click.MissingParameter as exc:
+      click.echo(ctx.get_help())
+      click.secho(f"\nError: {str(exc)}", fg="red", err=True)
+      ctx.exit(2)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +93,7 @@ def deploy():
   pass
 
 
-@main.command("create")
+@main.command("create", cls=HelpfulCommand)
 @click.option(
     "--model",
     type=str,
@@ -115,7 +159,7 @@ def validate_exclusive(ctx, param, value):
   return value
 
 
-@main.command("run")
+@main.command("run", cls=HelpfulCommand)
 @click.option(
     "--save_session",
     type=bool,
@@ -196,7 +240,7 @@ def cli_run(
   )
 
 
-@main.command("eval")
+@main.command("eval", cls=HelpfulCommand)
 @click.argument(
     "agent_module_file_path",
     type=click.Path(
@@ -252,6 +296,7 @@ def cli_eval(
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import run_evals
     from .cli_eval import try_get_reset_func
+    from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
   except ModuleNotFoundError:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
 
@@ -267,17 +312,27 @@ def cli_eval(
   root_agent = get_root_agent(agent_module_file_path)
   reset_func = try_get_reset_func(agent_module_file_path)
 
-  eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
+  eval_set_file_path_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
+  eval_set_id_to_eval_cases = {}
+
+  # Read the eval_set files and get the cases.
+  for eval_set_file_path, eval_case_ids in eval_set_file_path_to_evals.items():
+    eval_set = load_eval_set_from_file(eval_set_file_path, eval_set_file_path)
+    eval_cases = eval_set.eval_cases
+
+    if eval_case_ids:
+      # There are eval_ids that we should select.
+      eval_cases = [
+          e for e in eval_set.eval_cases if e.eval_id in eval_case_ids
+      ]
+
+    eval_set_id_to_eval_cases[eval_set_file_path] = eval_cases
 
   async def _collect_eval_results() -> list[EvalCaseResult]:
     return [
         result
         async for result in run_evals(
-            eval_set_to_evals,
-            root_agent,
-            reset_func,
-            eval_metrics,
-            print_detailed_results=print_detailed_results,
+            eval_set_id_to_eval_cases, root_agent, reset_func, eval_metrics
         )
     ]
 
@@ -292,19 +347,27 @@ def cli_eval(
   for eval_result in eval_results:
     eval_result: EvalCaseResult
 
-    if eval_result.eval_set_file not in eval_run_summary:
-      eval_run_summary[eval_result.eval_set_file] = [0, 0]
+    if eval_result.eval_set_id not in eval_run_summary:
+      eval_run_summary[eval_result.eval_set_id] = [0, 0]
 
     if eval_result.final_eval_status == EvalStatus.PASSED:
-      eval_run_summary[eval_result.eval_set_file][0] += 1
+      eval_run_summary[eval_result.eval_set_id][0] += 1
     else:
-      eval_run_summary[eval_result.eval_set_file][1] += 1
+      eval_run_summary[eval_result.eval_set_id][1] += 1
   print("Eval Run Summary")
-  for eval_set_file, pass_fail_count in eval_run_summary.items():
+  for eval_set_id, pass_fail_count in eval_run_summary.items():
     print(
-        f"{eval_set_file}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
+        f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
         f" failed: {pass_fail_count[1]}"
     )
+
+  if print_detailed_results:
+    for eval_result in eval_results:
+      eval_result: EvalCaseResult
+      print(
+          "*********************************************************************"
+      )
+      print(eval_result.model_dump_json(indent=2))
 
 
 @main.command("web")
@@ -319,6 +382,13 @@ def cli_eval(
 
   - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
+)
+@click.option(
+    "--host",
+    type=str,
+    help="Optional. The binding host of the server",
+    default="127.0.0.1",
+    show_default=True,
 )
 @click.option(
     "--port",
@@ -374,6 +444,7 @@ def cli_web(
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
+    host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
     reload: bool = True,
@@ -426,7 +497,7 @@ def cli_web(
   )
   config = uvicorn.Config(
       app,
-      host="0.0.0.0",
+      host=host,
       port=port,
       reload=reload,
   )
@@ -447,6 +518,13 @@ def cli_web(
 
   - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
+)
+@click.option(
+    "--host",
+    type=str,
+    help="Optional. The binding host of the server",
+    default="127.0.0.1",
+    show_default=True,
 )
 @click.option(
     "--port",
@@ -504,6 +582,7 @@ def cli_api_server(
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
+    host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
     reload: bool = True,
@@ -532,7 +611,7 @@ def cli_api_server(
           web=False,
           trace_to_cloud=trace_to_cloud,
       ),
-      host="0.0.0.0",
+      host=host,
       port=port,
       reload=reload,
   )
@@ -583,7 +662,6 @@ def cli_api_server(
 )
 @click.option(
     "--trace_to_cloud",
-    type=bool,
     is_flag=True,
     show_default=True,
     default=False,
@@ -591,7 +669,6 @@ def cli_api_server(
 )
 @click.option(
     "--with_ui",
-    type=bool,
     is_flag=True,
     show_default=True,
     default=False,

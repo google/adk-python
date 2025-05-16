@@ -92,7 +92,9 @@ def after_agent_cb1(callback_context):
 
 def after_agent_cb2(callback_context):
   print('@after_agent_cb2')
-  return types.Content(
+  # ModelContent (or Content with role set to 'model') must be returned.
+  # Otherwise, the event will be excluded from the context in the next turn.
+  return types.ModelContent(
       parts=[
           types.Part(
               text='(stopped) after_agent_cb2',
@@ -143,7 +145,7 @@ def after_tool_cb3(tool, args, tool_context, tool_response):
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash-exp',
+    model='gemini-2.0-flash',
     name='data_processing_agent',
     description=(
         'hello world agent that can roll a dice of 8 sides and check prime'

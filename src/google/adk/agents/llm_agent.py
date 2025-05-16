@@ -16,15 +16,13 @@ from __future__ import annotations
 
 import inspect
 import logging
-from typing import (
-    Any,
-    AsyncGenerator,
-    Awaitable,
-    Callable,
-    Literal,
-    Optional,
-    Union,
-)
+from typing import Any
+from typing import AsyncGenerator
+from typing import Awaitable
+from typing import Callable
+from typing import Literal
+from typing import Optional
+from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -152,7 +150,12 @@ class LlmAgent(BaseAgent):
 
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
-  """Disallows LLM-controlled transferring to the parent agent."""
+  """Disallows LLM-controlled transferring to the parent agent.
+
+  NOTE: Setting this as True also prevents this agent to continue reply to the
+  end-user. This behavior prevents one-way transfer, in which end-user may be
+  stuck with one agent that cannot transfer to other agents in the agent tree.
+  """
   disallow_transfer_to_peers: bool = False
   """Disallows LLM-controlled transferring to the peer agents."""
   # LLM-based agent transfer configs - End
@@ -197,8 +200,7 @@ class LlmAgent(BaseAgent):
 
   Check out available code executions in `google.adk.code_executor` package.
 
-  NOTE: to use model's built-in code executor, don't set this field, add
-  `google.adk.tools.built_in_code_execution` to tools instead.
+  NOTE: to use model's built-in code executor, use the `BuiltInCodeExecutor`.
   """
   # Advance features - End
 

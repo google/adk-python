@@ -244,6 +244,9 @@ def test_cli_eval_success_path(
 
   # stub cli_eval module
   stub = types.ModuleType("google.adk.cli.cli_eval")
+  eval_sets_manager_stub = types.ModuleType(
+      "google.adk.evaluation.local_eval_sets_manager"
+  )
 
   class _EvalMetric:
 
@@ -252,9 +255,19 @@ def test_cli_eval_success_path(
 
   class _EvalCaseResult:
 
-    def __init__(self, eval_set_file: str, final_eval_status: str) -> None:
-      self.eval_set_file = eval_set_file
+    def __init__(self, eval_set_id: str, final_eval_status: str) -> None:
+      self.eval_set_id = eval_set_id
       self.final_eval_status = final_eval_status
+
+  class EvalCase:
+
+    def __init__(self, eval_id: str):
+      self.eval_id = eval_id
+
+  class EvalSet:
+
+    def __init__(self, eval_cases: list[EvalCase]):
+      self.eval_cases = eval_cases
 
   # minimal enum-like namespace
   _EvalStatus = types.SimpleNamespace(PASSED="PASSED", FAILED="FAILED")
@@ -269,6 +282,9 @@ def test_cli_eval_success_path(
   stub.get_root_agent = lambda _p: object()
   stub.try_get_reset_func = lambda _p: None
   stub.parse_and_get_evals_to_run = lambda _paths: {"set1.json": ["e1", "e2"]}
+  eval_sets_manager_stub.load_eval_set_from_file = lambda x, y: EvalSet(
+      [EvalCase("e1"), EvalCase("e2")]
+  )
 
   # Create an async generator function for run_evals
   async def mock_run_evals(*_a, **_k):
@@ -290,6 +306,9 @@ def test_cli_eval_success_path(
 
   # inject stub
   sys.modules["google.adk.cli.cli_eval"] = stub
+  sys.modules["google.adk.evaluation.local_eval_sets_manager"] = (
+      eval_sets_manager_stub
+  )
 
   # create dummy agent directory
   agent_dir = tmp_path / "agent5"
