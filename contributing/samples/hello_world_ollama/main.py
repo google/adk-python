@@ -41,7 +41,7 @@ async def main():
       artifact_service=artifact_service,
       session_service=session_service,
   )
-  session_11 = session_service.create_session(
+  session_11 = await session_service.create_session(
       app_name=app_name, user_id=user_id_1
   )
 
@@ -66,7 +66,7 @@ async def main():
       session_11, 'Roll a die with 100 sides and check if it is prime'
   )
   await run_prompt(session_11, 'Roll it again.')
-  await run_prompt(session_11, 'What numbers did I got?')
+  await run_prompt(session_11, 'What numbers did I get?')
   end_time = time.time()
   print('------------------------------------')
   print('End time:', end_time)

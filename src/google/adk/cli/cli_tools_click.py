@@ -288,15 +288,15 @@ def cli_eval(
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
 
   try:
-    from .cli_eval import EvalMetric
+    from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
     from .cli_eval import EvalCaseResult
+    from .cli_eval import EvalMetric
     from .cli_eval import EvalStatus
     from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import run_evals
     from .cli_eval import try_get_reset_func
-    from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
   except ModuleNotFoundError:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
 
@@ -459,11 +459,9 @@ def cli_web(
     adk web --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
   if log_to_tmp:
-    logs.log_to_tmp_folder()
+    logs.log_to_tmp_folder(getattr(logging, log_level.upper()))
   else:
-    logs.log_to_stderr()
-
-  logging.getLogger().setLevel(log_level)
+    logs.log_to_stderr(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
   async def _lifespan(app: FastAPI):
@@ -597,11 +595,9 @@ def cli_api_server(
     adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
   if log_to_tmp:
-    logs.log_to_tmp_folder()
+    logs.log_to_tmp_folder(getattr(logging, log_level.upper()))
   else:
-    logs.log_to_stderr()
-
-  logging.getLogger().setLevel(log_level)
+    logs.log_to_stderr(getattr(logging, log_level.upper()))
 
   config = uvicorn.Config(
       get_fast_api_app(
