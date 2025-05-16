@@ -662,7 +662,6 @@ def cli_api_server(
 )
 @click.option(
     "--trace_to_cloud",
-    type=bool,
     is_flag=True,
     show_default=True,
     default=False,
@@ -670,7 +669,6 @@ def cli_api_server(
 )
 @click.option(
     "--with_ui",
-    type=bool,
     is_flag=True,
     show_default=True,
     default=False,
