@@ -77,7 +77,7 @@ class HelpfulCommand(click.Command):
       ctx.exit(2)
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 @click.group(context_settings={"max_content_width": 240})
