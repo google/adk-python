@@ -1,0 +1,105 @@
+{
+  "eval_set_id": "94553685-5f19-492b-bc44-f3bc775955e9",
+  "name": "94553685-5f19-492b-bc44-f3bc775955e9",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/home_automation_agent/test_files/memorizing_past_events/eval_data.test.json",
+      "conversation": [
+        {
+          "invocation_id": "a958b622-21d3-4a6c-9c15-1274bbb8a6b6",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Turn off device_2 in the Bedroom."
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "OK. I've turned off device_2 in the Bedroom. Anything else?\n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "location": "Bedroom",
+                  "device_id": "device_2",
+                  "status": "OFF"
+                },
+                "name": "set_device_info"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747340865.7043095
+        },
+        {
+          "invocation_id": "1c07123d-4bed-4eb0-9e55-c7f80c70dadf",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "What's the command I just issued?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "You asked me to turn off device_2 in the Bedroom.\n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747340865.7043421
+        }
+      ],
+      "session_input": null,
+      "creation_timestamp": 1747340865.7043483
+    }
+  ],
+  "creation_timestamp": 1747340865.704361
+}

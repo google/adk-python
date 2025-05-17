@@ -1,0 +1,65 @@
+{
+  "eval_set_id": "b305bd06-38c5-4796-b9c7-d9c7454338b9",
+  "name": "b305bd06-38c5-4796-b9c7-d9c7454338b9",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/home_automation_agent/simple_test.test.json",
+      "conversation": [
+        {
+          "invocation_id": "b7982664-0ab6-47cc-ab13-326656afdf75",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Turn off device_2 in the Bedroom."
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "I have set the device_2 status to off."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "location": "Bedroom",
+                  "device_id": "device_2",
+                  "status": "OFF"
+                },
+                "name": "set_device_info"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747337309.2360144
+        }
+      ],
+      "session_input": null,
+      "creation_timestamp": 1747337309.2360282
+    }
+  ],
+  "creation_timestamp": 1747337309.2360387
+}

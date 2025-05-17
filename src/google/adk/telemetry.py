@@ -16,8 +16,8 @@
 #
 #    We expect that the underlying GenAI SDK will provide a certain
 #    level of tracing and logging telemetry aligned with Open Telemetry
-#    Semantic Conventions (such as logging prompts, respones, request
-#    properties, etc.) and so the information that is recorded by the
+#    Semantic Conventions (such as logging prompts, responses,
+#    request properties, etc.) and so the information that is recorded by the
 #    Agent Development Kit should be focused on the higher-level
 #    constructs of the framework that are not observable by the SDK.
 
@@ -110,6 +110,9 @@ def trace_call_llm(
   span.set_attribute('gen_ai.request.model', llm_request.model)
   span.set_attribute(
       'gcp.vertex.agent.invocation_id', invocation_context.invocation_id
+  )
+  span.set_attribute(
+      'gcp.vertex.agent.session_id', invocation_context.session.id
   )
   span.set_attribute('gcp.vertex.agent.event_id', event_id)
   # Consider removing once GenAI SDK provides a way to record this info.

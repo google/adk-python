@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+
 from __future__ import annotations
 
 import contextlib
@@ -34,7 +36,7 @@ from .llm_response import LlmResponse
 if TYPE_CHECKING:
   from .llm_request import LlmRequest
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
@@ -121,6 +123,7 @@ class Gemini(BaseLlm):
               content=types.ModelContent(
                   parts=[types.Part.from_text(text=text)],
               ),
+              usage_metadata=llm_response.usage_metadata,
           )
           text = ''
         yield llm_response
@@ -174,9 +177,13 @@ class Gemini(BaseLlm):
   @cached_property
   def _live_api_client(self) -> Client:
     if self._api_backend == 'vertex':
+      # use beta version for vertex api
+      api_version = 'v1beta1'
       # use default api version for vertex
       return Client(
-          http_options=types.HttpOptions(headers=self._tracking_headers)
+          http_options=types.HttpOptions(
+              headers=self._tracking_headers, api_version=api_version
+          )
       )
     else:
       # use v1alpha for ml_dev
@@ -209,48 +216,6 @@ class Gemini(BaseLlm):
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(live_session)
-
-  def _maybe_append_user_content(self, llm_request: LlmRequest):
-    """Appends a user content, so that model can continue to output.
-
-    Args:
-      llm_request: LlmRequest, the request to send to the Gemini model.
-    """
-    # If no content is provided, append a user content to hint model response
-    # using system instruction.
-    if not llm_request.contents:
-      llm_request.contents.append(
-          types.Content(
-              role='user',
-              parts=[
-                  types.Part(
-                      text=(
-                          'Handle the requests as specified in the System'
-                          ' Instruction.'
-                      )
-                  )
-              ],
-          )
-      )
-      return
-
-    # Insert a user content to preserve user intent and to avoid empty
-    # model response.
-    if llm_request.contents[-1].role != 'user':
-      llm_request.contents.append(
-          types.Content(
-              role='user',
-              parts=[
-                  types.Part(
-                      text=(
-                          'Continue processing previous requests as instructed.'
-                          ' Exit or provide a summary if no more outputs are'
-                          ' needed.'
-                      )
-                  )
-              ],
-          )
-      )
 
 
 def _build_function_declaration_log(

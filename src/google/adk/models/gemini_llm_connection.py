@@ -145,14 +145,27 @@ class GeminiLlmConnection(BaseLlmConnection):
             yield self.__build_full_text_response(text)
             text = ''
           yield llm_response
-
+        if (
+            message.server_content.input_transcription
+            and message.server_content.input_transcription.text
+        ):
+            user_text = message.server_content.input_transcription.text
+            parts = [
+                types.Part.from_text(
+                    text=user_text,
+                )
+            ]
+            llm_response = LlmResponse(
+                content=types.Content(role='user', parts=parts)
+            )
+            yield llm_response
         if (
             message.server_content.output_transcription
             and message.server_content.output_transcription.text
         ):
           # TODO: Right now, we just support output_transcription without
           # changing interface and data protocol. Later, we can consider to
-          # support output_transcription as a separete field in LlmResponse.
+          # support output_transcription as a separate field in LlmResponse.
 
           # Transcription is always considered as partial event
           # We rely on other control signals to determine when to yield the
@@ -179,7 +192,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         # in case of empty content or parts, we sill surface it
         # in case it's an interrupted message, we merge the previous partial
         # text. Other we don't merge. because content can be none when model
-        # safty threshold is triggered
+        # safety threshold is triggered
         if message.server_content.interrupted and text:
           yield self.__build_full_text_response(text)
           text = ''

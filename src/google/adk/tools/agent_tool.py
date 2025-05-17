@@ -45,10 +45,9 @@ class AgentTool(BaseTool):
     skip_summarization: Whether to skip summarization of the agent output.
   """
 
-  def __init__(self, agent: BaseAgent):
+  def __init__(self, agent: BaseAgent, skip_summarization: bool = False):
     self.agent = agent
-    self.skip_summarization: bool = False
-    """Whether to skip summarization of the agent output."""
+    self.skip_summarization: bool = skip_summarization
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -130,7 +129,7 @@ class AgentTool(BaseTool):
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
     )
-    session = runner.session_service.create_session(
+    session = await runner.session_service.create_session(
         app_name=self.agent.name,
         user_id='tmp_user',
         state=tool_context.state.to_dict(),
@@ -147,30 +146,33 @@ class AgentTool(BaseTool):
 
     if runner.artifact_service:
       # Forward all artifacts to parent session.
-      for artifact_name in runner.artifact_service.list_artifact_keys(
+      artifact_names = await runner.artifact_service.list_artifact_keys(
           app_name=session.app_name,
           user_id=session.user_id,
           session_id=session.id,
-      ):
-        if artifact := runner.artifact_service.load_artifact(
+      )
+      for artifact_name in artifact_names:
+        if artifact := await runner.artifact_service.load_artifact(
             app_name=session.app_name,
             user_id=session.user_id,
             session_id=session.id,
             filename=artifact_name,
         ):
-          tool_context.save_artifact(filename=artifact_name, artifact=artifact)
+          await tool_context.save_artifact(
+              filename=artifact_name, artifact=artifact
+          )
 
-    if (
-        not last_event
-        or not last_event.content
-        or not last_event.content.parts
-        or not last_event.content.parts[0].text
-    ):
+    if not last_event or not last_event.content or not last_event.content.parts:
       return ''
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
+      merged_text = '\n'.join(
+          [p.text for p in last_event.content.parts if p.text]
+      )
       tool_result = self.agent.output_schema.model_validate_json(
-          last_event.content.parts[0].text
+          merged_text
       ).model_dump(exclude_none=True)
     else:
-      tool_result = last_event.content.parts[0].text
+      tool_result = '\n'.join(
+          [p.text for p in last_event.content.parts if p.text]
+      )
     return tool_result

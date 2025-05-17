@@ -14,21 +14,22 @@
 import logging
 import re
 import time
-from typing import Any
-from typing import Optional
+from typing import Any, Optional
 
-from dateutil.parser import isoparse
+from dateutil import parser
 from google import genai
 from typing_extensions import override
 
 from ..events.event import Event
 from ..events.event_actions import EventActions
+from . import _session_util
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
-from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 
+
+isoparse = parser.isoparse
 logger = logging.getLogger(__name__)
 
 
@@ -47,7 +48,7 @@ class VertexAiSessionService(BaseSessionService):
     self.api_client = client._api_client
 
   @override
-  def create_session(
+  async def create_session(
       self,
       *,
       app_name: str,
@@ -55,13 +56,19 @@ class VertexAiSessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
+    if session_id:
+      raise ValueError(
+          'User-provided Session id is not supported for'
+          ' VertexAISessionService.'
+      )
+
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
     session_json_dict = {'user_id': user_id}
     if state:
       session_json_dict['session_state'] = state
 
-    api_response = self.api_client.request(
+    api_response = await self.api_client.async_request(
         http_method='POST',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions',
         request_dict=session_json_dict,
@@ -73,7 +80,7 @@ class VertexAiSessionService(BaseSessionService):
 
     max_retry_attempt = 5
     while max_retry_attempt >= 0:
-      lro_response = self.api_client.request(
+      lro_response = await self.api_client.async_request(
           http_method='GET',
           path=f'operations/{operation_id}',
           request_dict={},
@@ -86,7 +93,7 @@ class VertexAiSessionService(BaseSessionService):
       max_retry_attempt -= 1
 
     # Get session resource
-    get_session_api_response = self.api_client.request(
+    get_session_api_response = await self.api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
@@ -105,7 +112,7 @@ class VertexAiSessionService(BaseSessionService):
     return session
 
   @override
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
@@ -116,7 +123,7 @@ class VertexAiSessionService(BaseSessionService):
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
     # Get session resource
-    get_session_api_response = self.api_client.request(
+    get_session_api_response = await self.api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
@@ -134,7 +141,7 @@ class VertexAiSessionService(BaseSessionService):
         last_update_time=update_timestamp,
     )
 
-    list_events_api_response = self.api_client.request(
+    list_events_api_response = await self.api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events',
         request_dict={},
@@ -168,7 +175,7 @@ class VertexAiSessionService(BaseSessionService):
     return session
 
   @override
-  def list_sessions(
+  async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
@@ -195,50 +202,23 @@ class VertexAiSessionService(BaseSessionService):
       sessions.append(session)
     return ListSessionsResponse(sessions=sessions)
 
-  def delete_session(
+  async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
-    self.api_client.request(
+    await self.api_client.async_request(
         http_method='DELETE',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
     )
 
   @override
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    reasoning_engine_id = _parse_reasoning_engine_id(app_name)
-    api_response = self.api_client.request(
-        http_method='GET',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events',
-        request_dict={},
-    )
-
-    logger.info(f'List events response {api_response}')
-
-    # Handles empty response case
-    if api_response.get('httpHeaders', None):
-      return ListEventsResponse()
-
-    session_events = api_response['sessionEvents']
-
-    return ListEventsResponse(
-        events=[_from_api_event(event) for event in session_events]
-    )
-
-  @override
-  def append_event(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
-    super().append_event(session=session, event=event)
+    await super().append_event(session=session, event=event)
 
     reasoning_engine_id = _parse_reasoning_engine_id(session.app_name)
-    self.api_client.request(
+    await self.api_client.async_request(
         http_method='POST',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}:appendEvent',
         request_dict=_convert_event_to_json(event),
@@ -289,7 +269,7 @@ def _convert_event_to_json(event: Event):
     }
     event_json['actions'] = actions_json
   if event.content:
-    event_json['content'] = event.content.model_dump(exclude_none=True)
+    event_json['content'] = _session_util.encode_content(event.content)
   if event.error_code:
     event_json['error_code'] = event.error_code
   if event.error_message:
@@ -316,7 +296,7 @@ def _from_api_event(api_event: dict) -> Event:
       invocation_id=api_event['invocationId'],
       author=api_event['author'],
       actions=event_actions,
-      content=api_event.get('content', None),
+      content=_session_util.decode_content(api_event.get('content', None)),
       timestamp=isoparse(api_event['timestamp']).timestamp(),
       error_code=api_event.get('errorCode', None),
       error_message=api_event.get('errorMessage', None),

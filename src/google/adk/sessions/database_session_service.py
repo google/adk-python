@@ -11,24 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import copy
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
-from typing import Any
-from typing import Optional
+from typing import Any, Optional
 import uuid
 
+from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
-from sqlalchemy import select
 from sqlalchemy import Text
+from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine import create_engine
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import DeclarativeBase
@@ -46,36 +46,38 @@ from typing_extensions import override
 from tzlocal import get_localzone
 
 from ..events.event import Event
+from . import _session_util
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
-from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 from .state import State
 
+
 logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_KEY_LENGTH = 128
+DEFAULT_MAX_VARCHAR_LENGTH = 256
 
 
 class DynamicJSON(TypeDecorator):
-  """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON
-
-  serialization for other databases.
-  """
+  """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON serialization for other databases."""
 
   impl = Text  # Default implementation is TEXT
 
   def load_dialect_impl(self, dialect: Dialect):
     if dialect.name == "postgresql":
       return dialect.type_descriptor(postgresql.JSONB)
-    else:
-      return dialect.type_descriptor(Text)  # Default to Text for other dialects
+    if dialect.name == "mysql":
+      # Use LONGTEXT for MySQL to address the data too long issue
+      return dialect.type_descriptor(mysql.LONGTEXT)
+    return dialect.type_descriptor(Text)  # Default to Text for other dialects
 
   def process_bind_param(self, value, dialect: Dialect):
     if value is not None:
       if dialect.name == "postgresql":
         return value  # JSONB handles dict directly
-      else:
-        return json.dumps(value)  # Serialize to JSON string for TEXT
+      return json.dumps(value)  # Serialize to JSON string for TEXT
     return value
 
   def process_result_value(self, value, dialect: Dialect):
@@ -89,20 +91,28 @@ class DynamicJSON(TypeDecorator):
 
 class Base(DeclarativeBase):
   """Base class for database tables."""
+
   pass
 
 
 class StorageSession(Base):
   """Represents a session stored in the database."""
+
   __tablename__ = "sessions"
 
-  app_name: Mapped[str] = mapped_column(String, primary_key=True)
-  user_id: Mapped[str] = mapped_column(String, primary_key=True)
+  app_name: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  user_id: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
   id: Mapped[str] = mapped_column(
-      String, primary_key=True, default=lambda: str(uuid.uuid4())
+      String(DEFAULT_MAX_KEY_LENGTH),
+      primary_key=True,
+      default=lambda: str(uuid.uuid4()),
   )
 
-  state: Mapped[dict] = mapped_column(
+  state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default={}
   )
 
@@ -122,19 +132,44 @@ class StorageSession(Base):
 
 class StorageEvent(Base):
   """Represents an event stored in the database."""
+
   __tablename__ = "events"
 
-  id: Mapped[str] = mapped_column(String, primary_key=True)
-  app_name: Mapped[str] = mapped_column(String, primary_key=True)
-  user_id: Mapped[str] = mapped_column(String, primary_key=True)
-  session_id: Mapped[str] = mapped_column(String, primary_key=True)
+  id: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  app_name: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  user_id: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  session_id: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
 
-  invocation_id: Mapped[str] = mapped_column(String)
-  author: Mapped[str] = mapped_column(String)
-  branch: Mapped[str] = mapped_column(String, nullable=True)
+  invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
+  author: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
+  branch: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
+  )
   timestamp: Mapped[DateTime] = mapped_column(DateTime(), default=func.now())
-  content: Mapped[dict] = mapped_column(DynamicJSON)
-  actions: Mapped[dict] = mapped_column(PickleType)
+  content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
+  actions: Mapped[MutableDict[str, Any]] = mapped_column(PickleType)
+
+  long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
+      Text, nullable=True
+  )
+  grounding_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  partial: Mapped[bool] = mapped_column(Boolean, nullable=True)
+  turn_complete: Mapped[bool] = mapped_column(Boolean, nullable=True)
+  error_code: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
+  )
+  error_message: Mapped[str] = mapped_column(String(1024), nullable=True)
+  interrupted: Mapped[bool] = mapped_column(Boolean, nullable=True)
 
   storage_session: Mapped[StorageSession] = relationship(
       "StorageSession",
@@ -149,13 +184,31 @@ class StorageEvent(Base):
       ),
   )
 
+  @property
+  def long_running_tool_ids(self) -> set[str]:
+    return (
+        set(json.loads(self.long_running_tool_ids_json))
+        if self.long_running_tool_ids_json
+        else set()
+    )
+
+  @long_running_tool_ids.setter
+  def long_running_tool_ids(self, value: set[str]):
+    if value is None:
+      self.long_running_tool_ids_json = None
+    else:
+      self.long_running_tool_ids_json = json.dumps(list(value))
+
 
 class StorageAppState(Base):
   """Represents an app state stored in the database."""
+
   __tablename__ = "app_states"
 
-  app_name: Mapped[str] = mapped_column(String, primary_key=True)
-  state: Mapped[dict] = mapped_column(
+  app_name: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default={}
   )
   update_time: Mapped[DateTime] = mapped_column(
@@ -165,11 +218,16 @@ class StorageAppState(Base):
 
 class StorageUserState(Base):
   """Represents a user state stored in the database."""
+
   __tablename__ = "user_states"
 
-  app_name: Mapped[str] = mapped_column(String, primary_key=True)
-  user_id: Mapped[str] = mapped_column(String, primary_key=True)
-  state: Mapped[dict] = mapped_column(
+  app_name: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  user_id: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default={}
   )
   update_time: Mapped[DateTime] = mapped_column(
@@ -181,21 +239,25 @@ class DatabaseSessionService(BaseSessionService):
   """A session service that uses a database for storage."""
 
   def __init__(self, db_url: str):
-    """
-    Args:
-        db_url: The database URL to connect to.
-    """
+    """Initializes the database session service with a database URL."""
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
-    # 3. Initialize all properies
+    # 3. Initialize all properties
 
-    supported_dialects = ["postgresql", "mysql", "sqlite"]
-    dialect = db_url.split("://")[0]
-
-    if dialect in supported_dialects:
+    try:
       db_engine = create_engine(db_url)
-    else:
-      raise ValueError(f"Unsupported database URL: {db_url}")
+    except Exception as e:
+      if isinstance(e, ArgumentError):
+        raise ValueError(
+            f"Invalid database URL format or argument '{db_url}'."
+        ) from e
+      if isinstance(e, ImportError):
+        raise ValueError(
+            f"Database related module not found for URL '{db_url}'."
+        ) from e
+      raise ValueError(
+          f"Failed to create database engine for URL '{db_url}'"
+      ) from e
 
     # Get the local timezone
     local_timezone = get_localzone()
@@ -206,7 +268,7 @@ class DatabaseSessionService(BaseSessionService):
     self.inspector = inspect(self.db_engine)
 
     # DB session factory method
-    self.DatabaseSessionFactory: sessionmaker[DatabaseSessionFactory] = (
+    self.database_session_factory: sessionmaker[DatabaseSessionFactory] = (
         sessionmaker(bind=self.db_engine)
     )
 
@@ -215,7 +277,7 @@ class DatabaseSessionService(BaseSessionService):
     Base.metadata.create_all(self.db_engine)
 
   @override
-  def create_session(
+  async def create_session(
       self,
       *,
       app_name: str,
@@ -229,11 +291,11 @@ class DatabaseSessionService(BaseSessionService):
     # 4. Build the session object with generated id
     # 5. Return the session
 
-    with self.DatabaseSessionFactory() as sessionFactory:
+    with self.database_session_factory() as session_factory:
 
       # Fetch app and user states from storage
-      storage_app_state = sessionFactory.get(StorageAppState, (app_name))
-      storage_user_state = sessionFactory.get(
+      storage_app_state = session_factory.get(StorageAppState, (app_name))
+      storage_user_state = session_factory.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -243,12 +305,12 @@ class DatabaseSessionService(BaseSessionService):
       # Create state tables if not exist
       if not storage_app_state:
         storage_app_state = StorageAppState(app_name=app_name, state={})
-        sessionFactory.add(storage_app_state)
+        session_factory.add(storage_app_state)
       if not storage_user_state:
         storage_user_state = StorageUserState(
             app_name=app_name, user_id=user_id, state={}
         )
-        sessionFactory.add(storage_user_state)
+        session_factory.add(storage_user_state)
 
       # Extract state deltas
       app_state_delta, user_state_delta, session_state = _extract_state_delta(
@@ -272,10 +334,10 @@ class DatabaseSessionService(BaseSessionService):
           id=session_id,
           state=session_state,
       )
-      sessionFactory.add(storage_session)
-      sessionFactory.commit()
+      session_factory.add(storage_session)
+      session_factory.commit()
 
-      sessionFactory.refresh(storage_session)
+      session_factory.refresh(storage_session)
 
       # Merge states for response
       merged_state = _merge_state(app_state, user_state, session_state)
@@ -287,10 +349,9 @@ class DatabaseSessionService(BaseSessionService):
           last_update_time=storage_session.update_time.timestamp(),
       )
       return session
-    return None
 
   @override
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
@@ -301,29 +362,37 @@ class DatabaseSessionService(BaseSessionService):
     # 1. Get the storage session entry from session table
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
-    session: Session = None
-    with self.DatabaseSessionFactory() as sessionFactory:
-      storage_session = sessionFactory.get(
+    with self.database_session_factory() as session_factory:
+      storage_session = session_factory.get(
           StorageSession, (app_name, user_id, session_id)
       )
       if storage_session is None:
         return None
 
+      if config and config.after_timestamp:
+        after_dt = datetime.fromtimestamp(
+            config.after_timestamp, tz=timezone.utc
+        )
+        timestamp_filter = StorageEvent.timestamp > after_dt
+      else:
+        timestamp_filter = True
+
       storage_events = (
-          sessionFactory.query(StorageEvent)
+          session_factory.query(StorageEvent)
           .filter(StorageEvent.session_id == storage_session.id)
-          .filter(
-              StorageEvent.timestamp < config.after_timestamp
-              if config
-              else True
+          .filter(timestamp_filter)
+          .order_by(StorageEvent.timestamp.asc())
+          .limit(
+              config.num_recent_events
+              if config and config.num_recent_events
+              else None
           )
-          .limit(config.num_recent_events if config else None)
           .all()
       )
 
       # Fetch states from storage
-      storage_app_state = sessionFactory.get(StorageAppState, (app_name))
-      storage_user_state = sessionFactory.get(
+      storage_app_state = session_factory.get(StorageAppState, (app_name))
+      storage_user_state = session_factory.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -348,22 +417,28 @@ class DatabaseSessionService(BaseSessionService):
               author=e.author,
               branch=e.branch,
               invocation_id=e.invocation_id,
-              content=e.content,
+              content=_session_util.decode_content(e.content),
               actions=e.actions,
               timestamp=e.timestamp.timestamp(),
+              long_running_tool_ids=e.long_running_tool_ids,
+              grounding_metadata=e.grounding_metadata,
+              partial=e.partial,
+              turn_complete=e.turn_complete,
+              error_code=e.error_code,
+              error_message=e.error_message,
+              interrupted=e.interrupted,
           )
           for e in storage_events
       ]
-
     return session
 
   @override
-  def list_sessions(
+  async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
-    with self.DatabaseSessionFactory() as sessionFactory:
+    with self.database_session_factory() as session_factory:
       results = (
-          sessionFactory.query(StorageSession)
+          session_factory.query(StorageSession)
           .filter(StorageSession.app_name == app_name)
           .filter(StorageSession.user_id == user_id)
           .all()
@@ -379,47 +454,49 @@ class DatabaseSessionService(BaseSessionService):
         )
         sessions.append(session)
       return ListSessionsResponse(sessions=sessions)
-    raise ValueError("Failed to retrieve sessions.")
 
   @override
-  def delete_session(
+  async def delete_session(
       self, app_name: str, user_id: str, session_id: str
   ) -> None:
-    with self.DatabaseSessionFactory() as sessionFactory:
+    with self.database_session_factory() as session_factory:
       stmt = delete(StorageSession).where(
           StorageSession.app_name == app_name,
           StorageSession.user_id == user_id,
           StorageSession.id == session_id,
       )
-      sessionFactory.execute(stmt)
-      sessionFactory.commit()
+      session_factory.execute(stmt)
+      session_factory.commit()
 
   @override
-  def append_event(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     logger.info(f"Append event: {event} to session {session.id}")
 
-    if event.partial and not event.content:
+    if event.partial:
       return event
 
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config
     # 3. Store event to table
-    with self.DatabaseSessionFactory() as sessionFactory:
-      storage_session = sessionFactory.get(
+    with self.database_session_factory() as session_factory:
+      storage_session = session_factory.get(
           StorageSession, (session.app_name, session.user_id, session.id)
       )
 
       if storage_session.update_time.timestamp() > session.last_update_time:
         raise ValueError(
-            f"Session last_update_time {session.last_update_time} is later than"
-            f" the upate_time in storage {storage_session.update_time}"
+            "The last_update_time provided in the session object"
+            f" {datetime.fromtimestamp(session.last_update_time):'%Y-%m-%d %H:%M:%S'} is"
+            " earlier than the update_time in the storage_session"
+            f" {storage_session.update_time:'%Y-%m-%d %H:%M:%S'}. Please check"
+            " if it is a stale session."
         )
 
       # Fetch states from storage
-      storage_app_state = sessionFactory.get(
+      storage_app_state = session_factory.get(
           StorageAppState, (session.app_name)
       )
-      storage_user_state = sessionFactory.get(
+      storage_user_state = session_factory.get(
           StorageUserState, (session.app_name, session.user_id)
       )
 
@@ -447,41 +524,38 @@ class DatabaseSessionService(BaseSessionService):
       storage_user_state.state = user_state
       storage_session.state = session_state
 
-      encoded_content = event.content.model_dump(exclude_none=True)
       storage_event = StorageEvent(
           id=event.id,
           invocation_id=event.invocation_id,
           author=event.author,
           branch=event.branch,
-          content=encoded_content,
           actions=event.actions,
           session_id=session.id,
           app_name=session.app_name,
           user_id=session.user_id,
           timestamp=datetime.fromtimestamp(event.timestamp),
+          long_running_tool_ids=event.long_running_tool_ids,
+          grounding_metadata=event.grounding_metadata,
+          partial=event.partial,
+          turn_complete=event.turn_complete,
+          error_code=event.error_code,
+          error_message=event.error_message,
+          interrupted=event.interrupted,
       )
+      if event.content:
+        storage_event.content = _session_util.encode_content(event.content)
 
-      sessionFactory.add(storage_event)
+      session_factory.add(storage_event)
 
-      sessionFactory.commit()
-      sessionFactory.refresh(storage_session)
+      session_factory.commit()
+      session_factory.refresh(storage_session)
 
       # Update timestamp with commit time
       session.last_update_time = storage_session.update_time.timestamp()
 
     # Also update the in-memory session
-    super().append_event(session=session, event=event)
+    await super().append_event(session=session, event=event)
     return event
-
-  @override
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    pass
 
 
 def convert_event(event: StorageEvent) -> Event:
@@ -497,7 +571,7 @@ def convert_event(event: StorageEvent) -> Event:
   )
 
 
-def _extract_state_delta(state: dict):
+def _extract_state_delta(state: dict[str, Any]):
   app_state_delta = {}
   user_state_delta = {}
   session_state_delta = {}

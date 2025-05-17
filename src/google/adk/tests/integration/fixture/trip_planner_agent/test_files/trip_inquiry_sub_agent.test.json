@@ -1,7 +1,0 @@
-[
-  {
-    "query": "Based on my interests, where should I go, Yosemite national park or Los Angeles?",
-    "expected_tool_use": [],
-    "reference": "Given your interests in food, shopping, and museums, Los Angeles would be a better choice than Yosemite National Park. Yosemite is primarily focused on outdoor activities and natural landscapes, while Los Angeles offers a diverse range of culinary experiences, shopping districts, and world-class museums. I will now gather information to create an in-depth guide for your trip to Los Angeles.\n"
-  }
-]
