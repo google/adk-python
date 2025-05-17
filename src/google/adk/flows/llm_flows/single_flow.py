@@ -17,6 +17,7 @@
 import logging
 
 from ...auth import auth_preprocessor
+from ...approval import approval_request_processor
 from . import _code_execution
 from . import _nl_planning
 from . import basic
@@ -39,6 +40,7 @@ class SingleFlow(BaseLlmFlow):
     super().__init__()
     self.request_processors += [
         basic.request_processor,
+        approval_request_processor.request_processor,
         auth_preprocessor.request_processor,
         instructions.request_processor,
         identity.request_processor,

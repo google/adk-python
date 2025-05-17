@@ -24,7 +24,8 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
-from .functions import remove_client_function_call_id
+from .functions import REQUEST_APPROVAL_FUNCTION_CALL_NAME, \
+  remove_client_function_call_id
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
 
@@ -216,6 +217,9 @@ def _get_contents(
     if _is_auth_event(event):
       # skip auth event
       continue
+    if _is_approval_event(event):
+      # skip approval event
+      continue
     filtered_events.append(
         _convert_foreign_event(event)
         if _is_other_agent_reply(agent_name, event)
@@ -389,6 +393,23 @@ def _is_auth_event(event: Event) -> bool:
     if (
         part.function_response
         and part.function_response.name == REQUEST_EUC_FUNCTION_CALL_NAME
+    ):
+      return True
+  return False
+
+
+def _is_approval_event(event: Event) -> bool:
+  if not event.content.parts:
+    return False
+  for part in event.content.parts:
+    if (
+        part.function_call
+        and part.function_call.name == REQUEST_APPROVAL_FUNCTION_CALL_NAME
+    ):
+      return True
+    if (
+        part.function_response
+        and part.function_response.name == REQUEST_APPROVAL_FUNCTION_CALL_NAME
     ):
       return True
   return False

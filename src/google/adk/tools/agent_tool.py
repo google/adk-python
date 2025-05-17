@@ -21,6 +21,8 @@ from google.genai import types
 from pydantic import model_validator
 from typing_extensions import override
 
+from ..approval.approval_grant import ApprovalAction
+from ..approval.approval_policy import FunctionToolPolicy, TOOL_NAMESPACE, register_policy_for_tool
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
 from ..sessions.in_memory_session_service import InMemorySessionService
@@ -176,3 +178,31 @@ class AgentTool(BaseTool):
           [p.text for p in last_event.content.parts if p.text]
       )
     return tool_result
+
+
+DEFAULT_APPROVED_AGENT_TOOL_POLICIES = [
+    FunctionToolPolicy(
+        actions=[ApprovalAction(f'{TOOL_NAMESPACE}:agent:use')],
+        resource_mappers=lambda args: ['*'],
+    )
+]
+
+
+class ApprovedAgentTool(AgentTool):
+
+  def __init__(
+      self,
+      agent: BaseAgent,
+      skip_summarization: bool = False,
+      policies: list[FunctionToolPolicy] = None,
+  ):
+    super().__init__(agent=agent, skip_summarization=skip_summarization)
+    if policies is None:
+      policies = [
+          FunctionToolPolicy(
+              actions=[ApprovalAction(f'{TOOL_NAMESPACE}:agent:use')],
+              resource_mappers=lambda args: [f'{TOOL_NAMESPACE}:agents:{self.name}'],
+          )
+      ]
+    for policy in policies:
+      register_policy_for_tool(self, policy)

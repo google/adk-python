@@ -14,13 +14,17 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional
 from typing import TYPE_CHECKING
 
 from ..agents.callback_context import CallbackContext
+from ..approval.approval_request import ApprovalRequest
 from ..auth.auth_credential import AuthCredential
 from ..auth.auth_handler import AuthHandler
 from ..auth.auth_tool import AuthConfig
+# from ..approval.approval_credential import ApprovalCredential, ApprovalStatus, ApprovalType
+# from ..approval.approval_handler import ApprovalHandler
+# from ..approval.approval_tool import ApprovalConfig
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
@@ -68,6 +72,23 @@ class ToolContext(CallbackContext):
 
   def get_auth_response(self, auth_config: AuthConfig) -> AuthCredential:
     return AuthHandler(auth_config).get_auth_response(self.state)
+
+  def request_approval(
+      self,
+      approval_request: ApprovalRequest,
+  ) -> None:
+    """Request approval for the current tool execution.
+
+    Args:
+      approval_request: The approval request to capture as an event action
+
+    Raises:
+        ValueError: If function_call_id is not set.
+    """
+    if not self.function_call_id:
+      raise ValueError('function_call_id is not set.')
+
+    self._event_actions.requested_approvals.append(approval_request)
 
   async def list_artifacts(self) -> list[str]:
     """Lists the filenames of the artifacts attached to the current session."""
