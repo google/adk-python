@@ -84,6 +84,9 @@ from .utils import common
 from .utils import create_empty_state
 from .utils import envs
 from .utils import evals
+import mimetypes
+
+mimetypes.add_type("text/javascript", ".js", True)
 
 logger = logging.getLogger("google_adk." + __name__)
 
