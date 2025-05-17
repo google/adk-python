@@ -409,16 +409,6 @@ def cli_eval(
     help="Optional. Set the logging level",
 )
 @click.option(
-    "--log_to_tmp",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to log to system temp folder instead of console."
-        " This is useful for local debugging."
-    ),
-)
-@click.option(
     "--trace_to_cloud",
     is_flag=True,
     show_default=True,
@@ -439,7 +429,6 @@ def cli_eval(
 )
 def cli_web(
     agents_dir: str,
-    log_to_tmp: bool,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
@@ -457,10 +446,7 @@ def cli_web(
 
     adk web --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
-  if log_to_tmp:
-    logs.log_to_tmp_folder(getattr(logging, log_level.upper()))
-  else:
-    logs.log_to_stderr(getattr(logging, log_level.upper()))
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
   async def _lifespan(app: FastAPI):
@@ -543,16 +529,6 @@ def cli_web(
     help="Optional. Set the logging level",
 )
 @click.option(
-    "--log_to_tmp",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to log to system temp folder instead of console."
-        " This is useful for local debugging."
-    ),
-)
-@click.option(
     "--trace_to_cloud",
     is_flag=True,
     show_default=True,
@@ -575,7 +551,6 @@ def cli_web(
 )
 def cli_api_server(
     agents_dir: str,
-    log_to_tmp: bool,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
@@ -593,10 +568,7 @@ def cli_api_server(
 
     adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
-  if log_to_tmp:
-    logs.log_to_tmp_folder(getattr(logging, log_level.upper()))
-  else:
-    logs.log_to_stderr(getattr(logging, log_level.upper()))
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   config = uvicorn.Config(
       get_fast_api_app(
