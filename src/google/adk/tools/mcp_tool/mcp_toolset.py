@@ -32,6 +32,7 @@ from ..base_toolset import ToolPredicate
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
 from .mcp_session_manager import SseServerParams
+from .mcp_session_manager import StreamableHTTPServerParams
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
@@ -74,7 +75,7 @@ class MCPToolset(BaseToolset):
   def __init__(
       self,
       *,
-      connection_params: StdioServerParameters | SseServerParams,
+      connection_params: StdioServerParameters | SseServerParams | StreamableHTTPServerParams,
       errlog: TextIO = sys.stderr,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
@@ -83,7 +84,9 @@ class MCPToolset(BaseToolset):
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
         `StdioServerParameters` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseServerParams` for a local/remote SSE server.
+
+        `python3`); or `SseServerParams` for a local/remote SSE server; or
+        `StreamableHTTPServerParams` for local/remote Streamable http server.
       errlog: (Optional) TextIO stream for error logging. Use only for
         initializing a local stdio MCP session.
     """
@@ -101,6 +104,7 @@ class MCPToolset(BaseToolset):
         exit_stack=self._exit_stack,
         errlog=self._errlog,
     )
+
     self._session = None
     self.tool_filter = tool_filter
     self._initialized = False
