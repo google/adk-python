@@ -218,7 +218,7 @@ class BaseLlmFlow(ABC):
 
       When the model returns transcription, the author is "user". Otherwise, the
       author is the agent name(not 'model').
-      
+
       Args:
         llm_response: The LLM response from the LLM call.
       """
