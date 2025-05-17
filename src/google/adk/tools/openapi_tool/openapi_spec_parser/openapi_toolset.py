@@ -33,7 +33,7 @@ from ...base_toolset import ToolPredicate
 from .openapi_spec_parser import OpenApiSpecParser
 from .rest_api_tool import RestApiTool
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class OpenAPIToolset(BaseToolset):

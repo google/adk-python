@@ -43,7 +43,7 @@ from .sessions.session import Session
 from .telemetry import tracer
 from .tools.built_in_code_execution_tool import built_in_code_execution
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class Runner:

@@ -24,8 +24,9 @@ from typing import AsyncGenerator
 from typing import Generator
 from typing import Iterable
 from typing import Literal
-from typing import Optional, Union
+from typing import Optional
 from typing import TYPE_CHECKING
+from typing import Union
 
 from anthropic import AnthropicVertex
 from anthropic import NOT_GIVEN
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
 
 __all__ = ["Claude"]
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 MAX_TOKEN = 1024
 

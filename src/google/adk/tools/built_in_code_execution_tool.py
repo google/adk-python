@@ -24,11 +24,10 @@ from typing_extensions import override
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
-
 if TYPE_CHECKING:
   from ..models import LlmRequest
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 @deprecated(

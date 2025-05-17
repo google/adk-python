@@ -18,9 +18,10 @@ import logging
 import os
 import signal
 import sys
-from typing import List, Union
+from typing import List
 from typing import Optional
 from typing import TextIO
+from typing import Union
 
 from typing_extensions import override
 
@@ -51,7 +52,7 @@ except ImportError as e:
 
 from .mcp_tool import MCPTool
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class MCPToolset(BaseToolset):

@@ -34,7 +34,7 @@ from .local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
 from .response_evaluator import ResponseEvaluator
 from .trajectory_evaluator import TrajectoryEvaluator
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 # Constants for default runs and evaluation criteria

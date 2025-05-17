@@ -14,14 +14,15 @@
 
 
 import logging
-from typing import List, Optional, Union
+from typing import List
+from typing import Optional
+from typing import Union
 
 from google.adk.tools.base_toolset import ToolPredicate
 
 from .google_api_toolset import GoogleApiToolset
 
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class BigQueryToolset(GoogleApiToolset):

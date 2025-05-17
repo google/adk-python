@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import logging
-from typing import List, Optional, Union
+from typing import List
+from typing import Optional
+from typing import Union
 
 from fastapi.openapi.models import HTTPBearer
 from typing_extensions import override
@@ -34,8 +36,7 @@ from .clients.connections_client import ConnectionsClient
 from .clients.integration_client import IntegrationClient
 from .integration_connector_tool import IntegrationConnectorTool
 
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 # TODO(cheliu): Apply a common toolset interface

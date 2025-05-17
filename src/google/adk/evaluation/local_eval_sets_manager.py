@@ -19,9 +19,11 @@ import re
 import time
 from typing import Any
 import uuid
+
 from google.genai import types as genai_types
 from pydantic import ValidationError
 from typing_extensions import override
+
 from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -29,7 +31,7 @@ from .eval_case import SessionInput
 from .eval_set import EvalSet
 from .eval_sets_manager import EvalSetsManager
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 

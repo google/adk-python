@@ -24,7 +24,7 @@ from typing_extensions import override
 
 from .base_artifact_service import BaseArtifactService
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class InMemoryArtifactService(BaseArtifactService, BaseModel):
