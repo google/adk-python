@@ -28,7 +28,7 @@ from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 
 if TYPE_CHECKING:
-  from ..sessions.state import State
+  from ..states.state import State
 
 try:
   from authlib.integrations.requests_client import OAuth2Session

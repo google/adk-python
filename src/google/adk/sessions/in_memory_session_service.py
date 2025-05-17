@@ -22,11 +22,11 @@ import uuid
 from typing_extensions import override
 
 from ..events.event import Event
+from ..states import State
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
 from .session import Session
-from .state import State
 
 logger = logging.getLogger('google_adk.' + __name__)
 

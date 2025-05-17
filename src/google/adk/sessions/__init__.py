@@ -16,7 +16,6 @@ import logging
 from .base_session_service import BaseSessionService
 from .in_memory_session_service import InMemorySessionService
 from .session import Session
-from .state import State
 from .vertex_ai_session_service import VertexAiSessionService
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -26,7 +25,6 @@ __all__ = [
     'BaseSessionService',
     'InMemorySessionService',
     'Session',
-    'State',
     'VertexAiSessionService',
 ]
 

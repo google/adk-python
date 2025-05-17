@@ -20,6 +20,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from ..events.event import Event
+from ..states import StateValue
 
 
 class Session(BaseModel):
@@ -49,7 +50,7 @@ class Session(BaseModel):
   """The name of the app."""
   user_id: str
   """The id of the user."""
-  state: dict[str, Any] = Field(default_factory=dict)
+  state: dict[str, StateValue] = Field(default_factory=dict)
   """The state of the session."""
   events: list[Event] = Field(default_factory=list)
   """The events of the session, e.g. user input, model response, function

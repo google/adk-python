@@ -20,7 +20,7 @@ import datetime
 from typing import Any
 from typing import Optional
 
-from ..sessions.state import State
+from ..states.state import State
 from .code_execution_utils import File
 
 _CONTEXT_KEY = '_code_execution_context'
