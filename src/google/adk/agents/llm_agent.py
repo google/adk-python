@@ -167,6 +167,14 @@ class LlmAgent(BaseAgent):
   user messages, tool results, etc.
   """
 
+  max_contents: Optional[int] = None
+  """The maximum number of contents to include in the model request.
+  Hallucinations can lead to compounding error if allowed to persist in the
+  system prompt indefinitely. Recommend setting this large enough to allow
+  relevant content to stay in memory but short enough that older irrelevant
+  content can be forgotten.
+  """
+
   # Controlled input/output configurations - Start
   input_schema: Optional[type[BaseModel]] = None
   """The input schema when agent is used as a tool."""
