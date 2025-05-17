@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import asyncio
 import time
 import warnings
@@ -20,6 +19,7 @@ import warnings
 import agent
 from dotenv import load_dotenv
 from google.adk import Runner
+from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.cli.utils import logs
 from google.adk.sessions import InMemorySessionService
@@ -42,11 +42,18 @@ async def main():
       artifact_service=artifact_service,
       session_service=session_service,
   )
-  session_11 = session_service.create_session(
+  session_11 = await session_service.create_session(
       app_name=app_name, user_id=user_id_1
   )
 
+  total_prompt_tokens = 0
+  total_candidate_tokens = 0
+  total_tokens = 0
+
   async def run_prompt(session: Session, new_message: str):
+    nonlocal total_prompt_tokens
+    nonlocal total_candidate_tokens
+    nonlocal total_tokens
     content = types.Content(
         role='user', parts=[types.Part.from_text(text=new_message)]
     )
@@ -58,16 +65,33 @@ async def main():
     ):
       if event.content.parts and event.content.parts[0].text:
         print(f'** {event.author}: {event.content.parts[0].text}')
+      if event.usage_metadata:
+        total_prompt_tokens += event.usage_metadata.prompt_token_count or 0
+        total_candidate_tokens += (
+            event.usage_metadata.candidates_token_count or 0
+        )
+        total_tokens += event.usage_metadata.total_token_count or 0
+        print(
+            'Turn tokens:'
+            f' {event.usage_metadata.total_token_count} (prompt={event.usage_metadata.prompt_token_count},'
+            f' candidates={event.usage_metadata.candidates_token_count})'
+        )
+
+    print(
+        f'Session tokens: {total_tokens} (prompt={total_prompt_tokens},'
+        f' candidates={total_candidate_tokens})'
+    )
 
   start_time = time.time()
   print('Start time:', start_time)
   print('------------------------------------')
-  await run_prompt(session_11, 'Hi, introduce yourself.')
-  await run_prompt(
-      session_11, 'Roll a die with 100 sides and check if it is prime'
+  await run_prompt(session_11, 'Hi')
+  await run_prompt(session_11, 'Roll a die with 100 sides')
+  print(
+      await artifact_service.list_artifact_keys(
+          app_name=app_name, user_id=user_id_1, session_id=session_11.id
+      )
   )
-  await run_prompt(session_11, 'Roll it again.')
-  await run_prompt(session_11, 'What numbers did I got?')
   end_time = time.time()
   print('------------------------------------')
   print('End time:', end_time)

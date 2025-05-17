@@ -124,6 +124,7 @@ def test_to_cloud_run_happy_path(
         with_ui=True,
         verbosity="info",
         session_db_url="sqlite://",
+        adk_version="0.0.5",
     )
 
     # Assertions
@@ -163,6 +164,7 @@ def test_to_cloud_run_cleans_temp_dir(
         with_ui=False,
         verbosity="info",
         session_db_url=None,
+        adk_version="0.0.5",
     )
 
     assert deleted["path"] == tmp_dir

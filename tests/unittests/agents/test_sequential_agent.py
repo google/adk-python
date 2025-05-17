@@ -53,11 +53,11 @@ class _TestingAgent(BaseAgent):
     )
 
 
-def _create_parent_invocation_context(
+async def _create_parent_invocation_context(
     test_name: str, agent: BaseAgent
 ) -> InvocationContext:
   session_service = InMemorySessionService()
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name='test_app', user_id='test_user'
   )
   return InvocationContext(
@@ -79,7 +79,7 @@ async def test_run_async(request: pytest.FixtureRequest):
           agent_2,
       ],
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, sequential_agent
   )
   events = [e async for e in sequential_agent.run_async(parent_ctx)]
@@ -102,7 +102,7 @@ async def test_run_live(request: pytest.FixtureRequest):
           agent_2,
       ],
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, sequential_agent
   )
   events = [e async for e in sequential_agent.run_live(parent_ctx)]
