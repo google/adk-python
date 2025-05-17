@@ -1,11 +1,13 @@
 from abc import ABC
 from abc import abstractmethod
+from typing import Optional, runtime_checkable
 from typing import Protocol
 
-from google.adk.agents.readonly_context import ReadonlyContext
-from google.adk.tools.base_tool import BaseTool
+from ..agents.readonly_context import ReadonlyContext
+from .base_tool import BaseTool
 
 
+@runtime_checkable
 class ToolPredicate(Protocol):
   """Base class for a predicate that defines the interface to decide whether a
 
@@ -15,7 +17,7 @@ class ToolPredicate(Protocol):
   """
 
   def __call__(
-      self, tool: BaseTool, readonly_context: ReadonlyContext = None
+      self, tool: BaseTool, readonly_context: Optional[ReadonlyContext] = None
   ) -> bool:
     """Decide whether the passed-in tool should be exposed to LLM based on the
 
@@ -33,7 +35,7 @@ class BaseToolset(ABC):
 
   @abstractmethod
   async def get_tools(
-      self, readony_context: ReadonlyContext = None
+      self, readonly_context: Optional[ReadonlyContext] = None
   ) -> list[BaseTool]:
     """Return all tools in the toolset based on the provided context.
 
