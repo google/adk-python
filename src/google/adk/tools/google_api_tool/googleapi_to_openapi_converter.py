@@ -24,7 +24,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class GoogleApiToOpenApiConverter:

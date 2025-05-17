@@ -12,22 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+from __future__ import annotations
+
 from collections import OrderedDict
 import json
 import os
 import tempfile
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
 from vertexai.preview import rag
 
-from ..events.event import Event
-from ..sessions.session import Session
 from . import _utils
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
+
+if TYPE_CHECKING:
+  from ..events.event import Event
+  from ..sessions.session import Session
 
 
 class VertexAiRagMemoryService(BaseMemoryService):
@@ -103,6 +109,8 @@ class VertexAiRagMemoryService(BaseMemoryService):
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query using rag.retrieval_query."""
+    from ..events.event import Event
+
     response = rag.retrieval_query(
         text=query,
         rag_resources=self._vertex_rag_store.rag_resources,

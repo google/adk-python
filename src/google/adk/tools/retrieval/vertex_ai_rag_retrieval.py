@@ -30,7 +30,7 @@ from .base_retrieval_tool import BaseRetrievalTool
 if TYPE_CHECKING:
   from ...models.llm_request import LlmRequest
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class VertexAiRagRetrieval(BaseRetrievalTool):

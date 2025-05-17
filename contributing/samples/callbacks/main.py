@@ -19,7 +19,6 @@ import warnings
 import agent
 from dotenv import load_dotenv
 from google.adk import Runner
-from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.cli.utils import logs
 from google.adk.sessions import InMemorySessionService
@@ -42,7 +41,7 @@ async def main():
       artifact_service=artifact_service,
       session_service=session_service,
   )
-  session_11 = session_service.create_session(
+  session_11 = await session_service.create_session(
       app_name=app_name, user_id=user_id_1
   )
 
@@ -59,25 +58,6 @@ async def main():
       if event.content.parts and event.content.parts[0].text:
         print(f'** {event.author}: {event.content.parts[0].text}')
 
-  async def run_prompt_bytes(session: Session, new_message: str):
-    content = types.Content(
-        role='user',
-        parts=[
-            types.Part.from_bytes(
-                data=str.encode(new_message), mime_type='text/plain'
-            )
-        ],
-    )
-    print('** User says:', content.model_dump(exclude_none=True))
-    async for event in runner.run_async(
-        user_id=user_id_1,
-        session_id=session.id,
-        new_message=content,
-        run_config=RunConfig(save_input_blobs_as_artifacts=True),
-    ):
-      if event.content.parts and event.content.parts[0].text:
-        print(f'** {event.author}: {event.content.parts[0].text}')
-
   start_time = time.time()
   print('Start time:', start_time)
   print('------------------------------------')
@@ -85,7 +65,6 @@ async def main():
   await run_prompt(session_11, 'Roll a die with 100 sides')
   await run_prompt(session_11, 'Roll a die again with 100 sides.')
   await run_prompt(session_11, 'What numbers did I got?')
-  await run_prompt_bytes(session_11, 'Hi bytes')
   print(
       await artifact_service.list_artifact_keys(
           app_name=app_name, user_id=user_id_1, session_id=session_11.id
@@ -97,49 +76,5 @@ async def main():
   print('Total time:', end_time - start_time)
 
 
-def main_sync():
-  app_name = 'my_app'
-  user_id_1 = 'user1'
-  session_service = InMemorySessionService()
-  artifact_service = InMemoryArtifactService()
-  runner = Runner(
-      app_name=app_name,
-      agent=agent.root_agent,
-      artifact_service=artifact_service,
-      session_service=session_service,
-  )
-  session_11 = session_service.create_session(
-      app_name=app_name, user_id=user_id_1
-  )
-
-  def run_prompt(session: Session, new_message: str):
-    content = types.Content(
-        role='user', parts=[types.Part.from_text(text=new_message)]
-    )
-    print('** User says:', content.model_dump(exclude_none=True))
-    for event in runner.run(
-        user_id=user_id_1,
-        session_id=session.id,
-        new_message=content,
-    ):
-      if event.content.parts and event.content.parts[0].text:
-        print(f'** {event.author}: {event.content.parts[0].text}')
-
-  start_time = time.time()
-  print('Start time:', start_time)
-  print('------------------------------------')
-  run_prompt(session_11, 'Hi')
-  run_prompt(session_11, 'Roll a die with 100 sides.')
-  run_prompt(session_11, 'Roll a die again with 100 sides.')
-  run_prompt(session_11, 'What numbers did I got?')
-  end_time = time.time()
-  print('------------------------------------')
-  print('End time:', end_time)
-  print('Total time:', end_time - start_time)
-
-
 if __name__ == '__main__':
-  print('--------------ASYNC--------------------')
   asyncio.run(main())
-  print('--------------SYNC--------------------')
-  main_sync()

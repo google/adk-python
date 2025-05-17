@@ -41,9 +41,7 @@ async def main():
       artifact_service=artifact_service,
       session_service=session_service,
   )
-  session_11 = session_service.create_session(
-      app_name=app_name, user_id=user_id_1
-  )
+  session_11 = await session_service.create_session(app_name, user_id_1)
 
   async def run_prompt(session: Session, new_message: str):
     content = types.Content(
@@ -61,11 +59,9 @@ async def main():
   start_time = time.time()
   print('Start time:', start_time)
   print('------------------------------------')
-  await run_prompt(session_11, 'Hi, introduce yourself.')
-  await run_prompt(
-      session_11, 'Roll a die with 100 sides and check if it is prime'
-  )
-  await run_prompt(session_11, 'Roll it again.')
+  await run_prompt(session_11, 'Hi')
+  await run_prompt(session_11, 'Roll a die.')
+  await run_prompt(session_11, 'Roll a die again.')
   await run_prompt(session_11, 'What numbers did I got?')
   end_time = time.time()
   print('------------------------------------')

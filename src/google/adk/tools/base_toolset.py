@@ -3,8 +3,8 @@ from abc import abstractmethod
 from typing import Optional, runtime_checkable
 from typing import Protocol
 
-from google.adk.agents.readonly_context import ReadonlyContext
-from google.adk.tools.base_tool import BaseTool
+from ..agents.readonly_context import ReadonlyContext
+from .base_tool import BaseTool
 
 
 @runtime_checkable
@@ -17,7 +17,7 @@ class ToolPredicate(Protocol):
   """
 
   def __call__(
-      self, tool: BaseTool, readonly_context: ReadonlyContext = None
+      self, tool: BaseTool, readonly_context: Optional[ReadonlyContext] = None
   ) -> bool:
     """Decide whether the passed-in tool should be exposed to LLM based on the
 

@@ -29,7 +29,7 @@ try:
 except ImportError:
   import logging
 
-  logger = logging.getLogger(__name__)
+  logger = logging.getLogger('google_adk.' + __name__)
   logger.debug(
       'The Vertex sdk is not installed. If you want to use the Vertex RAG with'
       ' agents, please install it. If not, you can ignore this warning.'

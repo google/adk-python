@@ -13,9 +13,11 @@
 # limitations under the License.
 import copy
 from datetime import datetime
+from datetime import timezone
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
+from typing import Optional
 import uuid
 
 from sqlalchemy import Boolean
@@ -49,23 +51,18 @@ from ..events.event import Event
 from . import _session_util
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
-from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 from .state import State
 
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256
 
 
 class DynamicJSON(TypeDecorator):
-  """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON
-
-  serialization for other databases.
-  """
+  """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON serialization for other databases."""
 
   impl = Text  # Default implementation is TEXT
 
@@ -243,10 +240,7 @@ class DatabaseSessionService(BaseSessionService):
   """A session service that uses a database for storage."""
 
   def __init__(self, db_url: str):
-    """
-    Args:
-        db_url: The database URL to connect to.
-    """
+    """Initializes the database session service with a database URL."""
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
     # 3. Initialize all properties
@@ -275,7 +269,7 @@ class DatabaseSessionService(BaseSessionService):
     self.inspector = inspect(self.db_engine)
 
     # DB session factory method
-    self.DatabaseSessionFactory: sessionmaker[DatabaseSessionFactory] = (
+    self.database_session_factory: sessionmaker[DatabaseSessionFactory] = (
         sessionmaker(bind=self.db_engine)
     )
 
@@ -284,7 +278,7 @@ class DatabaseSessionService(BaseSessionService):
     Base.metadata.create_all(self.db_engine)
 
   @override
-  def create_session(
+  async def create_session(
       self,
       *,
       app_name: str,
@@ -298,11 +292,11 @@ class DatabaseSessionService(BaseSessionService):
     # 4. Build the session object with generated id
     # 5. Return the session
 
-    with self.DatabaseSessionFactory() as sessionFactory:
+    with self.database_session_factory() as session_factory:
 
       # Fetch app and user states from storage
-      storage_app_state = sessionFactory.get(StorageAppState, (app_name))
-      storage_user_state = sessionFactory.get(
+      storage_app_state = session_factory.get(StorageAppState, (app_name))
+      storage_user_state = session_factory.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -312,12 +306,12 @@ class DatabaseSessionService(BaseSessionService):
       # Create state tables if not exist
       if not storage_app_state:
         storage_app_state = StorageAppState(app_name=app_name, state={})
-        sessionFactory.add(storage_app_state)
+        session_factory.add(storage_app_state)
       if not storage_user_state:
         storage_user_state = StorageUserState(
             app_name=app_name, user_id=user_id, state={}
         )
-        sessionFactory.add(storage_user_state)
+        session_factory.add(storage_user_state)
 
       # Extract state deltas
       app_state_delta, user_state_delta, session_state = _extract_state_delta(
@@ -341,10 +335,10 @@ class DatabaseSessionService(BaseSessionService):
           id=session_id,
           state=session_state,
       )
-      sessionFactory.add(storage_session)
-      sessionFactory.commit()
+      session_factory.add(storage_session)
+      session_factory.commit()
 
-      sessionFactory.refresh(storage_session)
+      session_factory.refresh(storage_session)
 
       # Merge states for response
       merged_state = _merge_state(app_state, user_state, session_state)
@@ -358,7 +352,7 @@ class DatabaseSessionService(BaseSessionService):
       return session
 
   @override
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
@@ -369,29 +363,37 @@ class DatabaseSessionService(BaseSessionService):
     # 1. Get the storage session entry from session table
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
-    with self.DatabaseSessionFactory() as sessionFactory:
-      storage_session = sessionFactory.get(
+    with self.database_session_factory() as session_factory:
+      storage_session = session_factory.get(
           StorageSession, (app_name, user_id, session_id)
       )
       if storage_session is None:
         return None
 
+      if config and config.after_timestamp:
+        after_dt = datetime.fromtimestamp(
+            config.after_timestamp, tz=timezone.utc
+        )
+        timestamp_filter = StorageEvent.timestamp > after_dt
+      else:
+        timestamp_filter = True
+
       storage_events = (
-          sessionFactory.query(StorageEvent)
+          session_factory.query(StorageEvent)
           .filter(StorageEvent.session_id == storage_session.id)
-          .filter(
-              StorageEvent.timestamp < config.after_timestamp
-              if config
-              else True
-          )
-          .limit(config.num_recent_events if config else None)
+          .filter(timestamp_filter)
           .order_by(StorageEvent.timestamp.asc())
+          .limit(
+              config.num_recent_events
+              if config and config.num_recent_events
+              else None
+          )
           .all()
       )
 
       # Fetch states from storage
-      storage_app_state = sessionFactory.get(StorageAppState, (app_name))
-      storage_user_state = sessionFactory.get(
+      storage_app_state = session_factory.get(StorageAppState, (app_name))
+      storage_user_state = session_factory.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -432,12 +434,12 @@ class DatabaseSessionService(BaseSessionService):
     return session
 
   @override
-  def list_sessions(
+  async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
-    with self.DatabaseSessionFactory() as sessionFactory:
+    with self.database_session_factory() as session_factory:
       results = (
-          sessionFactory.query(StorageSession)
+          session_factory.query(StorageSession)
           .filter(StorageSession.app_name == app_name)
           .filter(StorageSession.user_id == user_id)
           .all()
@@ -455,20 +457,20 @@ class DatabaseSessionService(BaseSessionService):
       return ListSessionsResponse(sessions=sessions)
 
   @override
-  def delete_session(
+  async def delete_session(
       self, app_name: str, user_id: str, session_id: str
   ) -> None:
-    with self.DatabaseSessionFactory() as sessionFactory:
+    with self.database_session_factory() as session_factory:
       stmt = delete(StorageSession).where(
           StorageSession.app_name == app_name,
           StorageSession.user_id == user_id,
           StorageSession.id == session_id,
       )
-      sessionFactory.execute(stmt)
-      sessionFactory.commit()
+      session_factory.execute(stmt)
+      session_factory.commit()
 
   @override
-  def append_event(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     logger.info(f"Append event: {event} to session {session.id}")
 
     if event.partial:
@@ -477,8 +479,8 @@ class DatabaseSessionService(BaseSessionService):
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config
     # 3. Store event to table
-    with self.DatabaseSessionFactory() as sessionFactory:
-      storage_session = sessionFactory.get(
+    with self.database_session_factory() as session_factory:
+      storage_session = session_factory.get(
           StorageSession, (session.app_name, session.user_id, session.id)
       )
 
@@ -492,10 +494,10 @@ class DatabaseSessionService(BaseSessionService):
         )
 
       # Fetch states from storage
-      storage_app_state = sessionFactory.get(
+      storage_app_state = session_factory.get(
           StorageAppState, (session.app_name)
       )
-      storage_user_state = sessionFactory.get(
+      storage_user_state = session_factory.get(
           StorageUserState, (session.app_name, session.user_id)
       )
 
@@ -544,27 +546,17 @@ class DatabaseSessionService(BaseSessionService):
       if event.content:
         storage_event.content = _session_util.encode_content(event.content)
 
-      sessionFactory.add(storage_event)
+      session_factory.add(storage_event)
 
-      sessionFactory.commit()
-      sessionFactory.refresh(storage_session)
+      session_factory.commit()
+      session_factory.refresh(storage_session)
 
       # Update timestamp with commit time
       session.last_update_time = storage_session.update_time.timestamp()
 
     # Also update the in-memory session
-    super().append_event(session=session, event=event)
+    await super().append_event(session=session, event=event)
     return event
-
-  @override
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    raise NotImplementedError()
 
 
 def convert_event(event: StorageEvent) -> Event:

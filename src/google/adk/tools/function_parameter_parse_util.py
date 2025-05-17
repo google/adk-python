@@ -35,7 +35,7 @@ _py_builtin_type_to_schema_type = {
     dict: types.Type.OBJECT,
 }
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _is_builtin_primitive_or_compound(

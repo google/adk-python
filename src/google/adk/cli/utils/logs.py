@@ -14,6 +14,7 @@
 
 import logging
 import os
+import sys
 import tempfile
 import time
 
@@ -22,11 +23,18 @@ LOGGING_FORMAT = (
 )
 
 
-def log_to_stderr(level=logging.INFO):
-  logging.basicConfig(
-      level=level,
-      format=LOGGING_FORMAT,
-  )
+def setup_adk_logger(level=logging.INFO):
+  # Configure the root logger format and level.
+  logging.basicConfig(level=level, format=LOGGING_FORMAT)
+
+  # Set up adk_logger and log to stderr.
+  handler = logging.StreamHandler(sys.stderr)
+  handler.setLevel(level)
+  handler.setFormatter(logging.Formatter(LOGGING_FORMAT))
+
+  adk_logger = logging.getLogger('google_adk')
+  adk_logger.setLevel(level)
+  adk_logger.addHandler(handler)
 
 
 def log_to_tmp_folder(

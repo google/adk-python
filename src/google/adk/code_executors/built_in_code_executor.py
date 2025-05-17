@@ -23,8 +23,12 @@ from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 
 
-class GeminiCodeExecutor(BaseCodeExecutor):
-  """A code executor for Gemini 2.0+ models to exeute code."""
+class BuiltInCodeExecutor(BaseCodeExecutor):
+  """A code executor that uses the Model's built-in code executor.
+
+  Currently only supports Gemini 2.0+ models, but will be expanded to
+  other models.
+  """
 
   @override
   def execute_code(

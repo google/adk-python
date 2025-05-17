@@ -145,7 +145,7 @@ def after_tool_cb3(tool, args, tool_context, tool_response):
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash-exp',
+    model='gemini-2.0-flash',
     name='data_processing_agent',
     description=(
         'hello world agent that can roll a dice of 8 sides and check prime'

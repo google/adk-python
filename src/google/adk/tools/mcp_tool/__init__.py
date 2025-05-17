@@ -15,7 +15,8 @@
 __all__ = []
 
 try:
-  from .conversion_utils import adk_to_mcp_tool_type, gemini_to_json_schema
+  from .conversion_utils import adk_to_mcp_tool_type
+  from .conversion_utils import gemini_to_json_schema
   from .mcp_tool import MCPTool
   from .mcp_toolset import MCPToolset
 
@@ -30,7 +31,7 @@ except ImportError as e:
   import logging
   import sys
 
-  logger = logging.getLogger(__name__)
+  logger = logging.getLogger('google_adk.' + __name__)
 
   if sys.version_info < (3, 10):
     logger.warning(
