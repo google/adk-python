@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.genai import types
+import pytest
+
 from google.adk.agents import Agent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.flows.llm_flows import instructions
 from google.adk.models import LlmRequest
 from google.adk.sessions import Session
-from google.genai import types
-import pytest
 
 from ... import utils
 
@@ -33,15 +34,21 @@ async def test_build_system_instruction():
       model="gemini-1.5-flash",
       name="agent",
       instruction=("""Use the echo_info tool to echo { customerId }, \
-{{customer_int  }, {  non-identifier-float}}, \
-{'key1': 'value1'} and {{'key2': 'value2'}}."""),
+{{customer_int  }, {customer.profile.name}, {customer?.preferences.alias}, \
+{  non-identifier-float}}, {'key1': 'value1'} and {{'key2': 'value2'}}."""),
   )
   invocation_context = await utils.create_invocation_context(agent=agent)
   invocation_context.session = Session(
       app_name="test_app",
       user_id="test_user",
       id="test_id",
-      state={"customerId": "1234567890", "customer_int": 30},
+      state={
+          "customerId": "1234567890",
+          "customer_int": 30,
+          "customer": {
+              "profile": {"name": "Test User", "email": "test@example.com"}
+          },
+      },
   )
 
   async for _ in instructions.request_processor.run_async(
@@ -52,7 +59,7 @@ async def test_build_system_instruction():
 
   assert request.config.system_instruction == (
       """Use the echo_info tool to echo 1234567890, 30, \
-{  non-identifier-float}}, {'key1': 'value1'} and {{'key2': 'value2'}}."""
+Test User, , {  non-identifier-float}}, {'key1': 'value1'} and {{'key2': 'value2'}}."""
   )
 
 
@@ -292,4 +299,40 @@ async def test_build_system_instruction_with_namespace():
 
   assert request.config.system_instruction == (
       """Use the echo_info tool to echo 1234567890, app_value, user_value, {a:key}."""
+  )
+
+
+@pytest.mark.asyncio
+async def test_nested_templating():
+  request = LlmRequest(
+      model="gemini-1.5-flash",
+      config=types.GenerateContentConfig(system_instruction=""),
+  )
+  agent = Agent(
+      model="gemini-1.5-flash",
+      name="agent",
+      instruction=(
+          """Echo the following: {user.profile.name}, {user.profile.email}, {user.settings?.preferences.theme}, {user.preferences.value}"""
+      ),
+  )
+  invocation_context = utils.create_invocation_context(agent=agent)
+  invocation_context.session = Session(
+      app_name="test_app",
+      user_id="test_user",
+      id="test_id",
+      state={
+          "user": {
+              "profile": {"name": "Test User", "email": "test@example.com"}
+          }
+      },
+  )
+
+  async for _ in instructions.request_processor.run_async(
+      invocation_context,
+      request,
+  ):
+    pass
+
+  assert request.config.system_instruction == (
+      """Echo the following: Test User, test@example.com, , {user.preferences.value}"""
   )
