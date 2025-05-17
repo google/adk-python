@@ -109,6 +109,49 @@ coordinator = LlmAgent(
 )
 ```
 
+
+### 🧩 New Tool: `get_city_population()`
+
+ADK now includes a sample custom tool called `get_city_population()` to demonstrate how agents can be extended with additional real-world capabilities.
+
+**Function Purpose**  
+This tool allows the agent to answer questions such as:
+
+> “What is the population of Tokyo?”
+
+The agent returns the approximate population in millions from a predefined dictionary.
+
+**Supported Cities**
+- New York
+- Tokyo
+- Paris
+- London
+- Beijing
+
+**Code Sample**
+
+```python
+from google.adk.tools import get_city_population
+
+# Inside your agent definition
+my_agent = Agent(
+    name="population_agent",
+    model="gemini-2.0-pro",
+    instruction="Answer population queries for supported cities.",
+    tools=[get_city_population]
+)
+```
+
+**Sample Query and Response**
+
+
+<img src="https://raw.githubusercontent.com/Yincici/adk-python/main/assets/dev_ui_population_demo.png" width="720"/>
+
+
+> **User**: What is the population of Paris?  
+> **Agent**: The population of Paris is approximately 2.2 million.
+
+
 ### Development UI
 
 A built-in development UI to help you test, evaluate, debug, and showcase your agent(s).
