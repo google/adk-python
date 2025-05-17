@@ -97,7 +97,8 @@ class Gemini(BaseLlm):
           config=llm_request.config,
       )
       response = None
-      text = ''
+      thought_text = ''
+      content_text = ''
       # for sse, similar as bidi (see receive method in gemini_llm_connecton.py),
       # we need to mark those text content as partial and after all partial
       # contents are sent, we send an accumulated event which contains all the
@@ -111,32 +112,43 @@ class Gemini(BaseLlm):
             and llm_response.content.parts
             and llm_response.content.parts[0].text
         ):
-          text += llm_response.content.parts[0].text
+          part0 = llm_response.content.parts[0]
+          if part0.thought:
+            thought_text += part0.text
+          else:
+            content_text += part0.text
           llm_response.partial = True
-        elif text and (
+        elif (thought_text or content_text) and (
             not llm_response.content
             or not llm_response.content.parts
             # don't yield the merged text event when receiving audio data
             or not llm_response.content.parts[0].inline_data
         ):
+          parts = []
+          if thought_text:
+            parts.append(types.Part(text=thought_text, thought=True))
+          if content_text:
+            parts.append(types.Part.from_text(text=content_text))
+          print(f'parts: {parts}')
           yield LlmResponse(
-              content=types.ModelContent(
-                  parts=[types.Part.from_text(text=text)],
-              ),
+              content=types.ModelContent(parts=parts),
               usage_metadata=llm_response.usage_metadata,
           )
-          text = ''
+          thought_text = ''
+          content_text = ''
         yield llm_response
       if (
-          text
-          and response
+          response
           and response.candidates
           and response.candidates[0].finish_reason == types.FinishReason.STOP
       ):
+        parts = []
+        if thought_text:
+          parts.append(types.Part(text=thought_text, thought=True))
+        if content_text:
+          parts.append(types.Part.from_text(text=content_text))
         yield LlmResponse(
-            content=types.ModelContent(
-                parts=[types.Part.from_text(text=text)],
-            ),
+            content=types.ModelContent(parts=parts),
         )
 
     else:
