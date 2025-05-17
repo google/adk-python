@@ -168,7 +168,7 @@ class MCPSessionManager:
       connection_params: StdioServerParameters | SseServerParams,
       exit_stack: AsyncExitStack,
       errlog: TextIO = sys.stderr,
-  ) -> ClientSession:
+  ):
     """Initializes the MCP session manager.
 
     Example usage:
