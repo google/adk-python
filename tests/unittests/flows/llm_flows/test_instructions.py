@@ -36,7 +36,7 @@ async def test_build_system_instruction():
 {{customer_int  }, {  non-identifier-float}}, \
 {'key1': 'value1'} and {{'key2': 'value2'}}."""),
   )
-  invocation_context = utils.create_invocation_context(agent=agent)
+  invocation_context = await utils.create_invocation_context(agent=agent)
   invocation_context.session = Session(
       app_name="test_app",
       user_id="test_user",
@@ -61,6 +61,8 @@ async def test_function_system_instruction():
   def build_function_instruction(readonly_context: ReadonlyContext) -> str:
     return (
         "This is the function agent instruction for invocation:"
+        " provider template intact { customerId }"
+        " provider template intact { customer_int }"
         f" {readonly_context.invocation_id}."
     )
 
@@ -73,7 +75,7 @@ async def test_function_system_instruction():
       name="agent",
       instruction=build_function_instruction,
   )
-  invocation_context = utils.create_invocation_context(agent=agent)
+  invocation_context = await utils.create_invocation_context(agent=agent)
   invocation_context.session = Session(
       app_name="test_app",
       user_id="test_user",
@@ -88,9 +90,11 @@ async def test_function_system_instruction():
     pass
 
   assert request.config.system_instruction == (
-      "This is the function agent instruction for invocation: test_id."
+      "This is the function agent instruction for invocation:"
+      " provider template intact { customerId }"
+      " provider template intact { customer_int }"
+      " test_id."
   )
-
 
 @pytest.mark.asyncio
 async def test_async_function_system_instruction():
@@ -99,6 +103,8 @@ async def test_async_function_system_instruction():
   ) -> str:
     return (
         "This is the function agent instruction for invocation:"
+        " provider template intact { customerId }"
+        " provider template intact { customer_int }"
         f" {readonly_context.invocation_id}."
     )
 
@@ -111,7 +117,7 @@ async def test_async_function_system_instruction():
       name="agent",
       instruction=build_function_instruction,
   )
-  invocation_context = utils.create_invocation_context(agent=agent)
+  invocation_context = await utils.create_invocation_context(agent=agent)
   invocation_context.session = Session(
       app_name="test_app",
       user_id="test_user",
@@ -126,7 +132,10 @@ async def test_async_function_system_instruction():
     pass
 
   assert request.config.system_instruction == (
-      "This is the function agent instruction for invocation: test_id."
+      "This is the function agent instruction for invocation:"
+      " provider template intact { customerId }"
+      " provider template intact { customer_int }"
+      " test_id."
   )
 
 
@@ -147,7 +156,7 @@ async def test_global_system_instruction():
       model="gemini-1.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
-  invocation_context = utils.create_invocation_context(agent=sub_agent)
+  invocation_context = await utils.create_invocation_context(agent=sub_agent)
   invocation_context.session = Session(
       app_name="test_app",
       user_id="test_user",
@@ -189,7 +198,7 @@ async def test_function_global_system_instruction():
       model="gemini-1.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
-  invocation_context = utils.create_invocation_context(agent=sub_agent)
+  invocation_context = await utils.create_invocation_context(agent=sub_agent)
   invocation_context.session = Session(
       app_name="test_app",
       user_id="test_user",
@@ -231,7 +240,7 @@ async def test_async_function_global_system_instruction():
       model="gemini-1.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
-  invocation_context = utils.create_invocation_context(agent=sub_agent)
+  invocation_context = await utils.create_invocation_context(agent=sub_agent)
   invocation_context.session = Session(
       app_name="test_app",
       user_id="test_user",
@@ -263,7 +272,7 @@ async def test_build_system_instruction_with_namespace():
           """Use the echo_info tool to echo { customerId }, {app:key}, {user:key}, {a:key}."""
       ),
   )
-  invocation_context = utils.create_invocation_context(agent=agent)
+  invocation_context = await utils.create_invocation_context(agent=agent)
   invocation_context.session = Session(
       app_name="test_app",
       user_id="test_user",

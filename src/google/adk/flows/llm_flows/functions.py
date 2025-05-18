@@ -41,7 +41,7 @@ from ...tools.tool_context import ToolContext
 AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
 REQUEST_EUC_FUNCTION_CALL_NAME = 'adk_request_credential'
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def generate_client_function_call_id() -> str:
@@ -106,7 +106,7 @@ def generate_auth_event(
         args=AuthToolArguments(
             function_call_id=function_call_id,
             auth_config=auth_config,
-        ).model_dump(exclude_none=True),
+        ).model_dump(exclude_none=True, by_alias=True),
     )
     request_euc_function_call.id = generate_client_function_call_id()
     long_running_tool_ids.add(request_euc_function_call.id)
