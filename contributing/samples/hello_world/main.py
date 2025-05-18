@@ -17,11 +17,9 @@ import time
 
 import agent
 from dotenv import load_dotenv
-from google.adk import Runner
 from google.adk.agents.run_config import RunConfig
-from google.adk.artifacts import InMemoryArtifactService
 from google.adk.cli.utils import logs
-from google.adk.sessions import InMemorySessionService
+from google.adk.runners import InMemoryRunner
 from google.adk.sessions import Session
 from google.genai import types
 
@@ -32,15 +30,11 @@ logs.log_to_tmp_folder()
 async def main():
   app_name = 'my_app'
   user_id_1 = 'user1'
-  session_service = InMemorySessionService()
-  artifact_service = InMemoryArtifactService()
-  runner = Runner(
-      app_name=app_name,
+  runner = InMemoryRunner(
       agent=agent.root_agent,
-      artifact_service=artifact_service,
-      session_service=session_service,
+      app_name=app_name,
   )
-  session_11 = await session_service.create_session(
+  session_11 = await runner.session_service.create_session(
       app_name=app_name, user_id=user_id_1
   )
 
@@ -85,7 +79,7 @@ async def main():
   await run_prompt(session_11, 'What numbers did I got?')
   await run_prompt_bytes(session_11, 'Hi bytes')
   print(
-      await artifact_service.list_artifact_keys(
+      await runner.artifact_service.list_artifact_keys(
           app_name=app_name, user_id=user_id_1, session_id=session_11.id
       )
   )

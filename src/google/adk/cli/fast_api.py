@@ -85,7 +85,7 @@ from .utils import create_empty_state
 from .utils import envs
 from .utils import evals
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 _EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"

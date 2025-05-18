@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional, override
+from typing import List
+from typing import Optional
 
 import toolbox_core as toolbox
+from typing_extensions import override
 
 from ..agents.readonly_context import ReadonlyContext
 from .base_tool import BaseTool

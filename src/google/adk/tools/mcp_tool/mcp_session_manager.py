@@ -13,16 +13,21 @@
 # limitations under the License.
 
 import asyncio
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack
 import functools
 import logging
 import sys
-from typing import Any, Optional, TextIO
+from typing import Any
+from typing import Optional
+from typing import TextIO
+
 import anyio
 from pydantic import BaseModel
 
 try:
-  from mcp import ClientSession, StdioServerParameters
+  from mcp import ClientSession
+  from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
 except ImportError as e:
@@ -36,7 +41,7 @@ except ImportError as e:
   else:
     raise e
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class SseServerParams(BaseModel):
@@ -163,7 +168,7 @@ class MCPSessionManager:
       connection_params: StdioServerParameters | SseServerParams,
       exit_stack: AsyncExitStack,
       errlog: TextIO = sys.stderr,
-  ) -> ClientSession:
+  ):
     """Initializes the MCP session manager.
 
     Example usage:
