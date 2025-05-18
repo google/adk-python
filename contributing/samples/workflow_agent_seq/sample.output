@@ -1,0 +1,82 @@
+----Session to create memory: a05683c9-4a19-4ba8-b810-e90fc48be566 ----------------------
+** User says: {'parts': [{'text': 'Write a python function to do quicksort.'}], 'role': 'user'}
+** CodeWriterAgent: ```python
+def quicksort(arr):
+    if len(arr) < 2:
+        return arr
+    else:
+        pivot = arr[0]
+        less = [i for i in arr[1:] if i <= pivot]
+        greater = [i for i in arr[1:] if i > pivot]
+        return quicksort(less) + [pivot] + quicksort(greater)
+
+```
+
+** CodeReviewerAgent: *   **Correctness:** The code is functionally correct.
+*   **Readability:** The code is fairly readable, utilizing list comprehensions effectively.
+*   **Efficiency:** The space complexity is `O(n)` due to the creation of new lists (`less` and `greater`) in each recursive call. Choosing the first element as the pivot can lead to `O(n^2)` time complexity in the worst-case scenario (e.g., a sorted array). A better pivot selection strategy (e.g., random pivot) would improve average performance.
+*   **Best Practices:** While the code works, it's not the most efficient implementation of quicksort due to the space complexity and potential for worst-case time complexity. An in-place quicksort algorithm would be more efficient in terms of space.
+
+** CodeRefactorerAgent: ```python
+import random
+
+def quicksort(arr):
+    """
+    Sorts a list using the quicksort algorithm.  This implementation
+    uses a randomly selected pivot to improve average-case performance
+    and performs the sort in-place to reduce space complexity.
+
+    Args:
+        arr (list): The list to be sorted.
+
+    Returns:
+        list: The sorted list.
+    """
+    def _quicksort(arr, low, high):
+        if low < high:
+            pi = partition(arr, low, high)
+            _quicksort(arr, low, pi-1)
+            _quicksort(arr, pi+1, high)
+
+    def partition(arr, low, high):
+        # Choose a random pivot
+        pivot_index = random.randint(low, high)
+        arr[pivot_index], arr[high] = arr[high], arr[pivot_index]
+        pivot = arr[high]
+
+        i = (low - 1)
+        for j in range(low, high):
+            if arr[j] <= pivot:
+                i += 1
+                arr[i], arr[j] = arr[j], arr[i]
+
+        arr[i + 1], arr[high] = arr[high], arr[i + 1]
+        return (i + 1)
+
+    _quicksort(arr, 0, len(arr)-1)
+    return arr
+```
+** User says: {'parts': [{'text': 'Write another python function to do bubble sort.'}], 'role': 'user'}
+** CodeWriterAgent: ```python
+def bubble_sort(arr):
+    n = len(arr)
+    for i in range(n):
+        for j in range(0, n-i-1):
+            if arr[j] > arr[j+1]:
+                arr[j], arr[j+1] = arr[j+1], arr[j]
+    return arr
+
+```
+
+** CodeReviewerAgent: No major issues found.
+
+** CodeRefactorerAgent: ```python
+def bubble_sort(arr):
+    n = len(arr)
+    for i in range(n):
+        for j in range(0, n-i-1):
+            if arr[j] > arr[j+1]:
+                arr[j], arr[j+1] = arr[j+1], arr[j]
+    return arr
+```
+-------------------------------------------------------------------
