@@ -280,7 +280,7 @@ def get_fast_api_app(
 
         # If any tasks are still pending, log it
         if pending:
-          logger.warn(
+          logger.warning(
               f"{len(pending)} toolset cleanup tasks didn't complete in time"
           )
           for task in pending:
