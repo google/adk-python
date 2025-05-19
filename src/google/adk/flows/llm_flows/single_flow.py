@@ -25,7 +25,7 @@ from . import identity
 from . import instructions
 from .base_llm_flow import BaseLlmFlow
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class SingleFlow(BaseLlmFlow):

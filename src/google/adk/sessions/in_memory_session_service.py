@@ -28,7 +28,7 @@ from .base_session_service import ListSessionsResponse
 from .session import Session
 from .state import State
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class InMemorySessionService(BaseSessionService):
@@ -167,7 +167,7 @@ class InMemorySessionService(BaseSessionService):
             break
           i -= 1
         if i >= 0:
-          copied_session.events = copied_session.events[i + 1:]
+          copied_session.events = copied_session.events[i + 1 :]
 
     return self._merge_state(app_name, user_id, copied_session)
 

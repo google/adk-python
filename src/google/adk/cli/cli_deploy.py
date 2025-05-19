@@ -42,7 +42,7 @@ ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 # Set up environment variables - End
 
 # Install ADK - Start
-RUN pip install google-adk
+RUN pip install google-adk=={adk_version}
 # Install ADK - End
 
 # Copy agent - Start
@@ -86,6 +86,7 @@ def to_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    adk_version: str,
 ):
   """Deploys an agent to Google Cloud Run.
 
@@ -114,6 +115,7 @@ def to_cloud_run(
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     session_db_url: The database URL to connect the session.
+    adk_version: The ADK version to use in Cloud Run.
   """
   app_name = app_name or os.path.basename(agent_folder)
 
@@ -150,6 +152,7 @@ def to_cloud_run(
         if session_db_url
         else '',
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        adk_version=adk_version,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)

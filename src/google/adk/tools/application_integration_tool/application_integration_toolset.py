@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from typing import List
 from typing import Optional
 from typing import Union
@@ -24,6 +25,7 @@ from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes
 from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
+from ...auth.auth_schemes import AuthScheme
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
@@ -33,6 +35,8 @@ from ..openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
 from .clients.connections_client import ConnectionsClient
 from .clients.integration_client import IntegrationClient
 from .integration_connector_tool import IntegrationConnectorTool
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 # TODO(cheliu): Apply a common toolset interface
@@ -93,6 +97,8 @@ class ApplicationIntegrationToolset(BaseToolset):
       # tool/python function description.
       tool_instructions: Optional[str] = "",
       service_account_json: Optional[str] = None,
+      auth_scheme: Optional[AuthScheme] = None,
+      auth_credential: Optional[AuthCredential] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
     """Args:
@@ -132,6 +138,8 @@ class ApplicationIntegrationToolset(BaseToolset):
     self._tool_name_prefix = tool_name_prefix
     self._tool_instructions = tool_instructions
     self._service_account_json = service_account_json
+    self._auth_scheme = auth_scheme
+    self._auth_credential = auth_credential
     self.tool_filter = tool_filter
 
     integration_client = IntegrationClient(
@@ -212,6 +220,27 @@ class ApplicationIntegrationToolset(BaseToolset):
         rest_api_tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         rest_api_tool.configure_auth_credential(auth_credential)
+
+      auth_override_enabled = connection_details.get(
+          "authOverrideEnabled", False
+      )
+
+      if (
+          self._auth_scheme
+          and self._auth_credential
+          and not auth_override_enabled
+      ):
+        # Case: Auth provided, but override is OFF. Don't use provided auth.
+        logger.warning(
+            "Authentication schema and credentials are not used because"
+            " authOverrideEnabled is not enabled in the connection."
+        )
+        connector_auth_scheme = None
+        connector_auth_credential = None
+      else:
+        connector_auth_scheme = self._auth_scheme
+        connector_auth_credential = self._auth_credential
+
       self._tools.append(
           IntegrationConnectorTool(
               name=rest_api_tool.name,
@@ -223,6 +252,8 @@ class ApplicationIntegrationToolset(BaseToolset):
               action=action,
               operation=operation,
               rest_api_tool=rest_api_tool,
+              auth_scheme=connector_auth_scheme,
+              auth_credential=connector_auth_credential,
           )
       )
 

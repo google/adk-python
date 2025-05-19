@@ -17,7 +17,8 @@ from typing import Optional
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
-from .mcp_session_manager import MCPSessionManager, retry_on_closed_resource
+from .mcp_session_manager import MCPSessionManager
+from .mcp_session_manager import retry_on_closed_resource
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
@@ -36,9 +37,9 @@ except ImportError as e:
     raise e
 
 
-from ..base_tool import BaseTool
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ..base_tool import BaseTool
 from ..openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
 from ..tool_context import ToolContext
 
@@ -79,8 +80,7 @@ class MCPTool(BaseTool):
       raise ValueError("mcp_tool cannot be None")
     if mcp_session is None:
       raise ValueError("mcp_session cannot be None")
-    self.name = mcp_tool.name
-    self.description = mcp_tool.description if mcp_tool.description else ""
+    super().__init__(name=mcp_tool.name, description=mcp_tool.description or "")
     self._mcp_tool = mcp_tool
     self._mcp_session = mcp_session
     self._mcp_session_manager = mcp_session_manager
