@@ -15,9 +15,9 @@
 from google.adk.tools.application_integration_tool.application_integration_toolset import ApplicationIntegrationToolset
 
 jira_tool = ApplicationIntegrationToolset(
-    project="gen-lang-client-0707433693",
-    location="us-east4",
-    connection="jira",
+    project="your-gcp-project-id",  # replace with your GCP project ID
+    location="your-regions",  # replace your regions
+    connection="your-integration-connection-name", #replace with your connection name
     entity_operations={
         "Issues": ["GET", "LIST"],
     },
