@@ -45,7 +45,6 @@ dependencies = [
   "sqlalchemy>=2.0",                         # SQL database ORM
   "tzlocal>=5.3",                            # Time zone utilities
   "uvicorn>=0.34.0",                         # ASGI server for FastAPI
-  "toolbox-core>=0.1.0",
   # go/keep-sorted end
 ]
 dynamic = ["version"]
@@ -113,6 +112,7 @@ extensions = [
   "litellm>=1.63.11",                     # For LiteLLM support
   "llama-index-readers-file>=0.4.0",      # For retrieval using LlamaIndex.
   "lxml>=5.3.0",                          # For load_web_page tool.
+  "toolbox-core>=0.1.0",                  # For tools.toolbox_toolset.ToolboxToolset
 ]
 
 
