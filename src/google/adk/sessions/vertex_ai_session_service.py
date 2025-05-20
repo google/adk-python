@@ -14,7 +14,8 @@
 import logging
 import re
 import time
-from typing import Any, Optional
+from typing import Any
+from typing import Optional
 
 from dateutil import parser
 from google import genai
@@ -28,9 +29,8 @@ from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
 from .session import Session
 
-
 isoparse = parser.isoparse
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class VertexAiSessionService(BaseSessionService):
@@ -119,7 +119,7 @@ class VertexAiSessionService(BaseSessionService):
       user_id: str,
       session_id: str,
       config: Optional[GetSessionConfig] = None,
-  ) -> Session:
+  ) -> Optional[Session]:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
     # Get session resource

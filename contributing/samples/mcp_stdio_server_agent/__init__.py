@@ -12,20 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-
-logger = logging.getLogger('google_adk.' + __name__)
-
-__all__ = []
-
-try:
-  from .agent_evaluator import AgentEvaluator
-
-  __all__.append('AgentEvaluator')
-except ImportError:
-  logger.debug(
-      'The Vertex[eval] sdk is not installed. If you want to use the Vertex'
-      ' Evaluation with agents, please install it(pip install'
-      ' "google-cloud-aiplatform[evaluation]). If not, you can ignore this'
-      ' warning.'
-  )
+from . import agent

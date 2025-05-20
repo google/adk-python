@@ -24,11 +24,10 @@ from typing_extensions import override
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
-
 if TYPE_CHECKING:
   from ..models import LlmRequest
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 @deprecated(
@@ -53,8 +52,8 @@ class BuiltInCodeExecutionTool(BaseTool):
       llm_request: LlmRequest,
   ) -> None:
     logger.warning(
-        'BuiltInCodeExecutionTool is deprecated. Please use the new'
-        ' BuiltInCodeExecutor instead.'
+        'BuiltInCodeExecutionTool is deprecated and will be removed in 1.1.0.'
+        ' Please use the new BuiltInCodeExecutor instead.'
     )
     if llm_request.model and llm_request.model.startswith('gemini-2'):
       llm_request.config = llm_request.config or types.GenerateContentConfig()

@@ -13,7 +13,10 @@
 # limitations under the License.
 
 import logging
-from typing import Any, Dict, Optional, Union
+from typing import Any
+from typing import Dict
+from typing import Optional
+from typing import Union
 
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
@@ -26,8 +29,7 @@ from ..openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
 from ..openapi_tool.openapi_spec_parser.tool_auth_handler import ToolAuthHandler
 from ..tool_context import ToolContext
 
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class IntegrationConnectorTool(BaseTool):

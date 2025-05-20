@@ -36,7 +36,7 @@ from .llm_response import LlmResponse
 if TYPE_CHECKING:
   from .llm_request import LlmRequest
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}

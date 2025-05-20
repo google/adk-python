@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-from datetime import datetime, timezone
+from datetime import datetime
+from datetime import timezone
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
+from typing import Optional
 import uuid
 
 from sqlalchemy import Boolean
@@ -53,8 +55,7 @@ from .base_session_service import ListSessionsResponse
 from .session import Session
 from .state import State
 
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256
