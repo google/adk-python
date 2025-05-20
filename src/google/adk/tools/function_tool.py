@@ -33,7 +33,17 @@ class FunctionTool(BaseTool):
   """
 
   def __init__(self, func: Callable[..., Any]):
-    super().__init__(name=func.__name__, description=func.__doc__)
+    """Extract metadata from a callable object."""
+    if inspect.isfunction(func) or inspect.ismethod(func):
+      # Handle regular functions and methods
+      name = func.__name__
+      doc = func.__doc__ or ''
+    else:
+      # Handle objects with __call__ method
+      call_method = func.__call__
+      name = func.__class__.__name__
+      doc = call_method.__doc__ or func.__doc__ or ''
+    super().__init__(name=name, description=doc)
     self.func = func
 
   @override
@@ -76,7 +86,14 @@ class FunctionTool(BaseTool):
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
       return {'error': error_str}
 
-    if inspect.iscoroutinefunction(self.func):
+    # Functions are callable objects, but not all callable objects are functions
+    # checking coroutine function is not enough. We also need to check whether
+    # Callable's __call__ function is a coroutine funciton
+    if (
+        inspect.iscoroutinefunction(self.func)
+        or hasattr(self.func, '__call__')
+        and inspect.iscoroutinefunction(self.func.__call__)
+    ):
       return await self.func(**args_to_call) or {}
     else:
       return self.func(**args_to_call) or {}
