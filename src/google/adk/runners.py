@@ -41,7 +41,7 @@ from .sessions.base_session_service import BaseSessionService
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry import tracer
-from .tools.built_in_code_execution_tool import built_in_code_execution
+from .tools._built_in_code_execution_tool import built_in_code_execution
 
 logger = logging.getLogger('google_adk.' + __name__)
 

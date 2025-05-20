@@ -16,7 +16,6 @@
 from ..auth.auth_tool import AuthToolArguments
 from .apihub_tool.apihub_toolset import APIHubToolset
 from .base_tool import BaseTool
-from .built_in_code_execution_tool import built_in_code_execution
 from .example_tool import ExampleTool
 from .exit_loop_tool import exit_loop
 from .function_tool import FunctionTool
@@ -34,7 +33,6 @@ __all__ = [
     'APIHubToolset',
     'AuthToolArguments',
     'BaseTool',
-    'built_in_code_execution',
     'google_search',
     'VertexAiSearchTool',
     'ExampleTool',
