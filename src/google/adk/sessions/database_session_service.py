@@ -476,7 +476,7 @@ class DatabaseSessionService(BaseSessionService):
     if event.partial:
       return event
 
-    session = self.get_session(
+    session = await self.get_session(
         app_name=session.app_name,
         user_id=session.user_id,
         session_id=session.id,
