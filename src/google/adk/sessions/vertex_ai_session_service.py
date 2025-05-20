@@ -119,7 +119,7 @@ class VertexAiSessionService(BaseSessionService):
       user_id: str,
       session_id: str,
       config: Optional[GetSessionConfig] = None,
-  ) -> Session:
+  ) -> Optional[Session]:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
     # Get session resource
