@@ -25,7 +25,7 @@ from ..tools.agent_tool import AgentTool
 from ..tools.base_tool import BaseTool
 from ..tools.function_tool import FunctionTool
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 try:
   from ..tools.retrieval.base_retrieval_tool import BaseRetrievalTool

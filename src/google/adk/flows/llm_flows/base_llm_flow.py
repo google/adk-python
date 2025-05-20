@@ -48,7 +48,7 @@ if TYPE_CHECKING:
   from ._base_llm_processor import BaseLlmRequestProcessor
   from ._base_llm_processor import BaseLlmResponseProcessor
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class BaseLlmFlow(ABC):
@@ -218,7 +218,7 @@ class BaseLlmFlow(ABC):
 
       When the model returns transcription, the author is "user". Otherwise, the
       author is the agent name(not 'model').
-      
+
       Args:
         llm_response: The LLM response from the LLM call.
       """
