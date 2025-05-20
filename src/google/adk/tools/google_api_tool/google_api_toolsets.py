@@ -26,6 +26,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 class BigQueryToolset(GoogleApiToolset):
+  """Auto-generated Bigquery toolset based on Google BigQuery API v2 spec exposed by Google API discovery API"""
 
   def __init__(
       self,
@@ -37,6 +38,7 @@ class BigQueryToolset(GoogleApiToolset):
 
 
 class CalendarToolset(GoogleApiToolset):
+  """Auto-generated Calendar toolset based on Google Calendar API v3 spec exposed by Google API discovery API"""
 
   def __init__(
       self,
@@ -48,6 +50,7 @@ class CalendarToolset(GoogleApiToolset):
 
 
 class GmailToolset(GoogleApiToolset):
+  """Auto-generated Gmail toolset based on Google Gmail API v1 spec exposed by Google API discovery API"""
 
   def __init__(
       self,
@@ -59,6 +62,7 @@ class GmailToolset(GoogleApiToolset):
 
 
 class YoutubeToolset(GoogleApiToolset):
+  """Auto-generated Youtube toolset based on Youtube API v3 spec exposed by Google API discovery API"""
 
   def __init__(
       self,
@@ -70,6 +74,7 @@ class YoutubeToolset(GoogleApiToolset):
 
 
 class SlidesToolset(GoogleApiToolset):
+  """Auto-generated Slides toolset based on Google Slides API v1 spec exposed by Google API discovery API"""
 
   def __init__(
       self,
@@ -81,6 +86,7 @@ class SlidesToolset(GoogleApiToolset):
 
 
 class SheetsToolset(GoogleApiToolset):
+  """Auto-generated Sheets toolset based on Google Sheets API v4 spec exposed by Google API discovery API"""
 
   def __init__(
       self,
@@ -92,6 +98,7 @@ class SheetsToolset(GoogleApiToolset):
 
 
 class DocsToolset(GoogleApiToolset):
+  """Auto-generated Docs toolset based on Google Docs API v1 spec exposed by Google API discovery API"""
 
   def __init__(
       self,

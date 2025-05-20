@@ -11,6 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""Auto-generated tools and toolsets for Google APIs.
+
+These tools and toolsets are auto-generated based on the API specifications
+provided by the Google API Discovery API.
+"""
+
+from .google_api_tool import GoogleApiTool
+from .google_api_toolset import GoogleApiToolset
+from .google_api_toolsets import BigQueryToolset
+from .google_api_toolsets import CalendarToolset
+from .google_api_toolsets import DocsToolset
+from .google_api_toolsets import GmailToolset
+from .google_api_toolsets import SheetsToolset
+from .google_api_toolsets import SlidesToolset
+from .google_api_toolsets import YoutubeToolset
+
 __all__ = [
     'BigQueryToolset',
     'CalendarToolset',
@@ -22,14 +39,3 @@ __all__ = [
     'GoogleApiToolset',
     'GoogleApiTool',
 ]
-
-
-from .google_api_tool import GoogleApiTool
-from .google_api_toolset import GoogleApiToolset
-from .google_api_toolsets import BigQueryToolset
-from .google_api_toolsets import CalendarToolset
-from .google_api_toolsets import DocsToolset
-from .google_api_toolsets import GmailToolset
-from .google_api_toolsets import SheetsToolset
-from .google_api_toolsets import SlidesToolset
-from .google_api_toolsets import YoutubeToolset
