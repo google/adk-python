@@ -16,7 +16,6 @@ import asyncio
 from datetime import datetime
 from datetime import timedelta
 from typing import cast
-import warnings
 
 import agent
 from dotenv import load_dotenv
@@ -26,7 +25,6 @@ from google.adk.sessions import Session
 from google.genai import types
 
 load_dotenv(override=True)
-warnings.filterwarnings('ignore', category=UserWarning)
 logs.log_to_tmp_folder()
 
 
@@ -67,12 +65,12 @@ async def main():
 
     return cast(
         Session,
-        runner.session_service.get_session(
+        await runner.session_service.get_session(
             app_name=app_name, user_id=user_id_1, session_id=session.id
         ),
     )
 
-  session_1 = runner.session_service.create_session(
+  session_1 = await runner.session_service.create_session(
       app_name=app_name, user_id=user_id_1
   )
 
@@ -93,7 +91,7 @@ async def main():
     await runner.memory_service.add_session_to_memory(session_1)
   print('-------------------------------------------------------------------')
 
-  session_2 = runner.session_service.create_session(
+  session_2 = await runner.session_service.create_session(
       app_name=app_name, user_id=user_id_1
   )
   print(f'----Session to use memory: {session_2.id} ----------------------')
