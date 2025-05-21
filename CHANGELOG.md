@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.0.0
+
+### ⚠ BREAKING CHANGES
+
+* Evaluation dataset schema is finalized with strong-type pydantic models.
+  (previously saved eval file needs re-generation, for both adk eval cli and
+  the eval tab in adk web UI).
+* `BuiltInCodeExecutor` (in code_executors package) replaces
+  `BuiltInCodeExecutionTool` (previously in tools package).
+* All methods in services are now async, including session service, artifact
+  service and memory service.
+  * `list_events` and `close_session` methods are removed from session service.
+* agent.py file structure with MCP tools are now easier and simpler ([now](https://github.com/google/adk-python/blob/3b5232c14f48e1d5b170f3698d91639b079722c8/contributing/samples/mcp_stdio_server_agent/agent.py#L33) vs [before](https://github.com/google/adk-python/blob/a4adb739c0d86b9ae4587547d2653d568f6567f2/contributing/samples/mcp_agent/agent.py#L41)).
+  Old format is not working anymore.
+* `Memory` schema and `MemoryService` is redesigned.
+* Mark various class attributes as private in the classes in the `tools` package.
+* Disabled session state injection if instruction provider is used.
+  (so that you can have `{var_name}` in the instruction, which is required for code snippets)
+* Toolbox integration is revamped: tools/toolbox_tool.py → tools/toolbox_toolset.py.
+* Removes the experimental `remote_agent.py`. We'll redesign it and bring it back.
+
+### Features
+
+* Dev UI:
+  * A brand new trace view for overall agent invocation.
+  * A revamped evaluation tab and comparison view for checking eval results.
+* Introduced `BaseToolset` to allow dynamically add/remove tools for agents.
+  * Revamped MCPToolset with the new BaseToolset interface.
+  * Revamped GoogleApiTool, GoogleApiToolset and ApplicationIntegrationToolset with the new BaseToolset interface.
+  * Resigned agent.py file structure when needing MCPToolset.
+  * Added ToolboxToolset.
+* Redesigned strong-typed agent evaluation schema.
+  * Allows users to create more cohesive eval sets.
+  * Allows evals to be extended for non-text modality.
+  * Allows for a structured interaction with the uber eval system.
+* Redesigned Memory schema and MemoryService interfaces.
+* Added token usage to LlmResponse.
+* Allowed specifying `--adk_version` in `adk deploy cloud_run` cli. Default is the current version.
+
+### Bug Fixes
+
+* Fixed `adk deploy cloud_run` failing bug.
+* Fixed logs not being printed due to `google-auth` library.
+
+### Miscellaneous Chores
+
+* Display full help text when adk cli receives invalid arguments.
+* `adk web` now binds `127.0.0.1` by default, instead of 0.0.0.0.
+* `InMemoryRunner` now takes `BaseAgent` in constructor.
+* Various docstring improvements.
+* Various UI tweaks.
+* Various bug fixes.
+* Update various contributing/samples for contributors to validate the implementation.
+
+
 ## 0.5.0
 
 ### ⚠ BREAKING CHANGES

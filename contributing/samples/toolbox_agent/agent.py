@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from google.adk.agents import Agent
-from google.adk.tools import ToolboxToolset
+from google.adk.tools.toolbox_toolset import ToolboxToolset
 
 root_agent = Agent(
     model="gemini-2.0-flash",
