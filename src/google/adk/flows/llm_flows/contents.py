@@ -48,6 +48,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          agent.max_contents,
       )
 
     # Maintain async generator behavior
@@ -186,7 +187,10 @@ def _rearrange_events_for_latest_function_response(
 
 
 def _get_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+    current_branch: Optional[str],
+    events: list[Event],
+    agent_name: str = '',
+    max_contents: Optional[int] = None
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
@@ -230,6 +234,8 @@ def _get_contents(
   result_events = _rearrange_events_for_async_function_responses_in_history(
       result_events
   )
+  if max_contents:
+    result_events = result_events[-max_contents:]
   contents = []
   for event in result_events:
     content = copy.deepcopy(event.content)
