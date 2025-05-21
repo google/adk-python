@@ -15,7 +15,8 @@
 import datetime
 import mimetypes
 import os
-from typing import Any, Optional
+from typing import Any
+from typing import Optional
 
 from typing_extensions import override
 from vertexai.preview.extensions import Extension

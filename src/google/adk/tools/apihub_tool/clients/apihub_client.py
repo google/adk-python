@@ -12,11 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from abc import ABC, abstractmethod
+from abc import ABC
+from abc import abstractmethod
 import base64
 import json
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Tuple
+from urllib.parse import parse_qs
+from urllib.parse import urlparse
+
 from google.auth import default as default_service_credential
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account

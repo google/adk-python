@@ -14,7 +14,11 @@
 
 import inspect
 from textwrap import dedent
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
 from fastapi.encoders import jsonable_encoder
 from fastapi.openapi.models import Operation

@@ -15,7 +15,8 @@
 """Utility functions for session service."""
 
 import base64
-from typing import Any, Optional
+from typing import Any
+from typing import Optional
 
 from google.genai import types
 

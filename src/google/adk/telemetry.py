@@ -32,7 +32,6 @@ from .events.event import Event
 from .models.llm_request import LlmRequest
 from .models.llm_response import LlmResponse
 
-
 tracer = trace.get_tracer('gcp.vertex.agent')
 
 

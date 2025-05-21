@@ -13,7 +13,9 @@
 # limitations under the License.
 
 
-from typing import Any, Optional, Tuple
+from typing import Any
+from typing import Optional
+from typing import Tuple
 
 from google.genai import types as genai_types
 from pydantic import alias_generators

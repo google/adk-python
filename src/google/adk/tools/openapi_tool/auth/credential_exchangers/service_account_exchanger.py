@@ -21,14 +21,13 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import google.oauth2.credentials
 
-from .....auth.auth_credential import (
-    AuthCredential,
-    AuthCredentialTypes,
-    HttpAuth,
-    HttpCredentials,
-)
+from .....auth.auth_credential import AuthCredential
+from .....auth.auth_credential import AuthCredentialTypes
+from .....auth.auth_credential import HttpAuth
+from .....auth.auth_credential import HttpCredentials
 from .....auth.auth_schemes import AuthScheme
-from .base_credential_exchanger import AuthCredentialMissingError, BaseAuthCredentialExchanger
+from .base_credential_exchanger import AuthCredentialMissingError
+from .base_credential_exchanger import BaseAuthCredentialExchanger
 
 
 class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
