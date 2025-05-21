@@ -5,7 +5,7 @@ from google.adk.sessions import Session
 from google.adk.utils import instructions_utils
 import pytest
 
-from .. import utils
+from .. import testing_utils
 
 
 class MockArtifactService:
@@ -32,7 +32,9 @@ async def _create_test_readonly_context(
       name="agent",
       instruction="test",
   )
-  invocation_context = await utils.create_invocation_context(agent=agent)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
   invocation_context.session = Session(
       state=state if state else {},
       app_name=app_name,

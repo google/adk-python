@@ -30,7 +30,7 @@ from google.genai import types
 import pytest
 import pytest_mock
 from typing_extensions import override
-from .. import utils
+from .. import testing_utils
 
 
 def _before_agent_callback_noop(callback_context: CallbackContext) -> None:
@@ -398,7 +398,7 @@ async def test_before_agent_callbacks_chain(
       request.function.__name__, agent
   )
   result = [e async for e in agent.run_async(parent_ctx)]
-  assert utils.simplify_events(result) == [
+  assert testing_utils.simplify_events(result) == [
       (f'{request.function.__name__}_test_agent', response)
       for response in expected_responses
   ]
@@ -459,7 +459,7 @@ async def test_after_agent_callbacks_chain(
       request.function.__name__, agent
   )
   result = [e async for e in agent.run_async(parent_ctx)]
-  assert utils.simplify_events(result) == [
+  assert testing_utils.simplify_events(result) == [
       (f'{request.function.__name__}_test_agent', response)
       for response in expected_responses
   ]

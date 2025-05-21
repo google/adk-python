@@ -17,7 +17,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.retrieval.vertex_ai_rag_retrieval import VertexAiRagRetrieval
 from google.genai import types
 
-from ... import utils
+from ... import testing_utils
 
 
 def noop_tool(x: str) -> str:
@@ -28,7 +28,7 @@ def test_vertex_rag_retrieval_for_gemini_1_x():
   responses = [
       'response1',
   ]
-  mockModel = utils.MockModel.create(responses=responses)
+  mockModel = testing_utils.MockModel.create(responses=responses)
   mockModel.model = 'gemini-1.5-pro'
 
   # Calls the first time.
@@ -45,12 +45,12 @@ def test_vertex_rag_retrieval_for_gemini_1_x():
           )
       ],
   )
-  runner = utils.InMemoryRunner(agent)
+  runner = testing_utils.InMemoryRunner(agent)
   events = runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 1
-  assert utils.simplify_contents(mockModel.requests[0].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[0].contents) == [
       ('user', 'test1'),
   ]
   assert len(mockModel.requests[0].config.tools) == 1
@@ -65,7 +65,7 @@ def test_vertex_rag_retrieval_for_gemini_1_x_with_another_function_tool():
   responses = [
       'response1',
   ]
-  mockModel = utils.MockModel.create(responses=responses)
+  mockModel = testing_utils.MockModel.create(responses=responses)
   mockModel.model = 'gemini-1.5-pro'
 
   # Calls the first time.
@@ -83,12 +83,12 @@ def test_vertex_rag_retrieval_for_gemini_1_x_with_another_function_tool():
           FunctionTool(func=noop_tool),
       ],
   )
-  runner = utils.InMemoryRunner(agent)
+  runner = testing_utils.InMemoryRunner(agent)
   events = runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 1
-  assert utils.simplify_contents(mockModel.requests[0].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[0].contents) == [
       ('user', 'test1'),
   ]
   assert len(mockModel.requests[0].config.tools[0].function_declarations) == 2
@@ -107,7 +107,7 @@ def test_vertex_rag_retrieval_for_gemini_2_x():
   responses = [
       'response1',
   ]
-  mockModel = utils.MockModel.create(responses=responses)
+  mockModel = testing_utils.MockModel.create(responses=responses)
   mockModel.model = 'gemini-2.0-flash'
 
   # Calls the first time.
@@ -124,12 +124,12 @@ def test_vertex_rag_retrieval_for_gemini_2_x():
           )
       ],
   )
-  runner = utils.InMemoryRunner(agent)
+  runner = testing_utils.InMemoryRunner(agent)
   events = runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 1
-  assert utils.simplify_contents(mockModel.requests[0].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[0].contents) == [
       ('user', 'test1'),
   ]
   assert len(mockModel.requests[0].config.tools) == 1
