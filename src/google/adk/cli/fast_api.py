@@ -61,7 +61,7 @@ from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
-from ..artifacts import InMemoryArtifactService
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
