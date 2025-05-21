@@ -34,6 +34,7 @@ from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
+from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
@@ -41,7 +42,6 @@ from .sessions.base_session_service import BaseSessionService
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry import tracer
-from .tools._built_in_code_execution_tool import built_in_code_execution
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -409,8 +409,8 @@ class Runner:
             f'CFC is not supported for model: {model_name} in agent:'
             f' {self.agent.name}'
         )
-      if built_in_code_execution not in self.agent.canonical_tools():
-        self.agent.tools.append(built_in_code_execution)
+      if not isinstance(self.agent.code_executor, BuiltInCodeExecutor):
+        self.agent.code_executor = BuiltInCodeExecutor()
 
     return InvocationContext(
         artifact_service=self.artifact_service,
