@@ -34,15 +34,27 @@ class FunctionTool(BaseTool):
 
   def __init__(self, func: Callable[..., Any]):
     """Extract metadata from a callable object."""
-    if inspect.isfunction(func) or inspect.ismethod(func):
-      # Handle regular functions and methods
+    name = ''
+    doc = ''
+    # Handle different types of callables
+    if hasattr(func, '__name__'):
+      # Regular functions, unbound methods, etc.
       name = func.__name__
-      doc = func.__doc__ or ''
-    else:
-      # Handle objects with __call__ method
-      call_method = func.__call__
+    elif hasattr(func, '__class__'):
+      # Callable objects, bound methods, etc.
       name = func.__class__.__name__
-      doc = call_method.__doc__ or func.__doc__ or ''
+
+    # Get documentation (prioritize direct __doc__ if available)
+    if hasattr(func, '__doc__') and func.__doc__:
+      doc = func.__doc__
+    elif (
+        hasattr(func, '__call__')
+        and hasattr(func.__call__, '__doc__')
+        and func.__call__.__doc__
+    ):
+      # For callable objects, try to get docstring from __call__ method
+      doc = func.__call__.__doc__
+
     super().__init__(name=name, description=doc)
     self.func = func
 
