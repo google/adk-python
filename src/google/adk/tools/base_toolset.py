@@ -1,7 +1,8 @@
 from abc import ABC
 from abc import abstractmethod
-from typing import Optional, runtime_checkable
+from typing import Optional
 from typing import Protocol
+from typing import runtime_checkable
 
 from ..agents.readonly_context import ReadonlyContext
 from .base_tool import BaseTool

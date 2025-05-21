@@ -61,9 +61,10 @@ from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
-from ..artifacts import InMemoryArtifactService
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
+from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
@@ -322,6 +323,7 @@ def get_fast_api_app(
   memory_service = InMemoryMemoryService()
 
   eval_sets_manager = LocalEvalSetsManager(agent_dir=agent_dir)
+  eval_set_results_manager = LocalEvalSetResultsManager(agent_dir=agent_dir)
 
   # Build the Session service
   agent_engine_id = ""
@@ -594,31 +596,9 @@ def get_fast_api_app(
       )
       eval_case_results.append(eval_case_result)
 
-    timestamp = time.time()
-    eval_set_result_name = app_name + "_" + eval_set_id + "_" + str(timestamp)
-    eval_set_result = EvalSetResult(
-        eval_set_result_id=eval_set_result_name,
-        eval_set_result_name=eval_set_result_name,
-        eval_set_id=eval_set_id,
-        eval_case_results=eval_case_results,
-        creation_timestamp=timestamp,
+    eval_set_results_manager.save_eval_set_result(
+        app_name, eval_set_id, eval_case_results
     )
-
-    # Write eval result file, with eval_set_result_name.
-    app_eval_history_dir = os.path.join(
-        agent_dir, app_name, ".adk", "eval_history"
-    )
-    if not os.path.exists(app_eval_history_dir):
-      os.makedirs(app_eval_history_dir)
-    # Convert to json and write to file.
-    eval_set_result_json = eval_set_result.model_dump_json()
-    eval_set_result_file_path = os.path.join(
-        app_eval_history_dir,
-        eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
-    )
-    logger.info("Writing eval result to file: %s", eval_set_result_file_path)
-    with open(eval_set_result_file_path, "w") as f:
-      f.write(json.dumps(eval_set_result_json, indent=2))
 
     return run_eval_results
 
@@ -631,25 +611,14 @@ def get_fast_api_app(
       eval_result_id: str,
   ) -> EvalSetResult:
     """Gets the eval result for the given eval id."""
-    # Load the eval set file data
-    maybe_eval_result_file_path = (
-        os.path.join(
-            agent_dir, app_name, ".adk", "eval_history", eval_result_id
-        )
-        + _EVAL_SET_RESULT_FILE_EXTENSION
-    )
-    if not os.path.exists(maybe_eval_result_file_path):
-      raise HTTPException(
-          status_code=404,
-          detail=f"Eval result `{eval_result_id}` not found.",
-      )
-    with open(maybe_eval_result_file_path, "r") as file:
-      eval_result_data = json.load(file)  # Load JSON into a list
     try:
-      eval_result = EvalSetResult.model_validate_json(eval_result_data)
-      return eval_result
-    except ValidationError as e:
-      logger.exception("get_eval_result validation error: %s", e)
+      return eval_set_results_manager.get_eval_set_result(
+          app_name, eval_result_id
+      )
+    except ValueError as ve:
+      raise HTTPException(status_code=404, detail=str(ve)) from ve
+    except ValidationError as ve:
+      raise HTTPException(status_code=500, detail=str(ve)) from ve
 
   @app.get(
       "/apps/{app_name}/eval_results",
@@ -657,19 +626,7 @@ def get_fast_api_app(
   )
   def list_eval_results(app_name: str) -> list[str]:
     """Lists all eval results for the given app."""
-    app_eval_history_directory = os.path.join(
-        agent_dir, app_name, ".adk", "eval_history"
-    )
-
-    if not os.path.exists(app_eval_history_directory):
-      return []
-
-    eval_result_files = [
-        file.removesuffix(_EVAL_SET_RESULT_FILE_EXTENSION)
-        for file in os.listdir(app_eval_history_directory)
-        if file.endswith(_EVAL_SET_RESULT_FILE_EXTENSION)
-    ]
-    return eval_result_files
+    return eval_set_results_manager.list_eval_set_results(app_name)
 
   @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
   async def delete_session(app_name: str, user_id: str, session_id: str):
