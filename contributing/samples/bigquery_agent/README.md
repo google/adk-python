@@ -33,7 +33,7 @@ This sample tests and demos the OAuth support in ADK via two tools:
   * GOOGLE_CLIENT_ID={your client id}
   * GOOGLE_CLIENT_SECRET={your client secret}
 
-  Note: done't create a separate .env , instead put it to the same .env file that stores your Vertex AI or Dev ML credentials
+  Note: don't create a separate .env , instead put it to the same .env file that stores your Vertex AI or Dev ML credentials
 
 * 3. Follow https://developers.google.com/identity/protocols/oauth2/web-server#creatingcred to add http://localhost/dev-ui to "Authorized redirect URIs".
 
