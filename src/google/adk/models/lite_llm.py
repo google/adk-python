@@ -136,6 +136,7 @@ def _safe_json_serialize(obj) -> str:
 
   try:
     # Try direct JSON serialization first
+    # fix: improve json serialization by allowing non-ascii characters
     return json.dumps(obj, ensure_ascii=False)
   except (TypeError, OverflowError):
     return str(obj)
