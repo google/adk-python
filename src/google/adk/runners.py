@@ -286,7 +286,7 @@ class Runner:
           stacklevel=2,
       )
     if not session:
-      session = self.session_service.get_session(
+      session = await self.session_service.get_session(
           app_name=self.app_name, user_id=user_id, session_id=session_id
       )
       if not session:
