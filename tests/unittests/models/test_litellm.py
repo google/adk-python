@@ -15,6 +15,7 @@
 
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
+
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_content
@@ -169,6 +170,7 @@ STREAMING_MODEL_RESPONSE = [
     ),
 ]
 
+
 @pytest.fixture
 def mock_response():
   return ModelResponse(
@@ -264,57 +266,59 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
 
 
 litellm_append_user_content_test_cases = [
-  pytest.param(
-    LlmRequest(
-      contents=[
-        types.Content(
-          role="developer",
-          parts=[types.Part.from_text(text="Test prompt")]
-        )
-      ]
-    ),
-    2,
-    id="litellm request without user content"
-  ),
-  pytest.param(
-    LlmRequest(
-      contents=[
-        types.Content(
-          role="user",
-          parts=[types.Part.from_text(text="user prompt")]
-        )
-      ]
-    ),
-    1,
-    id="litellm request with user content"
-  ),
-  pytest.param(
-    LlmRequest(
-      contents=[
-        types.Content(
-          role="model",
-          parts=[types.Part.from_text(text="model prompt")]
+    pytest.param(
+        LlmRequest(
+            contents=[
+                types.Content(
+                    role="developer",
+                    parts=[types.Part.from_text(text="Test prompt")],
+                )
+            ]
         ),
-        types.Content(
-          role="user",
-          parts=[types.Part.from_text(text="user prompt")]
-        ),
-        types.Content(
-          role="model",
-          parts=[types.Part.from_text(text="model prompt")]
-        )
-      ]
+        2,
+        id="litellm request without user content",
     ),
-    4,
-    id="user content is not the last message scenario"
-  )
+    pytest.param(
+        LlmRequest(
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text="user prompt")],
+                )
+            ]
+        ),
+        1,
+        id="litellm request with user content",
+    ),
+    pytest.param(
+        LlmRequest(
+            contents=[
+                types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text="model prompt")],
+                ),
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text="user prompt")],
+                ),
+                types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text="model prompt")],
+                ),
+            ]
+        ),
+        4,
+        id="user content is not the last message scenario",
+    ),
 ]
 
+
 @pytest.mark.parametrize(
-    "llm_request, expected_output",
-    litellm_append_user_content_test_cases
+    "llm_request, expected_output", litellm_append_user_content_test_cases
 )
-def test_maybe_append_user_content(lite_llm_instance, llm_request, expected_output):
+def test_maybe_append_user_content(
+    lite_llm_instance, llm_request, expected_output
+):
 
   lite_llm_instance._maybe_append_user_content(llm_request)
 
