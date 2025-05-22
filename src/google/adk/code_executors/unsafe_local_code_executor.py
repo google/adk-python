@@ -55,10 +55,9 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
     error = ''
     try:
       globals_ = {}
-      locals_ = {}
       stdout = io.StringIO()
       with redirect_stdout(stdout):
-        exec(code_execution_input.code, globals_, locals_)
+        exec(code_execution_input.code, globals_)
       output = stdout.getvalue()
     except Exception as e:
       error = str(e)
