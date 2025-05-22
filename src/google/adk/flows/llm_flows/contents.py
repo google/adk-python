@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import copy
-from typing import AsyncGenerator, Generator, Optional
+from typing import AsyncGenerator
+from typing import Generator
+from typing import Optional
 
 from google.genai import types
 from typing_extensions import override
