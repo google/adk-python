@@ -18,12 +18,13 @@ from typing import Any
 from typing import Optional
 
 from dateutil import parser
-from google import genai
 from typing_extensions import override
 
+from google import genai
+
+from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from . import _session_util
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
