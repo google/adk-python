@@ -700,13 +700,12 @@ def test_content_to_message_param_function_call():
   message = _content_to_message_param(content)
   assert message["role"] == "assistant"
   assert message["content"] == None
-  assert message["tool_calls"][0].type == "function"
-  assert message["tool_calls"][0].id == "test_tool_call_id"
-  assert message["tool_calls"][0].function.name == "test_function"
-  assert (
-      message["tool_calls"][0].function.arguments
-      == '{"test_arg": "test_value"}'
-  )
+
+  tool_call = message["tool_calls"][0]
+  assert tool_call["type"] == "function"
+  assert tool_call["id"] == "test_tool_call_id"
+  assert tool_call["function"]["name"] == "test_function"
+  assert tool_call["function"]["arguments"] == '{"test_arg": "test_value"}'
 
 
 def test_message_to_generate_content_response_text():
