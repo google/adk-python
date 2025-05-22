@@ -47,8 +47,8 @@ from sqlalchemy.types import TypeDecorator
 from typing_extensions import override
 from tzlocal import get_localzone
 
-from ..events.event import Event
 from . import _session_util
+from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
