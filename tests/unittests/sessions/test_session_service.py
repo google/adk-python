@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import enum
-import pytest
 
 from google.adk.events import Event
 from google.adk.events import EventActions
@@ -21,6 +20,7 @@ from google.adk.sessions import DatabaseSessionService
 from google.adk.sessions import InMemorySessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai import types
+import pytest
 
 
 class SessionServiceType(enum.Enum):

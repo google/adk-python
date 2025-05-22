@@ -18,7 +18,8 @@ import os
 import sys
 import time
 import types as ptypes
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
@@ -30,7 +31,6 @@ from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.genai import types
 import pytest
-
 
 # Configure logging to help diagnose server startup issues
 logging.basicConfig(

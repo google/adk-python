@@ -137,11 +137,15 @@ def test_get_input_files_not_exists(empty_state: State):
 def test_add_input_files_new(empty_state: State):
   """Test adding input files to an empty session state."""
   ctx = CodeExecutorContext(empty_state)
-  new_files = [File(name="new.dat", content="Yg==", mime_type="application/octet-stream")]
-  ctx.add_input_files(new_files)
-  assert empty_state["_code_executor_input_files"] == [
-      {"name": "new.dat", "content": "Yg==", "mime_type": "application/octet-stream"}
+  new_files = [
+      File(name="new.dat", content="Yg==", mime_type="application/octet-stream")
   ]
+  ctx.add_input_files(new_files)
+  assert empty_state["_code_executor_input_files"] == [{
+      "name": "new.dat",
+      "content": "Yg==",
+      "mime_type": "application/octet-stream",
+  }]
 
 
 def test_add_input_files_append(context_with_data: CodeExecutorContext):
@@ -239,9 +243,7 @@ def test_reset_error_count_no_error_key(empty_state: State):
 def test_update_code_execution_result_new_invocation(empty_state: State):
   """Test updating code execution result for a new invocation."""
   ctx = CodeExecutorContext(empty_state)
-  ctx.update_code_execution_result(
-      "inv1", "print('hi')", "hi", ""
-  )
+  ctx.update_code_execution_result("inv1", "print('hi')", "hi", "")
   results = empty_state["_code_execution_results"]["inv1"]
   assert len(results) == 1
   assert results[0]["code"] == "print('hi')"

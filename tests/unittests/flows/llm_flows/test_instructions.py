@@ -100,6 +100,7 @@ async def test_function_system_instruction():
       " test_id."
   )
 
+
 @pytest.mark.asyncio
 async def test_async_function_system_instruction():
   async def build_function_instruction(
