@@ -14,7 +14,8 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import AsyncGenerator, TYPE_CHECKING
+from typing import AsyncGenerator
+from typing import TYPE_CHECKING
 
 from google.genai import types
 from pydantic import BaseModel

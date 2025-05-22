@@ -15,29 +15,31 @@
 from abc import ABC
 from abc import abstractmethod
 
-from .eval_case import EvalCase
-from .eval_set import EvalSet
+from ..cli.cli_eval import EvalCaseResult
+from ..cli.cli_eval import EvalSetResult
 
 
-class EvalSetsManager(ABC):
-  """An interface to manage an Eval Sets."""
+class EvalSetResultsManager(ABC):
+  """An interface to manage Eval Set Results."""
 
   @abstractmethod
-  def get_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
-    """Returns an EvalSet identified by an app_name and eval_set_id."""
+  def save_eval_set_result(
+      self,
+      app_name: str,
+      eval_set_id: str,
+      eval_case_results: list[EvalCaseResult],
+  ) -> None:
+    """Creates and saves a new EvalSetResult given eval_case_results."""
     raise NotImplementedError()
 
   @abstractmethod
-  def create_eval_set(self, app_name: str, eval_set_id: str):
-    """Creates an empty EvalSet given the app_name and eval_set_id."""
+  def get_eval_set_result(
+      self, app_name: str, eval_set_result_id: str
+  ) -> EvalSetResult:
+    """Returns an EvalSetResult identified by app_name and eval_set_result_id."""
     raise NotImplementedError()
 
   @abstractmethod
-  def list_eval_sets(self, app_name: str) -> list[str]:
-    """Returns a list of EvalSets that belong to the given app_name."""
-    raise NotImplementedError()
-
-  @abstractmethod
-  def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: EvalCase):
-    """Adds the given EvalCase to an existing EvalSet identified by app_name and eval_set_id."""
+  def list_eval_set_results(self, app_name: str) -> list[str]:
+    """Returns the eval result ids that belong to the given app_name."""
     raise NotImplementedError()
