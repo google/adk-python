@@ -131,6 +131,7 @@ class APIHubToolset(BaseToolset):
           be either a tool predicate or a list of tool names of the tools to
           expose.
     """
+    super().__init__(tool_filter=tool_filter)
     self.name = name
     self.description = description
     self._apihub_resource_name = apihub_resource_name
@@ -143,7 +144,6 @@ class APIHubToolset(BaseToolset):
     self._openapi_toolset = None
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
-    self.tool_filter = tool_filter
 
     if not self._lazy_load_spec:
       self._prepare_toolset()
