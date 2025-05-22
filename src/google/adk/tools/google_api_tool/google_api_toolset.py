@@ -56,20 +56,6 @@ class GoogleApiToolset(BaseToolset):
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
     self.tool_filter = tool_filter
 
-  def _is_tool_selected(
-      self, tool: GoogleApiTool, readonly_context: ReadonlyContext
-  ) -> bool:
-    if not self.tool_filter:
-      return True
-
-    if isinstance(self.tool_filter, ToolPredicate):
-      return self.tool_filter(tool, readonly_context)
-
-    if isinstance(self.tool_filter, list):
-      return tool.name in self.tool_filter
-
-    return False
-
   @override
   async def get_tools(
       self, readonly_context: Optional[ReadonlyContext] = None

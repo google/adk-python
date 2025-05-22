@@ -128,6 +128,7 @@ class ApplicationIntegrationToolset(BaseToolset):
         Exception: If there is an error during the initialization of the
             integration or connection client.
     """
+    super().__init__(tool_filter=tool_filter)
     self.project = project
     self.location = location
     self._integration = integration
@@ -140,7 +141,6 @@ class ApplicationIntegrationToolset(BaseToolset):
     self._service_account_json = service_account_json
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
-    self.tool_filter = tool_filter
 
     integration_client = IntegrationClient(
         project,
@@ -263,7 +263,11 @@ class ApplicationIntegrationToolset(BaseToolset):
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> List[RestApiTool]:
     return (
-        self._tools
+        [
+            tool
+            for tool in self._tools
+            if self._is_tool_selected(tool, readonly_context)
+        ]
         if self._openapi_toolset is None
         else await self._openapi_toolset.get_tools(readonly_context)
     )
