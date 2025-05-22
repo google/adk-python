@@ -23,7 +23,6 @@ from typing import Generator
 from typing import Optional
 import warnings
 
-from deprecated import deprecated
 from google.genai import types
 
 from .agents.active_streaming_tool import ActiveStreamingTool
@@ -33,9 +32,9 @@ from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
 from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
-from .agents.run_config import StreamingMode
 from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
+from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
@@ -43,9 +42,8 @@ from .sessions.base_session_service import BaseSessionService
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry import tracer
-from .tools.built_in_code_execution_tool import built_in_code_execution
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class Runner:
@@ -327,16 +325,6 @@ class Runner:
       await self.session_service.append_event(session=session, event=event)
       yield event
 
-  async def close_session(self, session: Session):
-    """Closes a session and adds it to the memory service (experimental feature).
-
-    Args:
-        session: The session to close.
-    """
-    if self.memory_service:
-      await self.memory_service.add_session_to_memory(session)
-    await self.session_service.close_session(session=session)
-
   def _find_agent_to_run(
       self, session: Session, root_agent: BaseAgent
   ) -> BaseAgent:
@@ -421,8 +409,8 @@ class Runner:
             f'CFC is not supported for model: {model_name} in agent:'
             f' {self.agent.name}'
         )
-      if built_in_code_execution not in self.agent.canonical_tools():
-        self.agent.tools.append(built_in_code_execution)
+      if not isinstance(self.agent.code_executor, BuiltInCodeExecutor):
+        self.agent.code_executor = BuiltInCodeExecutor()
 
     return InvocationContext(
         artifact_service=self.artifact_service,
@@ -485,7 +473,7 @@ class InMemoryRunner(Runner):
         session service for the runner.
   """
 
-  def __init__(self, agent: LlmAgent, *, app_name: str = 'InMemoryRunner'):
+  def __init__(self, agent: BaseAgent, *, app_name: str = 'InMemoryRunner'):
     """Initializes the InMemoryRunner.
 
     Args:

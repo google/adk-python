@@ -35,7 +35,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from .utils import common
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class EvalMetric(common.BaseModel):
@@ -82,7 +82,7 @@ class EvalCaseResult(common.BaseModel):
   """The eval case id."""
 
   final_eval_status: EvalStatus
-  """Final evalu status for this eval case."""
+  """Final eval status for this eval case."""
 
   eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]] = Field(
       deprecated=True,

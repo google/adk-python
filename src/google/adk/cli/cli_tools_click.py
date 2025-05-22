@@ -18,8 +18,6 @@ from datetime import datetime
 import logging
 import os
 import tempfile
-from typing import AsyncGenerator
-from typing import Coroutine
 from typing import Optional
 
 import click
@@ -28,6 +26,7 @@ import uvicorn
 
 from . import cli_create
 from . import cli_deploy
+from .. import version
 from .cli import run_cli
 from .cli_eval import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .fast_api import get_fast_api_app
@@ -78,7 +77,7 @@ class HelpfulCommand(click.Command):
       ctx.exit(2)
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 @click.group(context_settings={"max_content_width": 240})
@@ -410,16 +409,6 @@ def cli_eval(
     help="Optional. Set the logging level",
 )
 @click.option(
-    "--log_to_tmp",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to log to system temp folder instead of console."
-        " This is useful for local debugging."
-    ),
-)
-@click.option(
     "--trace_to_cloud",
     is_flag=True,
     show_default=True,
@@ -440,7 +429,6 @@ def cli_eval(
 )
 def cli_web(
     agents_dir: str,
-    log_to_tmp: bool,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
@@ -458,10 +446,7 @@ def cli_web(
 
     adk web --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
-  if log_to_tmp:
-    logs.log_to_tmp_folder(getattr(logging, log_level.upper()))
-  else:
-    logs.log_to_stderr(getattr(logging, log_level.upper()))
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
   async def _lifespan(app: FastAPI):
@@ -544,16 +529,6 @@ def cli_web(
     help="Optional. Set the logging level",
 )
 @click.option(
-    "--log_to_tmp",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to log to system temp folder instead of console."
-        " This is useful for local debugging."
-    ),
-)
-@click.option(
     "--trace_to_cloud",
     is_flag=True,
     show_default=True,
@@ -576,7 +551,6 @@ def cli_web(
 )
 def cli_api_server(
     agents_dir: str,
-    log_to_tmp: bool,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
@@ -594,10 +568,7 @@ def cli_api_server(
 
     adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
-  if log_to_tmp:
-    logs.log_to_tmp_folder(getattr(logging, log_level.upper()))
-  else:
-    logs.log_to_stderr(getattr(logging, log_level.upper()))
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   config = uvicorn.Config(
       get_fast_api_app(
@@ -712,6 +683,16 @@ def cli_api_server(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
+@click.option(
+    "--adk_version",
+    type=str,
+    default=version.__version__,
+    show_default=True,
+    help=(
+        "Optional. The ADK version used in Cloud Run deployment. (default: the"
+        " version in the dev environment)"
+    ),
+)
 def cli_deploy_cloud_run(
     agent: str,
     project: Optional[str],
@@ -724,6 +705,7 @@ def cli_deploy_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    adk_version: str,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -746,6 +728,7 @@ def cli_deploy_cloud_run(
         with_ui=with_ui,
         verbosity=verbosity,
         session_db_url=session_db_url,
+        adk_version=adk_version,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

@@ -112,6 +112,7 @@ extensions = [
   "litellm>=1.63.11",                     # For LiteLLM support
   "llama-index-readers-file>=0.4.0",      # For retrieval using LlamaIndex.
   "lxml>=5.3.0",                          # For load_web_page tool.
+  "toolbox-core>=0.1.0",                  # For tools.toolbox_toolset.ToolboxToolset
 ]
 
 
@@ -149,7 +150,6 @@ name = "google.adk"
 profile = "google"
 single_line_exclusions = []
 known_third_party = ["google.adk"]
-
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

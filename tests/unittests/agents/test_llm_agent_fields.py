@@ -79,8 +79,11 @@ async def test_canonical_instruction_str():
   agent = LlmAgent(name='test_agent', instruction='instruction')
   ctx = await _create_readonly_context(agent)
 
-  canonical_instruction = await agent.canonical_instruction(ctx)
+  canonical_instruction, bypass_state_injection = (
+      await agent.canonical_instruction(ctx)
+  )
   assert canonical_instruction == 'instruction'
+  assert not bypass_state_injection
 
 
 async def test_canonical_instruction():
@@ -92,8 +95,11 @@ async def test_canonical_instruction():
       agent, state={'state_var': 'state_value'}
   )
 
-  canonical_instruction = await agent.canonical_instruction(ctx)
+  canonical_instruction, bypass_state_injection = (
+      await agent.canonical_instruction(ctx)
+  )
   assert canonical_instruction == 'instruction: state_value'
+  assert bypass_state_injection
 
 
 async def test_async_canonical_instruction():
@@ -105,16 +111,22 @@ async def test_async_canonical_instruction():
       agent, state={'state_var': 'state_value'}
   )
 
-  canonical_instruction = await agent.canonical_instruction(ctx)
+  canonical_instruction, bypass_state_injection = (
+      await agent.canonical_instruction(ctx)
+  )
   assert canonical_instruction == 'instruction: state_value'
+  assert bypass_state_injection
 
 
 async def test_canonical_global_instruction_str():
   agent = LlmAgent(name='test_agent', global_instruction='global instruction')
   ctx = await _create_readonly_context(agent)
 
-  canonical_instruction = await agent.canonical_global_instruction(ctx)
+  canonical_instruction, bypass_state_injection = (
+      await agent.canonical_global_instruction(ctx)
+  )
   assert canonical_instruction == 'global instruction'
+  assert not bypass_state_injection
 
 
 async def test_canonical_global_instruction():
@@ -128,9 +140,11 @@ async def test_canonical_global_instruction():
       agent, state={'state_var': 'state_value'}
   )
 
-  canonical_global_instruction = await agent.canonical_global_instruction(ctx)
+  canonical_global_instruction, bypass_state_injection = (
+      await agent.canonical_global_instruction(ctx)
+  )
   assert canonical_global_instruction == 'global instruction: state_value'
-
+  assert bypass_state_injection
 
 async def test_async_canonical_global_instruction():
   async def _global_instruction_provider(ctx: ReadonlyContext) -> str:
@@ -142,11 +156,11 @@ async def test_async_canonical_global_instruction():
   ctx = await _create_readonly_context(
       agent, state={'state_var': 'state_value'}
   )
-
-  assert (
+  canonical_global_instruction, bypass_state_injection = (
       await agent.canonical_global_instruction(ctx)
-      == 'global instruction: state_value'
   )
+  assert canonical_global_instruction == 'global instruction: state_value'
+  assert bypass_state_injection
 
 
 def test_output_schema_will_disable_transfer(caplog: pytest.LogCaptureFixture):

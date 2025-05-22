@@ -39,11 +39,32 @@ async def async_function_for_testing_with_2_arg_and_no_tool_context(arg1, arg2):
   return arg1
 
 
+class AsyncCallableWith2ArgsAndNoToolContext:
+
+  def __init__(self):
+    self.__name__ = "Async callable name"
+    self.__doc__ = "Async callable doc"
+
+  async def __call__(self, arg1, arg2):
+    assert arg1
+    assert arg2
+    return arg1
+
+
 def function_for_testing_with_1_arg_and_tool_context(arg1, tool_context):
   """Function for testing with 1 arge and tool context."""
   assert arg1
   assert tool_context
   return arg1
+
+
+class AsyncCallableWith1ArgAndToolContext:
+
+  async def __call__(self, arg1, tool_context):
+    """Async call doc"""
+    assert arg1
+    assert tool_context
+    return arg1
 
 
 def function_for_testing_with_2_arg_and_no_tool_context(arg1, arg2):
@@ -84,12 +105,35 @@ async def test_run_async_with_tool_context_async_func():
 
 
 @pytest.mark.asyncio
+async def test_run_async_with_tool_context_async_callable():
+  """Test that run_async calls the callable with tool_context when tool_context is in signature (async callable)."""
+
+  tool = FunctionTool(AsyncCallableWith1ArgAndToolContext())
+  args = {"arg1": "test_value_1"}
+  result = await tool.run_async(args=args, tool_context=MagicMock())
+  assert result == "test_value_1"
+  assert tool.name == "AsyncCallableWith1ArgAndToolContext"
+  assert tool.description == "Async call doc"
+
+
+@pytest.mark.asyncio
 async def test_run_async_without_tool_context_async_func():
   """Test that run_async calls the function without tool_context when tool_context is not in signature (async function)."""
   tool = FunctionTool(async_function_for_testing_with_2_arg_and_no_tool_context)
   args = {"arg1": "test_value_1", "arg2": "test_value_2"}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == "test_value_1"
+
+
+@pytest.mark.asyncio
+async def test_run_async_without_tool_context_async_callable():
+  """Test that run_async calls the callable without tool_context when tool_context is not in signature (async callable)."""
+  tool = FunctionTool(AsyncCallableWith2ArgsAndNoToolContext())
+  args = {"arg1": "test_value_1", "arg2": "test_value_2"}
+  result = await tool.run_async(args=args, tool_context=MagicMock())
+  assert result == "test_value_1"
+  assert tool.name == "Async callable name"
+  assert tool.description == "Async callable doc"
 
 
 @pytest.mark.asyncio

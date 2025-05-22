@@ -21,6 +21,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import signal
 import sys
 import time
 import traceback
@@ -60,9 +61,10 @@ from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
-from ..artifacts import InMemoryArtifactService
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
+from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
@@ -84,7 +86,7 @@ from .utils import create_empty_state
 from .utils import envs
 from .utils import evals
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 _EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
@@ -221,7 +223,7 @@ def get_fast_api_app(
       )
       provider.add_span_processor(processor)
     else:
-      logging.warning(
+      logger.warning(
           "GOOGLE_CLOUD_PROJECT environment variable is not set. Tracing will"
           " not be enabled."
       )
@@ -232,14 +234,71 @@ def get_fast_api_app(
 
   @asynccontextmanager
   async def internal_lifespan(app: FastAPI):
-    if lifespan:
-      async with lifespan(app) as lifespan_context:
-        yield
+    # Set up signal handlers for graceful shutdown
+    original_sigterm = signal.getsignal(signal.SIGTERM)
+    original_sigint = signal.getsignal(signal.SIGINT)
 
-        for toolset in toolsets_to_close:
-          await toolset.close()
-    else:
-      yield
+    def cleanup_handler(sig, frame):
+      # Log the signal
+      logger.info("Received signal %s, performing pre-shutdown cleanup", sig)
+      # Do synchronous cleanup if needed
+      # Then call original handler if it exists
+      if sig == signal.SIGTERM and callable(original_sigterm):
+        original_sigterm(sig, frame)
+      elif sig == signal.SIGINT and callable(original_sigint):
+        original_sigint(sig, frame)
+
+    # Install cleanup handlers
+    signal.signal(signal.SIGTERM, cleanup_handler)
+    signal.signal(signal.SIGINT, cleanup_handler)
+
+    try:
+      if lifespan:
+        async with lifespan(app) as lifespan_context:
+          yield lifespan_context
+      else:
+        yield
+    finally:
+      # During shutdown, properly clean up all toolsets
+      logger.info(
+          "Server shutdown initiated, cleaning up %s toolsets",
+          len(toolsets_to_close),
+      )
+
+      # Create tasks for all toolset closures to run concurrently
+      cleanup_tasks = []
+      for toolset in toolsets_to_close:
+        task = asyncio.create_task(close_toolset_safely(toolset))
+        cleanup_tasks.append(task)
+
+      if cleanup_tasks:
+        # Wait for all cleanup tasks with timeout
+        done, pending = await asyncio.wait(
+            cleanup_tasks,
+            timeout=10.0,  # 10 second timeout for cleanup
+            return_when=asyncio.ALL_COMPLETED,
+        )
+
+        # If any tasks are still pending, log it
+        if pending:
+          logger.warning(
+              f"{len(pending)} toolset cleanup tasks didn't complete in time"
+          )
+          for task in pending:
+            task.cancel()
+
+      # Restore original signal handlers
+      signal.signal(signal.SIGTERM, original_sigterm)
+      signal.signal(signal.SIGINT, original_sigint)
+
+  async def close_toolset_safely(toolset):
+    """Safely close a toolset with error handling."""
+    try:
+      logger.info(f"Closing toolset: {type(toolset).__name__}")
+      await toolset.close()
+      logger.info(f"Successfully closed toolset: {type(toolset).__name__}")
+    except Exception as e:
+      logger.error(f"Error closing toolset {type(toolset).__name__}: {e}")
 
   # Run the FastAPI server.
   app = FastAPI(lifespan=internal_lifespan)
@@ -264,6 +323,7 @@ def get_fast_api_app(
   memory_service = InMemoryMemoryService()
 
   eval_sets_manager = LocalEvalSetsManager(agent_dir=agent_dir)
+  eval_set_results_manager = LocalEvalSetResultsManager(agent_dir=agent_dir)
 
   # Build the Session service
   agent_engine_id = ""
@@ -536,31 +596,9 @@ def get_fast_api_app(
       )
       eval_case_results.append(eval_case_result)
 
-    timestamp = time.time()
-    eval_set_result_name = app_name + "_" + eval_set_id + "_" + str(timestamp)
-    eval_set_result = EvalSetResult(
-        eval_set_result_id=eval_set_result_name,
-        eval_set_result_name=eval_set_result_name,
-        eval_set_id=eval_set_id,
-        eval_case_results=eval_case_results,
-        creation_timestamp=timestamp,
+    eval_set_results_manager.save_eval_set_result(
+        app_name, eval_set_id, eval_case_results
     )
-
-    # Write eval result file, with eval_set_result_name.
-    app_eval_history_dir = os.path.join(
-        agent_dir, app_name, ".adk", "eval_history"
-    )
-    if not os.path.exists(app_eval_history_dir):
-      os.makedirs(app_eval_history_dir)
-    # Convert to json and write to file.
-    eval_set_result_json = eval_set_result.model_dump_json()
-    eval_set_result_file_path = os.path.join(
-        app_eval_history_dir,
-        eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
-    )
-    logger.info("Writing eval result to file: %s", eval_set_result_file_path)
-    with open(eval_set_result_file_path, "w") as f:
-      f.write(json.dumps(eval_set_result_json, indent=2))
 
     return run_eval_results
 
@@ -573,25 +611,14 @@ def get_fast_api_app(
       eval_result_id: str,
   ) -> EvalSetResult:
     """Gets the eval result for the given eval id."""
-    # Load the eval set file data
-    maybe_eval_result_file_path = (
-        os.path.join(
-            agent_dir, app_name, ".adk", "eval_history", eval_result_id
-        )
-        + _EVAL_SET_RESULT_FILE_EXTENSION
-    )
-    if not os.path.exists(maybe_eval_result_file_path):
-      raise HTTPException(
-          status_code=404,
-          detail=f"Eval result `{eval_result_id}` not found.",
-      )
-    with open(maybe_eval_result_file_path, "r") as file:
-      eval_result_data = json.load(file)  # Load JSON into a list
     try:
-      eval_result = EvalSetResult.model_validate_json(eval_result_data)
-      return eval_result
-    except ValidationError as e:
-      logger.exception("get_eval_result validation error: %s", e)
+      return eval_set_results_manager.get_eval_set_result(
+          app_name, eval_result_id
+      )
+    except ValueError as ve:
+      raise HTTPException(status_code=404, detail=str(ve)) from ve
+    except ValidationError as ve:
+      raise HTTPException(status_code=500, detail=str(ve)) from ve
 
   @app.get(
       "/apps/{app_name}/eval_results",
@@ -599,19 +626,7 @@ def get_fast_api_app(
   )
   def list_eval_results(app_name: str) -> list[str]:
     """Lists all eval results for the given app."""
-    app_eval_history_directory = os.path.join(
-        agent_dir, app_name, ".adk", "eval_history"
-    )
-
-    if not os.path.exists(app_eval_history_directory):
-      return []
-
-    eval_result_files = [
-        file.removesuffix(_EVAL_SET_RESULT_FILE_EXTENSION)
-        for file in os.listdir(app_eval_history_directory)
-        if file.endswith(_EVAL_SET_RESULT_FILE_EXTENSION)
-    ]
-    return eval_result_files
+    return eval_set_results_manager.list_eval_set_results(app_name)
 
   @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
   async def delete_session(app_name: str, user_id: str, session_id: str):

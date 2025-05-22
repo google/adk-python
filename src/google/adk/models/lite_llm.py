@@ -30,6 +30,7 @@ from typing import Union
 from google.genai import types
 from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
+from litellm import ChatCompletionAssistantToolCall
 from litellm import ChatCompletionDeveloperMessage
 from litellm import ChatCompletionImageUrlObject
 from litellm import ChatCompletionMessageToolCall
@@ -51,7 +52,7 @@ from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
@@ -180,12 +181,12 @@ def _content_to_message_param(
     for part in content.parts:
       if part.function_call:
         tool_calls.append(
-            ChatCompletionMessageToolCall(
+            ChatCompletionAssistantToolCall(
                 type="function",
                 id=part.function_call.id,
                 function=Function(
                     name=part.function_call.name,
-                    arguments=part.function_call.args,
+                    arguments=json.dumps(part.function_call.args),
                 ),
             )
         )
