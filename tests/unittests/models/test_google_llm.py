@@ -15,12 +15,13 @@
 import sys
 from unittest import mock
 
-from google.adk import version
+from google.adk import version as adk_version
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
+from google.genai import version as genai_version
 from google.genai.types import Content
 from google.genai.types import Part
 import pytest
@@ -73,10 +74,14 @@ def test_supported_models():
 def test_client_version_header():
   model = Gemini(model="gemini-1.5-flash")
   client = model.api_client
-  expected_header = (
-      f"google-adk/{version.__version__}"
-      f" gl-python/{sys.version.split()[0]} google-genai-sdk/"
+  adk_header = (
+      f"google-adk/{adk_version.__version__} gl-python/{sys.version.split()[0]}"
   )
+  genai_header = (
+      f"google-genai-sdk/{genai_version.__version__} gl-python/{sys.version.split()[0]} "
+  )
+  expected_header = genai_header + adk_header
+
   assert (
       expected_header
       in client._api_client._http_options.headers["x-goog-api-client"]
