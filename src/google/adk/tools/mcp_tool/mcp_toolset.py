@@ -12,18 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
-from contextlib import AsyncExitStack
 import logging
-import os
-import signal
 import sys
 from typing import List
 from typing import Optional
 from typing import TextIO
 from typing import Union
-
-from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ..base_tool import BaseTool
@@ -36,7 +30,6 @@ from .mcp_session_manager import SseServerParams
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
 try:
-  from mcp import ClientSession
   from mcp import StdioServerParameters
   from mcp.types import ListToolsResult
 except ImportError as e:
@@ -58,16 +51,31 @@ logger = logging.getLogger("google_adk." + __name__)
 class MCPToolset(BaseToolset):
   """Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
 
+  This toolset manages the connection to an MCP server and provides tools
+  that can be used by an agent. It properly implements the BaseToolset
+  interface for easy integration with the agent framework.
+
   Usage:
-  ```
-  root_agent = LlmAgent(
-      tools=MCPToolset(
-          connection_params=StdioServerParameters(
-              command='npx',
-              args=["-y", "@modelcontextprotocol/server-filesystem"],
-          )
-      )
+  ```python
+  toolset = MCPToolset(
+      connection_params=StdioServerParameters(
+          command='npx',
+          args=["-y", "@modelcontextprotocol/server-filesystem"],
+      ),
+      tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
   )
+
+  # Use in an agent
+  agent = LlmAgent(
+      model='gemini-2.0-flash',
+      name='enterprise_assistant',
+      instruction='Help user accessing their file systems',
+      tools=[toolset],
+  )
+
+  # Cleanup is handled automatically by the agent framework
+  # But you can also manually close if needed:
+  # await toolset.close()
   ```
   """
 
@@ -75,140 +83,89 @@ class MCPToolset(BaseToolset):
       self,
       *,
       connection_params: StdioServerParameters | SseServerParams,
-      errlog: TextIO = sys.stderr,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      errlog: TextIO = sys.stderr,
   ):
     """Initializes the MCPToolset.
 
     Args:
-      connection_params: The connection parameters to the MCP server. Can be:
-        `StdioServerParameters` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseServerParams` for a local/remote SSE server.
-      errlog: (Optional) TextIO stream for error logging. Use only for
-        initializing a local stdio MCP session.
+        connection_params: The connection parameters to the MCP server. Can be:
+            `StdioServerParameters` for using local mcp server (e.g. using `npx` or
+            `python3`); or `SseServerParams` for a local/remote SSE server.
+        tool_filter: Optional filter to select specific tools. Can be either:
+            - A list of tool names to include
+            - A ToolPredicate function for custom filtering logic
+        errlog: TextIO stream for error logging.
     """
+    super().__init__(tool_filter=tool_filter)
 
     if not connection_params:
       raise ValueError("Missing connection params in MCPToolset.")
-    super().__init__(tool_filter=tool_filter)
+
     self._connection_params = connection_params
     self._errlog = errlog
-    self._exit_stack = AsyncExitStack()
-    self._creator_task_id = None
-    self._process_pid = None  # Store the subprocess PID
 
-    self._session_manager = MCPSessionManager(
+    # Create the session manager that will handle the MCP connection
+    self._mcp_session_manager = MCPSessionManager(
         connection_params=self._connection_params,
-        exit_stack=self._exit_stack,
         errlog=self._errlog,
     )
     self._session = None
-    self._initialized = False
 
-  async def _initialize(self) -> ClientSession:
-    """Connects to the MCP Server and initializes the ClientSession."""
-    # Store the current task ID when initializing
-    self._creator_task_id = id(asyncio.current_task())
-    self._session, process = await self._session_manager.create_session()
-    # Store the process PID if available
-    if process and hasattr(process, "pid"):
-      self._process_pid = process.pid
-    self._initialized = True
-    return self._session
-
-  @override
-  async def close(self):
-    """Safely closes the connection to MCP Server with guaranteed resource cleanup."""
-    if not self._initialized:
-      return  # Nothing to close
-
-    logger.info("Closing MCP Toolset")
-
-    # Step 1: Try graceful shutdown of the session if it exists
-    if self._session:
-      try:
-        logger.info("Attempting graceful session shutdown")
-        await self._session.shutdown()
-      except Exception as e:
-        logger.warning(f"Session shutdown error (continuing cleanup): {e}")
-
-    # Step 2: Try to close the exit stack
-    try:
-      logger.info("Closing AsyncExitStack")
-      await self._exit_stack.aclose()
-      # If we get here, the exit stack closed successfully
-      logger.info("AsyncExitStack closed successfully")
-      return
-    except RuntimeError as e:
-      if "Attempted to exit cancel scope in a different task" in str(e):
-        logger.warning("Task mismatch during shutdown - using fallback cleanup")
-        # Continue to manual cleanup
-      else:
-        logger.error(f"Unexpected RuntimeError: {e}")
-        # Continue to manual cleanup
-    except Exception as e:
-      logger.error(f"Error during exit stack closure: {e}")
-      # Continue to manual cleanup
-
-    # Step 3: Manual cleanup of the subprocess if we have its PID
-    if self._process_pid:
-      await self._ensure_process_terminated(self._process_pid)
-
-    # Step 4: Ask the session manager to do any additional cleanup it can
-    await self._session_manager._emergency_cleanup()
-
-  async def _ensure_process_terminated(self, pid):
-    """Ensure a process is terminated using its PID."""
-    try:
-      # Check if process exists
-      os.kill(pid, 0)  # This just checks if the process exists
-
-      logger.info(f"Terminating process with PID {pid}")
-      # First try SIGTERM for graceful shutdown
-      os.kill(pid, signal.SIGTERM)
-
-      # Give it a moment to terminate
-      for _ in range(30):  # wait up to 3 seconds
-        await asyncio.sleep(0.1)
-        try:
-          os.kill(pid, 0)  # Process still exists
-        except ProcessLookupError:
-          logger.info(f"Process {pid} terminated successfully")
-          return
-
-      # If we get here, process didn't terminate gracefully
-      logger.warning(
-          f"Process {pid} didn't terminate gracefully, using SIGKILL"
-      )
-      os.kill(pid, signal.SIGKILL)
-
-    except ProcessLookupError:
-      logger.info(f"Process {pid} already terminated")
-    except Exception as e:
-      logger.error(f"Error terminating process {pid}: {e}")
-
-  @retry_on_closed_resource("_initialize")
-  @override
+  @retry_on_closed_resource("_reinitialize_session")
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
-  ) -> List[MCPTool]:
-    """Loads all tools from the MCP Server.
+  ) -> List[BaseTool]:
+    """Return all tools in the toolset based on the provided context.
+
+    Args:
+        readonly_context: Context used to filter tools available to the agent.
+            If None, all tools in the toolset are returned.
 
     Returns:
-      A list of MCPTools imported from the MCP Server.
+        List[BaseTool]: A list of tools available under the specified context.
     """
+    # Get session from session manager
     if not self._session:
-      await self._initialize()
+      self._session = await self._mcp_session_manager.create_session()
+
+    # Fetch available tools from the MCP server
     tools_response: ListToolsResult = await self._session.list_tools()
+
+    # Apply filtering based on context and tool_filter
     tools = []
     for tool in tools_response.tools:
       mcp_tool = MCPTool(
           mcp_tool=tool,
-          mcp_session=self._session,
-          mcp_session_manager=self._session_manager,
+          mcp_session_manager=self._mcp_session_manager,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
     return tools
+
+  async def _reinitialize_session(self):
+    """Reinitializes the session when connection is lost."""
+    # Close the old session and clear cache
+    await self._mcp_session_manager.close()
+    self._session = await self._mcp_session_manager.create_session()
+
+    # Tools will be reloaded on next get_tools call
+
+  async def close(self) -> None:
+    """Performs cleanup and releases resources held by the toolset.
+
+    This method closes the MCP session and cleans up all associated resources.
+    It's designed to be safe to call multiple times and handles cleanup errors
+    gracefully to avoid blocking application shutdown.
+    """
+    try:
+      await self._mcp_session_manager.close()
+    except Exception as e:
+      # Log the error but don't re-raise to avoid blocking shutdown
+      print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
+    finally:
+      # Clear cached tools
+      self._tools_cache = None
+      self._tools_loaded = False
