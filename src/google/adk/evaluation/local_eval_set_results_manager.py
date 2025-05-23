@@ -29,6 +29,10 @@ _ADK_EVAL_HISTORY_DIR = ".adk/eval_history"
 _EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
 
 
+def _sanitize_eval_set_result_name(eval_set_result_name: str) -> str:
+  return eval_set_result_name.replace("/", "_")
+
+
 class LocalEvalSetResultsManager(EvalSetResultsManager):
   """An EvalSetResult manager that stores eval set results locally on disk."""
 
@@ -44,9 +48,10 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
   ) -> None:
     """Creates and saves a new EvalSetResult given eval_case_results."""
     timestamp = time.time()
-    eval_set_result_name = app_name + "_" + eval_set_id + "_" + str(timestamp)
+    eval_set_result_id = app_name + "_" + eval_set_id + "_" + str(timestamp)
+    eval_set_result_name = _sanitize_eval_set_result_name(eval_set_result_id)
     eval_set_result = EvalSetResult(
-        eval_set_result_id=eval_set_result_name,
+        eval_set_result_id=eval_set_result_id,
         eval_set_result_name=eval_set_result_name,
         eval_set_id=eval_set_id,
         eval_case_results=eval_case_results,
