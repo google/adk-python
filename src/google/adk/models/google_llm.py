@@ -13,6 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
+import re
+import ast
 import contextlib
 from functools import cached_property
 import logging
