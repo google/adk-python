@@ -14,9 +14,11 @@
 
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
-from fastapi.openapi.models import MediaType, Operation
+from fastapi.openapi.models import MediaType
+from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter as OpenAPIParameter
 from fastapi.openapi.models import RequestBody
 from fastapi.openapi.models import Schema as OpenAPISchema
@@ -25,13 +27,13 @@ from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_cred
 from google.adk.tools.openapi_tool.common.common import ApiParameter
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
 from google.adk.tools.openapi_tool.openapi_spec_parser.operation_parser import OperationParser
-from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import (
-    RestApiTool,
-    snake_to_lower_camel,
-    to_gemini_schema,
-)
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import snake_to_lower_camel
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
 from google.adk.tools.tool_context import ToolContext
-from google.genai.types import FunctionDeclaration, Schema, Type
+from google.genai.types import FunctionDeclaration
+from google.genai.types import Schema
+from google.genai.types import Type
 import pytest
 
 
