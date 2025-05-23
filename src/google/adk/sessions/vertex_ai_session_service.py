@@ -14,6 +14,7 @@
 import logging
 import re
 import time
+import urllib.parse
 from typing import Any
 from typing import Optional
 
@@ -181,9 +182,14 @@ class VertexAiSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
+    path = f"reasoningEngines/{reasoning_engine_id}/sessions"
+    if user_id:
+      parsed_user_id = urllib.parse.quote(f'''="{user_id}"''', safe="")
+      path = path + f"?filter=user_id{parsed_user_id}"
+    
     api_response = self.api_client.request(
         http_method='GET',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions?filter=user_id={user_id}',
+        path=f'reasoningEngines/{reasoning_engine_id}/sessions?filter=user_id{parsed_user_id}',
         request_dict={},
     )
 
