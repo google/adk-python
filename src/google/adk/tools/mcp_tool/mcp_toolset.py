@@ -90,6 +90,7 @@ class MCPToolset(BaseToolset):
 
     if not connection_params:
       raise ValueError("Missing connection params in MCPToolset.")
+    super().__init__(tool_filter=tool_filter)
     self._connection_params = connection_params
     self._errlog = errlog
     self._exit_stack = AsyncExitStack()
@@ -102,7 +103,6 @@ class MCPToolset(BaseToolset):
         errlog=self._errlog,
     )
     self._session = None
-    self.tool_filter = tool_filter
     self._initialized = False
 
   async def _initialize(self) -> ClientSession:
@@ -115,18 +115,6 @@ class MCPToolset(BaseToolset):
       self._process_pid = process.pid
     self._initialized = True
     return self._session
-
-  def _is_selected(
-      self, tool: BaseTool, readonly_context: Optional[ReadonlyContext]
-  ) -> bool:
-    """Checks if a tool should be selected based on the tool filter."""
-    if self.tool_filter is None:
-      return True
-    if isinstance(self.tool_filter, ToolPredicate):
-      return self.tool_filter(tool, readonly_context)
-    if isinstance(self.tool_filter, list):
-      return tool.name in self.tool_filter
-    return False
 
   @override
   async def close(self):
@@ -221,6 +209,6 @@ class MCPToolset(BaseToolset):
           mcp_session_manager=self._session_manager,
       )
 
-      if self._is_selected(mcp_tool, readonly_context):
+      if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
     return tools
