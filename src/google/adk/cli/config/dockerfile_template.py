@@ -17,7 +17,7 @@ USER myuser
 ENV PATH="/home/myuser/.local/bin:$PATH"
 
 # Install ADK
-RUN pip install google-adk
+RUN pip install google-adk=={adk_version}
 
 # Copy agent
 COPY "agents/{app_name}/" "/app/agents/{app_name}/"
@@ -25,5 +25,5 @@ COPY "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {session_db_option} {trace_to_cloud_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {session_db_option} {trace_to_cloud_option} "/app/agents"
 """
