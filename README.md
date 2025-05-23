@@ -13,9 +13,10 @@
     </h3>
     <h3 align="center">
       Important Links:
-      <a href="https://google.github.io/adk-docs/">Docs</a> &
-      <a href="https://github.com/google/adk-samples">Samples</a> &
-      <a href="https://github.com/google/adk-java">Java ADK</a>.
+      <a href="https://google.github.io/adk-docs/">Docs</a>, 
+      <a href="https://github.com/google/adk-samples">Samples</a>,
+      <a href="https://github.com/google/adk-java">Java ADK</a> &
+      <a href="https://github.com/google/adk-web">ADK Web</a>.
     </h3>
 </html>
 
@@ -39,6 +40,12 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 - **Deploy Anywhere**: Easily containerize and deploy agents on Cloud Run or
   scale seamlessly with Vertex AI Agent Engine.
 
+## 🤖 Agent2Agent (A2A) Protocol and ADK Integration
+
+For remote agent-to-agent communication, ADK integrates with the
+[A2A protocol](https://github.com/google/A2A/).
+See this [example](https://github.com/google/A2A/tree/main/samples/python/agents/google_adk)
+for how they can work together.
 
 ## 🚀 Installation
 
@@ -123,13 +130,6 @@ adk eval \
     samples_for_testing/hello_world \
     samples_for_testing/hello_world/hello_world_eval_set_001.evalset.json
 ```
-
-## 🤖 A2A and ADK integration
-
-For remote agent-to-agent communication, ADK integrates with the
-[A2A protocol](https://github.com/google/A2A/).
-See this [example](https://github.com/google/A2A/tree/main/samples/python/agents/google_adk)
-for how they can work together.
 
 ## 🤝 Contributing
 
