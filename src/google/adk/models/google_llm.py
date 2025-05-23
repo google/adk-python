@@ -62,6 +62,8 @@ class Gemini(BaseLlm):
 
     return [
         r'gemini-.*',
+        r'gemma-.*',
+        r'learnlm-.*',
         # fine-tuned vertex endpoint pattern
         r'projects\/.+\/locations\/.+\/endpoints\/.+',
         # vertex gemini long name
