@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict
-from google.genai.types import Schema, Type
+from typing import Any
+from typing import Dict
+
+from google.genai.types import Schema
+from google.genai.types import Type
 import mcp.types as mcp_types
+
 from ..base_tool import BaseTool
 
 

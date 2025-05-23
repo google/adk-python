@@ -20,18 +20,23 @@ from typing import Final
 from typing import List
 from typing import Literal
 from typing import Optional
+from typing import Union
 
+from typing_extensions import override
 import yaml
 
+from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ...base_toolset import BaseToolset
+from ...base_toolset import ToolPredicate
 from .openapi_spec_parser import OpenApiSpecParser
 from .rest_api_tool import RestApiTool
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
-class OpenAPIToolset:
+class OpenAPIToolset(BaseToolset):
   """Class for parsing OpenAPI spec into a list of RestApiTool.
 
   Usage:
@@ -61,6 +66,7 @@ class OpenAPIToolset:
       spec_str_type: Literal["json", "yaml"] = "json",
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
     """Initializes the OpenAPIToolset.
 
@@ -94,10 +100,13 @@ class OpenAPIToolset:
       auth_credential: The auth credential to use for all tools. Use
         AuthCredential or use helpers in
         `google.adk.tools.openapi_tool.auth.auth_helpers`
+      tool_filter: The filter used to filter the tools in the toolset. It can be
+        either a tool predicate or a list of tool names of the tools to expose.
     """
+    super().__init__(tool_filter=tool_filter)
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
-    self.tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
+    self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
 
@@ -106,19 +115,26 @@ class OpenAPIToolset:
   ):
     """Configure auth scheme and credential for all tools."""
 
-    for tool in self.tools:
+    for tool in self._tools:
       if auth_scheme:
         tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         tool.configure_auth_credential(auth_credential)
 
-  def get_tools(self) -> List[RestApiTool]:
+  @override
+  async def get_tools(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> List[RestApiTool]:
     """Get all tools in the toolset."""
-    return self.tools
+    return [
+        tool
+        for tool in self._tools
+        if self._is_tool_selected(tool, readonly_context)
+    ]
 
   def get_tool(self, tool_name: str) -> Optional[RestApiTool]:
     """Get a tool by name."""
-    matching_tool = filter(lambda t: t.name == tool_name, self.tools)
+    matching_tool = filter(lambda t: t.name == tool_name, self._tools)
     return next(matching_tool, None)
 
   def _load_spec(
@@ -142,3 +158,7 @@ class OpenAPIToolset:
       logger.info("Parsed tool: %s", tool.name)
       tools.append(tool)
     return tools
+
+  @override
+  async def close(self):
+    pass

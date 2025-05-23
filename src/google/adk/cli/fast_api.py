@@ -12,23 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import asyncio
 from contextlib import asynccontextmanager
 import importlib
-import inspect
-import json
 import logging
 import os
 from pathlib import Path
-import re
 import sys
+import time
 import traceback
 import typing
 from typing import Any
 from typing import List
 from typing import Literal
 from typing import Optional
-from typing import Union
 
 import click
 from fastapi import FastAPI
@@ -48,18 +46,21 @@ from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
-from pydantic import BaseModel
+from pydantic import Field
 from pydantic import ValidationError
 from starlette.types import Lifespan
+from typing_extensions import override
 
 from ..agents import RunConfig
-from ..agents.base_agent import BaseAgent
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
-from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
-from ..artifacts import InMemoryArtifactService
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
+from ..evaluation.eval_case import EvalCase
+from ..evaluation.eval_case import SessionInput
+from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
+from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
@@ -71,14 +72,19 @@ from ..tools.base_toolset import BaseToolset
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .cli_eval import EvalMetric
 from .cli_eval import EvalMetricResult
+from .cli_eval import EvalMetricResultPerInvocation
+from .cli_eval import EvalSetResult
 from .cli_eval import EvalStatus
+from .utils import cleanup
+from .utils import common
 from .utils import create_empty_state
 from .utils import envs
 from .utils import evals
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+_EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
 
 
 class ApiServerSpanExporter(export.SpanExporter):
@@ -106,7 +112,45 @@ class ApiServerSpanExporter(export.SpanExporter):
     return True
 
 
-class AgentRunRequest(BaseModel):
+class InMemoryExporter(export.SpanExporter):
+
+  def __init__(self, trace_dict):
+    super().__init__()
+    self._spans = []
+    self.trace_dict = trace_dict
+
+  @override
+  def export(
+      self, spans: typing.Sequence[ReadableSpan]
+  ) -> export.SpanExportResult:
+    for span in spans:
+      trace_id = span.context.trace_id
+      if span.name == "call_llm":
+        attributes = dict(span.attributes)
+        session_id = attributes.get("gcp.vertex.agent.session_id", None)
+        if session_id:
+          if session_id not in self.trace_dict:
+            self.trace_dict[session_id] = [trace_id]
+          else:
+            self.trace_dict[session_id] += [trace_id]
+    self._spans.extend(spans)
+    return export.SpanExportResult.SUCCESS
+
+  @override
+  def force_flush(self, timeout_millis: int = 30000) -> bool:
+    return True
+
+  def get_finished_spans(self, session_id: str):
+    trace_ids = self.trace_dict.get(session_id, None)
+    if trace_ids is None or not trace_ids:
+      return []
+    return [x for x in self._spans if x.context.trace_id in trace_ids]
+
+  def clear(self):
+    self._spans.clear()
+
+
+class AgentRunRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
@@ -114,23 +158,36 @@ class AgentRunRequest(BaseModel):
   streaming: bool = False
 
 
-class AddSessionToEvalSetRequest(BaseModel):
+class AddSessionToEvalSetRequest(common.BaseModel):
   eval_id: str
   session_id: str
   user_id: str
 
 
-class RunEvalRequest(BaseModel):
+class RunEvalRequest(common.BaseModel):
   eval_ids: list[str]  # if empty, then all evals in the eval set are run.
   eval_metrics: list[EvalMetric]
 
 
-class RunEvalResult(BaseModel):
+class RunEvalResult(common.BaseModel):
+  eval_set_file: str
   eval_set_id: str
   eval_id: str
   final_eval_status: EvalStatus
-  eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]]
+  eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]] = Field(
+      deprecated=True,
+      description=(
+          "This field is deprecated, use overall_eval_metric_results instead."
+      ),
+  )
+  overall_eval_metric_results: list[EvalMetricResult]
+  eval_metric_result_per_invocation: list[EvalMetricResultPerInvocation]
+  user_id: str
   session_id: str
+
+
+class GetEventGraphResult(common.BaseModel):
+  dot_src: str
 
 
 def get_fast_api_app(
@@ -144,12 +201,15 @@ def get_fast_api_app(
 ) -> FastAPI:
   # InMemory tracing dict.
   trace_dict: dict[str, Any] = {}
+  session_trace_dict: dict[str, Any] = {}
 
   # Set up tracing in the FastAPI server.
   provider = TracerProvider()
   provider.add_span_processor(
       export.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict))
   )
+  memory_exporter = InMemoryExporter(session_trace_dict)
+  provider.add_span_processor(export.SimpleSpanProcessor(memory_exporter))
   if trace_to_cloud:
     envs.load_dotenv_for_agent("", agent_dir)
     if project_id := os.environ.get("GOOGLE_CLOUD_PROJECT", None):
@@ -158,29 +218,25 @@ def get_fast_api_app(
       )
       provider.add_span_processor(processor)
     else:
-      logging.warning(
+      logger.warning(
           "GOOGLE_CLOUD_PROJECT environment variable is not set. Tracing will"
           " not be enabled."
       )
 
   trace.set_tracer_provider(provider)
 
-  exit_stacks = []
-  toolsets_to_close: set[BaseToolset] = set()
-
   @asynccontextmanager
   async def internal_lifespan(app: FastAPI):
-    if lifespan:
-      async with lifespan(app) as lifespan_context:
-        yield
 
-        if exit_stacks:
-          for stack in exit_stacks:
-            await stack.aclose()
-        for toolset in toolsets_to_close:
-          await toolset.close()
-    else:
-      yield
+    try:
+      if lifespan:
+        async with lifespan(app) as lifespan_context:
+          yield lifespan_context
+      else:
+        yield
+    finally:
+      # Create tasks for all runner closures to run concurrently
+      await cleanup.close_runners(list(runner_dict.values()))
 
   # Run the FastAPI server.
   app = FastAPI(lifespan=internal_lifespan)
@@ -203,6 +259,9 @@ def get_fast_api_app(
   # Build the Artifact service
   artifact_service = InMemoryArtifactService()
   memory_service = InMemoryMemoryService()
+
+  eval_sets_manager = LocalEvalSetsManager(agent_dir=agent_dir)
+  eval_set_results_manager = LocalEvalSetResultsManager(agent_dir=agent_dir)
 
   # Build the Session service
   agent_engine_id = ""
@@ -246,14 +305,34 @@ def get_fast_api_app(
       raise HTTPException(status_code=404, detail="Trace not found")
     return event_dict
 
+  @app.get("/debug/trace/session/{session_id}")
+  def get_session_trace(session_id: str) -> Any:
+    spans = memory_exporter.get_finished_spans(session_id)
+    if not spans:
+      return []
+    return [
+        {
+            "name": s.name,
+            "span_id": s.context.span_id,
+            "trace_id": s.context.trace_id,
+            "start_time": s.start_time,
+            "end_time": s.end_time,
+            "attributes": dict(s.attributes),
+            "parent_span_id": s.parent.span_id if s.parent else None,
+        }
+        for s in spans
+    ]
+
   @app.get(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
       response_model_exclude_none=True,
   )
-  def get_session(app_name: str, user_id: str, session_id: str) -> Session:
+  async def get_session(
+      app_name: str, user_id: str, session_id: str
+  ) -> Session:
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
     if not session:
@@ -264,14 +343,15 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions",
       response_model_exclude_none=True,
   )
-  def list_sessions(app_name: str, user_id: str) -> list[Session]:
+  async def list_sessions(app_name: str, user_id: str) -> list[Session]:
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
+    list_sessions_response = await session_service.list_sessions(
+        app_name=app_name, user_id=user_id
+    )
     return [
         session
-        for session in session_service.list_sessions(
-            app_name=app_name, user_id=user_id
-        ).sessions
+        for session in list_sessions_response.sessions
         # Remove sessions that were generated as a part of Eval.
         if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
     ]
@@ -280,7 +360,7 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
       response_model_exclude_none=True,
   )
-  def create_session_with_id(
+  async def create_session_with_id(
       app_name: str,
       user_id: str,
       session_id: str,
@@ -289,7 +369,7 @@ def get_fast_api_app(
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
     if (
-        session_service.get_session(
+        await session_service.get_session(
             app_name=app_name, user_id=user_id, session_id=session_id
         )
         is not None
@@ -298,9 +378,8 @@ def get_fast_api_app(
       raise HTTPException(
           status_code=400, detail=f"Session already exists: {session_id}"
       )
-
     logger.info("New session created: %s", session_id)
-    return session_service.create_session(
+    return await session_service.create_session(
         app_name=app_name, user_id=user_id, state=state, session_id=session_id
     )
 
@@ -308,16 +387,15 @@ def get_fast_api_app(
       "/apps/{app_name}/users/{user_id}/sessions",
       response_model_exclude_none=True,
   )
-  def create_session(
+  async def create_session(
       app_name: str,
       user_id: str,
       state: Optional[dict[str, Any]] = None,
   ) -> Session:
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
-
     logger.info("New session created")
-    return session_service.create_session(
+    return await session_service.create_session(
         app_name=app_name, user_id=user_id, state=state
     )
 
@@ -337,28 +415,13 @@ def get_fast_api_app(
       eval_set_id: str,
   ):
     """Creates an eval set, given the id."""
-    pattern = r"^[a-zA-Z0-9_]+$"
-    if not bool(re.fullmatch(pattern, eval_set_id)):
+    try:
+      eval_sets_manager.create_eval_set(app_name, eval_set_id)
+    except ValueError as ve:
       raise HTTPException(
           status_code=400,
-          detail=(
-              f"Invalid eval set id. Eval set id should have the `{pattern}`"
-              " format"
-          ),
-      )
-    # Define the file path
-    new_eval_set_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-
-    logger.info("Creating eval set file `%s`", new_eval_set_path)
-
-    if not os.path.exists(new_eval_set_path):
-      # Write the JSON string to the file
-      logger.info("Eval set file doesn't exist, we will create a new one.")
-      with open(new_eval_set_path, "w") as f:
-        empty_content = json.dumps([], indent=2)
-        f.write(empty_content)
+          detail=str(ve),
+      ) from ve
 
   @app.get(
       "/apps/{app_name}/eval_sets",
@@ -366,15 +429,7 @@ def get_fast_api_app(
   )
   def list_eval_sets(app_name: str) -> list[str]:
     """Lists all eval sets for the given app."""
-    eval_set_file_path = os.path.join(agent_dir, app_name)
-    eval_sets = []
-    for file in os.listdir(eval_set_file_path):
-      if file.endswith(_EVAL_SET_FILE_EXTENSION):
-        eval_sets.append(
-            os.path.basename(file).removesuffix(_EVAL_SET_FILE_EXTENSION)
-        )
-
-    return sorted(eval_sets)
+    return eval_sets_manager.list_eval_sets(app_name)
 
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
@@ -383,54 +438,33 @@ def get_fast_api_app(
   async def add_session_to_eval_set(
       app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
   ):
-    pattern = r"^[a-zA-Z0-9_]+$"
-    if not bool(re.fullmatch(pattern, req.eval_id)):
-      raise HTTPException(
-          status_code=400,
-          detail=f"Invalid eval id. Eval id should have the `{pattern}` format",
-      )
-
     # Get the session
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_name, user_id=req.user_id, session_id=req.session_id
     )
     assert session, "Session not found."
-    # Load the eval set file data
-    eval_set_file_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-    with open(eval_set_file_path, "r") as file:
-      eval_set_data = json.load(file)  # Load JSON into a list
 
-    if [x for x in eval_set_data if x["name"] == req.eval_id]:
-      raise HTTPException(
-          status_code=400,
-          detail=(
-              f"Eval id `{req.eval_id}` already exists in `{eval_set_id}`"
-              " eval set."
-          ),
-      )
-
-    # Convert the session data to evaluation format
-    test_data = evals.convert_session_to_eval_format(session)
+    # Convert the session data to eval invocations
+    invocations = evals.convert_session_to_eval_invocations(session)
 
     # Populate the session with initial session state.
     initial_session_state = create_empty_state(
         await _get_root_agent_async(app_name)
     )
 
-    eval_set_data.append({
-        "name": req.eval_id,
-        "data": test_data,
-        "initial_session": {
-            "state": initial_session_state,
-            "app_name": app_name,
-            "user_id": req.user_id,
-        },
-    })
-    # Serialize the test data to JSON and write to the eval set file.
-    with open(eval_set_file_path, "w") as f:
-      f.write(json.dumps(eval_set_data, indent=2))
+    new_eval_case = EvalCase(
+        eval_id=req.eval_id,
+        conversation=invocations,
+        session_input=SessionInput(
+            app_name=app_name, user_id=req.user_id, state=initial_session_state
+        ),
+        creation_timestamp=time.time(),
+    )
+
+    try:
+      eval_sets_manager.add_eval_case(app_name, eval_set_id, new_eval_case)
+    except ValueError as ve:
+      raise HTTPException(status_code=400, detail=str(ve)) from ve
 
   @app.get(
       "/apps/{app_name}/eval_sets/{eval_set_id}/evals",
@@ -441,14 +475,9 @@ def get_fast_api_app(
       eval_set_id: str,
   ) -> list[str]:
     """Lists all evals in an eval set."""
-    # Load the eval set file data
-    eval_set_file_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-    with open(eval_set_file_path, "r") as file:
-      eval_set_data = json.load(file)  # Load JSON into a list
+    eval_set_data = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
-    return sorted([x["name"] for x in eval_set_data])
+    return sorted([x.eval_id for x in eval_set_data.eval_cases])
 
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
@@ -457,46 +486,91 @@ def get_fast_api_app(
   async def run_eval(
       app_name: str, eval_set_id: str, req: RunEvalRequest
   ) -> list[RunEvalResult]:
+    """Runs an eval given the details in the eval request."""
     from .cli_eval import run_evals
 
-    """Runs an eval given the details in the eval request."""
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
     envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
-    eval_set_file_path = _get_eval_set_file_path(
-        app_name, agent_dir, eval_set_id
-    )
-    eval_set_to_evals = {eval_set_file_path: req.eval_ids}
 
-    if not req.eval_ids:
-      logger.info(
-          "Eval ids to run list is empty. We will all evals in the eval set."
-      )
+    eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
+
+    if req.eval_ids:
+      eval_cases = [e for e in eval_set.eval_cases if e.eval_id in req.eval_ids]
+      eval_set_to_evals = {eval_set_id: eval_cases}
+    else:
+      logger.info("Eval ids to run list is empty. We will run all eval cases.")
+      eval_set_to_evals = {eval_set_id: eval_set.eval_cases}
+
     root_agent = await _get_root_agent_async(app_name)
-    return [
-        RunEvalResult(
-            app_name=app_name,
-            eval_set_id=eval_set_id,
-            eval_id=eval_result.eval_id,
-            final_eval_status=eval_result.final_eval_status,
-            eval_metric_results=eval_result.eval_metric_results,
-            session_id=eval_result.session_id,
-        )
-        async for eval_result in run_evals(
-            eval_set_to_evals,
-            root_agent,
-            getattr(root_agent, "reset_data", None),
-            req.eval_metrics,
-            session_service=session_service,
-            artifact_service=artifact_service,
-        )
-    ]
+    run_eval_results = []
+    eval_case_results = []
+    async for eval_case_result in run_evals(
+        eval_set_to_evals,
+        root_agent,
+        getattr(root_agent, "reset_data", None),
+        req.eval_metrics,
+        session_service=session_service,
+        artifact_service=artifact_service,
+    ):
+      run_eval_results.append(
+          RunEvalResult(
+              app_name=app_name,
+              eval_set_file=eval_case_result.eval_set_file,
+              eval_set_id=eval_set_id,
+              eval_id=eval_case_result.eval_id,
+              final_eval_status=eval_case_result.final_eval_status,
+              eval_metric_results=eval_case_result.eval_metric_results,
+              overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
+              eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
+              user_id=eval_case_result.user_id,
+              session_id=eval_case_result.session_id,
+          )
+      )
+      eval_case_result.session_details = await session_service.get_session(
+          app_name=app_name,
+          user_id=eval_case_result.user_id,
+          session_id=eval_case_result.session_id,
+      )
+      eval_case_results.append(eval_case_result)
+
+    eval_set_results_manager.save_eval_set_result(
+        app_name, eval_set_id, eval_case_results
+    )
+
+    return run_eval_results
+
+  @app.get(
+      "/apps/{app_name}/eval_results/{eval_result_id}",
+      response_model_exclude_none=True,
+  )
+  def get_eval_result(
+      app_name: str,
+      eval_result_id: str,
+  ) -> EvalSetResult:
+    """Gets the eval result for the given eval id."""
+    try:
+      return eval_set_results_manager.get_eval_set_result(
+          app_name, eval_result_id
+      )
+    except ValueError as ve:
+      raise HTTPException(status_code=404, detail=str(ve)) from ve
+    except ValidationError as ve:
+      raise HTTPException(status_code=500, detail=str(ve)) from ve
+
+  @app.get(
+      "/apps/{app_name}/eval_results",
+      response_model_exclude_none=True,
+  )
+  def list_eval_results(app_name: str) -> list[str]:
+    """Lists all eval results for the given app."""
+    return eval_set_results_manager.list_eval_set_results(app_name)
 
   @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
-  def delete_session(app_name: str, user_id: str, session_id: str):
+  async def delete_session(app_name: str, user_id: str, session_id: str):
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
-    session_service.delete_session(
+    await session_service.delete_session(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
 
@@ -591,7 +665,7 @@ def get_fast_api_app(
   async def agent_run(req: AgentRunRequest) -> list[Event]:
     # Connect to managed session if agent_engine_id is set.
     app_id = agent_engine_id if agent_engine_id else req.app_name
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_id, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
@@ -613,7 +687,7 @@ def get_fast_api_app(
     # Connect to managed session if agent_engine_id is set.
     app_id = agent_engine_id if agent_engine_id else req.app_name
     # SSE endpoint
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_id, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
@@ -654,7 +728,7 @@ def get_fast_api_app(
   ):
     # Connect to managed session if agent_engine_id is set.
     app_id = agent_engine_id if agent_engine_id else app_name
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_id, user_id=user_id, session_id=session_id
     )
     session_events = session.events if session else []
@@ -693,7 +767,7 @@ def get_fast_api_app(
           root_agent, [(from_name, to_name)]
       )
     if dot_graph and isinstance(dot_graph, graphviz.Digraph):
-      return {"dot_src": dot_graph.source}
+      return GetEventGraphResult(dot_src=dot_graph.source)
     else:
       return {}
 
@@ -711,7 +785,7 @@ def get_fast_api_app(
 
     # Connect to managed session if agent_engine_id is set.
     app_id = agent_engine_id if agent_engine_id else app_name
-    session = session_service.get_session(
+    session = await session_service.get_session(
         app_name=app_id, user_id=user_id, session_id=session_id
     )
     if not session:
@@ -767,16 +841,6 @@ def get_fast_api_app(
       for task in pending:
         task.cancel()
 
-  def _get_all_toolsets(agent: BaseAgent) -> set[BaseToolset]:
-    toolsets = set()
-    if isinstance(agent, LlmAgent):
-      for tool_union in agent.tools:
-        if isinstance(tool_union, BaseToolset):
-          toolsets.add(tool_union)
-    for sub_agent in agent.sub_agents:
-      toolsets.update(_get_all_toolsets(sub_agent))
-    return toolsets
-
   async def _get_root_agent_async(app_name: str) -> Agent:
     """Returns the root agent for the given app."""
     if app_name in root_agent_dict:
@@ -787,17 +851,7 @@ def get_fast_api_app(
     else:
       raise ValueError(f'Unable to find "root_agent" from {app_name}.')
 
-    # Handle an awaitable root agent and await for the actual agent.
-    if inspect.isawaitable(root_agent):
-      try:
-        agent, exit_stack = await root_agent
-        exit_stacks.append(exit_stack)
-        root_agent = agent
-      except Exception as e:
-        raise RuntimeError(f"error getting root agent, {e}") from e
-
     root_agent_dict[app_name] = root_agent
-    toolsets_to_close.update(_get_all_toolsets(root_agent))
     return root_agent
 
   async def _get_runner_async(app_name: str) -> Runner:

@@ -26,16 +26,19 @@ if TYPE_CHECKING:
   from ..models import LlmRequest
 
 
-class BuiltInCodeExecutionTool(BaseTool):
-  """A built-in code execution tool that is automatically invoked by Gemini 2 models.
+class EnterpriseWebSearchTool(BaseTool):
+  """A Gemini 2+ built-in tool using web grounding for Enterprise compliance.
 
-  This tool operates internally within the model and does not require or perform
-  local code execution.
+  See the documentation for more details:
+  https://cloud.google.com/vertex-ai/generative-ai/docs/grounding/web-grounding-enterprise.
   """
 
   def __init__(self):
+    """Initializes the Vertex AI Search tool."""
     # Name and description are not used because this is a model built-in tool.
-    super().__init__(name='code_execution', description='code_execution')
+    super().__init__(
+        name='enterprise_web_search', description='enterprise_web_search'
+    )
 
   @override
   async def process_llm_request(
@@ -44,16 +47,19 @@ class BuiltInCodeExecutionTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    if llm_request.model and llm_request.model.startswith('gemini-2'):
+    if llm_request.model and llm_request.model.startswith('gemini-'):
+      if llm_request.model.startswith('gemini-1') and llm_request.config.tools:
+        raise ValueError(
+            'Enterprise web search tool can not be used with other tools in'
+            ' Gemini 1.x.'
+        )
       llm_request.config = llm_request.config or types.GenerateContentConfig()
       llm_request.config.tools = llm_request.config.tools or []
       llm_request.config.tools.append(
-          types.Tool(code_execution=types.ToolCodeExecution())
+          types.Tool(enterprise_web_search=types.EnterpriseWebSearch())
       )
     else:
       raise ValueError(
-          f'Code execution tool is not supported for model {llm_request.model}'
+          'Enterprise web search tool is not supported for model'
+          f' {llm_request.model}'
       )
-
-
-built_in_code_execution = BuiltInCodeExecutionTool()

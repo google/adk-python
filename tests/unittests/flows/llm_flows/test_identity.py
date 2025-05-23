@@ -18,7 +18,7 @@ from google.adk.models import LlmRequest
 from google.genai import types
 import pytest
 
-from ... import utils
+from ... import testing_utils
 
 
 @pytest.mark.asyncio
@@ -28,7 +28,9 @@ async def test_no_description():
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(model="gemini-1.5-flash", name="agent")
-  invocation_context = utils.create_invocation_context(agent=agent)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
 
   async for _ in identity.request_processor.run_async(
       invocation_context,
@@ -52,7 +54,9 @@ async def test_with_description():
       name="agent",
       description="test description",
   )
-  invocation_context = utils.create_invocation_context(agent=agent)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
 
   async for _ in identity.request_processor.run_async(
       invocation_context,

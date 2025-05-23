@@ -33,6 +33,7 @@ def to_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    adk_version: str,
     provider_args: Tuple[str],
     env: Tuple[str],
 ):
@@ -64,8 +65,10 @@ def to_cloud_run(
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     session_db_url: The database URL to connect the session.
+    adk_version: The ADK version to use in Cloud Run.
     provider_args: The arguments specific to cloud provider
     env: The environment valriables provided
+
   """
   app_name = app_name or os.path.basename(agent_folder)
   mode = 'web' if with_ui else 'api_server'
@@ -93,6 +96,7 @@ def to_cloud_run(
 
     # create Dockerfile
     click.echo('Creating Dockerfile...')
+    host_option = '--host=0.0.0.0' if adk_version > '0.5.0' else ''
     dockerfile_content = _DOCKERFILE_TEMPLATE.format(
         gcp_project_id=project,
         gcp_region=region,
@@ -104,6 +108,8 @@ def to_cloud_run(
         if session_db_url
         else '',
         trace_to_cloud_option=trace_to_cloud_option,
+        adk_version=adk_version,
+        host_option=host_option,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)

@@ -15,11 +15,13 @@
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import Any, Optional
+from typing import Any
+from typing import Optional
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
   from google.genai import types
+
   from .invocation_context import InvocationContext
 
 
