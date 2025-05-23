@@ -17,7 +17,7 @@ from google.adk.tools import ToolContext
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.genai.types import Part
 
-from ... import utils
+from ... import testing_utils
 
 
 def test_async_function():
@@ -28,7 +28,7 @@ def test_async_function():
       'response3',
       'response4',
   ]
-  mockModel = utils.MockModel.create(responses=responses)
+  mockModel = testing_utils.MockModel.create(responses=responses)
   function_called = 0
 
   def increase_by_one(x: int, tool_context: ToolContext) -> int:
@@ -43,14 +43,14 @@ def test_async_function():
       model=mockModel,
       tools=[LongRunningFunctionTool(func=increase_by_one)],
   )
-  runner = utils.InMemoryRunner(agent)
+  runner = testing_utils.InMemoryRunner(agent)
   events = runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 2
   # 1 item: user content
   assert mockModel.requests[0].contents == [
-      utils.UserContent('test1'),
+      testing_utils.UserContent('test1'),
   ]
   increase_by_one_call = Part.from_function_call(
       name='increase_by_one', args={'x': 1}
@@ -59,7 +59,7 @@ def test_async_function():
       name='increase_by_one', response={'status': 'pending'}
   )
 
-  assert utils.simplify_contents(mockModel.requests[1].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[1].contents) == [
       ('user', 'test1'),
       ('model', increase_by_one_call),
       ('user', pending_response),
@@ -69,7 +69,7 @@ def test_async_function():
   assert function_called == 1
 
   # Asserts the responses.
-  assert utils.simplify_events(events) == [
+  assert testing_utils.simplify_events(events) == [
       (
           'root_agent',
           Part.from_function_call(name='increase_by_one', args={'x': 1}),
@@ -88,45 +88,45 @@ def test_async_function():
   still_waiting_response = Part.from_function_response(
       name='increase_by_one', response={'status': 'still waiting'}
   )
-  events = runner.run(utils.UserContent(still_waiting_response))
+  events = runner.run(testing_utils.UserContent(still_waiting_response))
   # We have one new request.
   assert len(mockModel.requests) == 3
-  assert utils.simplify_contents(mockModel.requests[2].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[2].contents) == [
       ('user', 'test1'),
       ('model', increase_by_one_call),
       ('user', still_waiting_response),
   ]
 
-  assert utils.simplify_events(events) == [('root_agent', 'response2')]
+  assert testing_utils.simplify_events(events) == [('root_agent', 'response2')]
 
   # Calls when the result is ready.
   result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 2}
   )
-  events = runner.run(utils.UserContent(result_response))
+  events = runner.run(testing_utils.UserContent(result_response))
   # We have one new request.
   assert len(mockModel.requests) == 4
-  assert utils.simplify_contents(mockModel.requests[3].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[3].contents) == [
       ('user', 'test1'),
       ('model', increase_by_one_call),
       ('user', result_response),
   ]
-  assert utils.simplify_events(events) == [('root_agent', 'response3')]
+  assert testing_utils.simplify_events(events) == [('root_agent', 'response3')]
 
   # Calls when the result is ready. Here we still accept the result and do
   # another summarization. Whether this is the right behavior is TBD.
   another_result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 3}
   )
-  events = runner.run(utils.UserContent(another_result_response))
+  events = runner.run(testing_utils.UserContent(another_result_response))
   # We have one new request.
   assert len(mockModel.requests) == 5
-  assert utils.simplify_contents(mockModel.requests[4].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[4].contents) == [
       ('user', 'test1'),
       ('model', increase_by_one_call),
       ('user', another_result_response),
   ]
-  assert utils.simplify_events(events) == [('root_agent', 'response4')]
+  assert testing_utils.simplify_events(events) == [('root_agent', 'response4')]
 
   # At the end, function_called should still be 1.
   assert function_called == 1
@@ -140,7 +140,7 @@ def test_async_function_with_none_response():
       'response3',
       'response4',
   ]
-  mockModel = utils.MockModel.create(responses=responses)
+  mockModel = testing_utils.MockModel.create(responses=responses)
   function_called = 0
 
   def increase_by_one(x: int, tool_context: ToolContext) -> int:
@@ -154,20 +154,20 @@ def test_async_function_with_none_response():
       model=mockModel,
       tools=[LongRunningFunctionTool(func=increase_by_one)],
   )
-  runner = utils.InMemoryRunner(agent)
+  runner = testing_utils.InMemoryRunner(agent)
   events = runner.run('test1')
 
   # Asserts the requests.
   assert len(mockModel.requests) == 2
   # 1 item: user content
   assert mockModel.requests[0].contents == [
-      utils.UserContent('test1'),
+      testing_utils.UserContent('test1'),
   ]
   increase_by_one_call = Part.from_function_call(
       name='increase_by_one', args={'x': 1}
   )
 
-  assert utils.simplify_contents(mockModel.requests[1].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[1].contents) == [
       ('user', 'test1'),
       ('model', increase_by_one_call),
       (
@@ -182,7 +182,7 @@ def test_async_function_with_none_response():
   assert function_called == 1
 
   # Asserts the responses.
-  assert utils.simplify_events(events) == [
+  assert testing_utils.simplify_events(events) == [
       (
           'root_agent',
           Part.from_function_call(name='increase_by_one', args={'x': 1}),
@@ -200,45 +200,45 @@ def test_async_function_with_none_response():
   still_waiting_response = Part.from_function_response(
       name='increase_by_one', response={'status': 'still waiting'}
   )
-  events = runner.run(utils.UserContent(still_waiting_response))
+  events = runner.run(testing_utils.UserContent(still_waiting_response))
   # We have one new request.
   assert len(mockModel.requests) == 3
-  assert utils.simplify_contents(mockModel.requests[2].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[2].contents) == [
       ('user', 'test1'),
       ('model', increase_by_one_call),
       ('user', still_waiting_response),
   ]
 
-  assert utils.simplify_events(events) == [('root_agent', 'response2')]
+  assert testing_utils.simplify_events(events) == [('root_agent', 'response2')]
 
   # Calls when the result is ready.
   result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 2}
   )
-  events = runner.run(utils.UserContent(result_response))
+  events = runner.run(testing_utils.UserContent(result_response))
   # We have one new request.
   assert len(mockModel.requests) == 4
-  assert utils.simplify_contents(mockModel.requests[3].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[3].contents) == [
       ('user', 'test1'),
       ('model', increase_by_one_call),
       ('user', result_response),
   ]
-  assert utils.simplify_events(events) == [('root_agent', 'response3')]
+  assert testing_utils.simplify_events(events) == [('root_agent', 'response3')]
 
   # Calls when the result is ready. Here we still accept the result and do
   # another summarization. Whether this is the right behavior is TBD.
   another_result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 3}
   )
-  events = runner.run(utils.UserContent(another_result_response))
+  events = runner.run(testing_utils.UserContent(another_result_response))
   # We have one new request.
   assert len(mockModel.requests) == 5
-  assert utils.simplify_contents(mockModel.requests[4].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[4].contents) == [
       ('user', 'test1'),
       ('model', increase_by_one_call),
       ('user', another_result_response),
   ]
-  assert utils.simplify_events(events) == [('root_agent', 'response4')]
+  assert testing_utils.simplify_events(events) == [('root_agent', 'response4')]
 
   # At the end, function_called should still be 1.
   assert function_called == 1

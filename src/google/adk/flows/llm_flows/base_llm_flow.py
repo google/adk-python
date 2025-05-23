@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from websockets.exceptions import ConnectionClosedOK
 
+from . import functions
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
@@ -40,7 +41,6 @@ from ...telemetry import trace_call_llm
 from ...telemetry import trace_send_data
 from ...telemetry import tracer
 from ...tools.tool_context import ToolContext
-from . import functions
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent

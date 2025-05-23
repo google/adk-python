@@ -82,7 +82,7 @@ class EvalCaseResult(common.BaseModel):
   """The eval case id."""
 
   final_eval_status: EvalStatus
-  """Final evalu status for this eval case."""
+  """Final eval status for this eval case."""
 
   eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]] = Field(
       deprecated=True,
