@@ -30,7 +30,7 @@ from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuth
 from ..auth.credential_exchangers.base_credential_exchanger import AuthCredentialMissingError
 from ..auth.credential_exchangers.base_credential_exchanger import BaseAuthCredentialExchanger
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 AuthPreparationState = Literal["pending", "done"]
 

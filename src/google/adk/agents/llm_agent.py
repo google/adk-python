@@ -14,9 +14,11 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any
 from typing import AsyncGenerator
+from typing import Awaitable
 from typing import Callable
 from typing import Literal
 from typing import Optional
@@ -43,6 +45,7 @@ from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..planners.base_planner import BasePlanner
 from ..tools.base_tool import BaseTool
+from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
 from .base_agent import BaseAgent
@@ -50,39 +53,65 @@ from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
 from .readonly_context import ReadonlyContext
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
-
-BeforeModelCallback: TypeAlias = Callable[
-    [CallbackContext, LlmRequest], Optional[LlmResponse]
+_SingleBeforeModelCallback: TypeAlias = Callable[
+    [CallbackContext, LlmRequest],
+    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
 ]
-AfterModelCallback: TypeAlias = Callable[
+
+BeforeModelCallback: TypeAlias = Union[
+    _SingleBeforeModelCallback,
+    list[_SingleBeforeModelCallback],
+]
+
+_SingleAfterModelCallback: TypeAlias = Callable[
     [CallbackContext, LlmResponse],
-    Optional[LlmResponse],
+    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
 ]
-BeforeToolCallback: TypeAlias = Callable[
+
+AfterModelCallback: TypeAlias = Union[
+    _SingleAfterModelCallback,
+    list[_SingleAfterModelCallback],
+]
+
+_SingleBeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
-    Optional[dict],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
 ]
-AfterToolCallback: TypeAlias = Callable[
+
+BeforeToolCallback: TypeAlias = Union[
+    _SingleBeforeToolCallback,
+    list[_SingleBeforeToolCallback],
+]
+
+_SingleAfterToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext, dict],
-    Optional[dict],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
 ]
 
-InstructionProvider: TypeAlias = Callable[[ReadonlyContext], str]
+AfterToolCallback: TypeAlias = Union[
+    _SingleAfterToolCallback,
+    list[_SingleAfterToolCallback],
+]
 
-ToolUnion: TypeAlias = Union[Callable, BaseTool]
+InstructionProvider: TypeAlias = Callable[
+    [ReadonlyContext], Union[str, Awaitable[str]]
+]
+
+ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
 ExamplesUnion = Union[list[Example], BaseExampleProvider]
 
 
-def _convert_tool_union_to_tool(
-    tool_union: ToolUnion,
-) -> BaseTool:
-  return (
-      tool_union
-      if isinstance(tool_union, BaseTool)
-      else FunctionTool(tool_union)
-  )
+async def _convert_tool_union_to_tools(
+    tool_union: ToolUnion, ctx: ReadonlyContext
+) -> list[BaseTool]:
+  if isinstance(tool_union, BaseTool):
+    return [tool_union]
+  if isinstance(tool_union, Callable):
+    return [FunctionTool(func=tool_union)]
+
+  return await tool_union.get_tools(ctx)
 
 
 class LlmAgent(BaseAgent):
@@ -121,7 +150,12 @@ class LlmAgent(BaseAgent):
 
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
-  """Disallows LLM-controlled transferring to the parent agent."""
+  """Disallows LLM-controlled transferring to the parent agent.
+
+  NOTE: Setting this as True also prevents this agent to continue reply to the
+  end-user. This behavior prevents one-way transfer, in which end-user may be
+  stuck with one agent that cannot transfer to other agents in the agent tree.
+  """
   disallow_transfer_to_peers: bool = False
   """Disallows LLM-controlled transferring to the peer agents."""
   # LLM-based agent transfer configs - End
@@ -166,8 +200,7 @@ class LlmAgent(BaseAgent):
 
   Check out available code executions in `google.adk.code_executor` package.
 
-  NOTE: to use model's built-in code executor, don't set this field, add
-  `google.adk.tools.built_in_code_execution` to tools instead.
+  NOTE: to use model's built-in code executor, use the `BuiltInCodeExecutor`.
   """
   # Advance features - End
 
@@ -178,7 +211,11 @@ class LlmAgent(BaseAgent):
 
   # Callbacks - Start
   before_model_callback: Optional[BeforeModelCallback] = None
-  """Called before calling the LLM.
+  """Callback or list of callbacks to be called before calling the LLM.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
+
   Args:
     callback_context: CallbackContext,
     llm_request: LlmRequest, The raw model request. Callback can mutate the
@@ -189,7 +226,10 @@ class LlmAgent(BaseAgent):
     skipped and the provided content will be returned to user.
   """
   after_model_callback: Optional[AfterModelCallback] = None
-  """Called after calling LLM.
+  """Callback or list of callbacks to be called after calling the LLM.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
 
   Args:
     callback_context: CallbackContext,
@@ -200,7 +240,10 @@ class LlmAgent(BaseAgent):
     will be ignored and the provided content will be returned to user.
   """
   before_tool_callback: Optional[BeforeToolCallback] = None
-  """Called before the tool is called.
+  """Callback or list of callbacks to be called before calling the tool.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
 
   Args:
     tool: The tool to be called.
@@ -212,7 +255,10 @@ class LlmAgent(BaseAgent):
     the framework will skip calling the actual tool.
   """
   after_tool_callback: Optional[AfterToolCallback] = None
-  """Called after the tool is called.
+  """Callback or list of callbacks to be called after calling the tool.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
 
   Args:
     tool: The tool to be called.
@@ -261,33 +307,119 @@ class LlmAgent(BaseAgent):
         ancestor_agent = ancestor_agent.parent_agent
       raise ValueError(f'No model found for {self.name}.')
 
-  def canonical_instruction(self, ctx: ReadonlyContext) -> str:
+  async def canonical_instruction(
+      self, ctx: ReadonlyContext
+  ) -> tuple[str, bool]:
     """The resolved self.instruction field to construct instruction for this agent.
 
     This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The context to retrieve the session state.
+
+    Returns:
+      A tuple of (instruction, bypass_state_injection).
+      instruction: The resolved self.instruction field.
+      bypass_state_injection: Whether the instruction is based on
+      InstructionProvider.
     """
     if isinstance(self.instruction, str):
-      return self.instruction
+      return self.instruction, False
     else:
-      return self.instruction(ctx)
+      instruction = self.instruction(ctx)
+      if inspect.isawaitable(instruction):
+        instruction = await instruction
+      return instruction, True
 
-  def canonical_global_instruction(self, ctx: ReadonlyContext) -> str:
+  async def canonical_global_instruction(
+      self, ctx: ReadonlyContext
+  ) -> tuple[str, bool]:
     """The resolved self.instruction field to construct global instruction.
 
     This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The context to retrieve the session state.
+
+    Returns:
+      A tuple of (instruction, bypass_state_injection).
+      instruction: The resolved self.global_instruction field.
+      bypass_state_injection: Whether the instruction is based on
+      InstructionProvider.
     """
     if isinstance(self.global_instruction, str):
-      return self.global_instruction
+      return self.global_instruction, False
     else:
-      return self.global_instruction(ctx)
+      global_instruction = self.global_instruction(ctx)
+      if inspect.isawaitable(global_instruction):
+        global_instruction = await global_instruction
+      return global_instruction, True
 
-  @property
-  def canonical_tools(self) -> list[BaseTool]:
-    """The resolved self.tools field as a list of BaseTool.
+  async def canonical_tools(
+      self, ctx: ReadonlyContext = None
+  ) -> list[BaseTool]:
+    """The resolved self.tools field as a list of BaseTool based on the context.
 
     This method is only for use by Agent Development Kit.
     """
-    return [_convert_tool_union_to_tool(tool) for tool in self.tools]
+    resolved_tools = []
+    for tool_union in self.tools:
+      resolved_tools.extend(await _convert_tool_union_to_tools(tool_union, ctx))
+    return resolved_tools
+
+  @property
+  def canonical_before_model_callbacks(
+      self,
+  ) -> list[_SingleBeforeModelCallback]:
+    """The resolved self.before_model_callback field as a list of _SingleBeforeModelCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.before_model_callback:
+      return []
+    if isinstance(self.before_model_callback, list):
+      return self.before_model_callback
+    return [self.before_model_callback]
+
+  @property
+  def canonical_after_model_callbacks(self) -> list[_SingleAfterModelCallback]:
+    """The resolved self.after_model_callback field as a list of _SingleAfterModelCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.after_model_callback:
+      return []
+    if isinstance(self.after_model_callback, list):
+      return self.after_model_callback
+    return [self.after_model_callback]
+
+  @property
+  def canonical_before_tool_callbacks(
+      self,
+  ) -> list[BeforeToolCallback]:
+    """The resolved self.before_tool_callback field as a list of BeforeToolCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.before_tool_callback:
+      return []
+    if isinstance(self.before_tool_callback, list):
+      return self.before_tool_callback
+    return [self.before_tool_callback]
+
+  @property
+  def canonical_after_tool_callbacks(
+      self,
+  ) -> list[AfterToolCallback]:
+    """The resolved self.after_tool_callback field as a list of AfterToolCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.after_tool_callback:
+      return []
+    if isinstance(self.after_tool_callback, list):
+      return self.after_tool_callback
+    return [self.after_tool_callback]
 
   @property
   def _llm_flow(self) -> BaseLlmFlow:

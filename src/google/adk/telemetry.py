@@ -32,7 +32,6 @@ from .events.event import Event
 from .models.llm_request import LlmRequest
 from .models.llm_response import LlmResponse
 
-
 tracer = trace.get_tracer('gcp.vertex.agent')
 
 
@@ -110,6 +109,9 @@ def trace_call_llm(
   span.set_attribute('gen_ai.request.model', llm_request.model)
   span.set_attribute(
       'gcp.vertex.agent.invocation_id', invocation_context.invocation_id
+  )
+  span.set_attribute(
+      'gcp.vertex.agent.session_id', invocation_context.session.id
   )
   span.set_attribute('gcp.vertex.agent.event_id', event_id)
   # Consider removing once GenAI SDK provides a way to record this info.

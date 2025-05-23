@@ -19,6 +19,7 @@ import string
 from typing import Optional
 
 from google.genai import types
+from pydantic import alias_generators
 from pydantic import ConfigDict
 from pydantic import Field
 
@@ -46,8 +47,13 @@ class Event(LlmResponse):
   """
 
   model_config = ConfigDict(
-      extra='forbid', ser_json_bytes='base64', val_json_bytes='base64'
+      extra='forbid',
+      ser_json_bytes='base64',
+      val_json_bytes='base64',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
   )
+  """The pydantic model config."""
 
   # TODO: revert to be required after spark migration
   invocation_id: str = ''

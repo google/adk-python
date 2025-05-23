@@ -14,7 +14,11 @@
 
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Tuple
 
 import google.auth
 from google.auth import default as default_service_credential
@@ -68,12 +72,14 @@ class ConnectionsClient:
     response = self._execute_api_call(url)
 
     connection_data = response.json()
+    connection_name = connection_data.get("name", "")
     service_name = connection_data.get("serviceDirectory", "")
     host = connection_data.get("host", "")
     if host:
       service_name = connection_data.get("tlsServiceDirectory", "")
     auth_override_enabled = connection_data.get("authOverrideEnabled", False)
     return {
+        "name": connection_name,
         "serviceName": service_name,
         "host": host,
         "authOverrideEnabled": auth_override_enabled,
@@ -291,13 +297,9 @@ class ConnectionsClient:
       tool_name: str = "",
       tool_instructions: str = "",
   ) -> Dict[str, Any]:
-    description = (
-        f"Use this tool with" f' action = "{action}" and'
-    ) + f' operation = "{operation}" only. Dont ask these values from user.'
+    description = f"Use this tool to execute {action}"
     if operation == "EXECUTE_QUERY":
-      description = (
-          (f"Use this tool with" f' action = "{action}" and')
-          + f' operation = "{operation}" only. Dont ask these values from user.'
+      description += (
           " Use pageSize = 50 and timeout = 120 until user specifies a"
           " different value otherwise. If user provides a query in natural"
           " language, convert it to SQL query and then execute it using the"
@@ -308,13 +310,13 @@ class ConnectionsClient:
             "summary": f"{action_display_name}",
             "description": f"{description} {tool_instructions}",
             "operationId": f"{tool_name}_{action_display_name}",
+            "x-action": f"{action}",
+            "x-operation": f"{operation}",
             "requestBody": {
                 "content": {
                     "application/json": {
                         "schema": {
-                            "$ref": (
-                                f"#/components/schemas/{action_display_name}_Request"
-                            )
+                            "$ref": f"#/components/schemas/{action_display_name}_Request"
                         }
                     }
                 }
@@ -325,9 +327,7 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": (
-                                    f"#/components/schemas/{action_display_name}_Response"
-                                ),
+                                "$ref": f"#/components/schemas/{action_display_name}_Response",
                             }
                         }
                     },
@@ -346,17 +346,11 @@ class ConnectionsClient:
     return {
         "post": {
             "summary": f"List {entity}",
-            "description": (
-                f"Returns all entities of type {entity}. Use this tool with"
-                + f' entity = "{entity}" and'
-                + ' operation = "LIST_ENTITIES" only. Dont ask these values'
-                " from"
-                + ' user. Always use ""'
-                + ' as filter clause and ""'
-                + " as page token and 50 as page size until user specifies a"
-                " different value otherwise. Use single quotes for strings in"
-                f" filter clause. {tool_instructions}"
-            ),
+            "description": f"""Returns the list of {entity} data. If the page token was available in the response, let users know there are more records available. Ask if the user wants to fetch the next page of results. When passing filter use the
+                following format: `field_name1='value1' AND field_name2='value2'
+                `. {tool_instructions}""",
+            "x-operation": "LIST_ENTITIES",
+            "x-entity": f"{entity}",
             "operationId": f"{tool_name}_list_{entity}",
             "requestBody": {
                 "content": {
@@ -379,9 +373,7 @@ class ConnectionsClient:
                                     f"Returns a list of {entity} of json"
                                     f" schema: {schema_as_string}"
                                 ),
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                ),
+                                "$ref": "#/components/schemas/execute-connector_Response",
                             }
                         }
                     },
@@ -401,14 +393,11 @@ class ConnectionsClient:
         "post": {
             "summary": f"Get {entity}",
             "description": (
-                (
-                    f"Returns the details of the {entity}. Use this tool with"
-                    f' entity = "{entity}" and'
-                )
-                + ' operation = "GET_ENTITY" only. Dont ask these values from'
-                f" user.  {tool_instructions}"
+                f"Returns the details of the {entity}. {tool_instructions}"
             ),
             "operationId": f"{tool_name}_get_{entity}",
+            "x-operation": "GET_ENTITY",
+            "x-entity": f"{entity}",
             "requestBody": {
                 "content": {
                     "application/json": {
@@ -428,9 +417,7 @@ class ConnectionsClient:
                                     f"Returns {entity} of json schema:"
                                     f" {schema_as_string}"
                                 ),
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                ),
+                                "$ref": "#/components/schemas/execute-connector_Response",
                             }
                         }
                     },
@@ -445,17 +432,10 @@ class ConnectionsClient:
   ) -> Dict[str, Any]:
     return {
         "post": {
-            "summary": f"Create {entity}",
-            "description": (
-                (
-                    f"Creates a new entity of type {entity}. Use this tool with"
-                    f' entity = "{entity}" and'
-                )
-                + ' operation = "CREATE_ENTITY" only. Dont ask these values'
-                " from"
-                + " user. Follow the schema of the entity provided in the"
-                f" instructions to create {entity}.  {tool_instructions}"
-            ),
+            "summary": f"Creates a new {entity}",
+            "description": f"Creates a new {entity}. {tool_instructions}",
+            "x-operation": "CREATE_ENTITY",
+            "x-entity": f"{entity}",
             "operationId": f"{tool_name}_create_{entity}",
             "requestBody": {
                 "content": {
@@ -474,9 +454,7 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                )
+                                "$ref": "#/components/schemas/execute-connector_Response"
                             }
                         }
                     },
@@ -491,18 +469,10 @@ class ConnectionsClient:
   ) -> Dict[str, Any]:
     return {
         "post": {
-            "summary": f"Update {entity}",
-            "description": (
-                (
-                    f"Updates an entity of type {entity}. Use this tool with"
-                    f' entity = "{entity}" and'
-                )
-                + ' operation = "UPDATE_ENTITY" only. Dont ask these values'
-                " from"
-                + " user. Use entityId to uniquely identify the entity to"
-                " update. Follow the schema of the entity provided in the"
-                f" instructions to update {entity}.  {tool_instructions}"
-            ),
+            "summary": f"Updates the {entity}",
+            "description": f"Updates the {entity}. {tool_instructions}",
+            "x-operation": "UPDATE_ENTITY",
+            "x-entity": f"{entity}",
             "operationId": f"{tool_name}_update_{entity}",
             "requestBody": {
                 "content": {
@@ -521,9 +491,7 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                )
+                                "$ref": "#/components/schemas/execute-connector_Response"
                             }
                         }
                     },
@@ -538,16 +506,10 @@ class ConnectionsClient:
   ) -> Dict[str, Any]:
     return {
         "post": {
-            "summary": f"Delete {entity}",
-            "description": (
-                (
-                    f"Deletes an entity of type {entity}. Use this tool with"
-                    f' entity = "{entity}" and'
-                )
-                + ' operation = "DELETE_ENTITY" only. Dont ask these values'
-                " from"
-                f" user.  {tool_instructions}"
-            ),
+            "summary": f"Delete the {entity}",
+            "description": f"Deletes the {entity}. {tool_instructions}",
+            "x-operation": "DELETE_ENTITY",
+            "x-entity": f"{entity}",
             "operationId": f"{tool_name}_delete_{entity}",
             "requestBody": {
                 "content": {
@@ -566,9 +528,7 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": (
-                                    "#/components/schemas/execute-connector_Response"
-                                )
+                                "$ref": "#/components/schemas/execute-connector_Response"
                             }
                         }
                     },
@@ -598,6 +558,9 @@ class ConnectionsClient:
             "serviceName": {"$ref": "#/components/schemas/serviceName"},
             "host": {"$ref": "#/components/schemas/host"},
             "entity": {"$ref": "#/components/schemas/entity"},
+            "dynamicAuthConfig": {
+                "$ref": "#/components/schemas/dynamicAuthConfig"
+            },
         },
     }
 
@@ -624,6 +587,10 @@ class ConnectionsClient:
             "serviceName": {"$ref": "#/components/schemas/serviceName"},
             "host": {"$ref": "#/components/schemas/host"},
             "entity": {"$ref": "#/components/schemas/entity"},
+            "dynamicAuthConfig": {
+                "$ref": "#/components/schemas/dynamicAuthConfig"
+            },
+            "filterClause": {"$ref": "#/components/schemas/filterClause"},
         },
     }
 
@@ -646,6 +613,9 @@ class ConnectionsClient:
             "serviceName": {"$ref": "#/components/schemas/serviceName"},
             "host": {"$ref": "#/components/schemas/host"},
             "entity": {"$ref": "#/components/schemas/entity"},
+            "dynamicAuthConfig": {
+                "$ref": "#/components/schemas/dynamicAuthConfig"
+            },
         },
     }
 
@@ -668,6 +638,10 @@ class ConnectionsClient:
             "serviceName": {"$ref": "#/components/schemas/serviceName"},
             "host": {"$ref": "#/components/schemas/host"},
             "entity": {"$ref": "#/components/schemas/entity"},
+            "dynamicAuthConfig": {
+                "$ref": "#/components/schemas/dynamicAuthConfig"
+            },
+            "filterClause": {"$ref": "#/components/schemas/filterClause"},
         },
     }
 
@@ -691,6 +665,9 @@ class ConnectionsClient:
             "serviceName": {"$ref": "#/components/schemas/serviceName"},
             "host": {"$ref": "#/components/schemas/host"},
             "entity": {"$ref": "#/components/schemas/entity"},
+            "dynamicAuthConfig": {
+                "$ref": "#/components/schemas/dynamicAuthConfig"
+            },
         },
     }
 
@@ -714,6 +691,9 @@ class ConnectionsClient:
             "action": {"$ref": "#/components/schemas/action"},
             "connectorInputPayload": {
                 "$ref": f"#/components/schemas/connectorInputPayload_{action}"
+            },
+            "dynamicAuthConfig": {
+                "$ref": "#/components/schemas/dynamicAuthConfig"
             },
         },
     }
@@ -752,6 +732,9 @@ class ConnectionsClient:
             "query": {"$ref": "#/components/schemas/query"},
             "timeout": {"$ref": "#/components/schemas/timeout"},
             "pageSize": {"$ref": "#/components/schemas/pageSize"},
+            "dynamicAuthConfig": {
+                "$ref": "#/components/schemas/dynamicAuthConfig"
+            },
         },
     }
 
