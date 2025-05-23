@@ -456,6 +456,16 @@ class BaseLlmFlow(ABC):
     if function_response_event := await functions.handle_function_calls_async(
         invocation_context, function_call_event, llm_request.tools_dict
     ):
+      # If the function responses triggered any approval requests (e.g., a tool call was suspended),
+      # generate an event to send these approval requests to the client/user.
+      approval_event = functions.generate_approval_event(
+      # If the function responses triggered any approval requests (e.g., a tool call was suspended),
+      # generate an event to send these approval requests to the client/user.
+          invocation_context, function_response_event
+      )
+      if approval_event:
+        yield approval_event
+
       auth_event = functions.generate_auth_event(
           invocation_context, function_response_event
       )
