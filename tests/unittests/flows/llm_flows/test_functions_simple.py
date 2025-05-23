@@ -247,8 +247,8 @@ def test_function_call_id():
   agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
   runner = testing_utils.InMemoryRunner(agent)
   events = runner.run('test')
-  for reqeust in mock_model.requests:
-    for content in reqeust.contents:
+  for request in mock_model.requests:
+    for content in request.contents:
       for part in content.parts:
         if part.function_call:
           assert part.function_call.id is None
