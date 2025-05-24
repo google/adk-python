@@ -15,19 +15,18 @@
 import copy
 from unittest.mock import patch
 
-import pytest
 from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
-
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.auth_tool import AuthConfig
+import pytest
 
 
 # Mock classes for testing
