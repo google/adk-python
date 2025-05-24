@@ -185,7 +185,7 @@ class ToolAuthHandler:
       )
       self.credential_store.store_credential(key, auth_credential)
 
-  def _reqeust_credential(self) -> None:
+  def _request_credential(self) -> None:
     """Handles the case where an OpenID Connect or OAuth2 authentication request is needed."""
     if self.auth_scheme.type_ in (
         AuthSchemeType.openIdConnect,
@@ -223,11 +223,6 @@ class ToolAuthHandler:
         )
     )
 
-  def _request_credential(self, auth_config: AuthConfig):
-    if not self.tool_context:
-      return
-    self.tool_context.request_credential(auth_config)
-
   def prepare_auth_credentials(
       self,
   ) -> AuthPreparationResult:
@@ -260,7 +255,7 @@ class ToolAuthHandler:
           auth_credential=exchanged_credential,
       )
     else:
-      self._reqeust_credential()
+      self._request_credential()
       return AuthPreparationResult(
           state="pending",
           auth_scheme=self.auth_scheme,
