@@ -356,7 +356,7 @@ class LlmAgent(BaseAgent):
       return global_instruction, True
 
   async def canonical_tools(
-      self, ctx: ReadonlyContext = None
+      self, ctx: ReadonlyContext
   ) -> list[BaseTool]:
     """The resolved self.tools field as a list of BaseTool based on the context.
 
