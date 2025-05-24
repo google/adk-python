@@ -145,6 +145,7 @@ exclude = ['src/**/*.sh']
 
 [tool.flit.module]
 name = "google.adk"
+include = ["py.typed"]
 
 [tool.isort]
 profile = "google"
