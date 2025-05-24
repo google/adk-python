@@ -14,6 +14,7 @@
 
 """Defines the interface to support a model."""
 
+from .anthropic_llm import Claude
 from .base_llm import BaseLlm
 from .google_llm import Gemini
 from .llm_request import LlmRequest
@@ -27,5 +28,5 @@ __all__ = [
 ]
 
 
-for regex in Gemini.supported_models():
-  LLMRegistry.register(Gemini)
+LLMRegistry.register(Gemini)
+LLMRegistry.register(Claude)
