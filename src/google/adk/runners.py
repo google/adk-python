@@ -413,6 +413,9 @@ class Runner:
       if not isinstance(self.agent.code_executor, BuiltInCodeExecutor):
         self.agent.code_executor = BuiltInCodeExecutor()
 
+    if not isinstance(self.agent, BaseAgent):
+      raise ValueError("Invalid parent agent: The provided 'agent' must be an instance of 'BaseAgent' or a subclass of 'BaseAgent'.")
+
     return InvocationContext(
         artifact_service=self.artifact_service,
         session_service=self.session_service,
