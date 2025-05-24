@@ -102,7 +102,7 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      new_message: types.Content,
+      new_message: Optional[types.Content] = None,
       run_config: RunConfig = RunConfig(),
   ) -> Generator[Event, None, None]:
     """Runs the agent.
@@ -157,7 +157,7 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      new_message: types.Content,
+      new_message: Optional[types.Content] = None,
       run_config: RunConfig = RunConfig(),
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
