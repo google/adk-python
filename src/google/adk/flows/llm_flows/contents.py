@@ -26,7 +26,7 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
-from .functions import remove_client_function_call_id
+from .functions import REQUEST_APPROVAL_FUNCTION_CALL_NAME, remove_client_function_call_id
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
 
@@ -172,7 +172,7 @@ def _rearrange_events_for_latest_function_response(
     function_responses = event.get_function_responses()
     if (
         function_responses
-        and function_responses[0].id in function_responses_ids
+        and any([function_response.id in function_responses_ids for function_response in function_responses])
     ):
       function_response_events.append(event)
   function_response_events.append(events[-1])
@@ -217,6 +217,10 @@ def _get_contents(
       continue
     if _is_auth_event(event):
       # skip auth event
+      continue
+    if _is_approval_event(event):
+      # Skip approval events as they are part of the approval flow
+      # and not direct conversational content for the LLM history.
       continue
     filtered_events.append(
         _convert_foreign_event(event)
@@ -391,6 +395,34 @@ def _is_auth_event(event: Event) -> bool:
     if (
         part.function_response
         and part.function_response.name == REQUEST_EUC_FUNCTION_CALL_NAME
+    ):
+      return True
+  return False
+
+
+def _is_approval_event(event: Event) -> bool:
+  """Checks if an event is related to the approval workflow.
+
+  An event is considered an approval event if it contains a function call or
+  function response part where the function name is `REQUEST_APPROVAL_FUNCTION_CALL_NAME`.
+
+  Args:
+      event: The `Event` to check.
+
+  Returns:
+      `True` if the event is an approval-related event, `False` otherwise.
+  """
+  if not event.content.parts:
+    return False
+  for part in event.content.parts:
+    if (
+        part.function_call
+        and part.function_call.name == REQUEST_APPROVAL_FUNCTION_CALL_NAME
+    ):
+      return True
+    if (
+        part.function_response
+        and part.function_response.name == REQUEST_APPROVAL_FUNCTION_CALL_NAME
     ):
       return True
   return False
