@@ -80,6 +80,9 @@ def _patch_types_and_runner(monkeypatch: pytest.MonkeyPatch) -> None:
       response = _Content("assistant", [_Part(f"echo:{text}")])
       yield types.SimpleNamespace(author="assistant", content=response)
 
+    async def close(self, *a: Any, **k: Any) -> None:
+      ...
+
   monkeypatch.setattr(cli, "Runner", _FakeRunner)
 
 
