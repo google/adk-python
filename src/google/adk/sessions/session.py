@@ -36,7 +36,7 @@ class Session(BaseModel):
   """
 
   model_config = ConfigDict(
-      extra='forbid',
+      extra="forbid",
       arbitrary_types_allowed=True,
       alias_generator=alias_generators.to_camel,
       populate_by_name=True,
@@ -56,3 +56,28 @@ class Session(BaseModel):
   call/response, etc."""
   last_update_time: float = 0.0
   """The last update time of the session."""
+
+  def to_dict(self) -> dict:
+    return {
+        "id": self.id,
+        "app_name": self.app_name,
+        "user_id": self.user_id,
+        "state": self.state,
+        "events": [
+            e.to_dict() for e in self.events
+        ],  # requires Event.to_dict()
+        "last_update_time": self.last_update_time,
+    }
+
+  @staticmethod
+  def from_dict(data: dict) -> "Session":
+    return Session(
+        id=data["id"],
+        app_name=data["app_name"],
+        user_id=data["user_id"],
+        state=data.get("state", {}),
+        events=[
+            Event.from_dict(e) for e in data.get("events", [])
+        ],  # requires Event.from_dict()
+        last_update_time=data.get("last_update_time", 0.0),
+    )
