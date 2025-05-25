@@ -476,6 +476,12 @@ class DatabaseSessionService(BaseSessionService):
     if event.partial:
       return event
 
+    session = await self.get_session(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+    )
+
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config
     # 3. Store event to table
@@ -484,13 +490,12 @@ class DatabaseSessionService(BaseSessionService):
           StorageSession, (session.app_name, session.user_id, session.id)
       )
 
-      if storage_session.update_time.timestamp() > session.last_update_time:
+      if storage_session.update_time.timestamp() != session.last_update_time:
         raise ValueError(
-            "The last_update_time provided in the session object"
-            f" {datetime.fromtimestamp(session.last_update_time):'%Y-%m-%d %H:%M:%S'} is"
-            " earlier than the update_time in the storage_session"
-            f" {storage_session.update_time:'%Y-%m-%d %H:%M:%S'}. Please check"
-            " if it is a stale session."
+            "Session last_update_time"
+            f" {datetime.fromtimestamp(session.last_update_time):%Y-%m-%d %H:%M:%S} is"
+            " not equal to update_time in storage"
+            f" {storage_session.update_time:%Y-%m-%d %H:%M:%S}"
         )
 
       # Fetch states from storage
