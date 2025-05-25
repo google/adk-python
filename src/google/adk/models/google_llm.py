@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import re
+import ast
 import contextlib
 from functools import cached_property
 import logging
@@ -40,6 +42,46 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
+
+
+def _extract_function_call(input_string):
+    """ Use regex to convert a function call string into a FunctionCall object. """
+    pattern = r"Malformed function call:\s*(\w+)\((.*)\)"
+    match = re.search(pattern, input_string)
+    if match:
+        func_name = match.group(1)
+        args_str = match.group(2).strip()
+
+        # Create a dummy function call with the captured arguments.
+        # This will allow us to use ast to parse the function call.
+        dummy_call = f"dummy({args_str})"
+
+        # Parse the dummy function call.
+        tree = ast.parse(dummy_call, mode='eval')
+        call_node = tree.body
+
+        # Extract keyword arguments (if there are any).
+        args_dict = {kw.arg: ast.literal_eval(kw.value) for kw in call_node.keywords}
+
+        return types.FunctionCall(args=args_dict, name=func_name)
+    else:
+        return None
+
+
+def _fix_malformed_function_calls(response):
+  """ Check if there's malformed error, create FunctionCall object using args.
+      Then remove the error and insert the FunctionCall into the response.
+  """
+  for candidate in response.candidates:
+      if candidate.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL:
+          function_call = _extract_function_call(candidate.finish_message)
+          if function_call is None:
+              logging.warning("could not parse function call: %s", candidate.finish_message)
+              continue
+          logging.warning("malformed function call caught and overwritten: %s", candidate.finish_message)
+          candidate.content = types.Content(parts=[types.Part(function_call=function_call)], role="model")
+          candidate.finish_message = None
+          candidate.finish_reason = types.FinishReason.STOP
 
 
 class Gemini(BaseLlm):
@@ -105,6 +147,7 @@ class Gemini(BaseLlm):
       # previous partial content. The only difference is bidi rely on
       # complete_turn flag to detect end while sse depends on finish_reason.
       async for response in responses:
+        _fix_malformed_function_calls(response)
         logger.info(_build_response_log(response))
         llm_response = LlmResponse.create(response)
         usage_metadata = llm_response.usage_metadata
@@ -148,6 +191,7 @@ class Gemini(BaseLlm):
           contents=llm_request.contents,
           config=llm_request.config,
       )
+      _fix_malformed_function_calls(response)
       logger.info(_build_response_log(response))
       yield LlmResponse.create(response)
 
