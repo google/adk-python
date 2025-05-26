@@ -22,7 +22,6 @@ from typing import AsyncGenerator
 from typing import Optional
 import uuid
 
-from pydantic import BaseModel
 from pydantic import Field
 
 from ..agents import Agent
