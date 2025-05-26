@@ -36,8 +36,8 @@ def _sanitize_eval_set_result_name(eval_set_result_name: str) -> str:
 class LocalEvalSetResultsManager(EvalSetResultsManager):
   """An EvalSetResult manager that stores eval set results locally on disk."""
 
-  def __init__(self, agent_dir: str):
-    self._agent_dir = agent_dir
+  def __init__(self, agents_dir: str):
+    self._agents_dir = agents_dir
 
   @override
   def save_eval_set_result(
@@ -108,4 +108,4 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     return eval_result_files
 
   def _get_eval_history_dir(self, app_name: str) -> str:
-    return os.path.join(self._agent_dir, app_name, _ADK_EVAL_HISTORY_DIR)
+    return os.path.join(self._agents_dir, app_name, _ADK_EVAL_HISTORY_DIR)
