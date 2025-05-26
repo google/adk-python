@@ -17,7 +17,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.tools import ToolContext
-from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentials
+from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsManager
 from google.adk.tools.bigquery.bigquery_tool import BigQueryTool
 # Mock the Google OAuth and API dependencies
@@ -78,7 +78,7 @@ class TestBigQueryTool:
   @pytest.fixture
   def credentials_config(self):
     """Create credentials configuration for testing."""
-    return BigQueryCredentials(
+    return BigQueryCredentialsConfig(
         client_id="test_client_id",
         client_secret="test_client_secret",
         scopes=["https://www.googleapis.com/auth/bigquery"],
