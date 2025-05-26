@@ -48,7 +48,7 @@ _OPENAPI_SCHEMA_IGNORE_FIELDS = (
     "format",
     "additional_properties",
     "ref",
-    "def"
+    "def",
 )
 
 
