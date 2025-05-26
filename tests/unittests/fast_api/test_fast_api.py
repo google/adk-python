@@ -308,7 +308,7 @@ def test_app(mock_session_service, mock_artifact_service, mock_memory_service):
   ):
     # Get the FastAPI app, but don't actually run it
     app = get_fast_api_app(
-        agent_dir=".", web=True, session_db_url="", allow_origins=["*"]
+        agents_dir=".", web=True, session_db_url="", allow_origins=["*"]
     )
 
     # Create a TestClient that doesn't start a real server
