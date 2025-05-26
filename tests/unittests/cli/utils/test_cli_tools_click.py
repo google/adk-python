@@ -28,6 +28,7 @@ from typing import Tuple
 import click
 from click.testing import CliRunner
 from google.adk.cli import cli_tools_click
+from google.adk.evaluation import local_eval_set_results_manager
 import pytest
 
 
@@ -255,9 +256,17 @@ def test_cli_eval_success_path(
 
   class _EvalCaseResult:
 
-    def __init__(self, eval_set_id: str, final_eval_status: str) -> None:
+    def __init__(
+        self,
+        eval_set_id: str,
+        final_eval_status: str,
+        user_id: str,
+        session_id: str,
+    ) -> None:
       self.eval_set_id = eval_set_id
       self.final_eval_status = final_eval_status
+      self.user_id = user_id
+      self.session_id = session_id
 
   class EvalCase:
 
@@ -266,8 +275,18 @@ def test_cli_eval_success_path(
 
   class EvalSet:
 
-    def __init__(self, eval_cases: list[EvalCase]):
+    def __init__(self, eval_set_id: str, eval_cases: list[EvalCase]):
+      self.eval_set_id = eval_set_id
       self.eval_cases = eval_cases
+
+  def mock_save_eval_set_result(cls, *args, **kwargs):
+    return None
+
+  monkeypatch.setattr(
+      local_eval_set_results_manager.LocalEvalSetResultsManager,
+      "save_eval_set_result",
+      mock_save_eval_set_result,
+  )
 
   # minimal enum-like namespace
   _EvalStatus = types.SimpleNamespace(PASSED="PASSED", FAILED="FAILED")
@@ -283,13 +302,13 @@ def test_cli_eval_success_path(
   stub.try_get_reset_func = lambda _p: None
   stub.parse_and_get_evals_to_run = lambda _paths: {"set1.json": ["e1", "e2"]}
   eval_sets_manager_stub.load_eval_set_from_file = lambda x, y: EvalSet(
-      [EvalCase("e1"), EvalCase("e2")]
+      "test_eval_set_id", [EvalCase("e1"), EvalCase("e2")]
   )
 
   # Create an async generator function for run_evals
   async def mock_run_evals(*_a, **_k):
-    yield _EvalCaseResult("set1.json", "PASSED")
-    yield _EvalCaseResult("set1.json", "FAILED")
+    yield _EvalCaseResult("set1.json", "PASSED", "user", "session1")
+    yield _EvalCaseResult("set1.json", "FAILED", "user", "session2")
 
   stub.run_evals = mock_run_evals
 
