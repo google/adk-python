@@ -13,7 +13,24 @@
 # limitations under the License.
 
 import asyncio
-import collections
+import sys
+if sys.platform == "win32":
+    try:
+        # Attempt to set WindowsProactorEventLoopPolicy first
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        print("INFO: ADK CLI - Set asyncio event loop policy to WindowsProactorEventLoopPolicy")
+    except Exception as e:
+        print(f"ERROR: ADK CLI - Failed to set WindowsProactorEventLoopPolicy: {e}. Trying Selector as fallback.")
+        try:
+            # Fallback to WindowsSelectorEventLoopPolicy if Proactor fails or is not preferred
+            current_policy = asyncio.get_event_loop_policy()
+            if not isinstance(current_policy, asyncio.WindowsSelectorEventLoopPolicy):
+                 asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+                 print("INFO: ADK CLI - Set asyncio event loop policy to WindowsSelectorEventLoopPolicy as fallback")
+            else:
+                print("INFO: ADK CLI - WindowsSelectorEventLoopPolicy was already set.")
+        except Exception as e2:
+            print(f"ERROR: ADK CLI - Failed to set any specific Windows asyncio policy: {e2}")
 from contextlib import asynccontextmanager
 from datetime import datetime
 import logging
@@ -28,8 +45,6 @@ import uvicorn
 from . import cli_create
 from . import cli_deploy
 from .. import version
-from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
-from ..sessions.in_memory_session_service import InMemorySessionService
 from .cli import run_cli
 from .cli_eval import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .fast_api import get_fast_api_app
@@ -309,7 +324,7 @@ def cli_eval(
         EvalMetric(metric_name=metric_name, threshold=threshold)
     )
 
-  print(f"Using evaluation criteria: {evaluation_criteria}")
+  print(f"Using evaluation creiteria: {evaluation_criteria}")
 
   root_agent = get_root_agent(agent_module_file_path)
   reset_func = try_get_reset_func(agent_module_file_path)
@@ -328,46 +343,20 @@ def cli_eval(
           e for e in eval_set.eval_cases if e.eval_id in eval_case_ids
       ]
 
-    eval_set_id_to_eval_cases[eval_set.eval_set_id] = eval_cases
+    eval_set_id_to_eval_cases[eval_set_file_path] = eval_cases
 
   async def _collect_eval_results() -> list[EvalCaseResult]:
-    session_service = InMemorySessionService()
-    eval_case_results = []
-    async for eval_case_result in run_evals(
-        eval_set_id_to_eval_cases,
-        root_agent,
-        reset_func,
-        eval_metrics,
-        session_service=session_service,
-    ):
-      eval_case_result.session_details = await session_service.get_session(
-          app_name=os.path.basename(agent_module_file_path),
-          user_id=eval_case_result.user_id,
-          session_id=eval_case_result.session_id,
-      )
-      eval_case_results.append(eval_case_result)
-    return eval_case_results
+    return [
+        result
+        async for result in run_evals(
+            eval_set_id_to_eval_cases, root_agent, reset_func, eval_metrics
+        )
+    ]
 
   try:
     eval_results = asyncio.run(_collect_eval_results())
   except ModuleNotFoundError:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
-
-  # Write eval set results.
-  local_eval_set_results_manager = LocalEvalSetResultsManager(
-      agents_dir=os.path.dirname(agent_module_file_path)
-  )
-  eval_set_id_to_eval_results = collections.defaultdict(list)
-  for eval_case_result in eval_results:
-    eval_set_id = eval_case_result.eval_set_id
-    eval_set_id_to_eval_results[eval_set_id].append(eval_case_result)
-
-  for eval_set_id, eval_case_results in eval_set_id_to_eval_results.items():
-    local_eval_set_results_manager.save_eval_set_result(
-        app_name=os.path.basename(agent_module_file_path),
-        eval_set_id=eval_set_id,
-        eval_case_results=eval_case_results,
-    )
 
   print("*********************************************************************")
   eval_run_summary = {}
@@ -499,8 +488,13 @@ def cli_web(
         fg="green",
     )
 
+  reload_uvicorn = reload
+  if sys.platform == "win32":
+    logger.info("ADK_WEB_DEBUG: Disabling Uvicorn reload on Windows to prevent asyncio subprocess issues.")
+    reload_uvicorn = False
+
   app = get_fast_api_app(
-      agents_dir=agents_dir,
+      agent_dir=agents_dir,
       session_db_url=session_db_url,
       allow_origins=allow_origins,
       web=True,
@@ -511,7 +505,8 @@ def cli_web(
       app,
       host=host,
       port=port,
-      reload=reload,
+      reload=reload_uvicorn,
+      loop="asyncio"
   )
 
   server = uvicorn.Server(config)
@@ -601,7 +596,7 @@ def cli_api_server(
 
   config = uvicorn.Config(
       get_fast_api_app(
-          agents_dir=agents_dir,
+          agent_dir=agents_dir,
           session_db_url=session_db_url,
           allow_origins=allow_origins,
           web=False,

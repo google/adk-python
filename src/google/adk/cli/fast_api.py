@@ -13,15 +13,18 @@
 # limitations under the License.
 
 
-from __future__ import annotations
-
 import asyncio
+import sys
+
 from contextlib import asynccontextmanager
 import importlib
+import inspect
+import json
 import logging
 import os
 from pathlib import Path
-import sys
+import signal
+
 import time
 import traceback
 import typing
@@ -54,18 +57,15 @@ from starlette.types import Lifespan
 from typing_extensions import override
 
 from ..agents import RunConfig
+from ..agents.base_agent import BaseAgent
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
+from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
-from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
+from ..artifacts import InMemoryArtifactService
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
-from ..evaluation.eval_metrics import EvalMetric
-from ..evaluation.eval_metrics import EvalMetricResult
-from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
-from ..evaluation.eval_result import EvalSetResult
-from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
@@ -74,9 +74,14 @@ from ..sessions.database_session_service import DatabaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
+from ..tools.base_toolset import BaseToolset
 from .cli_eval import EVAL_SESSION_ID_PREFIX
+from .cli_eval import EvalCaseResult
+from .cli_eval import EvalMetric
+from .cli_eval import EvalMetricResult
+from .cli_eval import EvalMetricResultPerInvocation
+from .cli_eval import EvalSetResult
 from .cli_eval import EvalStatus
-from .utils import cleanup
 from .utils import common
 from .utils import create_empty_state
 from .utils import envs
@@ -226,8 +231,27 @@ def get_fast_api_app(
 
   trace.set_tracer_provider(provider)
 
+  toolsets_to_close: set[BaseToolset] = set()
+
   @asynccontextmanager
   async def internal_lifespan(app: FastAPI):
+    # Set up signal handlers for graceful shutdown
+    original_sigterm = signal.getsignal(signal.SIGTERM)
+    original_sigint = signal.getsignal(signal.SIGINT)
+
+    def cleanup_handler(sig, frame):
+      # Log the signal
+      logger.info("Received signal %s, performing pre-shutdown cleanup", sig)
+      # Do synchronous cleanup if needed
+      # Then call original handler if it exists
+      if sig == signal.SIGTERM and callable(original_sigterm):
+        original_sigterm(sig, frame)
+      elif sig == signal.SIGINT and callable(original_sigint):
+        original_sigint(sig, frame)
+
+    # Install cleanup handlers
+    signal.signal(signal.SIGTERM, cleanup_handler)
+    signal.signal(signal.SIGINT, cleanup_handler)
 
     try:
       if lifespan:
@@ -236,8 +260,46 @@ def get_fast_api_app(
       else:
         yield
     finally:
-      # Create tasks for all runner closures to run concurrently
-      await cleanup.close_runners(list(runner_dict.values()))
+      # During shutdown, properly clean up all toolsets
+      logger.info(
+          "Server shutdown initiated, cleaning up %s toolsets",
+          len(toolsets_to_close),
+      )
+
+      # Create tasks for all toolset closures to run concurrently
+      cleanup_tasks = []
+      for toolset in toolsets_to_close:
+        task = asyncio.create_task(close_toolset_safely(toolset))
+        cleanup_tasks.append(task)
+
+      if cleanup_tasks:
+        # Wait for all cleanup tasks with timeout
+        done, pending = await asyncio.wait(
+            cleanup_tasks,
+            timeout=10.0,  # 10 second timeout for cleanup
+            return_when=asyncio.ALL_COMPLETED,
+        )
+
+        # If any tasks are still pending, log it
+        if pending:
+          logger.warning(
+              f"{len(pending)} toolset cleanup tasks didn't complete in time"
+          )
+          for task in pending:
+            task.cancel()
+
+      # Restore original signal handlers
+      signal.signal(signal.SIGTERM, original_sigterm)
+      signal.signal(signal.SIGINT, original_sigint)
+
+  async def close_toolset_safely(toolset):
+    """Safely close a toolset with error handling."""
+    try:
+      logger.info(f"Closing toolset: {type(toolset).__name__}")
+      await toolset.close()
+      logger.info(f"Successfully closed toolset: {type(toolset).__name__}")
+    except Exception as e:
+      logger.error(f"Error closing toolset {type(toolset).__name__}: {e}")
 
   # Run the FastAPI server.
   app = FastAPI(lifespan=internal_lifespan)
@@ -262,7 +324,6 @@ def get_fast_api_app(
   memory_service = InMemoryMemoryService()
 
   eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
-  eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
   # Build the Session service
   agent_engine_id = ""
@@ -535,9 +596,31 @@ def get_fast_api_app(
       )
       eval_case_results.append(eval_case_result)
 
-    eval_set_results_manager.save_eval_set_result(
-        app_name, eval_set_id, eval_case_results
+    timestamp = time.time()
+    eval_set_result_name = app_name + "_" + eval_set_id + "_" + str(timestamp)
+    eval_set_result = EvalSetResult(
+        eval_set_result_id=eval_set_result_name,
+        eval_set_result_name=eval_set_result_name,
+        eval_set_id=eval_set_id,
+        eval_case_results=eval_case_results,
+        creation_timestamp=timestamp,
     )
+
+    # Write eval result file, with eval_set_result_name.
+    app_eval_history_dir = os.path.join(
+        agents_dir, app_name, ".adk", "eval_history"
+    )
+    if not os.path.exists(app_eval_history_dir):
+      os.makedirs(app_eval_history_dir)
+    # Convert to json and write to file.
+    eval_set_result_json = eval_set_result.model_dump_json()
+    eval_set_result_file_path = os.path.join(
+        app_eval_history_dir,
+        eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
+    )
+    logger.info("Writing eval result to file: %s", eval_set_result_file_path)
+    with open(eval_set_result_file_path, "w") as f:
+      f.write(json.dumps(eval_set_result_json, indent=2))
 
     return run_eval_results
 
@@ -550,14 +633,25 @@ def get_fast_api_app(
       eval_result_id: str,
   ) -> EvalSetResult:
     """Gets the eval result for the given eval id."""
-    try:
-      return eval_set_results_manager.get_eval_set_result(
-          app_name, eval_result_id
+    # Load the eval set file data
+    maybe_eval_result_file_path = (
+        os.path.join(
+            agents_dir, app_name, ".adk", "eval_history", eval_result_id
+        )
+        + _EVAL_SET_RESULT_FILE_EXTENSION
+    )
+    if not os.path.exists(maybe_eval_result_file_path):
+      raise HTTPException(
+          status_code=404,
+          detail=f"Eval result `{eval_result_id}` not found.",
       )
-    except ValueError as ve:
-      raise HTTPException(status_code=404, detail=str(ve)) from ve
-    except ValidationError as ve:
-      raise HTTPException(status_code=500, detail=str(ve)) from ve
+    with open(maybe_eval_result_file_path, "r") as file:
+      eval_result_data = json.load(file)  # Load JSON into a list
+    try:
+      eval_result = EvalSetResult.model_validate_json(eval_result_data)
+      return eval_result
+    except ValidationError as e:
+      logger.exception("get_eval_result validation error: %s", e)
 
   @app.get(
       "/apps/{app_name}/eval_results",
@@ -565,7 +659,19 @@ def get_fast_api_app(
   )
   def list_eval_results(app_name: str) -> list[str]:
     """Lists all eval results for the given app."""
-    return eval_set_results_manager.list_eval_set_results(app_name)
+    app_eval_history_directory = os.path.join(
+        agents_dir, app_name, ".adk", "eval_history"
+    )
+
+    if not os.path.exists(app_eval_history_directory):
+      return []
+
+    eval_result_files = [
+        file.removesuffix(_EVAL_SET_RESULT_FILE_EXTENSION)
+        for file in os.listdir(app_eval_history_directory)
+        if file.endswith(_EVAL_SET_RESULT_FILE_EXTENSION)
+    ]
+    return eval_result_files
 
   @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
   async def delete_session(app_name: str, user_id: str, session_id: str):
@@ -665,9 +771,9 @@ def get_fast_api_app(
   @app.post("/run", response_model_exclude_none=True)
   async def agent_run(req: AgentRunRequest) -> list[Event]:
     # Connect to managed session if agent_engine_id is set.
-    app_name = agent_engine_id if agent_engine_id else req.app_name
+    app_id = agent_engine_id if agent_engine_id else req.app_name
     session = await session_service.get_session(
-        app_name=app_name, user_id=req.user_id, session_id=req.session_id
+        app_name=app_id, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
       raise HTTPException(status_code=404, detail="Session not found")
@@ -686,10 +792,10 @@ def get_fast_api_app(
   @app.post("/run_sse")
   async def agent_run_sse(req: AgentRunRequest) -> StreamingResponse:
     # Connect to managed session if agent_engine_id is set.
-    app_name = agent_engine_id if agent_engine_id else req.app_name
+    app_id = agent_engine_id if agent_engine_id else req.app_name
     # SSE endpoint
     session = await session_service.get_session(
-        app_name=app_name, user_id=req.user_id, session_id=req.session_id
+        app_name=app_id, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
       raise HTTPException(status_code=404, detail="Session not found")
@@ -728,9 +834,9 @@ def get_fast_api_app(
       app_name: str, user_id: str, session_id: str, event_id: str
   ):
     # Connect to managed session if agent_engine_id is set.
-    app_name = agent_engine_id if agent_engine_id else app_name
+    app_id = agent_engine_id if agent_engine_id else app_name
     session = await session_service.get_session(
-        app_name=app_name, user_id=user_id, session_id=session_id
+        app_name=app_id, user_id=user_id, session_id=session_id
     )
     session_events = session.events if session else []
     event = next((x for x in session_events if x.id == event_id), None)
@@ -785,9 +891,9 @@ def get_fast_api_app(
     await websocket.accept()
 
     # Connect to managed session if agent_engine_id is set.
-    app_name = agent_engine_id if agent_engine_id else app_name
+    app_id = agent_engine_id if agent_engine_id else app_name
     session = await session_service.get_session(
-        app_name=app_name, user_id=user_id, session_id=session_id
+        app_name=app_id, user_id=user_id, session_id=session_id
     )
     if not session:
       # Accept first so that the client is aware of connection establishment,
@@ -842,6 +948,16 @@ def get_fast_api_app(
       for task in pending:
         task.cancel()
 
+  def _get_all_toolsets(agent: BaseAgent) -> set[BaseToolset]:
+    toolsets = set()
+    if isinstance(agent, LlmAgent):
+      for tool_union in agent.tools:
+        if isinstance(tool_union, BaseToolset):
+          toolsets.add(tool_union)
+    for sub_agent in agent.sub_agents:
+      toolsets.update(_get_all_toolsets(sub_agent))
+    return toolsets
+
   async def _get_root_agent_async(app_name: str) -> Agent:
     """Returns the root agent for the given app."""
     if app_name in root_agent_dict:
@@ -853,6 +969,7 @@ def get_fast_api_app(
       raise ValueError(f'Unable to find "root_agent" from {app_name}.')
 
     root_agent_dict[app_name] = root_agent
+    toolsets_to_close.update(_get_all_toolsets(root_agent))
     return root_agent
 
   async def _get_runner_async(app_name: str) -> Runner:
