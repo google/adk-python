@@ -51,16 +51,18 @@ class EvalMetricResult(EvalMetric):
       alias_generator=alias_generators.to_camel,
       populate_by_name=True,
   )
-  model_config = ConfigDict(
-      alias_generator=alias_generators.to_camel,
-      populate_by_name=True,
-  )
+
   score: Optional[float] = None
   eval_status: EvalStatus
 
 
 class EvalMetricResultPerInvocation(BaseModel):
   """Eval metric results per invocation."""
+
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
 
   actual_invocation: Invocation
   """The actual invocation, usually obtained by inferencing the agent."""
