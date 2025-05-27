@@ -14,7 +14,7 @@
 
 from unittest.mock import Mock
 
-from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentials
+from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
 # Mock the Google OAuth and API dependencies
 from google.oauth2.credentials import Credentials
 import pytest
@@ -39,7 +39,7 @@ class TestBigQueryCredentials:
     mock_creds.client_secret = "test_client_secret"
     mock_creds.scopes = ["https://www.googleapis.com/auth/calendar"]
 
-    config = BigQueryCredentials(credentials=mock_creds)
+    config = BigQueryCredentialsConfig(credentials=mock_creds)
 
     # Verify that the credentials are properly stored and attributes are extracted
     assert config.credentials == mock_creds
@@ -53,7 +53,7 @@ class TestBigQueryCredentials:
     This tests the scenario where users want to create new OAuth credentials
     from scratch using their application's client ID and secret.
     """
-    config = BigQueryCredentials(
+    config = BigQueryCredentialsConfig(
         client_id="test_client_id",
         client_secret="test_client_secret",
         scopes=["https://www.googleapis.com/auth/bigquery"],
@@ -77,7 +77,7 @@ class TestBigQueryCredentials:
             " pair"
         ),
     ):
-      BigQueryCredentials(client_id="test_client_id")
+      BigQueryCredentialsConfig(client_id="test_client_id")
 
   def test_missing_client_id_raises_error(self):
     """Test that missing client ID raises appropriate validation error."""
@@ -88,7 +88,7 @@ class TestBigQueryCredentials:
             " pair"
         ),
     ):
-      BigQueryCredentials(client_secret="test_client_secret")
+      BigQueryCredentialsConfig(client_secret="test_client_secret")
 
   def test_empty_configuration_raises_error(self):
     """Test that completely empty configuration is rejected.
@@ -103,4 +103,4 @@ class TestBigQueryCredentials:
             " pair"
         ),
     ):
-      BigQueryCredentials()
+      BigQueryCredentialsConfig()

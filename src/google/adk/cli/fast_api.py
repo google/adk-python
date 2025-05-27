@@ -13,6 +13,8 @@
 # limitations under the License.
 
 
+from __future__ import annotations
+
 import asyncio
 from contextlib import asynccontextmanager
 import importlib
@@ -59,6 +61,10 @@ from ..agents.run_config import StreamingMode
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
+from ..evaluation.eval_metrics import EvalMetric
+from ..evaluation.eval_metrics import EvalMetricResult
+from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
+from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
@@ -68,12 +74,7 @@ from ..sessions.database_session_service import DatabaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
-from ..tools.base_toolset import BaseToolset
 from .cli_eval import EVAL_SESSION_ID_PREFIX
-from .cli_eval import EvalMetric
-from .cli_eval import EvalMetricResult
-from .cli_eval import EvalMetricResultPerInvocation
-from .cli_eval import EvalSetResult
 from .cli_eval import EvalStatus
 from .utils import cleanup
 from .utils import common
@@ -192,7 +193,7 @@ class GetEventGraphResult(common.BaseModel):
 
 def get_fast_api_app(
     *,
-    agent_dir: str,
+    agents_dir: str,
     session_db_url: str = "",
     allow_origins: Optional[list[str]] = None,
     web: bool,
@@ -211,7 +212,7 @@ def get_fast_api_app(
   memory_exporter = InMemoryExporter(session_trace_dict)
   provider.add_span_processor(export.SimpleSpanProcessor(memory_exporter))
   if trace_to_cloud:
-    envs.load_dotenv_for_agent("", agent_dir)
+    envs.load_dotenv_for_agent("", agents_dir)
     if project_id := os.environ.get("GOOGLE_CLOUD_PROJECT", None):
       processor = export.BatchSpanProcessor(
           CloudTraceSpanExporter(project_id=project_id)
@@ -250,8 +251,8 @@ def get_fast_api_app(
         allow_headers=["*"],
     )
 
-  if agent_dir not in sys.path:
-    sys.path.append(agent_dir)
+  if agents_dir not in sys.path:
+    sys.path.append(agents_dir)
 
   runner_dict = {}
   root_agent_dict = {}
@@ -260,8 +261,8 @@ def get_fast_api_app(
   artifact_service = InMemoryArtifactService()
   memory_service = InMemoryMemoryService()
 
-  eval_sets_manager = LocalEvalSetsManager(agent_dir=agent_dir)
-  eval_set_results_manager = LocalEvalSetResultsManager(agent_dir=agent_dir)
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
+  eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
   # Build the Session service
   agent_engine_id = ""
@@ -271,7 +272,7 @@ def get_fast_api_app(
       agent_engine_id = session_db_url.split("://")[1]
       if not agent_engine_id:
         raise click.ClickException("Agent engine id can not be empty.")
-      envs.load_dotenv_for_agent("", agent_dir)
+      envs.load_dotenv_for_agent("", agents_dir)
       session_service = VertexAiSessionService(
           os.environ["GOOGLE_CLOUD_PROJECT"],
           os.environ["GOOGLE_CLOUD_LOCATION"],
@@ -283,7 +284,7 @@ def get_fast_api_app(
 
   @app.get("/list-apps")
   def list_apps() -> list[str]:
-    base_path = Path.cwd() / agent_dir
+    base_path = Path.cwd() / agents_dir
     if not base_path.exists():
       raise HTTPException(status_code=404, detail="Path not found")
     if not base_path.is_dir():
@@ -399,9 +400,9 @@ def get_fast_api_app(
         app_name=app_name, user_id=user_id, state=state
     )
 
-  def _get_eval_set_file_path(app_name, agent_dir, eval_set_id) -> str:
+  def _get_eval_set_file_path(app_name, agents_dir, eval_set_id) -> str:
     return os.path.join(
-        agent_dir,
+        agents_dir,
         app_name,
         eval_set_id + _EVAL_SET_FILE_EXTENSION,
     )
@@ -491,7 +492,7 @@ def get_fast_api_app(
 
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
-    envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
+    envs.load_dotenv_for_agent(os.path.basename(app_name), agents_dir)
 
     eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
@@ -664,9 +665,9 @@ def get_fast_api_app(
   @app.post("/run", response_model_exclude_none=True)
   async def agent_run(req: AgentRunRequest) -> list[Event]:
     # Connect to managed session if agent_engine_id is set.
-    app_id = agent_engine_id if agent_engine_id else req.app_name
+    app_name = agent_engine_id if agent_engine_id else req.app_name
     session = await session_service.get_session(
-        app_name=app_id, user_id=req.user_id, session_id=req.session_id
+        app_name=app_name, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
       raise HTTPException(status_code=404, detail="Session not found")
@@ -685,10 +686,10 @@ def get_fast_api_app(
   @app.post("/run_sse")
   async def agent_run_sse(req: AgentRunRequest) -> StreamingResponse:
     # Connect to managed session if agent_engine_id is set.
-    app_id = agent_engine_id if agent_engine_id else req.app_name
+    app_name = agent_engine_id if agent_engine_id else req.app_name
     # SSE endpoint
     session = await session_service.get_session(
-        app_name=app_id, user_id=req.user_id, session_id=req.session_id
+        app_name=app_name, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
       raise HTTPException(status_code=404, detail="Session not found")
@@ -727,9 +728,9 @@ def get_fast_api_app(
       app_name: str, user_id: str, session_id: str, event_id: str
   ):
     # Connect to managed session if agent_engine_id is set.
-    app_id = agent_engine_id if agent_engine_id else app_name
+    app_name = agent_engine_id if agent_engine_id else app_name
     session = await session_service.get_session(
-        app_name=app_id, user_id=user_id, session_id=session_id
+        app_name=app_name, user_id=user_id, session_id=session_id
     )
     session_events = session.events if session else []
     event = next((x for x in session_events if x.id == event_id), None)
@@ -784,9 +785,9 @@ def get_fast_api_app(
     await websocket.accept()
 
     # Connect to managed session if agent_engine_id is set.
-    app_id = agent_engine_id if agent_engine_id else app_name
+    app_name = agent_engine_id if agent_engine_id else app_name
     session = await session_service.get_session(
-        app_name=app_id, user_id=user_id, session_id=session_id
+        app_name=app_name, user_id=user_id, session_id=session_id
     )
     if not session:
       # Accept first so that the client is aware of connection establishment,
@@ -856,7 +857,7 @@ def get_fast_api_app(
 
   async def _get_runner_async(app_name: str) -> Runner:
     """Returns the runner for the given app."""
-    envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
+    envs.load_dotenv_for_agent(os.path.basename(app_name), agents_dir)
     if app_name in runner_dict:
       return runner_dict[app_name]
     root_agent = await _get_root_agent_async(app_name)
