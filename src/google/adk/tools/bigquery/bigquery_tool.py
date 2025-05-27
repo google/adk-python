@@ -17,13 +17,13 @@ import inspect
 from typing import Any
 from typing import Callable
 from typing import Optional
-from typing import override
 
 from google.oauth2.credentials import Credentials
+from typing_extensions import override
 
 from ..function_tool import FunctionTool
 from ..tool_context import ToolContext
-from .bigquery_credentials import BigQueryCredentials
+from .bigquery_credentials import BigQueryCredentialsConfig
 from .bigquery_credentials import BigQueryCredentialsManager
 
 
@@ -41,7 +41,7 @@ class BigQueryTool(FunctionTool):
   def __init__(
       self,
       func: Callable[..., Any],
-      credentials: Optional[BigQueryCredentials] = None,
+      credentials: Optional[BigQueryCredentialsConfig] = None,
   ):
     """Initialize the Google API tool.
 
