@@ -14,7 +14,7 @@
 
 from pytest import mark
 
-from ..unittests.utils import simplify_events
+from ..unittests.testing_utils import simplify_events
 from .fixture import callback_agent
 from .utils import assert_agent_says
 from .utils import TestRunner

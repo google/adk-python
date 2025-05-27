@@ -21,7 +21,7 @@ from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
 
-from ... import utils
+from ... import testing_utils
 
 
 def simple_function(input_str: str) -> str:
@@ -76,7 +76,7 @@ def test_before_tool_callback():
       types.Part.from_function_call(name='simple_function', args={}),
       'response1',
   ]
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
   agent = Agent(
       name='root_agent',
       model=mock_model,
@@ -86,8 +86,8 @@ def test_before_tool_callback():
       tools=[simple_function],
   )
 
-  runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  runner = testing_utils.InMemoryRunner(agent)
+  assert testing_utils.simplify_events(runner.run('test')) == [
       ('root_agent', Part.from_function_call(name='simple_function', args={})),
       (
           'root_agent',
@@ -106,7 +106,7 @@ def test_before_tool_callback_noop():
       ),
       'response1',
   ]
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
   agent = Agent(
       name='root_agent',
       model=mock_model,
@@ -114,8 +114,8 @@ def test_before_tool_callback_noop():
       tools=[simple_function],
   )
 
-  runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  runner = testing_utils.InMemoryRunner(agent)
+  assert testing_utils.simplify_events(runner.run('test')) == [
       (
           'root_agent',
           Part.from_function_call(
@@ -138,7 +138,7 @@ def test_before_tool_callback_modify_tool_request():
       types.Part.from_function_call(name='simple_function', args={}),
       'response1',
   ]
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
   agent = Agent(
       name='root_agent',
       model=mock_model,
@@ -149,8 +149,8 @@ def test_before_tool_callback_modify_tool_request():
       tools=[simple_function],
   )
 
-  runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  runner = testing_utils.InMemoryRunner(agent)
+  assert testing_utils.simplify_events(runner.run('test')) == [
       ('root_agent', Part.from_function_call(name='simple_function', args={})),
       (
           'root_agent',
@@ -170,7 +170,7 @@ def test_after_tool_callback():
       ),
       'response1',
   ]
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
   agent = Agent(
       name='root_agent',
       model=mock_model,
@@ -180,8 +180,8 @@ def test_after_tool_callback():
       tools=[simple_function],
   )
 
-  runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  runner = testing_utils.InMemoryRunner(agent)
+  assert testing_utils.simplify_events(runner.run('test')) == [
       (
           'root_agent',
           Part.from_function_call(
@@ -205,7 +205,7 @@ def test_after_tool_callback_noop():
       ),
       'response1',
   ]
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
   agent = Agent(
       name='root_agent',
       model=mock_model,
@@ -213,8 +213,8 @@ def test_after_tool_callback_noop():
       tools=[simple_function],
   )
 
-  runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  runner = testing_utils.InMemoryRunner(agent)
+  assert testing_utils.simplify_events(runner.run('test')) == [
       (
           'root_agent',
           Part.from_function_call(
@@ -239,7 +239,7 @@ def test_after_tool_callback_modify_tool_response():
       ),
       'response1',
   ]
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
   agent = Agent(
       name='root_agent',
       model=mock_model,
@@ -250,8 +250,8 @@ def test_after_tool_callback_modify_tool_response():
       tools=[simple_function],
   )
 
-  runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  runner = testing_utils.InMemoryRunner(agent)
+  assert testing_utils.simplify_events(runner.run('test')) == [
       (
           'root_agent',
           Part.from_function_call(

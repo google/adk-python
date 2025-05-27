@@ -13,7 +13,6 @@
 # limitations under the License.
 import copy
 from datetime import datetime
-from datetime import timezone
 import json
 import logging
 from typing import Any
@@ -47,8 +46,8 @@ from sqlalchemy.types import TypeDecorator
 from typing_extensions import override
 from tzlocal import get_localzone
 
-from ..events.event import Event
 from . import _session_util
+from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -371,10 +370,8 @@ class DatabaseSessionService(BaseSessionService):
         return None
 
       if config and config.after_timestamp:
-        after_dt = datetime.fromtimestamp(
-            config.after_timestamp, tz=timezone.utc
-        )
-        timestamp_filter = StorageEvent.timestamp > after_dt
+        after_dt = datetime.fromtimestamp(config.after_timestamp)
+        timestamp_filter = StorageEvent.timestamp >= after_dt
       else:
         timestamp_filter = True
 
@@ -382,7 +379,7 @@ class DatabaseSessionService(BaseSessionService):
           session_factory.query(StorageEvent)
           .filter(StorageEvent.session_id == storage_session.id)
           .filter(timestamp_filter)
-          .order_by(StorageEvent.timestamp.asc())
+          .order_by(StorageEvent.timestamp.desc())
           .limit(
               config.num_recent_events
               if config and config.num_recent_events
@@ -429,7 +426,7 @@ class DatabaseSessionService(BaseSessionService):
               error_message=e.error_message,
               interrupted=e.interrupted,
           )
-          for e in storage_events
+          for e in reversed(storage_events)
       ]
     return session
 

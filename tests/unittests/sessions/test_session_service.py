@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import enum
-import pytest
 
 from google.adk.events import Event
 from google.adk.events import EventActions
@@ -21,6 +20,7 @@ from google.adk.sessions import DatabaseSessionService
 from google.adk.sessions import InMemorySessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai import types
+import pytest
 
 
 class SessionServiceType(enum.Enum):
@@ -315,7 +315,7 @@ async def test_append_event_complete(service_type):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('service_type', [SessionServiceType.IN_MEMORY])
+@pytest.mark.parametrize('service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE])
 async def test_get_session_with_config(service_type):
   session_service = get_session_service(service_type)
   app_name = 'my_app'
