@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -19,8 +21,8 @@ import time
 
 from typing_extensions import override
 
-from ..cli.cli_eval import EvalCaseResult
-from ..cli.cli_eval import EvalSetResult
+from .eval_result import EvalCaseResult
+from .eval_result import EvalSetResult
 from .eval_set_results_manager import EvalSetResultsManager
 
 logger = logging.getLogger("google_adk." + __name__)
