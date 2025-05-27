@@ -289,6 +289,13 @@ def _parse_schema_from_parameter(
       )
     _raise_if_schema_unsupported(variant, schema)
     return schema
+  if param.annotation is None:
+    # https://swagger.io/docs/specification/v3_0/data-models/data-types/#null
+    # null is not a valid type in schema, use object instead.
+    schema.type = types.Type.OBJECT
+    schema.nullable = True
+    _raise_if_schema_unsupported(variant, schema)
+    return schema
   raise ValueError(
       f'Failed to parse the parameter {param} of function {func_name} for'
       ' automatic function calling. Automatic function calling works best with'
