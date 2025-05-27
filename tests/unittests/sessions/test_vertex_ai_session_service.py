@@ -214,9 +214,9 @@ def mock_get_api_client():
       '1': MOCK_EVENT_JSON,
   }
   with mock.patch(
-      "google.adk.sessions.vertex_ai_session_service._get_api_client",
+      'google.adk.sessions.vertex_ai_session_service._get_api_client',
       return_value=api_client,
-    ):
+  ):
     yield
 
 

@@ -302,8 +302,7 @@ def test_cli_eval_success_path(
   stub.try_get_reset_func = lambda _p: None
   stub.parse_and_get_evals_to_run = lambda _paths: {"set1.json": ["e1", "e2"]}
   eval_sets_manager_stub.load_eval_set_from_file = lambda x, y: EvalSet(
-      "test_eval_set_id",
-      [EvalCase("e1"), EvalCase("e2")]
+      "test_eval_set_id", [EvalCase("e1"), EvalCase("e2")]
   )
 
   # Create an async generator function for run_evals

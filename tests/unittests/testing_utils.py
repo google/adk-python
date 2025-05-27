@@ -177,17 +177,13 @@ class InMemoryRunner:
   @property
   def session(self) -> Session:
     if not self.session_id:
-      session = asyncio.run(
-          self.runner.session_service.create_session(
-              app_name='test_app', user_id='test_user'
-          )
+      session = self.runner.session_service.create_session_sync(
+          app_name='test_app', user_id='test_user'
       )
       self.session_id = session.id
       return session
-    return asyncio.run(
-        self.runner.session_service.get_session(
-            app_name='test_app', user_id='test_user', session_id=self.session_id
-        )
+    return self.runner.session_service.get_session_sync(
+        app_name='test_app', user_id='test_user', session_id=self.session_id
     )
 
   def run(self, new_message: types.ContentUnion) -> list[Event]:
@@ -198,6 +194,16 @@ class InMemoryRunner:
             new_message=get_user_content(new_message),
         )
     )
+
+  async def run_async(self, new_message: types.ContentUnion) -> list[Event]:
+    events = []
+    async for event in self.runner.run_async(
+        user_id=self.session.user_id,
+        session_id=self.session.id,
+        new_message=get_user_content(new_message),
+    ):
+      events.append(event)
+    return events
 
   def run_live(self, live_request_queue: LiveRequestQueue) -> list[Event]:
     collected_responses = []
