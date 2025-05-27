@@ -202,7 +202,7 @@ class InMemoryRunner:
         session_id=self.session.id,
         new_message=get_user_content(new_message),
     ):
-        events.append(event)
+      events.append(event)
     return events
 
   def run_live(self, live_request_queue: LiveRequestQueue) -> list[Event]:
