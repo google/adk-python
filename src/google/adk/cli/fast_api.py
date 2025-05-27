@@ -858,14 +858,16 @@ def get_fast_api_app(
     ANGULAR_DIST_PATH = BASE_DIR / "browser"
 
     @app.get("/")
-    async def redirect_to_dev_ui():
-      return RedirectResponse("/dev-ui")
+    async def redirect_root_to_dev_ui():
+      return RedirectResponse("/dev-ui/")
 
     @app.get("/dev-ui")
-    async def dev_ui():
-      return FileResponse(BASE_DIR / "browser/index.html")
+    async def redirect_dev_ui_add_slash():
+      return RedirectResponse("/dev-ui/")
 
     app.mount(
-        "/", StaticFiles(directory=ANGULAR_DIST_PATH, html=True), name="static"
+        "/dev-ui/",
+        StaticFiles(directory=ANGULAR_DIST_PATH, html=True),
+        name="static",
     )
   return app
