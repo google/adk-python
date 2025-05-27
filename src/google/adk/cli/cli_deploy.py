@@ -19,6 +19,7 @@ from typing import Optional, Tuple
 from .deployers.deployer_factory import DeployerFactory
 from .config.dockerfile_template import _DOCKERFILE_TEMPLATE
 
+
 def run(
     *,
     agent_folder: str,
@@ -121,17 +122,17 @@ def run(
     click.echo(f'Deploying to {provider}...')
     deployer = DeployerFactory.get_deployer(provider)
     deployer.deploy(
-          agent_folder=agent_folder,
-          temp_folder=temp_folder,
-          service_name=service_name,
-          provider_args=provider_args,
-          env_vars=env,
-          project=project,
-          region=region,
-          port=port,
-          verbosity=verbosity,
+        agent_folder=agent_folder,
+        temp_folder=temp_folder,
+        service_name=service_name,
+        provider_args=provider_args,
+        env_vars=env,
+        project=project,
+        region=region,
+        port=port,
+        verbosity=verbosity,
     )
-    
+
     click.echo(f'Deployment to {provider} complete.')
 
   finally:

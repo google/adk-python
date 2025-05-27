@@ -147,6 +147,7 @@ def test_deploy_run_gcp_happy_path(
   # Manual cleanup because we disabled rmtree in the monkeypatch.
   shutil.rmtree(tmp_dir, ignore_errors=True)
 
+
 # cli_deploy.run with docker
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_deploy_run_docker_happy_path(
@@ -203,6 +204,7 @@ def test_deploy_run_docker_happy_path(
 
   # Manual cleanup because we disabled rmtree in the monkeypatch.
   shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 def test_deploy_run_gcp_cleans_temp_dir(
     monkeypatch: pytest.MonkeyPatch,
