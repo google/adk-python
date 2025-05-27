@@ -182,8 +182,8 @@ def load_eval_set_from_file(
 class LocalEvalSetsManager(EvalSetsManager):
   """An EvalSets manager that stores eval sets locally on disk."""
 
-  def __init__(self, agent_dir: str):
-    self._agent_dir = agent_dir
+  def __init__(self, agents_dir: str):
+    self._agents_dir = agents_dir
 
   @override
   def get_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
@@ -216,7 +216,7 @@ class LocalEvalSetsManager(EvalSetsManager):
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
     """Returns a list of EvalSets that belong to the given app_name."""
-    eval_set_file_path = os.path.join(self._agent_dir, app_name)
+    eval_set_file_path = os.path.join(self._agents_dir, app_name)
     eval_sets = []
     for file in os.listdir(eval_set_file_path):
       if file.endswith(_EVAL_SET_FILE_EXTENSION):
@@ -247,7 +247,7 @@ class LocalEvalSetsManager(EvalSetsManager):
 
   def _get_eval_set_file_path(self, app_name: str, eval_set_id: str) -> str:
     return os.path.join(
-        self._agent_dir,
+        self._agents_dir,
         app_name,
         eval_set_id + _EVAL_SET_FILE_EXTENSION,
     )

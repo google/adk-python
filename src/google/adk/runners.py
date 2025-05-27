@@ -42,6 +42,7 @@ from .sessions.base_session_service import BaseSessionService
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry import tracer
+from .tools.base_toolset import BaseToolset
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -456,6 +457,37 @@ class Runner:
         live_request_queue=live_request_queue,
         run_config=run_config,
     )
+
+  def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
+    toolsets = set()
+    if isinstance(agent, LlmAgent):
+      for tool_union in agent.tools:
+        if isinstance(tool_union, BaseToolset):
+          toolsets.add(tool_union)
+    for sub_agent in agent.sub_agents:
+      toolsets.update(self._collect_toolset(sub_agent))
+    return toolsets
+
+  async def _cleanup_toolsets(self, toolsets_to_close: set[BaseToolset]):
+    """Clean up toolsets with proper task context management."""
+    if not toolsets_to_close:
+      return
+
+    # This maintains the same task context throughout cleanup
+    for toolset in toolsets_to_close:
+      try:
+        logger.info('Closing toolset: %s', type(toolset).__name__)
+        # Use asyncio.wait_for to add timeout protection
+        await asyncio.wait_for(toolset.close(), timeout=10.0)
+        logger.info('Successfully closed toolset: %s', type(toolset).__name__)
+      except asyncio.TimeoutError:
+        logger.warning('Toolset %s cleanup timed out', type(toolset).__name__)
+      except Exception as e:
+        logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
+
+  async def close(self):
+    """Closes the runner."""
+    await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
 
 class InMemoryRunner(Runner):
