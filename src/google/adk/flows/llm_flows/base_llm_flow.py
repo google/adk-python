@@ -472,14 +472,12 @@ class BaseLlmFlow(ABC):
           yield event
 
   def _get_agent_to_run(
-      self, invocation_context: InvocationContext, transfer_to_agent
+      self, invocation_context: InvocationContext, agent_name: str
   ) -> BaseAgent:
     root_agent = invocation_context.agent.root_agent
-    agent_to_run = root_agent.find_agent(transfer_to_agent)
+    agent_to_run = root_agent.find_agent(agent_name)
     if not agent_to_run:
-      raise ValueError(
-          f'Agent {transfer_to_agent} not found in the agent tree.'
-      )
+      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
     return agent_to_run
 
   async def _call_llm_async(
