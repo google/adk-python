@@ -19,10 +19,10 @@ from typing import Optional, Tuple
 from .deployers.deployer_factory import DeployerFactory
 from .config.dockerfile_template import _DOCKERFILE_TEMPLATE
 
-def to_cloud_run(
+def run(
     *,
     agent_folder: str,
-    cloud_provider: str,
+    provider: str,
     project: Optional[str],
     region: Optional[str],
     service_name: str,
@@ -54,7 +54,7 @@ def to_cloud_run(
 
   Args:
     agent_folder: The folder (absolute path) containing the agent source code.
-    cloud_provider: Target deployment platform (gcp, local, etc).
+    provider: Target deployment platform (gcp, docker, etc).
     project: Google Cloud project id.
     region: Google Cloud region.
     service_name: The service name in Cloud Run.
@@ -118,13 +118,8 @@ def to_cloud_run(
           dockerfile_content,
       )
     click.echo(f'Creating Dockerfile complete: {dockerfile_path}')
-
-        # Deploy using the appropriate deployer
-    if cloud_provider is None:
-      cloud_provider = 'local'
-      
-    click.echo(f'Deploying to {cloud_provider}...')
-    deployer = DeployerFactory.get_deployer(cloud_provider)
+    click.echo(f'Deploying to {provider}...')
+    deployer = DeployerFactory.get_deployer(provider)
     deployer.deploy(
           agent_folder=agent_folder,
           temp_folder=temp_folder,
@@ -137,7 +132,7 @@ def to_cloud_run(
           verbosity=verbosity,
     )
     
-    click.echo(f'Deployment to {cloud_provider} complete.')
+    click.echo(f'Deployment to {provider} complete.')
 
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')

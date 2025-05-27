@@ -4,7 +4,7 @@ from typing import Tuple, List
 from ..deployers.base_deployer import Deployer
 import click
 
-class LocalDockerDeployer(Deployer):
+class DockerDeployer(Deployer):
     def deploy(self, 
                agent_folder: str, 
                temp_folder: str, 

@@ -121,9 +121,9 @@ async def test_cli_run_invokes_run_cli(
 def test_cli_deploy_cloud_run_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Successful path should call cli_deploy.to_cloud_run once."""
+  """Successful path should call cli_deploy.run once."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", rec)
 
   agent_dir = tmp_path / "agent2"
   agent_dir.mkdir()
@@ -141,18 +141,41 @@ def test_cli_deploy_cloud_run_success(
       ],
   )
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
+
+
+# cli deploy docker
+def test_cli_docker_cloud_run_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Successful path should call cli_deploy.run once."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", rec)
+
+  agent_dir = tmp_path / "agent2"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "docker",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.run must be invoked"
 
 
 def test_cli_deploy_cloud_run_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Exception from to_cloud_run should be caught and surfaced via click.secho."""
+  """Exception from cli_deploy.run should be caught and surfaced via click.secho."""
 
   def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
     raise RuntimeError("boom")
 
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", _boom)
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", _boom)
 
   # intercept click.secho(error=True) output
   captured: List[str] = []
