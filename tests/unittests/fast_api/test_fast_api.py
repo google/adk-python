@@ -18,7 +18,8 @@ import os
 import sys
 import time
 import types as ptypes
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
@@ -30,7 +31,6 @@ from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.genai import types
 import pytest
-
 
 # Configure logging to help diagnose server startup issues
 logging.basicConfig(
@@ -308,7 +308,7 @@ def test_app(mock_session_service, mock_artifact_service, mock_memory_service):
   ):
     # Get the FastAPI app, but don't actually run it
     app = get_fast_api_app(
-        agent_dir=".", web=True, session_db_url="", allow_origins=["*"]
+        agents_dir=".", web=True, session_db_url="", allow_origins=["*"]
     )
 
     # Create a TestClient that doesn't start a real server

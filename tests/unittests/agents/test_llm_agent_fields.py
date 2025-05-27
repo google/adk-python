@@ -15,7 +15,8 @@
 """Unit tests for canonical_xxx fields in LlmAgent."""
 
 from typing import Any
-from typing import Optional, cast
+from typing import cast
+from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
@@ -145,6 +146,7 @@ async def test_canonical_global_instruction():
   )
   assert canonical_global_instruction == 'global instruction: state_value'
   assert bypass_state_injection
+
 
 async def test_async_canonical_global_instruction():
   async def _global_instruction_provider(ctx: ReadonlyContext) -> str:
