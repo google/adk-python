@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import collections
 from contextlib import asynccontextmanager
 from datetime import datetime
 import logging
@@ -27,6 +28,8 @@ import uvicorn
 from . import cli_create
 from . import cli_deploy
 from .. import version
+from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
+from ..sessions.in_memory_session_service import InMemorySessionService
 from .cli import run_cli
 from .cli_eval import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .fast_api import get_fast_api_app
@@ -77,7 +80,7 @@ class HelpfulCommand(click.Command):
       ctx.exit(2)
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 @click.group(context_settings={"max_content_width": 240})
@@ -306,7 +309,7 @@ def cli_eval(
         EvalMetric(metric_name=metric_name, threshold=threshold)
     )
 
-  print(f"Using evaluation creiteria: {evaluation_criteria}")
+  print(f"Using evaluation criteria: {evaluation_criteria}")
 
   root_agent = get_root_agent(agent_module_file_path)
   reset_func = try_get_reset_func(agent_module_file_path)
@@ -325,20 +328,46 @@ def cli_eval(
           e for e in eval_set.eval_cases if e.eval_id in eval_case_ids
       ]
 
-    eval_set_id_to_eval_cases[eval_set_file_path] = eval_cases
+    eval_set_id_to_eval_cases[eval_set.eval_set_id] = eval_cases
 
   async def _collect_eval_results() -> list[EvalCaseResult]:
-    return [
-        result
-        async for result in run_evals(
-            eval_set_id_to_eval_cases, root_agent, reset_func, eval_metrics
-        )
-    ]
+    session_service = InMemorySessionService()
+    eval_case_results = []
+    async for eval_case_result in run_evals(
+        eval_set_id_to_eval_cases,
+        root_agent,
+        reset_func,
+        eval_metrics,
+        session_service=session_service,
+    ):
+      eval_case_result.session_details = await session_service.get_session(
+          app_name=os.path.basename(agent_module_file_path),
+          user_id=eval_case_result.user_id,
+          session_id=eval_case_result.session_id,
+      )
+      eval_case_results.append(eval_case_result)
+    return eval_case_results
 
   try:
     eval_results = asyncio.run(_collect_eval_results())
   except ModuleNotFoundError:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
+
+  # Write eval set results.
+  local_eval_set_results_manager = LocalEvalSetResultsManager(
+      agents_dir=os.path.dirname(agent_module_file_path)
+  )
+  eval_set_id_to_eval_results = collections.defaultdict(list)
+  for eval_case_result in eval_results:
+    eval_set_id = eval_case_result.eval_set_id
+    eval_set_id_to_eval_results[eval_set_id].append(eval_case_result)
+
+  for eval_set_id, eval_case_results in eval_set_id_to_eval_results.items():
+    local_eval_set_results_manager.save_eval_set_result(
+        app_name=os.path.basename(agent_module_file_path),
+        eval_set_id=eval_set_id,
+        eval_case_results=eval_case_results,
+    )
 
   print("*********************************************************************")
   eval_run_summary = {}
@@ -409,16 +438,6 @@ def cli_eval(
     help="Optional. Set the logging level",
 )
 @click.option(
-    "--log_to_tmp",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to log to system temp folder instead of console."
-        " This is useful for local debugging."
-    ),
-)
-@click.option(
     "--trace_to_cloud",
     is_flag=True,
     show_default=True,
@@ -439,7 +458,6 @@ def cli_eval(
 )
 def cli_web(
     agents_dir: str,
-    log_to_tmp: bool,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
@@ -457,10 +475,7 @@ def cli_web(
 
     adk web --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
-  if log_to_tmp:
-    logs.log_to_tmp_folder(getattr(logging, log_level.upper()))
-  else:
-    logs.log_to_stderr(getattr(logging, log_level.upper()))
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
   async def _lifespan(app: FastAPI):
@@ -485,7 +500,7 @@ def cli_web(
     )
 
   app = get_fast_api_app(
-      agent_dir=agents_dir,
+      agents_dir=agents_dir,
       session_db_url=session_db_url,
       allow_origins=allow_origins,
       web=True,
@@ -543,16 +558,6 @@ def cli_web(
     help="Optional. Set the logging level",
 )
 @click.option(
-    "--log_to_tmp",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to log to system temp folder instead of console."
-        " This is useful for local debugging."
-    ),
-)
-@click.option(
     "--trace_to_cloud",
     is_flag=True,
     show_default=True,
@@ -575,7 +580,6 @@ def cli_web(
 )
 def cli_api_server(
     agents_dir: str,
-    log_to_tmp: bool,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
@@ -593,14 +597,11 @@ def cli_api_server(
 
     adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
-  if log_to_tmp:
-    logs.log_to_tmp_folder(getattr(logging, log_level.upper()))
-  else:
-    logs.log_to_stderr(getattr(logging, log_level.upper()))
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   config = uvicorn.Config(
       get_fast_api_app(
-          agent_dir=agents_dir,
+          agents_dir=agents_dir,
           session_db_url=session_db_url,
           allow_origins=allow_origins,
           web=False,

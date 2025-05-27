@@ -35,7 +35,7 @@ _py_builtin_type_to_schema_type = {
     dict: types.Type.OBJECT,
 }
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _is_builtin_primitive_or_compound(
@@ -287,6 +287,13 @@ def _parse_schema_from_parameter(
           ),
           func_name,
       )
+    _raise_if_schema_unsupported(variant, schema)
+    return schema
+  if param.annotation is None:
+    # https://swagger.io/docs/specification/v3_0/data-models/data-types/#null
+    # null is not a valid type in schema, use object instead.
+    schema.type = types.Type.OBJECT
+    schema.nullable = True
     _raise_if_schema_unsupported(variant, schema)
     return schema
   raise ValueError(

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from google.genai import types
-from pydantic import Field
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext

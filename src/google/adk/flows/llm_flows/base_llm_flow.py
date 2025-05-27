@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from websockets.exceptions import ConnectionClosedOK
 
+from . import functions
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
@@ -40,7 +41,6 @@ from ...telemetry import trace_call_llm
 from ...telemetry import trace_send_data
 from ...telemetry import tracer
 from ...tools.tool_context import ToolContext
-from . import functions
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
   from ._base_llm_processor import BaseLlmRequestProcessor
   from ._base_llm_processor import BaseLlmResponseProcessor
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class BaseLlmFlow(ABC):
@@ -472,14 +472,12 @@ class BaseLlmFlow(ABC):
           yield event
 
   def _get_agent_to_run(
-      self, invocation_context: InvocationContext, transfer_to_agent
+      self, invocation_context: InvocationContext, agent_name: str
   ) -> BaseAgent:
     root_agent = invocation_context.agent.root_agent
-    agent_to_run = root_agent.find_agent(transfer_to_agent)
+    agent_to_run = root_agent.find_agent(agent_name)
     if not agent_to_run:
-      raise ValueError(
-          f'Agent {transfer_to_agent} not found in the agent tree.'
-      )
+      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
     return agent_to_run
 
   async def _call_llm_async(

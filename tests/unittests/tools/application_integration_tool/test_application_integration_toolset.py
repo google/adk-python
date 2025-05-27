@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import json
 from unittest import mock
+
 from fastapi.openapi.models import Operation
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth import AuthCredentialTypes
@@ -22,7 +24,8 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.tools.application_integration_tool.application_integration_toolset import ApplicationIntegrationToolset
 from google.adk.tools.application_integration_tool.integration_connector_tool import IntegrationConnectorTool
 from google.adk.tools.openapi_tool.auth.auth_helpers import dict_to_auth_scheme
-from google.adk.tools.openapi_tool.openapi_spec_parser import ParsedOperation, rest_api_tool
+from google.adk.tools.openapi_tool.openapi_spec_parser import ParsedOperation
+from google.adk.tools.openapi_tool.openapi_spec_parser import rest_api_tool
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
 import pytest
 
@@ -489,7 +492,8 @@ def test_initialization_with_connection_details(
   )
 
 
-def test_init_with_connection_and_custom_auth(
+@pytest.mark.asyncio
+async def test_init_with_connection_and_custom_auth(
     mock_integration_client,
     mock_connections_client,
     mock_openapi_action_spec_parser,
@@ -548,16 +552,17 @@ def test_init_with_connection_and_custom_auth(
       tool_name, tool_instructions
   )
   mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
-  assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "list_issues_operation"
-  assert isinstance(toolset.get_tools()[0], IntegrationConnectorTool)
-  assert toolset.get_tools()[0].action == "CustomAction"
-  assert toolset.get_tools()[0].operation == "EXECUTE_ACTION"
-  assert toolset.get_tools()[0].auth_scheme == oauth2_scheme
-  assert toolset.get_tools()[0].auth_credential == auth_credential
+  assert len(await toolset.get_tools()) == 1
+  assert (await toolset.get_tools())[0].name == "list_issues_operation"
+  assert isinstance((await toolset.get_tools())[0], IntegrationConnectorTool)
+  assert (await toolset.get_tools())[0]._action == "CustomAction"
+  assert (await toolset.get_tools())[0]._operation == "EXECUTE_ACTION"
+  assert (await toolset.get_tools())[0]._auth_scheme == oauth2_scheme
+  assert (await toolset.get_tools())[0]._auth_credential == auth_credential
 
 
-def test_init_with_connection_with_auth_override_disabled_and_custom_auth(
+@pytest.mark.asyncio
+async def test_init_with_connection_with_auth_override_disabled_and_custom_auth(
     mock_integration_client,
     mock_connections_client,
     mock_openapi_action_spec_parser,
@@ -616,10 +621,10 @@ def test_init_with_connection_with_auth_override_disabled_and_custom_auth(
       tool_name, tool_instructions
   )
   mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
-  assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "list_issues_operation"
-  assert isinstance(toolset.get_tools()[0], IntegrationConnectorTool)
-  assert toolset.get_tools()[0].action == "CustomAction"
-  assert toolset.get_tools()[0].operation == "EXECUTE_ACTION"
-  assert not toolset.get_tools()[0].auth_scheme
-  assert not toolset.get_tools()[0].auth_credential
+  assert len(await toolset.get_tools()) == 1
+  assert (await toolset.get_tools())[0].name == "list_issues_operation"
+  assert isinstance((await toolset.get_tools())[0], IntegrationConnectorTool)
+  assert (await toolset.get_tools())[0]._action == "CustomAction"
+  assert (await toolset.get_tools())[0]._operation == "EXECUTE_ACTION"
+  assert not (await toolset.get_tools())[0]._auth_scheme
+  assert not (await toolset.get_tools())[0]._auth_credential
