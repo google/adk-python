@@ -240,14 +240,14 @@ class StorageUserState(Base):
 class DatabaseSessionService(BaseSessionService):
   """A session service that uses a database for storage."""
 
-  def __init__(self, db_url: str):
+  def __init__(self, db_url: str, **kwargs: Any):
     """Initializes the database session service with a database URL."""
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
     # 3. Initialize all properties
 
     try:
-      db_engine = create_engine(db_url)
+      db_engine = create_engine(db_url, **kwargs)
     except Exception as e:
       if isinstance(e, ArgumentError):
         raise ValueError(
