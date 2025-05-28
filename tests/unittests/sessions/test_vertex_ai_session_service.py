@@ -111,7 +111,7 @@ MOCK_SESSION = Session(
 
 
 SESSION_REGEX = r'^reasoningEngines/([^/]+)/sessions/([^/]+)$'
-SESSIONS_REGEX = r'^reasoningEngines/([^/]+)/sessions\?filter=user_id=%22([^%]+)%22.*$'
+SESSIONS_REGEX = r'^reasoningEngines/([^/]+)/sessions\?filter=user_id=%22([^%]+)%22.*$' # %22 represents double-quotes in a URL-encoded string
 EVENTS_REGEX = r'^reasoningEngines/([^/]+)/sessions/([^/]+)/events$'
 LRO_REGEX = r'^operations/([^/]+)$'
 
