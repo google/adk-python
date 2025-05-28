@@ -127,7 +127,7 @@ class MockApiClient:
   async def async_request(
       self, http_method: str, path: str, request_dict: dict[str, Any]
   ):
-    """Mocks the API Client request method."""
+    """Mocks the API Client request method"""
     if http_method == 'GET':
       if re.match(SESSION_REGEX, path):
         match = re.match(SESSION_REGEX, path)
