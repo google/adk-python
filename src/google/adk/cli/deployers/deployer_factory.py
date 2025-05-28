@@ -1,4 +1,4 @@
-from ..deployers.gcp_deployer import GCPDeployer
+from ..deployers.cloud_run_deployer import CloudRunDeployer
 from ..deployers.docker_deployer import DockerDeployer
 # Future deployers can be added here
 
@@ -10,7 +10,7 @@ class DeployerFactory:
     """Returns the appropriate deployer based on the cloud provider."""
     deployers = {
         'docker': DockerDeployer(),
-        'gcp': GCPDeployer(),
+        'cloud_run': CloudRunDeployer(),
         # Future providers: 'aws': AWSDeployer(), 'k8s': KubernetesDeployer()
     }
 

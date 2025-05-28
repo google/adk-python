@@ -119,13 +119,13 @@ coordinator = LlmAgent(
 
 ### 🚀 Deployment Options
 
-  Running the Agent Locally with Docker Container:
+  Deploying the Agent Locally with Docker Container:
 
 ```bash
 adk deploy docker <agent-folder> --with_ui
 ```
 
-  Running the Agent in Google Cloud (GCP)
+  Deploying the Agent in Google Cloud (Cloud Run)
 
 ```bash
 adk deploy cloud_run <agent-folder> --with_ui

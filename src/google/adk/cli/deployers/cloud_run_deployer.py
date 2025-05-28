@@ -1,4 +1,4 @@
-# deployers/gcp_deployer.py
+# deployers/cloud_run_deployer.py
 
 import subprocess
 import os
@@ -7,7 +7,7 @@ from typing import Tuple
 from ..deployers.base_deployer import Deployer
 
 
-class GCPDeployer(Deployer):
+class CloudRunDeployer(Deployer):
 
   def deploy(
       self,

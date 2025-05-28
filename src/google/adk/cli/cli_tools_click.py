@@ -777,7 +777,7 @@ def cli_deploy_to_cloud_run(
   try:
     cli_deploy.run(
         agent_folder=agent,
-        provider="gcp",
+        provider="cloud_run",
         project=project,
         region=region,
         service_name=service_name,

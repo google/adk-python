@@ -72,8 +72,8 @@ def agent_dir(tmp_path: Path) -> Callable[[bool], Path]:
 # _resolve_project
 def test_resolve_project_with_option() -> None:
   """It should return the explicit project value untouched."""
-  gcpDeployer = DeployerFactory.get_deployer("gcp")
-  assert gcpDeployer._resolve_project("my-project") == "my-project"
+  cloudRunDeployer = DeployerFactory.get_deployer("cloud_run")
+  assert cloudRunDeployer._resolve_project("my-project") == "my-project"
 
 
 def test_resolve_project_from_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,20 +85,20 @@ def test_resolve_project_from_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
   )
 
   with mock.patch("click.echo") as mocked_echo:
-    gcpDeployer = DeployerFactory.get_deployer("gcp")
-    assert gcpDeployer._resolve_project(None) == "gcp-proj"
+    cloudRunDeployer = DeployerFactory.get_deployer("cloud_run")
+    assert cloudRunDeployer._resolve_project(None) == "gcp-proj"
     mocked_echo.assert_called_once()
 
 
-# cli_deploy.run with gcp
+# cli_deploy.run with cloud_run
 @pytest.mark.parametrize("include_requirements", [True, False])
-def test_deploy_run_gcp_happy_path(
+def test_deploy_cloud_run_happy_path(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool], Path],
     include_requirements: bool,
 ) -> None:
   """
-  End-to-end execution test for `cli_deploy.run` on gcp covering both presence and
+  End-to-end execution test for `cli_deploy.run` with cloud_run covering both presence and
   absence of *requirements.txt*.
   """
   tmp_dir = Path(tempfile.mkdtemp())
@@ -121,7 +121,7 @@ def test_deploy_run_gcp_happy_path(
 
   cli_deploy.run(
       agent_folder=str(src_dir),
-      provider="gcp",
+      provider="cloud_run",
       project="proj",
       region="asia-northeast1",
       service_name="svc",
@@ -156,7 +156,7 @@ def test_deploy_run_docker_happy_path(
     include_requirements: bool,
 ) -> None:
   """
-  End-to-end execution test for `cli_deploy.run` on docker covering both presence and
+  End-to-end execution test for `cli_deploy.run` with docker covering both presence and
   absence of *requirements.txt*.
   """
   tmp_dir = Path(tempfile.mkdtemp())
@@ -206,7 +206,7 @@ def test_deploy_run_docker_happy_path(
   shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_deploy_run_gcp_cleans_temp_dir(
+def test_deploy_cloud_run_cleans_temp_dir(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool], Path],
 ) -> None:
@@ -224,7 +224,7 @@ def test_deploy_run_gcp_cleans_temp_dir(
 
   cli_deploy.run(
       agent_folder=str(src_dir),
-      provider="gcp",
+      provider="cloud_run",
       project="proj",
       region=None,
       service_name="svc",
