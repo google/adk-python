@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.1.0
+
+### Features
+
+* Extract agent loading logic from fast_api.py to a separate AgentLoader class and support more agent definition folder/file structure.
+* Added audio play in web UI.
+* Added input transcription support for live/streaming.
+* Added support for storing eval run history locally in adk eval cli.
+* Image artifacts can now be clicked directly in chat message to view.
+* Left side panel can now be resized.
+
+### Bug Fixes
+
+* Avoid duplicating log in stderr.
+* Align event filtering and ordering logic.
+* Add handling for None param.annotation.
+* Fixed several minor bugs regarding eval tab in web UI.
+
+### Miscellaneous Chores
+
+* Updates mypy config in pyproject.toml.
+* Add google search agent in samples.
+* Update filtered schema parameters for Gemini API.
+* Adds autoformat.sh for formatting codebase.
+
 ## 1.0.0
 
 ### ⚠ BREAKING CHANGES
