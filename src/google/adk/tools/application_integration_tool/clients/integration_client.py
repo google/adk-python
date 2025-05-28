@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import json
-from typing import List, Optional
+from typing import List
+from typing import Optional
+
 from google.adk.tools.application_integration_tool.clients.connections_client import ConnectionsClient
 import google.auth
 from google.auth import default as default_service_credential
@@ -35,7 +37,7 @@ class IntegrationClient:
       project: str,
       location: str,
       integration: Optional[str] = None,
-      triggers: List[str] = None,
+      triggers: Optional[List[str]] = None,
       connection: Optional[str] = None,
       entity_operations: Optional[dict[str, list[str]]] = None,
       actions: Optional[list[str]] = None,
@@ -109,7 +111,7 @@ class IntegrationClient:
         raise ValueError(
             "Invalid request. Please check the provided values of"
             f" project({self.project}), location({self.location}),"
-            f" integration({self.integration}) and trigger({self.triggers})."
+            f" integration({self.integration})."
         ) from e
       raise ValueError(f"Request error: {e}") from e
     except Exception as e:

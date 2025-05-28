@@ -65,29 +65,8 @@ async def check_prime(nums: list[int]) -> str:
       else f"{', '.join(str(num) for num in primes)} are prime numbers."
   )
 
-
-async def before_agent_callback(callback_context):
-  print('@before_agent_callback')
-  return None
-
-
-async def after_agent_callback(callback_context):
-  print('@after_agent_callback')
-  return None
-
-
-async def before_model_callback(callback_context, llm_request):
-  print('@before_model_callback')
-  return None
-
-
-async def after_model_callback(callback_context, llm_response):
-  print('@after_model_callback')
-  return None
-
-
 root_agent = Agent(
-    model='gemini-2.0-flash-exp',
+    model='gemini-2.0-flash',
     name='data_processing_agent',
     description=(
         'hello world agent that can roll a dice of 8 sides and check prime'
@@ -127,8 +106,4 @@ root_agent = Agent(
             ),
         ]
     ),
-    before_agent_callback=before_agent_callback,
-    after_agent_callback=after_agent_callback,
-    before_model_callback=before_model_callback,
-    after_model_callback=after_model_callback,
 )
