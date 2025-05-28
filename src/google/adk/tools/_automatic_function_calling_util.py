@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Forked from google3/third_party/py/google/genai/_automatic_function_calling_util.py temporarily."""
+from __future__ import annotations
 
 import inspect
 from types import FunctionType
