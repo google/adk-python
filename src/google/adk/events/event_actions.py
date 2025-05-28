@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -26,7 +27,12 @@ from ..auth.auth_tool import AuthConfig
 class EventActions(BaseModel):
   """Represents the actions attached to an event."""
 
-  model_config = ConfigDict(extra='forbid')
+  model_config = ConfigDict(
+      extra='forbid',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+  """The pydantic model config."""
 
   skip_summarization: Optional[bool] = None
   """If true, it won't call model to summarize function response.
@@ -48,8 +54,13 @@ class EventActions(BaseModel):
   """The agent is escalating to a higher level agent."""
 
   requested_auth_configs: dict[str, AuthConfig] = Field(default_factory=dict)
-  """Will only be set by a tool response indicating tool request euc.
-  dict key is the function call id since one function call response (from model)
-  could correspond to multiple function calls.
-  dict value is the required auth config.
+  """Authentication configurations requested by tool responses.
+
+  This field will only be set by a tool response event indicating tool request
+  auth credential.
+  - Keys: The function call id. Since one function response event could contain
+  multiple function responses that correspond to multiple function calls. Each
+  function call could request different auth configs. This id is used to
+  identify the function call.
+  - Values: The requested auth config.
   """

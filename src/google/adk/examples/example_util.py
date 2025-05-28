@@ -15,8 +15,9 @@
 """Utility functions for converting examples to a string that can be used in system instructions in the prompt."""
 
 import logging
-from typing import Optional, Union
+from typing import Optional
 from typing import TYPE_CHECKING
+from typing import Union
 
 from .base_example_provider import BaseExampleProvider
 from .example import Example
@@ -24,7 +25,7 @@ from .example import Example
 if TYPE_CHECKING:
   from ..sessions.session import Session
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 # Constant parts of the example string
 _EXAMPLES_INTRO = (

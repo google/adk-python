@@ -15,7 +15,8 @@
 import datetime
 import mimetypes
 import os
-from typing import Any, Optional
+from typing import Any
+from typing import Optional
 
 from typing_extensions import override
 from vertexai.preview.extensions import Extension
@@ -147,18 +148,15 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
     )
 
     # Save output file as artifacts.
-    current_timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    file_name_prefix = '%s_' % str(current_timestamp)
     saved_files = []
     file_count = 0
     for output_file in code_execution_result['output_files']:
       file_type = output_file['name'].split('.')[-1]
-      file_name = file_name_prefix + '%d.%s' % (file_count, file_type)
       if file_type in _SUPPORTED_IMAGE_TYPES:
         file_count += 1
         saved_files.append(
             File(
-                name='plot_' + file_name,
+                name=output_file['name'],
                 content=output_file['contents'],
                 mime_type=f'image/{file_type}',
             )
@@ -167,16 +165,16 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
         file_count += 1
         saved_files.append(
             File(
-                name='data_' + file_name,
+                name=output_file['name'],
                 content=output_file['contents'],
                 mime_type=f'text/{file_type}',
             )
         )
       else:
-        mime_type, _ = mimetypes.guess_type(file_name)
+        mime_type, _ = mimetypes.guess_type(output_file['name'])
         saved_files.append(
             File(
-                name=file_name,
+                name=output_file['name'],
                 content=output_file['contents'],
                 mime_type=mime_type,
             )

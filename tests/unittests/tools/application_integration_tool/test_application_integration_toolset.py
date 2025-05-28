@@ -12,13 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import json
 from unittest import mock
+
 from fastapi.openapi.models import Operation
+from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.auth import AuthCredentialTypes
+from google.adk.auth import OAuth2Auth
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.tools.application_integration_tool.application_integration_toolset import ApplicationIntegrationToolset
 from google.adk.tools.application_integration_tool.integration_connector_tool import IntegrationConnectorTool
-from google.adk.tools.openapi_tool.openapi_spec_parser import ParsedOperation, rest_api_tool
+from google.adk.tools.openapi_tool.auth.auth_helpers import dict_to_auth_scheme
+from google.adk.tools.openapi_tool.openapi_spec_parser import ParsedOperation
+from google.adk.tools.openapi_tool.openapi_spec_parser import rest_api_tool
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
 import pytest
 
@@ -47,7 +54,34 @@ def mock_openapi_toolset():
     mock_toolset_instance = mock.MagicMock()
     mock_rest_api_tool = mock.MagicMock(spec=rest_api_tool.RestApiTool)
     mock_rest_api_tool.name = "Test Tool"
-    mock_toolset_instance.get_tools.return_value = [mock_rest_api_tool]
+
+    # Create an async mock for the get_tools method
+    async def mock_get_tools(context: ReadonlyContext = None):
+      return [mock_rest_api_tool]
+
+    # Assign the async mock function to get_tools
+    mock_toolset_instance.get_tools = mock_get_tools
+
+    mock_toolset.return_value = mock_toolset_instance
+    yield mock_toolset
+
+
+@pytest.fixture
+def mock_openapi_toolset_with_multiple_tools_and_no_tools():
+  with mock.patch(
+      "google.adk.tools.application_integration_tool.application_integration_toolset.OpenAPIToolset"
+  ) as mock_toolset:
+    mock_toolset_instance = mock.MagicMock()
+    mock_rest_api_tool = mock.MagicMock(spec=rest_api_tool.RestApiTool)
+    mock_rest_api_tool.name = "Test Tool"
+    mock_rest_api_tool_2 = mock.MagicMock(spec=rest_api_tool.RestApiTool)
+    mock_rest_api_tool_2.name = "Test Tool 2"
+
+    # Create an async mock for the get_tools method
+    async def mock_get_tools(context: ReadonlyContext = None):
+      return [mock_rest_api_tool, mock_rest_api_tool_2]
+
+    mock_toolset_instance.get_tools = mock_get_tools
     mock_toolset.return_value = mock_toolset_instance
     yield mock_toolset
 
@@ -134,7 +168,18 @@ def connection_details():
   }
 
 
-def test_initialization_with_integration_and_trigger(
+@pytest.fixture
+def connection_details_auth_override_enabled():
+  return {
+      "serviceName": "test-service",
+      "host": "test.host",
+      "name": "test-connection",
+      "authOverrideEnabled": True,
+  }
+
+
+@pytest.mark.asyncio
+async def test_initialization_with_integration_and_trigger(
     project,
     location,
     mock_integration_client,
@@ -142,21 +187,79 @@ def test_initialization_with_integration_and_trigger(
     mock_openapi_toolset,
 ):
   integration_name = "test-integration"
-  trigger_name = "test-trigger"
+  triggers = ["test-trigger"]
   toolset = ApplicationIntegrationToolset(
-      project, location, integration=integration_name, trigger=trigger_name
+      project, location, integration=integration_name, triggers=triggers
   )
   mock_integration_client.assert_called_once_with(
-      project, location, integration_name, trigger_name, None, None, None, None
+      project, location, integration_name, triggers, None, None, None, None
   )
   mock_integration_client.return_value.get_openapi_spec_for_integration.assert_called_once()
   mock_connections_client.assert_not_called()
   mock_openapi_toolset.assert_called_once()
-  assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "Test Tool"
+  tools = await toolset.get_tools()
+  assert len(tools) == 1
+  assert tools[0].name == "Test Tool"
 
 
-def test_initialization_with_connection_and_entity_operations(
+@pytest.mark.asyncio
+async def test_initialization_with_integration_and_list_of_triggers(
+    project,
+    location,
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_toolset_with_multiple_tools_and_no_tools,
+):
+  integration_name = "test-integration"
+  triggers = ["test-trigger1", "test-trigger2"]
+  toolset = ApplicationIntegrationToolset(
+      project, location, integration=integration_name, triggers=triggers
+  )
+  mock_integration_client.assert_called_once_with(
+      project,
+      location,
+      integration_name,
+      triggers,
+      None,
+      None,
+      None,
+      None,
+  )
+  mock_integration_client.return_value.get_openapi_spec_for_integration.assert_called_once()
+  mock_connections_client.assert_not_called()
+  mock_openapi_toolset_with_multiple_tools_and_no_tools.assert_called_once()
+  tools = await toolset.get_tools()
+  assert len(tools) == 2
+  assert tools[0].name == "Test Tool"
+  assert tools[1].name == "Test Tool 2"
+
+
+@pytest.mark.asyncio
+async def test_initialization_with_integration_and_empty_trigger_list(
+    project,
+    location,
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_toolset_with_multiple_tools_and_no_tools,
+):
+  integration_name = "test-integration"
+  toolset = ApplicationIntegrationToolset(
+      project, location, integration=integration_name
+  )
+  mock_integration_client.assert_called_once_with(
+      project, location, integration_name, None, None, None, None, None
+  )
+  mock_integration_client.return_value.get_openapi_spec_for_integration.assert_called_once()
+  mock_connections_client.assert_not_called()
+  mock_openapi_toolset_with_multiple_tools_and_no_tools.assert_called_once()
+  tools = await toolset.get_tools()
+  assert len(tools) == 2
+  assert tools[0].name == "Test Tool"
+  assert tools[1].name == "Test Tool 2"
+
+
+@pytest.mark.asyncio
+async def test_initialization_with_connection_and_entity_operations(
     project,
     location,
     mock_integration_client,
@@ -176,7 +279,7 @@ def test_initialization_with_connection_and_entity_operations(
       location,
       connection=connection_name,
       entity_operations=entity_operations_list,
-      tool_name=tool_name,
+      tool_name_prefix=tool_name,
       tool_instructions=tool_instructions,
   )
   mock_integration_client.assert_called_once_with(
@@ -198,14 +301,17 @@ def test_initialization_with_connection_and_entity_operations(
       tool_name,
       tool_instructions,
   )
-  assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "list_issues"
-  assert isinstance(toolset.get_tools()[0], IntegrationConnectorTool)
-  assert toolset.get_tools()[0].entity == "Issues"
-  assert toolset.get_tools()[0].operation == "LIST_ENTITIES"
+
+  tools = await toolset.get_tools()
+  assert len(tools) == 1
+  assert tools[0].name == "list_issues"
+  assert isinstance(tools[0], IntegrationConnectorTool)
+  assert tools[0]._entity == "Issues"
+  assert tools[0]._operation == "LIST_ENTITIES"
 
 
-def test_initialization_with_connection_and_actions(
+@pytest.mark.asyncio
+async def test_initialization_with_connection_and_actions(
     project,
     location,
     mock_integration_client,
@@ -225,7 +331,7 @@ def test_initialization_with_connection_and_actions(
       location,
       connection=connection_name,
       actions=actions_list,
-      tool_name=tool_name,
+      tool_name_prefix=tool_name,
       tool_instructions=tool_instructions,
   )
   mock_integration_client.assert_called_once_with(
@@ -236,22 +342,22 @@ def test_initialization_with_connection_and_actions(
   )
   mock_connections_client.return_value.get_connection_details.assert_called_once()
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
-      tool_name,
-      tool_instructions
+      tool_name, tool_instructions
   )
   mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
-  assert len(toolset.get_tools()) == 1
-  assert toolset.get_tools()[0].name == "list_issues_operation"
-  assert isinstance(toolset.get_tools()[0], IntegrationConnectorTool)
-  assert toolset.get_tools()[0].action == "CustomAction"
-  assert toolset.get_tools()[0].operation == "EXECUTE_ACTION"
+  tools = await toolset.get_tools()
+  assert len(tools) == 1
+  assert tools[0].name == "list_issues_operation"
+  assert isinstance(tools[0], IntegrationConnectorTool)
+  assert tools[0]._action == "CustomAction"
+  assert tools[0]._operation == "EXECUTE_ACTION"
 
 
 def test_initialization_without_required_params(project, location):
   with pytest.raises(
       ValueError,
       match=(
-          "Either \\(integration and trigger\\) or \\(connection and"
+          "Invalid request, Either integration or \\(connection and"
           " \\(entity_operations or actions\\)\\) should be provided."
       ),
   ):
@@ -260,25 +366,16 @@ def test_initialization_without_required_params(project, location):
   with pytest.raises(
       ValueError,
       match=(
-          "Either \\(integration and trigger\\) or \\(connection and"
+          "Invalid request, Either integration or \\(connection and"
           " \\(entity_operations or actions\\)\\) should be provided."
       ),
   ):
-    ApplicationIntegrationToolset(project, location, integration="test")
+    ApplicationIntegrationToolset(project, location, triggers=["test"])
 
   with pytest.raises(
       ValueError,
       match=(
-          "Either \\(integration and trigger\\) or \\(connection and"
-          " \\(entity_operations or actions\\)\\) should be provided."
-      ),
-  ):
-    ApplicationIntegrationToolset(project, location, trigger="test")
-
-  with pytest.raises(
-      ValueError,
-      match=(
-          "Either \\(integration and trigger\\) or \\(connection and"
+          "Invalid request, Either integration or \\(connection and"
           " \\(entity_operations or actions\\)\\) should be provided."
       ),
   ):
@@ -306,19 +403,19 @@ def test_initialization_with_service_account_credentials(
       "universe_domain": "googleapis.com",
   })
   integration_name = "test-integration"
-  trigger_name = "test-trigger"
+  triggers = ["test-trigger"]
   toolset = ApplicationIntegrationToolset(
       project,
       location,
       integration=integration_name,
-      trigger=trigger_name,
+      triggers=triggers,
       service_account_json=service_account_json,
   )
   mock_integration_client.assert_called_once_with(
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       None,
       None,
       None,
@@ -339,12 +436,12 @@ def test_initialization_without_explicit_service_account_credentials(
     project, location, mock_integration_client, mock_openapi_toolset
 ):
   integration_name = "test-integration"
-  trigger_name = "test-trigger"
+  triggers = "test-trigger"
   toolset = ApplicationIntegrationToolset(
-      project, location, integration=integration_name, trigger=trigger_name
+      project, location, integration=integration_name, triggers=triggers
   )
   mock_integration_client.assert_called_once_with(
-      project, location, integration_name, trigger_name, None, None, None, None
+      project, location, integration_name, triggers, None, None, None, None
   )
   mock_openapi_toolset.assert_called_once()
   _, kwargs = mock_openapi_toolset.call_args
@@ -352,15 +449,16 @@ def test_initialization_without_explicit_service_account_credentials(
   assert kwargs["auth_credential"].service_account.use_default_credential
 
 
-def test_get_tools(
+@pytest.mark.asyncio
+async def test_get_tools(
     project, location, mock_integration_client, mock_openapi_toolset
 ):
   integration_name = "test-integration"
-  trigger_name = "test-trigger"
+  triggers = ["test-trigger"]
   toolset = ApplicationIntegrationToolset(
-      project, location, integration=integration_name, trigger=trigger_name
+      project, location, integration=integration_name, triggers=triggers
   )
-  tools = toolset.get_tools()
+  tools = await toolset.get_tools()
   assert len(tools) == 1
   assert isinstance(tools[0], rest_api_tool.RestApiTool)
   assert tools[0].name == "Test Tool"
@@ -386,10 +484,147 @@ def test_initialization_with_connection_details(
       location,
       connection=connection_name,
       entity_operations=entity_operations_list,
-      tool_name=tool_name,
+      tool_name_prefix=tool_name,
       tool_instructions=tool_instructions,
   )
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
-      tool_name,
-      tool_instructions
+      tool_name, tool_instructions
   )
+
+
+@pytest.mark.asyncio
+async def test_init_with_connection_and_custom_auth(
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_action_spec_parser,
+    connection_details_auth_override_enabled,
+):
+  connection_name = "test-connection"
+  actions_list = ["create", "delete"]
+  tool_name = "My Actions Tool"
+  tool_instructions = "Perform actions using this tool."
+  mock_connections_client.return_value.get_connection_details.return_value = (
+      connection_details_auth_override_enabled
+  )
+
+  oauth2_data_google_cloud = {
+      "type": "oauth2",
+      "flows": {
+          "authorizationCode": {
+              "authorizationUrl": "https://test-url/o/oauth2/auth",
+              "tokenUrl": "https://test-url/token",
+              "scopes": {
+                  "https://test-url/auth/test-scope": "test scope",
+                  "https://www.test-url.com/auth/test-scope2": "test scope 2",
+              },
+          }
+      },
+  }
+
+  oauth2_scheme = dict_to_auth_scheme(oauth2_data_google_cloud)
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="test-client-id",
+          client_secret="test-client-secret",
+      ),
+  )
+
+  toolset = ApplicationIntegrationToolset(
+      project,
+      location,
+      connection=connection_name,
+      actions=actions_list,
+      tool_name_prefix=tool_name,
+      tool_instructions=tool_instructions,
+      auth_scheme=oauth2_scheme,
+      auth_credential=auth_credential,
+  )
+  mock_integration_client.assert_called_once_with(
+      project, location, None, None, connection_name, None, actions_list, None
+  )
+  mock_connections_client.assert_called_once_with(
+      project, location, connection_name, None
+  )
+  mock_connections_client.return_value.get_connection_details.assert_called_once()
+  mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
+      tool_name, tool_instructions
+  )
+  mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
+  assert len(await toolset.get_tools()) == 1
+  assert (await toolset.get_tools())[0].name == "list_issues_operation"
+  assert isinstance((await toolset.get_tools())[0], IntegrationConnectorTool)
+  assert (await toolset.get_tools())[0]._action == "CustomAction"
+  assert (await toolset.get_tools())[0]._operation == "EXECUTE_ACTION"
+  assert (await toolset.get_tools())[0]._auth_scheme == oauth2_scheme
+  assert (await toolset.get_tools())[0]._auth_credential == auth_credential
+
+
+@pytest.mark.asyncio
+async def test_init_with_connection_with_auth_override_disabled_and_custom_auth(
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_action_spec_parser,
+    connection_details,
+):
+  connection_name = "test-connection"
+  actions_list = ["create", "delete"]
+  tool_name = "My Actions Tool"
+  tool_instructions = "Perform actions using this tool."
+  mock_connections_client.return_value.get_connection_details.return_value = (
+      connection_details
+  )
+
+  oauth2_data_google_cloud = {
+      "type": "oauth2",
+      "flows": {
+          "authorizationCode": {
+              "authorizationUrl": "https://test-url/o/oauth2/auth",
+              "tokenUrl": "https://test-url/token",
+              "scopes": {
+                  "https://test-url/auth/test-scope": "test scope",
+                  "https://www.test-url.com/auth/test-scope2": "test scope 2",
+              },
+          }
+      },
+  }
+
+  oauth2_scheme = dict_to_auth_scheme(oauth2_data_google_cloud)
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="test-client-id",
+          client_secret="test-client-secret",
+      ),
+  )
+
+  toolset = ApplicationIntegrationToolset(
+      project,
+      location,
+      connection=connection_name,
+      actions=actions_list,
+      tool_name_prefix=tool_name,
+      tool_instructions=tool_instructions,
+      auth_scheme=oauth2_scheme,
+      auth_credential=auth_credential,
+  )
+  mock_integration_client.assert_called_once_with(
+      project, location, None, None, connection_name, None, actions_list, None
+  )
+  mock_connections_client.assert_called_once_with(
+      project, location, connection_name, None
+  )
+  mock_connections_client.return_value.get_connection_details.assert_called_once()
+  mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
+      tool_name, tool_instructions
+  )
+  mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
+  assert len(await toolset.get_tools()) == 1
+  assert (await toolset.get_tools())[0].name == "list_issues_operation"
+  assert isinstance((await toolset.get_tools())[0], IntegrationConnectorTool)
+  assert (await toolset.get_tools())[0]._action == "CustomAction"
+  assert (await toolset.get_tools())[0]._operation == "EXECUTE_ACTION"
+  assert not (await toolset.get_tools())[0]._auth_scheme
+  assert not (await toolset.get_tools())[0]._auth_credential
