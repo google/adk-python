@@ -69,7 +69,7 @@ class LoadMemoryTool(FunctionTool):
                     type=types.Type.STRING,
                 )
             },
-            required=['query']
+            required=['query'],
         ),
     )
 
