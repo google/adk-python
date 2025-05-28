@@ -55,7 +55,7 @@ def run(
 
   Args:
     agent_folder: The folder (absolute path) containing the agent source code.
-    provider: Target deployment platform (gcp, docker, etc).
+    provider: Target deployment platform (cloud_run, docker, etc).
     project: Google Cloud project id.
     region: Google Cloud region.
     service_name: The service name in Cloud Run.
