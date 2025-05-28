@@ -12,5 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: date+base_cl
-__version__ = "1.1.0"
+from . import agent
