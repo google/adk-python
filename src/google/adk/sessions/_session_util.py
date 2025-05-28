@@ -11,25 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Utility functions for session service."""
+from __future__ import annotations
 
-import base64
 from typing import Any
 from typing import Optional
 
 from google.genai import types
-
-
-def encode_content(content: types.Content):
-  """Encodes a content object to a JSON dictionary."""
-  encoded_content = content.model_dump(exclude_none=True)
-  for p in encoded_content["parts"]:
-    if "inline_data" in p:
-      p["inline_data"]["data"] = base64.b64encode(
-          p["inline_data"]["data"]
-      ).decode("utf-8")
-  return encoded_content
 
 
 def decode_content(
@@ -38,7 +26,13 @@ def decode_content(
   """Decodes a content object from a JSON dictionary."""
   if not content:
     return None
-  for p in content["parts"]:
-    if "inline_data" in p:
-      p["inline_data"]["data"] = base64.b64decode(p["inline_data"]["data"])
   return types.Content.model_validate(content)
+
+
+def decode_grounding_metadata(
+    grounding_metadata: Optional[dict[str, Any]],
+) -> Optional[types.GroundingMetadata]:
+  """Decodes a grounding metadata object from a JSON dictionary."""
+  if not grounding_metadata:
+    return None
+  return types.GroundingMetadata.model_validate(grounding_metadata)

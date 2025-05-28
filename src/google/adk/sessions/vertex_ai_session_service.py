@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
@@ -18,6 +20,7 @@ from typing import Any
 from typing import Optional
 
 from dateutil import parser
+from google.genai import types
 from typing_extensions import override
 
 from google import genai
@@ -256,7 +259,7 @@ def _convert_event_to_json(event: Event):
   }
   if event.grounding_metadata:
     metadata_json['grounding_metadata'] = event.grounding_metadata.model_dump(
-        exclude_none=True
+        exclude_none=True, mode='json'
     )
 
   event_json = {
@@ -284,7 +287,9 @@ def _convert_event_to_json(event: Event):
     }
     event_json['actions'] = actions_json
   if event.content:
-    event_json['content'] = _session_util.encode_content(event.content)
+    event_json['content'] = event.content.model_dump(
+        exclude_none=True, mode='json'
+    )
   if event.error_code:
     event_json['error_code'] = event.error_code
   if event.error_message:
@@ -325,8 +330,8 @@ def _from_api_event(api_event: dict) -> Event:
     event.turn_complete = api_event['eventMetadata'].get('turnComplete', None)
     event.interrupted = api_event['eventMetadata'].get('interrupted', None)
     event.branch = api_event['eventMetadata'].get('branch', None)
-    event.grounding_metadata = api_event['eventMetadata'].get(
-        'groundingMetadata', None
+    event.grounding_metadata = _session_util.decode_grounding_metadata(
+        api_event['eventMetadata'].get('groundingMetadata', None)
     )
     event.long_running_tool_ids = (
         set(long_running_tool_ids_list) if long_running_tool_ids_list else None
