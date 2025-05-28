@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -39,9 +41,9 @@ _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 def _convert_invocation_to_pydantic_schema(
     invocation_in_json_format: dict[str, Any],
 ) -> Invocation:
-  """Converts an invocation from old json format to new Pydantic Schema"""
+  """Converts an invocation from old json format to new Pydantic Schema."""
   query = invocation_in_json_format["query"]
-  reference = invocation_in_json_format["reference"]
+  reference = invocation_in_json_format.get("reference", "")
   expected_tool_use = []
   expected_intermediate_agent_responses = []
 
