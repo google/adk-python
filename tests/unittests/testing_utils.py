@@ -203,7 +203,7 @@ class InMemoryRunner:
     async for event in self.runner.run_async(
         user_id=self.session.user_id,
         session_id=self.session.id,
-        new_message=new_message,
+        new_message=get_user_content(new_message),
     ):
       events.append(event)
     return events
