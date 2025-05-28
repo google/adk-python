@@ -21,6 +21,7 @@ from typing import Any
 from typing import Optional
 import uuid
 
+from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
@@ -421,7 +422,9 @@ class DatabaseSessionService(BaseSessionService):
               actions=e.actions,
               timestamp=e.timestamp.timestamp(),
               long_running_tool_ids=e.long_running_tool_ids,
-              grounding_metadata=e.grounding_metadata,
+              grounding_metadata=_session_util.decode_grounding_metadata(
+                  e.grounding_metadata
+              ),
               partial=e.partial,
               turn_complete=e.turn_complete,
               error_code=e.error_code,
@@ -536,7 +539,6 @@ class DatabaseSessionService(BaseSessionService):
           user_id=session.user_id,
           timestamp=datetime.fromtimestamp(event.timestamp),
           long_running_tool_ids=event.long_running_tool_ids,
-          grounding_metadata=event.grounding_metadata,
           partial=event.partial,
           turn_complete=event.turn_complete,
           error_code=event.error_code,
@@ -544,7 +546,13 @@ class DatabaseSessionService(BaseSessionService):
           interrupted=event.interrupted,
       )
       if event.content:
-        storage_event.content = _session_util.encode_content(event.content)
+        storage_event.content = event.content.model_dump(
+            exclude_none=True, mode="json"
+        )
+      if event.grounding_metadata:
+        storage_event.grounding_metadata = event.grounding_metadata.model_dump(
+            exclude_none=True, mode="json"
+        )
 
       session_factory.add(storage_event)
 
