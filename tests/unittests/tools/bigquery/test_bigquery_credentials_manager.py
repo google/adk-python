@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import json
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -98,12 +99,12 @@ class TestBigQueryCredentialsManager:
     manager.credentials_config.credentials = None
 
     # Create mock cached credentials JSON that would be stored in cache
-    mock_cached_creds_json = {
+    mock_cached_creds_json = json.dumps({
         "token": "cached_token",
         "refresh_token": "cached_refresh_token",
         "client_id": "test_client_id",
         "client_secret": "test_client_secret",
-    }
+    })
 
     # Set up the tool context state to contain cached credentials
     mock_tool_context.state[BIGQUERY_TOKEN_CACHE_KEY] = mock_cached_creds_json
@@ -120,7 +121,7 @@ class TestBigQueryCredentialsManager:
 
       # Verify credentials were created from cached JSON
       mock_from_json.assert_called_once_with(
-          mock_cached_creds_json, manager.credentials_config.scopes
+          json.loads(mock_cached_creds_json), manager.credentials_config.scopes
       )
       # Verify loaded credentials were not cached into manager
       assert manager.credentials_config.credentials is None
@@ -160,19 +161,19 @@ class TestBigQueryCredentialsManager:
     manager.credentials_config.credentials = None
 
     # Create mock cached credentials JSON
-    mock_cached_creds_json = {
+    mock_cached_creds_json = json.dumps({
         "token": "expired_token",
         "refresh_token": "valid_refresh_token",
         "client_id": "test_client_id",
         "client_secret": "test_client_secret",
-    }
+    })
 
-    mock_refreshed_creds_json = {
+    mock_refreshed_creds_json = json.dumps({
         "token": "new_token",
         "refresh_token": "valid_refresh_token",
         "client_id": "test_client_id",
         "client_secret": "test_client_secret",
-    }
+    })
 
     # Set up the tool context state to contain cached credentials
     mock_tool_context.state[BIGQUERY_TOKEN_CACHE_KEY] = mock_cached_creds_json
@@ -200,7 +201,7 @@ class TestBigQueryCredentialsManager:
 
       # Verify credentials were created from cached JSON
       mock_from_json.assert_called_once_with(
-          mock_cached_creds_json, manager.credentials_config.scopes
+          json.loads(mock_cached_creds_json), manager.credentials_config.scopes
       )
       # Verify refresh was attempted and succeeded
       mock_cached_creds.refresh.assert_called_once()
@@ -209,7 +210,9 @@ class TestBigQueryCredentialsManager:
       # Verify refreshed credentials were cached
       assert (
           "new_token"
-          == mock_tool_context.state[BIGQUERY_TOKEN_CACHE_KEY]["token"]
+          == json.loads(mock_tool_context.state[BIGQUERY_TOKEN_CACHE_KEY])[
+              "token"
+          ]
       )
       assert result == mock_cached_creds
 

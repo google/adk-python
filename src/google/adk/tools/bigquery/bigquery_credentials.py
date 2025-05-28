@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import List
 from typing import Optional
 
@@ -121,7 +122,7 @@ class BigQueryCredentialsManager:
     creds_json = tool_context.state.get(BIGQUERY_TOKEN_CACHE_KEY, None)
     creds = (
         Credentials.from_authorized_user_info(
-            creds_json, self.credentials_config.scopes
+            json.loads(creds_json), self.credentials_config.scopes
         )
         if creds_json
         else None
