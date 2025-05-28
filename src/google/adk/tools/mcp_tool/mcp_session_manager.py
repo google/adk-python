@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 from contextlib import AsyncExitStack
+from datetime import timedelta
 import functools
 import logging
 import sys
-from datetime import timedelta
 from typing import Any
 from typing import Optional
 from typing import TextIO
+
 import anyio
 from pydantic import BaseModel
 
