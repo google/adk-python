@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import copy
 from datetime import datetime
 import json
@@ -512,15 +514,16 @@ class DatabaseSessionService(BaseSessionService):
               _extract_state_delta(event.actions.state_delta)
           )
 
-      # Merge state
-      app_state.update(app_state_delta)
-      user_state.update(user_state_delta)
-      session_state.update(session_state_delta)
-
-      # Update storage
-      storage_app_state.state = app_state
-      storage_user_state.state = user_state
-      storage_session.state = session_state
+      # Merge state and update storage
+      if app_state_delta:
+        app_state.update(app_state_delta)
+        storage_app_state.state = app_state
+      if user_state_delta:
+        user_state.update(user_state_delta)
+        storage_user_state.state = user_state
+      if session_state_delta:
+        session_state.update(session_state_delta)
+        storage_session.state = session_state
 
       storage_event = StorageEvent(
           id=event.id,

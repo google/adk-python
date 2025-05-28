@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import asyncio
 import collections
 from contextlib import asynccontextmanager
@@ -84,6 +86,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 @click.group(context_settings={"max_content_width": 240})
+@click.version_option(version.__version__)
 def main():
   """Agent Development Kit CLI tools."""
   pass
