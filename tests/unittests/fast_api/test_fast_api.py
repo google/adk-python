@@ -14,10 +14,7 @@
 
 import asyncio
 import logging
-import os
-import sys
 import time
-import types as ptypes
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -25,7 +22,6 @@ from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.cli.fast_api import get_fast_api_app
-from google.adk.cli.utils import envs
 from google.adk.events import Event
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
@@ -48,22 +44,7 @@ class DummyAgent(BaseAgent):
     self.sub_agents = []
 
 
-# Set up dummy module and add to sys.modules
-dummy_module = ptypes.ModuleType("test_agent")
-dummy_module.agent = ptypes.SimpleNamespace(
-    root_agent=DummyAgent(name="dummy_agent")
-)
-sys.modules["test_app"] = dummy_module
-
-# Try to load environment variables, with a fallback for testing
-try:
-  envs.load_dotenv_for_agent("test_app", ".")
-except Exception as e:
-  logger.warning(f"Could not load environment variables: {e}")
-  # Create a basic .env file if needed
-  if not os.path.exists(".env"):
-    with open(".env", "w") as f:
-      f.write("# Test environment variables\n")
+root_agent = DummyAgent(name="dummy_agent")
 
 
 # Create sample events that our mocked runner will return
@@ -148,6 +129,20 @@ def test_session_info():
       "user_id": "test_user",
       "session_id": "test_session",
   }
+
+
+@pytest.fixture
+def mock_agent_loader():
+
+  class MockAgentLoader:
+
+    def __init__(self, agents_dir: str):
+      pass
+
+    def load_agent(self, app_name):
+      return root_agent
+
+  return MockAgentLoader(".")
 
 
 @pytest.fixture
@@ -287,28 +282,37 @@ def mock_memory_service():
 
 
 @pytest.fixture
-def test_app(mock_session_service, mock_artifact_service, mock_memory_service):
+def test_app(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
   """Create a TestClient for the FastAPI app without starting a server."""
 
   # Patch multiple services and signal handlers
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.InMemorySessionService",  # Changed this line
+          "google.adk.cli.fast_api.InMemorySessionService",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryArtifactService",  # Make consistent
+          "google.adk.cli.fast_api.InMemoryArtifactService",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryMemoryService",  # Make consistent
+          "google.adk.cli.fast_api.InMemoryMemoryService",
           return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
       ),
   ):
     # Get the FastAPI app, but don't actually run it
     app = get_fast_api_app(
-        agent_dir=".", web=True, session_db_url="", allow_origins=["*"]
+        agents_dir=".", web=True, session_db_url="", allow_origins=["*"]
     )
 
     # Create a TestClient that doesn't start a real server

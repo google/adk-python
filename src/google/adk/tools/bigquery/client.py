@@ -12,5 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: date+base_cl
-__version__ = "1.1.0"
+from __future__ import annotations
+
+import google.api_core.client_info
+from google.cloud import bigquery
+from google.oauth2.credentials import Credentials
+
+USER_AGENT = "adk-bigquery-tool"
+
+
+def get_bigquery_client(*, credentials: Credentials) -> bigquery.Client:
+  """Get a BigQuery client."""
+
+  client_info = google.api_core.client_info.ClientInfo(user_agent=USER_AGENT)
+
+  bigquery_client = bigquery.Client(
+      credentials=credentials, client_info=client_info
+  )
+
+  return bigquery_client

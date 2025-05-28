@@ -355,7 +355,7 @@ def cli_eval(
 
   # Write eval set results.
   local_eval_set_results_manager = LocalEvalSetResultsManager(
-      agent_dir=os.path.dirname(agent_module_file_path)
+      agents_dir=os.path.dirname(agent_module_file_path)
   )
   eval_set_id_to_eval_results = collections.defaultdict(list)
   for eval_case_result in eval_results:
@@ -500,7 +500,7 @@ def cli_web(
     )
 
   app = get_fast_api_app(
-      agent_dir=agents_dir,
+      agents_dir=agents_dir,
       session_db_url=session_db_url,
       allow_origins=allow_origins,
       web=True,
@@ -601,7 +601,7 @@ def cli_api_server(
 
   config = uvicorn.Config(
       get_fast_api_app(
-          agent_dir=agents_dir,
+          agents_dir=agents_dir,
           session_db_url=session_db_url,
           allow_origins=allow_origins,
           web=False,
