@@ -136,7 +136,7 @@ def _safe_json_serialize(obj) -> str:
 
   try:
     # Try direct JSON serialization first
-    return json.dumps(obj)
+    return json.dumps(obj, ensure_ascii=False)
   except (TypeError, OverflowError):
     return str(obj)
 
@@ -186,7 +186,7 @@ def _content_to_message_param(
                 id=part.function_call.id,
                 function=Function(
                     name=part.function_call.name,
-                    arguments=json.dumps(part.function_call.args),
+                    arguments=_safe_json_serialize(part.function_call.args),
                 ),
             )
         )
