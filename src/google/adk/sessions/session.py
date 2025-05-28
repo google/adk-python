@@ -14,6 +14,7 @@
 
 from typing import Any
 
+from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -37,7 +38,10 @@ class Session(BaseModel):
   model_config = ConfigDict(
       extra='forbid',
       arbitrary_types_allowed=True,
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
   )
+  """The pydantic model config."""
 
   id: str
   """The unique identifier of the session."""

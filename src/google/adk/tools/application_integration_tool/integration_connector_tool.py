@@ -12,21 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import logging
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import Union
 
-from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
-from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
 from .. import BaseTool
+from ...auth.auth_credential import AuthCredential
+from ...auth.auth_schemes import AuthScheme
+from ..openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
+from ..openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
+from ..openapi_tool.openapi_spec_parser.tool_auth_handler import ToolAuthHandler
 from ..tool_context import ToolContext
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class IntegrationConnectorTool(BaseTool):
@@ -56,6 +59,7 @@ class IntegrationConnectorTool(BaseTool):
       'entity',
       'operation',
       'action',
+      'dynamic_auth_config',
   ]
 
   OPTIONAL_FIELDS = [
@@ -75,6 +79,8 @@ class IntegrationConnectorTool(BaseTool):
       operation: str,
       action: str,
       rest_api_tool: RestApiTool,
+      auth_scheme: Optional[Union[AuthScheme, str]] = None,
+      auth_credential: Optional[Union[AuthCredential, str]] = None,
   ):
     """Initializes the ApplicationIntegrationTool.
 
@@ -101,18 +107,20 @@ class IntegrationConnectorTool(BaseTool):
         name=name,
         description=description,
     )
-    self.connection_name = connection_name
-    self.connection_host = connection_host
-    self.connection_service_name = connection_service_name
-    self.entity = entity
-    self.operation = operation
-    self.action = action
-    self.rest_api_tool = rest_api_tool
+    self._connection_name = connection_name
+    self._connection_host = connection_host
+    self._connection_service_name = connection_service_name
+    self._entity = entity
+    self._operation = operation
+    self._action = action
+    self._rest_api_tool = rest_api_tool
+    self._auth_scheme = auth_scheme
+    self._auth_credential = auth_credential
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
     """Returns the function declaration in the Gemini Schema format."""
-    schema_dict = self.rest_api_tool._operation_parser.get_json_schema()
+    schema_dict = self._rest_api_tool._operation_parser.get_json_schema()
     for field in self.EXCLUDE_FIELDS:
       if field in schema_dict['properties']:
         del schema_dict['properties'][field]
@@ -126,34 +134,69 @@ class IntegrationConnectorTool(BaseTool):
     )
     return function_decl
 
+  def _prepare_dynamic_euc(self, auth_credential: AuthCredential) -> str:
+    if (
+        auth_credential
+        and auth_credential.http
+        and auth_credential.http.credentials
+        and auth_credential.http.credentials.token
+    ):
+      return auth_credential.http.credentials.token
+    return None
+
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
   ) -> Dict[str, Any]:
-    args['connection_name'] = self.connection_name
-    args['service_name'] = self.connection_service_name
-    args['host'] = self.connection_host
-    args['entity'] = self.entity
-    args['operation'] = self.operation
-    args['action'] = self.action
+
+    tool_auth_handler = ToolAuthHandler.from_tool_context(
+        tool_context, self._auth_scheme, self._auth_credential
+    )
+    auth_result = tool_auth_handler.prepare_auth_credentials()
+
+    if auth_result.state == 'pending':
+      return {
+          'pending': True,
+          'message': 'Needs your authorization to access your data.',
+      }
+
+    # Attach parameters from auth into main parameters list
+    if auth_result.auth_credential:
+      # Attach parameters from auth into main parameters list
+      auth_credential_token = self._prepare_dynamic_euc(
+          auth_result.auth_credential
+      )
+      if auth_credential_token:
+        args['dynamic_auth_config'] = {
+            'oauth2_auth_code_flow.access_token': auth_credential_token
+        }
+      else:
+        args['dynamic_auth_config'] = {'oauth2_auth_code_flow.access_token': {}}
+
+    args['connection_name'] = self._connection_name
+    args['service_name'] = self._connection_service_name
+    args['host'] = self._connection_host
+    args['entity'] = self._entity
+    args['operation'] = self._operation
+    args['action'] = self._action
     logger.info('Running tool: %s with args: %s', self.name, args)
-    return self.rest_api_tool.call(args=args, tool_context=tool_context)
+    return self._rest_api_tool.call(args=args, tool_context=tool_context)
 
   def __str__(self):
     return (
         f'ApplicationIntegrationTool(name="{self.name}",'
         f' description="{self.description}",'
-        f' connection_name="{self.connection_name}", entity="{self.entity}",'
-        f' operation="{self.operation}", action="{self.action}")'
+        f' connection_name="{self._connection_name}", entity="{self._entity}",'
+        f' operation="{self._operation}", action="{self._action}")'
     )
 
   def __repr__(self):
     return (
         f'ApplicationIntegrationTool(name="{self.name}",'
         f' description="{self.description}",'
-        f' connection_name="{self.connection_name}",'
-        f' connection_host="{self.connection_host}",'
-        f' connection_service_name="{self.connection_service_name}",'
-        f' entity="{self.entity}", operation="{self.operation}",'
-        f' action="{self.action}", rest_api_tool={repr(self.rest_api_tool)})'
+        f' connection_name="{self._connection_name}",'
+        f' connection_host="{self._connection_host}",'
+        f' connection_service_name="{self._connection_service_name}",'
+        f' entity="{self._entity}", operation="{self._operation}",'
+        f' action="{self._action}", rest_api_tool={repr(self._rest_api_tool)})'
     )

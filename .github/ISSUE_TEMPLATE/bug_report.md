@@ -7,7 +7,7 @@ assignees: ''
 
 ---
 
-** Please make sure you read the contribution guide and file the issues in the rigth place. **
+** Please make sure you read the contribution guide and file the issues in the right place. **
 [Contribution guide.](https://google.github.io/adk-docs/contributing-guide/)
 
 **Describe the bug**

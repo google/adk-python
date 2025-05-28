@@ -1,12 +1,32 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 from contextlib import AsyncExitStack
 import functools
+import logging
 import sys
-from typing import Any, TextIO
+from typing import Any
+from typing import Optional
+from typing import TextIO
+
 import anyio
 from pydantic import BaseModel
 
 try:
-  from mcp import ClientSession, StdioServerParameters
+  from mcp import ClientSession
+  from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
 except ImportError as e:
@@ -19,6 +39,8 @@ except ImportError as e:
     ) from e
   else:
     raise e
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class SseServerParams(BaseModel):
@@ -48,29 +70,27 @@ def retry_on_closed_resource(async_reinit_func_name: str):
 
   Usage:
   class MCPTool:
-    ...
-    async def create_session(self):
-      self.session = ...
+      ...
+      async def create_session(self):
+          self.session = ...
 
-    @retry_on_closed_resource('create_session')
-    async def use_session(self):
-      await self.session.call_tool()
+      @retry_on_closed_resource('create_session')
+      async def use_session(self):
+          await self.session.call_tool()
 
   Args:
-    async_reinit_func_name: The name of the async function to recreate session.
+      async_reinit_func_name: The name of the async function to recreate session.
 
   Returns:
-    The decorated function.
+      The decorated function.
   """
 
   def decorator(func):
-    @functools.wraps(
-        func
-    )  # Preserves original function metadata (name, docstring)
+    @functools.wraps(func)  # Preserves original function metadata
     async def wrapper(self, *args, **kwargs):
       try:
         return await func(self, *args, **kwargs)
-      except anyio.ClosedResourceError:
+      except anyio.ClosedResourceError as close_err:
         try:
           if hasattr(self, async_reinit_func_name) and callable(
               getattr(self, async_reinit_func_name)
@@ -82,7 +102,7 @@ def retry_on_closed_resource(async_reinit_func_name: str):
                 f'Function {async_reinit_func_name} does not exist in decorated'
                 ' class. Please check the function name in'
                 ' retry_on_closed_resource decorator.'
-            )
+            ) from close_err
         except Exception as reinit_err:
           raise RuntimeError(
               f'Error reinitializing: {reinit_err}'
@@ -104,73 +124,78 @@ class MCPSessionManager:
   def __init__(
       self,
       connection_params: StdioServerParameters | SseServerParams,
-      exit_stack: AsyncExitStack,
       errlog: TextIO = sys.stderr,
-  ) -> ClientSession:
+  ):
     """Initializes the MCP session manager.
-
-    Example usage:
-    ```
-    mcp_session_manager = MCPSessionManager(
-        connection_params=connection_params,
-        exit_stack=exit_stack,
-    )
-    session = await mcp_session_manager.create_session()
-    ```
 
     Args:
         connection_params: Parameters for the MCP connection (Stdio or SSE).
-        exit_stack: AsyncExitStack to manage the session lifecycle.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
     """
-    self.connection_params = connection_params
-    self.exit_stack = exit_stack
-    self.errlog = errlog
+    self._connection_params = connection_params
+    self._errlog = errlog
+    # Each session manager maintains its own exit stack for proper cleanup
+    self._exit_stack: Optional[AsyncExitStack] = None
+    self._session: Optional[ClientSession] = None
 
   async def create_session(self) -> ClientSession:
-    return await MCPSessionManager.initialize_session(
-        connection_params=self.connection_params,
-        exit_stack=self.exit_stack,
-        errlog=self.errlog,
-    )
-
-  @classmethod
-  async def initialize_session(
-      cls,
-      *,
-      connection_params: StdioServerParameters | SseServerParams,
-      exit_stack: AsyncExitStack,
-      errlog: TextIO = sys.stderr,
-  ) -> ClientSession:
-    """Initializes an MCP client session.
-
-    Args:
-        connection_params: Parameters for the MCP connection (Stdio or SSE).
-        exit_stack: AsyncExitStack to manage the session lifecycle.
-        errlog: (Optional) TextIO stream for error logging. Use only for
-          initializing a local stdio MCP session.
+    """Creates and initializes an MCP client session.
 
     Returns:
         ClientSession: The initialized MCP client session.
     """
-    if isinstance(connection_params, StdioServerParameters):
-      client = stdio_client(server=connection_params, errlog=errlog)
-    elif isinstance(connection_params, SseServerParams):
-      client = sse_client(
-          url=connection_params.url,
-          headers=connection_params.headers,
-          timeout=connection_params.timeout,
-          sse_read_timeout=connection_params.sse_read_timeout,
-      )
-    else:
-      raise ValueError(
-          'Unable to initialize connection. Connection should be'
-          ' StdioServerParameters or SseServerParams, but got'
-          f' {connection_params}'
-      )
+    if self._session is not None:
+      return self._session
 
-    transports = await exit_stack.enter_async_context(client)
-    session = await exit_stack.enter_async_context(ClientSession(*transports))
-    await session.initialize()
-    return session
+    # Create a new exit stack for this session
+    self._exit_stack = AsyncExitStack()
+
+    try:
+      if isinstance(self._connection_params, StdioServerParameters):
+        client = stdio_client(
+            server=self._connection_params, errlog=self._errlog
+        )
+      elif isinstance(self._connection_params, SseServerParams):
+        client = sse_client(
+            url=self._connection_params.url,
+            headers=self._connection_params.headers,
+            timeout=self._connection_params.timeout,
+            sse_read_timeout=self._connection_params.sse_read_timeout,
+        )
+      else:
+        raise ValueError(
+            'Unable to initialize connection. Connection should be'
+            ' StdioServerParameters or SseServerParams, but got'
+            f' {self._connection_params}'
+        )
+
+      transports = await self._exit_stack.enter_async_context(client)
+      session = await self._exit_stack.enter_async_context(
+          ClientSession(*transports)
+      )
+      await session.initialize()
+
+      self._session = session
+      return session
+
+    except Exception:
+      # If session creation fails, clean up the exit stack
+      if self._exit_stack:
+        await self._exit_stack.aclose()
+        self._exit_stack = None
+      raise
+
+  async def close(self):
+    """Closes the session and cleans up resources."""
+    if self._exit_stack:
+      try:
+        await self._exit_stack.aclose()
+      except Exception as e:
+        # Log the error but don't re-raise to avoid blocking shutdown
+        print(
+            f'Warning: Error during MCP session cleanup: {e}', file=self._errlog
+        )
+      finally:
+        self._exit_stack = None
+        self._session = None
