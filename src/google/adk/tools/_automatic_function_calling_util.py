@@ -319,12 +319,11 @@ def from_function_with_options(
         type='OBJECT',
         properties=parameters_properties,
     )
-    if variant == 'VERTEX_AI':
-      declaration.parameters.required = (
-          function_parameter_parse_util._get_required_fields(
-              declaration.parameters
-          )
-      )
+    declaration.parameters.required = (
+        function_parameter_parse_util._get_required_fields(
+            declaration.parameters
+        )
+    )
   if not variant == 'VERTEX_AI':
     return declaration
 
