@@ -98,11 +98,11 @@ question to that agent. When transferring, do not generate any text other than
 the function call.
 """
 
-  if agent.parent_agent:
+  if agent.parent_agent and not agent.disallow_transfer_to_parent:
     si += f"""
 Your parent agent is {agent.parent_agent.name}. If neither the other agents nor
 you are best for answering the question according to the descriptions, transfer
-to your parent agent. If you don't have parent agent, try answer by yourself.
+to your parent agent.
 """
   return si
 
