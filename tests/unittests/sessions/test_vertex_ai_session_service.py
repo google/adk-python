@@ -111,7 +111,7 @@ MOCK_SESSION = Session(
 
 
 SESSION_REGEX = r'^reasoningEngines/([^/]+)/sessions/([^/]+)$'
-SESSIONS_REGEX = r'^reasoningEngines/([^/]+)/sessions.*user_id=%22([^%]+)%22'
+SESSIONS_REGEX = r'^reasoningEngines/([^/]+)/sessions\?filter=user_id=%22([^%]+)%22.*$'
 EVENTS_REGEX = r'^reasoningEngines/([^/]+)/sessions/([^/]+)/events$'
 LRO_REGEX = r'^operations/([^/]+)$'
 
@@ -136,7 +136,7 @@ class MockApiClient:
           if session_id in self.session_dict:
             return self.session_dict[session_id]
           else:
-            raise ValueError(f'Session not found: {session_id}.')
+            raise ValueError(f'Session not found: {session_id}')
       elif re.match(SESSIONS_REGEX, path):
         match = re.match(SESSIONS_REGEX, path)
         return {
