@@ -343,7 +343,9 @@ def from_function_with_options(
   )
   # This snippet catches the case when type hints are stored as strings
   if isinstance(return_value.annotation, str):
-    return_value = return_value.replace(annotation=typing.get_type_hints(func)["return"])
+    return_value = return_value.replace(
+        annotation=typing.get_type_hints(func)['return']
+    )
 
   declaration.response = (
       _function_parameter_parse_util._parse_schema_from_parameter(
