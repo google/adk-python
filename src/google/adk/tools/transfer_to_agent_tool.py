@@ -19,7 +19,7 @@ def transfer_to_agent(agent_name: str, tool_context: ToolContext):
   """Transfer the question to another agent.
 
   This tool hands off control to another agent when it's more suitable to 
-  answer users' question according to the other agent's description.
+  answer the user's question according to the agent's description.
   
   Args:
     agent_name: the agent name to transfer to.
