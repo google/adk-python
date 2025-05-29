@@ -205,13 +205,14 @@ class InMemoryRunner:
       events.append(event)
     return events
 
-  def run_live(self, live_request_queue: LiveRequestQueue) -> list[Event]:
+  def run_live(self, live_request_queue: LiveRequestQueue, run_config: RunConfig = None) -> list[Event]:
     collected_responses = []
 
     async def consume_responses(session: Session):
       run_res = self.runner.run_live(
           session=session,
           live_request_queue=live_request_queue,
+          run_config=run_config or RunConfig(),
       )
 
       async for response in run_res:
@@ -307,7 +308,7 @@ class MockLlmConnection(BaseLlmConnection):
   async def send(self, data):
     pass
 
-  async def send_realtime(self, blob: types.Blob):
+  async def send_realtime(self, blob: types.Blob, automatic_activity_detection: bool = True):
     pass
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:

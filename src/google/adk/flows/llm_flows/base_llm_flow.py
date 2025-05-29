@@ -105,7 +105,7 @@ class BaseLlmFlow(ABC):
             trace_send_data(invocation_context, event_id, llm_request.contents)
 
       send_task = asyncio.create_task(
-          self._send_to_model(llm_connection, invocation_context)
+          self._send_to_model(llm_connection, invocation_context, llm_request)
       )
 
       try:
@@ -160,6 +160,7 @@ class BaseLlmFlow(ABC):
       self,
       llm_connection: BaseLlmConnection,
       invocation_context: InvocationContext,
+      llm_request: LlmRequest,
   ):
     """Sends data to model."""
     while True:
@@ -200,7 +201,10 @@ class BaseLlmFlow(ABC):
           invocation_context.transcription_cache.append(
               TranscriptionEntry(role='user', data=live_request.blob)
           )
-        await llm_connection.send_realtime(live_request.blob)
+        # if the automatic activity detection is disabled, then we need to send the activity start and end events to the model
+        realtime_input_config = llm_request.live_connect_config.realtime_input_config
+        disabled_vad = realtime_input_config is not None and realtime_input_config.automatic_activity_detection is not None and realtime_input_config.automatic_activity_detection.disabled is True
+        await llm_connection.send_realtime(live_request.blob, automatic_activity_detection=not disabled_vad)
       if live_request.content:
         await llm_connection.send_content(live_request.content)
 
