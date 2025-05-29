@@ -136,7 +136,7 @@ def _safe_json_serialize(obj) -> str:
 
   try:
     # Try direct JSON serialization first
-    return json.dumps(obj)
+    return json.dumps(obj, ensure_ascii=False)
   except (TypeError, OverflowError):
     return str(obj)
 
@@ -186,7 +186,7 @@ def _content_to_message_param(
                 id=part.function_call.id,
                 function=Function(
                     name=part.function_call.name,
-                    arguments=json.dumps(part.function_call.args),
+                    arguments=_safe_json_serialize(part.function_call.args),
                 ),
             )
         )
@@ -477,7 +477,7 @@ def _get_completion_inputs(
     llm_request: The LlmRequest to convert.
 
   Returns:
-    The litellm inputs (message list and tool dictionary).
+    The litellm inputs (message list, tool dictionary and response format).
   """
   messages = []
   for content in llm_request.contents or []:
@@ -506,7 +506,13 @@ def _get_completion_inputs(
         _function_declaration_to_tool_param(tool)
         for tool in llm_request.config.tools[0].function_declarations
     ]
-  return messages, tools
+
+  response_format = None
+
+  if llm_request.config.response_schema:
+    response_format = llm_request.config.response_schema
+
+  return messages, tools, response_format
 
 
 def _build_function_declaration_log(
@@ -643,12 +649,13 @@ class LiteLlm(BaseLlm):
     self._maybe_append_user_content(llm_request)
     logger.debug(_build_request_log(llm_request))
 
-    messages, tools = _get_completion_inputs(llm_request)
+    messages, tools, response_format = _get_completion_inputs(llm_request)
 
     completion_args = {
         "model": self.model,
         "messages": messages,
         "tools": tools,
+        "response_format": response_format,
     }
     completion_args.update(self._additional_args)
 
