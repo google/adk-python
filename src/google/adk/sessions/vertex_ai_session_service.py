@@ -16,8 +16,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from typing import Any
 from typing import Optional
+import urllib.parse
 
 from dateutil import parser
 from google.genai import types
@@ -186,10 +188,15 @@ class VertexAiSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
+    path = f"reasoningEngines/{reasoning_engine_id}/sessions"
+    if user_id:
+      parsed_user_id = urllib.parse.quote(f'''"{user_id}"''', safe="")
+      path = path + f"?filter=user_id={parsed_user_id}"
+
     api_client = _get_api_client(self.project, self.location)
     api_response = await api_client.async_request(
         http_method='GET',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions?filter=user_id={user_id}',
+        path=path,
         request_dict={},
     )
 
