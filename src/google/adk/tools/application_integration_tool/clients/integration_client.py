@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import json
-from typing import List, Optional
+from typing import List
+from typing import Optional
+
 from google.adk.tools.application_integration_tool.clients.connections_client import ConnectionsClient
 import google.auth
 from google.auth import default as default_service_credential

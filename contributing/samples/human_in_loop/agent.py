@@ -22,14 +22,20 @@ from google.genai import types
 
 def reimburse(purpose: str, amount: float) -> str:
   """Reimburse the amount of money to the employee."""
-  return {'status': 'ok'}
+  return {
+      'status': 'ok',
+  }
 
 
 def ask_for_approval(
     purpose: str, amount: float, tool_context: ToolContext
 ) -> dict[str, Any]:
   """Ask for approval for the reimbursement."""
-  return {'status': 'pending'}
+  return {
+      'status': 'pending',
+      'amount': amount,
+      'ticketId': 'reimbursement-ticket-001',
+  }
 
 
 root_agent = Agent(

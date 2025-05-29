@@ -21,10 +21,10 @@ from google.genai import types
 from pydantic import model_validator
 from typing_extensions import override
 
+from . import _automatic_function_calling_util
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
 from ..sessions.in_memory_session_service import InMemorySessionService
-from . import _automatic_function_calling_util
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
