@@ -16,18 +16,12 @@ from .tool_context import ToolContext
 
 
 def transfer_to_agent(agent_name: str, tool_context: ToolContext):
-  """Transfer the current request to another agent.
+  """Transfer the question to another agent.
 
-  This tool hands off control to a different named agent.  Any additional
-  context (e.g. user query, temperature settings) should be carried in the
-  LLM prompt or tool_context, not passed as extra parameters here.
-
+  This tool hands off control to another agent when it's more suitable to 
+  answer users' question according to the other agent's description.
+  
   Args:
-    agent_name: The identifier of the agent to transfer to (e.g. "math_agent").
-    tool_context: The current ToolContext, whose `actions.transfer_to_agent`
-      field will be set.
-
-  Returns:
-    None. Side-effect: `tool_context.actions.transfer_to_agent` is set.
+    agent_name: the agent name to transfer to.
   """
   tool_context.actions.transfer_to_agent = agent_name
