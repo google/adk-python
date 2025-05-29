@@ -43,8 +43,8 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 ## 🤖 Agent2Agent (A2A) Protocol and ADK Integration
 
 For remote agent-to-agent communication, ADK integrates with the
-[A2A protocol](https://github.com/google/A2A/).
-See this [example](https://github.com/google/A2A/tree/main/samples/python/agents/google_adk)
+[A2A protocol](https://github.com/google-a2a/A2A/).
+See this [example](https://github.com/google-a2a/a2a-samples/tree/main/samples/python/agents/google_adk)
 for how they can work together.
 
 ## 🚀 Installation
