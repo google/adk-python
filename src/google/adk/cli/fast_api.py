@@ -501,34 +501,38 @@ def get_fast_api_app(
     root_agent = agent_loader.load_agent(app_name)
     run_eval_results = []
     eval_case_results = []
-    async for eval_case_result in run_evals(
-        eval_set_to_evals,
-        root_agent,
-        getattr(root_agent, "reset_data", None),
-        req.eval_metrics,
-        session_service=session_service,
-        artifact_service=artifact_service,
-    ):
-      run_eval_results.append(
-          RunEvalResult(
-              app_name=app_name,
-              eval_set_file=eval_case_result.eval_set_file,
-              eval_set_id=eval_set_id,
-              eval_id=eval_case_result.eval_id,
-              final_eval_status=eval_case_result.final_eval_status,
-              eval_metric_results=eval_case_result.eval_metric_results,
-              overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
-              eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
-              user_id=eval_case_result.user_id,
-              session_id=eval_case_result.session_id,
-          )
-      )
-      eval_case_result.session_details = await session_service.get_session(
-          app_name=app_name,
-          user_id=eval_case_result.user_id,
-          session_id=eval_case_result.session_id,
-      )
-      eval_case_results.append(eval_case_result)
+    try:
+      async for eval_case_result in run_evals(
+          eval_set_to_evals,
+          root_agent,
+          getattr(root_agent, "reset_data", None),
+          req.eval_metrics,
+          session_service=session_service,
+          artifact_service=artifact_service,
+      ):
+        run_eval_results.append(
+            RunEvalResult(
+                app_name=app_name,
+                eval_set_file=eval_case_result.eval_set_file,
+                eval_set_id=eval_set_id,
+                eval_id=eval_case_result.eval_id,
+                final_eval_status=eval_case_result.final_eval_status,
+                eval_metric_results=eval_case_result.eval_metric_results,
+                overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
+                eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
+                user_id=eval_case_result.user_id,
+                session_id=eval_case_result.session_id,
+            )
+        )
+        eval_case_result.session_details = await session_service.get_session(
+            app_name=app_name,
+            user_id=eval_case_result.user_id,
+            session_id=eval_case_result.session_id,
+        )
+        eval_case_results.append(eval_case_result)
+    except ModuleNotFoundError as e:
+      logger.exception("%s", e)
+      raise HTTPException(status_code=400, detail=str(e)) from e
 
     eval_set_results_manager.save_eval_set_result(
         app_name, eval_set_id, eval_case_results
