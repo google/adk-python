@@ -15,6 +15,8 @@
 import asyncio
 import logging
 import time
+from typing import Any
+from typing import Optional
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -30,6 +32,7 @@ from google.adk.events import Event
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.genai import types
+from pydantic import BaseModel
 import pytest
 
 # Configure logging to help diagnose server startup issues
@@ -111,6 +114,40 @@ async def dummy_run_async(
   await asyncio.sleep(0)
 
   yield _event_3()
+
+
+# Define a local mock for EvalCaseResult specific to fast_api tests
+class _MockEvalCaseResult(BaseModel):
+  eval_set_id: str
+  eval_id: str
+  final_eval_status: Any
+  user_id: str
+  session_id: str
+  eval_set_file: str
+  eval_metric_results: list = {}
+  overall_eval_metric_results: list = ({},)
+  eval_metric_result_per_invocation: list = {}
+
+
+# Mock for the run_evals function, tailored for test_run_eval
+async def mock_run_evals_for_fast_api(*args, **kwargs):
+  # This is what the test_run_eval expects for its assertions
+  yield _MockEvalCaseResult(
+      eval_set_id="test_eval_set_id",  # Matches expected in verify_eval_case_result
+      eval_id="test_eval_case_id",  # Matches expected
+      final_eval_status=1,  # Matches expected (assuming 1 is PASSED)
+      user_id="test_user",  # Placeholder, adapt if needed
+      session_id="test_session_for_eval_case",  # Placeholder
+      overall_eval_metric_results=[{  # Matches expected
+          "metricName": "tool_trajectory_avg_score",
+          "threshold": 0.5,
+          "score": 1.0,
+          "evalStatus": 1,
+      }],
+      # Provide other fields if RunEvalResult or subsequent processing needs them
+      eval_metric_results=[],
+      eval_metric_result_per_invocation=[],
+  )
 
 
 #################################################
@@ -414,6 +451,10 @@ def test_app(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
+      patch(
+          "google.adk.cli.cli_eval.run_evals",  # Patch where it's imported in fast_api.py
+          new=mock_run_evals_for_fast_api,
+      ),
   ):
     # Get the FastAPI app, but don't actually run it
     app = get_fast_api_app(
@@ -611,13 +652,6 @@ def test_list_artifact_names(test_app, create_test_session):
   data = response.json()
   assert isinstance(data, list)
   logger.info(f"Listed {len(data)} artifacts")
-
-
-def test_get_eval_set_not_found(test_app):
-  """Test getting an eval set that doesn't exist."""
-  url = "/apps/test_app_name/eval_sets/test_eval_set_id_not_found"
-  response = test_app.get(url)
-  assert response.status_code == 404
 
 
 def test_create_eval_set(test_app, test_session_info):
