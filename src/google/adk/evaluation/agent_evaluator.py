@@ -13,15 +13,29 @@
 # limitations under the License.
 
 import json
+import logging
 import os
 from os import path
+from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Union
+import uuid
 
+from pydantic import ValidationError
+
+from .eval_set import EvalSet
 from .evaluation_generator import EvaluationGenerator
+from .evaluator import EvalStatus
+from .evaluator import EvaluationResult
+from .evaluator import Evaluator
+from .local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
 from .response_evaluator import ResponseEvaluator
 from .trajectory_evaluator import TrajectoryEvaluator
+
+logger = logging.getLogger("google_adk." + __name__)
+
 
 # Constants for default runs and evaluation criteria
 NUM_RUNS = 2
@@ -76,12 +90,67 @@ class AgentEvaluator:
     return DEFAULT_CRITERIA
 
   @staticmethod
-  def evaluate(
-      agent_module,
-      eval_dataset_file_path_or_dir,
+  async def evaluate_eval_set(
+      agent_module: str,
+      eval_set: EvalSet,
+      criteria: dict[str, float],
       num_runs=NUM_RUNS,
       agent_name=None,
-      initial_session_file=None,
+  ):
+    """Evaluates an agent using the given EvalSet.
+
+    Args:
+      agent_module: The path to python module that contains the definition of
+        the agent. There is convention in place here, where the code is going to
+        look for 'root_agent' in the loaded module.
+      eval_set: The eval set.
+      criteria: Evauation criterias, a dictionary of metric names to their
+        respective thresholds.
+      num_runs: Number of times all entries in the eval dataset should be
+        assessed.
+      agent_name: The name of the agent.
+    """
+    eval_case_responses_list = await EvaluationGenerator.generate_responses(
+        eval_set=eval_set,
+        agent_module_path=agent_module,
+        repeat_num=num_runs,
+        agent_name=agent_name,
+    )
+
+    for eval_case_responses in eval_case_responses_list:
+      actual_invocations = [
+          invocation
+          for invocations in eval_case_responses.responses
+          for invocation in invocations
+      ]
+      expected_invocations = (
+          eval_case_responses.eval_case.conversation * num_runs
+      )
+
+      for metric_name, threshold in criteria.items():
+        metric_evaluator = AgentEvaluator._get_metric_evaluator(
+            metric_name=metric_name, threshold=threshold
+        )
+
+        evaluation_result: EvaluationResult = (
+            metric_evaluator.evaluate_invocations(
+                actual_invocations=actual_invocations,
+                expected_invocations=expected_invocations,
+            )
+        )
+
+        assert evaluation_result.overall_eval_status == EvalStatus.PASSED, (
+            f"{metric_name} for {agent_module} Failed. Expected {threshold},"
+            f" but got {evaluation_result.overall_score}."
+        )
+
+  @staticmethod
+  async def evaluate(
+      agent_module: str,
+      eval_dataset_file_path_or_dir: str,
+      num_runs: int = NUM_RUNS,
+      agent_name: Optional[str] = None,
+      initial_session_file: Optional[str] = None,
   ):
     """Evaluates an Agent given eval data.
 
@@ -109,34 +178,101 @@ class AgentEvaluator:
     else:
       test_files = [eval_dataset_file_path_or_dir]
 
-    initial_session_state = {}
-    if initial_session_file:
-      with open(initial_session_file, "r") as f:
-        initial_session_state = json.loads(f.read())["state"]
+    initial_session = AgentEvaluator._get_initial_session(initial_session_file)
 
     for test_file in test_files:
-      dataset = AgentEvaluator._load_dataset(test_file)[0]
       criteria = AgentEvaluator.find_config_for_test_file(test_file)
-
-      AgentEvaluator._validate_input([dataset], criteria)
-
-      evaluation_response = AgentEvaluator._generate_responses(
-          agent_module,
-          [dataset],
-          num_runs,
-          agent_name=agent_name,
-          initial_session={"state": initial_session_state},
+      eval_set = AgentEvaluator._load_eval_set_from_file(
+          test_file, criteria, initial_session
       )
 
-      if AgentEvaluator._response_evaluation_required(criteria, [dataset]):
-        AgentEvaluator._evaluate_response_scores(
-            agent_module, evaluation_response, criteria
+      await AgentEvaluator.evaluate_eval_set(
+          agent_module=agent_module,
+          eval_set=eval_set,
+          criteria=criteria,
+          num_runs=num_runs,
+          agent_name=agent_name,
+      )
+
+  @staticmethod
+  def migrate_eval_data_to_new_schema(
+      old_eval_data_file: str,
+      new_eval_data_file: str,
+      initial_session_file: Optional[str] = None,
+  ):
+    """A utility for migrating eval data to new schema backed by EvalSet."""
+    if not old_eval_data_file or not new_eval_data_file:
+      raise ValueError(
+          "One of old_eval_data_file or new_eval_data_file is empty."
+      )
+
+    criteria = AgentEvaluator.find_config_for_test_file(old_eval_data_file)
+    initial_session = AgentEvaluator._get_initial_session(initial_session_file)
+
+    eval_set = AgentEvaluator._get_eval_set_from_old_format(
+        old_eval_data_file, criteria, initial_session
+    )
+
+    with open(new_eval_data_file, "w") as f:
+      f.write(eval_set.model_dump_json(indent=2))
+
+  @staticmethod
+  def _load_eval_set_from_file(
+      eval_set_file: str,
+      criteria: dict[str, float],
+      initial_session: dict[str, Any],
+  ) -> EvalSet:
+    """Loads an EvalSet from the given file."""
+    if os.path.isfile(eval_set_file):
+      with open(eval_set_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+      try:
+        eval_set = EvalSet.model_validate_json(content)
+        assert len(initial_session) == 0, (
+            "Intial session should be specified as a part of EvalSet file."
+            " Explicit initial session is only needed, when specifying data in"
+            " the older schema."
+        )
+        return eval_set
+      except ValidationError:
+        # We assume that the eval data was specified in the old format
+        logger.warning(
+            f"Contents of {eval_set_file} appear to be in older format.To avoid"
+            " this warning, please update your test files to contain data in"
+            " EvalSet schema. You can use `migrate_eval_data_to_new_schema`"
+            " for migrating your old test files."
         )
 
-      if AgentEvaluator._trajectory_evaluation_required(criteria, [dataset]):
-        AgentEvaluator._evaluate_tool_trajectory(
-            agent_module, evaluation_response, criteria
-        )
+    # If we are here, the data must be specified in the older format.
+    return AgentEvaluator._get_eval_set_from_old_format(
+        eval_set_file, criteria, initial_session
+    )
+
+  @staticmethod
+  def _get_eval_set_from_old_format(
+      eval_set_file: str,
+      criteria: dict[str, float],
+      initial_session: dict[str, Any],
+  ) -> EvalSet:
+    data = AgentEvaluator._load_dataset(eval_set_file)[0]
+    AgentEvaluator._validate_input([data], criteria)
+    eval_data = {
+        "name": eval_set_file,
+        "data": data,
+        "initial_session": initial_session,
+    }
+    return convert_eval_set_to_pydanctic_schema(
+        eval_set_id=str(uuid.uuid4()), eval_set_in_json_format=[eval_data]
+    )
+
+  @staticmethod
+  def _get_initial_session(initial_session_file: Optional[str] = None):
+    initial_session = {}
+    if initial_session_file:
+      with open(initial_session_file, "r") as f:
+        initial_session = json.loads(f.read())
+    return initial_session
 
   @staticmethod
   def _load_dataset(
@@ -221,109 +357,13 @@ class AgentEvaluator:
         )
 
   @staticmethod
-  def _get_infer_criteria(eval_dataset):
-    """Infers evaluation criteria based on the provided dataset.
+  def _get_metric_evaluator(metric_name: str, threshold: float) -> Evaluator:
+    if metric_name == TOOL_TRAJECTORY_SCORE_KEY:
+      return TrajectoryEvaluator(threshold=threshold)
+    elif (
+        metric_name == RESPONSE_MATCH_SCORE_KEY
+        or metric_name == RESPONSE_EVALUATION_SCORE_KEY
+    ):
+      return ResponseEvaluator(threshold=threshold, metric_name=metric_name)
 
-    Args:
-        eval_dataset (list): A list of evaluation samples.
-
-    Returns:
-        dict: Inferred evaluation criteria based on dataset fields.
-    """
-    inferred_criteria = {}
-    sample = eval_dataset[0][0]
-
-    if QUERY_COLUMN in sample and EXPECTED_TOOL_USE_COLUMN in sample:
-      inferred_criteria[TOOL_TRAJECTORY_SCORE_KEY] = DEFAULT_CRITERIA[
-          TOOL_TRAJECTORY_SCORE_KEY
-      ]
-
-    if QUERY_COLUMN in sample and REFERENCE_COLUMN in sample:
-      inferred_criteria[RESPONSE_MATCH_SCORE_KEY] = DEFAULT_CRITERIA[
-          RESPONSE_MATCH_SCORE_KEY
-      ]
-
-    return inferred_criteria
-
-  @staticmethod
-  def _generate_responses(
-      agent_module, eval_dataset, num_runs, agent_name=None, initial_session={}
-  ):
-    """Generates evaluation responses by running the agent module multiple times."""
-    return EvaluationGenerator.generate_responses(
-        eval_dataset,
-        agent_module,
-        repeat_num=num_runs,
-        agent_name=agent_name,
-        initial_session=initial_session,
-    )
-
-  @staticmethod
-  def _generate_responses_from_session(eval_dataset, session_path):
-    """Generates evaluation responses by running the agent module multiple times."""
-    return EvaluationGenerator.generate_responses_from_session(
-        session_path, eval_dataset
-    )
-
-  @staticmethod
-  def _response_evaluation_required(criteria, eval_dataset):
-    """Checks if response evaluation are needed."""
-    return REFERENCE_COLUMN in eval_dataset[0][0] and any(
-        key in criteria
-        for key in [RESPONSE_EVALUATION_SCORE_KEY, RESPONSE_MATCH_SCORE_KEY]
-    )
-
-  @staticmethod
-  def _trajectory_evaluation_required(evaluation_criteria, eval_dataset):
-    """Checks if response evaluation are needed."""
-    return (
-        EXPECTED_TOOL_USE_COLUMN in eval_dataset[0][0]
-        and TOOL_TRAJECTORY_SCORE_KEY in evaluation_criteria
-    )
-
-  @staticmethod
-  def _evaluate_response_scores(agent_module, evaluation_response, criteria):
-    """Evaluates response scores and raises an assertion error if they don't meet the criteria."""
-    metrics = ResponseEvaluator.evaluate(
-        evaluation_response, criteria, print_detailed_results=True
-    )
-
-    AgentEvaluator._assert_score(
-        metrics,
-        "coherence/mean",
-        criteria.get(RESPONSE_EVALUATION_SCORE_KEY),
-        "Average response evaluation score",
-        agent_module,
-    )
-
-    AgentEvaluator._assert_score(
-        metrics,
-        "rouge_1/mean",
-        criteria.get(RESPONSE_MATCH_SCORE_KEY),
-        "Average response match score",
-        agent_module,
-    )
-
-  @staticmethod
-  def _evaluate_tool_trajectory(agent_module, evaluation_response, criteria):
-    """Evaluates tool trajectory scores and raises an assertion error if they don't meet the criteria."""
-    score = TrajectoryEvaluator.evaluate(
-        evaluation_response, print_detailed_results=True
-    )
-    AgentEvaluator._assert_score(
-        {TOOL_TRAJECTORY_SCORE_KEY: score},
-        TOOL_TRAJECTORY_SCORE_KEY,
-        criteria[TOOL_TRAJECTORY_SCORE_KEY],
-        "Average tool trajectory evaluation score",
-        agent_module,
-    )
-
-  @staticmethod
-  def _assert_score(metrics, metric_key, threshold, description, agent_module):
-    """Asserts that a metric meets the specified threshold."""
-    if metric_key in metrics:
-      actual_score = metrics[metric_key]
-      assert actual_score >= threshold, (
-          f"{description} for {agent_module} is lower than expected. "
-          f"Expected >= {threshold}, but got {actual_score}."
-      )
+    raise ValueError(f"Unsupported eval metric: {metric_name}")

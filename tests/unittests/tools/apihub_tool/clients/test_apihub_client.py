@@ -14,7 +14,9 @@
 
 import base64
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
+
 from google.adk.tools.apihub_tool.clients.apihub_client import APIHubClient
 import pytest
 from requests.exceptions import HTTPError
@@ -464,9 +466,7 @@ class TestAPIHubClient:
         MagicMock(
             status_code=200,
             json=lambda: {
-                "name": (
-                    "projects/test-project/locations/us-central1/apis/api1/versions/v1"
-                ),
+                "name": "projects/test-project/locations/us-central1/apis/api1/versions/v1",
                 "specs": [],
             },
         ),  # No specs

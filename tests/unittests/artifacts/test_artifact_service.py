@@ -17,6 +17,7 @@
 import enum
 from typing import Optional
 from typing import Union
+from unittest import mock
 
 from google.adk.artifacts import GcsArtifactService
 from google.adk.artifacts import InMemoryArtifactService
@@ -136,11 +137,10 @@ class MockClient:
 
 
 def mock_gcs_artifact_service():
-  """Creates a mock GCS artifact service for testing."""
-  service = GcsArtifactService(bucket_name="test_bucket")
-  service.storage_client = MockClient()
-  service.bucket = service.storage_client.bucket("test_bucket")
-  return service
+  with mock.patch("google.cloud.storage.Client", return_value=MockClient()):
+    service = GcsArtifactService(bucket_name="test_bucket")
+    service.bucket = service.storage_client.bucket("test_bucket")
+    return service
 
 
 def get_artifact_service(
