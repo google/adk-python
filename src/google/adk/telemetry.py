@@ -38,6 +38,25 @@ from .tools.base_tool import BaseTool
 tracer = trace.get_tracer('gcp.vertex.agent')
 
 
+def _safe_json_serialize(obj) -> str:
+  """Convert any Python object to a JSON-serializable type or string.
+
+  Args:
+    obj: The object to serialize.
+
+  Returns:
+    The JSON-serialized object string or <non-serializable> if the object cannot be serialized.
+  """
+
+  try:
+    # Try direct JSON serialization first
+    return json.dumps(
+        obj, ensure_ascii=False, default=lambda o: '<not serializable>'
+    )
+  except (TypeError, OverflowError):
+    return '<not serializable>'
+
+
 def trace_tool_call(
     tool: BaseTool,
     args: dict[str, Any],
@@ -69,11 +88,14 @@ def trace_tool_call(
 
   if not isinstance(tool_response, dict):
     tool_response = {'result': tool_response}
-  span.set_attribute('gcp.vertex.agent.tool_call_args', json.dumps(args))
+  span.set_attribute(
+      'gcp.vertex.agent.tool_call_args',
+      _safe_json_serialize(args),
+  )
   span.set_attribute('gcp.vertex.agent.event_id', function_response_event.id)
   span.set_attribute(
       'gcp.vertex.agent.tool_response',
-      json.dumps(tool_response),
+      _safe_json_serialize(tool_response),
   )
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
@@ -159,10 +181,7 @@ def trace_call_llm(
   # Consider removing once GenAI SDK provides a way to record this info.
   span.set_attribute(
       'gcp.vertex.agent.llm_request',
-      json.dumps(
-          _build_llm_request_for_trace(llm_request),
-          default=lambda o: '<not serializable>',
-      ),
+      _safe_json_serialize(_build_llm_request_for_trace(llm_request)),
   )
   # Consider removing once GenAI SDK provides a way to record this info.
 
@@ -201,7 +220,7 @@ def trace_send_data(
   # information still needs to be recorded by the Agent Development Kit.
   span.set_attribute(
       'gcp.vertex.agent.data',
-      json.dumps([
+      _safe_json_serialize([
           types.Content(role=content.role, parts=content.parts).model_dump(
               exclude_none=True
           )
