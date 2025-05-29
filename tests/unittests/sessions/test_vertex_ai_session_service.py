@@ -111,7 +111,9 @@ MOCK_SESSION = Session(
 
 
 SESSION_REGEX = r'^reasoningEngines/([^/]+)/sessions/([^/]+)$'
-SESSIONS_REGEX = r'^reasoningEngines/([^/]+)/sessions\?filter=user_id=%22([^%]+)%22.*$' # %22 represents double-quotes in a URL-encoded string
+SESSIONS_REGEX = (  # %22 represents double-quotes in a URL-encoded string
+    r'^reasoningEngines/([^/]+)/sessions\?filter=user_id=%22([^%]+)%22.*$'
+)
 EVENTS_REGEX = r'^reasoningEngines/([^/]+)/sessions/([^/]+)/events$'
 LRO_REGEX = r'^operations/([^/]+)$'
 
@@ -156,7 +158,7 @@ class MockApiClient:
         return {
             'name': path,
             'done': True,
-            'response': self.session_dict['4']  # Return the created session
+            'response': self.session_dict['4'],  # Return the created session
         }
       else:
         raise ValueError(f'Unsupported path: {path}')
