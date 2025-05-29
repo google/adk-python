@@ -21,6 +21,10 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_set import EvalSet
+from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.events import Event
 from google.adk.runners import Runner
@@ -282,11 +286,106 @@ def mock_memory_service():
 
 
 @pytest.fixture
+def mock_eval_sets_manager():
+  """Create a mock eval sets manager."""
+
+  # Storage for eval sets.
+  eval_sets = {}
+
+  class MockEvalSetsManager:
+    """Mock eval sets manager."""
+
+    def create_eval_set(self, app_name, eval_set_id):
+      """Create an eval set."""
+      if app_name not in eval_sets:
+        eval_sets[app_name] = {}
+
+      if eval_set_id in eval_sets[app_name]:
+        raise ValueError(f"Eval set {eval_set_id} already exists.")
+
+      eval_sets[app_name][eval_set_id] = EvalSet(
+          eval_set_id=eval_set_id, eval_cases=[]
+      )
+      return eval_set_id
+
+    def get_eval_set(self, app_name, eval_set_id):
+      """Get an eval set."""
+      if app_name not in eval_sets:
+        raise ValueError(f"App {app_name} not found.")
+      if eval_set_id not in eval_sets[app_name]:
+        raise ValueError(f"Eval set {eval_set_id} not found in app {app_name}.")
+      return eval_sets[app_name][eval_set_id]
+
+    def list_eval_sets(self, app_name):
+      """List eval sets."""
+      if app_name not in eval_sets:
+        raise ValueError(f"App {app_name} not found.")
+      return list(eval_sets[app_name].keys())
+
+    def add_eval_case(self, app_name, eval_set_id, eval_case):
+      """Add an eval case to an eval set."""
+      if app_name not in eval_sets:
+        raise ValueError(f"App {app_name} not found.")
+      if eval_set_id not in eval_sets[app_name]:
+        raise ValueError(f"Eval set {eval_set_id} not found in app {app_name}.")
+      eval_sets[app_name][eval_set_id].eval_cases.append(eval_case)
+
+  return MockEvalSetsManager()
+
+
+@pytest.fixture
+def mock_eval_set_results_manager():
+  """Create a mock eval set results manager."""
+
+  # Storage for eval set results.
+  eval_set_results = {}
+
+  class MockEvalSetResultsManager:
+    """Mock eval set results manager."""
+
+    def save_eval_set_result(
+        self, app_name, eval_set_id, eval_case_results
+    ):
+      if app_name not in eval_set_results:
+        eval_set_results[app_name] = {}
+      eval_set_result_id = f"{app_name}_{eval_set_id}_eval_result"
+      eval_set_result = EvalSetResult(
+          eval_set_result_id=eval_set_result_id,
+          eval_set_result_name=eval_set_result_id,
+          eval_set_id=eval_set_id,
+          eval_case_results=eval_case_results,
+      )
+      if eval_set_result_id not in eval_set_results[app_name]:
+        eval_set_results[app_name][eval_set_result_id] = eval_set_result
+      else:
+        eval_set_results[app_name][eval_set_result_id].append(eval_set_result)
+
+    def get_eval_set_result(self, app_name, eval_set_result_id):
+      if app_name not in eval_set_results:
+        raise ValueError(f"App {app_name} not found.")
+      if eval_set_result_id not in eval_set_results[app_name]:
+        raise ValueError(
+            f"Eval set result {eval_set_result_id} not found in app {app_name}."
+        )
+      return eval_set_results[app_name][eval_set_result_id]
+
+    def list_eval_set_results(self, app_name):
+      """List eval set results."""
+      if app_name not in eval_set_results:
+        raise ValueError(f"App {app_name} not found.")
+      return list(eval_set_results[app_name].keys())
+
+  return MockEvalSetResultsManager()
+
+
+@pytest.fixture
 def test_app(
     mock_session_service,
     mock_artifact_service,
     mock_memory_service,
     mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
 ):
   """Create a TestClient for the FastAPI app without starting a server."""
 
@@ -308,6 +407,14 @@ def test_app(
       patch(
           "google.adk.cli.fast_api.AgentLoader",
           return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
       ),
   ):
     # Get the FastAPI app, but don't actually run it
@@ -336,6 +443,35 @@ async def create_test_session(
   )
 
   logger.info(f"Created test session: {session['id']}")
+  return test_session_info
+
+
+@pytest.fixture
+async def create_test_eval_set(
+    test_app, test_session_info, mock_eval_sets_manager
+):
+  """Create a test eval set using the mocked eval sets manager."""
+  _ = mock_eval_sets_manager.create_eval_set(
+      app_name=test_session_info["app_name"],
+      eval_set_id="test_eval_set_id",
+  )
+  test_eval_case = EvalCase(
+      eval_id="test_eval_case_id",
+      conversation=[
+          Invocation(
+              invocation_id="test_invocation_id",
+              user_content=types.Content(
+                  parts=[types.Part(text="test_user_content")],
+                  role="user",
+              ),
+          )
+      ],
+  )
+  _ = mock_eval_sets_manager.add_eval_case(
+      app_name=test_session_info["app_name"],
+      eval_set_id="test_eval_set_id",
+      eval_case=test_eval_case,
+  )
   return test_session_info
 
 
@@ -477,6 +613,98 @@ def test_list_artifact_names(test_app, create_test_session):
   data = response.json()
   assert isinstance(data, list)
   logger.info(f"Listed {len(data)} artifacts")
+
+
+def test_get_eval_set_not_found(test_app):
+  """Test getting an eval set that doesn't exist."""
+  url = "/apps/test_app_name/eval_sets/test_eval_set_id_not_found"
+  response = test_app.get(url)
+  assert response.status_code == 404
+
+
+def test_create_eval_set(test_app, test_session_info):
+  """Test creating an eval set."""
+  url = f"/apps/{test_session_info['app_name']}/eval_sets/test_eval_set_id"
+  response = test_app.post(url)
+
+  # Verify the response
+  assert response.status_code == 200
+
+
+def test_list_eval_sets(test_app, create_test_eval_set):
+  """Test get eval set."""
+  info = create_test_eval_set
+  url = f"/apps/{info['app_name']}/eval_sets"
+  response = test_app.get(url)
+
+  # Verify the response
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, list)
+  assert len(data) == 1
+  assert data[0] == "test_eval_set_id"
+
+
+def test_get_eval_set_result_not_found(test_app):
+  """Test getting an eval set result that doesn't exist."""
+  url = "/apps/test_app_name/eval_results/test_eval_result_id_not_found"
+  response = test_app.get(url)
+  assert response.status_code == 404
+
+
+def test_run_eval(test_app, create_test_eval_set):
+  """Test running an eval."""
+
+  # Helper function to verify eval case result.
+  def verify_eval_case_result(actual_eval_case_result):
+    expected_eval_case_result = {
+        "evalSetId": "test_eval_set_id",
+        "evalId": "test_eval_case_id",
+        "finalEvalStatus": 1,
+        "overallEvalMetricResults": [{
+            "metricName": "tool_trajectory_avg_score",
+            "threshold": 0.5,
+            "score": 1.0,
+            "evalStatus": 1,
+        }],
+    }
+    for k, v in expected_eval_case_result.items():
+      assert actual_eval_case_result[k] == v
+
+  info = create_test_eval_set
+  url = f"/apps/{info['app_name']}/eval_sets/test_eval_set_id/run_eval"
+  payload = {
+      "eval_ids": ["test_eval_case_id"],
+      "eval_metrics": [
+          {"metric_name": "tool_trajectory_avg_score", "threshold": 0.5}
+      ],
+  }
+  response = test_app.post(url, json=payload)
+
+  # Verify the response
+  assert response.status_code == 200
+
+  data = response.json()
+  assert len(data) == 1
+  verify_eval_case_result(data[0])
+
+  # Verify the eval set result is saved via get_eval_result endpoint.
+  url = f"/apps/{info['app_name']}/eval_results/{info['app_name']}_test_eval_set_id_eval_result"
+  response = test_app.get(url)
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, dict)
+  assert data["evalSetId"] == "test_eval_set_id"
+  assert data["evalSetResultId"] == f"{info['app_name']}_test_eval_set_id_eval_result"
+  assert len(data["evalCaseResults"]) == 1
+  verify_eval_case_result(data["evalCaseResults"][0])
+
+  # Verify the eval set result is saved via list_eval_results endpoint.
+  url = f"/apps/{info['app_name']}/eval_results"
+  response = test_app.get(url)
+  assert response.status_code == 200
+  data = response.json()
+  assert data == [f"{info['app_name']}_test_eval_set_id_eval_result"]
 
 
 def test_debug_trace(test_app):
