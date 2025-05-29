@@ -92,6 +92,18 @@ class DynamicJSON(TypeDecorator):
     return value
 
 
+class PreciseTimestamp(TypeDecorator):
+  """Represents a timestamp precise to the microsecond."""
+
+  impl = DateTime
+  cache_ok = True
+
+  def load_dialect_impl(self, dialect):
+    if dialect.name == "mysql":
+      return dialect.type_descriptor(mysql.DATETIME(fsp=6))
+    return self.impl
+
+
 class Base(DeclarativeBase):
   """Base class for database tables."""
 
@@ -156,7 +168,9 @@ class StorageEvent(Base):
   branch: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
   )
-  timestamp: Mapped[DateTime] = mapped_column(DateTime(), default=func.now())
+  timestamp: Mapped[PreciseTimestamp] = mapped_column(
+      PreciseTimestamp, default=func.now()
+  )
   content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
   actions: Mapped[MutableDict[str, Any]] = mapped_column(PickleType)
 
