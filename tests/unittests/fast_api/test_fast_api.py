@@ -21,11 +21,11 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
-from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.eval_result import EvalSetResult
-from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.evaluation.eval_set import EvalSet
 from google.adk.events import Event
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
@@ -343,9 +343,7 @@ def mock_eval_set_results_manager():
   class MockEvalSetResultsManager:
     """Mock eval set results manager."""
 
-    def save_eval_set_result(
-        self, app_name, eval_set_id, eval_case_results
-    ):
+    def save_eval_set_result(self, app_name, eval_set_id, eval_case_results):
       if app_name not in eval_set_results:
         eval_set_results[app_name] = {}
       eval_set_result_id = f"{app_name}_{eval_set_id}_eval_result"
@@ -695,7 +693,10 @@ def test_run_eval(test_app, create_test_eval_set):
   data = response.json()
   assert isinstance(data, dict)
   assert data["evalSetId"] == "test_eval_set_id"
-  assert data["evalSetResultId"] == f"{info['app_name']}_test_eval_set_id_eval_result"
+  assert (
+      data["evalSetResultId"]
+      == f"{info['app_name']}_test_eval_set_id_eval_result"
+  )
   assert len(data["evalCaseResults"]) == 1
   verify_eval_case_result(data["evalCaseResults"][0])
 
