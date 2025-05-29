@@ -96,6 +96,7 @@ class PreciseTimestamp(TypeDecorator):
   """Represents a timestamp precise to the microsecond."""
 
   impl = DateTime
+  cache_ok = True
 
   def load_dialect_impl(self, dialect):
       if dialect.name == 'mysql':
