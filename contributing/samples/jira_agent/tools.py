@@ -24,7 +24,7 @@ jira_tool = ApplicationIntegrationToolset(
     actions=[
         "get_issue_by_key",
     ],
-    tool_name="jira_conversation_agent",
+    tool_name="jira_conversation_tool",
     tool_instructions="""
     
     To start with, greet the user
