@@ -153,12 +153,15 @@ def trace_send_data(
   # information still needs to be recorded by the Agent Development Kit.
   span.set_attribute(
       'gcp.vertex.agent.data',
-      json.dumps([
-          types.Content(role=content.role, parts=content.parts).model_dump(
-              exclude_none=True
-          )
-          for content in data
-      ]),
+      json.dumps(
+          [
+              types.Content(role=content.role, parts=content.parts).model_dump(
+                  exclude_none=True
+              )
+              for content in data
+          ],
+          ensure_ascii=False,
+      ),
   )
 
 
