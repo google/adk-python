@@ -111,7 +111,7 @@ MOCK_SESSION = Session(
 
 
 SESSION_REGEX = r'^reasoningEngines/([^/]+)/sessions/([^/]+)$'
-SESSIONS_REGEX = r'^reasoningEngines/([^/]+)/sessions\?filter=user_id=([^/]+)$'
+SESSIONS_REGEX = r'^reasoningEngines/([^/]+)/sessions\?filter=user_id=%22([^%]+)%22.*$' # %22 represents double-quotes in a URL-encoded string
 EVENTS_REGEX = r'^reasoningEngines/([^/]+)/sessions/([^/]+)/events$'
 LRO_REGEX = r'^operations/([^/]+)$'
 
@@ -127,7 +127,7 @@ class MockApiClient:
   async def async_request(
       self, http_method: str, path: str, request_dict: dict[str, Any]
   ):
-    """Mocks the API Client request method."""
+    """Mocks the API Client request method"""
     if http_method == 'GET':
       if re.match(SESSION_REGEX, path):
         match = re.match(SESSION_REGEX, path)
@@ -149,20 +149,14 @@ class MockApiClient:
       elif re.match(EVENTS_REGEX, path):
         match = re.match(EVENTS_REGEX, path)
         if match:
-          return {
-              'sessionEvents': (
-                  self.event_dict[match.group(2)]
-                  if match.group(2) in self.event_dict
-                  else []
-              )
-          }
+          session_id = match.group(2)
+          return {'sessionEvents': self.event_dict.get(session_id, [])}
       elif re.match(LRO_REGEX, path):
+        # Mock long-running operation as completed
         return {
-            'name': (
-                'projects/test-project/locations/test-location/'
-                'reasoningEngines/123/sessions/4'
-            ),
+            'name': path,
             'done': True,
+            'response': self.session_dict['4']  # Return the created session
         }
       else:
         raise ValueError(f'Unsupported path: {path}')
@@ -225,10 +219,10 @@ def mock_get_api_client():
 async def test_get_empty_session():
   session_service = mock_vertex_ai_session_service()
   with pytest.raises(ValueError) as excinfo:
-    assert await session_service.get_session(
+    await session_service.get_session(
         app_name='123', user_id='user', session_id='0'
     )
-    assert str(excinfo.value) == 'Session not found: 0'
+  assert str(excinfo.value) == 'Session not found: 0'
 
 
 @pytest.mark.asyncio
@@ -247,10 +241,10 @@ async def test_get_and_delete_session():
       app_name='123', user_id='user', session_id='1'
   )
   with pytest.raises(ValueError) as excinfo:
-    assert await session_service.get_session(
+    await session_service.get_session(
         app_name='123', user_id='user', session_id='1'
     )
-    assert str(excinfo.value) == 'Session not found: 1'
+  assert str(excinfo.value) == 'Session not found: 1'
 
 
 @pytest.mark.asyncio
@@ -292,6 +286,6 @@ async def test_create_session_with_custom_session_id():
     await session_service.create_session(
         app_name='123', user_id='user', session_id='1'
     )
-    assert str(excinfo.value) == (
-        'User-provided Session id is not supported for VertexAISessionService.'
-    )
+  assert str(excinfo.value) == (
+      'User-provided Session id is not supported for VertexAISessionService.'
+  )
