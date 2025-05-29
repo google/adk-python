@@ -210,74 +210,76 @@ async def test_generate_content_async_stream(gemini_llm, llm_request):
 async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
     gemini_llm, llm_request
 ):
-    with mock.patch.object(gemini_llm, "api_client") as mock_client:
-        class MockAsyncIterator:
-            def __init__(self, seq):
-                self._iter = iter(seq)
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
 
-            def __aiter__(self):
-                return self
+    class MockAsyncIterator:
 
-            async def __anext__(self):
-                try:
-                    return next(self._iter)
-                except StopIteration:
-                    raise StopAsyncIteration
+      def __init__(self, seq):
+        self._iter = iter(seq)
 
-        response1 = types.GenerateContentResponse(
-            candidates=[
-                types.Candidate(
-                    content=Content(
-                        role="model",
-                        parts=[Part(text="Think1", thought=True)],
-                    ),
-                    finish_reason=None,
-                )
-            ]
-        )
-        response2 = types.GenerateContentResponse(
-            candidates=[
-                types.Candidate(
-                    content=Content(
-                        role="model",
-                        parts=[Part(text="Think2", thought=True)],
-                    ),
-                    finish_reason=None,
-                )
-            ]
-        )
-        response3 = types.GenerateContentResponse(
-            candidates=[
-                types.Candidate(
-                    content=Content(
-                        role="model",
-                        parts=[Part.from_text(text="Answer.")],
-                    ),
-                    finish_reason=types.FinishReason.STOP,
-                )
-            ]
-        )
+      def __aiter__(self):
+        return self
 
-        async def mock_coro():
-            return MockAsyncIterator([response1, response2, response3])
+      async def __anext__(self):
+        try:
+          return next(self._iter)
+        except StopIteration:
+          raise StopAsyncIteration
 
-        mock_client.aio.models.generate_content_stream.return_value = mock_coro()
-
-        responses = [
-            resp
-            async for resp in gemini_llm.generate_content_async(
-                llm_request, stream=True
+    response1 = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=Content(
+                    role="model",
+                    parts=[Part(text="Think1", thought=True)],
+                ),
+                finish_reason=None,
             )
         ]
+    )
+    response2 = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=Content(
+                    role="model",
+                    parts=[Part(text="Think2", thought=True)],
+                ),
+                finish_reason=None,
+            )
+        ]
+    )
+    response3 = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=Content(
+                    role="model",
+                    parts=[Part.from_text(text="Answer.")],
+                ),
+                finish_reason=types.FinishReason.STOP,
+            )
+        ]
+    )
 
-        assert len(responses) == 4
-        assert responses[0].partial is True
-        assert responses[1].partial is True
-        assert responses[2].partial is True
-        assert responses[3].content.parts[0].text == "Think1Think2"
-        assert responses[3].content.parts[0].thought is True
-        assert responses[3].content.parts[1].text == "Answer."
-        mock_client.aio.models.generate_content_stream.assert_called_once()
+    async def mock_coro():
+      return MockAsyncIterator([response1, response2, response3])
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+    assert len(responses) == 4
+    assert responses[0].partial is True
+    assert responses[1].partial is True
+    assert responses[2].partial is True
+    assert responses[3].content.parts[0].text == "Think1Think2"
+    assert responses[3].content.parts[0].thought is True
+    assert responses[3].content.parts[1].text == "Answer."
+    mock_client.aio.models.generate_content_stream.assert_called_once()
 
 
 @pytest.mark.asyncio

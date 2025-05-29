@@ -188,10 +188,10 @@ class VertexAiSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
-    path = f"reasoningEngines/{reasoning_engine_id}/sessions"
+    path = f'reasoningEngines/{reasoning_engine_id}/sessions'
     if user_id:
-      parsed_user_id = urllib.parse.quote(f'''"{user_id}"''', safe="")
-      path = path + f"?filter=user_id={parsed_user_id}"
+      parsed_user_id = urllib.parse.quote(f'''"{user_id}"''', safe='')
+      path = path + f'?filter=user_id={parsed_user_id}'
 
     api_client = _get_api_client(self.project, self.location)
     api_response = await api_client.async_request(
