@@ -42,6 +42,7 @@ dependencies = [
   "pydantic>=2.0, <3.0.0",                   # For data validation/models
   "python-dotenv>=1.0.0",                    # To manage environment variables
   "PyYAML>=6.0.2",                           # For APIHubToolset.
+  "redis>=6.0.0",                            # For RedisToolset
   "sqlalchemy>=2.0",                         # SQL database ORM
   "tzlocal>=5.3",                            # Time zone utilities
   "uvicorn>=0.34.0",                         # ASGI server for FastAPI
