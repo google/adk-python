@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sys
+from textwrap import dedent
 import types
 from typing import Any
 from typing import Dict
@@ -87,7 +87,7 @@ def _patch_types_and_runner(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def fake_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def fake_agent(tmp_path: Path):
   """Create a minimal importable agent package and patch importlib."""
 
   parent_dir = tmp_path / "agents"
@@ -95,27 +95,16 @@ def fake_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
   agent_dir = parent_dir / "fake_agent"
   agent_dir.mkdir()
   # __init__.py exposes root_agent with .name
-  (agent_dir / "__init__.py").write_text(
-      "from types import SimpleNamespace\n"
-      "root_agent = SimpleNamespace(name='fake_root')\n"
-  )
+  (agent_dir / "__init__.py").write_text(dedent("""
+    from google.adk.agents.base_agent import BaseAgent
+    class FakeAgent(BaseAgent):
+      def __init__(self, name):
+        super().__init__(name=name)
 
-  # Ensure importable via sys.path
-  sys.path.insert(0, str(parent_dir))
+    root_agent = FakeAgent(name="fake_root")
+    """))
 
-  import importlib
-
-  module = importlib.import_module("fake_agent")
-  fake_module = types.SimpleNamespace(agent=module)
-
-  monkeypatch.setattr(importlib, "import_module", lambda n: fake_module)
-  monkeypatch.setattr(cli.envs, "load_dotenv_for_agent", lambda *a, **k: None)
-
-  yield parent_dir, "fake_agent"
-
-  # Cleanup
-  sys.path.remove(str(parent_dir))
-  del sys.modules["fake_agent"]
+  return parent_dir, "fake_agent"
 
 
 # _run_input_file
