@@ -12,14 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import json
 from unittest import mock
+
 from fastapi.openapi.models import Operation
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.auth import AuthCredentialTypes
+from google.adk.auth import OAuth2Auth
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.tools.application_integration_tool.application_integration_toolset import ApplicationIntegrationToolset
 from google.adk.tools.application_integration_tool.integration_connector_tool import IntegrationConnectorTool
-from google.adk.tools.openapi_tool.openapi_spec_parser import ParsedOperation, rest_api_tool
+from google.adk.tools.openapi_tool.auth.auth_helpers import dict_to_auth_scheme
+from google.adk.tools.openapi_tool.openapi_spec_parser import ParsedOperation
+from google.adk.tools.openapi_tool.openapi_spec_parser import rest_api_tool
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
 import pytest
 
@@ -159,6 +165,16 @@ def connection_details():
       "serviceName": "test-service",
       "host": "test.host",
       "name": "test-connection",
+  }
+
+
+@pytest.fixture
+def connection_details_auth_override_enabled():
+  return {
+      "serviceName": "test-service",
+      "host": "test.host",
+      "name": "test-connection",
+      "authOverrideEnabled": True,
   }
 
 
@@ -474,3 +490,141 @@ def test_initialization_with_connection_details(
   mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
       tool_name, tool_instructions
   )
+
+
+@pytest.mark.asyncio
+async def test_init_with_connection_and_custom_auth(
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_action_spec_parser,
+    connection_details_auth_override_enabled,
+):
+  connection_name = "test-connection"
+  actions_list = ["create", "delete"]
+  tool_name = "My Actions Tool"
+  tool_instructions = "Perform actions using this tool."
+  mock_connections_client.return_value.get_connection_details.return_value = (
+      connection_details_auth_override_enabled
+  )
+
+  oauth2_data_google_cloud = {
+      "type": "oauth2",
+      "flows": {
+          "authorizationCode": {
+              "authorizationUrl": "https://test-url/o/oauth2/auth",
+              "tokenUrl": "https://test-url/token",
+              "scopes": {
+                  "https://test-url/auth/test-scope": "test scope",
+                  "https://www.test-url.com/auth/test-scope2": "test scope 2",
+              },
+          }
+      },
+  }
+
+  oauth2_scheme = dict_to_auth_scheme(oauth2_data_google_cloud)
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="test-client-id",
+          client_secret="test-client-secret",
+      ),
+  )
+
+  toolset = ApplicationIntegrationToolset(
+      project,
+      location,
+      connection=connection_name,
+      actions=actions_list,
+      tool_name_prefix=tool_name,
+      tool_instructions=tool_instructions,
+      auth_scheme=oauth2_scheme,
+      auth_credential=auth_credential,
+  )
+  mock_integration_client.assert_called_once_with(
+      project, location, None, None, connection_name, None, actions_list, None
+  )
+  mock_connections_client.assert_called_once_with(
+      project, location, connection_name, None
+  )
+  mock_connections_client.return_value.get_connection_details.assert_called_once()
+  mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
+      tool_name, tool_instructions
+  )
+  mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
+  assert len(await toolset.get_tools()) == 1
+  assert (await toolset.get_tools())[0].name == "list_issues_operation"
+  assert isinstance((await toolset.get_tools())[0], IntegrationConnectorTool)
+  assert (await toolset.get_tools())[0]._action == "CustomAction"
+  assert (await toolset.get_tools())[0]._operation == "EXECUTE_ACTION"
+  assert (await toolset.get_tools())[0]._auth_scheme == oauth2_scheme
+  assert (await toolset.get_tools())[0]._auth_credential == auth_credential
+
+
+@pytest.mark.asyncio
+async def test_init_with_connection_with_auth_override_disabled_and_custom_auth(
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_action_spec_parser,
+    connection_details,
+):
+  connection_name = "test-connection"
+  actions_list = ["create", "delete"]
+  tool_name = "My Actions Tool"
+  tool_instructions = "Perform actions using this tool."
+  mock_connections_client.return_value.get_connection_details.return_value = (
+      connection_details
+  )
+
+  oauth2_data_google_cloud = {
+      "type": "oauth2",
+      "flows": {
+          "authorizationCode": {
+              "authorizationUrl": "https://test-url/o/oauth2/auth",
+              "tokenUrl": "https://test-url/token",
+              "scopes": {
+                  "https://test-url/auth/test-scope": "test scope",
+                  "https://www.test-url.com/auth/test-scope2": "test scope 2",
+              },
+          }
+      },
+  }
+
+  oauth2_scheme = dict_to_auth_scheme(oauth2_data_google_cloud)
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="test-client-id",
+          client_secret="test-client-secret",
+      ),
+  )
+
+  toolset = ApplicationIntegrationToolset(
+      project,
+      location,
+      connection=connection_name,
+      actions=actions_list,
+      tool_name_prefix=tool_name,
+      tool_instructions=tool_instructions,
+      auth_scheme=oauth2_scheme,
+      auth_credential=auth_credential,
+  )
+  mock_integration_client.assert_called_once_with(
+      project, location, None, None, connection_name, None, actions_list, None
+  )
+  mock_connections_client.assert_called_once_with(
+      project, location, connection_name, None
+  )
+  mock_connections_client.return_value.get_connection_details.assert_called_once()
+  mock_integration_client.return_value.get_openapi_spec_for_connection.assert_called_once_with(
+      tool_name, tool_instructions
+  )
+  mock_openapi_action_spec_parser.return_value.parse.assert_called_once()
+  assert len(await toolset.get_tools()) == 1
+  assert (await toolset.get_tools())[0].name == "list_issues_operation"
+  assert isinstance((await toolset.get_tools())[0], IntegrationConnectorTool)
+  assert (await toolset.get_tools())[0]._action == "CustomAction"
+  assert (await toolset.get_tools())[0]._operation == "EXECUTE_ACTION"
+  assert not (await toolset.get_tools())[0]._auth_scheme
+  assert not (await toolset.get_tools())[0]._auth_credential

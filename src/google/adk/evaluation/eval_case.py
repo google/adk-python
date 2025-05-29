@@ -13,7 +13,9 @@
 # limitations under the License.
 
 
-from typing import Any, Optional, Tuple
+from typing import Any
+from typing import Optional
+from typing import Tuple
 
 from google.genai import types as genai_types
 from pydantic import alias_generators
@@ -57,10 +59,10 @@ class Invocation(EvalBaseModel):
   """Content provided by the user in this invocation."""
 
   final_response: Optional[genai_types.Content] = None
-  """Final response from the agent that acts a reference or benchmark."""
+  """Final response from the agent."""
 
   intermediate_data: Optional[IntermediateData] = None
-  """Reference intermediate steps generated as a part of Agent execution.
+  """Intermediate steps generated as a part of Agent execution.
 
   For a multi-agent system, it is also helpful to inspect the route that
   the agent took to generate final response.
