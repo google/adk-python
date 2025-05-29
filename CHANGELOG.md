@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+### Features
+* Add BigQuery first-party tools. See [here](https://github.com/google/adk-python/commit/d6c6bb4b2489a8b7a4713e4747c30d6df0c07961) for more details.
+
+
 ## 1.1.0
 
 ### Features
