@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
+from __future__ import annotations
+
 from typing import Optional
 from typing import Union
 
 from google.genai import types
 from langchain.agents import Tool
 from langchain_core.tools import BaseTool
+from langchain_core.tools.structured import StructuredTool
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
@@ -63,7 +65,10 @@ class LangchainTool(FunctionTool):
       raise ValueError("Langchain tool must have a 'run' or '_run' method")
 
     # Determine which function to use
-    func = tool._run if hasattr(tool, '_run') else tool.run
+    if isinstance(tool, StructuredTool):
+      func = tool.func
+    else:
+      func = tool._run if hasattr(tool, '_run') else tool.run
     super().__init__(func)
 
     self._langchain_tool = tool
