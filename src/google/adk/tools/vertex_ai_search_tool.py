@@ -40,6 +40,8 @@ class VertexAiSearchTool(BaseTool):
       *,
       data_store_id: Optional[str] = None,
       search_engine_id: Optional[str] = None,
+      filter: Optional[str] = None,
+      max_results: Optional[int] = None,
   ):
     """Initializes the Vertex AI Search tool.
 
@@ -64,6 +66,8 @@ class VertexAiSearchTool(BaseTool):
       )
     self.data_store_id = data_store_id
     self.search_engine_id = search_engine_id
+    self.filter = filter
+    self.max_results = max_results
 
   @override
   async def process_llm_request(
@@ -84,7 +88,10 @@ class VertexAiSearchTool(BaseTool):
           types.Tool(
               retrieval=types.Retrieval(
                   vertex_ai_search=types.VertexAISearch(
-                      datastore=self.data_store_id, engine=self.search_engine_id
+                      datastore=self.data_store_id,
+                      engine=self.search_engine_id,
+                      filter=self.filter,
+                      max_results=self.max_results,
                   )
               )
           )

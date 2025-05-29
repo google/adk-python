@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import logging
 import sys
 from typing import List
@@ -83,7 +85,9 @@ class MCPToolset(BaseToolset):
   def __init__(
       self,
       *,
-      connection_params: StdioServerParameters | SseServerParams | StreamableHTTPServerParams,
+      connection_params: (
+          StdioServerParameters | SseServerParams | StreamableHTTPServerParams
+      ),
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       errlog: TextIO = sys.stderr,
   ):
