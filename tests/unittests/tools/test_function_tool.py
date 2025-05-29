@@ -104,14 +104,16 @@ def test_init():
   assert tool.func == function_for_testing_with_no_args
 
 
-def test_function_returning_none():
+@pytest.mark.asyncio
+async def test_function_returning_none():
   """Test that the function returns with None actually returning None."""
   tool = FunctionTool(function_returning_none)
   result = await tool.run_async(args={}, tool_context=MagicMock())
   assert result is None
 
 
-def test_function_returning_empty_dict():
+@pytest.mark.asyncio
+async def test_function_returning_empty_dict():
   """Test that the function returns with empty dict actually returning empty dict."""
   tool = FunctionTool(function_returning_empty_dict)
   result = await tool.run_async(args={}, tool_context=MagicMock())
