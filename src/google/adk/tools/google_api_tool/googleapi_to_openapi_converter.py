@@ -18,19 +18,13 @@ import logging
 from typing import Any
 from typing import Dict
 from typing import List
-from typing import Optional
-from typing import Union
 
 # Google API client
 from googleapiclient.discovery import build
-from googleapiclient.discovery import Resource
 from googleapiclient.errors import HttpError
 
 # Configure logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class GoogleApiToOpenApiConverter:
@@ -43,11 +37,11 @@ class GoogleApiToOpenApiConverter:
         api_name: The name of the Google API (e.g., "calendar")
         api_version: The version of the API (e.g., "v3")
     """
-    self.api_name = api_name
-    self.api_version = api_version
-    self.google_api_resource = None
-    self.google_api_spec = None
-    self.openapi_spec = {
+    self._api_name = api_name
+    self._api_version = api_version
+    self._google_api_resource = None
+    self._google_api_spec = None
+    self._openapi_spec = {
         "openapi": "3.0.0",
         "info": {},
         "servers": [],
@@ -59,18 +53,20 @@ class GoogleApiToOpenApiConverter:
     """Fetches the Google API specification using discovery service."""
     try:
       logger.info(
-          "Fetching Google API spec for %s %s", self.api_name, self.api_version
+          "Fetching Google API spec for %s %s",
+          self._api_name,
+          self._api_version,
       )
       # Build a resource object for the specified API
-      self.google_api_resource = build(self.api_name, self.api_version)
+      self._google_api_resource = build(self._api_name, self._api_version)
 
       # Access the underlying API discovery document
-      self.google_api_spec = self.google_api_resource._rootDesc
+      self._google_api_spec = self._google_api_resource._rootDesc
 
-      if not self.google_api_spec:
+      if not self._google_api_spec:
         raise ValueError("Failed to retrieve API specification")
 
-      logger.info("Successfully fetched %s API specification", self.api_name)
+      logger.info("Successfully fetched %s API specification", self._api_name)
     except HttpError as e:
       logger.error("HTTP Error: %s", e)
       raise
@@ -84,7 +80,7 @@ class GoogleApiToOpenApiConverter:
     Returns:
         Dict containing the converted OpenAPI v3 specification
     """
-    if not self.google_api_spec:
+    if not self._google_api_spec:
       self.fetch_google_api_spec()
 
     # Convert basic API information
@@ -100,49 +96,49 @@ class GoogleApiToOpenApiConverter:
     self._convert_schemas()
 
     # Convert endpoints/paths
-    self._convert_resources(self.google_api_spec.get("resources", {}))
+    self._convert_resources(self._google_api_spec.get("resources", {}))
 
     # Convert top-level methods, if any
-    self._convert_methods(self.google_api_spec.get("methods", {}), "/")
+    self._convert_methods(self._google_api_spec.get("methods", {}), "/")
 
-    return self.openapi_spec
+    return self._openapi_spec
 
   def _convert_info(self) -> None:
     """Convert basic API information."""
-    self.openapi_spec["info"] = {
-        "title": self.google_api_spec.get("title", f"{self.api_name} API"),
-        "description": self.google_api_spec.get("description", ""),
-        "version": self.google_api_spec.get("version", self.api_version),
+    self._openapi_spec["info"] = {
+        "title": self._google_api_spec.get("title", f"{self._api_name} API"),
+        "description": self._google_api_spec.get("description", ""),
+        "version": self._google_api_spec.get("version", self._api_version),
         "contact": {},
-        "termsOfService": self.google_api_spec.get("documentationLink", ""),
+        "termsOfService": self._google_api_spec.get("documentationLink", ""),
     }
 
     # Add documentation links if available
-    docs_link = self.google_api_spec.get("documentationLink")
+    docs_link = self._google_api_spec.get("documentationLink")
     if docs_link:
-      self.openapi_spec["externalDocs"] = {
+      self._openapi_spec["externalDocs"] = {
           "description": "API Documentation",
           "url": docs_link,
       }
 
   def _convert_servers(self) -> None:
     """Convert server information."""
-    base_url = self.google_api_spec.get(
+    base_url = self._google_api_spec.get(
         "rootUrl", ""
-    ) + self.google_api_spec.get("servicePath", "")
+    ) + self._google_api_spec.get("servicePath", "")
 
     # Remove trailing slash if present
     if base_url.endswith("/"):
       base_url = base_url[:-1]
 
-    self.openapi_spec["servers"] = [{
+    self._openapi_spec["servers"] = [{
         "url": base_url,
-        "description": f"{self.api_name} {self.api_version} API",
+        "description": f"{self._api_name} {self._api_version} API",
     }]
 
   def _convert_security_schemes(self) -> None:
     """Convert authentication and authorization schemes."""
-    auth = self.google_api_spec.get("auth", {})
+    auth = self._google_api_spec.get("auth", {})
     oauth2 = auth.get("oauth2", {})
 
     if oauth2:
@@ -153,7 +149,7 @@ class GoogleApiToOpenApiConverter:
       for scope, scope_info in scopes.items():
         formatted_scopes[scope] = scope_info.get("description", "")
 
-      self.openapi_spec["components"]["securitySchemes"]["oauth2"] = {
+      self._openapi_spec["components"]["securitySchemes"]["oauth2"] = {
           "type": "oauth2",
           "description": "OAuth 2.0 authentication",
           "flows": {
@@ -168,7 +164,7 @@ class GoogleApiToOpenApiConverter:
       }
 
     # Add API key authentication (most Google APIs support this)
-    self.openapi_spec["components"]["securitySchemes"]["apiKey"] = {
+    self._openapi_spec["components"]["securitySchemes"]["apiKey"] = {
         "type": "apiKey",
         "in": "query",
         "name": "key",
@@ -176,18 +172,20 @@ class GoogleApiToOpenApiConverter:
     }
 
     # Create global security requirement
-    self.openapi_spec["security"] = [
+    self._openapi_spec["security"] = [
         {"oauth2": list(formatted_scopes.keys())} if oauth2 else {},
         {"apiKey": []},
     ]
 
   def _convert_schemas(self) -> None:
     """Convert schema definitions (models)."""
-    schemas = self.google_api_spec.get("schemas", {})
+    schemas = self._google_api_spec.get("schemas", {})
 
     for schema_name, schema_def in schemas.items():
       converted_schema = self._convert_schema_object(schema_def)
-      self.openapi_spec["components"]["schemas"][schema_name] = converted_schema
+      self._openapi_spec["components"]["schemas"][
+          schema_name
+      ] = converted_schema
 
   def _convert_schema_object(
       self, schema_def: Dict[str, Any]
@@ -320,11 +318,11 @@ class GoogleApiToOpenApiConverter:
       path_params = self._extract_path_parameters(rest_path)
 
       # Create path entry if it doesn't exist
-      if rest_path not in self.openapi_spec["paths"]:
-        self.openapi_spec["paths"][rest_path] = {}
+      if rest_path not in self._openapi_spec["paths"]:
+        self._openapi_spec["paths"][rest_path] = {}
 
       # Add the operation for this method
-      self.openapi_spec["paths"][rest_path][http_method] = (
+      self._openapi_spec["paths"][rest_path][http_method] = (
           self._convert_operation(method_data, path_params)
       )
 
@@ -478,7 +476,7 @@ class GoogleApiToOpenApiConverter:
         output_path: Path where the OpenAPI spec should be saved
     """
     with open(output_path, "w", encoding="utf-8") as f:
-      json.dump(self.openapi_spec, f, indent=2)
+      json.dump(self._openapi_spec, f, indent=2)
     logger.info("OpenAPI specification saved to %s", output_path)
 
 

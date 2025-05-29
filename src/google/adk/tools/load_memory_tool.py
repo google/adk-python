@@ -17,17 +17,25 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from pydantic import BaseModel
+from pydantic import Field
 from typing_extensions import override
 
+from ..memory.memory_entry import MemoryEntry
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
-  from ..memory.base_memory_service import MemoryResult
   from ..models import LlmRequest
 
 
-def load_memory(query: str, tool_context: ToolContext) -> 'list[MemoryResult]':
+class LoadMemoryResponse(BaseModel):
+  memories: list[MemoryEntry] = Field(default_factory=list)
+
+
+async def load_memory(
+    query: str, tool_context: ToolContext
+) -> LoadMemoryResponse:
   """Loads the memory for the current user.
 
   Args:
@@ -36,12 +44,15 @@ def load_memory(query: str, tool_context: ToolContext) -> 'list[MemoryResult]':
   Returns:
     A list of memory results.
   """
-  response = tool_context.search_memory(query)
-  return response.memories
+  search_memory_response = await tool_context.search_memory(query)
+  return LoadMemoryResponse(memories=search_memory_response.memories)
 
 
 class LoadMemoryTool(FunctionTool):
-  """A tool that loads the memory for the current user."""
+  """A tool that loads the memory for the current user.
+
+  NOTE: Currently this tool only uses text part from the memory.
+  """
 
   def __init__(self):
     super().__init__(load_memory)
@@ -58,6 +69,7 @@ class LoadMemoryTool(FunctionTool):
                     type=types.Type.STRING,
                 )
             },
+            required=['query'],
         ),
     )
 

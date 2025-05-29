@@ -62,6 +62,9 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     llm_request.live_connect_config.output_audio_transcription = (
         invocation_context.run_config.output_audio_transcription
     )
+    llm_request.live_connect_config.input_audio_transcription = (
+        invocation_context.run_config.input_audio_transcription
+    )
 
     # TODO: handle tool append here, instead of in BaseTool.process_llm_request.
 
