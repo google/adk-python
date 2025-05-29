@@ -35,7 +35,7 @@ dependencies = [
   "google-cloud-storage>=2.18.0, <3.0.0",    # For GCS Artifact service
   "google-genai>=1.14.0",                    # Google GenAI SDK
   "graphviz>=0.20.2",                        # Graphviz for graph rendering
-  "mcp>=1.5.0;python_version>='3.10'",       # For MCP Toolset
+  "mcp>=1.8.0;python_version>='3.10'",       # For MCP Toolset
   "opentelemetry-api>=1.31.0",               # OpenTelemetry
   "opentelemetry-exporter-gcp-trace>=1.9.0",
   "opentelemetry-sdk>=1.31.0",

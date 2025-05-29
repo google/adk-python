@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Forked from google3/third_party/py/google/genai/_automatic_function_calling_util.py temporarily."""
+from __future__ import annotations
 
 import inspect
 from types import FunctionType
@@ -319,12 +319,11 @@ def from_function_with_options(
         type='OBJECT',
         properties=parameters_properties,
     )
-    if variant == 'VERTEX_AI':
-      declaration.parameters.required = (
-          function_parameter_parse_util._get_required_fields(
-              declaration.parameters
-          )
-      )
+    declaration.parameters.required = (
+        function_parameter_parse_util._get_required_fields(
+            declaration.parameters
+        )
+    )
   if not variant == 'VERTEX_AI':
     return declaration
 

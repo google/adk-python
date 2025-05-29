@@ -208,7 +208,7 @@ class Claude(BaseLlm):
   @staticmethod
   @override
   def supported_models() -> list[str]:
-    return [r"claude-3-.*"]
+    return [r"claude-3-.*", r"claude-.*-4.*"]
 
   @override
   async def generate_content_async(
