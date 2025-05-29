@@ -11,15 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import copy
 from datetime import datetime
-from datetime import timezone
 import json
 import logging
 from typing import Any
 from typing import Optional
 import uuid
 
+from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
@@ -47,8 +49,8 @@ from sqlalchemy.types import TypeDecorator
 from typing_extensions import override
 from tzlocal import get_localzone
 
-from ..events.event import Event
 from . import _session_util
+from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -239,14 +241,14 @@ class StorageUserState(Base):
 class DatabaseSessionService(BaseSessionService):
   """A session service that uses a database for storage."""
 
-  def __init__(self, db_url: str):
+  def __init__(self, db_url: str, **kwargs: Any):
     """Initializes the database session service with a database URL."""
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
     # 3. Initialize all properties
 
     try:
-      db_engine = create_engine(db_url)
+      db_engine = create_engine(db_url, **kwargs)
     except Exception as e:
       if isinstance(e, ArgumentError):
         raise ValueError(
@@ -371,10 +373,8 @@ class DatabaseSessionService(BaseSessionService):
         return None
 
       if config and config.after_timestamp:
-        after_dt = datetime.fromtimestamp(
-            config.after_timestamp, tz=timezone.utc
-        )
-        timestamp_filter = StorageEvent.timestamp > after_dt
+        after_dt = datetime.fromtimestamp(config.after_timestamp)
+        timestamp_filter = StorageEvent.timestamp >= after_dt
       else:
         timestamp_filter = True
 
@@ -382,7 +382,7 @@ class DatabaseSessionService(BaseSessionService):
           session_factory.query(StorageEvent)
           .filter(StorageEvent.session_id == storage_session.id)
           .filter(timestamp_filter)
-          .order_by(StorageEvent.timestamp.asc())
+          .order_by(StorageEvent.timestamp.desc())
           .limit(
               config.num_recent_events
               if config and config.num_recent_events
@@ -422,14 +422,16 @@ class DatabaseSessionService(BaseSessionService):
               actions=e.actions,
               timestamp=e.timestamp.timestamp(),
               long_running_tool_ids=e.long_running_tool_ids,
-              grounding_metadata=e.grounding_metadata,
+              grounding_metadata=_session_util.decode_grounding_metadata(
+                  e.grounding_metadata
+              ),
               partial=e.partial,
               turn_complete=e.turn_complete,
               error_code=e.error_code,
               error_message=e.error_message,
               interrupted=e.interrupted,
           )
-          for e in storage_events
+          for e in reversed(storage_events)
       ]
     return session
 
@@ -515,15 +517,16 @@ class DatabaseSessionService(BaseSessionService):
               _extract_state_delta(event.actions.state_delta)
           )
 
-      # Merge state
-      app_state.update(app_state_delta)
-      user_state.update(user_state_delta)
-      session_state.update(session_state_delta)
-
-      # Update storage
-      storage_app_state.state = app_state
-      storage_user_state.state = user_state
-      storage_session.state = session_state
+      # Merge state and update storage
+      if app_state_delta:
+        app_state.update(app_state_delta)
+        storage_app_state.state = app_state
+      if user_state_delta:
+        user_state.update(user_state_delta)
+        storage_user_state.state = user_state
+      if session_state_delta:
+        session_state.update(session_state_delta)
+        storage_session.state = session_state
 
       storage_event = StorageEvent(
           id=event.id,
@@ -536,7 +539,6 @@ class DatabaseSessionService(BaseSessionService):
           user_id=session.user_id,
           timestamp=datetime.fromtimestamp(event.timestamp),
           long_running_tool_ids=event.long_running_tool_ids,
-          grounding_metadata=event.grounding_metadata,
           partial=event.partial,
           turn_complete=event.turn_complete,
           error_code=event.error_code,
@@ -544,7 +546,13 @@ class DatabaseSessionService(BaseSessionService):
           interrupted=event.interrupted,
       )
       if event.content:
-        storage_event.content = _session_util.encode_content(event.content)
+        storage_event.content = event.content.model_dump(
+            exclude_none=True, mode="json"
+        )
+      if event.grounding_metadata:
+        storage_event.grounding_metadata = event.grounding_metadata.model_dump(
+            exclude_none=True, mode="json"
+        )
 
       session_factory.add(storage_event)
 

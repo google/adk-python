@@ -22,7 +22,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 import pytest
 
-from ... import utils
+from ... import testing_utils
 
 
 def test_simple_function():
@@ -40,7 +40,7 @@ def test_simple_function():
       'response4',
   ]
   function_called = 0
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
 
   def increase_by_one(x: int) -> int:
     nonlocal function_called
@@ -48,18 +48,18 @@ def test_simple_function():
     return x + 1
 
   agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
-  runner = utils.InMemoryRunner(agent)
-  assert utils.simplify_events(runner.run('test')) == [
+  runner = testing_utils.InMemoryRunner(agent)
+  assert testing_utils.simplify_events(runner.run('test')) == [
       ('root_agent', function_call_1),
       ('root_agent', function_respones_2),
       ('root_agent', 'response1'),
   ]
 
   # Asserts the requests.
-  assert utils.simplify_contents(mock_model.requests[0].contents) == [
+  assert testing_utils.simplify_contents(mock_model.requests[0].contents) == [
       ('user', 'test')
   ]
-  assert utils.simplify_contents(mock_model.requests[1].contents) == [
+  assert testing_utils.simplify_contents(mock_model.requests[1].contents) == [
       ('user', 'test'),
       ('model', function_call_1),
       ('user', function_respones_2),
@@ -96,7 +96,7 @@ async def test_async_function():
       'response4',
   ]
   function_called = 0
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
 
   async def increase_by_one(x: int) -> int:
     nonlocal function_called
@@ -118,19 +118,19 @@ async def test_async_function():
       model=mock_model,
       tools=[increase_by_one, multiple_by_two, multiple_by_two_sync],
   )
-  runner = utils.TestInMemoryRunner(agent)
+  runner = testing_utils.TestInMemoryRunner(agent)
   events = await runner.run_async_with_new_session('test')
-  assert utils.simplify_events(events) == [
+  assert testing_utils.simplify_events(events) == [
       ('root_agent', function_calls),
       ('root_agent', function_responses),
       ('root_agent', 'response1'),
   ]
 
   # Asserts the requests.
-  assert utils.simplify_contents(mock_model.requests[0].contents) == [
+  assert testing_utils.simplify_contents(mock_model.requests[0].contents) == [
       ('user', 'test')
   ]
-  assert utils.simplify_contents(mock_model.requests[1].contents) == [
+  assert testing_utils.simplify_contents(mock_model.requests[1].contents) == [
       ('user', 'test'),
       ('model', function_calls),
       ('user', function_responses),
@@ -167,7 +167,7 @@ async def test_function_tool():
       'response4',
   ]
   function_called = 0
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
 
   async def increase_by_one(x: int) -> int:
     nonlocal function_called
@@ -195,19 +195,19 @@ async def test_function_tool():
       model=mock_model,
       tools=[wrapped_increase_by_one, multiple_by_two, multiple_by_two_sync],
   )
-  runner = utils.TestInMemoryRunner(agent)
+  runner = testing_utils.TestInMemoryRunner(agent)
   events = await runner.run_async_with_new_session('test')
-  assert utils.simplify_events(events) == [
+  assert testing_utils.simplify_events(events) == [
       ('root_agent', function_calls),
       ('root_agent', function_responses),
       ('root_agent', 'response1'),
   ]
 
   # Asserts the requests.
-  assert utils.simplify_contents(mock_model.requests[0].contents) == [
+  assert testing_utils.simplify_contents(mock_model.requests[0].contents) == [
       ('user', 'test')
   ]
-  assert utils.simplify_contents(mock_model.requests[1].contents) == [
+  assert testing_utils.simplify_contents(mock_model.requests[1].contents) == [
       ('user', 'test'),
       ('model', function_calls),
       ('user', function_responses),
@@ -218,7 +218,7 @@ async def test_function_tool():
 
 
 def test_update_state():
-  mock_model = utils.MockModel.create(
+  mock_model = testing_utils.MockModel.create(
       responses=[
           types.Part.from_function_call(name='update_state', args={}),
           'response1',
@@ -229,7 +229,7 @@ def test_update_state():
     tool_context.state['x'] = 1
 
   agent = Agent(name='root_agent', model=mock_model, tools=[update_state])
-  runner = utils.InMemoryRunner(agent)
+  runner = testing_utils.InMemoryRunner(agent)
   runner.run('test')
   assert runner.session.state['x'] == 1
 
@@ -239,13 +239,13 @@ def test_function_call_id():
       types.Part.from_function_call(name='increase_by_one', args={'x': 1}),
       'response1',
   ]
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
 
   def increase_by_one(x: int) -> int:
     return x + 1
 
   agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
-  runner = utils.InMemoryRunner(agent)
+  runner = testing_utils.InMemoryRunner(agent)
   events = runner.run('test')
   for reqeust in mock_model.requests:
     for content in reqeust.contents:

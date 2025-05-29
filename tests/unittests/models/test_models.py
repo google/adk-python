@@ -46,6 +46,8 @@ def test_match_gemini_family(model_name):
         'claude-3-haiku@20240307',
         'claude-3-opus@20240229',
         'claude-3-sonnet@20240229',
+        'claude-sonnet-4@20250514',
+        'claude-opus-4@20250514',
     ],
 )
 def test_match_claude_family(model_name):

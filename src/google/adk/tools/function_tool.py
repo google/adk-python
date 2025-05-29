@@ -34,17 +34,30 @@ class FunctionTool(BaseTool):
 
   def __init__(self, func: Callable[..., Any]):
     """Extract metadata from a callable object."""
-    if inspect.isfunction(func) or inspect.ismethod(func):
-      # Handle regular functions and methods
+    name = ''
+    doc = ''
+    # Handle different types of callables
+    if hasattr(func, '__name__'):
+      # Regular functions, unbound methods, etc.
       name = func.__name__
-      doc = func.__doc__ or ''
-    else:
-      # Handle objects with __call__ method
-      call_method = func.__call__
+    elif hasattr(func, '__class__'):
+      # Callable objects, bound methods, etc.
       name = func.__class__.__name__
-      doc = call_method.__doc__ or func.__doc__ or ''
+
+    # Get documentation (prioritize direct __doc__ if available)
+    if hasattr(func, '__doc__') and func.__doc__:
+      doc = func.__doc__
+    elif (
+        hasattr(func, '__call__')
+        and hasattr(func.__call__, '__doc__')
+        and func.__call__.__doc__
+    ):
+      # For callable objects, try to get docstring from __call__ method
+      doc = func.__call__.__doc__
+
     super().__init__(name=name, description=doc)
     self.func = func
+    self._ignore_params = ['tool_context', 'input_stream']
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -53,7 +66,7 @@ class FunctionTool(BaseTool):
             func=self.func,
             # The model doesn't understand the function context.
             # input_stream is for streaming tool
-            ignore_params=['tool_context', 'input_stream'],
+            ignore_params=self._ignore_params,
             variant=self._api_variant,
         )
     )
@@ -94,9 +107,9 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         or hasattr(self.func, '__call__')
         and inspect.iscoroutinefunction(self.func.__call__)
     ):
-      return await self.func(**args_to_call) or {}
+      return await self.func(**args_to_call)
     else:
-      return self.func(**args_to_call) or {}
+      return self.func(**args_to_call)
 
   # TODO(hangfei): fix call live for function stream.
   async def _call_live(
