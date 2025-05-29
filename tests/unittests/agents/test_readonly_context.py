@@ -1,7 +1,8 @@
-import pytest
-from unittest.mock import MagicMock
 from types import MappingProxyType
+from unittest.mock import MagicMock
+
 from google.adk.agents.readonly_context import ReadonlyContext
+import pytest
 
 
 @pytest.fixture

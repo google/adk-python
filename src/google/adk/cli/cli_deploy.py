@@ -54,7 +54,7 @@ COPY "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} --host=0.0.0.0 {session_db_option} {trace_to_cloud_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {session_db_option} {trace_to_cloud_option} "/app/agents"
 """
 
 
@@ -141,6 +141,7 @@ def to_cloud_run(
 
     # create Dockerfile
     click.echo('Creating Dockerfile...')
+    host_option = '--host=0.0.0.0' if adk_version > '0.5.0' else ''
     dockerfile_content = _DOCKERFILE_TEMPLATE.format(
         gcp_project_id=project,
         gcp_region=region,
@@ -153,6 +154,7 @@ def to_cloud_run(
         else '',
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         adk_version=adk_version,
+        host_option=host_option,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
