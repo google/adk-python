@@ -38,6 +38,7 @@ from litellm.types.utils import Delta
 from litellm.types.utils import ModelResponse
 from litellm.types.utils import StreamingChoices
 import pytest
+import json
 
 LLM_REQUEST_WITH_FUNCTION_DECLARATION = LlmRequest(
     contents=[
@@ -165,6 +166,100 @@ STREAMING_MODEL_RESPONSE = [
         choices=[
             StreamingChoices(
                 finish_reason="tool_use",
+            )
+        ]
+    ),
+]
+
+MULTIPLE_FUNCTION_CALLS_STREAM = [
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id="call_1",
+                            function=Function(
+                                name="function_1",
+                                arguments='{"arg": "val',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments='ue1"}',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id="call_2",
+                            function=Function(
+                                name="function_2",
+                                arguments='{"arg": "val',
+                            ),
+                            index=1,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments='ue2"}',
+                            ),
+                            index=1,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason="tool_calls",
             )
         ]
     ),
@@ -1089,3 +1184,80 @@ async def test_generate_content_async_stream_with_usage_metadata(
       ]
       == "string"
   )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_multiple_function_calls(
+    mock_completion, lite_llm_instance
+):
+    """Test handling of multiple function calls with different indices in streaming mode.
+
+    This test verifies that:
+    1. Multiple function calls with different indices are handled correctly
+    2. Arguments and names are properly accumulated for each function call
+    3. The final response contains all function calls with correct indices
+    """
+    mock_completion.return_value = MULTIPLE_FUNCTION_CALLS_STREAM
+
+    llm_request = LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text="Test multiple function calls")],
+            )
+        ],
+        config=types.GenerateContentConfig(
+            tools=[
+                types.Tool(
+                    function_declarations=[
+                        types.FunctionDeclaration(
+                            name="function_1",
+                            description="First test function",
+                            parameters=types.Schema(
+                                type=types.Type.OBJECT,
+                                properties={
+                                    "arg": types.Schema(type=types.Type.STRING),
+                                },
+                            ),
+                        ),
+                        types.FunctionDeclaration(
+                            name="function_2",
+                            description="Second test function",
+                            parameters=types.Schema(
+                                type=types.Type.OBJECT,
+                                properties={
+                                    "arg": types.Schema(type=types.Type.STRING),
+                                },
+                            ),
+                        ),
+                    ]
+                )
+            ],
+        ),
+    )
+
+    responses = []
+    async for response in lite_llm_instance.generate_content_async(
+        llm_request, stream=True
+    ):
+        responses.append(response)
+
+    # Verify we got the final response with both function calls
+    assert len(responses) > 0
+    final_response = responses[-1]
+    assert final_response.content.role == "model"
+    assert len(final_response.content.parts) == 2
+
+    # Verify first function call
+    assert final_response.content.parts[0].function_call.name == "function_1"
+    assert final_response.content.parts[0].function_call.id == "call_1"
+    assert final_response.content.parts[0].function_call.args == {
+        "arg": "value1"
+    }
+
+    # Verify second function call
+    assert final_response.content.parts[1].function_call.name == "function_2"
+    assert final_response.content.parts[1].function_call.id == "call_2"
+    assert final_response.content.parts[1].function_call.args == {
+        "arg": "value2"
+    }
