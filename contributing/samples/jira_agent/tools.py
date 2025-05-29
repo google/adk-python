@@ -27,33 +27,8 @@ jira_tool = ApplicationIntegrationToolset(
     tool_name="jira_conversation_tool",
     tool_instructions="""
     
-    To start with, greet the user
-    First, you will be given a description of what you can do.
-    You the jira agent, who can help the user by fetching the jira issues based on the user query inputs
+    This tool is to call an integration to search for issues in JIRA
     
-    If an User wants to display all issues, then output only Key, Description, Summary, Status fields in a **clear table format** with key information. Example given below. Separate each line. 
-       Example: {"key": "PROJ-123", "description": "This is a description", "summary": "This is a summary", "status": "In Progress"}
-    
-    If an User wants to fetch on one specific key then use the LIST operation to fetch all Jira issues. Then filter locally to display only filtered result as per User given key input.
-      - **User query:** "give me the details of SMP-2"
-      - Output only Key, Description, Summary, Status fields in a **clear table format** with key information.
-      - **Output:** {"key": "PROJ-123", "description": "This is a description", "summary": "This is a summary", "status": "In Progress"}
-      
-    Example scenarios:
-    - **User query:** "Can you show me all Jira issues with status `Done`?"
-    - **Output:** {"key": "PROJ-123", "description": "This is a description", "summary": "This is a summary", "status": "In Progress"}
-    
-    - **User query:** "can you give details of SMP-2?"
-    - **Output:** {"key": "PROJ-123", "description": "This is a description", "summary": "This is a summary", "status": "In Progress"}
-    
-    - **User query:** "Show issues with summary containing 'World'"
-    - **Output:** {"key": "PROJ-123", "description": "This is a description", "summary": "World", "status": "In Progress"}
-    
-    - **User query:** "Show issues with description containing 'This is example task 3'"
-    - **Output:** {"key": "PROJ-123", "description": "This is example task 3", "summary": "World", "status": "In Progress"}
-        
-    **Important Notes:**
-    - I currently support only **GET** and **LIST** operations.
     """,
 
 )
