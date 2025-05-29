@@ -98,7 +98,7 @@ class ApiServerSpanExporter(export.SpanExporter):
       if (
           span.name == "call_llm"
           or span.name == "send_data"
-          or span.name.startswith("tool_response")
+          or span.name.startswith("execute_tool")
       ):
         attributes = dict(span.attributes)
         attributes["trace_id"] = span.get_span_context().trace_id

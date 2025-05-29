@@ -21,6 +21,8 @@
 #    Agent Development Kit should be focused on the higher-level
 #    constructs of the framework that are not observable by the SDK.
 
+from __future__ import annotations
+
 import json
 from typing import Any
 
@@ -31,51 +33,91 @@ from .agents.invocation_context import InvocationContext
 from .events.event import Event
 from .models.llm_request import LlmRequest
 from .models.llm_response import LlmResponse
+from .tools.base_tool import BaseTool
 
 tracer = trace.get_tracer('gcp.vertex.agent')
 
 
 def trace_tool_call(
+    tool: BaseTool,
     args: dict[str, Any],
+    function_response_event: Event,
 ):
   """Traces tool call.
 
   Args:
+    tool: The tool that was called.
     args: The arguments to the tool call.
+    function_response_event: The event with the function response details.
   """
   span = trace.get_current_span()
   span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
+  span.set_attribute('gen_ai.operation.name', 'execute_tool')
+  span.set_attribute('gen_ai.tool.name', tool.name)
+  span.set_attribute('gen_ai.tool.description', tool.description)
+  tool_call_id = '<not specified>'
+  tool_response = '<not specified>'
+  if function_response_event.content.parts:
+    function_response = function_response_event.content.parts[
+        0
+    ].function_response
+    if function_response is not None:
+      tool_call_id = function_response.id
+      tool_response = function_response.response
+
+  span.set_attribute('gen_ai.tool.call.id', tool_call_id)
+
+  if not isinstance(tool_response, dict):
+    tool_response = {'result': tool_response}
   span.set_attribute('gcp.vertex.agent.tool_call_args', json.dumps(args))
-
-
-def trace_tool_response(
-    invocation_context: InvocationContext,
-    event_id: str,
-    function_response_event: Event,
-):
-  """Traces tool response event.
-
-  This function records details about the tool response event as attributes on
-  the current OpenTelemetry span.
-
-  Args:
-    invocation_context: The invocation context for the current agent run.
-    event_id: The ID of the event.
-    function_response_event: The function response event which can be either
-      merged function response for parallel function calls or individual
-      function response for sequential function calls.
-  """
-  span = trace.get_current_span()
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
-  span.set_attribute(
-      'gcp.vertex.agent.invocation_id', invocation_context.invocation_id
-  )
-  span.set_attribute('gcp.vertex.agent.event_id', event_id)
+  span.set_attribute('gcp.vertex.agent.event_id', function_response_event.id)
   span.set_attribute(
       'gcp.vertex.agent.tool_response',
-      function_response_event.model_dump_json(exclude_none=True),
+      json.dumps(tool_response),
+  )
+  # Setting empty llm request and response (as UI expect these) while not
+  # applicable for tool_response.
+  span.set_attribute('gcp.vertex.agent.llm_request', '{}')
+  span.set_attribute(
+      'gcp.vertex.agent.llm_response',
+      '{}',
   )
 
+
+def trace_merged_tool_calls(
+    response_event_id: str,
+    function_response_event: Event,
+):
+  """Traces merged tool call events.
+
+  Calling this function is not needed for telemetry purposes. This is provided
+  for preventing /debug/trace requests (typically sent by web UI).
+
+  Args:
+    response_event_id: The ID of the response event.
+    function_response_event: The merged response event.
+  """
+
+  span = trace.get_current_span()
+  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
+  span.set_attribute('gen_ai.operation.name', 'execute_tool')
+  span.set_attribute('gen_ai.tool.name', '(merged tools)')
+  span.set_attribute('gen_ai.tool.description', '(merged tools)')
+  span.set_attribute('gen_ai.tool.call.id', response_event_id)
+
+  span.set_attribute('gcp.vertex.agent.tool_call_args', 'N/A')
+  span.set_attribute('gcp.vertex.agent.event_id', response_event_id)
+  try:
+    function_response_event_json = function_response_event.model_dumps_json(
+        exclude_none=True
+    )
+  except Exception:  # pylint: disable=broad-exception-caught
+    function_response_event_json = '<not serializable>'
+
+  span.set_attribute(
+      'gcp.vertex.agent.tool_response',
+      function_response_event_json,
+  )
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
   span.set_attribute('gcp.vertex.agent.llm_request', '{}')
@@ -123,9 +165,15 @@ def trace_call_llm(
       ),
   )
   # Consider removing once GenAI SDK provides a way to record this info.
+
+  try:
+    llm_response_json = llm_response.model_dump_json(exclude_none=True)
+  except Exception:  # pylint: disable=broad-exception-caught
+    llm_response_json = '<not serializable>'
+
   span.set_attribute(
       'gcp.vertex.agent.llm_response',
-      llm_response.model_dump_json(exclude_none=True),
+      llm_response_json,
   )
 
 
