@@ -99,7 +99,7 @@ class BaseSessionService(abc.ABC):
     session.events.append(event)
     return event
 
-  def __update_session_state(self, session: Session, event: Event):
+  def __update_session_state(self, session: Session, event: Event) -> None:
     """Updates the session state based on the event."""
     if not event.actions or not event.actions.state_delta:
       return

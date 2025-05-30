@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import asyncio
-from datetime import datetime
-from datetime import timedelta
 from typing import cast
-import warnings
 
 import agent
 from dotenv import load_dotenv
@@ -26,7 +24,6 @@ from google.adk.sessions import Session
 from google.genai import types
 
 load_dotenv(override=True)
-warnings.filterwarnings('ignore', category=UserWarning)
 logs.log_to_tmp_folder()
 
 
@@ -67,43 +64,22 @@ async def main():
 
     return cast(
         Session,
-        runner.session_service.get_session(
+        await runner.session_service.get_session(
             app_name=app_name, user_id=user_id_1, session_id=session.id
         ),
     )
 
-  session_1 = runner.session_service.create_session(
+  session_1 = await runner.session_service.create_session(
       app_name=app_name, user_id=user_id_1
   )
 
   print(f'----Session to create memory: {session_1.id} ----------------------')
-  session_1 = await run_prompt(session_1, 'Hi')
-  session_1 = await run_prompt(session_1, 'My name is Jack')
-  session_1 = await run_prompt(session_1, 'I like badminton.')
   session_1 = await run_prompt(
-      session_1,
-      f'I ate a burger on {(datetime.now() - timedelta(days=1)).date()}.',
+      session_1, 'Write a python function to do quicksort.'
   )
   session_1 = await run_prompt(
-      session_1,
-      f'I ate a banana on {(datetime.now() - timedelta(days=2)).date()}.',
+      session_1, 'Write another python function to do bubble sort.'
   )
-  print('Saving session to memory service...')
-  if runner.memory_service:
-    await runner.memory_service.add_session_to_memory(session_1)
-  print('-------------------------------------------------------------------')
-
-  session_2 = runner.session_service.create_session(
-      app_name=app_name, user_id=user_id_1
-  )
-  print(f'----Session to use memory: {session_2.id} ----------------------')
-  session_2 = await run_prompt(session_2, 'Hi')
-  session_2 = await run_prompt(session_2, 'What do I like to do?')
-  # ** memory_agent: You like badminton.
-  session_2 = await run_prompt(session_2, 'When did I say that?')
-  # ** memory_agent: You said you liked badminton on ...
-  session_2 = await run_prompt(session_2, 'What did I eat yesterday?')
-  # ** memory_agent: You ate a burger yesterday...
   print('-------------------------------------------------------------------')
 
 
