@@ -24,7 +24,7 @@ from typing_extensions import override
 
 from .base_artifact_service import BaseArtifactService
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class InMemoryArtifactService(BaseArtifactService, BaseModel):
@@ -63,7 +63,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   @override
-  def save_artifact(
+  async def save_artifact(
       self,
       *,
       app_name: str,
@@ -80,7 +80,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     return version
 
   @override
-  def load_artifact(
+  async def load_artifact(
       self,
       *,
       app_name: str,
@@ -98,7 +98,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     return versions[version]
 
   @override
-  def list_artifact_keys(
+  async def list_artifact_keys(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> list[str]:
     session_prefix = f"{app_name}/{user_id}/{session_id}/"
@@ -114,7 +114,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     return sorted(filenames)
 
   @override
-  def delete_artifact(
+  async def delete_artifact(
       self, *, app_name: str, user_id: str, session_id: str, filename: str
   ) -> None:
     path = self._artifact_path(app_name, user_id, session_id, filename)
@@ -123,7 +123,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     self.artifacts.pop(path, None)
 
   @override
-  def list_versions(
+  async def list_versions(
       self, *, app_name: str, user_id: str, session_id: str, filename: str
   ) -> list[int]:
     path = self._artifact_path(app_name, user_id, session_id, filename)

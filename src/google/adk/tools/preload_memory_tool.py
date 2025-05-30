@@ -14,11 +14,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
+from . import _memory_entry_utils
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -27,7 +27,10 @@ if TYPE_CHECKING:
 
 
 class PreloadMemoryTool(BaseTool):
-  """A tool that preloads the memory for the current user."""
+  """A tool that preloads the memory for the current user.
+
+  NOTE: Currently this tool only uses text part from the memory.
+  """
 
   def __init__(self):
     # Name and description are not used because this tool only
@@ -41,29 +44,35 @@ class PreloadMemoryTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    parts = tool_context.user_content.parts
-    if not parts or not parts[0].text:
+    user_content = tool_context.user_content
+    if (
+        not user_content
+        or not user_content.parts
+        or not user_content.parts[0].text
+    ):
       return
-    query = parts[0].text
-    response = tool_context.search_memory(query)
+
+    user_query: str = user_content.parts[0].text
+    response = await tool_context.search_memory(user_query)
     if not response.memories:
       return
-    memory_text = ''
+
+    memory_text_lines = []
     for memory in response.memories:
-      time_str = datetime.fromtimestamp(memory.events[0].timestamp).isoformat()
-      memory_text += f'Time: {time_str}\n'
-      for event in memory.events:
-        # TODO: support multi-part content.
-        if (
-            event.content
-            and event.content.parts
-            and event.content.parts[0].text
-        ):
-          memory_text += f'{event.author}: {event.content.parts[0].text}\n'
+      if time_str := (f'Time: {memory.timestamp}' if memory.timestamp else ''):
+        memory_text_lines.append(time_str)
+      if memory_text := _memory_entry_utils.extract_text(memory):
+        memory_text_lines.append(
+            f'{memory.author}: {memory_text}' if memory.author else memory_text
+        )
+    if not memory_text_lines:
+      return
+
+    full_memory_text = '\n'.join(memory_text_lines)
     si = f"""The following content is from your previous conversations with the user.
 They may be useful for answering the user's current query.
 <PAST_CONVERSATIONS>
-{memory_text}
+{full_memory_text}
 </PAST_CONVERSATIONS>
 """
     llm_request.append_instructions([si])

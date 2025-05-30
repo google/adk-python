@@ -12,261 +12,167 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from contextlib import AsyncExitStack
-from types import TracebackType
-from typing import Any, List, Optional, Tuple, Type
+from __future__ import annotations
+
+import logging
+import sys
+from typing import List
+from typing import Optional
+from typing import TextIO
+from typing import Union
+
+from ...agents.readonly_context import ReadonlyContext
+from ..base_tool import BaseTool
+from ..base_toolset import BaseToolset
+from ..base_toolset import ToolPredicate
+from .mcp_session_manager import MCPSessionManager
+from .mcp_session_manager import retry_on_closed_resource
+from .mcp_session_manager import SseServerParams
+from .mcp_session_manager import StreamableHTTPServerParams
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
 try:
-  from mcp import ClientSession, StdioServerParameters
-  from mcp.client.sse import sse_client
-  from mcp.client.stdio import stdio_client
+  from mcp import StdioServerParameters
   from mcp.types import ListToolsResult
 except ImportError as e:
   import sys
 
   if sys.version_info < (3, 10):
     raise ImportError(
-        'MCP Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
+        "MCP Tool requires Python 3.10 or above. Please upgrade your Python"
+        " version."
     ) from e
   else:
     raise e
 
-from pydantic import BaseModel
-
 from .mcp_tool import MCPTool
 
-
-class SseServerParams(BaseModel):
-  url: str
-  headers: dict[str, Any] | None = None
-  timeout: float = 5
-  sse_read_timeout: float = 60 * 5
+logger = logging.getLogger("google_adk." + __name__)
 
 
-class MCPToolset:
+class MCPToolset(BaseToolset):
   """Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
 
+  This toolset manages the connection to an MCP server and provides tools
+  that can be used by an agent. It properly implements the BaseToolset
+  interface for easy integration with the agent framework.
+
   Usage:
-  Example 1: (using from_server helper):
-  ```
-  async def load_tools():
-    return await MCPToolset.from_server(
+  ```python
+  toolset = MCPToolset(
       connection_params=StdioServerParameters(
           command='npx',
           args=["-y", "@modelcontextprotocol/server-filesystem"],
-          )
-    )
-
-  # Use the tools in an LLM agent
-  tools, exit_stack = await load_tools()
-  agent = LlmAgent(
-      tools=tools
+      ),
+      tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
   )
-  ...
-  await exit_stack.aclose()
+
+  # Use in an agent
+  agent = LlmAgent(
+      model='gemini-2.0-flash',
+      name='enterprise_assistant',
+      instruction='Help user accessing their file systems',
+      tools=[toolset],
+  )
+
+  # Cleanup is handled automatically by the agent framework
+  # But you can also manually close if needed:
+  # await toolset.close()
   ```
-
-  Example 2: (using `async with`):
-
-  ```
-  async def load_tools():
-    async with MCPToolset(
-      connection_params=SseServerParams(url="http://0.0.0.0:8090/sse")
-    ) as toolset:
-      tools = await toolset.load_tools()
-
-      agent = LlmAgent(
-          ...
-          tools=tools
-      )
-  ```
-
-  Example 3: (provide AsyncExitStack):
-  ```
-  async def load_tools():
-    async_exit_stack = AsyncExitStack()
-    toolset = MCPToolset(
-      connection_params=StdioServerParameters(...),
-    )
-    async_exit_stack.enter_async_context(toolset)
-    tools = await toolset.load_tools()
-    agent = LlmAgent(
-        ...
-        tools=tools
-    )
-    ...
-    await async_exit_stack.aclose()
-
-  ```
-
-  Attributes:
-    connection_params: The connection parameters to the MCP server. Can be
-      either `StdioServerParameters` or `SseServerParams`.
-    exit_stack: The async exit stack to manage the connection to the MCP server.
-    session: The MCP session being initialized with the connection.
   """
 
   def __init__(
-      self, *, connection_params: StdioServerParameters | SseServerParams
+      self,
+      *,
+      connection_params: (
+          StdioServerParameters | SseServerParams | StreamableHTTPServerParams
+      ),
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      errlog: TextIO = sys.stderr,
   ):
     """Initializes the MCPToolset.
-
-    Usage:
-    Example 1: (using from_server helper):
-    ```
-    async def load_tools():
-      return await MCPToolset.from_server(
-        connection_params=StdioServerParameters(
-            command='npx',
-            args=["-y", "@modelcontextprotocol/server-filesystem"],
-            )
-      )
-
-    # Use the tools in an LLM agent
-    tools, exit_stack = await load_tools()
-    agent = LlmAgent(
-        tools=tools
-    )
-    ...
-    await exit_stack.aclose()
-    ```
-
-    Example 2: (using `async with`):
-
-    ```
-    async def load_tools():
-      async with MCPToolset(
-        connection_params=SseServerParams(url="http://0.0.0.0:8090/sse")
-      ) as toolset:
-        tools = await toolset.load_tools()
-
-        agent = LlmAgent(
-            ...
-            tools=tools
-        )
-    ```
-
-    Example 3: (provide AsyncExitStack):
-    ```
-    async def load_tools():
-      async_exit_stack = AsyncExitStack()
-      toolset = MCPToolset(
-        connection_params=StdioServerParameters(...),
-      )
-      async_exit_stack.enter_async_context(toolset)
-      tools = await toolset.load_tools()
-      agent = LlmAgent(
-          ...
-          tools=tools
-      )
-      ...
-      await async_exit_stack.aclose()
-
-    ```
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
         `StdioServerParameters` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseServerParams` for a local/remote SSE server.
+        `python3`); or `SseServerParams` for a local/remote SSE server; or
+        `StreamableHTTPServerParams` for local/remote Streamable http server.
+      tool_filter: Optional filter to select specific tools. Can be either:
+            - A list of tool names to include
+            - A ToolPredicate function for custom filtering logic
+        errlog: TextIO stream for error logging.
     """
+    super().__init__(tool_filter=tool_filter)
+
     if not connection_params:
-      raise ValueError('Missing connection params in MCPToolset.')
-    self.connection_params = connection_params
-    self.exit_stack = AsyncExitStack()
+      raise ValueError("Missing connection params in MCPToolset.")
 
-  @classmethod
-  async def from_server(
-      cls,
-      *,
-      connection_params: StdioServerParameters | SseServerParams,
-      async_exit_stack: Optional[AsyncExitStack] = None,
-  ) -> Tuple[List[MCPTool], AsyncExitStack]:
-    """Retrieve all tools from the MCP connection.
+    self._connection_params = connection_params
+    self._errlog = errlog
 
-    Usage:
-    ```
-    async def load_tools():
-      tools, exit_stack = await MCPToolset.from_server(
-        connection_params=StdioServerParameters(
-            command='npx',
-            args=["-y", "@modelcontextprotocol/server-filesystem"],
-        )
-      )
-    ```
+    # Create the session manager that will handle the MCP connection
+    self._mcp_session_manager = MCPSessionManager(
+        connection_params=self._connection_params,
+        errlog=self._errlog,
+    )
+
+    self._session = None
+
+  @retry_on_closed_resource("_reinitialize_session")
+  async def get_tools(
+      self,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> List[BaseTool]:
+    """Return all tools in the toolset based on the provided context.
 
     Args:
-      connection_params: The connection parameters to the MCP server.
-      async_exit_stack: The async exit stack to use. If not provided, a new
-        AsyncExitStack will be created.
+        readonly_context: Context used to filter tools available to the agent.
+            If None, all tools in the toolset are returned.
 
     Returns:
-      A tuple of the list of MCPTools and the AsyncExitStack.
-      - tools: The list of MCPTools.
-      - async_exit_stack: The AsyncExitStack used to manage the connection to
-        the MCP server. Use `await async_exit_stack.aclose()` to close the
-        connection when server shuts down.
+        List[BaseTool]: A list of tools available under the specified context.
     """
-    toolset = cls(connection_params=connection_params)
-    async_exit_stack = async_exit_stack or AsyncExitStack()
-    await async_exit_stack.enter_async_context(toolset)
-    tools = await toolset.load_tools()
-    return (tools, async_exit_stack)
+    # Get session from session manager
+    if not self._session:
+      self._session = await self._mcp_session_manager.create_session()
 
-  async def _initialize(self) -> ClientSession:
-    """Connects to the MCP Server and initializes the ClientSession."""
-    if isinstance(self.connection_params, StdioServerParameters):
-      client = stdio_client(self.connection_params)
-    elif isinstance(self.connection_params, SseServerParams):
-      client = sse_client(
-          url=self.connection_params.url,
-          headers=self.connection_params.headers,
-          timeout=self.connection_params.timeout,
-          sse_read_timeout=self.connection_params.sse_read_timeout,
-      )
-    else:
-      raise ValueError(
-          'Unable to initialize connection. Connection should be'
-          ' StdioServerParameters or SseServerParams, but got'
-          f' {self.connection_params}'
+    # Fetch available tools from the MCP server
+    tools_response: ListToolsResult = await self._session.list_tools()
+
+    # Apply filtering based on context and tool_filter
+    tools = []
+    for tool in tools_response.tools:
+      mcp_tool = MCPTool(
+          mcp_tool=tool,
+          mcp_session_manager=self._mcp_session_manager,
       )
 
-    transports = await self.exit_stack.enter_async_context(client)
-    self.session = await self.exit_stack.enter_async_context(
-        ClientSession(*transports)
-    )
-    await self.session.initialize()
-    return self.session
+      if self._is_tool_selected(mcp_tool, readonly_context):
+        tools.append(mcp_tool)
+    return tools
 
-  async def _exit(self):
-    """Closes the connection to MCP Server."""
-    await self.exit_stack.aclose()
+  async def _reinitialize_session(self):
+    """Reinitializes the session when connection is lost."""
+    # Close the old session and clear cache
+    await self._mcp_session_manager.close()
+    self._session = await self._mcp_session_manager.create_session()
 
-  async def load_tools(self) -> List[MCPTool]:
-    """Loads all tools from the MCP Server.
+    # Tools will be reloaded on next get_tools call
 
-    Returns:
-      A list of MCPTools imported from the MCP Server.
+  async def close(self) -> None:
+    """Performs cleanup and releases resources held by the toolset.
+
+    This method closes the MCP session and cleans up all associated resources.
+    It's designed to be safe to call multiple times and handles cleanup errors
+    gracefully to avoid blocking application shutdown.
     """
-    tools_response: ListToolsResult = await self.session.list_tools()
-    return [
-        MCPTool(mcp_tool=tool, mcp_session=self.session)
-        for tool in tools_response.tools
-    ]
-
-  async def __aenter__(self):
     try:
-      await self._initialize()
-      return self
+      await self._mcp_session_manager.close()
     except Exception as e:
-      raise e
-
-  async def __aexit__(
-      self,
-      exc_type: Optional[Type[BaseException]],
-      exc: Optional[BaseException],
-      tb: Optional[TracebackType],
-  ) -> None:
-    await self._exit()
+      # Log the error but don't re-raise to avoid blocking shutdown
+      print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
+    finally:
+      # Clear cached tools
+      self._tools_cache = None
+      self._tools_loaded = False

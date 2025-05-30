@@ -1,0 +1,73 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Check Pyink Formatting
+
+on:
+  pull_request:
+    paths:
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+      - 'pyproject.toml'
+
+jobs:
+  pyink-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install pyink
+        run: |
+          pip install pyink
+
+      - name: Detect changed Python files
+        id: detect_changes
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
+          echo "CHANGED_FILES=${CHANGED_FILES}" >> $GITHUB_ENV
+
+      - name: Run pyink on changed files
+        if: env.CHANGED_FILES != ''
+        run: |
+          echo "Changed Python files:"
+          echo "$CHANGED_FILES"
+
+          # Run pyink --check
+          set +e
+          pyink --check --config pyproject.toml $CHANGED_FILES
+          RESULT=$?
+          set -e
+
+          if [ $RESULT -ne 0 ]; then
+            echo ""
+            echo "❌ Pyink formatting check failed!"
+            echo "👉 To fix formatting, run locally:"
+            echo ""
+            echo "    pyink --config pyproject.toml $CHANGED_FILES"
+            echo ""
+            exit $RESULT
+          fi
+
+      - name: No changed Python files detected
+        if: env.CHANGED_FILES == ''
+        run: |
+          echo "No Python files changed. Skipping pyink check."

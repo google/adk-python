@@ -16,9 +16,12 @@ from __future__ import annotations
 
 from types import MappingProxyType
 from typing import Any
+from typing import Optional
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+  from google.genai import types
+
   from .invocation_context import InvocationContext
 
 
@@ -29,6 +32,11 @@ class ReadonlyContext:
       invocation_context: InvocationContext,
   ) -> None:
     self._invocation_context = invocation_context
+
+  @property
+  def user_content(self) -> Optional[types.Content]:
+    """The user content that started this invocation. READONLY field."""
+    return self._invocation_context.user_content
 
   @property
   def invocation_id(self) -> str:

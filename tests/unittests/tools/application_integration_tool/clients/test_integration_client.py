@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import re
 from unittest import mock
 
 from google.adk.tools.application_integration_tool.clients.connections_client import ConnectionsClient
@@ -42,8 +43,8 @@ def integration_name():
 
 
 @pytest.fixture
-def trigger_name():
-  return "test-trigger"
+def triggers():
+  return ["test-trigger", "test-trigger2"]
 
 
 @pytest.fixture
@@ -76,13 +77,13 @@ def mock_connections_client():
 class TestIntegrationClient:
 
   def test_initialization(
-      self, project, location, integration_name, trigger_name, connection_name
+      self, project, location, integration_name, triggers, connection_name
   ):
     client = IntegrationClient(
         project=project,
         location=location,
         integration=integration_name,
-        trigger=trigger_name,
+        triggers=triggers,
         connection=connection_name,
         entity_operations={"entity": ["LIST"]},
         actions=["action1"],
@@ -91,7 +92,7 @@ class TestIntegrationClient:
     assert client.project == project
     assert client.location == location
     assert client.integration == integration_name
-    assert client.trigger == trigger_name
+    assert client.triggers == triggers
     assert client.connection == connection_name
     assert client.entity_operations == {"entity": ["LIST"]}
     assert client.actions == ["action1"]
@@ -105,7 +106,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_credentials,
       mock_connections_client,
   ):
@@ -114,16 +115,19 @@ class TestIntegrationClient:
     mock_response.status_code = 200
     mock_response.json.return_value = {"openApiSpec": json.dumps(expected_spec)}
 
-    with mock.patch.object(
-        IntegrationClient,
-        "_get_access_token",
-        return_value=mock_credentials.token,
-    ), mock.patch("requests.post", return_value=mock_response):
+    with (
+        mock.patch.object(
+            IntegrationClient,
+            "_get_access_token",
+            return_value=mock_credentials.token,
+        ),
+        mock.patch("requests.post", return_value=mock_response),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -140,7 +144,7 @@ class TestIntegrationClient:
           json={
               "apiTriggerResources": [{
                   "integrationResource": integration_name,
-                  "triggerId": [trigger_name],
+                  "triggerId": triggers,
               }],
               "fileFormat": "JSON",
           },
@@ -151,7 +155,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_connections_client,
   ):
     with mock.patch.object(
@@ -166,7 +170,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -190,7 +194,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_credentials,
       status_code,
       response_text,
@@ -202,16 +206,19 @@ class TestIntegrationClient:
         f"HTTP error {status_code}: {response_text}"
     )
 
-    with mock.patch.object(
-        IntegrationClient,
-        "_get_access_token",
-        return_value=mock_credentials.token,
-    ), mock.patch("requests.post", return_value=mock_response):
+    with (
+        mock.patch.object(
+            IntegrationClient,
+            "_get_access_token",
+            return_value=mock_credentials.token,
+        ),
+        mock.patch("requests.post", return_value=mock_response),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -220,10 +227,9 @@ class TestIntegrationClient:
       with pytest.raises(
           ValueError,
           match=(
-              "Invalid request. Please check the provided values of"
-              f" project\\({project}\\), location\\({location}\\),"
-              f" integration\\({integration_name}\\) and"
-              f" trigger\\({trigger_name}\\)."
+              r"Invalid request\. Please check the provided values of"
+              rf" project\({project}\), location\({location}\),"
+              rf" integration\({integration_name}\)."
           ),
       ):
         client.get_openapi_spec_for_integration()
@@ -233,7 +239,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_credentials,
       mock_connections_client,
   ):
@@ -243,16 +249,19 @@ class TestIntegrationClient:
         "Internal Server Error"
     )
 
-    with mock.patch.object(
-        IntegrationClient,
-        "_get_access_token",
-        return_value=mock_credentials.token,
-    ), mock.patch("requests.post", return_value=mock_response):
+    with (
+        mock.patch.object(
+            IntegrationClient,
+            "_get_access_token",
+            return_value=mock_credentials.token,
+        ),
+        mock.patch("requests.post", return_value=mock_response),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -266,22 +275,25 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       mock_credentials,
       mock_connections_client,
   ):
-    with mock.patch.object(
-        IntegrationClient,
-        "_get_access_token",
-        return_value=mock_credentials.token,
-    ), mock.patch(
-        "requests.post", side_effect=Exception("Something went wrong")
+    with (
+        mock.patch.object(
+            IntegrationClient,
+            "_get_access_token",
+            return_value=mock_credentials.token,
+        ),
+        mock.patch(
+            "requests.post", side_effect=Exception("Something went wrong")
+        ),
     ):
       client = IntegrationClient(
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=None,
           entity_operations=None,
           actions=None,
@@ -299,7 +311,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=None,
         actions=None,
@@ -344,7 +356,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=entity_operations,
         actions=None,
@@ -413,7 +425,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=None,
         actions=actions,
@@ -464,7 +476,7 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=None,
-        trigger=None,
+        triggers=None,
         connection=connection_name,
         entity_operations=entity_operations,
         actions=None,
@@ -476,7 +488,7 @@ class TestIntegrationClient:
       client.get_openapi_spec_for_connection()
 
   def test_get_access_token_with_service_account_json(
-      self, project, location, integration_name, trigger_name, connection_name
+      self, project, location, integration_name, triggers, connection_name
   ):
     service_account_json = json.dumps({
         "client_email": "test@example.com",
@@ -486,15 +498,18 @@ class TestIntegrationClient:
     mock_creds.token = "sa_token"
     mock_creds.expired = False
 
-    with mock.patch(
-        "google.oauth2.service_account.Credentials.from_service_account_info",
-        return_value=mock_creds,
-    ), mock.patch.object(mock_creds, "refresh", return_value=None):
+    with (
+        mock.patch(
+            "google.oauth2.service_account.Credentials.from_service_account_info",
+            return_value=mock_creds,
+        ),
+        mock.patch.object(mock_creds, "refresh", return_value=None),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=connection_name,
           entity_operations=None,
           actions=None,
@@ -513,20 +528,23 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       connection_name,
       mock_credentials,
   ):
     mock_credentials.expired = False
-    with mock.patch(
-        "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
-        return_value=(mock_credentials, "test_project_id"),
-    ), mock.patch.object(mock_credentials, "refresh", return_value=None):
+    with (
+        mock.patch(
+            "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
+            return_value=(mock_credentials, "test_project_id"),
+        ),
+        mock.patch.object(mock_credentials, "refresh", return_value=None),
+    ):
       client = IntegrationClient(
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=connection_name,
           entity_operations=None,
           actions=None,
@@ -536,20 +554,23 @@ class TestIntegrationClient:
       assert token == "test_token"
 
   def test_get_access_token_no_valid_credentials(
-      self, project, location, integration_name, trigger_name, connection_name
+      self, project, location, integration_name, triggers, connection_name
   ):
-    with mock.patch(
-        "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
-        return_value=(None, None),
-    ), mock.patch(
-        "google.oauth2.service_account.Credentials.from_service_account_info",
-        return_value=None,
+    with (
+        mock.patch(
+            "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
+            return_value=(None, None),
+        ),
+        mock.patch(
+            "google.oauth2.service_account.Credentials.from_service_account_info",
+            return_value=None,
+        ),
     ):
       client = IntegrationClient(
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=connection_name,
           entity_operations=None,
           actions=None,
@@ -570,7 +591,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       connection_name,
       mock_credentials,
   ):
@@ -580,16 +601,19 @@ class TestIntegrationClient:
         project=project,
         location=location,
         integration=integration_name,
-        trigger=trigger_name,
+        triggers=triggers,
         connection=connection_name,
         entity_operations=None,
         actions=None,
         service_account_json=None,
     )
     client.credential_cache = mock_credentials  # Simulate a cached credential
-    with mock.patch("google.auth.default") as mock_default, mock.patch(
-        "google.oauth2.service_account.Credentials.from_service_account_info"
-    ) as mock_sa:
+    with (
+        mock.patch("google.auth.default") as mock_default,
+        mock.patch(
+            "google.oauth2.service_account.Credentials.from_service_account_info"
+        ) as mock_sa,
+    ):
       token = client._get_access_token()
       assert token == "cached_token"
       mock_default.assert_not_called()
@@ -600,7 +624,7 @@ class TestIntegrationClient:
       project,
       location,
       integration_name,
-      trigger_name,
+      triggers,
       connection_name,
       mock_credentials,
   ):
@@ -618,7 +642,7 @@ class TestIntegrationClient:
           project=project,
           location=location,
           integration=integration_name,
-          trigger=trigger_name,
+          triggers=triggers,
           connection=connection_name,
           entity_operations=None,
           actions=None,

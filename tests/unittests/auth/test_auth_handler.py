@@ -20,14 +20,13 @@ from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
-import pytest
-
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.auth_tool import AuthConfig
+import pytest
 
 
 # Mock classes for testing
@@ -58,7 +57,7 @@ class MockOAuth2Session:
     self.redirect_uri = redirect_uri
     self.state = state
 
-  def create_authorization_url(self, url):
+  def create_authorization_url(self, url, **kwargs):
     return f"{url}?client_id={self.client_id}&scope={self.scope}", "mock_state"
 
   def fetch_token(
@@ -126,12 +125,8 @@ def oauth2_credentials_with_token():
           client_id="mock_client_id",
           client_secret="mock_client_secret",
           redirect_uri="https://example.com/callback",
-          token={
-              "access_token": "mock_access_token",
-              "token_type": "bearer",
-              "expires_in": 3600,
-              "refresh_token": "mock_refresh_token",
-          },
+          access_token="mock_access_token",
+          refresh_token="mock_refresh_token",
       ),
   )
 
@@ -242,7 +237,6 @@ class TestGetCredentialKey:
 class TestGenerateAuthUri:
   """Tests for the generate_auth_uri method."""
 
-  @pytest.mark.skip(reason="broken tests")
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_oauth2(self, auth_config):
     """Test generating an auth URI for OAuth2."""
@@ -255,7 +249,6 @@ class TestGenerateAuthUri:
     assert "client_id=mock_client_id" in result.oauth2.auth_uri
     assert result.oauth2.state == "mock_state"
 
-  @pytest.mark.skip(reason="broken tests")
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_openid(
       self, openid_auth_scheme, oauth2_credentials
@@ -458,7 +451,7 @@ class TestParseAndStoreAuthResponse:
     """Test with an OAuth auth scheme."""
     mock_exchange_token.return_value = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(token={"access_token": "exchanged_token"}),
+        oauth2=OAuth2Auth(access_token="exchanged_token"),
     )
 
     handler = AuthHandler(auth_config_with_exchanged)
@@ -573,6 +566,6 @@ class TestExchangeAuthToken:
     handler = AuthHandler(auth_config_with_auth_code)
     result = handler.exchange_auth_token()
 
-    assert result.oauth2.token["access_token"] == "mock_access_token"
-    assert result.oauth2.token["refresh_token"] == "mock_refresh_token"
+    assert result.oauth2.access_token == "mock_access_token"
+    assert result.oauth2.refresh_token == "mock_refresh_token"
     assert result.auth_type == AuthCredentialTypes.OAUTH2

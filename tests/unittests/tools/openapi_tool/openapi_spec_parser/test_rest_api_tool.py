@@ -63,7 +63,7 @@ class TestRestApiTool:
     return mock_parser
 
   @pytest.fixture
-  def sample_endpiont(self):
+  def sample_endpoint(self):
     return OperationEndpoint(
         base_url="https://example.com", path="/test", method="GET"
     )
@@ -133,7 +133,7 @@ class TestRestApiTool:
 
   def test_init(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_operation,
       sample_auth_scheme,
       sample_auth_credential,
@@ -141,14 +141,14 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_scheme=sample_auth_scheme,
         auth_credential=sample_auth_credential,
     )
     assert tool.name == "test_tool"
     assert tool.description == "Test Tool"
-    assert tool.endpoint == sample_endpiont
+    assert tool.endpoint == sample_endpoint
     assert tool.operation == sample_operation
     assert tool.auth_credential == sample_auth_credential
     assert tool.auth_scheme == sample_auth_scheme
@@ -156,7 +156,7 @@ class TestRestApiTool:
 
   def test_from_parsed_operation_str(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_api_parameters,
       sample_return_parameter,
       sample_operation,
@@ -164,7 +164,7 @@ class TestRestApiTool:
     parsed_operation_str = json.dumps({
         "name": "test_operation",
         "description": "Test Description",
-        "endpoint": sample_endpiont.model_dump(),
+        "endpoint": sample_endpoint.model_dump(),
         "operation": sample_operation.model_dump(),
         "auth_scheme": None,
         "auth_credential": None,
@@ -176,12 +176,12 @@ class TestRestApiTool:
     assert tool.name == "test_operation"
 
   def test_get_declaration(
-      self, sample_endpiont, sample_operation, mock_operation_parser
+      self, sample_endpoint, sample_operation, mock_operation_parser
   ):
     tool = RestApiTool(
         name="test_tool",
         description="Test description",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         should_parse_operation=False,
     )
@@ -200,7 +200,7 @@ class TestRestApiTool:
       self,
       mock_request,
       mock_tool_context,
-      sample_endpiont,
+      sample_endpoint,
       sample_operation,
       sample_auth_scheme,
       sample_auth_credential,
@@ -212,7 +212,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_scheme=sample_auth_scheme,
         auth_credential=sample_auth_credential,
@@ -230,7 +230,7 @@ class TestRestApiTool:
   def test_call_auth_pending(
       self,
       mock_request,
-      sample_endpiont,
+      sample_endpoint,
       sample_operation,
       sample_auth_scheme,
       sample_auth_credential,
@@ -239,7 +239,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_scheme=sample_auth_scheme,
         auth_credential=sample_auth_credential,
@@ -260,7 +260,7 @@ class TestRestApiTool:
       }
 
   def test_prepare_request_params_query_body(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     # Create a mock Operation object
     mock_operation = Operation(
@@ -290,7 +290,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -329,7 +329,7 @@ class TestRestApiTool:
     assert request_params["params"] == {"testQueryParam": "query_value"}
 
   def test_prepare_request_params_array(
-      self, sample_endpiont, sample_auth_scheme, sample_auth_credential
+      self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -347,7 +347,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -369,7 +369,7 @@ class TestRestApiTool:
     assert request_params["json"] == ["item1", "item2"]
 
   def test_prepare_request_params_string(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -382,7 +382,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -403,7 +403,7 @@ class TestRestApiTool:
     assert request_params["headers"]["Content-Type"] == "text/plain"
 
   def test_prepare_request_params_form_data(
-      self, sample_endpiont, sample_auth_scheme, sample_auth_credential
+      self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -421,7 +421,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -445,7 +445,7 @@ class TestRestApiTool:
     )
 
   def test_prepare_request_params_multipart(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -467,7 +467,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -488,7 +488,7 @@ class TestRestApiTool:
     assert request_params["headers"]["Content-Type"] == "multipart/form-data"
 
   def test_prepare_request_params_octet_stream(
-      self, sample_endpiont, sample_auth_scheme, sample_auth_credential
+      self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -503,7 +503,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -526,13 +526,13 @@ class TestRestApiTool:
     )
 
   def test_prepare_request_params_path_param(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     mock_operation = Operation(operationId="test_op")
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -559,7 +559,7 @@ class TestRestApiTool:
 
   def test_prepare_request_params_header_param(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_auth_credential,
       sample_auth_scheme,
       sample_operation,
@@ -567,7 +567,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -588,7 +588,7 @@ class TestRestApiTool:
 
   def test_prepare_request_params_cookie_param(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_auth_credential,
       sample_auth_scheme,
       sample_operation,
@@ -596,7 +596,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -616,7 +616,7 @@ class TestRestApiTool:
     assert request_params["cookies"]["session_id"] == "cookie_value"
 
   def test_prepare_request_params_multiple_mime_types(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     # Test what happens when multiple mime types are specified. It should take
     # the first one.
@@ -634,7 +634,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -655,7 +655,7 @@ class TestRestApiTool:
 
   def test_prepare_request_params_unknown_parameter(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_auth_credential,
       sample_auth_scheme,
       sample_operation,
@@ -663,7 +663,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -721,7 +721,7 @@ class TestRestApiTool:
 
   def test_prepare_request_params_no_unrecognized_query_parameter(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_auth_credential,
       sample_auth_scheme,
       sample_operation,
@@ -729,7 +729,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -750,13 +750,13 @@ class TestRestApiTool:
 
   def test_prepare_request_params_no_credential(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_operation,
   ):
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=None,
         auth_scheme=None,
@@ -790,13 +790,13 @@ class TestToGeminiSchema:
     result = to_gemini_schema({})
     assert isinstance(result, Schema)
     assert result.type == Type.OBJECT
-    assert result.properties == {"dummy_DO_NOT_GENERATE": Schema(type="string")}
+    assert result.properties is None
 
   def test_to_gemini_schema_dict_with_only_object_type(self):
     result = to_gemini_schema({"type": "object"})
     assert isinstance(result, Schema)
     assert result.type == Type.OBJECT
-    assert result.properties == {"dummy_DO_NOT_GENERATE": Schema(type="string")}
+    assert result.properties is None
 
   def test_to_gemini_schema_basic_types(self):
     openapi_schema = {
@@ -813,6 +813,42 @@ class TestToGeminiSchema:
     assert gemini_schema.properties["name"].type == Type.STRING
     assert gemini_schema.properties["age"].type == Type.INTEGER
     assert gemini_schema.properties["is_active"].type == Type.BOOLEAN
+
+  def test_to_gemini_schema_array_string_types(self):
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "boolean_field": {"type": "boolean"},
+            "nonnullable_string": {"type": ["string"]},
+            "nullable_string": {"type": ["string", "null"]},
+            "nullable_number": {"type": ["null", "integer"]},
+            "object_nullable": {"type": "null"},
+            "multi_types_nullable": {"type": ["string", "null", "integer"]},
+            "empty_default_object": {},
+        },
+    }
+    gemini_schema = to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties["boolean_field"].type == Type.BOOLEAN
+
+    assert gemini_schema.properties["nonnullable_string"].type == Type.STRING
+    assert not gemini_schema.properties["nonnullable_string"].nullable
+
+    assert gemini_schema.properties["nullable_string"].type == Type.STRING
+    assert gemini_schema.properties["nullable_string"].nullable
+
+    assert gemini_schema.properties["nullable_number"].type == Type.INTEGER
+    assert gemini_schema.properties["nullable_number"].nullable
+
+    assert gemini_schema.properties["object_nullable"].type == Type.OBJECT
+    assert gemini_schema.properties["object_nullable"].nullable
+
+    assert gemini_schema.properties["multi_types_nullable"].type == Type.STRING
+    assert gemini_schema.properties["multi_types_nullable"].nullable
+
+    assert gemini_schema.properties["empty_default_object"].type == Type.OBJECT
+    assert not gemini_schema.properties["empty_default_object"].nullable
 
   def test_to_gemini_schema_nested_objects(self):
     openapi_schema = {
@@ -895,7 +931,15 @@ class TestToGeminiSchema:
   def test_to_gemini_schema_nested_dict(self):
     openapi_schema = {
         "type": "object",
-        "properties": {"metadata": {"key1": "value1", "key2": 123}},
+        "properties": {
+            "metadata": {
+                "type": "object",
+                "properties": {
+                    "key1": {"type": "object"},
+                    "key2": {"type": "string"},
+                },
+            }
+        },
     }
     gemini_schema = to_gemini_schema(openapi_schema)
     # Since metadata is not properties nor item, it will call to_gemini_schema recursively.
@@ -903,9 +947,15 @@ class TestToGeminiSchema:
     assert (
         gemini_schema.properties["metadata"].type == Type.OBJECT
     )  # add object type by default
-    assert gemini_schema.properties["metadata"].properties == {
-        "dummy_DO_NOT_GENERATE": Schema(type="string")
-    }
+    assert len(gemini_schema.properties["metadata"].properties) == 2
+    assert (
+        gemini_schema.properties["metadata"].properties["key1"].type
+        == Type.OBJECT
+    )
+    assert (
+        gemini_schema.properties["metadata"].properties["key2"].type
+        == Type.STRING
+    )
 
   def test_to_gemini_schema_ignore_title_default_format(self):
     openapi_schema = {

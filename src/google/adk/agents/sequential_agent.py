@@ -23,6 +23,7 @@ from typing_extensions import override
 from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from .base_agent import BaseAgent
+from .llm_agent import LlmAgent
 
 
 class SequentialAgent(BaseAgent):
@@ -40,6 +41,36 @@ class SequentialAgent(BaseAgent):
   async def _run_live_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    """Implementation for live SequentialAgent.
+
+    Compared to non-live case, live agents process a continous streams of audio
+    or video, so it doesn't have a way to tell if it's finished and should pass
+    to next agent or not. So we introduce a task_completed() function so the
+    model can call this function to signal that it's finished the task and we
+    can move on to next agent.
+
+    Args:
+      ctx: The invocation context of the agent.
+    """
+    # There is no way to know if it's using live during init phase so we have to init it here
+    for sub_agent in self.sub_agents:
+      # add tool
+      def task_completed():
+        """
+        Signals that the model has successfully completed the user's question
+        or task.
+        """
+        return "Task completion signaled."
+
+      if isinstance(sub_agent, LlmAgent):
+        # Use function name to dedupe.
+        if task_completed.__name__ not in sub_agent.tools:
+          sub_agent.tools.append(task_completed)
+          sub_agent.instruction += f"""If you finished the user' request
+          according to its description, call {task_completed.__name__} function
+          to exit so the next agents can take over. When calling this function,
+          do not generate any text other than the function call.'"""
+
     for sub_agent in self.sub_agents:
       async for event in sub_agent.run_live(ctx):
         yield event

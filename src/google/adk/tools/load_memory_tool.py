@@ -16,27 +16,62 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from google.genai import types
+from pydantic import BaseModel
+from pydantic import Field
 from typing_extensions import override
 
+from ..memory.memory_entry import MemoryEntry
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..models import LlmRequest
-  from ..memory.base_memory_service import MemoryResult
 
 
-def load_memory(query: str, tool_context: ToolContext) -> 'list[MemoryResult]':
-  """Loads the memory for the current user."""
-  response = tool_context.search_memory(query)
-  return response.memories
+class LoadMemoryResponse(BaseModel):
+  memories: list[MemoryEntry] = Field(default_factory=list)
+
+
+async def load_memory(
+    query: str, tool_context: ToolContext
+) -> LoadMemoryResponse:
+  """Loads the memory for the current user.
+
+  Args:
+    query: The query to load the memory for.
+
+  Returns:
+    A list of memory results.
+  """
+  search_memory_response = await tool_context.search_memory(query)
+  return LoadMemoryResponse(memories=search_memory_response.memories)
 
 
 class LoadMemoryTool(FunctionTool):
-  """A tool that loads the memory for the current user."""
+  """A tool that loads the memory for the current user.
+
+  NOTE: Currently this tool only uses text part from the memory.
+  """
 
   def __init__(self):
     super().__init__(load_memory)
+
+  @override
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                'query': types.Schema(
+                    type=types.Type.STRING,
+                )
+            },
+            required=['query'],
+        ),
+    )
 
   @override
   async def process_llm_request(

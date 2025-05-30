@@ -19,12 +19,14 @@ from __future__ import annotations
 from functools import cached_property
 import logging
 import os
+from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
 from typing import Iterable
 from typing import Literal
-from typing import Optional, Union
+from typing import Optional
 from typing import TYPE_CHECKING
+from typing import Union
 
 from anthropic import AnthropicVertex
 from anthropic import NOT_GIVEN
@@ -41,7 +43,7 @@ if TYPE_CHECKING:
 
 __all__ = ["Claude"]
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 MAX_TOKEN = 1024
 
@@ -139,16 +141,34 @@ def message_to_generate_content_response(
           role="model",
           parts=[content_block_to_part(cb) for cb in message.content],
       ),
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=message.usage.input_tokens,
+          candidates_token_count=message.usage.output_tokens,
+          total_token_count=(
+              message.usage.input_tokens + message.usage.output_tokens
+          ),
+      ),
       # TODO: Deal with these later.
       # finish_reason=to_google_genai_finish_reason(message.stop_reason),
-      # usage_metadata=types.GenerateContentResponseUsageMetadata(
-      #     prompt_token_count=message.usage.input_tokens,
-      #     candidates_token_count=message.usage.output_tokens,
-      #     total_token_count=(
-      #         message.usage.input_tokens + message.usage.output_tokens
-      #     ),
-      # ),
   )
+
+
+def _update_type_string(value_dict: dict[str, Any]):
+  """Updates 'type' field to expected JSON schema format."""
+  if "type" in value_dict:
+    value_dict["type"] = value_dict["type"].lower()
+
+  if "items" in value_dict:
+    # 'type' field could exist for items as well, this would be the case if
+    # items represent primitive types.
+    _update_type_string(value_dict["items"])
+
+    if "properties" in value_dict["items"]:
+      # There could be properties as well on the items, especially if the items
+      # are complex object themselves. We recursively traverse each individual
+      # property as well and fix the "type" value.
+      for _, value in value_dict["items"]["properties"].items():
+        _update_type_string(value)
 
 
 def function_declaration_to_tool_param(
@@ -163,8 +183,7 @@ def function_declaration_to_tool_param(
   ):
     for key, value in function_declaration.parameters.properties.items():
       value_dict = value.model_dump(exclude_none=True)
-      if "type" in value_dict:
-        value_dict["type"] = value_dict["type"].lower()
+      _update_type_string(value_dict)
       properties[key] = value_dict
 
   return anthropic_types.ToolParam(
@@ -178,12 +197,18 @@ def function_declaration_to_tool_param(
 
 
 class Claude(BaseLlm):
+  """ "Integration with Claude models served from Vertex AI.
+
+  Attributes:
+    model: The name of the Claude model.
+  """
+
   model: str = "claude-3-5-sonnet-v2@20241022"
 
   @staticmethod
   @override
   def supported_models() -> list[str]:
-    return [r"claude-3-.*"]
+    return [r"claude-3-.*", r"claude-.*-4.*"]
 
   @override
   async def generate_content_async(

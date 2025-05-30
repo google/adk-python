@@ -33,8 +33,31 @@ class FunctionTool(BaseTool):
   """
 
   def __init__(self, func: Callable[..., Any]):
-    super().__init__(name=func.__name__, description=func.__doc__)
+    """Extract metadata from a callable object."""
+    name = ''
+    doc = ''
+    # Handle different types of callables
+    if hasattr(func, '__name__'):
+      # Regular functions, unbound methods, etc.
+      name = func.__name__
+    elif hasattr(func, '__class__'):
+      # Callable objects, bound methods, etc.
+      name = func.__class__.__name__
+
+    # Get documentation (prioritize direct __doc__ if available)
+    if hasattr(func, '__doc__') and func.__doc__:
+      doc = func.__doc__
+    elif (
+        hasattr(func, '__call__')
+        and hasattr(func.__call__, '__doc__')
+        and func.__call__.__doc__
+    ):
+      # For callable objects, try to get docstring from __call__ method
+      doc = func.__call__.__doc__
+
+    super().__init__(name=name, description=doc)
     self.func = func
+    self._ignore_params = ['tool_context', 'input_stream']
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -43,7 +66,7 @@ class FunctionTool(BaseTool):
             func=self.func,
             # The model doesn't understand the function context.
             # input_stream is for streaming tool
-            ignore_params=['tool_context', 'input_stream'],
+            ignore_params=self._ignore_params,
             variant=self._api_variant,
         )
     )
@@ -59,10 +82,34 @@ class FunctionTool(BaseTool):
     if 'tool_context' in signature.parameters:
       args_to_call['tool_context'] = tool_context
 
-    if inspect.iscoroutinefunction(self.func):
-      return await self.func(**args_to_call) or {}
+    # Before invoking the function, we check for if the list of args passed in
+    # has all the mandatory arguments or not.
+    # If the check fails, then we don't invoke the tool and let the Agent know
+    # that there was a missing a input parameter. This will basically help
+    # the underlying model fix the issue and retry.
+    mandatory_args = self._get_mandatory_args()
+    missing_mandatory_args = [
+        arg for arg in mandatory_args if arg not in args_to_call
+    ]
+
+    if missing_mandatory_args:
+      missing_mandatory_args_str = '\n'.join(missing_mandatory_args)
+      error_str = f"""Invoking `{self.name}()` failed as the following mandatory input parameters are not present:
+{missing_mandatory_args_str}
+You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
+      return {'error': error_str}
+
+    # Functions are callable objects, but not all callable objects are functions
+    # checking coroutine function is not enough. We also need to check whether
+    # Callable's __call__ function is a coroutine funciton
+    if (
+        inspect.iscoroutinefunction(self.func)
+        or hasattr(self.func, '__call__')
+        and inspect.iscoroutinefunction(self.func.__call__)
+    ):
+      return await self.func(**args_to_call)
     else:
-      return self.func(**args_to_call) or {}
+      return self.func(**args_to_call)
 
   # TODO(hangfei): fix call live for function stream.
   async def _call_live(
@@ -85,3 +132,28 @@ class FunctionTool(BaseTool):
       args_to_call['tool_context'] = tool_context
     async for item in self.func(**args_to_call):
       yield item
+
+  def _get_mandatory_args(
+      self,
+  ) -> list[str]:
+    """Identifies mandatory parameters (those without default values) for a function.
+
+    Returns:
+      A list of strings, where each string is the name of a mandatory parameter.
+    """
+    signature = inspect.signature(self.func)
+    mandatory_params = []
+
+    for name, param in signature.parameters.items():
+      # A parameter is mandatory if:
+      # 1. It has no default value (param.default is inspect.Parameter.empty)
+      # 2. It's not a variable positional (*args) or variable keyword (**kwargs) parameter
+      #
+      # For more refer to: https://docs.python.org/3/library/inspect.html#inspect.Parameter.kind
+      if param.default == inspect.Parameter.empty and param.kind not in (
+          inspect.Parameter.VAR_POSITIONAL,
+          inspect.Parameter.VAR_KEYWORD,
+      ):
+        mandatory_params.append(name)
+
+    return mandatory_params
