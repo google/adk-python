@@ -246,32 +246,33 @@ async def test_append_event_bytes(service_type):
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
   )
+
+  test_content = types.Content(
+      role='user',
+      parts=[
+          types.Part.from_bytes(data=b'test_image_data', mime_type='image/png'),
+      ],
+  )
+  test_grounding_metadata = types.GroundingMetadata(
+      search_entry_point=types.SearchEntryPoint(sdk_blob=b'test_sdk_blob')
+  )
   event = Event(
       invocation_id='invocation',
       author='user',
-      content=types.Content(
-          role='user',
-          parts=[
-              types.Part.from_bytes(
-                  data=b'test_image_data', mime_type='image/png'
-              ),
-          ],
-      ),
+      content=test_content,
+      grounding_metadata=test_grounding_metadata,
   )
   await session_service.append_event(session=session, event=event)
 
-  assert session.events[0].content.parts[0] == types.Part.from_bytes(
-      data=b'test_image_data', mime_type='image/png'
-  )
+  assert session.events[0].content == test_content
 
   session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   events = session.events
   assert len(events) == 1
-  assert events[0].content.parts[0] == types.Part.from_bytes(
-      data=b'test_image_data', mime_type='image/png'
-  )
+  assert events[0].content == test_content
+  assert events[0].grounding_metadata == test_grounding_metadata
 
 
 @pytest.mark.asyncio
