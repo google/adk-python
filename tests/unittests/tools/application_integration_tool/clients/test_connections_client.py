@@ -222,7 +222,7 @@ class TestConnectionsClient:
           "host": "",
           "authOverrideEnabled": False,
       }
-    
+
   def test_get_connection_details_without_name(
       self, project, location, connection_name, mock_credentials
   ):
@@ -245,7 +245,7 @@ class TestConnectionsClient:
           "host": "",
           "authOverrideEnabled": False,
       }
-      
+
   def test_get_connection_details_error(
       self, project, location, connection_name
   ):
