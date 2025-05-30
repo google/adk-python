@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 from functools import cached_property
 import logging
+import os
 import sys
 from typing import AsyncGenerator
 from typing import cast
@@ -38,8 +39,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("google_adk." + __name__)
 
-_NEW_LINE = "\n"
-_EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
+_NEW_LINE = '\n'
+_EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
+_AGENT_ENGINE_TELEMETRY_TAG = 'remote_reasoning_engine'
+_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_AGENT_ENGINE_ID'
 
 
 class Gemini(BaseLlm):
@@ -180,9 +183,11 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _tracking_headers(self) -> dict[str, str]:
-    framework_label = f"google-adk/{version.__version__}"
-    language_label = "gl-python/" + sys.version.split()[0]
-    version_header_value = f"{framework_label} {language_label}"
+    framework_label = f'google-adk/{version.__version__}'
+    if os.environ.get(_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME):
+      framework_label = f'{framework_label}+{_AGENT_ENGINE_TELEMETRY_TAG}'
+    language_label = 'gl-python/' + sys.version.split()[0]
+    version_header_value = f'{framework_label} {language_label}'
     tracking_headers = {
         "x-goog-api-client": version_header_value,
         "user-agent": version_header_value,
