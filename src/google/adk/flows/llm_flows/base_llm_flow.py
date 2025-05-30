@@ -281,6 +281,12 @@ class BaseLlmFlow(ABC):
         yield event
       if not last_event or last_event.is_final_response():
         break
+      if last_event.partial:
+        # TODO: handle this in BaseLlm level.
+        raise ValueError(
+            f"Last event shouldn't be partial. LLM max output limit may be"
+            f' reached.'
+        )
 
   async def _run_one_step_async(
       self,
@@ -472,14 +478,12 @@ class BaseLlmFlow(ABC):
           yield event
 
   def _get_agent_to_run(
-      self, invocation_context: InvocationContext, transfer_to_agent
+      self, invocation_context: InvocationContext, agent_name: str
   ) -> BaseAgent:
     root_agent = invocation_context.agent.root_agent
-    agent_to_run = root_agent.find_agent(transfer_to_agent)
+    agent_to_run = root_agent.find_agent(agent_name)
     if not agent_to_run:
-      raise ValueError(
-          f'Agent {transfer_to_agent} not found in the agent tree.'
-      )
+      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
     return agent_to_run
 
   async def _call_llm_async(

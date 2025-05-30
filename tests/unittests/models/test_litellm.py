@@ -13,8 +13,10 @@
 # limitations under the License.
 
 
+import json
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
+
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_content
@@ -169,6 +171,101 @@ STREAMING_MODEL_RESPONSE = [
     ),
 ]
 
+MULTIPLE_FUNCTION_CALLS_STREAM = [
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id="call_1",
+                            function=Function(
+                                name="function_1",
+                                arguments='{"arg": "val',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments='ue1"}',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id="call_2",
+                            function=Function(
+                                name="function_2",
+                                arguments='{"arg": "val',
+                            ),
+                            index=1,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments='ue2"}',
+                            ),
+                            index=1,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason="tool_calls",
+            )
+        ]
+    ),
+]
+
+
 @pytest.fixture
 def mock_response():
   return ModelResponse(
@@ -264,57 +361,59 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
 
 
 litellm_append_user_content_test_cases = [
-  pytest.param(
-    LlmRequest(
-      contents=[
-        types.Content(
-          role="developer",
-          parts=[types.Part.from_text(text="Test prompt")]
-        )
-      ]
-    ),
-    2,
-    id="litellm request without user content"
-  ),
-  pytest.param(
-    LlmRequest(
-      contents=[
-        types.Content(
-          role="user",
-          parts=[types.Part.from_text(text="user prompt")]
-        )
-      ]
-    ),
-    1,
-    id="litellm request with user content"
-  ),
-  pytest.param(
-    LlmRequest(
-      contents=[
-        types.Content(
-          role="model",
-          parts=[types.Part.from_text(text="model prompt")]
+    pytest.param(
+        LlmRequest(
+            contents=[
+                types.Content(
+                    role="developer",
+                    parts=[types.Part.from_text(text="Test prompt")],
+                )
+            ]
         ),
-        types.Content(
-          role="user",
-          parts=[types.Part.from_text(text="user prompt")]
-        ),
-        types.Content(
-          role="model",
-          parts=[types.Part.from_text(text="model prompt")]
-        )
-      ]
+        2,
+        id="litellm request without user content",
     ),
-    4,
-    id="user content is not the last message scenario"
-  )
+    pytest.param(
+        LlmRequest(
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text="user prompt")],
+                )
+            ]
+        ),
+        1,
+        id="litellm request with user content",
+    ),
+    pytest.param(
+        LlmRequest(
+            contents=[
+                types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text="model prompt")],
+                ),
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text="user prompt")],
+                ),
+                types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text="model prompt")],
+                ),
+            ]
+        ),
+        4,
+        id="user content is not the last message scenario",
+    ),
 ]
 
+
 @pytest.mark.parametrize(
-    "llm_request, expected_output",
-    litellm_append_user_content_test_cases
+    "llm_request, expected_output", litellm_append_user_content_test_cases
 )
-def test_maybe_append_user_content(lite_llm_instance, llm_request, expected_output):
+def test_maybe_append_user_content(
+    lite_llm_instance, llm_request, expected_output
+):
 
   lite_llm_instance._maybe_append_user_content(llm_request)
 
@@ -1085,3 +1184,76 @@ async def test_generate_content_async_stream_with_usage_metadata(
       ]
       == "string"
   )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_multiple_function_calls(
+    mock_completion, lite_llm_instance
+):
+  """Test handling of multiple function calls with different indices in streaming mode.
+
+  This test verifies that:
+  1. Multiple function calls with different indices are handled correctly
+  2. Arguments and names are properly accumulated for each function call
+  3. The final response contains all function calls with correct indices
+  """
+  mock_completion.return_value = MULTIPLE_FUNCTION_CALLS_STREAM
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[types.Part.from_text(text="Test multiple function calls")],
+          )
+      ],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="function_1",
+                          description="First test function",
+                          parameters=types.Schema(
+                              type=types.Type.OBJECT,
+                              properties={
+                                  "arg": types.Schema(type=types.Type.STRING),
+                              },
+                          ),
+                      ),
+                      types.FunctionDeclaration(
+                          name="function_2",
+                          description="Second test function",
+                          parameters=types.Schema(
+                              type=types.Type.OBJECT,
+                              properties={
+                                  "arg": types.Schema(type=types.Type.STRING),
+                              },
+                          ),
+                      ),
+                  ]
+              )
+          ],
+      ),
+  )
+
+  responses = []
+  async for response in lite_llm_instance.generate_content_async(
+      llm_request, stream=True
+  ):
+    responses.append(response)
+
+  # Verify we got the final response with both function calls
+  assert len(responses) > 0
+  final_response = responses[-1]
+  assert final_response.content.role == "model"
+  assert len(final_response.content.parts) == 2
+
+  # Verify first function call
+  assert final_response.content.parts[0].function_call.name == "function_1"
+  assert final_response.content.parts[0].function_call.id == "call_1"
+  assert final_response.content.parts[0].function_call.args == {"arg": "value1"}
+
+  # Verify second function call
+  assert final_response.content.parts[1].function_call.name == "function_2"
+  assert final_response.content.parts[1].function_call.id == "call_2"
+  assert final_response.content.parts[1].function_call.args == {"arg": "value2"}

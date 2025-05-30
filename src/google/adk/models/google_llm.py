@@ -97,6 +97,7 @@ class Gemini(BaseLlm):
           config=llm_request.config,
       )
       response = None
+      thought_text = ''
       text = ''
       usage_metadata = None
       # for sse, similar as bidi (see receive method in gemini_llm_connecton.py),
@@ -113,32 +114,43 @@ class Gemini(BaseLlm):
             and llm_response.content.parts
             and llm_response.content.parts[0].text
         ):
-          text += llm_response.content.parts[0].text
+          part0 = llm_response.content.parts[0]
+          if part0.thought:
+            thought_text += part0.text
+          else:
+            text += part0.text
           llm_response.partial = True
-        elif text and (
+        elif (thought_text or text) and (
             not llm_response.content
             or not llm_response.content.parts
             # don't yield the merged text event when receiving audio data
             or not llm_response.content.parts[0].inline_data
         ):
+          parts = []
+          if thought_text:
+            parts.append(types.Part(text=thought_text, thought=True))
+          if text:
+            parts.append(types.Part.from_text(text=text))
           yield LlmResponse(
-              content=types.ModelContent(
-                  parts=[types.Part.from_text(text=text)],
-              ),
-              usage_metadata=usage_metadata,
+              content=types.ModelContent(parts=parts),
+              usage_metadata=llm_response.usage_metadata,
           )
+          thought_text = ''
           text = ''
         yield llm_response
       if (
-          text
+          (text or thought_text)
           and response
           and response.candidates
           and response.candidates[0].finish_reason == types.FinishReason.STOP
       ):
+        parts = []
+        if thought_text:
+          parts.append(types.Part(text=thought_text, thought=True))
+        if text:
+          parts.append(types.Part.from_text(text=text))
         yield LlmResponse(
-            content=types.ModelContent(
-                parts=[types.Part.from_text(text=text)],
-            ),
+            content=types.ModelContent(parts=parts),
             usage_metadata=usage_metadata,
         )
 

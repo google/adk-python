@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Any
 from typing import Dict
 
@@ -41,10 +43,10 @@ def adk_to_mcp_tool_type(tool: BaseTool) -> mcp_types.Tool:
       print(mcp_tool)
   """
   tool_declaration = tool._get_declaration()
-  if not tool_declaration:
+  if not tool_declaration or not tool_declaration.parameters:
     input_schema = {}
   else:
-    input_schema = gemini_to_json_schema(tool._get_declaration().parameters)
+    input_schema = gemini_to_json_schema(tool_declaration.parameters)
   return mcp_types.Tool(
       name=tool.name,
       description=tool.description,
