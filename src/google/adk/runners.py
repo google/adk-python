@@ -34,6 +34,7 @@ from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
+from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
@@ -41,7 +42,7 @@ from .sessions.base_session_service import BaseSessionService
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry import tracer
-from .tools.built_in_code_execution_tool import built_in_code_execution
+from .tools.base_toolset import BaseToolset
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -286,7 +287,7 @@ class Runner:
           stacklevel=2,
       )
     if not session:
-      session = self.session_service.get_session(
+      session = await self.session_service.get_session(
           app_name=self.app_name, user_id=user_id, session_id=session_id
       )
       if not session:
@@ -409,8 +410,8 @@ class Runner:
             f'CFC is not supported for model: {model_name} in agent:'
             f' {self.agent.name}'
         )
-      if built_in_code_execution not in self.agent.canonical_tools():
-        self.agent.tools.append(built_in_code_execution)
+      if not isinstance(self.agent.code_executor, BuiltInCodeExecutor):
+        self.agent.code_executor = BuiltInCodeExecutor()
 
     return InvocationContext(
         artifact_service=self.artifact_service,
@@ -456,6 +457,37 @@ class Runner:
         live_request_queue=live_request_queue,
         run_config=run_config,
     )
+
+  def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
+    toolsets = set()
+    if isinstance(agent, LlmAgent):
+      for tool_union in agent.tools:
+        if isinstance(tool_union, BaseToolset):
+          toolsets.add(tool_union)
+    for sub_agent in agent.sub_agents:
+      toolsets.update(self._collect_toolset(sub_agent))
+    return toolsets
+
+  async def _cleanup_toolsets(self, toolsets_to_close: set[BaseToolset]):
+    """Clean up toolsets with proper task context management."""
+    if not toolsets_to_close:
+      return
+
+    # This maintains the same task context throughout cleanup
+    for toolset in toolsets_to_close:
+      try:
+        logger.info('Closing toolset: %s', type(toolset).__name__)
+        # Use asyncio.wait_for to add timeout protection
+        await asyncio.wait_for(toolset.close(), timeout=10.0)
+        logger.info('Successfully closed toolset: %s', type(toolset).__name__)
+      except asyncio.TimeoutError:
+        logger.warning('Toolset %s cleanup timed out', type(toolset).__name__)
+      except Exception as e:
+        logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
+
+  async def close(self):
+    """Closes the runner."""
+    await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
 
 class InMemoryRunner(Runner):

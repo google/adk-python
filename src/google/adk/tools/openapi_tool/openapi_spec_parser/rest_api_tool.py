@@ -41,6 +41,16 @@ from .openapi_spec_parser import ParsedOperation
 from .operation_parser import OperationParser
 from .tool_auth_handler import ToolAuthHandler
 
+# Not supported by the Gemini API
+_OPENAPI_SCHEMA_IGNORE_FIELDS = (
+    "title",
+    "default",
+    "format",
+    "additional_properties",
+    "ref",
+    "def",
+)
+
 
 def snake_to_lower_camel(snake_case_string: str):
   """Converts a snake_case string to a lower_camel_case string.
@@ -121,7 +131,7 @@ def to_gemini_schema(openapi_schema: Optional[Dict[str, Any]] = None) -> Schema:
     snake_case_key = to_snake_case(key)
     # Check if the snake_case_key exists in the Schema model's fields.
     if snake_case_key in Schema.model_fields:
-      if snake_case_key in ["title", "default", "format"]:
+      if snake_case_key in _OPENAPI_SCHEMA_IGNORE_FIELDS:
         # Ignore these fields as Gemini backend doesn't recognize them, and will
         # throw exception if they appear in the schema.
         # Format: properties[expiration].format: only 'enum' and 'date-time' are

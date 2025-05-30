@@ -13,7 +13,10 @@
 # limitations under the License.
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel

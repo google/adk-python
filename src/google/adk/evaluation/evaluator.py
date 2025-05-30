@@ -15,7 +15,9 @@
 from abc import ABC
 from enum import Enum
 from typing import Optional
+
 from pydantic import BaseModel
+
 from .eval_case import Invocation
 
 

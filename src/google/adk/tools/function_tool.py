@@ -33,8 +33,31 @@ class FunctionTool(BaseTool):
   """
 
   def __init__(self, func: Callable[..., Any]):
-    super().__init__(name=func.__name__, description=func.__doc__)
+    """Extract metadata from a callable object."""
+    name = ''
+    doc = ''
+    # Handle different types of callables
+    if hasattr(func, '__name__'):
+      # Regular functions, unbound methods, etc.
+      name = func.__name__
+    elif hasattr(func, '__class__'):
+      # Callable objects, bound methods, etc.
+      name = func.__class__.__name__
+
+    # Get documentation (prioritize direct __doc__ if available)
+    if hasattr(func, '__doc__') and func.__doc__:
+      doc = func.__doc__
+    elif (
+        hasattr(func, '__call__')
+        and hasattr(func.__call__, '__doc__')
+        and func.__call__.__doc__
+    ):
+      # For callable objects, try to get docstring from __call__ method
+      doc = func.__call__.__doc__
+
+    super().__init__(name=name, description=doc)
     self.func = func
+    self._ignore_params = ['tool_context', 'input_stream']
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -43,7 +66,7 @@ class FunctionTool(BaseTool):
             func=self.func,
             # The model doesn't understand the function context.
             # input_stream is for streaming tool
-            ignore_params=['tool_context', 'input_stream'],
+            ignore_params=self._ignore_params,
             variant=self._api_variant,
         )
     )
@@ -76,10 +99,17 @@ class FunctionTool(BaseTool):
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
       return {'error': error_str}
 
-    if inspect.iscoroutinefunction(self.func):
-      return await self.func(**args_to_call) or {}
+    # Functions are callable objects, but not all callable objects are functions
+    # checking coroutine function is not enough. We also need to check whether
+    # Callable's __call__ function is a coroutine funciton
+    if (
+        inspect.iscoroutinefunction(self.func)
+        or hasattr(self.func, '__call__')
+        and inspect.iscoroutinefunction(self.func.__call__)
+    ):
+      return await self.func(**args_to_call)
     else:
-      return self.func(**args_to_call) or {}
+      return self.func(**args_to_call)
 
   # TODO(hangfei): fix call live for function stream.
   async def _call_live(

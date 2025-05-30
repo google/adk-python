@@ -28,7 +28,7 @@ from google.adk.tools import AuthToolArguments
 from google.adk.tools import ToolContext
 from google.genai import types
 
-from ... import utils
+from ... import testing_utils
 
 
 def function_call(function_call_id, name, args: dict[str, Any]) -> types.Part:
@@ -95,7 +95,7 @@ def test_function_request_euc():
       ),
   )
 
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
 
   def call_external_api1(tool_context: ToolContext) -> Optional[int]:
     tool_context.request_credential(auth_config1)
@@ -108,7 +108,7 @@ def test_function_request_euc():
       model=mock_model,
       tools=[call_external_api1, call_external_api2],
   )
-  runner = utils.InMemoryRunner(agent)
+  runner = testing_utils.InMemoryRunner(agent)
   events = runner.run('test')
   assert events[0].content.parts[0].function_call is not None
   assert events[0].content.parts[1].function_call is not None
@@ -169,7 +169,7 @@ def test_function_get_auth_response():
       ],
   ]
 
-  mock_model = utils.MockModel.create(responses=responses)
+  mock_model = testing_utils.MockModel.create(responses=responses)
   function_invoked = 0
 
   auth_config1 = AuthConfig(
@@ -307,7 +307,7 @@ def test_function_get_auth_response():
       model=mock_model,
       tools=[call_external_api1, call_external_api2],
   )
-  runner = utils.InMemoryRunner(agent)
+  runner = testing_utils.InMemoryRunner(agent)
   runner.run('test')
   request_euc_function_call_event = runner.session.events[-3]
   function_response1 = types.FunctionResponse(

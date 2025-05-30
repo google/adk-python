@@ -45,7 +45,7 @@ class SequentialAgent(BaseAgent):
 
     Compared to non-live case, live agents process a continous streams of audio
     or video, so it doesn't have a way to tell if it's finished and should pass
-    to next agent or not. So we introduce a task_compelted() function so the
+    to next agent or not. So we introduce a task_completed() function so the
     model can call this function to signal that it's finished the task and we
     can move on to next agent.
 

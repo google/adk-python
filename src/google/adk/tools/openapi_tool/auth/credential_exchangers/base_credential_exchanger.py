@@ -15,9 +15,7 @@
 import abc
 from typing import Optional
 
-from .....auth.auth_credential import (
-    AuthCredential,
-)
+from .....auth.auth_credential import AuthCredential
 from .....auth.auth_schemes import AuthScheme
 
 

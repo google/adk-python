@@ -17,7 +17,7 @@ from google.adk.tools import ToolContext
 from google.genai.types import Part
 from pydantic import BaseModel
 
-from ... import utils
+from ... import testing_utils
 
 
 def test_output_schema():
@@ -27,7 +27,7 @@ def test_output_schema():
   response = [
       'response1',
   ]
-  mockModel = utils.MockModel.create(responses=response)
+  mockModel = testing_utils.MockModel.create(responses=response)
   root_agent = Agent(
       name='root_agent',
       model=mockModel,
@@ -36,9 +36,9 @@ def test_output_schema():
       disallow_transfer_to_peers=True,
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
 
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', 'response1'),
   ]
   assert len(mockModel.requests) == 1

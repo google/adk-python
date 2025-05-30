@@ -33,9 +33,9 @@ dependencies = [
   "google-cloud-secret-manager>=2.22.0",     # Fetching secrets in RestAPI Tool
   "google-cloud-speech>=2.30.0",             # For Audio Transcription
   "google-cloud-storage>=2.18.0, <3.0.0",    # For GCS Artifact service
-  "google-genai>=1.14.0",                    # Google GenAI SDK
+  "google-genai>=1.17.0",                    # Google GenAI SDK
   "graphviz>=0.20.2",                        # Graphviz for graph rendering
-  "mcp>=1.5.0;python_version>='3.10'",       # For MCP Toolset
+  "mcp>=1.8.0;python_version>='3.10'",       # For MCP Toolset
   "opentelemetry-api>=1.31.0",               # OpenTelemetry
   "opentelemetry-exporter-gcp-trace>=1.9.0",
   "opentelemetry-sdk>=1.31.0",
@@ -45,7 +45,6 @@ dependencies = [
   "sqlalchemy>=2.0",                         # SQL database ORM
   "tzlocal>=5.3",                            # Time zone utilities
   "uvicorn>=0.34.0",                         # ASGI server for FastAPI
-  "toolbox-core>=0.1.0",
   # go/keep-sorted end
 ]
 dynamic = ["version"]
@@ -113,6 +112,7 @@ extensions = [
   "litellm>=1.63.11",                     # For LiteLLM support
   "llama-index-readers-file>=0.4.0",      # For retrieval using LlamaIndex.
   "lxml>=5.3.0",                          # For load_web_page tool.
+  "toolbox-core>=0.1.0",                  # For tools.toolbox_toolset.ToolboxToolset
 ]
 
 
@@ -145,12 +145,12 @@ exclude = ['src/**/*.sh']
 
 [tool.flit.module]
 name = "google.adk"
+include = ["py.typed"]
 
 [tool.isort]
 profile = "google"
 single_line_exclusions = []
 known_third_party = ["google.adk"]
-
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -158,7 +158,10 @@ asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "auto"
 
 [tool.mypy]
+python_version = "3.9"
 exclude = "tests/"
 plugins = ["pydantic.mypy"]
-strict = true
+# Start with non-strict mode, and swtich to strict mode later.
+# strict = true
 disable_error_code = ["import-not-found", "import-untyped", "unused-ignore"]
+follow_imports = "skip"

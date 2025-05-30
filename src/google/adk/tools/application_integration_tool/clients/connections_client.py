@@ -14,7 +14,11 @@
 
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Tuple
 
 import google.auth
 from google.auth import default as default_service_credential
@@ -728,6 +732,9 @@ class ConnectionsClient:
             "query": {"$ref": "#/components/schemas/query"},
             "timeout": {"$ref": "#/components/schemas/timeout"},
             "pageSize": {"$ref": "#/components/schemas/pageSize"},
+            "dynamicAuthConfig": {
+                "$ref": "#/components/schemas/dynamicAuthConfig"
+            },
         },
     }
 

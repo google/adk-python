@@ -124,8 +124,8 @@ class VertexAiRagMemoryService(BaseMemoryService):
     for context in response.contexts.contexts:
       # filter out context that is not related
       # TODO: Add server side filtering by app_name and user_id.
-      # if not context.source_display_name.startswith(f"{app_name}.{user_id}."):
-      #   continue
+      if not context.source_display_name.startswith(f"{app_name}.{user_id}."):
+        continue
       session_id = context.source_display_name.split(".")[-1]
       events = []
       if context.text:

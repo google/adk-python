@@ -12,11 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import sys
 
 from google.adk import Agent
-from google.adk.agents import RemoteAgent
 from google.adk.examples import Example
 from google.adk.sessions import Session
 from google.genai import types
@@ -135,21 +132,13 @@ hotel_agent = Agent(
 )
 
 
-idea_agent = RemoteAgent(
-    model='gemini-1.5-pro',
-    name='idea_agent',
-    description='Provide travel ideas base on the destination.',
-    url='http://localhost:8000/agent/run',
-)
-
-
 root_agent = Agent(
     model='gemini-1.5-pro',
     name='root_agent',
     instruction="""
       You are a helpful customer support assistant for Swiss Airlines.
 """,
-    sub_agents=[flight_agent, hotel_agent, idea_agent],
+    sub_agents=[flight_agent, hotel_agent],
     flow='auto',
     examples=[
         Example(

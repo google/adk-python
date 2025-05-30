@@ -1,7 +1,25 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 from abc import ABC
 from abc import abstractmethod
-from typing import Optional, runtime_checkable
+from typing import List
+from typing import Optional
 from typing import Protocol
+from typing import runtime_checkable
+from typing import Union
 
 from ..agents.readonly_context import ReadonlyContext
 from .base_tool import BaseTool
@@ -33,9 +51,15 @@ class BaseToolset(ABC):
   A toolset is a collection of tools that can be used by an agent.
   """
 
+  def __init__(
+      self, *, tool_filter: Optional[Union[ToolPredicate, List[str]]] = None
+  ):
+    self.tool_filter = tool_filter
+
   @abstractmethod
   async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+      self,
+      readonly_context: Optional[ReadonlyContext] = None,
   ) -> list[BaseTool]:
     """Return all tools in the toolset based on the provided context.
 
@@ -56,3 +80,17 @@ class BaseToolset(ABC):
     should ensure that any open connections, files, or other managed
     resources are properly released to prevent leaks.
     """
+
+  def _is_tool_selected(
+      self, tool: BaseTool, readonly_context: ReadonlyContext
+  ) -> bool:
+    if not self.tool_filter:
+      return True
+
+    if isinstance(self.tool_filter, ToolPredicate):
+      return self.tool_filter(tool, readonly_context)
+
+    if isinstance(self.tool_filter, list):
+      return tool.name in self.tool_filter
+
+    return False

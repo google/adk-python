@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import importlib
 from typing import Any
 from typing import Optional
@@ -56,7 +58,7 @@ class EvaluationGenerator:
     """Returns evaluation responses for the given dataset and agent.
 
     Args:
-      eval_dataset: The dataset that needs to be scraped for responses.
+      eval_set: The eval set that needs to be scraped for responses.
       agent_module_path: Path to the module that contains the root agent.
       repeat_num: Number of time the eval dataset should be repeated. This is
         usually done to remove uncertainty that a single run may bring.
@@ -209,7 +211,8 @@ class EvaluationGenerator:
     """Process the queries using the existing session data without invoking the runner."""
     responses = data.copy()
 
-    # Iterate through the provided queries and align them with the session events
+    # Iterate through the provided queries and align them with the session
+    # events
     for index, eval_entry in enumerate(responses):
       query = eval_entry["query"]
       actual_tool_uses = []
@@ -240,6 +243,4 @@ class EvaluationGenerator:
       # Update the results for the current query
       responses[index]["actual_tool_use"] = actual_tool_uses
       responses[index]["response"] = response
-    return responses
-    return responses
     return responses

@@ -21,9 +21,9 @@ from typing import Union
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
+from .. import BaseTool
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
-from .. import BaseTool
 from ..openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
 from ..openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
 from ..openapi_tool.openapi_spec_parser.tool_auth_handler import ToolAuthHandler

@@ -18,7 +18,7 @@ from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.tools import exit_loop
 from google.genai.types import Part
 
-from ... import utils
+from ... import testing_utils
 
 
 def transfer_call_part(agent_name: str) -> Part:
@@ -28,7 +28,7 @@ def transfer_call_part(agent_name: str) -> Part:
 
 
 TRANSFER_RESPONSE_PART = Part.from_function_response(
-    name='transfer_to_agent', response={}
+    name='transfer_to_agent', response={'result': None}
 )
 
 
@@ -38,7 +38,7 @@ def test_auto_to_auto():
       'response1',
       'response2',
   ]
-  mockModel = utils.MockModel.create(responses=response)
+  mockModel = testing_utils.MockModel.create(responses=response)
   # root (auto) - sub_agent_1 (auto)
   sub_agent_1 = Agent(name='sub_agent_1', model=mockModel)
   root_agent = Agent(
@@ -47,17 +47,17 @@ def test_auto_to_auto():
       sub_agents=[sub_agent_1],
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
 
   # Asserts the transfer.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1', 'response1'),
   ]
 
   # sub_agent_1 should still be the current agent.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert testing_utils.simplify_events(runner.run('test2')) == [
       ('sub_agent_1', 'response2'),
   ]
 
@@ -68,7 +68,7 @@ def test_auto_to_single():
       'response1',
       'response2',
   ]
-  mockModel = utils.MockModel.create(responses=response)
+  mockModel = testing_utils.MockModel.create(responses=response)
   # root (auto) - sub_agent_1 (single)
   sub_agent_1 = Agent(
       name='sub_agent_1',
@@ -80,17 +80,17 @@ def test_auto_to_single():
       name='root_agent', model=mockModel, sub_agents=[sub_agent_1]
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
 
   # Asserts the responses.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1', 'response1'),
   ]
 
   # root_agent should still be the current agent, becaues sub_agent_1 is single.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert testing_utils.simplify_events(runner.run('test2')) == [
       ('root_agent', 'response2'),
   ]
 
@@ -103,7 +103,7 @@ def test_auto_to_auto_to_single():
       'response1',
       'response2',
   ]
-  mockModel = utils.MockModel.create(responses=response)
+  mockModel = testing_utils.MockModel.create(responses=response)
   # root (auto) - sub_agent_1 (auto) - sub_agent_1_1 (single)
   sub_agent_1_1 = Agent(
       name='sub_agent_1_1',
@@ -118,10 +118,10 @@ def test_auto_to_auto_to_single():
       name='root_agent', model=mockModel, sub_agents=[sub_agent_1]
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
 
   # Asserts the responses.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1', transfer_call_part('sub_agent_1_1')),
@@ -132,7 +132,7 @@ def test_auto_to_auto_to_single():
   # sub_agent_1 should still be the current agent. sub_agent_1_1 is single so it should
   # not be the current agent, otherwise the conversation will be tied to
   # sub_agent_1_1 forever.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert testing_utils.simplify_events(runner.run('test2')) == [
       ('sub_agent_1', 'response2'),
   ]
 
@@ -145,7 +145,7 @@ def test_auto_to_sequential():
       'response2',
       'response3',
   ]
-  mockModel = utils.MockModel.create(responses=response)
+  mockModel = testing_utils.MockModel.create(responses=response)
   # root (auto) - sub_agent_1 (sequential) - sub_agent_1_1 (single)
   #                                   \ sub_agent_1_2 (single)
   sub_agent_1_1 = Agent(
@@ -170,10 +170,10 @@ def test_auto_to_sequential():
       sub_agents=[sub_agent_1],
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
 
   # Asserts the transfer.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1_1', 'response1'),
@@ -181,7 +181,7 @@ def test_auto_to_sequential():
   ]
 
   # root_agent should still be the current agent because sub_agent_1 is sequential.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert testing_utils.simplify_events(runner.run('test2')) == [
       ('root_agent', 'response3'),
   ]
 
@@ -196,7 +196,7 @@ def test_auto_to_sequential_to_auto():
       'response3',
       'response4',
   ]
-  mockModel = utils.MockModel.create(responses=response)
+  mockModel = testing_utils.MockModel.create(responses=response)
   # root (auto) - sub_agent_1 (seq) - sub_agent_1_1 (single)
   #                            \ sub_agent_1_2 (auto) - sub_agent_1_2_1 (auto)
   #                            \ sub_agent_1_3 (single)
@@ -228,10 +228,10 @@ def test_auto_to_sequential_to_auto():
       sub_agents=[sub_agent_1],
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
 
   # Asserts the transfer.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
       ('sub_agent_1_1', 'response1'),
@@ -242,7 +242,7 @@ def test_auto_to_sequential_to_auto():
   ]
 
   # root_agent should still be the current agent because sub_agent_1 is sequential.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert testing_utils.simplify_events(runner.run('test2')) == [
       ('root_agent', 'response4'),
   ]
 
@@ -258,7 +258,7 @@ def test_auto_to_loop():
       'response4',
       'response5',
   ]
-  mockModel = utils.MockModel.create(responses=response)
+  mockModel = testing_utils.MockModel.create(responses=response)
   # root (auto) - sub_agent_1 (loop) - sub_agent_1_1 (single)
   #                             \ sub_agent_1_2 (single)
   sub_agent_1_1 = Agent(
@@ -284,10 +284,10 @@ def test_auto_to_loop():
       sub_agents=[sub_agent_1],
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
 
   # Asserts the transfer.
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert testing_utils.simplify_events(runner.run('test1')) == [
       # Transfers to sub_agent_1.
       ('root_agent', transfer_call_part('sub_agent_1')),
       ('root_agent', TRANSFER_RESPONSE_PART),
@@ -299,13 +299,15 @@ def test_auto_to_loop():
       ('sub_agent_1_2', Part.from_function_call(name='exit_loop', args={})),
       (
           'sub_agent_1_2',
-          Part.from_function_response(name='exit_loop', response={}),
+          Part.from_function_response(
+              name='exit_loop', response={'result': None}
+          ),
       ),
       # root_agent summarizes.
       ('root_agent', 'response4'),
   ]
 
   # root_agent should still be the current agent because sub_agent_1 is loop.
-  assert utils.simplify_events(runner.run('test2')) == [
+  assert testing_utils.simplify_events(runner.run('test2')) == [
       ('root_agent', 'response5'),
   ]

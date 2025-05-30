@@ -19,10 +19,10 @@ from typing import Optional
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
+from .. import BaseTool
 from ...auth import AuthCredential
 from ...auth import AuthCredentialTypes
 from ...auth import OAuth2Auth
-from .. import BaseTool
 from ..openapi_tool import RestApiTool
 from ..tool_context import ToolContext
 

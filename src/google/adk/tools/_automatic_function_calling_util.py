@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Forked from google3/third_party/py/google/genai/_automatic_function_calling_util.py temporarily."""
+from __future__ import annotations
 
 import inspect
 from types import FunctionType
+import typing
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -29,7 +30,7 @@ from pydantic import BaseModel
 from pydantic import create_model
 from pydantic import fields as pydantic_fields
 
-from . import function_parameter_parse_util
+from . import _function_parameter_parse_util
 
 _py_type_2_schema_type = {
     'str': types.Type.STRING,
@@ -306,7 +307,11 @@ def from_function_with_options(
         inspect.Parameter.KEYWORD_ONLY,
         inspect.Parameter.POSITIONAL_ONLY,
     ):
-      schema = function_parameter_parse_util._parse_schema_from_parameter(
+      # This snippet catches the case when type hints are stored as strings
+      if isinstance(param.annotation, str):
+        param = param.replace(annotation=typing.get_type_hints(func)[name])
+
+      schema = _function_parameter_parse_util._parse_schema_from_parameter(
           variant, param, func.__name__
       )
       parameters_properties[name] = schema
@@ -319,12 +324,11 @@ def from_function_with_options(
         type='OBJECT',
         properties=parameters_properties,
     )
-    if variant == 'VERTEX_AI':
-      declaration.parameters.required = (
-          function_parameter_parse_util._get_required_fields(
-              declaration.parameters
-          )
-      )
+    declaration.parameters.required = (
+        _function_parameter_parse_util._get_required_fields(
+            declaration.parameters
+        )
+    )
   if not variant == 'VERTEX_AI':
     return declaration
 
@@ -332,14 +336,21 @@ def from_function_with_options(
   if return_annotation is inspect._empty:
     return declaration
 
+  return_value = inspect.Parameter(
+      'return_value',
+      inspect.Parameter.POSITIONAL_OR_KEYWORD,
+      annotation=return_annotation,
+  )
+  # This snippet catches the case when type hints are stored as strings
+  if isinstance(return_value.annotation, str):
+    return_value = return_value.replace(
+        annotation=typing.get_type_hints(func)['return']
+    )
+
   declaration.response = (
-      function_parameter_parse_util._parse_schema_from_parameter(
+      _function_parameter_parse_util._parse_schema_from_parameter(
           variant,
-          inspect.Parameter(
-              'return_value',
-              inspect.Parameter.POSITIONAL_OR_KEYWORD,
-              annotation=return_annotation,
-          ),
+          return_value,
           func.__name__,
       )
   )
