@@ -858,6 +858,11 @@ def get_fast_api_app(
     return runner
 
   if web:
+    import mimetypes
+
+    mimetypes.add_type("application/javascript", ".js", True)
+    mimetypes.add_type("text/javascript", ".js", True)
+
     BASE_DIR = Path(__file__).parent.resolve()
     ANGULAR_DIST_PATH = BASE_DIR / "browser"
 
