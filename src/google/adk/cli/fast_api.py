@@ -17,11 +17,9 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-import importlib
 import logging
 import os
 from pathlib import Path
-import sys
 import time
 import traceback
 import typing
@@ -81,11 +79,11 @@ from .utils import common
 from .utils import create_empty_state
 from .utils import envs
 from .utils import evals
+from .utils.agent_loader import AgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
-_EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
 
 
 class ApiServerSpanExporter(export.SpanExporter):
@@ -100,7 +98,7 @@ class ApiServerSpanExporter(export.SpanExporter):
       if (
           span.name == "call_llm"
           or span.name == "send_data"
-          or span.name.startswith("tool_response")
+          or span.name.startswith("execute_tool")
       ):
         attributes = dict(span.attributes)
         attributes["trace_id"] = span.get_span_context().trace_id
@@ -251,11 +249,7 @@ def get_fast_api_app(
         allow_headers=["*"],
     )
 
-  if agents_dir not in sys.path:
-    sys.path.append(agents_dir)
-
   runner_dict = {}
-  root_agent_dict = {}
 
   # Build the Artifact service
   artifact_service = InMemoryArtifactService()
@@ -281,6 +275,9 @@ def get_fast_api_app(
       session_service = DatabaseSessionService(db_url=session_db_url)
   else:
     session_service = InMemorySessionService()
+
+  # initialize Agent Loader
+  agent_loader = AgentLoader(agents_dir)
 
   @app.get("/list-apps")
   def list_apps() -> list[str]:
@@ -450,7 +447,7 @@ def get_fast_api_app(
 
     # Populate the session with initial session state.
     initial_session_state = create_empty_state(
-        await _get_root_agent_async(app_name)
+        agent_loader.load_agent(app_name)
     )
 
     new_eval_case = EvalCase(
@@ -492,8 +489,6 @@ def get_fast_api_app(
 
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
-    envs.load_dotenv_for_agent(os.path.basename(app_name), agents_dir)
-
     eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
     if req.eval_ids:
@@ -503,37 +498,41 @@ def get_fast_api_app(
       logger.info("Eval ids to run list is empty. We will run all eval cases.")
       eval_set_to_evals = {eval_set_id: eval_set.eval_cases}
 
-    root_agent = await _get_root_agent_async(app_name)
+    root_agent = agent_loader.load_agent(app_name)
     run_eval_results = []
     eval_case_results = []
-    async for eval_case_result in run_evals(
-        eval_set_to_evals,
-        root_agent,
-        getattr(root_agent, "reset_data", None),
-        req.eval_metrics,
-        session_service=session_service,
-        artifact_service=artifact_service,
-    ):
-      run_eval_results.append(
-          RunEvalResult(
-              app_name=app_name,
-              eval_set_file=eval_case_result.eval_set_file,
-              eval_set_id=eval_set_id,
-              eval_id=eval_case_result.eval_id,
-              final_eval_status=eval_case_result.final_eval_status,
-              eval_metric_results=eval_case_result.eval_metric_results,
-              overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
-              eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
-              user_id=eval_case_result.user_id,
-              session_id=eval_case_result.session_id,
-          )
-      )
-      eval_case_result.session_details = await session_service.get_session(
-          app_name=app_name,
-          user_id=eval_case_result.user_id,
-          session_id=eval_case_result.session_id,
-      )
-      eval_case_results.append(eval_case_result)
+    try:
+      async for eval_case_result in run_evals(
+          eval_set_to_evals,
+          root_agent,
+          getattr(root_agent, "reset_data", None),
+          req.eval_metrics,
+          session_service=session_service,
+          artifact_service=artifact_service,
+      ):
+        run_eval_results.append(
+            RunEvalResult(
+                app_name=app_name,
+                eval_set_file=eval_case_result.eval_set_file,
+                eval_set_id=eval_set_id,
+                eval_id=eval_case_result.eval_id,
+                final_eval_status=eval_case_result.final_eval_status,
+                eval_metric_results=eval_case_result.eval_metric_results,
+                overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
+                eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
+                user_id=eval_case_result.user_id,
+                session_id=eval_case_result.session_id,
+            )
+        )
+        eval_case_result.session_details = await session_service.get_session(
+            app_name=app_name,
+            user_id=eval_case_result.user_id,
+            session_id=eval_case_result.session_id,
+        )
+        eval_case_results.append(eval_case_result)
+    except ModuleNotFoundError as e:
+      logger.exception("%s", e)
+      raise HTTPException(status_code=400, detail=str(e)) from e
 
     eval_set_results_manager.save_eval_set_result(
         app_name, eval_set_id, eval_case_results
@@ -741,7 +740,7 @@ def get_fast_api_app(
 
     function_calls = event.get_function_calls()
     function_responses = event.get_function_responses()
-    root_agent = await _get_root_agent_async(app_name)
+    root_agent = agent_loader.load_agent(app_name)
     dot_graph = None
     if function_calls:
       function_call_highlights = []
@@ -842,25 +841,12 @@ def get_fast_api_app(
       for task in pending:
         task.cancel()
 
-  async def _get_root_agent_async(app_name: str) -> Agent:
-    """Returns the root agent for the given app."""
-    if app_name in root_agent_dict:
-      return root_agent_dict[app_name]
-    agent_module = importlib.import_module(app_name)
-    if getattr(agent_module.agent, "root_agent"):
-      root_agent = agent_module.agent.root_agent
-    else:
-      raise ValueError(f'Unable to find "root_agent" from {app_name}.')
-
-    root_agent_dict[app_name] = root_agent
-    return root_agent
-
   async def _get_runner_async(app_name: str) -> Runner:
     """Returns the runner for the given app."""
     envs.load_dotenv_for_agent(os.path.basename(app_name), agents_dir)
     if app_name in runner_dict:
       return runner_dict[app_name]
-    root_agent = await _get_root_agent_async(app_name)
+    root_agent = agent_loader.load_agent(app_name)
     runner = Runner(
         app_name=agent_engine_id if agent_engine_id else app_name,
         agent=root_agent,
@@ -872,18 +858,25 @@ def get_fast_api_app(
     return runner
 
   if web:
+    import mimetypes
+
+    mimetypes.add_type("application/javascript", ".js", True)
+    mimetypes.add_type("text/javascript", ".js", True)
+
     BASE_DIR = Path(__file__).parent.resolve()
     ANGULAR_DIST_PATH = BASE_DIR / "browser"
 
     @app.get("/")
-    async def redirect_to_dev_ui():
-      return RedirectResponse("/dev-ui")
+    async def redirect_root_to_dev_ui():
+      return RedirectResponse("/dev-ui/")
 
     @app.get("/dev-ui")
-    async def dev_ui():
-      return FileResponse(BASE_DIR / "browser/index.html")
+    async def redirect_dev_ui_add_slash():
+      return RedirectResponse("/dev-ui/")
 
     app.mount(
-        "/", StaticFiles(directory=ANGULAR_DIST_PATH, html=True), name="static"
+        "/dev-ui/",
+        StaticFiles(directory=ANGULAR_DIST_PATH, html=True),
+        name="static",
     )
   return app
