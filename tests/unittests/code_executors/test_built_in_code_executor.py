@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import pytest
-from google.genai import types
 
 from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 from google.adk.models.llm_request import LlmRequest
+from google.genai import types
+import pytest
 
 
 @pytest.fixture
@@ -78,9 +78,10 @@ def test_process_llm_request_gemini_2_model_with_existing_tools(
   built_in_executor.process_llm_request(llm_request)
   assert len(llm_request.config.tools) == 2
   assert existing_tool in llm_request.config.tools
-  assert types.Tool(
-      code_execution=types.ToolCodeExecution()
-  ) in llm_request.config.tools
+  assert (
+      types.Tool(code_execution=types.ToolCodeExecution())
+      in llm_request.config.tools
+  )
 
 
 def test_process_llm_request_non_gemini_2_model(
@@ -100,10 +101,9 @@ def test_process_llm_request_no_model_name(
     built_in_executor: BuiltInCodeExecutor,
 ):
   """Tests that a ValueError is raised if model name is not set."""
-  llm_request = LlmRequest() # Model name defaults to None
+  llm_request = LlmRequest()  # Model name defaults to None
   with pytest.raises(ValueError) as excinfo:
     built_in_executor.process_llm_request(llm_request)
-  assert (
-      "Gemini code execution tool is not supported for model None"
-      in str(excinfo.value)
+  assert "Gemini code execution tool is not supported for model None" in str(
+      excinfo.value
   )
