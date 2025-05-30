@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -19,9 +21,11 @@ import re
 import time
 from typing import Any
 import uuid
+
 from google.genai import types as genai_types
 from pydantic import ValidationError
 from typing_extensions import override
+
 from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -29,7 +33,7 @@ from .eval_case import SessionInput
 from .eval_set import EvalSet
 from .eval_sets_manager import EvalSetsManager
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 
@@ -37,9 +41,9 @@ _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 def _convert_invocation_to_pydantic_schema(
     invocation_in_json_format: dict[str, Any],
 ) -> Invocation:
-  """Converts an invocation from old json format to new Pydantic Schema"""
+  """Converts an invocation from old json format to new Pydantic Schema."""
   query = invocation_in_json_format["query"]
-  reference = invocation_in_json_format["reference"]
+  reference = invocation_in_json_format.get("reference", "")
   expected_tool_use = []
   expected_intermediate_agent_responses = []
 
@@ -180,8 +184,8 @@ def load_eval_set_from_file(
 class LocalEvalSetsManager(EvalSetsManager):
   """An EvalSets manager that stores eval sets locally on disk."""
 
-  def __init__(self, agent_dir: str):
-    self._agent_dir = agent_dir
+  def __init__(self, agents_dir: str):
+    self._agents_dir = agents_dir
 
   @override
   def get_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
@@ -214,7 +218,7 @@ class LocalEvalSetsManager(EvalSetsManager):
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
     """Returns a list of EvalSets that belong to the given app_name."""
-    eval_set_file_path = os.path.join(self._agent_dir, app_name)
+    eval_set_file_path = os.path.join(self._agents_dir, app_name)
     eval_sets = []
     for file in os.listdir(eval_set_file_path):
       if file.endswith(_EVAL_SET_FILE_EXTENSION):
@@ -245,7 +249,7 @@ class LocalEvalSetsManager(EvalSetsManager):
 
   def _get_eval_set_file_path(self, app_name: str, eval_set_id: str) -> str:
     return os.path.join(
-        self._agent_dir,
+        self._agents_dir,
         app_name,
         eval_set_id + _EVAL_SET_FILE_EXTENSION,
     )

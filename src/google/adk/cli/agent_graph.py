@@ -25,7 +25,7 @@ from ..tools.agent_tool import AgentTool
 from ..tools.base_tool import BaseTool
 from ..tools.function_tool import FunctionTool
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 try:
   from ..tools.retrieval.base_retrieval_tool import BaseRetrievalTool
@@ -130,7 +130,7 @@ async def build_graph(graph, agent: BaseAgent, highlight_pairs):
 
   draw_node(agent)
   for sub_agent in agent.sub_agents:
-    build_graph(graph, sub_agent, highlight_pairs)
+    await build_graph(graph, sub_agent, highlight_pairs)
     draw_edge(agent.name, sub_agent.name)
   if isinstance(agent, LlmAgent):
     for tool in await agent.canonical_tools():
