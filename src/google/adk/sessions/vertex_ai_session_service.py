@@ -11,13 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
+import time
 from typing import Any
 from typing import Optional
+import urllib.parse
 
 from dateutil import parser
+from google.genai import types
 from typing_extensions import override
 
 from google import genai
@@ -154,15 +159,29 @@ class VertexAiSessionService(BaseSessionService):
     if list_events_api_response.get('httpHeaders', None):
       return session
 
-    session.events = [
+    session.events += [
         _from_api_event(event)
         for event in list_events_api_response['sessionEvents']
     ]
+
+    while list_events_api_response.get('nextPageToken', None):
+      page_token = list_events_api_response.get('nextPageToken', None)
+      list_events_api_response = await api_client.async_request(
+          http_method='GET',
+          path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events?pageToken={page_token}',
+          request_dict={},
+      )
+      session.events += [
+          _from_api_event(event)
+          for event in list_events_api_response['sessionEvents']
+      ]
+
     session.events = [
         event for event in session.events if event.timestamp <= update_timestamp
     ]
     session.events.sort(key=lambda event: event.timestamp)
 
+    # Filter events based on config
     if config:
       if config.num_recent_events:
         session.events = session.events[-config.num_recent_events :]
@@ -183,10 +202,15 @@ class VertexAiSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
+    path = f'reasoningEngines/{reasoning_engine_id}/sessions'
+    if user_id:
+      parsed_user_id = urllib.parse.quote(f'''"{user_id}"''', safe='')
+      path = path + f'?filter=user_id={parsed_user_id}'
+
     api_client = _get_api_client(self.project, self.location)
     api_response = await api_client.async_request(
         http_method='GET',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions?filter=user_id={user_id}',
+        path=path,
         request_dict={},
     )
 
@@ -256,7 +280,7 @@ def _convert_event_to_json(event: Event):
   }
   if event.grounding_metadata:
     metadata_json['grounding_metadata'] = event.grounding_metadata.model_dump(
-        exclude_none=True
+        exclude_none=True, mode='json'
     )
 
   event_json = {
@@ -284,7 +308,9 @@ def _convert_event_to_json(event: Event):
     }
     event_json['actions'] = actions_json
   if event.content:
-    event_json['content'] = _session_util.encode_content(event.content)
+    event_json['content'] = event.content.model_dump(
+        exclude_none=True, mode='json'
+    )
   if event.error_code:
     event_json['error_code'] = event.error_code
   if event.error_message:
@@ -325,8 +351,8 @@ def _from_api_event(api_event: dict) -> Event:
     event.turn_complete = api_event['eventMetadata'].get('turnComplete', None)
     event.interrupted = api_event['eventMetadata'].get('interrupted', None)
     event.branch = api_event['eventMetadata'].get('branch', None)
-    event.grounding_metadata = api_event['eventMetadata'].get(
-        'groundingMetadata', None
+    event.grounding_metadata = _session_util.decode_grounding_metadata(
+        api_event['eventMetadata'].get('groundingMetadata', None)
     )
     event.long_running_tool_ids = (
         set(long_running_tool_ids_list) if long_running_tool_ids_list else None
