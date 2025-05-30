@@ -24,8 +24,9 @@ from typing import AsyncGenerator
 from typing import Generator
 from typing import Iterable
 from typing import Literal
-from typing import Optional, Union
+from typing import Optional
 from typing import TYPE_CHECKING
+from typing import Union
 
 from anthropic import AnthropicVertex
 from anthropic import NOT_GIVEN
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
 
 __all__ = ["Claude"]
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 MAX_TOKEN = 1024
 
@@ -140,15 +141,15 @@ def message_to_generate_content_response(
           role="model",
           parts=[content_block_to_part(cb) for cb in message.content],
       ),
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=message.usage.input_tokens,
+          candidates_token_count=message.usage.output_tokens,
+          total_token_count=(
+              message.usage.input_tokens + message.usage.output_tokens
+          ),
+      ),
       # TODO: Deal with these later.
       # finish_reason=to_google_genai_finish_reason(message.stop_reason),
-      # usage_metadata=types.GenerateContentResponseUsageMetadata(
-      #     prompt_token_count=message.usage.input_tokens,
-      #     candidates_token_count=message.usage.output_tokens,
-      #     total_token_count=(
-      #         message.usage.input_tokens + message.usage.output_tokens
-      #     ),
-      # ),
   )
 
 
@@ -196,12 +197,18 @@ def function_declaration_to_tool_param(
 
 
 class Claude(BaseLlm):
+  """ "Integration with Claude models served from Vertex AI.
+
+  Attributes:
+    model: The name of the Claude model.
+  """
+
   model: str = "claude-3-5-sonnet-v2@20241022"
 
   @staticmethod
   @override
   def supported_models() -> list[str]:
-    return [r"claude-3-.*"]
+    return [r"claude-3-.*", r"claude-.*-4.*"]
 
   @override
   async def generate_content_async(

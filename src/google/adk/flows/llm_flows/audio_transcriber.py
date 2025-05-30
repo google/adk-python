@@ -25,8 +25,9 @@ if TYPE_CHECKING:
 class AudioTranscriber:
   """Transcribes audio using Google Cloud Speech-to-Text."""
 
-  def __init__(self):
-    self.client = speech.SpeechClient()
+  def __init__(self, init_client=False):
+    if init_client:
+      self.client = speech.SpeechClient()
 
   def transcribe_file(
       self, invocation_context: InvocationContext
@@ -84,7 +85,7 @@ class AudioTranscriber:
 
     # Step2: transcription
     for speaker, data in bundled_audio:
-      if speaker == 'user':
+      if isinstance(data, genai_types.Blob):
         audio = speech.RecognitionAudio(content=data)
 
         config = speech.RecognitionConfig(

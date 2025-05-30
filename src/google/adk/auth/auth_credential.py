@@ -18,12 +18,19 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from pydantic import alias_generators
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 
 
 class BaseModelWithConfig(BaseModel):
-  model_config = {"extra": "allow"}
+  model_config = ConfigDict(
+      extra="allow",
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+  """The pydantic model config."""
 
 
 class HttpCredentials(BaseModelWithConfig):
