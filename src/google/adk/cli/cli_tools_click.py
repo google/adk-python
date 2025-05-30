@@ -59,14 +59,14 @@ class HelpfulCommand(click.Command):
 
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
-  
+
   @staticmethod
   def _format_missing_arg_error(click_exception):
     """Format the missing argument error with uppercase parameter name.
-    
+
     Args:
       click_exception: The MissingParameter exception from Click.
-    
+
     Returns:
       str: Formatted error message with uppercase parameter name.
     """
