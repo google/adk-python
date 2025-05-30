@@ -41,7 +41,7 @@ class ReadonlyContext:
 
   @property
   def session(self) -> Session:
-    """The user content that started this invocation. READONLY field."""
+    """The current session. READONLY field."""
     return self._invocation_context.session
 
   @property
