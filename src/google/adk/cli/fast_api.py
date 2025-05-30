@@ -26,6 +26,7 @@ import typing
 from typing import Any
 from typing import List
 from typing import Literal
+from typing import Mapping
 from typing import Optional
 
 import click
@@ -193,6 +194,7 @@ def get_fast_api_app(
     *,
     agents_dir: str,
     session_db_url: str = "",
+    session_db_kwargs: Optional[Mapping[str, Any]] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
     trace_to_cloud: bool = False,
@@ -201,6 +203,10 @@ def get_fast_api_app(
   # InMemory tracing dict.
   trace_dict: dict[str, Any] = {}
   session_trace_dict: dict[str, Any] = {}
+
+  # Database session settings
+  if session_db_kwargs is None:
+    session_db_kwargs = {}
 
   # Set up tracing in the FastAPI server.
   provider = TracerProvider()
@@ -272,7 +278,9 @@ def get_fast_api_app(
           os.environ["GOOGLE_CLOUD_LOCATION"],
       )
     else:
-      session_service = DatabaseSessionService(db_url=session_db_url)
+      session_service = DatabaseSessionService(
+          db_url=session_db_url, **session_db_kwargs
+      )
   else:
     session_service = InMemorySessionService()
 
