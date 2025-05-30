@@ -39,9 +39,9 @@ class LlmCallsLimitExceededError(Exception):
 class _InvocationCostManager(BaseModel):
   """A container to keep track of the cost of invocation.
 
-  While we don't expected the metrics captured here to be a direct
-  representatative of monetary cost incurred in executing the current
-  invocation, but they, in someways have an indirect affect.
+  While we don't expect the metrics captured here to be a direct
+  representative of monetary cost incurred in executing the current
+  invocation, they in some ways have an indirect effect.
   """
 
   _number_of_llm_calls: int = 0
