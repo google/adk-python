@@ -159,15 +159,29 @@ class VertexAiSessionService(BaseSessionService):
     if list_events_api_response.get('httpHeaders', None):
       return session
 
-    session.events = [
+    session.events += [
         _from_api_event(event)
         for event in list_events_api_response['sessionEvents']
     ]
+
+    while list_events_api_response.get('nextPageToken', None):
+      page_token = list_events_api_response.get('nextPageToken', None)
+      list_events_api_response = await api_client.async_request(
+          http_method='GET',
+          path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events?pageToken={page_token}',
+          request_dict={},
+      )
+      session.events += [
+          _from_api_event(event)
+          for event in list_events_api_response['sessionEvents']
+      ]
+
     session.events = [
         event for event in session.events if event.timestamp <= update_timestamp
     ]
     session.events.sort(key=lambda event: event.timestamp)
 
+    # Filter events based on config
     if config:
       if config.num_recent_events:
         session.events = session.events[-config.num_recent_events :]
