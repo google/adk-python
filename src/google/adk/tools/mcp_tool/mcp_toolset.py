@@ -34,6 +34,7 @@ from .mcp_session_manager import StreamableHTTPServerParams
 # their Python version to 3.10 if it fails.
 try:
   from mcp import StdioServerParameters
+  from mcp.client.session import LoggingFnT
   from mcp.types import ListToolsResult
 except ImportError as e:
   import sys
@@ -90,6 +91,7 @@ class MCPToolset(BaseToolset):
       ),
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       errlog: TextIO = sys.stderr,
+      logging_callback: LoggingFnT | None = None,
   ):
     """Initializes the MCPToolset.
 
@@ -115,6 +117,7 @@ class MCPToolset(BaseToolset):
     self._mcp_session_manager = MCPSessionManager(
         connection_params=self._connection_params,
         errlog=self._errlog,
+        logging_callback=logging_callback,
     )
 
     self._session = None
