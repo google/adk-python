@@ -130,7 +130,7 @@ async def build_graph(graph, agent: BaseAgent, highlight_pairs):
 
   draw_node(agent)
   for sub_agent in agent.sub_agents:
-    build_graph(graph, sub_agent, highlight_pairs)
+    await build_graph(graph, sub_agent, highlight_pairs)
     draw_edge(agent.name, sub_agent.name)
   if isinstance(agent, LlmAgent):
     for tool in await agent.canonical_tools():

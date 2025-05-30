@@ -44,8 +44,10 @@ class ToolboxToolset(BaseToolset):
       server_url: str,
       toolset_name: Optional[str] = None,
       tool_names: Optional[List[str]] = None,
-      auth_token_getters: dict[str, Callable[[], str]] = {},
-      bound_params: Mapping[str, Union[Callable[[], Any], Any]] = {},
+      auth_token_getters: Optional[dict[str, Callable[[], str]]] = None,
+      bound_params: Optional[
+          Mapping[str, Union[Callable[[], Any], Any]]
+      ] = None,
   ):
     """Args:
 
@@ -70,8 +72,8 @@ class ToolboxToolset(BaseToolset):
     self._toolbox_client = toolbox.ToolboxClient(server_url)
     self._toolset_name = toolset_name
     self._tool_names = tool_names
-    self._auth_token_getters = auth_token_getters
-    self._bound_params = bound_params
+    self._auth_token_getters = auth_token_getters or {}
+    self._bound_params = bound_params or {}
 
   @override
   async def get_tools(
