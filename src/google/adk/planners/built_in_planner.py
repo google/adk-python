@@ -56,6 +56,7 @@ class BuiltInPlanner(BasePlanner):
       llm_request: The LLM request to apply the thinking config to.
     """
     if self.thinking_config:
+      llm_request.config = llm_request.config or types.GenerateContentConfig()
       llm_request.config.thinking_config = self.thinking_config
 
   @override

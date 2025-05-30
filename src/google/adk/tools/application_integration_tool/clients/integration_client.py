@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import json
+from typing import List
 from typing import Optional
+
 from google.adk.tools.application_integration_tool.clients.connections_client import ConnectionsClient
 import google.auth
 from google.auth import default as default_service_credential
@@ -35,7 +37,7 @@ class IntegrationClient:
       project: str,
       location: str,
       integration: Optional[str] = None,
-      trigger: Optional[str] = None,
+      triggers: Optional[List[str]] = None,
       connection: Optional[str] = None,
       entity_operations: Optional[dict[str, list[str]]] = None,
       actions: Optional[list[str]] = None,
@@ -47,7 +49,7 @@ class IntegrationClient:
         project: The Google Cloud project ID.
         location: The Google Cloud location (e.g., us-central1).
         integration: The integration name.
-        trigger: The trigger ID for the integration.
+        triggers: The list of trigger IDs for the integration.
         connection: The connection name.
         entity_operations: A dictionary mapping entity names to a list of
           operations (e.g., LIST, CREATE, UPDATE, DELETE, GET).
@@ -59,7 +61,7 @@ class IntegrationClient:
     self.project = project
     self.location = location
     self.integration = integration
-    self.trigger = trigger
+    self.triggers = triggers
     self.connection = connection
     self.entity_operations = (
         entity_operations if entity_operations is not None else {}
@@ -88,7 +90,7 @@ class IntegrationClient:
           "apiTriggerResources": [
               {
                   "integrationResource": self.integration,
-                  "triggerId": [self.trigger],
+                  "triggerId": self.triggers,
               },
           ],
           "fileFormat": "JSON",
@@ -109,7 +111,7 @@ class IntegrationClient:
         raise ValueError(
             "Invalid request. Please check the provided values of"
             f" project({self.project}), location({self.location}),"
-            f" integration({self.integration}) and trigger({self.trigger})."
+            f" integration({self.integration})."
         ) from e
       raise ValueError(f"Request error: {e}") from e
     except Exception as e:

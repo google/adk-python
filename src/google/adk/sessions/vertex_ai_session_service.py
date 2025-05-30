@@ -11,25 +11,32 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
+import asyncio
 import logging
 import re
 import time
 from typing import Any
 from typing import Optional
+import urllib.parse
 
-from dateutil.parser import isoparse
-from google import genai
+from dateutil import parser
+from google.genai import types
 from typing_extensions import override
 
+from google import genai
+
+from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
-from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 
-logger = logging.getLogger(__name__)
+isoparse = parser.isoparse
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class VertexAiSessionService(BaseSessionService):
@@ -47,7 +54,7 @@ class VertexAiSessionService(BaseSessionService):
     self.api_client = client._api_client
 
   @override
-  def create_session(
+  async def create_session(
       self,
       *,
       app_name: str,
@@ -55,13 +62,20 @@ class VertexAiSessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
+    if session_id:
+      raise ValueError(
+          'User-provided Session id is not supported for'
+          ' VertexAISessionService.'
+      )
+
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
     session_json_dict = {'user_id': user_id}
     if state:
       session_json_dict['session_state'] = state
 
-    api_response = self.api_client.request(
+    api_client = _get_api_client(self.project, self.location)
+    api_response = await api_client.async_request(
         http_method='POST',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions',
         request_dict=session_json_dict,
@@ -73,7 +87,7 @@ class VertexAiSessionService(BaseSessionService):
 
     max_retry_attempt = 5
     while max_retry_attempt >= 0:
-      lro_response = self.api_client.request(
+      lro_response = await api_client.async_request(
           http_method='GET',
           path=f'operations/{operation_id}',
           request_dict={},
@@ -82,11 +96,11 @@ class VertexAiSessionService(BaseSessionService):
       if lro_response.get('done', None):
         break
 
-      time.sleep(1)
+      await asyncio.sleep(1)
       max_retry_attempt -= 1
 
     # Get session resource
-    get_session_api_response = self.api_client.request(
+    get_session_api_response = await api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
@@ -105,18 +119,19 @@ class VertexAiSessionService(BaseSessionService):
     return session
 
   @override
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
       user_id: str,
       session_id: str,
       config: Optional[GetSessionConfig] = None,
-  ) -> Session:
+  ) -> Optional[Session]:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
     # Get session resource
-    get_session_api_response = self.api_client.request(
+    api_client = _get_api_client(self.project, self.location)
+    get_session_api_response = await api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
@@ -134,7 +149,7 @@ class VertexAiSessionService(BaseSessionService):
         last_update_time=update_timestamp,
     )
 
-    list_events_api_response = self.api_client.request(
+    list_events_api_response = await api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events',
         request_dict={},
@@ -144,15 +159,29 @@ class VertexAiSessionService(BaseSessionService):
     if list_events_api_response.get('httpHeaders', None):
       return session
 
-    session.events = [
+    session.events += [
         _from_api_event(event)
         for event in list_events_api_response['sessionEvents']
     ]
+
+    while list_events_api_response.get('nextPageToken', None):
+      page_token = list_events_api_response.get('nextPageToken', None)
+      list_events_api_response = await api_client.async_request(
+          http_method='GET',
+          path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events?pageToken={page_token}',
+          request_dict={},
+      )
+      session.events += [
+          _from_api_event(event)
+          for event in list_events_api_response['sessionEvents']
+      ]
+
     session.events = [
         event for event in session.events if event.timestamp <= update_timestamp
     ]
     session.events.sort(key=lambda event: event.timestamp)
 
+    # Filter events based on config
     if config:
       if config.num_recent_events:
         session.events = session.events[-config.num_recent_events :]
@@ -168,14 +197,20 @@ class VertexAiSessionService(BaseSessionService):
     return session
 
   @override
-  def list_sessions(
+  async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
 
-    api_response = self.api_client.request(
+    path = f'reasoningEngines/{reasoning_engine_id}/sessions'
+    if user_id:
+      parsed_user_id = urllib.parse.quote(f'''"{user_id}"''', safe='')
+      path = path + f'?filter=user_id={parsed_user_id}'
+
+    api_client = _get_api_client(self.project, self.location)
+    api_response = await api_client.async_request(
         http_method='GET',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions?filter=user_id={user_id}',
+        path=path,
         request_dict={},
     )
 
@@ -195,56 +230,40 @@ class VertexAiSessionService(BaseSessionService):
       sessions.append(session)
     return ListSessionsResponse(sessions=sessions)
 
-  def delete_session(
+  async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     reasoning_engine_id = _parse_reasoning_engine_id(app_name)
-    self.api_client.request(
+    api_client = _get_api_client(self.project, self.location)
+    await api_client.async_request(
         http_method='DELETE',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         request_dict={},
     )
 
   @override
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    reasoning_engine_id = _parse_reasoning_engine_id(app_name)
-    api_response = self.api_client.request(
-        http_method='GET',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events',
-        request_dict={},
-    )
-
-    logger.info(f'List events response {api_response}')
-
-    # Handles empty response case
-    if api_response.get('httpHeaders', None):
-      return ListEventsResponse()
-
-    session_events = api_response['sessionEvents']
-
-    return ListEventsResponse(
-        events=[_from_api_event(event) for event in session_events]
-    )
-
-  @override
-  def append_event(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
-    super().append_event(session=session, event=event)
+    await super().append_event(session=session, event=event)
 
     reasoning_engine_id = _parse_reasoning_engine_id(session.app_name)
-    self.api_client.request(
+    api_client = _get_api_client(self.project, self.location)
+    await api_client.async_request(
         http_method='POST',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}:appendEvent',
         request_dict=_convert_event_to_json(event),
     )
-
     return event
+
+
+def _get_api_client(project: str, location: str):
+  """Instantiates an API client for the given project and location.
+
+  It needs to be instantiated inside each request so that the event loop
+  management.
+  """
+  client = genai.Client(vertexai=True, project=project, location=location)
+  return client._api_client
 
 
 def _convert_event_to_json(event: Event):
@@ -261,7 +280,7 @@ def _convert_event_to_json(event: Event):
   }
   if event.grounding_metadata:
     metadata_json['grounding_metadata'] = event.grounding_metadata.model_dump(
-        exclude_none=True
+        exclude_none=True, mode='json'
     )
 
   event_json = {
@@ -289,7 +308,9 @@ def _convert_event_to_json(event: Event):
     }
     event_json['actions'] = actions_json
   if event.content:
-    event_json['content'] = event.content.model_dump(exclude_none=True)
+    event_json['content'] = event.content.model_dump(
+        exclude_none=True, mode='json'
+    )
   if event.error_code:
     event_json['error_code'] = event.error_code
   if event.error_message:
@@ -316,7 +337,7 @@ def _from_api_event(api_event: dict) -> Event:
       invocation_id=api_event['invocationId'],
       author=api_event['author'],
       actions=event_actions,
-      content=api_event.get('content', None),
+      content=_session_util.decode_content(api_event.get('content', None)),
       timestamp=isoparse(api_event['timestamp']).timestamp(),
       error_code=api_event.get('errorCode', None),
       error_message=api_event.get('errorMessage', None),
@@ -330,8 +351,8 @@ def _from_api_event(api_event: dict) -> Event:
     event.turn_complete = api_event['eventMetadata'].get('turnComplete', None)
     event.interrupted = api_event['eventMetadata'].get('interrupted', None)
     event.branch = api_event['eventMetadata'].get('branch', None)
-    event.grounding_metadata = api_event['eventMetadata'].get(
-        'groundingMetadata', None
+    event.grounding_metadata = _session_util.decode_grounding_metadata(
+        api_event['eventMetadata'].get('groundingMetadata', None)
     )
     event.long_running_tool_ids = (
         set(long_running_tool_ids_list) if long_running_tool_ids_list else None

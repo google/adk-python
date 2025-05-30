@@ -26,6 +26,7 @@ from .state import State
 
 class GetSessionConfig(BaseModel):
   """The configuration of getting a session."""
+
   num_recent_events: Optional[int] = None
   after_timestamp: Optional[float] = None
 
@@ -35,13 +36,8 @@ class ListSessionsResponse(BaseModel):
 
   The events and states are not set within each Session object.
   """
+
   sessions: list[Session] = Field(default_factory=list)
-
-
-class ListEventsResponse(BaseModel):
-  """The response of listing events in a session."""
-  events: list[Event] = Field(default_factory=list)
-  next_page_token: Optional[str] = None
 
 
 class BaseSessionService(abc.ABC):
@@ -51,7 +47,7 @@ class BaseSessionService(abc.ABC):
   """
 
   @abc.abstractmethod
-  def create_session(
+  async def create_session(
       self,
       *,
       app_name: str,
@@ -71,10 +67,9 @@ class BaseSessionService(abc.ABC):
     Returns:
       session: The newly created session instance.
     """
-    pass
 
   @abc.abstractmethod
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
@@ -83,39 +78,20 @@ class BaseSessionService(abc.ABC):
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     """Gets a session."""
-    pass
 
   @abc.abstractmethod
-  def list_sessions(
+  async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     """Lists all the sessions."""
-    pass
 
   @abc.abstractmethod
-  def delete_session(
+  async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     """Deletes a session."""
-    pass
 
-  @abc.abstractmethod
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    """Lists events in a session."""
-    pass
-
-  def close_session(self, *, session: Session):
-    """Closes a session."""
-    # TODO: determine whether we want to finalize the session here.
-    pass
-
-  def append_event(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     """Appends an event to a session object."""
     if event.partial:
       return event
@@ -123,7 +99,7 @@ class BaseSessionService(abc.ABC):
     session.events.append(event)
     return event
 
-  def __update_session_state(self, session: Session, event: Event):
+  def __update_session_state(self, session: Session, event: Event) -> None:
     """Updates the session state based on the event."""
     if not event.actions or not event.actions.state_delta:
       return

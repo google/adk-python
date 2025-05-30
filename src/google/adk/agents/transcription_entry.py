@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
 from typing import Union
 
 from google.genai import types
@@ -26,9 +27,11 @@ class TranscriptionEntry(BaseModel):
       arbitrary_types_allowed=True,
       extra='forbid',
   )
+  """The pydantic model config."""
 
-  role: str
-  """The role that created this data, typically "user" or "model"""
+  role: Optional[str] = None
+  """The role that created this data, typically "user" or "model". For function 
+  call, this is None."""
 
   data: Union[types.Blob, types.Content]
   """The data that can be used for transcription"""
