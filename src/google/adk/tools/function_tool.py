@@ -107,9 +107,9 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         or hasattr(self.func, '__call__')
         and inspect.iscoroutinefunction(self.func.__call__)
     ):
-      return await self.func(**args_to_call) or {}
+      return await self.func(**args_to_call)
     else:
-      return self.func(**args_to_call) or {}
+      return self.func(**args_to_call)
 
   # TODO(hangfei): fix call live for function stream.
   async def _call_live(

@@ -28,7 +28,7 @@ def transfer_call_part(agent_name: str) -> Part:
 
 
 TRANSFER_RESPONSE_PART = Part.from_function_response(
-    name='transfer_to_agent', response={}
+    name='transfer_to_agent', response={'result': None}
 )
 
 
@@ -299,7 +299,9 @@ def test_auto_to_loop():
       ('sub_agent_1_2', Part.from_function_call(name='exit_loop', args={})),
       (
           'sub_agent_1_2',
-          Part.from_function_response(name='exit_loop', response={}),
+          Part.from_function_response(
+              name='exit_loop', response={'result': None}
+          ),
       ),
       # root_agent summarizes.
       ('root_agent', 'response4'),
