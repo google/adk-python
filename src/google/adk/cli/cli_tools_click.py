@@ -18,6 +18,7 @@ import asyncio
 import collections
 from contextlib import asynccontextmanager
 from datetime import datetime
+import functools
 import logging
 import os
 import tempfile
@@ -416,57 +417,69 @@ def cli_eval(
       print(eval_result.model_dump_json(indent=2))
 
 
+def fast_api_common_options():
+  """Decorator to add common fast api options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--session_db_url",
+        help=(
+            """Optional. The database URL to store the session.
+          - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+          - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+          - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
+        ),
+    )
+    @click.option(
+        "--host",
+        type=str,
+        help="Optional. The binding host of the server",
+        default="127.0.0.1",
+        show_default=True,
+    )
+    @click.option(
+        "--port",
+        type=int,
+        help="Optional. The port of the server",
+        default=8000,
+    )
+    @click.option(
+        "--allow_origins",
+        help="Optional. Any additional origins to allow for CORS.",
+        multiple=True,
+    )
+    @click.option(
+        "--log_level",
+        type=click.Choice(
+            ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+            case_sensitive=False,
+        ),
+        default="INFO",
+        help="Optional. Set the logging level",
+    )
+    @click.option(
+        "--trace_to_cloud",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help="Optional. Whether to enable cloud trace for telemetry.",
+    )
+    @click.option(
+        "--reload/--no-reload",
+        default=True,
+        help="Optional. Whether to enable auto reload for server.",
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
 @main.command("web")
-@click.option(
-    "--session_db_url",
-    help=(
-        """Optional. The database URL to store the session.
-
-  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
-
-  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
-
-  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
-    ),
-)
-@click.option(
-    "--host",
-    type=str,
-    help="Optional. The binding host of the server",
-    default="127.0.0.1",
-    show_default=True,
-)
-@click.option(
-    "--port",
-    type=int,
-    help="Optional. The port of the server",
-    default=8000,
-)
-@click.option(
-    "--allow_origins",
-    help="Optional. Any additional origins to allow for CORS.",
-    multiple=True,
-)
-@click.option(
-    "--log_level",
-    type=click.Choice(
-        ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False
-    ),
-    default="INFO",
-    help="Optional. Set the logging level",
-)
-@click.option(
-    "--trace_to_cloud",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Optional. Whether to enable cloud trace for telemetry.",
-)
-@click.option(
-    "--reload/--no-reload",
-    default=True,
-    help="Optional. Whether to enable auto reload for server.",
-)
+@fast_api_common_options()
 @click.argument(
     "agents_dir",
     type=click.Path(
@@ -537,56 +550,6 @@ def cli_web(
 
 
 @main.command("api_server")
-@click.option(
-    "--session_db_url",
-    help=(
-        """Optional. The database URL to store the session.
-
-  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
-
-  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
-
-  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
-    ),
-)
-@click.option(
-    "--host",
-    type=str,
-    help="Optional. The binding host of the server",
-    default="127.0.0.1",
-    show_default=True,
-)
-@click.option(
-    "--port",
-    type=int,
-    help="Optional. The port of the server",
-    default=8000,
-)
-@click.option(
-    "--allow_origins",
-    help="Optional. Any additional origins to allow for CORS.",
-    multiple=True,
-)
-@click.option(
-    "--log_level",
-    type=click.Choice(
-        ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False
-    ),
-    default="INFO",
-    help="Optional. Set the logging level",
-)
-@click.option(
-    "--trace_to_cloud",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Optional. Whether to enable cloud trace for telemetry.",
-)
-@click.option(
-    "--reload/--no-reload",
-    default=True,
-    help="Optional. Whether to enable auto reload for server.",
-)
 # The directory of agents, where each sub-directory is a single agent.
 # By default, it is the current working directory
 @click.argument(
@@ -596,6 +559,7 @@ def cli_web(
     ),
     default=os.getcwd(),
 )
+@fast_api_common_options()
 def cli_api_server(
     agents_dir: str,
     session_db_url: str = "",
