@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from typing import List
 from typing import Optional
 from typing import Union
@@ -19,10 +20,13 @@ from typing import Union
 from fastapi.openapi.models import HTTPBearer
 from typing_extensions import override
 
+from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes
 from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
+from ...auth.auth_schemes import AuthScheme
+from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from ..openapi_tool.openapi_spec_parser.openapi_spec_parser import OpenApiSpecParser
@@ -32,9 +36,11 @@ from .clients.connections_client import ConnectionsClient
 from .clients.integration_client import IntegrationClient
 from .integration_connector_tool import IntegrationConnectorTool
 
+logger = logging.getLogger("google_adk." + __name__)
+
 
 # TODO(cheliu): Apply a common toolset interface
-class ApplicationIntegrationToolset:
+class ApplicationIntegrationToolset(BaseToolset):
   """ApplicationIntegrationToolset generates tools from a given Application
 
   Integration or Integration Connector resource.
@@ -91,6 +97,8 @@ class ApplicationIntegrationToolset:
       # tool/python function description.
       tool_instructions: Optional[str] = "",
       service_account_json: Optional[str] = None,
+      auth_scheme: Optional[AuthScheme] = None,
+      auth_credential: Optional[AuthCredential] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
     """Args:
@@ -120,6 +128,7 @@ class ApplicationIntegrationToolset:
         Exception: If there is an error during the initialization of the
             integration or connection client.
     """
+    super().__init__(tool_filter=tool_filter)
     self.project = project
     self.location = location
     self._integration = integration
@@ -130,7 +139,8 @@ class ApplicationIntegrationToolset:
     self._tool_name_prefix = tool_name_prefix
     self._tool_instructions = tool_instructions
     self._service_account_json = service_account_json
-    self.tool_filter = tool_filter
+    self._auth_scheme = auth_scheme
+    self._auth_credential = auth_credential
 
     integration_client = IntegrationClient(
         project,
@@ -160,7 +170,7 @@ class ApplicationIntegrationToolset:
           " (entity_operations or actions)) should be provided."
       )
     self._openapi_toolset = None
-    self._tool = None
+    self._tools = []
     self._parse_spec_to_toolset(spec, connection_details)
 
   def _parse_spec_to_toolset(self, spec_dict, connection_details):
@@ -210,22 +220,56 @@ class ApplicationIntegrationToolset:
         rest_api_tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         rest_api_tool.configure_auth_credential(auth_credential)
-      self._tool = IntegrationConnectorTool(
-          name=rest_api_tool.name,
-          description=rest_api_tool.description,
-          connection_name=connection_details["name"],
-          connection_host=connection_details["host"],
-          connection_service_name=connection_details["serviceName"],
-          entity=entity,
-          action=action,
-          operation=operation,
-          rest_api_tool=rest_api_tool,
+
+      auth_override_enabled = connection_details.get(
+          "authOverrideEnabled", False
+      )
+
+      if (
+          self._auth_scheme
+          and self._auth_credential
+          and not auth_override_enabled
+      ):
+        # Case: Auth provided, but override is OFF. Don't use provided auth.
+        logger.warning(
+            "Authentication schema and credentials are not used because"
+            " authOverrideEnabled is not enabled in the connection."
+        )
+        connector_auth_scheme = None
+        connector_auth_credential = None
+      else:
+        connector_auth_scheme = self._auth_scheme
+        connector_auth_credential = self._auth_credential
+
+      self._tools.append(
+          IntegrationConnectorTool(
+              name=rest_api_tool.name,
+              description=rest_api_tool.description,
+              connection_name=connection_details["name"],
+              connection_host=connection_details["host"],
+              connection_service_name=connection_details["serviceName"],
+              entity=entity,
+              action=action,
+              operation=operation,
+              rest_api_tool=rest_api_tool,
+              auth_scheme=connector_auth_scheme,
+              auth_credential=connector_auth_credential,
+          )
       )
 
   @override
-  async def get_tools(self) -> List[RestApiTool]:
+  async def get_tools(
+      self,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> List[RestApiTool]:
     return (
-        [self._tool] if self._tool else await self._openapi_toolset.get_tools()
+        [
+            tool
+            for tool in self._tools
+            if self._is_tool_selected(tool, readonly_context)
+        ]
+        if self._openapi_toolset is None
+        else await self._openapi_toolset.get_tools(readonly_context)
     )
 
   @override

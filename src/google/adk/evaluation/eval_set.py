@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from typing import Optional
+
 from pydantic import BaseModel
+
 from .eval_case import EvalCase
 
 
@@ -23,10 +25,10 @@ class EvalSet(BaseModel):
   eval_set_id: str
   """Unique identifier for the eval set."""
 
-  name: Optional[str]
+  name: Optional[str] = None
   """Name of the dataset."""
 
-  description: Optional[str]
+  description: Optional[str] = None
   """Description of the dataset."""
 
   eval_cases: list[EvalCase]

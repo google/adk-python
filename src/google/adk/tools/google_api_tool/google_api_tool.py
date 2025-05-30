@@ -19,23 +19,29 @@ from typing import Optional
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
+from .. import BaseTool
 from ...auth import AuthCredential
 from ...auth import AuthCredentialTypes
 from ...auth import OAuth2Auth
-from .. import BaseTool
 from ..openapi_tool import RestApiTool
 from ..tool_context import ToolContext
 
 
 class GoogleApiTool(BaseTool):
 
-  def __init__(self, rest_api_tool: RestApiTool):
+  def __init__(
+      self,
+      rest_api_tool: RestApiTool,
+      client_id: Optional[str] = None,
+      client_secret: Optional[str] = None,
+  ):
     super().__init__(
         name=rest_api_tool.name,
         description=rest_api_tool.description,
         is_long_running=rest_api_tool.is_long_running,
     )
     self._rest_api_tool = rest_api_tool
+    self.configure_auth(client_id, client_secret)
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
