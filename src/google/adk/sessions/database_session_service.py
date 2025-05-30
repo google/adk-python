@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import copy
 from datetime import datetime
 import json
@@ -19,6 +21,7 @@ from typing import Any
 from typing import Optional
 import uuid
 
+from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
@@ -89,6 +92,18 @@ class DynamicJSON(TypeDecorator):
     return value
 
 
+class PreciseTimestamp(TypeDecorator):
+  """Represents a timestamp precise to the microsecond."""
+
+  impl = DateTime
+  cache_ok = True
+
+  def load_dialect_impl(self, dialect):
+    if dialect.name == "mysql":
+      return dialect.type_descriptor(mysql.DATETIME(fsp=6))
+    return self.impl
+
+
 class Base(DeclarativeBase):
   """Base class for database tables."""
 
@@ -153,7 +168,9 @@ class StorageEvent(Base):
   branch: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
   )
-  timestamp: Mapped[DateTime] = mapped_column(DateTime(), default=func.now())
+  timestamp: Mapped[PreciseTimestamp] = mapped_column(
+      PreciseTimestamp, default=func.now()
+  )
   content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
   actions: Mapped[MutableDict[str, Any]] = mapped_column(PickleType)
 
@@ -238,14 +255,14 @@ class StorageUserState(Base):
 class DatabaseSessionService(BaseSessionService):
   """A session service that uses a database for storage."""
 
-  def __init__(self, db_url: str):
+  def __init__(self, db_url: str, **kwargs: Any):
     """Initializes the database session service with a database URL."""
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
     # 3. Initialize all properties
 
     try:
-      db_engine = create_engine(db_url)
+      db_engine = create_engine(db_url, **kwargs)
     except Exception as e:
       if isinstance(e, ArgumentError):
         raise ValueError(
@@ -419,7 +436,9 @@ class DatabaseSessionService(BaseSessionService):
               actions=e.actions,
               timestamp=e.timestamp.timestamp(),
               long_running_tool_ids=e.long_running_tool_ids,
-              grounding_metadata=e.grounding_metadata,
+              grounding_metadata=_session_util.decode_grounding_metadata(
+                  e.grounding_metadata
+              ),
               partial=e.partial,
               turn_complete=e.turn_complete,
               error_code=e.error_code,
@@ -512,15 +531,16 @@ class DatabaseSessionService(BaseSessionService):
               _extract_state_delta(event.actions.state_delta)
           )
 
-      # Merge state
-      app_state.update(app_state_delta)
-      user_state.update(user_state_delta)
-      session_state.update(session_state_delta)
-
-      # Update storage
-      storage_app_state.state = app_state
-      storage_user_state.state = user_state
-      storage_session.state = session_state
+      # Merge state and update storage
+      if app_state_delta:
+        app_state.update(app_state_delta)
+        storage_app_state.state = app_state
+      if user_state_delta:
+        user_state.update(user_state_delta)
+        storage_user_state.state = user_state
+      if session_state_delta:
+        session_state.update(session_state_delta)
+        storage_session.state = session_state
 
       storage_event = StorageEvent(
           id=event.id,
@@ -533,7 +553,6 @@ class DatabaseSessionService(BaseSessionService):
           user_id=session.user_id,
           timestamp=datetime.fromtimestamp(event.timestamp),
           long_running_tool_ids=event.long_running_tool_ids,
-          grounding_metadata=event.grounding_metadata,
           partial=event.partial,
           turn_complete=event.turn_complete,
           error_code=event.error_code,
@@ -541,7 +560,13 @@ class DatabaseSessionService(BaseSessionService):
           interrupted=event.interrupted,
       )
       if event.content:
-        storage_event.content = _session_util.encode_content(event.content)
+        storage_event.content = event.content.model_dump(
+            exclude_none=True, mode="json"
+        )
+      if event.grounding_metadata:
+        storage_event.grounding_metadata = event.grounding_metadata.model_dump(
+            exclude_none=True, mode="json"
+        )
 
       session_factory.add(storage_event)
 

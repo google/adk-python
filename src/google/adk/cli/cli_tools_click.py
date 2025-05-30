@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import asyncio
 import collections
 from contextlib import asynccontextmanager
@@ -57,6 +59,19 @@ class HelpfulCommand(click.Command):
 
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
+  
+  @staticmethod
+  def _format_missing_arg_error(click_exception):
+    """Format the missing argument error with uppercase parameter name.
+    
+    Args:
+      click_exception: The MissingParameter exception from Click.
+    
+    Returns:
+      str: Formatted error message with uppercase parameter name.
+    """
+    name = click_exception.param.name
+    return f"Missing required argument: {name.upper()}"
 
   def parse_args(self, ctx, args):
     """Override the parse_args method to show help text on error.
@@ -75,8 +90,10 @@ class HelpfulCommand(click.Command):
     try:
       return super().parse_args(ctx, args)
     except click.MissingParameter as exc:
+      error_message = self._format_missing_arg_error(exc)
+
       click.echo(ctx.get_help())
-      click.secho(f"\nError: {str(exc)}", fg="red", err=True)
+      click.secho(f"\nError: {error_message}", fg="red", err=True)
       ctx.exit(2)
 
 
@@ -84,6 +101,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 @click.group(context_settings={"max_content_width": 240})
+@click.version_option(version.__version__)
 def main():
   """Agent Development Kit CLI tools."""
   pass
