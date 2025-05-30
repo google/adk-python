@@ -30,6 +30,7 @@ from pydantic import BaseModel
 try:
   from mcp import ClientSession
   from mcp import StdioServerParameters
+  from mcp.client.session import LoggingFnT
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
   from mcp.client.streamable_http import streamablehttp_client
@@ -145,6 +146,7 @@ class MCPSessionManager:
           StdioServerParameters, SseServerParams, StreamableHTTPServerParams
       ],
       errlog: TextIO = sys.stderr,
+      logging_callback: LoggingFnT | None = None,
   ):
     """Initializes the MCP session manager.
 
@@ -158,6 +160,7 @@ class MCPSessionManager:
     # Each session manager maintains its own exit stack for proper cleanup
     self._exit_stack: Optional[AsyncExitStack] = None
     self._session: Optional[ClientSession] = None
+    self.logging_callback = logging_callback
 
   async def create_session(self) -> ClientSession:
     """Creates and initializes an MCP client session.
@@ -204,7 +207,7 @@ class MCPSessionManager:
       # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
       # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
       session = await self._exit_stack.enter_async_context(
-          ClientSession(*transports[:2])
+          ClientSession(*transports[:2], logging_callback=self.logging_callback)
       )
       await session.initialize()
 
