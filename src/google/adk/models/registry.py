@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from .base_llm import BaseLlm
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 _llm_registry_dict: dict[str, type[BaseLlm]] = {}

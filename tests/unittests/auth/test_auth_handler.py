@@ -20,14 +20,13 @@ from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
-import pytest
-
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.auth_tool import AuthConfig
+import pytest
 
 
 # Mock classes for testing
@@ -58,7 +57,7 @@ class MockOAuth2Session:
     self.redirect_uri = redirect_uri
     self.state = state
 
-  def create_authorization_url(self, url):
+  def create_authorization_url(self, url, **kwargs):
     return f"{url}?client_id={self.client_id}&scope={self.scope}", "mock_state"
 
   def fetch_token(
@@ -238,7 +237,6 @@ class TestGetCredentialKey:
 class TestGenerateAuthUri:
   """Tests for the generate_auth_uri method."""
 
-  @pytest.mark.skip(reason="broken tests")
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_oauth2(self, auth_config):
     """Test generating an auth URI for OAuth2."""
@@ -251,7 +249,6 @@ class TestGenerateAuthUri:
     assert "client_id=mock_client_id" in result.oauth2.auth_uri
     assert result.oauth2.state == "mock_state"
 
-  @pytest.mark.skip(reason="broken tests")
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_openid(
       self, openid_auth_scheme, oauth2_credentials

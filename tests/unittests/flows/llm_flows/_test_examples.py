@@ -21,7 +21,7 @@ from google.adk.models.base_llm import LlmRequest
 from google.genai import types
 import pytest
 
-from ... import utils
+from ... import testing_utils
 
 
 @pytest.mark.asyncio
@@ -31,7 +31,7 @@ async def test_no_examples():
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(model="gemini-1.5-flash", name="agent", examples=[])
-  invocation_context = utils.create_invocation_context(
+  invocation_context = await testing_utils.create_invocation_context(
       agent=agent, user_content=""
   )
 
@@ -69,7 +69,7 @@ async def test_agent_examples():
       name="agent",
       examples=example_list,
   )
-  invocation_context = utils.create_invocation_context(
+  invocation_context = await testing_utils.create_invocation_context(
       agent=agent, user_content="test"
   )
 
@@ -122,7 +122,7 @@ async def test_agent_base_example_provider():
       name="agent",
       examples=provider,
   )
-  invocation_context = utils.create_invocation_context(
+  invocation_context = await testing_utils.create_invocation_context(
       agent=agent, user_content="test"
   )
 

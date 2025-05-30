@@ -27,7 +27,6 @@ from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 
-
 DEFAULT_IMAGE_TAG = 'adk-code-executor:latest'
 
 

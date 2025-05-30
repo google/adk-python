@@ -26,7 +26,7 @@ from pytest import Metafunc
 
 from .utils import TestRunner
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def load_env_for_tests():
