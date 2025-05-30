@@ -1,5 +1,0 @@
-[{
-  "query": "Turn off device_2 in the Bedroom.",
-  "expected_tool_use": [{"tool_name": "set_device_info", "tool_input": {"location": "Bedroom", "device_id": "device_2", "status": "OFF"}}],
-  "reference": "I have set the device_2 status to off."
-}]

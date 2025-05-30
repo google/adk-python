@@ -22,7 +22,6 @@ import dataclasses
 import os
 import re
 from typing import AsyncGenerator
-from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -31,6 +30,7 @@ from typing_extensions import override
 
 from ...agents.invocation_context import InvocationContext
 from ...code_executors.base_code_executor import BaseCodeExecutor
+from ...code_executors.built_in_code_executor import BuiltInCodeExecutor
 from ...code_executors.code_execution_utils import CodeExecutionInput
 from ...code_executors.code_execution_utils import CodeExecutionResult
 from ...code_executors.code_execution_utils import CodeExecutionUtils
@@ -122,7 +122,7 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
     if not invocation_context.agent.code_executor:
       return
 
-    for event in _run_pre_processor(invocation_context, llm_request):
+    async for event in _run_pre_processor(invocation_context, llm_request):
       yield event
 
     # Convert the code execution parts to text parts.
@@ -152,17 +152,17 @@ class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):
     if llm_response.partial:
       return
 
-    for event in _run_post_processor(invocation_context, llm_response):
+    async for event in _run_post_processor(invocation_context, llm_response):
       yield event
 
 
 response_processor = _CodeExecutionResponseProcessor()
 
 
-def _run_pre_processor(
+async def _run_pre_processor(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
-) -> Generator[Event, None, None]:
+) -> AsyncGenerator[Event, None]:
   """Pre-process the user message by adding the user message to the Colab notebook."""
   from ...agents.llm_agent import LlmAgent
 
@@ -174,6 +174,11 @@ def _run_pre_processor(
 
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
     return
+
+  if isinstance(code_executor, BuiltInCodeExecutor):
+    code_executor.process_llm_request(llm_request)
+    return
+
   if not code_executor.optimize_data_file:
     return
 
@@ -242,17 +247,17 @@ def _run_pre_processor(
     code_executor_context.add_processed_file_names([file.name])
 
     # Emit the execution result, and add it to the LLM request.
-    execution_result_event = _post_process_code_execution_result(
+    execution_result_event = await _post_process_code_execution_result(
         invocation_context, code_executor_context, code_execution_result
     )
     yield execution_result_event
     llm_request.contents.append(copy.deepcopy(execution_result_event.content))
 
 
-def _run_post_processor(
+async def _run_post_processor(
     invocation_context: InvocationContext,
     llm_response,
-) -> Generator[Event, None, None]:
+) -> AsyncGenerator[Event, None]:
   """Post-process the model response by extracting and executing the first code block."""
   agent = invocation_context.agent
   code_executor = agent.code_executor
@@ -260,6 +265,9 @@ def _run_post_processor(
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
     return
   if not llm_response or not llm_response.content:
+    return
+
+  if isinstance(code_executor, BuiltInCodeExecutor):
     return
 
   code_executor_context = CodeExecutorContext(invocation_context.session.state)
@@ -305,7 +313,7 @@ def _run_post_processor(
       code_execution_result.stdout,
       code_execution_result.stderr,
   )
-  yield _post_process_code_execution_result(
+  yield await _post_process_code_execution_result(
       invocation_context, code_executor_context, code_execution_result
   )
 
@@ -375,7 +383,7 @@ def _get_or_set_execution_id(
   return execution_id
 
 
-def _post_process_code_execution_result(
+async def _post_process_code_execution_result(
     invocation_context: InvocationContext,
     code_executor_context: CodeExecutorContext,
     code_execution_result: CodeExecutionResult,
@@ -406,7 +414,7 @@ def _post_process_code_execution_result(
 
   # Handle output files.
   for output_file in code_execution_result.output_files:
-    version = invocation_context.artifact_service.save_artifact(
+    version = await invocation_context.artifact_service.save_artifact(
         app_name=invocation_context.app_name,
         user_id=invocation_context.user_id,
         session_id=invocation_context.session.id,

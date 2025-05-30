@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+
 from __future__ import annotations
 
 import contextlib
@@ -34,7 +36,7 @@ from .llm_response import LlmResponse
 if TYPE_CHECKING:
   from .llm_request import LlmRequest
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
@@ -95,7 +97,9 @@ class Gemini(BaseLlm):
           config=llm_request.config,
       )
       response = None
+      thought_text = ''
       text = ''
+      usage_metadata = None
       # for sse, similar as bidi (see receive method in gemini_llm_connecton.py),
       # we need to mark those text content as partial and after all partial
       # contents are sent, we send an accumulated event which contains all the
@@ -104,36 +108,50 @@ class Gemini(BaseLlm):
       async for response in responses:
         logger.info(_build_response_log(response))
         llm_response = LlmResponse.create(response)
+        usage_metadata = llm_response.usage_metadata
         if (
             llm_response.content
             and llm_response.content.parts
             and llm_response.content.parts[0].text
         ):
-          text += llm_response.content.parts[0].text
+          part0 = llm_response.content.parts[0]
+          if part0.thought:
+            thought_text += part0.text
+          else:
+            text += part0.text
           llm_response.partial = True
-        elif text and (
+        elif (thought_text or text) and (
             not llm_response.content
             or not llm_response.content.parts
             # don't yield the merged text event when receiving audio data
             or not llm_response.content.parts[0].inline_data
         ):
+          parts = []
+          if thought_text:
+            parts.append(types.Part(text=thought_text, thought=True))
+          if text:
+            parts.append(types.Part.from_text(text=text))
           yield LlmResponse(
-              content=types.ModelContent(
-                  parts=[types.Part.from_text(text=text)],
-              ),
+              content=types.ModelContent(parts=parts),
+              usage_metadata=llm_response.usage_metadata,
           )
+          thought_text = ''
           text = ''
         yield llm_response
       if (
-          text
+          (text or thought_text)
           and response
           and response.candidates
           and response.candidates[0].finish_reason == types.FinishReason.STOP
       ):
+        parts = []
+        if thought_text:
+          parts.append(types.Part(text=thought_text, thought=True))
+        if text:
+          parts.append(types.Part.from_text(text=text))
         yield LlmResponse(
-            content=types.ModelContent(
-                parts=[types.Part.from_text(text=text)],
-            ),
+            content=types.ModelContent(parts=parts),
+            usage_metadata=usage_metadata,
         )
 
     else:
@@ -174,9 +192,13 @@ class Gemini(BaseLlm):
   @cached_property
   def _live_api_client(self) -> Client:
     if self._api_backend == 'vertex':
+      # use beta version for vertex api
+      api_version = 'v1beta1'
       # use default api version for vertex
       return Client(
-          http_options=types.HttpOptions(headers=self._tracking_headers)
+          http_options=types.HttpOptions(
+              headers=self._tracking_headers, api_version=api_version
+          )
       )
     else:
       # use v1alpha for ml_dev
@@ -209,48 +231,6 @@ class Gemini(BaseLlm):
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(live_session)
-
-  def _maybe_append_user_content(self, llm_request: LlmRequest):
-    """Appends a user content, so that model can continue to output.
-
-    Args:
-      llm_request: LlmRequest, the request to send to the Gemini model.
-    """
-    # If no content is provided, append a user content to hint model response
-    # using system instruction.
-    if not llm_request.contents:
-      llm_request.contents.append(
-          types.Content(
-              role='user',
-              parts=[
-                  types.Part(
-                      text=(
-                          'Handle the requests as specified in the System'
-                          ' Instruction.'
-                      )
-                  )
-              ],
-          )
-      )
-      return
-
-    # Insert a user content to preserve user intent and to avoid empty
-    # model response.
-    if llm_request.contents[-1].role != 'user':
-      llm_request.contents.append(
-          types.Content(
-              role='user',
-              parts=[
-                  types.Part(
-                      text=(
-                          'Continue processing previous requests as instructed.'
-                          ' Exit or provide a summary if no more outputs are'
-                          ' needed.'
-                      )
-                  )
-              ],
-          )
-      )
 
 
 def _build_function_declaration_log(

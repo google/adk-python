@@ -20,7 +20,6 @@ from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from deprecated import deprecated
 from google.genai import types
 
 from .tool_context import ToolContext
