@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import asyncio
+import collections
 from contextlib import asynccontextmanager
 from datetime import datetime
 import logging
@@ -26,16 +29,79 @@ import uvicorn
 
 from . import cli_create
 from . import cli_deploy
+from .. import version
+from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
+from ..sessions.in_memory_session_service import InMemorySessionService
 from .cli import run_cli
 from .cli_eval import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .fast_api import get_fast_api_app
 from .utils import envs
 from .utils import logs
 
-logger = logging.getLogger(__name__)
+
+class HelpfulCommand(click.Command):
+  """Command that shows full help on error instead of just the error message.
+
+  A custom Click Command class that overrides the default error handling
+  behavior to display the full help text when a required argument is missing,
+  followed by the error message. This provides users with better context
+  about command usage without needing to run a separate --help command.
+
+  Args:
+    *args: Variable length argument list to pass to the parent class.
+    **kwargs: Arbitrary keyword arguments to pass to the parent class.
+
+  Returns:
+    None. Inherits behavior from the parent Click Command class.
+
+  Returns:
+  """
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+
+  @staticmethod
+  def _format_missing_arg_error(click_exception):
+    """Format the missing argument error with uppercase parameter name.
+
+    Args:
+      click_exception: The MissingParameter exception from Click.
+
+    Returns:
+      str: Formatted error message with uppercase parameter name.
+    """
+    name = click_exception.param.name
+    return f"Missing required argument: {name.upper()}"
+
+  def parse_args(self, ctx, args):
+    """Override the parse_args method to show help text on error.
+
+    Args:
+      ctx: Click context object for the current command.
+      args: List of command-line arguments to parse.
+
+    Returns:
+      The parsed arguments as returned by the parent class's parse_args method.
+
+    Raises:
+      click.MissingParameter: When a required parameter is missing, but this
+        is caught and handled by displaying the help text before exiting.
+    """
+    try:
+      return super().parse_args(ctx, args)
+    except click.MissingParameter as exc:
+      error_message = self._format_missing_arg_error(exc)
+
+      click.echo(ctx.get_help())
+      click.secho(f"\nError: {error_message}", fg="red", err=True)
+      ctx.exit(2)
+
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 @click.group(context_settings={"max_content_width": 240})
+@click.version_option(version.__version__)
 def main():
   """Agent Development Kit CLI tools."""
   pass
@@ -47,7 +113,7 @@ def deploy():
   pass
 
 
-@main.command("create")
+@main.command("create", cls=HelpfulCommand)
 @click.option(
     "--model",
     type=str,
@@ -96,7 +162,24 @@ def cli_create_cmd(
   )
 
 
-@main.command("run")
+def validate_exclusive(ctx, param, value):
+  # Store the validated parameters in the context
+  if not hasattr(ctx, "exclusive_opts"):
+    ctx.exclusive_opts = {}
+
+  # If this option has a value and we've already seen another exclusive option
+  if value is not None and any(ctx.exclusive_opts.values()):
+    exclusive_opt = next(key for key, val in ctx.exclusive_opts.items() if val)
+    raise click.UsageError(
+        f"Options '{param.name}' and '{exclusive_opt}' cannot be set together."
+    )
+
+  # Record this option's value
+  ctx.exclusive_opts[param.name] = value is not None
+  return value
+
+
+@main.command("run", cls=HelpfulCommand)
 @click.option(
     "--save_session",
     type=bool,
@@ -105,13 +188,53 @@ def cli_create_cmd(
     default=False,
     help="Optional. Whether to save the session to a json file on exit.",
 )
+@click.option(
+    "--session_id",
+    type=str,
+    help=(
+        "Optional. The session ID to save the session to on exit when"
+        " --save_session is set to true. User will be prompted to enter a"
+        " session ID if not set."
+    ),
+)
+@click.option(
+    "--replay",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help=(
+        "The json file that contains the initial state of the session and user"
+        " queries. A new session will be created using this state. And user"
+        " queries are run againt the newly created session. Users cannot"
+        " continue to interact with the agent."
+    ),
+    callback=validate_exclusive,
+)
+@click.option(
+    "--resume",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help=(
+        "The json file that contains a previously saved session (by"
+        "--save_session option). The previous session will be re-displayed. And"
+        " user can continue to interact with the agent."
+    ),
+    callback=validate_exclusive,
+)
 @click.argument(
     "agent",
     type=click.Path(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
-def cli_run(agent: str, save_session: bool):
+def cli_run(
+    agent: str,
+    save_session: bool,
+    session_id: Optional[str],
+    replay: Optional[str],
+    resume: Optional[str],
+):
   """Runs an interactive CLI for a certain agent.
 
   AGENT: The path to the agent source code folder.
@@ -129,12 +252,15 @@ def cli_run(agent: str, save_session: bool):
       run_cli(
           agent_parent_dir=agent_parent_folder,
           agent_folder_name=agent_folder_name,
+          input_file=replay,
+          saved_session_file=resume,
           save_session=save_session,
+          session_id=session_id,
       )
   )
 
 
-@main.command("eval")
+@main.command("eval", cls=HelpfulCommand)
 @click.argument(
     "agent_module_file_path",
     type=click.Path(
@@ -182,8 +308,9 @@ def cli_eval(
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
 
   try:
+    from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
+    from .cli_eval import EvalCaseResult
     from .cli_eval import EvalMetric
-    from .cli_eval import EvalResult
     from .cli_eval import EvalStatus
     from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
@@ -200,45 +327,93 @@ def cli_eval(
         EvalMetric(metric_name=metric_name, threshold=threshold)
     )
 
-  print(f"Using evaluation creiteria: {evaluation_criteria}")
+  print(f"Using evaluation criteria: {evaluation_criteria}")
 
   root_agent = get_root_agent(agent_module_file_path)
   reset_func = try_get_reset_func(agent_module_file_path)
 
-  eval_set_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
+  eval_set_file_path_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
+  eval_set_id_to_eval_cases = {}
+
+  # Read the eval_set files and get the cases.
+  for eval_set_file_path, eval_case_ids in eval_set_file_path_to_evals.items():
+    eval_set = load_eval_set_from_file(eval_set_file_path, eval_set_file_path)
+    eval_cases = eval_set.eval_cases
+
+    if eval_case_ids:
+      # There are eval_ids that we should select.
+      eval_cases = [
+          e for e in eval_set.eval_cases if e.eval_id in eval_case_ids
+      ]
+
+    eval_set_id_to_eval_cases[eval_set.eval_set_id] = eval_cases
+
+  async def _collect_eval_results() -> list[EvalCaseResult]:
+    session_service = InMemorySessionService()
+    eval_case_results = []
+    async for eval_case_result in run_evals(
+        eval_set_id_to_eval_cases,
+        root_agent,
+        reset_func,
+        eval_metrics,
+        session_service=session_service,
+    ):
+      eval_case_result.session_details = await session_service.get_session(
+          app_name=os.path.basename(agent_module_file_path),
+          user_id=eval_case_result.user_id,
+          session_id=eval_case_result.session_id,
+      )
+      eval_case_results.append(eval_case_result)
+    return eval_case_results
 
   try:
-    eval_results = list(
-        run_evals(
-            eval_set_to_evals,
-            root_agent,
-            reset_func,
-            eval_metrics,
-            print_detailed_results=print_detailed_results,
-        )
-    )
+    eval_results = asyncio.run(_collect_eval_results())
   except ModuleNotFoundError:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
+
+  # Write eval set results.
+  local_eval_set_results_manager = LocalEvalSetResultsManager(
+      agents_dir=os.path.dirname(agent_module_file_path)
+  )
+  eval_set_id_to_eval_results = collections.defaultdict(list)
+  for eval_case_result in eval_results:
+    eval_set_id = eval_case_result.eval_set_id
+    eval_set_id_to_eval_results[eval_set_id].append(eval_case_result)
+
+  for eval_set_id, eval_case_results in eval_set_id_to_eval_results.items():
+    local_eval_set_results_manager.save_eval_set_result(
+        app_name=os.path.basename(agent_module_file_path),
+        eval_set_id=eval_set_id,
+        eval_case_results=eval_case_results,
+    )
 
   print("*********************************************************************")
   eval_run_summary = {}
 
   for eval_result in eval_results:
-    eval_result: EvalResult
+    eval_result: EvalCaseResult
 
-    if eval_result.eval_set_file not in eval_run_summary:
-      eval_run_summary[eval_result.eval_set_file] = [0, 0]
+    if eval_result.eval_set_id not in eval_run_summary:
+      eval_run_summary[eval_result.eval_set_id] = [0, 0]
 
     if eval_result.final_eval_status == EvalStatus.PASSED:
-      eval_run_summary[eval_result.eval_set_file][0] += 1
+      eval_run_summary[eval_result.eval_set_id][0] += 1
     else:
-      eval_run_summary[eval_result.eval_set_file][1] += 1
+      eval_run_summary[eval_result.eval_set_id][1] += 1
   print("Eval Run Summary")
-  for eval_set_file, pass_fail_count in eval_run_summary.items():
+  for eval_set_id, pass_fail_count in eval_run_summary.items():
     print(
-        f"{eval_set_file}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
+        f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
         f" failed: {pass_fail_count[1]}"
     )
+
+  if print_detailed_results:
+    for eval_result in eval_results:
+      eval_result: EvalCaseResult
+      print(
+          "*********************************************************************"
+      )
+      print(eval_result.model_dump_json(indent=2))
 
 
 @main.command("web")
@@ -253,6 +428,13 @@ def cli_eval(
 
   - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
+)
+@click.option(
+    "--host",
+    type=str,
+    help="Optional. The binding host of the server",
+    default="127.0.0.1",
+    show_default=True,
 )
 @click.option(
     "--port",
@@ -274,21 +456,16 @@ def cli_eval(
     help="Optional. Set the logging level",
 )
 @click.option(
-    "--log_to_tmp",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to log to system temp folder instead of console."
-        " This is useful for local debugging."
-    ),
-)
-@click.option(
     "--trace_to_cloud",
     is_flag=True,
     show_default=True,
     default=False,
     help="Optional. Whether to enable cloud trace for telemetry.",
+)
+@click.option(
+    "--reload/--no-reload",
+    default=True,
+    help="Optional. Whether to enable auto reload for server.",
 )
 @click.argument(
     "agents_dir",
@@ -299,12 +476,13 @@ def cli_eval(
 )
 def cli_web(
     agents_dir: str,
-    log_to_tmp: bool,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
+    host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
+    reload: bool = True,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -315,12 +493,7 @@ def cli_web(
 
     adk web --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
-  if log_to_tmp:
-    logs.log_to_tmp_folder()
-  else:
-    logs.log_to_stderr()
-
-  logging.getLogger().setLevel(log_level)
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
   async def _lifespan(app: FastAPI):
@@ -345,7 +518,7 @@ def cli_web(
     )
 
   app = get_fast_api_app(
-      agent_dir=agents_dir,
+      agents_dir=agents_dir,
       session_db_url=session_db_url,
       allow_origins=allow_origins,
       web=True,
@@ -354,9 +527,9 @@ def cli_web(
   )
   config = uvicorn.Config(
       app,
-      host="0.0.0.0",
+      host=host,
       port=port,
-      reload=True,
+      reload=reload,
   )
 
   server = uvicorn.Server(config)
@@ -375,6 +548,13 @@ def cli_web(
 
   - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
+)
+@click.option(
+    "--host",
+    type=str,
+    help="Optional. The binding host of the server",
+    default="127.0.0.1",
+    show_default=True,
 )
 @click.option(
     "--port",
@@ -396,21 +576,16 @@ def cli_web(
     help="Optional. Set the logging level",
 )
 @click.option(
-    "--log_to_tmp",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to log to system temp folder instead of console."
-        " This is useful for local debugging."
-    ),
-)
-@click.option(
     "--trace_to_cloud",
     is_flag=True,
     show_default=True,
     default=False,
     help="Optional. Whether to enable cloud trace for telemetry.",
+)
+@click.option(
+    "--reload/--no-reload",
+    default=True,
+    help="Optional. Whether to enable auto reload for server.",
 )
 # The directory of agents, where each sub-directory is a single agent.
 # By default, it is the current working directory
@@ -423,12 +598,13 @@ def cli_web(
 )
 def cli_api_server(
     agents_dir: str,
-    log_to_tmp: bool,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
+    host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
+    reload: bool = True,
 ):
   """Starts a FastAPI server for agents.
 
@@ -439,24 +615,19 @@ def cli_api_server(
 
     adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
-  if log_to_tmp:
-    logs.log_to_tmp_folder()
-  else:
-    logs.log_to_stderr()
-
-  logging.getLogger().setLevel(log_level)
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   config = uvicorn.Config(
       get_fast_api_app(
-          agent_dir=agents_dir,
+          agents_dir=agents_dir,
           session_db_url=session_db_url,
           allow_origins=allow_origins,
           web=False,
           trace_to_cloud=trace_to_cloud,
       ),
-      host="0.0.0.0",
+      host=host,
       port=port,
-      reload=True,
+      reload=reload,
   )
   server = uvicorn.Server(config)
   server.run()
@@ -505,7 +676,6 @@ def cli_api_server(
 )
 @click.option(
     "--trace_to_cloud",
-    type=bool,
     is_flag=True,
     show_default=True,
     default=False,
@@ -513,7 +683,6 @@ def cli_api_server(
 )
 @click.option(
     "--with_ui",
-    type=bool,
     is_flag=True,
     show_default=True,
     default=False,
@@ -561,6 +730,16 @@ def cli_api_server(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
+@click.option(
+    "--adk_version",
+    type=str,
+    default=version.__version__,
+    show_default=True,
+    help=(
+        "Optional. The ADK version used in Cloud Run deployment. (default: the"
+        " version in the dev environment)"
+    ),
+)
 def cli_deploy_cloud_run(
     agent: str,
     project: Optional[str],
@@ -573,6 +752,7 @@ def cli_deploy_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    adk_version: str,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -595,6 +775,7 @@ def cli_deploy_cloud_run(
         with_ui=with_ui,
         verbosity=verbosity,
         session_db_url=session_db_url,
+        adk_version=adk_version,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

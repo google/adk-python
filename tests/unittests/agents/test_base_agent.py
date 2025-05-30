@@ -14,9 +14,13 @@
 
 """Testings for the BaseAgent."""
 
+from enum import Enum
+from functools import partial
 from typing import AsyncGenerator
+from typing import List
 from typing import Optional
 from typing import Union
+from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
@@ -28,8 +32,16 @@ import pytest
 import pytest_mock
 from typing_extensions import override
 
+from .. import testing_utils
+
 
 def _before_agent_callback_noop(callback_context: CallbackContext) -> None:
+  pass
+
+
+async def _async_before_agent_callback_noop(
+    callback_context: CallbackContext,
+) -> None:
   pass
 
 
@@ -39,11 +51,31 @@ def _before_agent_callback_bypass_agent(
   return types.Content(parts=[types.Part(text='agent run is bypassed.')])
 
 
+async def _async_before_agent_callback_bypass_agent(
+    callback_context: CallbackContext,
+) -> types.Content:
+  return types.Content(parts=[types.Part(text='agent run is bypassed.')])
+
+
 def _after_agent_callback_noop(callback_context: CallbackContext) -> None:
   pass
 
 
+async def _async_after_agent_callback_noop(
+    callback_context: CallbackContext,
+) -> None:
+  pass
+
+
 def _after_agent_callback_append_agent_reply(
+    callback_context: CallbackContext,
+) -> types.Content:
+  return types.Content(
+      parts=[types.Part(text='Agent reply from after agent callback.')]
+  )
+
+
+async def _async_after_agent_callback_append_agent_reply(
     callback_context: CallbackContext,
 ) -> types.Content:
   return types.Content(
@@ -80,11 +112,11 @@ class _TestingAgent(BaseAgent):
     )
 
 
-def _create_parent_invocation_context(
+async def _create_parent_invocation_context(
     test_name: str, agent: BaseAgent, branch: Optional[str] = None
 ) -> InvocationContext:
   session_service = InMemorySessionService()
-  session = session_service.create_session(
+  session = await session_service.create_session(
       app_name='test_app', user_id='test_user'
   )
   return InvocationContext(
@@ -104,7 +136,7 @@ def test_invalid_agent_name():
 @pytest.mark.asyncio
 async def test_run_async(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
@@ -118,7 +150,7 @@ async def test_run_async(request: pytest.FixtureRequest):
 @pytest.mark.asyncio
 async def test_run_async_with_branch(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent, branch='parent_branch'
   )
 
@@ -140,7 +172,35 @@ async def test_run_async_before_agent_callback_noop(
       name=f'{request.function.__name__}_test_agent',
       before_agent_callback=_before_agent_callback_noop,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  spy_run_async_impl = mocker.spy(agent, BaseAgent._run_async_impl.__name__)
+  spy_before_agent_callback = mocker.spy(agent, 'before_agent_callback')
+
+  # Act
+  _ = [e async for e in agent.run_async(parent_ctx)]
+
+  # Assert
+  spy_before_agent_callback.assert_called_once()
+  _, kwargs = spy_before_agent_callback.call_args
+  assert 'callback_context' in kwargs
+  assert isinstance(kwargs['callback_context'], CallbackContext)
+
+  spy_run_async_impl.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_async_before_agent_callback_noop(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+) -> Union[types.Content, None]:
+  # Arrange
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      before_agent_callback=_async_before_agent_callback_noop,
+  )
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   spy_run_async_impl = mocker.spy(agent, BaseAgent._run_async_impl.__name__)
@@ -168,7 +228,7 @@ async def test_run_async_before_agent_callback_bypass_agent(
       name=f'{request.function.__name__}_test_agent',
       before_agent_callback=_before_agent_callback_bypass_agent,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   spy_run_async_impl = mocker.spy(agent, BaseAgent._run_async_impl.__name__)
@@ -186,6 +246,247 @@ async def test_run_async_before_agent_callback_bypass_agent(
 
 
 @pytest.mark.asyncio
+async def test_run_async_with_async_before_agent_callback_bypass_agent(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+):
+  # Arrange
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      before_agent_callback=_async_before_agent_callback_bypass_agent,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  spy_run_async_impl = mocker.spy(agent, BaseAgent._run_async_impl.__name__)
+  spy_before_agent_callback = mocker.spy(agent, 'before_agent_callback')
+
+  # Act
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  # Assert
+  spy_before_agent_callback.assert_called_once()
+  spy_run_async_impl.assert_not_called()
+
+  assert len(events) == 1
+  assert events[0].content.parts[0].text == 'agent run is bypassed.'
+
+
+class CallbackType(Enum):
+  SYNC = 1
+  ASYNC = 2
+
+
+async def mock_async_agent_cb_side_effect(
+    callback_context: CallbackContext,
+    ret_value=None,
+):
+  if ret_value:
+    return types.Content(parts=[types.Part(text=ret_value)])
+  return None
+
+
+def mock_sync_agent_cb_side_effect(
+    callback_context: CallbackContext,
+    ret_value=None,
+):
+  if ret_value:
+    return types.Content(parts=[types.Part(text=ret_value)])
+  return None
+
+
+BEFORE_AGENT_CALLBACK_PARAMS = [
+    pytest.param(
+        [
+            (None, CallbackType.SYNC),
+            ('callback_2_response', CallbackType.ASYNC),
+            ('callback_3_response', CallbackType.SYNC),
+            (None, CallbackType.ASYNC),
+        ],
+        ['callback_2_response'],
+        [1, 1, 0, 0],
+        id='middle_async_callback_returns',
+    ),
+    pytest.param(
+        [
+            (None, CallbackType.SYNC),
+            (None, CallbackType.ASYNC),
+            (None, CallbackType.SYNC),
+            (None, CallbackType.ASYNC),
+        ],
+        ['Hello, world!'],
+        [1, 1, 1, 1],
+        id='all_callbacks_return_none',
+    ),
+    pytest.param(
+        [
+            ('callback_1_response', CallbackType.SYNC),
+            ('callback_2_response', CallbackType.ASYNC),
+        ],
+        ['callback_1_response'],
+        [1, 0],
+        id='first_sync_callback_returns',
+    ),
+]
+
+AFTER_AGENT_CALLBACK_PARAMS = [
+    pytest.param(
+        [
+            (None, CallbackType.SYNC),
+            ('callback_2_response', CallbackType.ASYNC),
+            ('callback_3_response', CallbackType.SYNC),
+            (None, CallbackType.ASYNC),
+        ],
+        ['Hello, world!', 'callback_2_response'],
+        [1, 1, 0, 0],
+        id='middle_async_callback_returns',
+    ),
+    pytest.param(
+        [
+            (None, CallbackType.SYNC),
+            (None, CallbackType.ASYNC),
+            (None, CallbackType.SYNC),
+            (None, CallbackType.ASYNC),
+        ],
+        ['Hello, world!'],
+        [1, 1, 1, 1],
+        id='all_callbacks_return_none',
+    ),
+    pytest.param(
+        [
+            ('callback_1_response', CallbackType.SYNC),
+            ('callback_2_response', CallbackType.ASYNC),
+        ],
+        ['Hello, world!', 'callback_1_response'],
+        [1, 0],
+        id='first_sync_callback_returns',
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    'callbacks, expected_responses, expected_calls',
+    BEFORE_AGENT_CALLBACK_PARAMS,
+)
+@pytest.mark.asyncio
+async def test_before_agent_callbacks_chain(
+    callbacks: List[tuple[str, int]],
+    expected_responses: List[str],
+    expected_calls: List[int],
+    request: pytest.FixtureRequest,
+):
+  mock_cbs = []
+  for response, callback_type in callbacks:
+
+    if callback_type == CallbackType.ASYNC:
+      mock_cb = mock.AsyncMock(
+          side_effect=partial(
+              mock_async_agent_cb_side_effect, ret_value=response
+          )
+      )
+    else:
+      mock_cb = mock.Mock(
+          side_effect=partial(
+              mock_sync_agent_cb_side_effect, ret_value=response
+          )
+      )
+    mock_cbs.append(mock_cb)
+
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      before_agent_callback=[mock_cb for mock_cb in mock_cbs],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  result = [e async for e in agent.run_async(parent_ctx)]
+  assert testing_utils.simplify_events(result) == [
+      (f'{request.function.__name__}_test_agent', response)
+      for response in expected_responses
+  ]
+
+  # Assert that the callbacks were called the expected number of times
+  for i, mock_cb in enumerate(mock_cbs):
+    expected_calls_count = expected_calls[i]
+    if expected_calls_count == 1:
+      if isinstance(mock_cb, mock.AsyncMock):
+        mock_cb.assert_awaited_once()
+      else:
+        mock_cb.assert_called_once()
+    elif expected_calls_count == 0:
+      if isinstance(mock_cb, mock.AsyncMock):
+        mock_cb.assert_not_awaited()
+      else:
+        mock_cb.assert_not_called()
+    else:
+      if isinstance(mock_cb, mock.AsyncMock):
+        mock_cb.assert_awaited(expected_calls_count)
+      else:
+        mock_cb.assert_called(expected_calls_count)
+
+
+@pytest.mark.parametrize(
+    'callbacks, expected_responses, expected_calls',
+    AFTER_AGENT_CALLBACK_PARAMS,
+)
+@pytest.mark.asyncio
+async def test_after_agent_callbacks_chain(
+    callbacks: List[tuple[str, int]],
+    expected_responses: List[str],
+    expected_calls: List[int],
+    request: pytest.FixtureRequest,
+):
+  mock_cbs = []
+  for response, callback_type in callbacks:
+
+    if callback_type == CallbackType.ASYNC:
+      mock_cb = mock.AsyncMock(
+          side_effect=partial(
+              mock_async_agent_cb_side_effect, ret_value=response
+          )
+      )
+    else:
+      mock_cb = mock.Mock(
+          side_effect=partial(
+              mock_sync_agent_cb_side_effect, ret_value=response
+          )
+      )
+    mock_cbs.append(mock_cb)
+
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      after_agent_callback=[mock_cb for mock_cb in mock_cbs],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  result = [e async for e in agent.run_async(parent_ctx)]
+  assert testing_utils.simplify_events(result) == [
+      (f'{request.function.__name__}_test_agent', response)
+      for response in expected_responses
+  ]
+
+  # Assert that the callbacks were called the expected number of times
+  for i, mock_cb in enumerate(mock_cbs):
+    expected_calls_count = expected_calls[i]
+    if expected_calls_count == 1:
+      if isinstance(mock_cb, mock.AsyncMock):
+        mock_cb.assert_awaited_once()
+      else:
+        mock_cb.assert_called_once()
+    elif expected_calls_count == 0:
+      if isinstance(mock_cb, mock.AsyncMock):
+        mock_cb.assert_not_awaited()
+      else:
+        mock_cb.assert_not_called()
+    else:
+      if isinstance(mock_cb, mock.AsyncMock):
+        mock_cb.assert_awaited(expected_calls_count)
+      else:
+        mock_cb.assert_called(expected_calls_count)
+
+
+@pytest.mark.asyncio
 async def test_run_async_after_agent_callback_noop(
     request: pytest.FixtureRequest,
     mocker: pytest_mock.MockerFixture,
@@ -195,7 +496,33 @@ async def test_run_async_after_agent_callback_noop(
       name=f'{request.function.__name__}_test_agent',
       after_agent_callback=_after_agent_callback_noop,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  spy_after_agent_callback = mocker.spy(agent, 'after_agent_callback')
+
+  # Act
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  # Assert
+  spy_after_agent_callback.assert_called_once()
+  _, kwargs = spy_after_agent_callback.call_args
+  assert 'callback_context' in kwargs
+  assert isinstance(kwargs['callback_context'], CallbackContext)
+  assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_async_after_agent_callback_noop(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+):
+  # Arrange
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      after_agent_callback=_async_after_agent_callback_noop,
+  )
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
   spy_after_agent_callback = mocker.spy(agent, 'after_agent_callback')
@@ -220,7 +547,32 @@ async def test_run_async_after_agent_callback_append_reply(
       name=f'{request.function.__name__}_test_agent',
       after_agent_callback=_after_agent_callback_append_agent_reply,
   )
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+
+  # Act
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  # Assert
+  assert len(events) == 2
+  assert events[1].author == agent.name
+  assert (
+      events[1].content.parts[0].text
+      == 'Agent reply from after agent callback.'
+  )
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_async_after_agent_callback_append_reply(
+    request: pytest.FixtureRequest,
+):
+  # Arrange
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      after_agent_callback=_async_after_agent_callback_append_agent_reply,
+  )
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
@@ -239,7 +591,7 @@ async def test_run_async_after_agent_callback_append_reply(
 @pytest.mark.asyncio
 async def test_run_async_incomplete_agent(request: pytest.FixtureRequest):
   agent = _IncompleteAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
@@ -250,7 +602,7 @@ async def test_run_async_incomplete_agent(request: pytest.FixtureRequest):
 @pytest.mark.asyncio
 async def test_run_live(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 
@@ -264,7 +616,7 @@ async def test_run_live(request: pytest.FixtureRequest):
 @pytest.mark.asyncio
 async def test_run_live_with_branch(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent, branch='parent_branch'
   )
 
@@ -279,7 +631,7 @@ async def test_run_live_with_branch(request: pytest.FixtureRequest):
 @pytest.mark.asyncio
 async def test_run_live_incomplete_agent(request: pytest.FixtureRequest):
   agent = _IncompleteAgent(name=f'{request.function.__name__}_test_agent')
-  parent_ctx = _create_parent_invocation_context(
+  parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, agent
   )
 

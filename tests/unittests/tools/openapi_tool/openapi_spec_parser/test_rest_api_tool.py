@@ -14,9 +14,11 @@
 
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
-from fastapi.openapi.models import MediaType, Operation
+from fastapi.openapi.models import MediaType
+from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter as OpenAPIParameter
 from fastapi.openapi.models import RequestBody
 from fastapi.openapi.models import Schema as OpenAPISchema
@@ -25,13 +27,13 @@ from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_cred
 from google.adk.tools.openapi_tool.common.common import ApiParameter
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
 from google.adk.tools.openapi_tool.openapi_spec_parser.operation_parser import OperationParser
-from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import (
-    RestApiTool,
-    snake_to_lower_camel,
-    to_gemini_schema,
-)
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import snake_to_lower_camel
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
 from google.adk.tools.tool_context import ToolContext
-from google.genai.types import FunctionDeclaration, Schema, Type
+from google.genai.types import FunctionDeclaration
+from google.genai.types import Schema
+from google.genai.types import Type
 import pytest
 
 
@@ -61,7 +63,7 @@ class TestRestApiTool:
     return mock_parser
 
   @pytest.fixture
-  def sample_endpiont(self):
+  def sample_endpoint(self):
     return OperationEndpoint(
         base_url="https://example.com", path="/test", method="GET"
     )
@@ -131,7 +133,7 @@ class TestRestApiTool:
 
   def test_init(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_operation,
       sample_auth_scheme,
       sample_auth_credential,
@@ -139,14 +141,14 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_scheme=sample_auth_scheme,
         auth_credential=sample_auth_credential,
     )
     assert tool.name == "test_tool"
     assert tool.description == "Test Tool"
-    assert tool.endpoint == sample_endpiont
+    assert tool.endpoint == sample_endpoint
     assert tool.operation == sample_operation
     assert tool.auth_credential == sample_auth_credential
     assert tool.auth_scheme == sample_auth_scheme
@@ -154,7 +156,7 @@ class TestRestApiTool:
 
   def test_from_parsed_operation_str(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_api_parameters,
       sample_return_parameter,
       sample_operation,
@@ -162,7 +164,7 @@ class TestRestApiTool:
     parsed_operation_str = json.dumps({
         "name": "test_operation",
         "description": "Test Description",
-        "endpoint": sample_endpiont.model_dump(),
+        "endpoint": sample_endpoint.model_dump(),
         "operation": sample_operation.model_dump(),
         "auth_scheme": None,
         "auth_credential": None,
@@ -174,12 +176,12 @@ class TestRestApiTool:
     assert tool.name == "test_operation"
 
   def test_get_declaration(
-      self, sample_endpiont, sample_operation, mock_operation_parser
+      self, sample_endpoint, sample_operation, mock_operation_parser
   ):
     tool = RestApiTool(
         name="test_tool",
         description="Test description",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         should_parse_operation=False,
     )
@@ -198,7 +200,7 @@ class TestRestApiTool:
       self,
       mock_request,
       mock_tool_context,
-      sample_endpiont,
+      sample_endpoint,
       sample_operation,
       sample_auth_scheme,
       sample_auth_credential,
@@ -210,7 +212,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_scheme=sample_auth_scheme,
         auth_credential=sample_auth_credential,
@@ -228,7 +230,7 @@ class TestRestApiTool:
   def test_call_auth_pending(
       self,
       mock_request,
-      sample_endpiont,
+      sample_endpoint,
       sample_operation,
       sample_auth_scheme,
       sample_auth_credential,
@@ -237,7 +239,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_scheme=sample_auth_scheme,
         auth_credential=sample_auth_credential,
@@ -258,7 +260,7 @@ class TestRestApiTool:
       }
 
   def test_prepare_request_params_query_body(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     # Create a mock Operation object
     mock_operation = Operation(
@@ -288,7 +290,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -327,7 +329,7 @@ class TestRestApiTool:
     assert request_params["params"] == {"testQueryParam": "query_value"}
 
   def test_prepare_request_params_array(
-      self, sample_endpiont, sample_auth_scheme, sample_auth_credential
+      self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -345,7 +347,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -367,7 +369,7 @@ class TestRestApiTool:
     assert request_params["json"] == ["item1", "item2"]
 
   def test_prepare_request_params_string(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -380,7 +382,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -401,7 +403,7 @@ class TestRestApiTool:
     assert request_params["headers"]["Content-Type"] == "text/plain"
 
   def test_prepare_request_params_form_data(
-      self, sample_endpiont, sample_auth_scheme, sample_auth_credential
+      self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -419,7 +421,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -443,7 +445,7 @@ class TestRestApiTool:
     )
 
   def test_prepare_request_params_multipart(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -465,7 +467,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -486,7 +488,7 @@ class TestRestApiTool:
     assert request_params["headers"]["Content-Type"] == "multipart/form-data"
 
   def test_prepare_request_params_octet_stream(
-      self, sample_endpiont, sample_auth_scheme, sample_auth_credential
+      self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
     mock_operation = Operation(
         operationId="test_op",
@@ -501,7 +503,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="test",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -524,13 +526,13 @@ class TestRestApiTool:
     )
 
   def test_prepare_request_params_path_param(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     mock_operation = Operation(operationId="test_op")
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -557,7 +559,7 @@ class TestRestApiTool:
 
   def test_prepare_request_params_header_param(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_auth_credential,
       sample_auth_scheme,
       sample_operation,
@@ -565,7 +567,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -586,7 +588,7 @@ class TestRestApiTool:
 
   def test_prepare_request_params_cookie_param(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_auth_credential,
       sample_auth_scheme,
       sample_operation,
@@ -594,7 +596,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -614,7 +616,7 @@ class TestRestApiTool:
     assert request_params["cookies"]["session_id"] == "cookie_value"
 
   def test_prepare_request_params_multiple_mime_types(
-      self, sample_endpiont, sample_auth_credential, sample_auth_scheme
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
     # Test what happens when multiple mime types are specified. It should take
     # the first one.
@@ -632,7 +634,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=mock_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -653,7 +655,7 @@ class TestRestApiTool:
 
   def test_prepare_request_params_unknown_parameter(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_auth_credential,
       sample_auth_scheme,
       sample_operation,
@@ -661,7 +663,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -719,7 +721,7 @@ class TestRestApiTool:
 
   def test_prepare_request_params_no_unrecognized_query_parameter(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_auth_credential,
       sample_auth_scheme,
       sample_operation,
@@ -727,7 +729,7 @@ class TestRestApiTool:
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=sample_auth_credential,
         auth_scheme=sample_auth_scheme,
@@ -748,13 +750,13 @@ class TestRestApiTool:
 
   def test_prepare_request_params_no_credential(
       self,
-      sample_endpiont,
+      sample_endpoint,
       sample_operation,
   ):
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
-        endpoint=sample_endpiont,
+        endpoint=sample_endpoint,
         operation=sample_operation,
         auth_credential=None,
         auth_scheme=None,

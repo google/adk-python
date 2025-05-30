@@ -13,14 +13,15 @@
 # limitations under the License.
 
 from google.adk.evaluation import AgentEvaluator
+import pytest
 
 
-def test_eval_agent():
+@pytest.mark.asyncio
+async def test_eval_agent():
   """Test hotel sub agent in a multi-agent system."""
-  AgentEvaluator.evaluate(
+  await AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.trip_planner_agent",
       eval_dataset_file_path_or_dir="tests/integration/fixture/trip_planner_agent/test_files/trip_inquiry_sub_agent.test.json",
-      initial_session_file="tests/integration/fixture/trip_planner_agent/test_files/initial.session.json",
       agent_name="identify_agent",
       num_runs=4,
   )

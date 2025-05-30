@@ -15,10 +15,10 @@ classifiers = [ # List of https://pypi.org/classifiers/
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.13",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Operating System :: OS Independent",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "License :: OSI Approved :: Apache Software License",
@@ -31,11 +31,11 @@ dependencies = [
   "google-api-python-client>=2.157.0",       # Google API client discovery
   "google-cloud-aiplatform>=1.87.0",         # For VertexAI integrations, e.g. example store.
   "google-cloud-secret-manager>=2.22.0",     # Fetching secrets in RestAPI Tool
-  "google-cloud-speech>=2.30.0",             # For Audo Transcription
+  "google-cloud-speech>=2.30.0",             # For Audio Transcription
   "google-cloud-storage>=2.18.0, <3.0.0",    # For GCS Artifact service
-  "google-genai>=1.11.0",                    # Google GenAI SDK
+  "google-genai>=1.17.0",                    # Google GenAI SDK
   "graphviz>=0.20.2",                        # Graphviz for graph rendering
-  "mcp>=1.5.0;python_version>='3.10'",       # For MCP Toolset
+  "mcp>=1.8.0;python_version>='3.10'",       # For MCP Toolset
   "opentelemetry-api>=1.31.0",               # OpenTelemetry
   "opentelemetry-exporter-gcp-trace>=1.9.0",
   "opentelemetry-sdk>=1.31.0",
@@ -66,6 +66,7 @@ dev = [
   "isort>=6.0.0",
   "pyink>=24.10.0",
   "pylint>=2.6.0",
+  "mypy>=1.15.0",
   # go/keep-sorted end
 ]
 
@@ -83,7 +84,8 @@ test = [
   "langchain-community>=0.3.17",
   "langgraph>=0.2.60",               # For LangGraphAgent
   "litellm>=1.63.11",                # For LiteLLM tests
-  "llama-index-readers-file>=0.4.0", # for retrieval tests
+  "llama-index-readers-file>=0.4.0", # For retrieval tests
+
   "pytest-asyncio>=0.25.0",
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
@@ -108,8 +110,9 @@ extensions = [
   "docker>=7.0.0",                        # For ContainerCodeExecutor
   "langgraph>=0.2.60",                    # For LangGraphAgent
   "litellm>=1.63.11",                     # For LiteLLM support
-  "llama-index-readers-file>=0.4.0",      # for retrieval usings LlamaIndex.
+  "llama-index-readers-file>=0.4.0",      # For retrieval using LlamaIndex.
   "lxml>=5.3.0",                          # For load_web_page tool.
+  "toolbox-core>=0.1.0",                  # For tools.toolbox_toolset.ToolboxToolset
 ]
 
 
@@ -119,6 +122,15 @@ line-length = 80
 unstable = true
 pyink-indentation = 2
 pyink-use-majority-quotes = true
+pyink-annotation-pragmas = [
+  "noqa",
+  "pylint:",
+  "type: ignore",
+  "pytype:",
+  "mypy:",
+  "pyright:",
+  "pyre-",
+]
 
 
 [build-system]
@@ -133,17 +145,23 @@ exclude = ['src/**/*.sh']
 
 [tool.flit.module]
 name = "google.adk"
+include = ["py.typed"]
 
 [tool.isort]
-# Organize imports following Google style-guide
-force_single_line = true
-force_sort_within_sections = true
-honor_case_in_force_sorted_sections = true
-order_by_type = false
-sort_relative_in_force_sorted_sections = true
-multi_line_output = 3
-line_length = 200
+profile = "google"
+single_line_exclusions = []
+known_third_party = ["google.adk"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.9"
+exclude = "tests/"
+plugins = ["pydantic.mypy"]
+# Start with non-strict mode, and swtich to strict mode later.
+# strict = true
+disable_error_code = ["import-not-found", "import-untyped", "unused-ignore"]
+follow_imports = "skip"

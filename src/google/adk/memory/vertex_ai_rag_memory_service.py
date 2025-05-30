@@ -12,20 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+from __future__ import annotations
+
 from collections import OrderedDict
 import json
 import os
 import tempfile
+from typing import Optional
+from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
 from vertexai.preview import rag
 
-from ..events.event import Event
-from ..sessions.session import Session
+from . import _utils
 from .base_memory_service import BaseMemoryService
-from .base_memory_service import MemoryResult
 from .base_memory_service import SearchMemoryResponse
+from .memory_entry import MemoryEntry
+
+if TYPE_CHECKING:
+  from ..events.event import Event
+  from ..sessions.session import Session
 
 
 class VertexAiRagMemoryService(BaseMemoryService):
@@ -33,8 +41,8 @@ class VertexAiRagMemoryService(BaseMemoryService):
 
   def __init__(
       self,
-      rag_corpus: str = None,
-      similarity_top_k: int = None,
+      rag_corpus: Optional[str] = None,
+      similarity_top_k: Optional[int] = None,
       vector_distance_threshold: float = 10,
   ):
     """Initializes a VertexAiRagMemoryService.
@@ -47,14 +55,16 @@ class VertexAiRagMemoryService(BaseMemoryService):
         vector_distance_threshold: Only returns contexts with vector distance
           smaller than the threshold..
     """
-    self.vertex_rag_store = types.VertexRagStore(
-        rag_resources=[rag.RagResource(rag_corpus=rag_corpus)],
+    self._vertex_rag_store = types.VertexRagStore(
+        rag_resources=[
+            types.VertexRagStoreRagResource(rag_corpus=rag_corpus),
+        ],
         similarity_top_k=similarity_top_k,
         vector_distance_threshold=vector_distance_threshold,
     )
 
   @override
-  def add_session_to_memory(self, session: Session):
+  async def add_session_to_memory(self, session: Session):
     with tempfile.NamedTemporaryFile(
         mode="w", delete=False, suffix=".txt"
     ) as temp_file:
@@ -79,7 +89,11 @@ class VertexAiRagMemoryService(BaseMemoryService):
       output_string = "\n".join(output_lines)
       temp_file.write(output_string)
       temp_file_path = temp_file.name
-    for rag_resource in self.vertex_rag_store.rag_resources:
+
+    if not self._vertex_rag_store.rag_resources:
+      raise ValueError("Rag resources must be set.")
+
+    for rag_resource in self._vertex_rag_store.rag_resources:
       rag.upload_file(
           corpus_name=rag_resource.rag_corpus,
           path=temp_file_path,
@@ -91,16 +105,18 @@ class VertexAiRagMemoryService(BaseMemoryService):
     os.remove(temp_file_path)
 
   @override
-  def search_memory(
+  async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query using rag.retrieval_query."""
+    from ..events.event import Event
+
     response = rag.retrieval_query(
         text=query,
-        rag_resources=self.vertex_rag_store.rag_resources,
-        rag_corpora=self.vertex_rag_store.rag_corpora,
-        similarity_top_k=self.vertex_rag_store.similarity_top_k,
-        vector_distance_threshold=self.vertex_rag_store.vector_distance_threshold,
+        rag_resources=self._vertex_rag_store.rag_resources,
+        rag_corpora=self._vertex_rag_store.rag_corpora,
+        similarity_top_k=self._vertex_rag_store.similarity_top_k,
+        vector_distance_threshold=self._vertex_rag_store.vector_distance_threshold,
     )
 
     memory_results = []
@@ -108,8 +124,8 @@ class VertexAiRagMemoryService(BaseMemoryService):
     for context in response.contexts.contexts:
       # filter out context that is not related
       # TODO: Add server side filtering by app_name and user_id.
-      # if not context.source_display_name.startswith(f"{app_name}.{user_id}."):
-      #   continue
+      if not context.source_display_name.startswith(f"{app_name}.{user_id}."):
+        continue
       session_id = context.source_display_name.split(".")[-1]
       events = []
       if context.text:
@@ -144,9 +160,16 @@ class VertexAiRagMemoryService(BaseMemoryService):
     for session_id, event_lists in session_events_map.items():
       for events in _merge_event_lists(event_lists):
         sorted_events = sorted(events, key=lambda e: e.timestamp)
-        memory_results.append(
-            MemoryResult(session_id=session_id, events=sorted_events)
-        )
+
+        memory_results.extend([
+            MemoryEntry(
+                author=event.author,
+                content=event.content,
+                timestamp=_utils.format_timestamp(event.timestamp),
+            )
+            for event in sorted_events
+            if event.content
+        ])
     return SearchMemoryResponse(memories=memory_results)
 
 
