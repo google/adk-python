@@ -136,7 +136,7 @@ For any changes that impact user-facing documentation (guides, API reference, tu
 4.  **Install dependencies:**
 
     ```shell
-    uv sync --all-extras
+    uv pip install -r pyproject.toml --all-extras
     ```
 
     **NOTE**: for convenience, installing all extra deps as a starting point.
