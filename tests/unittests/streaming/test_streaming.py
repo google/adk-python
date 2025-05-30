@@ -18,7 +18,7 @@ from google.adk.models import LlmResponse
 from google.genai import types
 import pytest
 
-from .. import utils
+from .. import testing_utils
 
 
 def test_streaming():
@@ -26,7 +26,7 @@ def test_streaming():
       turn_complete=True,
   )
 
-  mock_model = utils.MockModel.create([response1])
+  mock_model = testing_utils.MockModel.create([response1])
 
   root_agent = Agent(
       name='root_agent',
@@ -34,7 +34,7 @@ def test_streaming():
       tools=[],
   )
 
-  runner = utils.InMemoryRunner(
+  runner = testing_utils.InMemoryRunner(
       root_agent=root_agent, response_modalities=['AUDIO']
   )
   live_request_queue = LiveRequestQueue()

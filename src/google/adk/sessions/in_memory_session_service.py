@@ -113,7 +113,7 @@ class InMemorySessionService(BaseSessionService):
       user_id: str,
       session_id: str,
       config: Optional[GetSessionConfig] = None,
-  ) -> Session:
+  ) -> Optional[Session]:
     return self._get_session_impl(
         app_name=app_name,
         user_id=user_id,
@@ -128,7 +128,7 @@ class InMemorySessionService(BaseSessionService):
       user_id: str,
       session_id: str,
       config: Optional[GetSessionConfig] = None,
-  ) -> Session:
+  ) -> Optional[Session]:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._get_session_impl(
         app_name=app_name,
@@ -144,7 +144,7 @@ class InMemorySessionService(BaseSessionService):
       user_id: str,
       session_id: str,
       config: Optional[GetSessionConfig] = None,
-  ) -> Session:
+  ) -> Optional[Session]:
     if app_name not in self.sessions:
       return None
     if user_id not in self.sessions[app_name]:
@@ -171,7 +171,9 @@ class InMemorySessionService(BaseSessionService):
 
     return self._merge_state(app_name, user_id, copied_session)
 
-  def _merge_state(self, app_name: str, user_id: str, copied_session: Session):
+  def _merge_state(
+      self, app_name: str, user_id: str, copied_session: Session
+  ) -> Session:
     # Merge app state
     if app_name in self.app_state:
       for key in self.app_state[app_name].keys():

@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, cast
+from typing import Any
+from typing import cast
 
 from deprecated import deprecated
 from google.genai import types as genai_types
@@ -115,7 +116,7 @@ class TrajectoryEvaluator(Evaluator):
     tool use trajectories. An exact match scores a 1, 0 otherwise. The final
     number is an average of these individual scores.
 
-    Value range: [0, 1], where 0 is means none of the too use entries aligned,
+    Value range: [0, 1], where 0 means none of the tool use entries aligned,
     and 1 would mean all of them aligned. Higher value is good.
 
     Args:

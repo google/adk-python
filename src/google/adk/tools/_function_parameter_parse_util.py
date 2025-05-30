@@ -13,6 +13,8 @@
 # limitations under the License.
 #
 
+from __future__ import annotations
+
 import inspect
 import logging
 import types as typing_types
@@ -287,6 +289,13 @@ def _parse_schema_from_parameter(
           ),
           func_name,
       )
+    _raise_if_schema_unsupported(variant, schema)
+    return schema
+  if param.annotation is None:
+    # https://swagger.io/docs/specification/v3_0/data-models/data-types/#null
+    # null is not a valid type in schema, use object instead.
+    schema.type = types.Type.OBJECT
+    schema.nullable = True
     _raise_if_schema_unsupported(variant, schema)
     return schema
   raise ValueError(
