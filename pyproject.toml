@@ -26,6 +26,7 @@ classifiers = [ # List of https://pypi.org/classifiers/
 dependencies = [
   # go/keep-sorted start
   "authlib>=1.5.1",                          # For RestAPI Tool
+  "chromadb>=1.0.7",                         # For Chromadb integrations, e.g. memory
   "click>=8.1.8",                            # For CLI tools
   "fastapi>=0.115.0",                        # FastAPI framework
   "google-api-python-client>=2.157.0",       # Google API client discovery
