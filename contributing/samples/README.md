@@ -1,6 +1,6 @@
 # Contributing Resources
 
-This folder host resources for ADK contributors, for example, dev guide, testing guide etc.
+This folder host resources for ADK contributors, for example, testing samples etc.
 
 # Samples
 
