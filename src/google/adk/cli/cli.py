@@ -12,10 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from datetime import datetime
-import importlib
-import os
-import sys
 from typing import Optional
 
 import click
@@ -30,6 +29,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from .utils import envs
+from .utils.agent_loader import AgentLoader
 
 
 class InputFile(BaseModel):
@@ -122,19 +122,17 @@ async def run_cli(
     save_session: bool, whether to save the session on exit.
     session_id: Optional[str], the session ID to save the session to on exit.
   """
-  if agent_parent_dir not in sys.path:
-    sys.path.append(agent_parent_dir)
 
   artifact_service = InMemoryArtifactService()
   session_service = InMemorySessionService()
 
-  agent_module_path = os.path.join(agent_parent_dir, agent_folder_name)
-  agent_module = importlib.import_module(agent_folder_name)
   user_id = 'test_user'
   session = await session_service.create_session(
       app_name=agent_folder_name, user_id=user_id
   )
-  root_agent = agent_module.agent.root_agent
+  root_agent = AgentLoader(agents_dir=agent_parent_dir).load_agent(
+      agent_folder_name
+  )
   envs.load_dotenv_for_agent(agent_folder_name, agent_parent_dir)
   if input_file:
     session = await run_input_file(
@@ -177,7 +175,9 @@ async def run_cli(
 
   if save_session:
     session_id = session_id or input('Session ID to save: ')
-    session_path = f'{agent_module_path}/{session_id}.session.json'
+    session_path = (
+        f'{agent_parent_dir}/{agent_folder_name}/{session_id}.session.json'
+    )
 
     # Fetch the session again to get all the details.
     session = await session_service.get_session(

@@ -1,8 +1,8 @@
-# OAuth Sample
+# BigQuery Sample
 
 ## Introduction
 
-This sample tests and demos the OAuth support in ADK via two tools:
+This sample tests and demos the BigQuery support in ADK via two tools:
 
 * 1. bigquery_datasets_list:
 
@@ -28,14 +28,14 @@ This sample tests and demos the OAuth support in ADK via two tools:
 * 1. Follow https://developers.google.com/identity/protocols/oauth2#1.-obtain-oauth-2.0-credentials-from-the-dynamic_data.setvar.console_name. to get your client id and client secret.
   Be sure to choose "web" as your client type.
 
-* 2. Configure your .env file to add two variables:
+* 2. Configure your `.env` file to add two variables:
 
-  * GOOGLE_CLIENT_ID={your client id}
-  * GOOGLE_CLIENT_SECRET={your client secret}
+  * OAUTH_CLIENT_ID={your client id}
+  * OAUTH_CLIENT_SECRET={your client secret}
 
-  Note: done't create a separate .env , instead put it to the same .env file that stores your Vertex AI or Dev ML credentials
+  Note: don't create a separate `.env` file , instead put it to the same `.env` file that stores your Vertex AI or Dev ML credentials
 
-* 3. Follow https://developers.google.com/identity/protocols/oauth2/web-server#creatingcred to add http://localhost/dev-ui to "Authorized redirect URIs".
+* 3. Follow https://developers.google.com/identity/protocols/oauth2/web-server#creatingcred to add http://localhost/dev-ui/ to "Authorized redirect URIs".
 
   Note: localhost here is just a hostname that you use to access the dev ui, replace it with the actual hostname you use to access the dev ui.
 
