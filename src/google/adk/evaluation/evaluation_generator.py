@@ -12,53 +12,75 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import importlib
+from typing import Any
+from typing import Optional
 import uuid
 
-from google.genai import types
+from pydantic import BaseModel
 
-from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import Agent
-from ..agents.llm_agent import BeforeToolCallback
-from ..agents.llm_agent import LlmAgent
+from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..runners import Runner
+from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
-from .evaluation_constants import EvalConstants
+from .eval_case import EvalCase
+from .eval_case import IntermediateData
+from .eval_case import Invocation
+from .eval_case import SessionInput
+from .eval_set import EvalSet
+
+
+class EvalCaseResponses(BaseModel):
+  """Contains multiple responses associated with an EvalCase.
+
+  Multiple responses are a result of repeated requests to genereate inferences.
+  """
+
+  eval_case: EvalCase
+  responses: list[list[Invocation]]
 
 
 class EvaluationGenerator:
   """Generates evaluation responses for agents."""
 
   @staticmethod
-  def generate_responses(
-      eval_dataset,
-      agent_module_path,
-      repeat_num=3,
-      agent_name=None,
-      initial_session={},
-  ):
+  async def generate_responses(
+      eval_set: EvalSet,
+      agent_module_path: str,
+      repeat_num: int = 3,
+      agent_name: str = None,
+  ) -> list[EvalCaseResponses]:
     """Returns evaluation responses for the given dataset and agent.
 
     Args:
-      eval_dataset: The dataset that needs to be scraped for responses.
+      eval_set: The eval set that needs to be scraped for responses.
       agent_module_path: Path to the module that contains the root agent.
       repeat_num: Number of time the eval dataset should be repeated. This is
         usually done to remove uncertainty that a single run may bring.
       agent_name: The name of the agent that should be evaluated. This is
         usually the sub-agent.
-      initial_session: Initial session for the eval data.
     """
     results = []
 
-    for _ in range(repeat_num):
-      for data in eval_dataset:
-        results.append(
-            EvaluationGenerator._process_query(
-                data, agent_module_path, agent_name, initial_session
-            )
+    for eval_case in eval_set.eval_cases:
+      responses = []
+      for _ in range(repeat_num):
+        response_invocations = await EvaluationGenerator._process_query(
+            eval_case.conversation,
+            agent_module_path,
+            agent_name,
+            eval_case.session_input,
         )
+        responses.append(response_invocations)
+
+      results.append(
+          EvalCaseResponses(eval_case=eval_case, responses=responses)
+      )
 
     return results
 
@@ -89,7 +111,12 @@ class EvaluationGenerator:
     return results
 
   @staticmethod
-  def _process_query(data, module_name, agent_name=None, initial_session={}):
+  async def _process_query(
+      invocations: list[Invocation],
+      module_name: str,
+      agent_name: Optional[str] = None,
+      initial_session: Optional[SessionInput] = None,
+  ) -> list[Invocation]:
     """Process a query using the agent and evaluation dataset."""
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
@@ -102,56 +129,40 @@ class EvaluationGenerator:
       agent_to_evaluate = root_agent.find_agent(agent_name)
       assert agent_to_evaluate, f"Sub-Agent `{agent_name}` not found."
 
-    return EvaluationGenerator._process_query_with_root_agent(
-        data, agent_to_evaluate, reset_func, initial_session
+    return await EvaluationGenerator._generate_inferences_from_root_agent(
+        invocations, agent_to_evaluate, reset_func, initial_session
     )
 
   @staticmethod
-  def _process_query_with_root_agent(
-      data,
-      root_agent,
-      reset_func,
-      initial_session={},
-      session_id=None,
-      session_service=None,
-      artifact_service=None,
-  ):
-    """Process a query using the agent and evaluation dataset."""
-
-    # we don't know which tools belong to which agent
-    # so we just apply to any agents that has certain tool outputs
-    all_mock_tools = set()
-    for eval_entry in data:
-      expected_tool_use = eval_entry.get(EvalConstants.EXPECTED_TOOL_USE, [])
-      for expected in expected_tool_use:
-        if EvalConstants.MOCK_TOOL_OUTPUT in expected:
-          all_mock_tools.add(expected[EvalConstants.TOOL_NAME])
-
-    eval_data_copy = data.copy()
-    EvaluationGenerator.apply_before_tool_callback(
-        root_agent,
-        lambda *args: EvaluationGenerator.before_tool_callback(
-            *args, eval_dataset=eval_data_copy
-        ),
-        all_mock_tools,
-    )
-
+  async def _generate_inferences_from_root_agent(
+      invocations: list[Invocation],
+      root_agent: Agent,
+      reset_func: Any,
+      initial_session: Optional[SessionInput] = None,
+      session_id: Optional[str] = None,
+      session_service: Optional[BaseSessionService] = None,
+      artifact_service: Optional[BaseArtifactService] = None,
+  ) -> list[Invocation]:
+    """Scrapes the root agent given the list of Invocations."""
     if not session_service:
       session_service = InMemorySessionService()
 
-    app_name = initial_session.get("app_name", "EvaluationGenerator")
-    user_id = initial_session.get("user_id", "test_user_id")
+    app_name = (
+        initial_session.app_name if initial_session else "EvaluationGenerator"
+    )
+    user_id = initial_session.user_id if initial_session else "test_user_id"
     session_id = session_id if session_id else str(uuid.uuid4())
 
-    _ = session_service.create_session(
+    _ = await session_service.create_session(
         app_name=app_name,
         user_id=user_id,
-        state=initial_session.get("state", {}),
+        state=initial_session.state if initial_session else {},
         session_id=session_id,
     )
 
     if not artifact_service:
       artifact_service = InMemoryArtifactService()
+
     runner = Runner(
         app_name=app_name,
         agent=root_agent,
@@ -163,37 +174,45 @@ class EvaluationGenerator:
     if callable(reset_func):
       reset_func()
 
-    responses = data.copy()
+    response_invocations = []
 
-    for index, eval_entry in enumerate(responses):
-      response = None
-      query = eval_entry["query"]
-      content = types.Content(role="user", parts=[types.Part(text=query)])
-      turn_actual_tool_uses = []
+    for invocation in invocations:
+      final_response = None
+      user_content = invocation.user_content
+      tool_uses = []
+      invocation_id = ""
 
       for event in runner.run(
-          user_id=user_id, session_id=session_id, new_message=content
+          user_id=user_id, session_id=session_id, new_message=user_content
       ):
+        invocation_id = (
+            event.invocation_id if not invocation_id else invocation_id
+        )
+
         if event.is_final_response() and event.content and event.content.parts:
-          response = event.content.parts[0].text
+          final_response = event.content
         elif event.get_function_calls():
           for call in event.get_function_calls():
-            turn_actual_tool_uses.append({
-                EvalConstants.TOOL_NAME: call.name,
-                EvalConstants.TOOL_INPUT: call.args,
-            })
+            tool_uses.append(call)
 
-      responses[index]["actual_tool_use"] = turn_actual_tool_uses
-      responses[index]["response"] = response
+      response_invocations.append(
+          Invocation(
+              invocation_id=invocation_id,
+              user_content=user_content,
+              final_response=final_response,
+              intermediate_data=IntermediateData(tool_uses=tool_uses),
+          )
+      )
 
-    return responses
+    return response_invocations
 
   @staticmethod
   def _process_query_with_session(session_data, data):
     """Process the queries using the existing session data without invoking the runner."""
     responses = data.copy()
 
-    # Iterate through the provided queries and align them with the session events
+    # Iterate through the provided queries and align them with the session
+    # events
     for index, eval_entry in enumerate(responses):
       query = eval_entry["query"]
       actual_tool_uses = []
@@ -225,46 +244,3 @@ class EvaluationGenerator:
       responses[index]["actual_tool_use"] = actual_tool_uses
       responses[index]["response"] = response
     return responses
-
-  @staticmethod
-  def before_tool_callback(tool, args, tool_context, eval_dataset):
-    """Intercept specific tool calls and return predefined outputs
-
-    from eval_dataset.
-    """
-    for index, eval_entry in enumerate(eval_dataset):
-      expected_tool_use = eval_entry.get("expected_tool_use", [])
-      for expected in expected_tool_use:
-        if (
-            EvalConstants.MOCK_TOOL_OUTPUT in expected
-            and tool.name == expected[EvalConstants.TOOL_NAME]
-            and args == expected.get(EvalConstants.TOOL_INPUT, {})
-        ):
-          # pop the matched entry so we don't rematch again
-          eval_dataset.pop(index)
-          return {"result": expected[EvalConstants.MOCK_TOOL_OUTPUT]}
-
-    return None
-
-  @staticmethod
-  def apply_before_tool_callback(
-      agent: BaseAgent,
-      callback: BeforeToolCallback,
-      all_mock_tools: set[str],
-  ):
-    """Recursively apply the before_tool_callback to the root agent and all its subagents."""
-    # Check if the agent has tools that are defined by evalset.
-    # We use function names to check if tools match
-    if not isinstance(agent, Agent) and not isinstance(agent, LlmAgent):
-      return
-
-    for tool in agent.canonical_tools:
-      tool_name = tool.name
-      if tool_name in all_mock_tools:
-        agent.before_tool_callback = callback
-
-    # Apply recursively to subagents if they exist
-    for sub_agent in agent.sub_agents:
-      EvaluationGenerator.apply_before_tool_callback(
-          sub_agent, callback, all_mock_tools
-      )

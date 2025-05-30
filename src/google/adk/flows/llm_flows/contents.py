@@ -202,8 +202,14 @@ def _get_contents(
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
   for event in events:
-    if not event.content or not event.content.role:
-      # Skip events without content, or generated neither by user nor by model.
+    if (
+        not event.content
+        or not event.content.role
+        or not event.content.parts
+        or event.content.parts[0].text == ''
+    ):
+      # Skip events without content, or generated neither by user nor by model
+      # or has empty text.
       # E.g. events purely for mutating session states.
       continue
     if not _is_event_belongs_to_branch(current_branch, event):
