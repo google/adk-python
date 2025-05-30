@@ -17,7 +17,7 @@ from typing import Any
 from google.adk.agents import Agent
 from google.genai import types
 
-from ... import utils
+from ... import testing_utils
 
 
 def function_call(args: dict[str, Any]) -> types.Part:
@@ -37,7 +37,7 @@ def test_sequential_calls():
       function_call({'x': 3}),
       'response1',
   ]
-  mockModel = utils.MockModel.create(responses=responses)
+  mockModel = testing_utils.MockModel.create(responses=responses)
   function_called = 0
 
   def increase_by_one(x: int) -> int:
@@ -46,8 +46,8 @@ def test_sequential_calls():
     return x + 1
 
   agent = Agent(name='root_agent', model=mockModel, tools=[increase_by_one])
-  runner = utils.InMemoryRunner(agent)
-  result = utils.simplify_events(runner.run('test'))
+  runner = testing_utils.InMemoryRunner(agent)
+  result = testing_utils.simplify_events(runner.run('test'))
   assert result == [
       ('root_agent', function_call({'x': 1})),
       ('root_agent', function_response({'result': 2})),
@@ -61,17 +61,17 @@ def test_sequential_calls():
   # Asserts the requests.
   assert len(mockModel.requests) == 4
   # 1 item: user content
-  assert utils.simplify_contents(mockModel.requests[0].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[0].contents) == [
       ('user', 'test')
   ]
   # 3 items: user content, functaion call / response for the 1st call
-  assert utils.simplify_contents(mockModel.requests[1].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[1].contents) == [
       ('user', 'test'),
       ('model', function_call({'x': 1})),
       ('user', function_response({'result': 2})),
   ]
   # 5 items: user content, functaion call / response for two calls
-  assert utils.simplify_contents(mockModel.requests[2].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[2].contents) == [
       ('user', 'test'),
       ('model', function_call({'x': 1})),
       ('user', function_response({'result': 2})),
@@ -79,7 +79,7 @@ def test_sequential_calls():
       ('user', function_response({'result': 3})),
   ]
   # 7 items: user content, functaion call / response for three calls
-  assert utils.simplify_contents(mockModel.requests[3].contents) == [
+  assert testing_utils.simplify_contents(mockModel.requests[3].contents) == [
       ('user', 'test'),
       ('model', function_call({'x': 1})),
       ('user', function_response({'result': 2})),

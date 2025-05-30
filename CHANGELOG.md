@@ -1,5 +1,124 @@
 # Changelog
 
+## 1.1.1
+
+### Features
+* Add BigQuery first-party tools. See [here](https://github.com/google/adk-python/commit/d6c6bb4b2489a8b7a4713e4747c30d6df0c07961) for more details.
+
+
+## 1.1.0
+
+### Features
+
+* Extract agent loading logic from fast_api.py to a separate AgentLoader class and support more agent definition folder/file structure.
+* Added audio play in web UI.
+* Added input transcription support for live/streaming.
+* Added support for storing eval run history locally in adk eval cli.
+* Image artifacts can now be clicked directly in chat message to view.
+* Left side panel can now be resized.
+
+### Bug Fixes
+
+* Avoid duplicating log in stderr.
+* Align event filtering and ordering logic.
+* Add handling for None param.annotation.
+* Fixed several minor bugs regarding eval tab in web UI.
+
+### Miscellaneous Chores
+
+* Updates mypy config in pyproject.toml.
+* Add google search agent in samples.
+* Update filtered schema parameters for Gemini API.
+* Adds autoformat.sh for formatting codebase.
+
+## 1.0.0
+
+### ⚠ BREAKING CHANGES
+
+* Evaluation dataset schema is finalized with strong-type pydantic models.
+  (previously saved eval file needs re-generation, for both adk eval cli and
+  the eval tab in adk web UI).
+* `BuiltInCodeExecutor` (in code_executors package) replaces
+  `BuiltInCodeExecutionTool` (previously in tools package).
+* All methods in services are now async, including session service, artifact
+  service and memory service.
+  * `list_events` and `close_session` methods are removed from session service.
+* agent.py file structure with MCP tools are now easier and simpler ([now](https://github.com/google/adk-python/blob/3b5232c14f48e1d5b170f3698d91639b079722c8/contributing/samples/mcp_stdio_server_agent/agent.py#L33) vs [before](https://github.com/google/adk-python/blob/a4adb739c0d86b9ae4587547d2653d568f6567f2/contributing/samples/mcp_agent/agent.py#L41)).
+  Old format is not working anymore.
+* `Memory` schema and `MemoryService` is redesigned.
+* Mark various class attributes as private in the classes in the `tools` package.
+* Disabled session state injection if instruction provider is used.
+  (so that you can have `{var_name}` in the instruction, which is required for code snippets)
+* Toolbox integration is revamped: tools/toolbox_tool.py → tools/toolbox_toolset.py.
+* Removes the experimental `remote_agent.py`. We'll redesign it and bring it back.
+
+### Features
+
+* Dev UI:
+  * A brand new trace view for overall agent invocation.
+  * A revamped evaluation tab and comparison view for checking eval results.
+* Introduced `BaseToolset` to allow dynamically add/remove tools for agents.
+  * Revamped MCPToolset with the new BaseToolset interface.
+  * Revamped GoogleApiTool, GoogleApiToolset and ApplicationIntegrationToolset with the new BaseToolset interface.
+  * Resigned agent.py file structure when needing MCPToolset.
+  * Added ToolboxToolset.
+* Redesigned strong-typed agent evaluation schema.
+  * Allows users to create more cohesive eval sets.
+  * Allows evals to be extended for non-text modality.
+  * Allows for a structured interaction with the uber eval system.
+* Redesigned Memory schema and MemoryService interfaces.
+* Added token usage to LlmResponse.
+* Allowed specifying `--adk_version` in `adk deploy cloud_run` cli. Default is the current version.
+
+### Bug Fixes
+
+* Fixed `adk deploy cloud_run` failing bug.
+* Fixed logs not being printed due to `google-auth` library.
+
+### Miscellaneous Chores
+
+* Display full help text when adk cli receives invalid arguments.
+* `adk web` now binds `127.0.0.1` by default, instead of 0.0.0.0.
+* `InMemoryRunner` now takes `BaseAgent` in constructor.
+* Various docstring improvements.
+* Various UI tweaks.
+* Various bug fixes.
+* Update various contributing/samples for contributors to validate the implementation.
+
+
+## 0.5.0
+
+### ⚠ BREAKING CHANGES
+
+* Updated artifact and memory service interface to be async. Agents that
+  interact with these services through callbacks or tools will now need to
+  adjust their invocation methods to be async (using await), or ensure calls
+  are wrapped in an asynchronous executor like asyncio.run(). Any service that
+  extends the base interface must also be updated.
+
+### Features
+
+* Introduced the ability to chain model callbacks.
+* Added support for async agent and model callbacks.
+* Added input transcription support for live/streaming.
+* Captured all agent code error and display on UI.
+* Set param required tag to False by default in openapi_tool.
+* Updated evaluation functions to be asynchronous.
+
+### Bug Fixes
+
+* Ensured a unique ID is generated for every event.
+* Fixed the issue when openapi_specparser has parameter.required as None.
+* Updated the 'type' value on the items/properties nested structures for Anthropic models to adhere to JSON schema.
+* Fix litellm error issues.
+
+### Miscellaneous Chores
+
+* Regenerated API docs.
+* Created a `developer` folder and added samples.
+* Updated the contributing guide.
+* Docstring improvements, typo fixings, GitHub action to enforce code styles on formatting and imports, etc.
+
 ## 0.4.0
 
 ### ⚠ BREAKING CHANGES
