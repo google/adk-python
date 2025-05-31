@@ -553,6 +553,6 @@ def test_function_get_auth_response_partial():
   parts = content.parts
   assert len(parts) == 2
   assert parts[0].function_response.name == 'call_external_api1'
-  assert parts[0].function_response.response == {}
+  assert parts[0].function_response.response == {'result': None}
   assert parts[1].function_response.name == 'call_external_api2'
   assert parts[1].function_response.response == {'result': 2}
