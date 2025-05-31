@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import json
-import json
 import base64
 from datetime import datetime
 from unittest import mock # Use unittest.mock for creating mocks and simple objects
