@@ -83,7 +83,7 @@ class Gemini(BaseLlm):
     Yields:
       LlmResponse: The model response.
     """
-
+    self._preprocess_request(llm_request)
     self._maybe_append_user_content(llm_request)
     logger.info(
         'Sending out request, model: %s, backend: %s, stream: %s',
@@ -236,6 +236,12 @@ class Gemini(BaseLlm):
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(live_session)
+
+  def _preprocess_request(self, llm_request: LlmRequest) -> None:
+
+    if llm_request.config and self._api_backend == 'ml_dev':
+      # Using API key from Google AI Studio to call model doesn't support labels.
+      llm_request.config.labels = None
 
 
 def _build_function_declaration_log(
