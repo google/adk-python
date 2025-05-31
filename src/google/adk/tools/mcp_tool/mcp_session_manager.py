@@ -12,14 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 from contextlib import AsyncExitStack
+from datetime import timedelta
 import functools
 import logging
 import sys
 from typing import Any
 from typing import Optional
 from typing import TextIO
+from typing import Union
 
 import anyio
 from pydantic import BaseModel
@@ -29,6 +32,7 @@ try:
   from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
+  from mcp.client.streamable_http import streamablehttp_client
 except ImportError as e:
   import sys
 
@@ -54,6 +58,20 @@ class SseServerParams(BaseModel):
   headers: dict[str, Any] | None = None
   timeout: float = 5
   sse_read_timeout: float = 60 * 5
+
+
+class StreamableHTTPServerParams(BaseModel):
+  """Parameters for the MCP SSE connection.
+
+  See MCP SSE Client documentation for more details.
+  https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/client/streamable_http.py
+  """
+
+  url: str
+  headers: dict[str, Any] | None = None
+  timeout: float = 5
+  sse_read_timeout: float = 60 * 5
+  terminate_on_close: bool = True
 
 
 def retry_on_closed_resource(async_reinit_func_name: str):
@@ -123,13 +141,17 @@ class MCPSessionManager:
 
   def __init__(
       self,
-      connection_params: StdioServerParameters | SseServerParams,
+      connection_params: Union[
+          StdioServerParameters, SseServerParams, StreamableHTTPServerParams
+      ],
       errlog: TextIO = sys.stderr,
   ):
     """Initializes the MCP session manager.
 
     Args:
-        connection_params: Parameters for the MCP connection (Stdio or SSE).
+        connection_params: Parameters for the MCP connection (Stdio, SSE or
+          Streamable HTTP). Stdio by default also has a 5s read timeout as other
+          parameters but it's not configurable for now.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
     """
@@ -153,6 +175,9 @@ class MCPSessionManager:
 
     try:
       if isinstance(self._connection_params, StdioServerParameters):
+        # So far timeout is not configurable. Given MCP is still evolving, we
+        # would expect stdio_client to evolve to accept timeout parameter like
+        # other client.
         client = stdio_client(
             server=self._connection_params, errlog=self._errlog
         )
@@ -163,6 +188,16 @@ class MCPSessionManager:
             timeout=self._connection_params.timeout,
             sse_read_timeout=self._connection_params.sse_read_timeout,
         )
+      elif isinstance(self._connection_params, StreamableHTTPServerParams):
+        client = streamablehttp_client(
+            url=self._connection_params.url,
+            headers=self._connection_params.headers,
+            timeout=timedelta(seconds=self._connection_params.timeout),
+            sse_read_timeout=timedelta(
+                seconds=self._connection_params.sse_read_timeout
+            ),
+            terminate_on_close=self._connection_params.terminate_on_close,
+        )
       else:
         raise ValueError(
             'Unable to initialize connection. Connection should be'
@@ -171,9 +206,32 @@ class MCPSessionManager:
         )
 
       transports = await self._exit_stack.enter_async_context(client)
-      session = await self._exit_stack.enter_async_context(
-          ClientSession(*transports)
-      )
+      # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
+      # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
+      # The StdioServerParameters does not provide a timeout parameter for the
+      # session, so we need to set a default timeout for it. Other clients
+      # (SseServerParams and StreamableHTTPServerParams) already provide a
+      # timeout parameter in their configuration.
+      if isinstance(self._connection_params, StdioServerParameters):
+        # Default timeout for MCP session is 5 seconds, same as SseServerParams
+        # and StreamableHTTPServerParams.
+        # TODO :
+        #   1. make timeout configurable
+        #   2. Add StdioConnectionParams to include StdioServerParameters as a
+        #      field and rename other two params to XXXXConnetionParams. Ohter
+        #      two params are actually connection params, while stdio is
+        #      special, stdio_client takes the resposibility of starting the
+        #      server and working as a client.
+        session = await self._exit_stack.enter_async_context(
+            ClientSession(
+                *transports[:2],
+                read_timeout_seconds=timedelta(seconds=5),
+            )
+        )
+      else:
+        session = await self._exit_stack.enter_async_context(
+            ClientSession(*transports[:2])
+        )
       await session.initialize()
 
       self._session = session

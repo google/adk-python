@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import List
 from typing import Optional
 
@@ -33,6 +34,7 @@ from ...auth import OAuth2Auth
 from ..tool_context import ToolContext
 
 BIGQUERY_TOKEN_CACHE_KEY = "bigquery_token_cache"
+BIGQUERY_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/bigquery"]
 
 
 class BigQueryCredentialsConfig(BaseModel):
@@ -65,15 +67,14 @@ class BigQueryCredentialsConfig(BaseModel):
   client_secret: Optional[str] = None
   """the oauth client secret to use."""
   scopes: Optional[List[str]] = None
-  """the scopes to use.
-  """
+  """the scopes to use."""
 
   @model_validator(mode="after")
   def __post_init__(self) -> BigQueryCredentialsConfig:
     """Validate that either credentials or client ID/secret are provided."""
     if not self.credentials and (not self.client_id or not self.client_secret):
       raise ValueError(
-          "Must provide either credentials or client_id abd client_secret pair."
+          "Must provide either credentials or client_id and client_secret pair."
       )
     if self.credentials and (
         self.client_id or self.client_secret or self.scopes
@@ -87,6 +88,10 @@ class BigQueryCredentialsConfig(BaseModel):
       self.client_id = self.credentials.client_id
       self.client_secret = self.credentials.client_secret
       self.scopes = self.credentials.scopes
+
+    if not self.scopes:
+      self.scopes = BIGQUERY_DEFAULT_SCOPE
+
     return self
 
 
@@ -121,7 +126,7 @@ class BigQueryCredentialsManager:
     creds_json = tool_context.state.get(BIGQUERY_TOKEN_CACHE_KEY, None)
     creds = (
         Credentials.from_authorized_user_info(
-            creds_json, self.credentials_config.scopes
+            json.loads(creds_json), self.credentials_config.scopes
         )
         if creds_json
         else None

@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
+from __future__ import annotations
+
 from typing import Optional
 from typing import Union
 
 from google.genai import types
 from langchain.agents import Tool
 from langchain_core.tools import BaseTool
+from langchain_core.tools.structured import StructuredTool
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
@@ -63,9 +65,13 @@ class LangchainTool(FunctionTool):
       raise ValueError("Langchain tool must have a 'run' or '_run' method")
 
     # Determine which function to use
-    func = tool._run if hasattr(tool, '_run') else tool.run
+    if isinstance(tool, StructuredTool):
+      func = tool.func
+    else:
+      func = tool._run if hasattr(tool, '_run') else tool.run
     super().__init__(func)
-
+    # run_manager is a special parameter for langchain tool
+    self._ignore_params.append('run_manager')
     self._langchain_tool = tool
 
     # Set name: priority is 1) explicitly provided name, 2) tool's name, 3) default
@@ -112,20 +118,21 @@ class LangchainTool(FunctionTool):
         ):
           tool_wrapper.args_schema = self._langchain_tool.args_schema
 
-        return _automatic_function_calling_util.build_function_declaration_for_langchain(
-            False,
-            self.name,
-            self.description,
-            tool_wrapper.func,
-            getattr(tool_wrapper, 'args', None),
-        )
+          return _automatic_function_calling_util.build_function_declaration_for_langchain(
+              False,
+              self.name,
+              self.description,
+              tool_wrapper.func,
+              tool_wrapper.args,
+          )
 
       # Need to provide a way to override the function names and descriptions
       # as the original function names are mostly ".run" and the descriptions
       # may not meet users' needs
-      return _automatic_function_calling_util.build_function_declaration(
-          func=self._langchain_tool.run,
-      )
+      function_decl = super()._get_declaration()
+      function_decl.name = self.name
+      function_decl.description = self.description
+      return function_decl
 
     except Exception as e:
       raise ValueError(
