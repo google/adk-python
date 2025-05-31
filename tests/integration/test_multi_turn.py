@@ -15,7 +15,8 @@
 from google.adk.evaluation import AgentEvaluator
 
 
-def test_simple_multi_turn_conversation():
+@pytest.mark.asyncio
+async def test_simple_multi_turn_conversation():
   """Test a simple multi-turn conversation."""
   AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.home_automation_agent",
@@ -24,7 +25,8 @@ def test_simple_multi_turn_conversation():
   )
 
 
-def test_dependent_tool_calls():
+@pytest.mark.asyncio
+async def test_dependent_tool_calls():
   """Test subsequent tool calls that are dependent on previous tool calls."""
   AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.home_automation_agent",
@@ -33,8 +35,10 @@ def test_dependent_tool_calls():
   )
 
 
-def test_memorizing_past_events():
+@pytest.mark.asyncio
+async def test_memorizing_past_events():
   """Test memorizing past events."""
+
   AgentEvaluator.evaluate(
       agent_module="tests.integration.fixture.home_automation_agent",
       eval_dataset_file_path_or_dir="tests/integration/fixture/home_automation_agent/test_files/memorizing_past_events/eval_data.test.json",
