@@ -31,6 +31,7 @@ from pydantic import create_model
 from pydantic import fields as pydantic_fields
 
 from . import _function_parameter_parse_util
+from ..utils.variant_utils import GoogleLLMVariant
 
 _py_type_2_schema_type = {
     'str': types.Type.STRING,
@@ -194,7 +195,7 @@ def _get_return_type(func: Callable) -> Any:
 def build_function_declaration(
     func: Union[Callable, BaseModel],
     ignore_params: Optional[list[str]] = None,
-    variant: Literal['GOOGLE_AI', 'VERTEX_AI', 'DEFAULT'] = 'GOOGLE_AI',
+    variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
 ) -> types.FunctionDeclaration:
   signature = inspect.signature(func)
   should_update_signature = False
@@ -291,15 +292,8 @@ def build_function_declaration_util(
 
 def from_function_with_options(
     func: Callable,
-    variant: Literal['GOOGLE_AI', 'VERTEX_AI', 'DEFAULT'] = 'GOOGLE_AI',
+    variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
 ) -> 'types.FunctionDeclaration':
-
-  supported_variants = ['GOOGLE_AI', 'VERTEX_AI', 'DEFAULT']
-  if variant not in supported_variants:
-    raise ValueError(
-        f'Unsupported variant: {variant}. Supported variants are:'
-        f' {", ".join(supported_variants)}'
-    )
 
   parameters_properties = {}
   for name, param in inspect.signature(func).parameters.items():
@@ -330,7 +324,7 @@ def from_function_with_options(
             declaration.parameters
         )
     )
-  if not variant == 'VERTEX_AI':
+  if variant == GoogleLLMVariant.GEMINI_API:
     return declaration
 
   return_annotation = inspect.signature(func).return_annotation

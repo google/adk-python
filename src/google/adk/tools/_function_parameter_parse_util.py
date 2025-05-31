@@ -28,6 +28,8 @@ from typing import Union
 from google.genai import types
 import pydantic
 
+from ..utils.variant_utils import GoogleLLMVariant
+
 _py_builtin_type_to_schema_type = {
     str: types.Type.STRING,
     int: types.Type.INTEGER,
@@ -63,8 +65,10 @@ def _update_for_default_if_mldev(schema: types.Schema):
     )
 
 
-def _raise_if_schema_unsupported(variant: str, schema: types.Schema):
-  if not variant == 'VERTEX_AI':
+def _raise_if_schema_unsupported(
+    variant: GoogleLLMVariant, schema: types.Schema
+):
+  if variant == GoogleLLMVariant.GEMINI_API:
     _raise_for_any_of_if_mldev(schema)
     _update_for_default_if_mldev(schema)
 
@@ -116,7 +120,7 @@ def _is_default_value_compatible(
 
 
 def _parse_schema_from_parameter(
-    variant: str, param: inspect.Parameter, func_name: str
+    variant: GoogleLLMVariant, param: inspect.Parameter, func_name: str
 ) -> types.Schema:
   """parse schema from parameter.
 

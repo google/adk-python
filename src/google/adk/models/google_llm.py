@@ -29,6 +29,7 @@ from google.genai import types
 from typing_extensions import override
 
 from .. import version
+from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
 from .gemini_llm_connection import GeminiLlmConnection
@@ -178,8 +179,12 @@ class Gemini(BaseLlm):
     )
 
   @cached_property
-  def _api_backend(self) -> str:
-    return 'vertex' if self.api_client.vertexai else 'ml_dev'
+  def _api_backend(self) -> GoogleLLMVariant:
+    return (
+        GoogleLLMVariant.VERTEX_AI
+        if self.api_client.vertexai
+        else GoogleLLMVariant.GEMINI_API
+    )
 
   @cached_property
   def _tracking_headers(self) -> dict[str, str]:
@@ -196,7 +201,7 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
-    if self._api_backend == 'vertex':
+    if self._api_backend == GoogleLLMVariant.VERTEX_AI:
       # use beta version for vertex api
       api_version = 'v1beta1'
       # use default api version for vertex
@@ -206,7 +211,7 @@ class Gemini(BaseLlm):
           )
       )
     else:
-      # use v1alpha for ml_dev
+      # use v1alpha for using API KEY from Google AI Studio
       api_version = 'v1alpha'
       return Client(
           http_options=types.HttpOptions(
@@ -239,7 +244,7 @@ class Gemini(BaseLlm):
 
   def _preprocess_request(self, llm_request: LlmRequest) -> None:
 
-    if llm_request.config and self._api_backend == 'ml_dev':
+    if llm_request.config and self._api_backend == GoogleLLMVariant.GEMINI_API:
       # Using API key from Google AI Studio to call model doesn't support labels.
       llm_request.config.labels = None
 
