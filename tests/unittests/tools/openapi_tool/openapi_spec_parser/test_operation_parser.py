@@ -78,31 +78,31 @@ def sample_operation() -> Operation:
 def test_operation_parser_initialization(sample_operation):
   """Test initialization of OperationParser."""
   parser = OperationParser(sample_operation)
-  assert parser.operation == sample_operation
-  assert len(parser.params) == 4  # 2 params + 2 request body props
-  assert parser.return_value is not None
+  assert parser._operation == sample_operation
+  assert len(parser._params) == 4  # 2 params + 2 request body props
+  assert parser._return_value is not None
 
 
 def test_process_operation_parameters(sample_operation):
   """Test _process_operation_parameters method."""
   parser = OperationParser(sample_operation, should_parse=False)
   parser._process_operation_parameters()
-  assert len(parser.params) == 2
-  assert parser.params[0].original_name == 'param1'
-  assert parser.params[0].param_location == 'query'
-  assert parser.params[1].original_name == 'param2'
-  assert parser.params[1].param_location == 'header'
+  assert len(parser._params) == 2
+  assert parser._params[0].original_name == 'param1'
+  assert parser._params[0].param_location == 'query'
+  assert parser._params[1].original_name == 'param2'
+  assert parser._params[1].param_location == 'header'
 
 
 def test_process_request_body(sample_operation):
   """Test _process_request_body method."""
   parser = OperationParser(sample_operation, should_parse=False)
   parser._process_request_body()
-  assert len(parser.params) == 2  # 2 properties in request body
-  assert parser.params[0].original_name == 'prop1'
-  assert parser.params[0].param_location == 'body'
-  assert parser.params[1].original_name == 'prop2'
-  assert parser.params[1].param_location == 'body'
+  assert len(parser._params) == 2  # 2 properties in request body
+  assert parser._params[0].original_name == 'prop1'
+  assert parser._params[0].param_location == 'body'
+  assert parser._params[1].original_name == 'prop2'
+  assert parser._params[1].param_location == 'body'
 
 
 def test_process_request_body_array():
@@ -132,20 +132,20 @@ def test_process_request_body_array():
 
   parser = OperationParser(operation, should_parse=False)
   parser._process_request_body()
-  assert len(parser.params) == 1
-  assert parser.params[0].original_name == 'array'
-  assert parser.params[0].param_location == 'body'
+  assert len(parser._params) == 1
+  assert parser._params[0].original_name == 'array'
+  assert parser._params[0].param_location == 'body'
   # Check that schema is correctly propagated and is a dictionary
-  assert parser.params[0].param_schema.type == 'array'
-  assert parser.params[0].param_schema.items.type == 'object'
-  assert 'item_prop1' in parser.params[0].param_schema.items.properties
-  assert 'item_prop2' in parser.params[0].param_schema.items.properties
+  assert parser._params[0].param_schema.type == 'array'
+  assert parser._params[0].param_schema.items.type == 'object'
+  assert 'item_prop1' in parser._params[0].param_schema.items.properties
+  assert 'item_prop2' in parser._params[0].param_schema.items.properties
   assert (
-      parser.params[0].param_schema.items.properties['item_prop1'].description
+      parser._params[0].param_schema.items.properties['item_prop1'].description
       == 'Item Property 1'
   )
   assert (
-      parser.params[0].param_schema.items.properties['item_prop2'].description
+      parser._params[0].param_schema.items.properties['item_prop2'].description
       == 'Item Property 2'
   )
 
@@ -159,9 +159,9 @@ def test_process_request_body_no_name():
   )
   parser = OperationParser(operation, should_parse=False)
   parser._process_request_body()
-  assert len(parser.params) == 1
-  assert parser.params[0].original_name == ''  # No name
-  assert parser.params[0].param_location == 'body'
+  assert len(parser._params) == 1
+  assert parser._params[0].original_name == ''  # No name
+  assert parser._params[0].param_location == 'body'
 
 
 def test_process_request_body_empty_object():
@@ -173,30 +173,30 @@ def test_process_request_body_empty_object():
   )
   parser = OperationParser(operation, should_parse=False)
   parser._process_request_body()
-  assert len(parser.params) == 0
+  assert len(parser._params) == 0
 
 
 def test_dedupe_param_names(sample_operation):
   """Test _dedupe_param_names method."""
   parser = OperationParser(sample_operation, should_parse=False)
   # Add duplicate named parameters.
-  parser.params = [
+  parser._params = [
       ApiParameter(original_name='test', param_location='', param_schema={}),
       ApiParameter(original_name='test', param_location='', param_schema={}),
       ApiParameter(original_name='test', param_location='', param_schema={}),
   ]
   parser._dedupe_param_names()
-  assert parser.params[0].py_name == 'test'
-  assert parser.params[1].py_name == 'test_0'
-  assert parser.params[2].py_name == 'test_1'
+  assert parser._params[0].py_name == 'test'
+  assert parser._params[1].py_name == 'test_0'
+  assert parser._params[2].py_name == 'test_1'
 
 
 def test_process_return_value(sample_operation):
   """Test _process_return_value method."""
   parser = OperationParser(sample_operation, should_parse=False)
   parser._process_return_value()
-  assert parser.return_value is not None
-  assert parser.return_value.type_hint == 'str'
+  assert parser._return_value is not None
+  assert parser._return_value.type_hint == 'str'
 
 
 def test_process_return_value_no_2xx(sample_operation):
@@ -206,8 +206,8 @@ def test_process_return_value_no_2xx(sample_operation):
   )
   parser = OperationParser(operation_no_2xx, should_parse=False)
   parser._process_return_value()
-  assert parser.return_value is not None
-  assert parser.return_value.type_hint == 'Any'
+  assert parser._return_value is not None
+  assert parser._return_value.type_hint == 'Any'
 
 
 def test_process_return_value_multiple_2xx(sample_operation):
@@ -242,10 +242,10 @@ def test_process_return_value_multiple_2xx(sample_operation):
   parser = OperationParser(operation_multi_2xx, should_parse=False)
   parser._process_return_value()
 
-  assert parser.return_value is not None
+  assert parser._return_value is not None
   # Take the content type of the 200 response since it's the smallest response
   # code
-  assert parser.return_value.param_schema.type == 'boolean'
+  assert parser._return_value.param_schema.type == 'boolean'
 
 
 def test_process_return_value_no_content(sample_operation):
@@ -255,7 +255,7 @@ def test_process_return_value_no_content(sample_operation):
   )
   parser = OperationParser(operation_no_content, should_parse=False)
   parser._process_return_value()
-  assert parser.return_value.type_hint == 'Any'
+  assert parser._return_value.type_hint == 'Any'
 
 
 def test_process_return_value_no_schema(sample_operation):
@@ -270,7 +270,7 @@ def test_process_return_value_no_schema(sample_operation):
   )
   parser = OperationParser(operation_no_schema, should_parse=False)
   parser._process_return_value()
-  assert parser.return_value.type_hint == 'Any'
+  assert parser._return_value.type_hint == 'Any'
 
 
 def test_get_function_name(sample_operation):
@@ -347,8 +347,8 @@ def test_get_json_schema(sample_operation):
   assert json_schema['type'] == 'object'
   assert 'param1' in json_schema['properties']
   assert 'prop1' in json_schema['properties']
-  assert 'param1' in json_schema['required']
-  assert 'prop1' in json_schema['required']
+  # By default nothing is required unless explicitly stated
+  assert 'required' not in json_schema or json_schema['required'] == []
 
 
 def test_get_signature_parameters(sample_operation):
@@ -389,9 +389,9 @@ def test_load():
   parser = OperationParser.load(operation, params, return_value)
 
   assert isinstance(parser, OperationParser)
-  assert parser.operation == operation
-  assert parser.params == params
-  assert parser.return_value == return_value
+  assert parser._operation == operation
+  assert parser._params == params
+  assert parser._return_value == return_value
   assert (
       parser.get_function_name() == 'my_op'
   )  # Check that the operation is loaded
@@ -412,7 +412,7 @@ def test_operation_parser_with_dict():
       },
   }
   parser = OperationParser(operation_dict)
-  assert parser.operation.operationId == 'test_dict_operation'
-  assert len(parser.params) == 1
-  assert parser.params[0].original_name == 'dict_param'
-  assert parser.return_value.type_hint == 'str'
+  assert parser._operation.operationId == 'test_dict_operation'
+  assert len(parser._params) == 1
+  assert parser._params[0].original_name == 'dict_param'
+  assert parser._return_value.type_hint == 'str'

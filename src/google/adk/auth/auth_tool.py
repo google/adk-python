@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pydantic import BaseModel
-
 from .auth_credential import AuthCredential
+from .auth_credential import BaseModelWithConfig
 from .auth_schemes import AuthScheme
 
 
-class AuthConfig(BaseModel):
+class AuthConfig(BaseModelWithConfig):
   """The auth config sent by tool asking client to collect auth credentials and
 
   adk and client will help to fill in the response
@@ -45,7 +44,7 @@ class AuthConfig(BaseModel):
   this field"""
 
 
-class AuthToolArguments(BaseModel):
+class AuthToolArguments(BaseModelWithConfig):
   """the arguments for the special long running function tool that is used to
 
   request end user credentials.

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import logging
 import time
 from typing import Any
 from typing import Optional
@@ -23,17 +24,19 @@ from typing_extensions import override
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
-from .base_session_service import ListEventsResponse
 from .base_session_service import ListSessionsResponse
 from .session import Session
 from .state import State
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class InMemorySessionService(BaseSessionService):
   """An in-memory implementation of the session service."""
 
   def __init__(self):
-    # A map from app name to a map from user ID to a map from session ID to session.
+    # A map from app name to a map from user ID to a map from session ID to
+    # session.
     self.sessions: dict[str, dict[str, dict[str, Session]]] = {}
     # A map from app name to a map from user ID to a map from key to the value.
     self.user_state: dict[str, dict[str, dict[str, Any]]] = {}
@@ -41,7 +44,38 @@ class InMemorySessionService(BaseSessionService):
     self.app_state: dict[str, dict[str, Any]] = {}
 
   @override
-  def create_session(
+  async def create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      state: Optional[dict[str, Any]] = None,
+      session_id: Optional[str] = None,
+  ) -> Session:
+    return self._create_session_impl(
+        app_name=app_name,
+        user_id=user_id,
+        state=state,
+        session_id=session_id,
+    )
+
+  def create_session_sync(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      state: Optional[dict[str, Any]] = None,
+      session_id: Optional[str] = None,
+  ) -> Session:
+    logger.warning('Deprecated. Please migrate to the async method.')
+    return self._create_session_impl(
+        app_name=app_name,
+        user_id=user_id,
+        state=state,
+        session_id=session_id,
+    )
+
+  def _create_session_impl(
       self,
       *,
       app_name: str,
@@ -72,14 +106,45 @@ class InMemorySessionService(BaseSessionService):
     return self._merge_state(app_name, user_id, copied_session)
 
   @override
-  def get_session(
+  async def get_session(
       self,
       *,
       app_name: str,
       user_id: str,
       session_id: str,
       config: Optional[GetSessionConfig] = None,
-  ) -> Session:
+  ) -> Optional[Session]:
+    return self._get_session_impl(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        config=config,
+    )
+
+  def get_session_sync(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      config: Optional[GetSessionConfig] = None,
+  ) -> Optional[Session]:
+    logger.warning('Deprecated. Please migrate to the async method.')
+    return self._get_session_impl(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        config=config,
+    )
+
+  def _get_session_impl(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      config: Optional[GetSessionConfig] = None,
+  ) -> Optional[Session]:
     if app_name not in self.sessions:
       return None
     if user_id not in self.sessions[app_name]:
@@ -95,18 +160,20 @@ class InMemorySessionService(BaseSessionService):
         copied_session.events = copied_session.events[
             -config.num_recent_events :
         ]
-      elif config.after_timestamp:
-        i = len(session.events) - 1
+      if config.after_timestamp:
+        i = len(copied_session.events) - 1
         while i >= 0:
           if copied_session.events[i].timestamp < config.after_timestamp:
             break
           i -= 1
         if i >= 0:
-          copied_session.events = copied_session.events[i:]
+          copied_session.events = copied_session.events[i + 1 :]
 
     return self._merge_state(app_name, user_id, copied_session)
 
-  def _merge_state(self, app_name: str, user_id: str, copied_session: Session):
+  def _merge_state(
+      self, app_name: str, user_id: str, copied_session: Session
+  ) -> Session:
     # Merge app state
     if app_name in self.app_state:
       for key in self.app_state[app_name].keys():
@@ -128,7 +195,18 @@ class InMemorySessionService(BaseSessionService):
     return copied_session
 
   @override
-  def list_sessions(
+  async def list_sessions(
+      self, *, app_name: str, user_id: str
+  ) -> ListSessionsResponse:
+    return self._list_sessions_impl(app_name=app_name, user_id=user_id)
+
+  def list_sessions_sync(
+      self, *, app_name: str, user_id: str
+  ) -> ListSessionsResponse:
+    logger.warning('Deprecated. Please migrate to the async method.')
+    return self._list_sessions_impl(app_name=app_name, user_id=user_id)
+
+  def _list_sessions_impl(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     empty_response = ListSessionsResponse()
@@ -145,12 +223,26 @@ class InMemorySessionService(BaseSessionService):
       sessions_without_events.append(copied_session)
     return ListSessionsResponse(sessions=sessions_without_events)
 
-  @override
-  def delete_session(
+  async def delete_session(
+      self, *, app_name: str, user_id: str, session_id: str
+  ) -> None:
+    self._delete_session_impl(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+
+  def delete_session_sync(
+      self, *, app_name: str, user_id: str, session_id: str
+  ) -> None:
+    logger.warning('Deprecated. Please migrate to the async method.')
+    self._delete_session_impl(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+
+  def _delete_session_impl(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     if (
-        self.get_session(
+        self._get_session_impl(
             app_name=app_name, user_id=user_id, session_id=session_id
         )
         is None
@@ -160,9 +252,9 @@ class InMemorySessionService(BaseSessionService):
     self.sessions[app_name][user_id].pop(session_id)
 
   @override
-  def append_event(self, session: Session, event: Event) -> Event:
+  async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
-    super().append_event(session=session, event=event)
+    await super().append_event(session=session, event=event)
     session.last_update_time = event.timestamp
 
     # Update the storage session
@@ -189,18 +281,8 @@ class InMemorySessionService(BaseSessionService):
           ] = event.actions.state_delta[key]
 
     storage_session = self.sessions[app_name][user_id].get(session_id)
-    super().append_event(session=storage_session, event=event)
+    await super().append_event(session=storage_session, event=event)
 
     storage_session.last_update_time = event.timestamp
 
     return event
-
-  @override
-  def list_events(
-      self,
-      *,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> ListEventsResponse:
-    raise NotImplementedError()

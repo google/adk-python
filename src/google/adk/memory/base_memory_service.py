@@ -12,44 +12,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import abc
+
+from __future__ import annotations
+
+from abc import ABC
+from abc import abstractmethod
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from pydantic import Field
 
-from ..events.event import Event
-from ..sessions.session import Session
+from .memory_entry import MemoryEntry
 
-
-class MemoryResult(BaseModel):
-  """Represents a single memory retrieval result.
-
-  Attributes:
-      session_id: The session id associated with the memory.
-      events: A list of events in the session.
-  """
-  session_id: str
-  events: list[Event]
+if TYPE_CHECKING:
+  from ..sessions.session import Session
 
 
 class SearchMemoryResponse(BaseModel):
   """Represents the response from a memory search.
 
   Attributes:
-      memories: A list of memory results matching the search query.
+      memories: A list of memory entries that relate to the search query.
   """
-  memories: list[MemoryResult] = Field(default_factory=list)
+
+  memories: list[MemoryEntry] = Field(default_factory=list)
 
 
-class BaseMemoryService(abc.ABC):
+class BaseMemoryService(ABC):
   """Base class for memory services.
 
   The service provides functionalities to ingest sessions into memory so that
   the memory can be used for user queries.
   """
 
-  @abc.abstractmethod
-  def add_session_to_memory(self, session: Session):
+  @abstractmethod
+  async def add_session_to_memory(
+      self,
+      session: Session,
+  ):
     """Adds a session to the memory service.
 
     A session may be added multiple times during its lifetime.
@@ -58,9 +58,13 @@ class BaseMemoryService(abc.ABC):
         session: The session to add.
     """
 
-  @abc.abstractmethod
-  def search_memory(
-      self, *, app_name: str, user_id: str, query: str
+  @abstractmethod
+  async def search_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      query: str,
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query.
 

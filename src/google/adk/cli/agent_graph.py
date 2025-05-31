@@ -25,7 +25,7 @@ from ..tools.agent_tool import AgentTool
 from ..tools.base_tool import BaseTool
 from ..tools.function_tool import FunctionTool
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 try:
   from ..tools.retrieval.base_retrieval_tool import BaseRetrievalTool
@@ -35,7 +35,7 @@ else:
   retrieval_tool_module_loaded = True
 
 
-def build_graph(graph: graphviz.Digraph, agent: BaseAgent, highlight_pairs, parent_agent=None):
+async def build_graph(graph: graphviz.Digraph, agent: BaseAgent, highlight_pairs, parent_agent=None):
   """
   Build a graph of the agent and its sub-agents.
   Args:
@@ -247,15 +247,15 @@ def build_graph(graph: graphviz.Digraph, agent: BaseAgent, highlight_pairs, pare
     if (not should_build_agent_cluster(sub_agent) and not should_build_agent_cluster(agent)): # This is to avoid making a node for a Workflow Agent 
       draw_edge(agent.name, sub_agent.name)
   if isinstance(agent, LlmAgent):
-    for tool in agent.canonical_tools:
+    for tool in await agent.canonical_tools():
       draw_node(tool)
       draw_edge(agent.name, get_node_name(tool))
 
 
-def get_agent_graph(root_agent, highlights_pairs, image=False):
+async def get_agent_graph(root_agent, highlights_pairs, image=False):
   print('build graph')
   graph = graphviz.Digraph(graph_attr={'rankdir': 'LR', 'bgcolor': '#333537'})
-  build_graph(graph, root_agent, highlights_pairs)
+  await build_graph(graph, root_agent, highlights_pairs)
   if image:
     return graph.pipe(format='png')
   else:

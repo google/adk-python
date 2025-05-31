@@ -20,7 +20,7 @@ from pydantic import BaseModel
 import pytest
 from pytest import mark
 
-from .. import utils
+from .. import testing_utils
 
 pytestmark = pytest.mark.skip(
     reason='Skipping until tool.func evaluations are fixed (async)'
@@ -50,7 +50,7 @@ def change_state_callback(callback_context: CallbackContext):
 
 
 def test_no_schema():
-  mock_model = utils.MockModel.create(
+  mock_model = testing_utils.MockModel.create(
       responses=[
           function_call_no_schema,
           'response1',
@@ -69,9 +69,9 @@ def test_no_schema():
       tools=[AgentTool(agent=tool_agent)],
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
 
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', function_call_no_schema),
       ('root_agent', function_response_no_schema),
       ('root_agent', 'response2'),
@@ -81,7 +81,7 @@ def test_no_schema():
 def test_update_state():
   """The agent tool can read and change parent state."""
 
-  mock_model = utils.MockModel.create(
+  mock_model = testing_utils.MockModel.create(
       responses=[
           function_call_no_schema,
           '{"custom_output": "response1"}',
@@ -102,7 +102,7 @@ def test_update_state():
       tools=[AgentTool(agent=tool_agent)],
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
   runner.session.state['state_1'] = 'state1_value'
 
   runner.run('test1')
@@ -128,7 +128,7 @@ def test_custom_schema():
   class CustomOutput(BaseModel):
     custom_output: str
 
-  mock_model = utils.MockModel.create(
+  mock_model = testing_utils.MockModel.create(
       responses=[
           function_call_custom,
           '{"custom_output": "response1"}',
@@ -150,10 +150,10 @@ def test_custom_schema():
       tools=[AgentTool(agent=tool_agent)],
   )
 
-  runner = utils.InMemoryRunner(root_agent)
+  runner = testing_utils.InMemoryRunner(root_agent)
   runner.session.state['state_1'] = 'state1_value'
 
-  assert utils.simplify_events(runner.run('test1')) == [
+  assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', function_call_custom),
       ('root_agent', function_response_custom),
       ('root_agent', 'response2'),
