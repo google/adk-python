@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
+from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
@@ -59,11 +60,6 @@ class CallbackContext(ReadonlyContext):
     e.g. `ctx.state['foo'] = 'bar'`
     """
     return self._state
-
-  @property
-  def user_content(self) -> Optional[types.Content]:
-    """The user content that started this invocation. READONLY field."""
-    return self._invocation_context.user_content
 
   async def load_artifact(
       self, filename: str, version: Optional[int] = None

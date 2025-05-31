@@ -16,7 +16,8 @@ from typing import Any
 from typing import Dict
 from typing import List
 
-from fastapi.openapi.models import Response, Schema
+from fastapi.openapi.models import Response
+from fastapi.openapi.models import Schema
 from google.adk.tools.openapi_tool.common.common import ApiParameter
 from google.adk.tools.openapi_tool.common.common import PydocHelper
 from google.adk.tools.openapi_tool.common.common import rename_python_keywords

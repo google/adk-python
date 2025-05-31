@@ -23,12 +23,15 @@ from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.genai import types
 from websockets.exceptions import ConnectionClosedOK
 
+from . import functions
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
+from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...agents.transcription_entry import TranscriptionEntry
 from ...events.event import Event
@@ -39,7 +42,6 @@ from ...telemetry import trace_call_llm
 from ...telemetry import trace_send_data
 from ...telemetry import tracer
 from ...tools.tool_context import ToolContext
-from . import functions
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -47,7 +49,9 @@ if TYPE_CHECKING:
   from ._base_llm_processor import BaseLlmRequestProcessor
   from ._base_llm_processor import BaseLlmResponseProcessor
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
+
+_ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 
 
 class BaseLlmFlow(ABC):
@@ -88,7 +92,12 @@ class BaseLlmFlow(ABC):
           if invocation_context.transcription_cache:
             from . import audio_transcriber
 
-            audio_transcriber = audio_transcriber.AudioTranscriber()
+            audio_transcriber = audio_transcriber.AudioTranscriber(
+                init_client=True
+                if invocation_context.run_config.input_audio_transcription
+                is None
+                else False
+            )
             contents = audio_transcriber.transcribe_file(invocation_context)
             logger.debug('Sending history to model: %s', contents)
             await llm_connection.send_history(contents)
@@ -129,6 +138,18 @@ class BaseLlmFlow(ABC):
             # cancel the tasks that belongs to the closed connection.
             send_task.cancel()
             await llm_connection.close()
+          if (
+              event.content
+              and event.content.parts
+              and event.content.parts[0].function_response
+              and event.content.parts[0].function_response.name
+              == 'task_completed'
+          ):
+            # this is used for sequential agent to signal the end of the agent.
+            await asyncio.sleep(1)
+            # cancel the tasks that belongs to the closed connection.
+            send_task.cancel()
+            return
       finally:
         # Clean up
         if not send_task.done():
@@ -176,9 +197,12 @@ class BaseLlmFlow(ABC):
         # Cache audio data here for transcription
         if not invocation_context.transcription_cache:
           invocation_context.transcription_cache = []
-        invocation_context.transcription_cache.append(
-            TranscriptionEntry(role='user', data=live_request.blob)
-        )
+        if not invocation_context.run_config.input_audio_transcription:
+          # if the live model's input transcription is not enabled, then
+          # we use our onwn audio transcriber to achieve that.
+          invocation_context.transcription_cache.append(
+              TranscriptionEntry(role='user', data=live_request.blob)
+          )
         await llm_connection.send_realtime(live_request.blob)
       if live_request.content:
         await llm_connection.send_content(live_request.content)
@@ -191,14 +215,22 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:
     """Receive data from model and process events using BaseLlmConnection."""
-    def get_author(llm_response):
+
+    def get_author_for_event(llm_response):
       """Get the author of the event.
 
       When the model returns transcription, the author is "user". Otherwise, the
-      author is the agent.
+      author is the agent name(not 'model').
+
+      Args:
+        llm_response: The LLM response from the LLM call.
       """
-      if llm_response and llm_response.content and llm_response.content.role == "user":
-        return "user"
+      if (
+          llm_response
+          and llm_response.content
+          and llm_response.content.role == 'user'
+      ):
+        return 'user'
       else:
         return invocation_context.agent.name
 
@@ -209,7 +241,7 @@ class BaseLlmFlow(ABC):
           model_response_event = Event(
               id=Event.new_id(),
               invocation_id=invocation_context.invocation_id,
-              author=get_author(llm_response),
+              author=get_author_for_event(llm_response),
           )
           async for event in self._postprocess_live(
               invocation_context,
@@ -220,13 +252,20 @@ class BaseLlmFlow(ABC):
             if (
                 event.content
                 and event.content.parts
-                and event.content.parts[0].text
+                and event.content.parts[0].inline_data is None
                 and not event.partial
             ):
+              # This can be either user data or transcription data.
+              # when output transcription enabled, it will contain model's
+              # transcription.
+              # when input transcription enabled, it will contain user
+              # transcription.
               if not invocation_context.transcription_cache:
                 invocation_context.transcription_cache = []
               invocation_context.transcription_cache.append(
-                  TranscriptionEntry(role='model', data=event.content)
+                  TranscriptionEntry(
+                      role=event.content.role, data=event.content
+                  )
               )
             yield event
         # Give opportunity for other tasks to run.
@@ -245,6 +284,12 @@ class BaseLlmFlow(ABC):
         yield event
       if not last_event or last_event.is_final_response():
         break
+      if last_event.partial:
+        # TODO: handle this in BaseLlm level.
+        raise ValueError(
+            f"Last event shouldn't be partial. LLM max output limit may be"
+            f' reached.'
+        )
 
   async def _run_one_step_async(
       self,
@@ -261,6 +306,7 @@ class BaseLlmFlow(ABC):
 
     # Calls the LLM.
     model_response_event = Event(
+        id=Event.new_id(),
         invocation_id=invocation_context.invocation_id,
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
@@ -272,8 +318,8 @@ class BaseLlmFlow(ABC):
       async for event in self._postprocess_async(
           invocation_context, llm_request, llm_response, model_response_event
       ):
-        # Use a new id for every event.
-        event.id = Event.new_id()
+        # Update the mutable event id to avoid conflict
+        model_response_event.id = Event.new_id()
         yield event
 
   async def _preprocess_async(
@@ -291,7 +337,9 @@ class BaseLlmFlow(ABC):
         yield event
 
     # Run processors for tools.
-    for tool in agent.canonical_tools:
+    for tool in await agent.canonical_tools(
+        ReadonlyContext(invocation_context)
+    ):
       tool_context = ToolContext(invocation_context)
       await tool.process_llm_request(
           tool_context=tool_context, llm_request=llm_request
@@ -433,14 +481,12 @@ class BaseLlmFlow(ABC):
           yield event
 
   def _get_agent_to_run(
-      self, invocation_context: InvocationContext, transfer_to_agent
+      self, invocation_context: InvocationContext, agent_name: str
   ) -> BaseAgent:
     root_agent = invocation_context.agent.root_agent
-    agent_to_run = root_agent.find_agent(transfer_to_agent)
+    agent_to_run = root_agent.find_agent(agent_name)
     if not agent_to_run:
-      raise ValueError(
-          f'Agent {transfer_to_agent} not found in the agent tree.'
-      )
+      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
     return agent_to_run
 
   async def _call_llm_async(
@@ -455,6 +501,16 @@ class BaseLlmFlow(ABC):
     ):
       yield response
       return
+
+    llm_request.config = llm_request.config or types.GenerateContentConfig()
+    llm_request.config.labels = llm_request.config.labels or {}
+
+    # Add agent name as a label to the llm_request. This will help with slicing
+    # the billing reports on a per-agent basis.
+    if _ADK_AGENT_NAME_LABEL_KEY not in llm_request.config.labels:
+      llm_request.config.labels[_ADK_AGENT_NAME_LABEL_KEY] = (
+          invocation_context.agent.name
+      )
 
     # Calls the LLM.
     llm = self.__get_llm(invocation_context)
