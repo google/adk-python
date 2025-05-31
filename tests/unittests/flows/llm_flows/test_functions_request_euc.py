@@ -136,13 +136,13 @@ def test_function_request_euc():
   function_call_ids = list(events[2].actions.requested_auth_configs.keys())
 
   for idx, part in enumerate(events[1].content.parts):
-    reqeust_euc_function_call = part.function_call
-    assert reqeust_euc_function_call is not None
+    request_euc_function_call = part.function_call
+    assert request_euc_function_call is not None
     assert (
-        reqeust_euc_function_call.name
+        request_euc_function_call.name
         == functions.REQUEST_EUC_FUNCTION_CALL_NAME
     )
-    args = AuthToolArguments.model_validate(reqeust_euc_function_call.args)
+    args = AuthToolArguments.model_validate(request_euc_function_call.args)
 
     assert args.function_call_id == function_call_ids[idx]
     args.auth_config.auth_scheme.model_extra.clear()
@@ -336,8 +336,8 @@ def test_function_get_auth_response():
   )
 
   assert function_invoked == 4
-  reqeust = mock_model.requests[-1]
-  content = reqeust.contents[-1]
+  request = mock_model.requests[-1]
+  content = request.contents[-1]
   parts = content.parts
   assert len(parts) == 2
   assert parts[0].function_response.name == 'call_external_api1'
