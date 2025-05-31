@@ -14,13 +14,16 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+
 from contextlib import AsyncExitStack
+from datetime import timedelta
 import functools
 import logging
 import sys
 from typing import Any
 from typing import Optional
 from typing import TextIO
+from typing import Union
 
 import anyio
 from pydantic import BaseModel
@@ -35,6 +38,7 @@ try:
   # Removed MCPJsonEncoder import as it caused ModuleNotFoundError
   import cbor2
   MCP_DEPENDENCIES_AVAILABLE = True
+
 except ImportError as e:
   MCP_DEPENDENCIES_AVAILABLE = False
   # Simplified atexit_ensure_closeddependency check as mcp.common.json was problematic
@@ -64,6 +68,20 @@ class SseServerParams(BaseModel):
   headers: dict[str, Any] | None = None
   timeout: float = 5
   sse_read_timeout: float = 60 * 5
+
+
+class StreamableHTTPServerParams(BaseModel):
+  """Parameters for the MCP SSE connection.
+
+  See MCP SSE Client documentation for more details.
+  https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/client/streamable_http.py
+  """
+
+  url: str
+  headers: dict[str, Any] | None = None
+  timeout: float = 5
+  sse_read_timeout: float = 60 * 5
+  terminate_on_close: bool = True
 
 
 def retry_on_closed_resource(async_reinit_func_name: str):
@@ -174,7 +192,9 @@ class MCPSessionManager:
 
   def __init__(
       self,
-      connection_params: StdioServerParameters | SseServerParams,
+      connection_params: Union[
+          StdioServerParameters, SseServerParams, StreamableHTTPServerParams
+      ],
       exit_stack: AsyncExitStack,
       errlog: TextIO = sys.stderr,
   ):
@@ -190,8 +210,12 @@ class MCPSessionManager:
     ```
 
     Args:
-        connection_params: Parameters for the MCP connection (Stdio or SSE).
+        connection_params: Parameters for the MCP connection (Stdio, SSE or
+          Streamable HTTP). Stdio by default also has a 5s read timeout as other
+          parameters but it's not configurable for now.
+          
         exit_stack: AsyncExitStack to manage the session lifecycle.
+
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
     """
@@ -224,14 +248,16 @@ class MCPSessionManager:
   async def _initialize_session(
       cls,
       *,
-      connection_params: StdioServerParameters | SseServerParams,
+      connection_params: Union[
+        StdioServerParameters, SseServerParams, StreamableHTTPServerParams
+      ],
       exit_stack: AsyncExitStack,
       errlog: TextIO = sys.stderr,
   ) -> tuple[ClientSession, Optional[asyncio.subprocess.Process]]:
     """Initializes an MCP client session.
 
     Args:
-        connection_params: Parameters for the MCP connection (Stdio or SSE).
+        connection_params: Parameters for the MCP connection (Stdio or SSE pr StreamableHTTP).
         exit_stack: AsyncExitStack to manage the session lifecycle.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
@@ -256,16 +282,64 @@ class MCPSessionManager:
           timeout=connection_params.timeout,
           sse_read_timeout=connection_params.sse_read_timeout,
       )
+     elif isinstance(connection_params, StreamableHTTPServerParams):
+       client = streamablehttp_client(
+           url=connection_params.url,
+           headers=connection_params.headers,
+           timeout=timedelta(seconds=connection_params.timeout),
+           sse_read_timeout=timedelta(
+               seconds=connection_params.sse_read_timeout
+           ),
+           terminate_on_close=connection_params.terminate_on_close,
+       )
     else:
       raise ValueError(
           'Unable to initialize connection. Connection should be'
-          ' StdioServerParameters or SseServerParams, but got'
+          ' StdioServerParameters or SseServerParams, or StreamableHTTPServerParams but got'
           f' {connection_params}'
       )
 
+    if self._session is not None:
+      return self._session
+
+    # Create a new exit stack for this session
+    self._exit_stack = AsyncExitStack()
+
+    try:
+      if isinstance(self._connection_params, StdioServerParameters):
+        # So far timeout is not configurable. Given MCP is still evolving, we
+        # would expect stdio_client to evolve to accept timeout parameter like
+        # other client.
+        client = stdio_client(
+            server=self._connection_params, errlog=self._errlog
+        )
+      elif isinstance(self._connection_params, SseServerParams):
+        client = sse_client(
+            url=self._connection_params.url,
+            headers=self._connection_params.headers,
+            timeout=self._connection_params.timeout,
+            sse_read_timeout=self._connection_params.sse_read_timeout,
+        )
+      elif isinstance(self._connection_params, StreamableHTTPServerParams):
+        client = streamablehttp_client(
+            url=self._connection_params.url,
+            headers=self._connection_params.headers,
+            timeout=timedelta(seconds=self._connection_params.timeout),
+            sse_read_timeout=timedelta(
+                seconds=self._connection_params.sse_read_timeout
+            ),
+            terminate_on_close=self._connection_params.terminate_on_close,
+        )
+      else:
+        raise ValueError(
+            'Unable to initialize connection. Connection should be'
+            ' StdioServerParameters or SseServerParams, but got'
+            f' {self._connection_params}'
+        )
+
     # Create the session with the client
     transports = await exit_stack.enter_async_context(client)
-    session = await exit_stack.enter_async_context(ClientSession(*transports))
+    session = await exit_stack.enter_async_context(ClientSession(*transports[:2]))
     await session.initialize()
 
     return session, process

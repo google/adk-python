@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import sys
 from unittest import mock
 
 from google.adk import version as adk_version
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
+from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
+from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_TAG
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -60,6 +63,13 @@ def llm_request():
   )
 
 
+@pytest.fixture
+def mock_os_environ():
+  initial_env = os.environ.copy()
+  with mock.patch.dict(os.environ, initial_env, clear=False) as m:
+    yield m
+
+
 def test_supported_models():
   models = Gemini.supported_models()
   assert len(models) == 3
@@ -81,6 +91,30 @@ def test_client_version_header():
       f"google-genai-sdk/{genai_version.__version__} gl-python/{sys.version.split()[0]} "
   )
   expected_header = genai_header + adk_header
+
+  assert (
+      expected_header
+      in client._api_client._http_options.headers["x-goog-api-client"]
+  )
+  assert (
+      expected_header in client._api_client._http_options.headers["user-agent"]
+  )
+
+
+def test_client_version_header_with_agent_engine(mock_os_environ):
+  os.environ[_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME] = "my_test_project"
+  model = Gemini(model="gemini-1.5-flash")
+  client = model.api_client
+  adk_header_base = f"google-adk/{adk_version.__version__}"
+  adk_header_with_telemetry = (
+      f"{adk_header_base}+{_AGENT_ENGINE_TELEMETRY_TAG}"
+      f" gl-python/{sys.version.split()[0]}"
+  )
+  genai_header = (
+      f"google-genai-sdk/{genai_version.__version__} "
+      f"gl-python/{sys.version.split()[0]} "
+  )
+  expected_header = genai_header + adk_header_with_telemetry
 
   assert (
       expected_header
@@ -203,6 +237,82 @@ async def test_generate_content_async_stream(gemini_llm, llm_request):
     assert responses[1].partial is True
     assert responses[2].partial is True
     assert responses[3].content.parts[0].text == "Hello, how can I help you?"
+    mock_client.aio.models.generate_content_stream.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
+    gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    class MockAsyncIterator:
+
+      def __init__(self, seq):
+        self._iter = iter(seq)
+
+      def __aiter__(self):
+        return self
+
+      async def __anext__(self):
+        try:
+          return next(self._iter)
+        except StopIteration:
+          raise StopAsyncIteration
+
+    response1 = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=Content(
+                    role="model",
+                    parts=[Part(text="Think1", thought=True)],
+                ),
+                finish_reason=None,
+            )
+        ]
+    )
+    response2 = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=Content(
+                    role="model",
+                    parts=[Part(text="Think2", thought=True)],
+                ),
+                finish_reason=None,
+            )
+        ]
+    )
+    response3 = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=Content(
+                    role="model",
+                    parts=[Part.from_text(text="Answer.")],
+                ),
+                finish_reason=types.FinishReason.STOP,
+            )
+        ]
+    )
+
+    async def mock_coro():
+      return MockAsyncIterator([response1, response2, response3])
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+    assert len(responses) == 4
+    assert responses[0].partial is True
+    assert responses[1].partial is True
+    assert responses[2].partial is True
+    assert responses[3].content.parts[0].text == "Think1Think2"
+    assert responses[3].content.parts[0].thought is True
+    assert responses[3].content.parts[1].text == "Answer."
     mock_client.aio.models.generate_content_stream.assert_called_once()
 
 
