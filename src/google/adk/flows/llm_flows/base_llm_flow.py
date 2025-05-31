@@ -23,8 +23,10 @@ from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.genai import types
 from websockets.exceptions import ConnectionClosedOK
 
+from . import functions
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
@@ -40,7 +42,6 @@ from ...telemetry import trace_call_llm
 from ...telemetry import trace_send_data
 from ...telemetry import tracer
 from ...tools.tool_context import ToolContext
-from . import functions
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -48,7 +49,9 @@ if TYPE_CHECKING:
   from ._base_llm_processor import BaseLlmRequestProcessor
   from ._base_llm_processor import BaseLlmResponseProcessor
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
+
+_ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 
 
 class BaseLlmFlow(ABC):
@@ -218,7 +221,7 @@ class BaseLlmFlow(ABC):
 
       When the model returns transcription, the author is "user". Otherwise, the
       author is the agent name(not 'model').
-      
+
       Args:
         llm_response: The LLM response from the LLM call.
       """
@@ -281,6 +284,12 @@ class BaseLlmFlow(ABC):
         yield event
       if not last_event or last_event.is_final_response():
         break
+      if last_event.partial:
+        # TODO: handle this in BaseLlm level.
+        raise ValueError(
+            f"Last event shouldn't be partial. LLM max output limit may be"
+            f' reached.'
+        )
 
   async def _run_one_step_async(
       self,
@@ -472,14 +481,12 @@ class BaseLlmFlow(ABC):
           yield event
 
   def _get_agent_to_run(
-      self, invocation_context: InvocationContext, transfer_to_agent
+      self, invocation_context: InvocationContext, agent_name: str
   ) -> BaseAgent:
     root_agent = invocation_context.agent.root_agent
-    agent_to_run = root_agent.find_agent(transfer_to_agent)
+    agent_to_run = root_agent.find_agent(agent_name)
     if not agent_to_run:
-      raise ValueError(
-          f'Agent {transfer_to_agent} not found in the agent tree.'
-      )
+      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
     return agent_to_run
 
   async def _call_llm_async(
@@ -494,6 +501,16 @@ class BaseLlmFlow(ABC):
     ):
       yield response
       return
+
+    llm_request.config = llm_request.config or types.GenerateContentConfig()
+    llm_request.config.labels = llm_request.config.labels or {}
+
+    # Add agent name as a label to the llm_request. This will help with slicing
+    # the billing reports on a per-agent basis.
+    if _ADK_AGENT_NAME_LABEL_KEY not in llm_request.config.labels:
+      llm_request.config.labels[_ADK_AGENT_NAME_LABEL_KEY] = (
+          invocation_context.agent.name
+      )
 
     # Calls the LLM.
     llm = self.__get_llm(invocation_context)

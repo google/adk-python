@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import logging
 import os
 import tempfile
@@ -22,11 +24,12 @@ LOGGING_FORMAT = (
 )
 
 
-def log_to_stderr(level=logging.INFO):
-  logging.basicConfig(
-      level=level,
-      format=LOGGING_FORMAT,
-  )
+def setup_adk_logger(level=logging.INFO):
+  # Configure the root logger format and level.
+  logging.basicConfig(level=level, format=LOGGING_FORMAT)
+
+  adk_logger = logging.getLogger('google_adk')
+  adk_logger.setLevel(level)
 
 
 def log_to_tmp_folder(

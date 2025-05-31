@@ -16,15 +16,13 @@ from __future__ import annotations
 
 import inspect
 import logging
-from typing import (
-    Any,
-    AsyncGenerator,
-    Awaitable,
-    Callable,
-    Literal,
-    Optional,
-    Union,
-)
+from typing import Any
+from typing import AsyncGenerator
+from typing import Awaitable
+from typing import Callable
+from typing import Literal
+from typing import Optional
+from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -55,7 +53,7 @@ from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
 from .readonly_context import ReadonlyContext
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 _SingleBeforeModelCallback: TypeAlias = Callable[
     [CallbackContext, LlmRequest],
@@ -152,7 +150,12 @@ class LlmAgent(BaseAgent):
 
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
-  """Disallows LLM-controlled transferring to the parent agent."""
+  """Disallows LLM-controlled transferring to the parent agent.
+
+  NOTE: Setting this as True also prevents this agent to continue reply to the
+  end-user. This behavior prevents one-way transfer, in which end-user may be
+  stuck with one agent that cannot transfer to other agents in the agent tree.
+  """
   disallow_transfer_to_peers: bool = False
   """Disallows LLM-controlled transferring to the peer agents."""
   # LLM-based agent transfer configs - End
@@ -197,8 +200,7 @@ class LlmAgent(BaseAgent):
 
   Check out available code executions in `google.adk.code_executor` package.
 
-  NOTE: to use model's built-in code executor, don't set this field, add
-  `google.adk.tools.built_in_code_execution` to tools instead.
+  NOTE: to use model's built-in code executor, use the `BuiltInCodeExecutor`.
   """
   # Advance features - End
 
@@ -305,31 +307,53 @@ class LlmAgent(BaseAgent):
         ancestor_agent = ancestor_agent.parent_agent
       raise ValueError(f'No model found for {self.name}.')
 
-  async def canonical_instruction(self, ctx: ReadonlyContext) -> str:
+  async def canonical_instruction(
+      self, ctx: ReadonlyContext
+  ) -> tuple[str, bool]:
     """The resolved self.instruction field to construct instruction for this agent.
 
     This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The context to retrieve the session state.
+
+    Returns:
+      A tuple of (instruction, bypass_state_injection).
+      instruction: The resolved self.instruction field.
+      bypass_state_injection: Whether the instruction is based on
+      InstructionProvider.
     """
     if isinstance(self.instruction, str):
-      return self.instruction
+      return self.instruction, False
     else:
       instruction = self.instruction(ctx)
       if inspect.isawaitable(instruction):
         instruction = await instruction
-      return instruction
+      return instruction, True
 
-  async def canonical_global_instruction(self, ctx: ReadonlyContext) -> str:
+  async def canonical_global_instruction(
+      self, ctx: ReadonlyContext
+  ) -> tuple[str, bool]:
     """The resolved self.instruction field to construct global instruction.
 
     This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The context to retrieve the session state.
+
+    Returns:
+      A tuple of (instruction, bypass_state_injection).
+      instruction: The resolved self.global_instruction field.
+      bypass_state_injection: Whether the instruction is based on
+      InstructionProvider.
     """
     if isinstance(self.global_instruction, str):
-      return self.global_instruction
+      return self.global_instruction, False
     else:
       global_instruction = self.global_instruction(ctx)
       if inspect.isawaitable(global_instruction):
         global_instruction = await global_instruction
-      return global_instruction
+      return global_instruction, True
 
   async def canonical_tools(
       self, ctx: ReadonlyContext = None

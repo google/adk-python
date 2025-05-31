@@ -23,20 +23,23 @@ from types import SimpleNamespace
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 
 import click
 from click.testing import CliRunner
 from google.adk.cli import cli_tools_click
+from google.adk.evaluation import local_eval_set_results_manager
+from google.adk.sessions import Session
+from pydantic import BaseModel
 import pytest
 
 
 # Helpers
-class _Recorder:
+class _Recorder(BaseModel):
   """Callable that records every invocation."""
 
-  def __init__(self) -> None:
-    self.calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+  calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
 
   def __call__(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
     self.calls.append((args, kwargs))
@@ -244,17 +247,41 @@ def test_cli_eval_success_path(
 
   # stub cli_eval module
   stub = types.ModuleType("google.adk.cli.cli_eval")
+  eval_sets_manager_stub = types.ModuleType(
+      "google.adk.evaluation.local_eval_sets_manager"
+  )
 
   class _EvalMetric:
 
     def __init__(self, metric_name: str, threshold: float) -> None:
       ...
 
-  class _EvalCaseResult:
+  class _EvalCaseResult(BaseModel):
+    eval_set_id: str
+    eval_id: str
+    final_eval_status: Any
+    user_id: str
+    session_id: str
+    session_details: Optional[Session] = None
+    eval_metric_results: list = {}
+    overall_eval_metric_results: list = {}
+    eval_metric_result_per_invocation: list = {}
 
-    def __init__(self, eval_set_file: str, final_eval_status: str) -> None:
-      self.eval_set_file = eval_set_file
-      self.final_eval_status = final_eval_status
+  class EvalCase(BaseModel):
+    eval_id: str
+
+  class EvalSet(BaseModel):
+    eval_set_id: str
+    eval_cases: list[EvalCase]
+
+  def mock_save_eval_set_result(cls, *args, **kwargs):
+    return None
+
+  monkeypatch.setattr(
+      local_eval_set_results_manager.LocalEvalSetResultsManager,
+      "save_eval_set_result",
+      mock_save_eval_set_result,
+  )
 
   # minimal enum-like namespace
   _EvalStatus = types.SimpleNamespace(PASSED="PASSED", FAILED="FAILED")
@@ -269,11 +296,39 @@ def test_cli_eval_success_path(
   stub.get_root_agent = lambda _p: object()
   stub.try_get_reset_func = lambda _p: None
   stub.parse_and_get_evals_to_run = lambda _paths: {"set1.json": ["e1", "e2"]}
+  eval_sets_manager_stub.load_eval_set_from_file = lambda x, y: EvalSet(
+      eval_set_id="test_eval_set_id",
+      eval_cases=[EvalCase(eval_id="e1"), EvalCase(eval_id="e2")],
+  )
 
   # Create an async generator function for run_evals
   async def mock_run_evals(*_a, **_k):
-    yield _EvalCaseResult("set1.json", "PASSED")
-    yield _EvalCaseResult("set1.json", "FAILED")
+    yield _EvalCaseResult(
+        eval_set_id="set1.json",
+        eval_id="e1",
+        final_eval_status=_EvalStatus.PASSED,
+        user_id="user",
+        session_id="session1",
+        overall_eval_metric_results=[{
+            "metricName": "some_metric",
+            "threshold": 0.0,
+            "score": 1.0,
+            "evalStatus": _EvalStatus.PASSED,
+        }],
+    )
+    yield _EvalCaseResult(
+        eval_set_id="set1.json",
+        eval_id="e2",
+        final_eval_status=_EvalStatus.FAILED,
+        user_id="user",
+        session_id="session2",
+        overall_eval_metric_results=[{
+            "metricName": "some_metric",
+            "threshold": 0.0,
+            "score": 0.0,
+            "evalStatus": _EvalStatus.FAILED,
+        }],
+    )
 
   stub.run_evals = mock_run_evals
 
@@ -289,7 +344,12 @@ def test_cli_eval_success_path(
   monkeypatch.setattr(cli_tools_click.asyncio, "run", mock_asyncio_run)
 
   # inject stub
-  sys.modules["google.adk.cli.cli_eval"] = stub
+  monkeypatch.setitem(sys.modules, "google.adk.cli.cli_eval", stub)
+  monkeypatch.setitem(
+      sys.modules,
+      "google.adk.evaluation.local_eval_sets_manager",
+      eval_sets_manager_stub,
+  )
 
   # create dummy agent directory
   agent_dir = tmp_path / "agent5"

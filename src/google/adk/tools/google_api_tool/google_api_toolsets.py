@@ -14,98 +14,95 @@
 
 
 import logging
+from typing import List
+from typing import Optional
+from typing import Union
 
+from ..base_toolset import ToolPredicate
 from .google_api_toolset import GoogleApiToolset
 
-logger = logging.getLogger(__name__)
-
-_bigquery_toolset = None
-_calendar_toolset = None
-_gmail_toolset = None
-_youtube_toolset = None
-_slides_toolset = None
-_sheets_toolset = None
-_docs_toolset = None
+logger = logging.getLogger("google_adk." + __name__)
 
 
-def __getattr__(name):
-  """This method dynamically loads and returns GoogleApiToolSet instances for
+class BigQueryToolset(GoogleApiToolset):
+  """Auto-generated Bigquery toolset based on Google BigQuery API v2 spec exposed by Google API discovery API"""
 
-  various Google APIs. It uses a lazy loading approach, initializing each
-  tool set only when it is first requested. This avoids unnecessary loading
-  of tool sets that are not used in a given session.
+  def __init__(
+      self,
+      client_id: str = None,
+      client_secret: str = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+  ):
+    super().__init__("bigquery", "v2", client_id, client_secret, tool_filter)
 
-  Args:
-      name (str): The name of the tool set to retrieve (e.g.,
-        "bigquery_toolset").
 
-  Returns:
-      GoogleApiToolSet: The requested tool set instance.
+class CalendarToolset(GoogleApiToolset):
+  """Auto-generated Calendar toolset based on Google Calendar API v3 spec exposed by Google API discovery API"""
 
-  Raises:
-      AttributeError: If the requested tool set name is not recognized.
-  """
-  global _bigquery_toolset, _calendar_toolset, _gmail_toolset, _youtube_toolset, _slides_toolset, _sheets_toolset, _docs_toolset
+  def __init__(
+      self,
+      client_id: str = None,
+      client_secret: str = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+  ):
+    super().__init__("calendar", "v3", client_id, client_secret, tool_filter)
 
-  if name == "bigquery_toolset":
-    if _bigquery_toolset is None:
-      _bigquery_toolset = GoogleApiToolset.load_toolset(
-          api_name="bigquery",
-          api_version="v2",
-      )
 
-    return _bigquery_toolset
+class GmailToolset(GoogleApiToolset):
+  """Auto-generated Gmail toolset based on Google Gmail API v1 spec exposed by Google API discovery API"""
 
-  if name == "calendar_toolset":
-    if _calendar_toolset is None:
-      _calendar_toolset = GoogleApiToolset.load_toolset(
-          api_name="calendar",
-          api_version="v3",
-      )
+  def __init__(
+      self,
+      client_id: str = None,
+      client_secret: str = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+  ):
+    super().__init__("gmail", "v1", client_id, client_secret, tool_filter)
 
-    return _calendar_toolset
 
-  if name == "gmail_toolset":
-    if _gmail_toolset is None:
-      _gmail_toolset = GoogleApiToolset.load_toolset(
-          api_name="gmail",
-          api_version="v1",
-      )
+class YoutubeToolset(GoogleApiToolset):
+  """Auto-generated Youtube toolset based on Youtube API v3 spec exposed by Google API discovery API"""
 
-    return _gmail_toolset
+  def __init__(
+      self,
+      client_id: str = None,
+      client_secret: str = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+  ):
+    super().__init__("youtube", "v3", client_id, client_secret, tool_filter)
 
-  if name == "youtube_toolset":
-    if _youtube_toolset is None:
-      _youtube_toolset = GoogleApiToolset.load_toolset(
-          api_name="youtube",
-          api_version="v3",
-      )
 
-    return _youtube_toolset
+class SlidesToolset(GoogleApiToolset):
+  """Auto-generated Slides toolset based on Google Slides API v1 spec exposed by Google API discovery API"""
 
-  if name == "slides_toolset":
-    if _slides_toolset is None:
-      _slides_toolset = GoogleApiToolset.load_toolset(
-          api_name="slides",
-          api_version="v1",
-      )
+  def __init__(
+      self,
+      client_id: str = None,
+      client_secret: str = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+  ):
+    super().__init__("slides", "v1", client_id, client_secret, tool_filter)
 
-    return _slides_toolset
 
-  if name == "sheets_toolset":
-    if _sheets_toolset is None:
-      _sheets_toolset = GoogleApiToolset.load_toolset(
-          api_name="sheets",
-          api_version="v4",
-      )
+class SheetsToolset(GoogleApiToolset):
+  """Auto-generated Sheets toolset based on Google Sheets API v4 spec exposed by Google API discovery API"""
 
-    return _sheets_toolset
+  def __init__(
+      self,
+      client_id: str = None,
+      client_secret: str = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+  ):
+    super().__init__("sheets", "v4", client_id, client_secret, tool_filter)
 
-  if name == "docs_toolset":
-    if _docs_toolset is None:
-      _docs_toolset = GoogleApiToolset.load_toolset(
-          api_name="docs",
-          api_version="v1",
-      )
 
-    return _docs_toolset
+class DocsToolset(GoogleApiToolset):
+  """Auto-generated Docs toolset based on Google Docs API v1 spec exposed by Google API discovery API"""
+
+  def __init__(
+      self,
+      client_id: str = None,
+      client_secret: str = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+  ):
+    super().__init__("docs", "v1", client_id, client_secret, tool_filter)
