@@ -100,23 +100,24 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
         function_calls = event.get_function_calls()
         if not function_calls:
           continue
-        for function_call in function_calls:
-          function_response_event = None
-          if function_call.id in tools_to_resume:
-            function_response_event = await functions.handle_function_calls_async(
-                invocation_context,
-                event,
-                {
-                    tool.name: tool
-                    for tool in await agent.canonical_tools(
-                        ReadonlyContext(invocation_context)
-                    )
-                },
-                # there could be parallel function calls that require auth
-                # auth response would be a dict keyed by function call id
-                tools_to_resume,
-            )
-          if function_response_event:
+
+        if any([
+            function_call.id in tools_to_resume
+            for function_call in function_calls
+        ]):
+          if function_response_event := await functions.handle_function_calls_async(
+              invocation_context,
+              event,
+              {
+                  tool.name: tool
+                  for tool in await agent.canonical_tools(
+                      ReadonlyContext(invocation_context)
+                  )
+              },
+              # there could be parallel function calls that require auth
+              # auth response would be a dict keyed by function call id
+              tools_to_resume,
+          ):
             yield function_response_event
           return
       return
