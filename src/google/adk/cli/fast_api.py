@@ -204,10 +204,6 @@ def get_fast_api_app(
   trace_dict: dict[str, Any] = {}
   session_trace_dict: dict[str, Any] = {}
 
-  # Database session settings
-  if session_db_kwargs is None:
-    session_db_kwargs = {}
-
   # Set up tracing in the FastAPI server.
   provider = TracerProvider()
   provider.add_span_processor(
@@ -278,6 +274,9 @@ def get_fast_api_app(
           os.environ["GOOGLE_CLOUD_LOCATION"],
       )
     else:
+      # Database session additional settings
+      if session_db_kwargs is None:
+        session_db_kwargs = {}
       session_service = DatabaseSessionService(
           db_url=session_db_url, **session_db_kwargs
       )
