@@ -76,11 +76,10 @@ from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
 from ..tools.base_toolset import BaseToolset
 from .cli_eval import EVAL_SESSION_ID_PREFIX
-from .cli_eval import EvalCaseResult
 from .cli_eval import EvalMetric
 from .cli_eval import EvalMetricResult
 from .cli_eval import EvalMetricResultPerInvocation
-from .cli_eval import EvalSetResult
+from ..evaluation.eval_result import EvalSetResult
 from .cli_eval import EvalStatus
 from .utils import common
 from .utils import create_empty_state
@@ -198,7 +197,7 @@ class GetEventGraphResult(common.BaseModel):
 
 def get_fast_api_app(
     *,
-    agents_dir: str,
+    agent_dir: str,
     session_db_url: str = "",
     allow_origins: Optional[list[str]] = None,
     web: bool,
@@ -217,7 +216,7 @@ def get_fast_api_app(
   memory_exporter = InMemoryExporter(session_trace_dict)
   provider.add_span_processor(export.SimpleSpanProcessor(memory_exporter))
   if trace_to_cloud:
-    envs.load_dotenv_for_agent("", agents_dir)
+    envs.load_dotenv_for_agent("", agent_dir)
     if project_id := os.environ.get("GOOGLE_CLOUD_PROJECT", None):
       processor = export.BatchSpanProcessor(
           CloudTraceSpanExporter(project_id=project_id)
@@ -313,8 +312,8 @@ def get_fast_api_app(
         allow_headers=["*"],
     )
 
-  if agents_dir not in sys.path:
-    sys.path.append(agents_dir)
+  if agent_dir not in sys.path:
+    sys.path.append(agent_dir)
 
   runner_dict = {}
   root_agent_dict = {}
@@ -323,7 +322,7 @@ def get_fast_api_app(
   artifact_service = InMemoryArtifactService()
   memory_service = InMemoryMemoryService()
 
-  eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=agent_dir)
 
   # Build the Session service
   agent_engine_id = ""
@@ -333,7 +332,7 @@ def get_fast_api_app(
       agent_engine_id = session_db_url.split("://")[1]
       if not agent_engine_id:
         raise click.ClickException("Agent engine id can not be empty.")
-      envs.load_dotenv_for_agent("", agents_dir)
+      envs.load_dotenv_for_agent("", agent_dir)
       session_service = VertexAiSessionService(
           os.environ["GOOGLE_CLOUD_PROJECT"],
           os.environ["GOOGLE_CLOUD_LOCATION"],
@@ -345,7 +344,7 @@ def get_fast_api_app(
 
   @app.get("/list-apps")
   def list_apps() -> list[str]:
-    base_path = Path.cwd() / agents_dir
+    base_path = Path.cwd() / agent_dir
     if not base_path.exists():
       raise HTTPException(status_code=404, detail="Path not found")
     if not base_path.is_dir():
@@ -461,9 +460,9 @@ def get_fast_api_app(
         app_name=app_name, user_id=user_id, state=state
     )
 
-  def _get_eval_set_file_path(app_name, agents_dir, eval_set_id) -> str:
+  def _get_eval_set_file_path(app_name, agent_dir, eval_set_id) -> str:
     return os.path.join(
-        agents_dir,
+        agent_dir,
         app_name,
         eval_set_id + _EVAL_SET_FILE_EXTENSION,
     )
@@ -553,7 +552,7 @@ def get_fast_api_app(
 
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
-    envs.load_dotenv_for_agent(os.path.basename(app_name), agents_dir)
+    envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
 
     eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
@@ -608,7 +607,7 @@ def get_fast_api_app(
 
     # Write eval result file, with eval_set_result_name.
     app_eval_history_dir = os.path.join(
-        agents_dir, app_name, ".adk", "eval_history"
+        agent_dir, app_name, ".adk", "eval_history"
     )
     if not os.path.exists(app_eval_history_dir):
       os.makedirs(app_eval_history_dir)
@@ -632,26 +631,26 @@ def get_fast_api_app(
       app_name: str,
       eval_result_id: str,
   ) -> EvalSetResult:
-    """Gets the eval result for the given eval id."""
+    """Get a single eval result."""
     # Load the eval set file data
     maybe_eval_result_file_path = (
-        os.path.join(
-            agents_dir, app_name, ".adk", "eval_history", eval_result_id
+        evals.get_eval_set_result_file_path_if_exists(
+            eval_result_id, agent_dir, app_name
         )
-        + _EVAL_SET_RESULT_FILE_EXTENSION
     )
-    if not os.path.exists(maybe_eval_result_file_path):
+    if not maybe_eval_result_file_path:
       raise HTTPException(
-          status_code=404,
-          detail=f"Eval result `{eval_result_id}` not found.",
+          status_code=404, detail=f"Eval result {eval_result_id} not found."
       )
-    with open(maybe_eval_result_file_path, "r") as file:
+
+    with open(maybe_eval_result_file_path, "r", encoding="utf-8") as file:
       eval_result_data = json.load(file)  # Load JSON into a list
     try:
-      eval_result = EvalSetResult.model_validate_json(eval_result_data)
+      eval_result = EvalSetResult.model_validate_json(json.dumps(eval_result_data))
       return eval_result
     except ValidationError as e:
-      logger.exception("get_eval_result validation error: %s", e)
+      logger.error(f"Error validating eval result: {e}")
+      raise HTTPException(status_code=500, detail=str(e)) from e
 
   @app.get(
       "/apps/{app_name}/eval_results",
@@ -660,7 +659,7 @@ def get_fast_api_app(
   def list_eval_results(app_name: str) -> list[str]:
     """Lists all eval results for the given app."""
     app_eval_history_directory = os.path.join(
-        agents_dir, app_name, ".adk", "eval_history"
+        agent_dir, app_name, ".adk", "eval_history"
     )
 
     if not os.path.exists(app_eval_history_directory):
@@ -974,7 +973,7 @@ def get_fast_api_app(
 
   async def _get_runner_async(app_name: str) -> Runner:
     """Returns the runner for the given app."""
-    envs.load_dotenv_for_agent(os.path.basename(app_name), agents_dir)
+    envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
     if app_name in runner_dict:
       return runner_dict[app_name]
     root_agent = await _get_root_agent_async(app_name)

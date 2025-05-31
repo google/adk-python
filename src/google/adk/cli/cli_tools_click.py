@@ -439,14 +439,14 @@ def cli_eval(
     help="Optional. Whether to enable auto reload for server.",
 )
 @click.argument(
-    "agents_dir",
+    "agent_dir",
     type=click.Path(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
     default=os.getcwd,
 )
 def cli_web(
-    agents_dir: str,
+    agent_dir: str,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
@@ -457,12 +457,12 @@ def cli_web(
 ):
   """Starts a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  agent_dir: The directory of agents, where each sub-directory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:
 
-    adk web --session_db_url=[db_url] --port=[port] path/to/agents_dir
+    adk web --session_db_url=[db_url] --port=[port] path/to/agent_dir
   """
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
@@ -494,7 +494,7 @@ def cli_web(
     reload_uvicorn = False
 
   app = get_fast_api_app(
-      agent_dir=agents_dir,
+      agent_dir=agent_dir,
       session_db_url=session_db_url,
       allow_origins=allow_origins,
       web=True,
@@ -567,14 +567,14 @@ def cli_web(
 # The directory of agents, where each sub-directory is a single agent.
 # By default, it is the current working directory
 @click.argument(
-    "agents_dir",
+    "agent_dir",
     type=click.Path(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
     default=os.getcwd(),
 )
 def cli_api_server(
-    agents_dir: str,
+    agent_dir: str,
     session_db_url: str = "",
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
@@ -585,18 +585,18 @@ def cli_api_server(
 ):
   """Starts a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  agent_dir: The directory of agents, where each sub-directory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:
 
-    adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
+    adk api_server --session_db_url=[db_url] --port=[port] path/to/agent_dir
   """
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   config = uvicorn.Config(
       get_fast_api_app(
-          agent_dir=agents_dir,
+          agent_dir=agent_dir,
           session_db_url=session_db_url,
           allow_origins=allow_origins,
           web=False,

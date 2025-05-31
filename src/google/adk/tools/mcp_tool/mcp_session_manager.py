@@ -31,34 +31,24 @@ try:
   from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
-  from mcp.shared import message as mcp_messages # Moved here
-  import cbor2  # Moved here
-  MCP_AND_CBOR2_AVAILABLE = True
+  from mcp.shared import message as mcp_messages
+  # Removed MCPJsonEncoder import as it caused ModuleNotFoundError
+  import cbor2
+  MCP_DEPENDENCIES_AVAILABLE = True
 except ImportError as e:
-  MCP_AND_CBOR2_AVAILABLE = False # Flag to indicate if critical imports failed
-  # We will still raise the original ImportError if MCP core components are missing,
-  # but log if mcp_messages or cbor2 specifically failed for the StreamWriterWrapper.
-  # The original ImportError for ClientSession etc. is more critical.
+  MCP_DEPENDENCIES_AVAILABLE = False
+  # Simplified atexit_ensure_closeddependency check as mcp.common.json was problematic
   if 'mcp.shared.message' in str(e) or 'cbor2' in str(e):
-    # Log this specific failure for debugging StreamWriterWrapper context
-    # This logger might not be configured yet if this is the first thing failing.
-    # Consider a simple print for absolute surety if logger isn't set up.
-    # print(f"WARNING: MCPSessionManager: Failed to import mcp.shared.message or cbor2: {e}")
-    # Fall-through to the more general ImportError check below.
     pass
 
-  # Original check for critical MCP components
   if sys.version_info < (3, 10):
     raise ImportError(
         'MCP Tool requires Python 3.10 or above. Please upgrade your Python'
         ' version.'
     ) from e
   else:
-    # If it's not one of the optional ones and not a Python version issue, re-raise.
     if not ('mcp.shared.message' in str(e) or 'cbor2' in str(e)):
         raise e
-    # If only mcp_messages or cbor2 failed, MCP_AND_CBOR2_AVAILABLE will be False,
-    # and the StreamWriterWrapper will know not to attempt encoding.
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -285,140 +275,33 @@ class MCPSessionManager:
       cls,
       server: StdioServerParameters,
       errlog: TextIO,
-      exit_stack: AsyncExitStack,
+      exit_stack: AsyncExitStack, # exit_stack is not used by stdio_client directly but kept for signature consistency if needed later
   ) -> tuple[Any, Optional[asyncio.subprocess.Process]]:
     """Create stdio client and return the client and potentially a process."""
-    process = None
-    client = None
-    current_loop = None
-    current_policy = None
+    # Simplified: Always use mcp.client.stdio.stdio_client for stdio connections
+    # This avoids the complexities and brittleness of the manual StreamWriterWrapper path.
+    # stdio_client itself handles subprocess creation and management if not given one.
+    
+    # stdio_client is an async context manager that yields the client and manages the process.
+    # To fit the expected return type (client, process), we need to manage the process separately if stdio_client doesn't return it.
+    # However, mcp.client.stdio.stdio_client *does* manage its own process internally if not given one.
+    # For simplicity and robustness, we let stdio_client manage its process.
+    # The `tracked_stdio_client` context manager can wrap this if finer-grained process tracking by ADK is still desired.
+    # For now, return None for the process, as stdio_client handles it internally.
+    
+    # The stdio_client itself is the async context manager yielding the (reader, writer) transport tuple.
+    # We return the stdio_client instance itself, which ClientSession will then enter.
+    client = stdio_client(server=server, errlog=errlog)
+    process = None # stdio_client manages its own process
+    
+    # This entire block is replaced by the simpler stdio_client usage above.
+    # if sys.platform == "win32":
+    #     ...
+    # else:
+    #     ...
 
-    try:
-        current_loop = asyncio.get_running_loop()
-        current_policy = asyncio.get_event_loop_policy()
-        logger.info(
-            "ADK_WEB_DEBUG: mcp_session_manager._create_stdio_client - "
-            f"Before subprocess creation: Loop type: {type(current_loop)}, Policy type: {type(current_policy)}"
-        )
-    except Exception as e_log:
-        logger.error(f"ADK_WEB_DEBUG: Error getting loop/policy info: {e_log}")
-
-    if sys.platform == "win32":
-        logger.info(
-            "ADK_WEB_DEBUG: mcp_session_manager._create_stdio_client - Windows platform detected. "
-            f"Attempting direct asyncio.create_subprocess_exec for command: {server.command} {' '.join(server.args)}"
-        )
-        try:
-            process = await asyncio.create_subprocess_exec(
-                server.command,
-                *server.args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=errlog,
-            )
-            logger.info(f"ADK_WEB_DEBUG: Successfully created subprocess with PID {process.pid} on Windows.")
-
-            if not (process and process.stdin and process.stdout):
-                raise Exception("Subprocess stdin/stdout not available after creation on Windows direct path")
-
-            # Check if necessary modules for StreamWriterWrapper were loaded at the top level
-            if not MCP_AND_CBOR2_AVAILABLE:
-                logger.error("StreamWriterWrapper cannot function: mcp.shared.message or cbor2 failed to import at module level.")
-                # Fallback or raise an error, as the wrapper won't work correctly.
-                # For now, let's attempt fallback to stdio_client if these are missing,
-                # as the custom path will fail.
-                raise ImportError("Missing dependencies for StreamWriterWrapper (mcp.shared.message or cbor2)")
-
-            # Wrapper for asyncio.StreamWriter to provide a .send() method
-            class StreamWriterWrapper:
-                def __init__(self, writer: asyncio.StreamWriter):
-                    self._writer = writer
-                
-                async def send(self, data: Any): # data is likely SessionMessage from MCP
-                    logger.debug(f"StreamWriterWrapper: send called with data of type {type(data)}")
-                    encoded_data: bytes
-                    if isinstance(data, bytes):
-                        encoded_data = data
-                    elif isinstance(data, mcp_messages.SessionMessage): # mcp_messages should be available from top-level import
-                        try:
-                            if not hasattr(data, 'model_dump') or not callable(data.model_dump):
-                                logger.error(f"StreamWriterWrapper: SessionMessage of type {type(data)} does not have model_dump.")
-                                raise TypeError(f"SessionMessage type {type(data)} cannot be auto-encoded as it lacks model_dump.")
-                            json_model = data.model_dump(mode='json')
-                            encoded_data = cbor2.dumps(json_model) # cbor2 should be available from top-level import
-                            logger.debug(f"StreamWriterWrapper: Encoded SessionMessage to {len(encoded_data)} CBOR bytes.")
-                        except Exception as e_encode:
-                            logger.error(f"StreamWriterWrapper: Failed to encode SessionMessage ({type(data)}): {e_encode}", exc_info=True)
-                            raise TypeError(f"StreamWriterWrapper: Could not encode {type(data)} to bytes.") from e_encode
-                    else:
-                        logger.error(f"StreamWriterWrapper: Received unencodable/unexpected type {type(data)}. Expecting bytes or mcp.shared.message.SessionMessage.")
-                        raise TypeError(f"StreamWriterWrapper: Data must be bytes or an encodable mcp.shared.message.SessionMessage, got {type(data)}.")
-
-                    self._writer.write(encoded_data) # This must receive bytes.
-                    await self._writer.drain()
-                    logger.debug(f"StreamWriterWrapper: send completed for data of type {type(data)} (encoded to {len(encoded_data)} bytes of type {type(encoded_data)})")
-                
-                def can_write_eof(self) -> bool:
-                    return self._writer.can_write_eof()
-
-                def write_eof(self):
-                    return self._writer.write_eof()
-
-                def close(self):
-                    return self._writer.close()
-
-                async def wait_closed(self):
-                    return await self._writer.wait_closed()
-                
-                def get_extra_info(self, name, default=None):
-                    return self._writer.get_extra_info(name, default)
-                
-                # Add other necessary StreamWriter methods if MCP requires them
-                # For now, __getattr__ can be a fallback but explicit is better if known.
-                # def __getattr__(self, name):
-                #     # Delegate other attributes to the original writer
-                #     return getattr(self._writer, name)
-
-            @asynccontextmanager
-            async def manual_stdio_transport(proc_stdout, proc_stdin_writer):
-                logger.info("ADK_WEB_DEBUG: manual_stdio_transport entering with proc_stdout and proc_stdin_writer...")
-                wrapped_writer = StreamWriterWrapper(proc_stdin_writer)
-                try:
-                    yield (proc_stdout, wrapped_writer) # (reader, wrapped_writer)
-                finally:
-                    logger.info("ADK_WEB_DEBUG: manual_stdio_transport exiting...")
-            
-            client = manual_stdio_transport(process.stdout, process.stdin)
-            logger.info(f"ADK_WEB_DEBUG: Created manual_stdio_transport with StreamWriterWrapper for PID {process.pid} on Windows.")
-
-        except NotImplementedError as e_ni:
-            logger.error(
-                f"ADK_WEB_DEBUG: mcp_session_manager._create_stdio_client - Windows - "
-                f"asyncio.create_subprocess_exec failed with NotImplementedError: {e_ni}. "
-                f"Loop type: {type(current_loop)}, Policy type: {type(current_policy)}",
-                exc_info=True
-            )
-            raise # Re-raise to indicate critical failure
-        except Exception as e_subproc:
-            logger.error(
-                f"ADK_WEB_DEBUG: mcp_session_manager._create_stdio_client - Windows - "
-                f"Error during direct asyncio.create_subprocess_exec: {e_subproc}. Falling back.",
-                exc_info=True
-            )
-            client = stdio_client(server=server, errlog=errlog)
-            process = None 
-            logger.info("ADK_WEB_DEBUG: Successfully used mcp.client.stdio.stdio_client as fallback on Windows.")
-    else:
-        logger.info(
-            "ADK_WEB_DEBUG: mcp_session_manager._create_stdio_client - Non-Windows platform. "
-            f"Using mcp.client.stdio.stdio_client for command: {server.command} {' '.join(server.args)}"
-        )
-        client = stdio_client(server=server, errlog=errlog)
-        process = None 
-        logger.info("ADK_WEB_DEBUG: Successfully used mcp.client.stdio.stdio_client on non-Windows platform.")
-
-    if client is None:
-        raise RuntimeError("ADK_WEB_DEBUG: MCP Client (stdio_client or manual wrapper) was not initialized in _create_stdio_client")
+    if client is None: # Should not happen if stdio_client() call is successful
+        raise RuntimeError("MCP Client (stdio_client) was not initialized in _create_stdio_client")
 
     return client, process
 
