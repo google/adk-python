@@ -44,3 +44,4 @@ def test_output_schema():
   assert len(mockModel.requests) == 1
   assert mockModel.requests[0].config.response_schema == CustomOutput
   assert mockModel.requests[0].config.response_mime_type == 'application/json'
+  assert mockModel.requests[0].config.labels == {'adk_agent_name': 'root_agent'}
