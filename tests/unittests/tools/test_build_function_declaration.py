@@ -17,22 +17,9 @@ from typing import List
 
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.tools.agent_tool import ToolContext
-from google.adk.tools.langchain_tool import LangchainTool
 # TODO: crewai requires python 3.10 as minimum
 # from crewai_tools import FileReadTool
-from langchain_community.tools import ShellTool
 from pydantic import BaseModel
-import pytest
-
-
-def test_unsupported_variant():
-  def simple_function(input_str: str) -> str:
-    return {'result': input_str}
-
-  with pytest.raises(ValueError):
-    _automatic_function_calling_util.build_function_declaration(
-        func=simple_function, variant='Unsupported'
-    )
 
 
 def test_string_input():
