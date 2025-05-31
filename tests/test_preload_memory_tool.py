@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import json
 import base64
 from datetime import datetime
 from unittest import mock # Use unittest.mock for creating mocks and simple objects
@@ -77,8 +78,8 @@ def mock_memory_with_events(mock_tool_context):
     text_event_mock = mock.MagicMock()
     text_event_mock.author = "user"
     text_event_mock.timestamp = datetime.now().timestamp() # Needed for the first event time string
-    text_event_mock.content = types.Content( # Use real types.Content
-        parts=[types.Part(text="This is a text message")] # Use real types.Part
+    text_event_mock.content = types.Content(
+        parts=[types.Part(text="This is a text message")]
     )
     mock_memory_entry.events.append(text_event_mock)
 
@@ -86,10 +87,10 @@ def mock_memory_with_events(mock_tool_context):
     multi_text_part_event_mock = mock.MagicMock()
     multi_text_part_event_mock.author = "assistant"
     multi_text_part_event_mock.timestamp = datetime.now().timestamp()
-    multi_text_part_event_mock.content = types.Content( # Use real types.Content
+    multi_text_part_event_mock.content = types.Content(
         parts=[
-            types.Part(text="First part of assistant message."), # Use real types.Part
-            types.Part(text="Second part of assistant message.")  # Use real types.Part
+            types.Part(text="First part of assistant message."),
+            types.Part(text="Second part of assistant message.")
         ]
     )
     mock_memory_entry.events.append(multi_text_part_event_mock)
@@ -98,16 +99,16 @@ def mock_memory_with_events(mock_tool_context):
     mixed_part_event_mock = mock.MagicMock()
     mixed_part_event_mock.author = "tool_user"
     mixed_part_event_mock.timestamp = datetime.now().timestamp()
-    mixed_part_event_mock.content = types.Content( # Use real types.Content
+    mixed_part_event_mock.content = types.Content(
         parts=[
-            types.Part(text="Text part before image."), # Use real types.Part
-            types.Part( # Use real types.Part with real types.Blob
+            types.Part(text="Text part before image."),
+            types.Part(
                 inline_data=types.Blob(
                     data=b"fake_image_data",
                     mime_type="image/png"
                 )
             ),
-            types.Part(text="Text part after image."), # Use real types.Part
+            types.Part(text="Text part after image."),
             types.Part.from_function_call(name="some_tool", args={'a': 1})
         ]
     )
@@ -171,11 +172,11 @@ async def test_process_llm_request(preload_memory_tool, mock_memory_with_events,
     # Check text content from each event that *has* text - adjusted for your actual implementation
     expected_memory_segment_1 = "user: This is a text message\n"
     
-    # Adjusted expectation: your implementation only takes the first text part
-    expected_memory_segment_2 = "assistant: First part of assistant message.\n"
+    # Updated expectation: your implementation joins ALL text parts with spaces
+    expected_memory_segment_2 = "assistant: First part of assistant message. Second part of assistant message.\n"
     
-    # Adjusted expectation: your implementation processes the first text part for each event
-    expected_memory_segment_3 = "tool_user: Text part before image.\n"
+    # Updated expectation: your implementation joins all text parts for each event
+    expected_memory_segment_3 = "tool_user: Text part before image. Text part after image.\n"
 
     assert expected_memory_segment_1 in formatted_memory
     assert expected_memory_segment_2 in formatted_memory
