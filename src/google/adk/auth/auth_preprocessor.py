@@ -119,6 +119,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
               tools_to_resume,
           ):
             yield function_response_event
+          return
       return
 
 
