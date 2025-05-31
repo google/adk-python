@@ -36,7 +36,6 @@ else:
   credentials_config = BigQueryCredentialsConfig(
       client_id=os.getenv("OAUTH_CLIENT_ID"),
       client_secret=os.getenv("OAUTH_CLIENT_SECRET"),
-      scopes=["https://www.googleapis.com/auth/bigquery"],
   )
 
 bigquery_toolset = BigQueryToolset(credentials_config=credentials_config)

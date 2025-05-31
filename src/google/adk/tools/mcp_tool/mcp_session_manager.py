@@ -149,7 +149,9 @@ class MCPSessionManager:
     """Initializes the MCP session manager.
 
     Args:
-        connection_params: Parameters for the MCP connection (Stdio, SSE or Streamable HTTP).
+        connection_params: Parameters for the MCP connection (Stdio, SSE or
+          Streamable HTTP). Stdio by default also has a 5s read timeout as other
+          parameters but it's not configurable for now.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
     """
@@ -173,6 +175,9 @@ class MCPSessionManager:
 
     try:
       if isinstance(self._connection_params, StdioServerParameters):
+        # So far timeout is not configurable. Given MCP is still evolving, we
+        # would expect stdio_client to evolve to accept timeout parameter like
+        # other client.
         client = stdio_client(
             server=self._connection_params, errlog=self._errlog
         )
@@ -203,9 +208,30 @@ class MCPSessionManager:
       transports = await self._exit_stack.enter_async_context(client)
       # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
       # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
-      session = await self._exit_stack.enter_async_context(
-          ClientSession(*transports[:2])
-      )
+      # The StdioServerParameters does not provide a timeout parameter for the
+      # session, so we need to set a default timeout for it. Other clients
+      # (SseServerParams and StreamableHTTPServerParams) already provide a
+      # timeout parameter in their configuration.
+      if isinstance(self._connection_params, StdioServerParameters):
+        # Default timeout for MCP session is 5 seconds, same as SseServerParams
+        # and StreamableHTTPServerParams.
+        # TODO :
+        #   1. make timeout configurable
+        #   2. Add StdioConnectionParams to include StdioServerParameters as a
+        #      field and rename other two params to XXXXConnetionParams. Ohter
+        #      two params are actually connection params, while stdio is
+        #      special, stdio_client takes the resposibility of starting the
+        #      server and working as a client.
+        session = await self._exit_stack.enter_async_context(
+            ClientSession(
+                *transports[:2],
+                read_timeout_seconds=timedelta(seconds=5),
+            )
+        )
+      else:
+        session = await self._exit_stack.enter_async_context(
+            ClientSession(*transports[:2])
+        )
       await session.initialize()
 
       self._session = session
