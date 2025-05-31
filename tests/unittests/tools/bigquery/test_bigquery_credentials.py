@@ -47,16 +47,58 @@ class TestBigQueryCredentials:
     assert config.client_secret == "test_client_secret"
     assert config.scopes == ["https://www.googleapis.com/auth/calendar"]
 
-  def test_valid_client_id_secret_pair(self):
-    """Test that providing client ID and secret without credentials works.
+  def test_valid_client_id_secret_pair_default_scope(self):
+    """Test that providing client ID and secret with default scope works.
 
     This tests the scenario where users want to create new OAuth credentials
-    from scratch using their application's client ID and secret.
+    from scratch using their application's client ID and secret and does not
+    specify the scopes explicitly.
     """
     config = BigQueryCredentialsConfig(
         client_id="test_client_id",
         client_secret="test_client_secret",
-        scopes=["https://www.googleapis.com/auth/bigquery"],
+    )
+
+    assert config.credentials is None
+    assert config.client_id == "test_client_id"
+    assert config.client_secret == "test_client_secret"
+    assert config.scopes == ["https://www.googleapis.com/auth/bigquery"]
+
+  def test_valid_client_id_secret_pair_w_scope(self):
+    """Test that providing client ID and secret with explicit scopes works.
+
+    This tests the scenario where users want to create new OAuth credentials
+    from scratch using their application's client ID and secret and does specify
+    the scopes explicitly.
+    """
+    config = BigQueryCredentialsConfig(
+        client_id="test_client_id",
+        client_secret="test_client_secret",
+        scopes=[
+            "https://www.googleapis.com/auth/bigquery",
+            "https://www.googleapis.com/auth/drive",
+        ],
+    )
+
+    assert config.credentials is None
+    assert config.client_id == "test_client_id"
+    assert config.client_secret == "test_client_secret"
+    assert config.scopes == [
+        "https://www.googleapis.com/auth/bigquery",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+  def test_valid_client_id_secret_pair_w_empty_scope(self):
+    """Test that providing client ID and secret with empty scope works.
+
+    This tests the corner case scenario where users want to create new OAuth
+    credentials from scratch using their application's client ID and secret but
+    specifies empty scope, in which case the default BQ scope is used.
+    """
+    config = BigQueryCredentialsConfig(
+        client_id="test_client_id",
+        client_secret="test_client_secret",
+        scopes=[],
     )
 
     assert config.credentials is None
@@ -73,7 +115,7 @@ class TestBigQueryCredentials:
     with pytest.raises(
         ValueError,
         match=(
-            "Must provide either credentials or client_id abd client_secret"
+            "Must provide either credentials or client_id and client_secret"
             " pair"
         ),
     ):
@@ -84,7 +126,7 @@ class TestBigQueryCredentials:
     with pytest.raises(
         ValueError,
         match=(
-            "Must provide either credentials or client_id abd client_secret"
+            "Must provide either credentials or client_id and client_secret"
             " pair"
         ),
     ):
@@ -99,7 +141,7 @@ class TestBigQueryCredentials:
     with pytest.raises(
         ValueError,
         match=(
-            "Must provide either credentials or client_id abd client_secret"
+            "Must provide either credentials or client_id and client_secret"
             " pair"
         ),
     ):
