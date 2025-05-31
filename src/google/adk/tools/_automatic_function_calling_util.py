@@ -228,6 +228,7 @@ def build_function_declaration(
           func.__closure__,
       )
       new_func.__signature__ = new_sig
+      new_func.__doc__ = func.__doc__
 
   return (
       from_function_with_options(func, variant)
