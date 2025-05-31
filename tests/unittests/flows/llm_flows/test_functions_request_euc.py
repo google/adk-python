@@ -536,7 +536,7 @@ def test_function_get_auth_response_partial():
   assert parts[0].function_response.name == 'call_external_api1'
   assert parts[0].function_response.response == {'result': 1}
   assert parts[1].function_response.name == 'call_external_api2'
-  assert parts[1].function_response.response == {}
+  assert parts[1].function_response.response == {'result': None}
 
   runner.run(
       new_message=types.Content(
