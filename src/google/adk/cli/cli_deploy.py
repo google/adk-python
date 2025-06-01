@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import os
 import shutil
@@ -34,6 +35,7 @@ def run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    artifact_storage_uri: Optional[str],
     adk_version: str,
     provider_args: Tuple[str],
     env: Tuple[str],
@@ -66,6 +68,7 @@ def run(
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     session_db_url: The database URL to connect the session.
+    artifact_storage_uri: The artifact storage URI to store the artifacts.
     adk_version: The ADK version to use in Cloud Run.
     provider_args: The arguments specific to cloud provider
     env: The environment valriables provided
@@ -109,6 +112,9 @@ def run(
         if session_db_url
         else '',
         trace_to_cloud_option=trace_to_cloud_option,
+        artifact_storage_option=f'--artifact_storage_uri={artifact_storage_uri}'
+        if artifact_storage_uri
+        else '',
         adk_version=adk_version,
         host_option=host_option,
     )
