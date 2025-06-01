@@ -1,4 +1,17 @@
-# src/google/adk/cli/cli_samples.py
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 
 import click
 from pathlib import Path
@@ -9,7 +22,7 @@ import requests
 import zipfile
 import io
 import re  # For extracting description
-from typing import Optional, Dict, List, TypedDict  # Added List, TypedDict
+from typing import Optional, Dict, List, TypedDict
 
 import logging
 
@@ -495,8 +508,7 @@ def run_samples_command(
             click.echo(
                 "+---------------------------------------------------------------------------+"
             )
-
         except SystemExit:
             pass
         except Exception as e:
-            click.echo(f"An unexpected error occurred: {e}", fg="red")
+            click.secho(f"An unexpected error occurred: {e}", fg="red")
