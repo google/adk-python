@@ -170,10 +170,10 @@ def _rearrange_events_for_latest_function_response(
   for idx in range(function_call_event_idx + 1, len(events) - 1):
     event = events[idx]
     function_responses = event.get_function_responses()
-    if (
-        function_responses
-        and function_responses[0].id in function_responses_ids
-    ):
+    if function_responses and any([
+        function_response.id in function_responses_ids
+        for function_response in function_responses
+    ]):
       function_response_events.append(event)
   function_response_events.append(events[-1])
 
