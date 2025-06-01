@@ -207,8 +207,8 @@ def add_common_deploy_options(command):
           "--artifact_storage_uri",
           type=str,
           help=(
-              "Optional. The artifact storage URI to store the artifacts, supported"
-              " URIs: gs://<bucket name> for GCS artifact service."
+              "Optional. The artifact storage URI to store the artifacts,"
+              " supported URIs: gs://<bucket name> for GCS artifact service."
           ),
           default=None,
       ),

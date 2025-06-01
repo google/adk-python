@@ -1,8 +1,11 @@
-import subprocess
 import os
-from typing import Tuple, List
-from ..deployers.base_deployer import Deployer
+import subprocess
+from typing import List
+from typing import Tuple
+
 import click
+
+from ..deployers.base_deployer import Deployer
 
 
 class DockerDeployer(Deployer):

@@ -1,9 +1,11 @@
 # deployers/cloud_run_deployer.py
 
-import subprocess
 import os
-import click
+import subprocess
 from typing import Tuple
+
+import click
+
 from ..deployers.base_deployer import Deployer
 
 
