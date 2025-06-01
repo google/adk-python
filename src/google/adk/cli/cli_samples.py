@@ -23,7 +23,6 @@ class SampleSourceInfo(TypedDict):
     samples_path_in_repo: str  # e.g., "adk-python-main/contributing/samples"
 
 
-# MODIFIED: Now a list of dictionaries
 DEFAULT_SAMPLE_SOURCES: List[SampleSourceInfo] = [
     {
         "name": "Official ADK Samples",
@@ -40,9 +39,7 @@ DEFAULT_SAMPLE_SOURCES: List[SampleSourceInfo] = [
 ]
 
 ADK_CACHE_SUBDIR_NAME = ".adk"
-SAMPLES_CONTAINER_DIR_NAME = "adk-samples"  # New: Name of the output container dir
-
-# --- Helper Functions ---
+SAMPLES_CONTAINER_DIR_NAME = "adk-samples" # Directory where samples will be prepared
 
 
 def _get_samples_cache_dir(user_path_str: Optional[str] = None) -> Path:
@@ -144,8 +141,6 @@ def _download_and_extract_source(
 
 def _is_source_cache_populated(source_cache_dir: Path) -> bool:
     """Checks if a specific source's cache subdirectory seems populated."""
-    # For V1, simple check: exists and not empty.
-    # A more robust check might involve checking for a marker file or a specific sample.
     return source_cache_dir.exists() and any(source_cache_dir.iterdir())
 
 
@@ -187,40 +182,6 @@ def _extract_description_from_agent_py(agent_py_path: Path) -> str:
     try:
         with open(agent_py_path, "r", encoding="utf-8") as f:
             content = f.read()
-
-            # Regex patterns to try:
-            # 1. description = "..." (single or multi-line)
-            # 2. description = '...' (single or multi-line)
-            # 3. description = ("...") (single or multi-line with parentheses)
-            # 4. description = ('...') (single or multi-line with parentheses)
-            # We'll combine these using non-capturing groups for the quotes/parentheses
-            # This regex looks for:
-            # - 'description' followed by optional whitespace and '='
-            # - Optional opening parenthesis '\('?
-            # - Optional whitespace
-            # - A quote (single or double) - captured as group 1
-            # - The content of the string (non-greedy) - captured as group 2
-            # - The matching closing quote (matches group 1)
-            # - Optional whitespace
-            # - Optional closing parenthesis '\)?'
-            # - Followed by a comma or a closing parenthesis of the Agent() call, or end of line
-            #   to avoid matching descriptions within docstrings of other functions.
-
-            # Simpler regex focusing on the assignment and string content:
-            # It looks for `description` followed by `=`, optional `(`, a quote, the content, and the matching quote.
-            # It handles potential whitespace and newlines more gracefully.
-
-            # Updated regex:
-            # - `description\s*=\s*`: Matches "description =" with flexible spacing.
-            # - `(?:` ... `)?`: Optional non-capturing group for the opening parenthesis.
-            #   - `\(\s*`: Matches an opening parenthesis followed by optional whitespace.
-            # - `(['"])`: Captures the opening quote (single or double) into group 1.
-            # - `((?:.|\n)*?)`: Captures the description string (group 2). Allows any character including newlines, non-greedy.
-            # - `\1`: Matches the same closing quote as captured in group 1.
-            # - `(?:\s*\))?`: Optional non-capturing group for the closing parenthesis.
-            # - `\s*[,)]`: Ensures it's followed by a comma or closing parenthesis (part of an Agent constructor)
-            #              to avoid matching random "description" words in comments or other strings.
-
             patterns_to_try = [
                 # Triple-quoted strings (multi-line)
                 r"""description\s*=\s*\(?\s*\"\"\"(.*?)\"\"\"""",
@@ -367,7 +328,6 @@ def _get_specific_sample_details_from_cache(
 
 def _copy_sample_files(
     source_path_in_cache: Path,
-    # MODIFIED: destination_container_path is the 'adk-samples' folder
     destination_container_path: Path,
     sample_name: str,
 ) -> Path:
@@ -474,14 +434,10 @@ def run_samples_command(
 
         if user_output_base_path_str:
             output_base_path = Path(user_output_base_path_str)
-            # No need to ensure it exists here if click.Path already did,
-            # but good for robustness if used programmatically.
-            # output_base_path.mkdir(parents=True, exist_ok=True)
         else:
             output_base_path = Path.cwd()
 
         output_container_path = output_base_path / SAMPLES_CONTAINER_DIR_NAME
-        # mkdir here is fine, _copy_sample_files will also ensure specific sample dir
         output_container_path.mkdir(parents=True, exist_ok=True)
 
         click.echo(
@@ -499,8 +455,6 @@ def run_samples_command(
                 fg="green",
             )
             click.echo("\nNext steps:")
-
-            # --- MODIFIED SECTION FOR ROBUST PATH GUIDANCE ---
             current_working_dir = Path.cwd()
             is_output_relative = False
             try:
@@ -534,7 +488,6 @@ def run_samples_command(
             click.echo(
                 f"     (or 'adk run {chosen_sample_name}', 'adk api_server {chosen_sample_name}')"
             )
-            # --- END OF MODIFIED SECTION ---
 
             click.echo(
                 "\nNote: Some samples might have additional setup. Check their README.md if available."

@@ -599,7 +599,7 @@ def cli_api_server(
     server.run()
 
 
-@main.command("samples", cls=HelpfulCommand)  # Or cls=click.Command
+@main.command("samples", cls=HelpfulCommand)
 @click.argument("sample_name", required=False, type=str)
 @click.option(
     "--cache-path",
@@ -607,17 +607,16 @@ def cli_api_server(
     help="Optional. Specify a custom directory to cache downloaded samples. Defaults to ~/.adk/cache/samples/.",
     default=None,
 )
-@click.option(  # NEW OPTION
+@click.option( 
     "--output-path",
     type=click.Path(file_okay=False, dir_okay=True, writable=True, resolve_path=True),
     help="Optional. Specify a base directory where the 'adk-samples' folder will be created. Defaults to the current working directory.",
     default=None,
 )
-# @click.pass_context # Only if ctx is needed by run_samples_command
 def cli_samples_cmd(
     sample_name: Optional[str],
     cache_path: Optional[str],
-    output_path: Optional[str],  # NEW PARAMETER
+    output_path: Optional[str],
 ):
     """Lists available samples or prepares a specific sample.
 
@@ -629,7 +628,7 @@ def cli_samples_cmd(
     cli_samples.run_samples_command(
         sample_name_arg=sample_name,
         user_cache_path_str=cache_path,
-        user_output_base_path_str=output_path,  # Pass the new parameter
+        user_output_base_path_str=output_path,
     )
 
 
