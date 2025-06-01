@@ -191,6 +191,7 @@ def test_deploy_run_docker_happy_path(
       with_ui=True,
       verbosity="info",
       session_db_url="sqlite://",
+      artifact_storage_uri="gs://bucket",
       adk_version="0.0.5",
       provider_args="TEST_ARG=ARG1",
       env="TEST_ENV=1",
