@@ -36,6 +36,7 @@ class GoogleApiTool(BaseTool):
       rest_api_tool: RestApiTool,
       client_id: Optional[str] = None,
       client_secret: Optional[str] = None,
+      service_account: Optional[ServiceAccount] = None
   ):
     super().__init__(
         name=rest_api_tool.name,
@@ -43,7 +44,10 @@ class GoogleApiTool(BaseTool):
         is_long_running=rest_api_tool.is_long_running,
     )
     self._rest_api_tool = rest_api_tool
-    self.configure_auth(client_id, client_secret)
+    if service_account is not None:
+        self.configure_sa_auth(service_account)
+    else:
+        self.configure_auth(client_id, client_secret)
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -70,5 +74,5 @@ class GoogleApiTool(BaseTool):
     auth_scheme, auth_credential = service_account_scheme_credential(
         service_account
     )
-    self.rest_api_tool.auth_scheme = auth_scheme
-    self.rest_api_tool.auth_credential = auth_credential
+    self._rest_api_tool.auth_scheme = auth_scheme
+    self._rest_api_tool.auth_credential = auth_credential

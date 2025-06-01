@@ -54,8 +54,8 @@ class TestGoogleApiTool:
 
     assert tool.name == "test_tool"
     assert tool.description == "Test Tool Description"
-    assert tool.is_long_running == False
-    assert tool.rest_api_tool == mock_rest_api_tool
+    assert tool.is_long_running is False
+    assert tool._rest_api_tool == mock_rest_api_tool
 
   def test_get_declaration(self, mock_rest_api_tool):
     """Test _get_declaration method."""

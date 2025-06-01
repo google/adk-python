@@ -14,21 +14,17 @@
 
 from __future__ import annotations
 
-import inspect
-import os
-from typing import Any
 from typing import List
 from typing import Optional
-from typing import Type
 from typing import Union
 
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ...auth import OpenIdConnectWithConfig
+from ...auth.auth_credential import ServiceAccount
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
-from ...auth.auth_credential import ServiceAccount
 from ..openapi_tool import OpenAPIToolset
 from .google_api_tool import GoogleApiTool
 from .googleapi_to_openapi_converter import GoogleApiToOpenApiConverter
@@ -48,12 +44,14 @@ class GoogleApiToolset(BaseToolset):
       api_version: str,
       client_id: Optional[str] = None,
       client_secret: Optional[str] = None,
+      service_account: Optional[ServiceAccount] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
   ):
     self.api_name = api_name
     self.api_version = api_version
     self._client_id = client_id
     self._client_secret = client_secret
+    self._service_account = service_account
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
     self.tool_filter = tool_filter
 
@@ -62,10 +60,8 @@ class GoogleApiToolset(BaseToolset):
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> List[GoogleApiTool]:
     """Get all tools in the toolset."""
-    tools = []
-
     return [
-        GoogleApiTool(tool, self._client_id, self._client_secret)
+        GoogleApiTool(tool, self._client_id, self._client_secret, self._service_account)
         for tool in await self._openapi_toolset.get_tools(readonly_context)
         if self._is_tool_selected(tool, readonly_context)
     ]
@@ -108,8 +104,7 @@ class GoogleApiToolset(BaseToolset):
     self._client_secret = client_secret
 
   def configure_sa_auth(self, service_account: ServiceAccount):
-    for tool in self.tools:
-      tool.configure_sa_auth(service_account)
+    self._service_account = service_account
 
   @override
   async def close(self):
