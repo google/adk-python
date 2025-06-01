@@ -669,8 +669,8 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
-
-      for part in self.llm_client.completion(**completion_args):
+      response = await self.llm_client.acompletion(**completion_args)
+      async for part in response:
         for chunk, finish_reason in _model_response_to_chunk(part):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or 0
