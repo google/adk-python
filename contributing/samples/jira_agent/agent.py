@@ -17,6 +17,8 @@ from google.adk.agents import Agent
 from .tools import jira_tool
 
 root_agent = Agent(
+    
+    
     model='gemini-2.0-flash-001',
     name='jira_connector_agent',
     description='This agent helps search issues in JIRA',
