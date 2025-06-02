@@ -21,54 +21,12 @@ from fastapi.openapi.models import Schema
 from google.adk.tools.openapi_tool.common.common import ApiParameter
 from google.adk.tools.openapi_tool.common.common import PydocHelper
 from google.adk.tools.openapi_tool.common.common import rename_python_keywords
-from google.adk.tools.openapi_tool.common.common import to_snake_case
 from google.adk.tools.openapi_tool.common.common import TypeHintHelper
 import pytest
 
 
 def dict_to_responses(input: Dict[str, Any]) -> Dict[str, Response]:
   return {k: Response.model_validate(input[k]) for k in input}
-
-
-class TestToSnakeCase:
-
-  @pytest.mark.parametrize(
-      'input_str, expected_output',
-      [
-          ('lowerCamelCase', 'lower_camel_case'),
-          ('UpperCamelCase', 'upper_camel_case'),
-          ('space separated', 'space_separated'),
-          ('REST API', 'rest_api'),
-          ('Mixed_CASE with_Spaces', 'mixed_case_with_spaces'),
-          ('__init__', 'init'),
-          ('APIKey', 'api_key'),
-          ('SomeLongURL', 'some_long_url'),
-          ('CONSTANT_CASE', 'constant_case'),
-          ('already_snake_case', 'already_snake_case'),
-          ('single', 'single'),
-          ('', ''),
-          ('  spaced  ', 'spaced'),
-          ('with123numbers', 'with123numbers'),
-          ('With_Mixed_123_and_SPACES', 'with_mixed_123_and_spaces'),
-          ('HTMLParser', 'html_parser'),
-          ('HTTPResponseCode', 'http_response_code'),
-          ('a_b_c', 'a_b_c'),
-          ('A_B_C', 'a_b_c'),
-          ('fromAtoB', 'from_ato_b'),
-          ('XMLHTTPRequest', 'xmlhttp_request'),
-          ('_leading', 'leading'),
-          ('trailing_', 'trailing'),
-          ('  leading_and_trailing_  ', 'leading_and_trailing'),
-          ('Multiple___Underscores', 'multiple_underscores'),
-          ('  spaces_and___underscores  ', 'spaces_and_underscores'),
-          ('  _mixed_Case  ', 'mixed_case'),
-          ('123Start', '123_start'),
-          ('End123', 'end123'),
-          ('Mid123dle', 'mid123dle'),
-      ],
-  )
-  def test_to_snake_case(self, input_str, expected_output):
-    assert to_snake_case(input_str) == expected_output
 
 
 class TestRenamePythonKeywords:

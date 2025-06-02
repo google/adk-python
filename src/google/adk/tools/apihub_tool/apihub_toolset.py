@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 from typing import List
 from typing import Optional
@@ -23,9 +24,9 @@ import yaml
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from .._gemini_schema_util import _to_snake_case
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
-from ..openapi_tool.common.common import to_snake_case
 from ..openapi_tool.openapi_spec_parser.openapi_toolset import OpenAPIToolset
 from ..openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
 from .clients.apihub_client import APIHubClient
@@ -171,7 +172,7 @@ class APIHubToolset(BaseToolset):
     if not spec_dict:
       return
 
-    self.name = self.name or to_snake_case(
+    self.name = self.name or _to_snake_case(
         spec_dict.get('info', {}).get('title', 'unnamed')
     )
     self.description = self.description or spec_dict.get('info', {}).get(
