@@ -420,6 +420,15 @@ def fast_api_common_options():
         ),
     )
     @click.option(
+        "--artifact_storage_uri",
+        type=str,
+        help=(
+            "Optional. The artifact storage URI to store the artifacts,"
+            " supported URIs: gs://<bucket name> for GCS artifact service."
+        ),
+        default=None,
+    )
+    @click.option(
         "--host",
         type=str,
         help="Optional. The binding host of the server",
@@ -479,6 +488,7 @@ def fast_api_common_options():
 def cli_web(
     agent_dir: str,
     session_db_url: str = "",
+    artifact_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
@@ -527,6 +537,7 @@ def cli_web(
   app = get_fast_api_app(
       agent_dir=agent_dir,
       session_db_url=session_db_url,
+      artifact_storage_uri=artifact_storage_uri,
       allow_origins=allow_origins,
       web=True,
       trace_to_cloud=trace_to_cloud,
@@ -558,6 +569,7 @@ def cli_web(
 def cli_api_server(
     agent_dir: str,
     session_db_url: str = "",
+    artifact_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
@@ -580,6 +592,7 @@ def cli_api_server(
       get_fast_api_app(
           agent_dir=agent_dir,
           session_db_url=session_db_url,
+          artifact_storage_uri=artifact_storage_uri,
           allow_origins=allow_origins,
           web=False,
           trace_to_cloud=trace_to_cloud,
@@ -683,6 +696,15 @@ def cli_api_server(
   - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
 )
+@click.option(
+    "--artifact_storage_uri",
+    type=str,
+    help=(
+        "Optional. The artifact storage URI to store the artifacts, supported"
+        " URIs: gs://<bucket name> for GCS artifact service."
+    ),
+    default=None,
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -711,6 +733,7 @@ def cli_deploy_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    artifact_storage_uri: Optional[str],
     adk_version: str,
 ):
   """Deploys an agent to Cloud Run.
@@ -734,6 +757,7 @@ def cli_deploy_cloud_run(
         with_ui=with_ui,
         verbosity=verbosity,
         session_db_url=session_db_url,
+        artifact_storage_uri=artifact_storage_uri,
         adk_version=adk_version,
     )
   except Exception as e:

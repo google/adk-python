@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import os
 import shutil
@@ -86,6 +87,7 @@ def to_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    artifact_storage_uri: Optional[str],
     adk_version: str,
 ):
   """Deploys an agent to Google Cloud Run.
@@ -115,6 +117,7 @@ def to_cloud_run(
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     session_db_url: The database URL to connect the session.
+    artifact_storage_uri: The artifact storage URI to store the artifacts.
     adk_version: The ADK version to use in Cloud Run.
   """
   app_name = app_name or os.path.basename(agent_folder)
@@ -151,6 +154,9 @@ def to_cloud_run(
         install_agent_deps=install_agent_deps,
         session_db_option=f'--session_db_url={session_db_url}'
         if session_db_url
+        else '',
+        artifact_storage_option=f'--artifact_storage_uri={artifact_storage_uri}'
+        if artifact_storage_uri
         else '',
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         adk_version=adk_version,

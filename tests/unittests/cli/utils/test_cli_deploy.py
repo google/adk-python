@@ -128,6 +128,7 @@ def test_to_cloud_run_happy_path(
       with_ui=True,
       verbosity="info",
       session_db_url="sqlite://",
+      artifact_storage_uri="gs://bucket",
       adk_version="0.0.5",
   )
 
@@ -170,6 +171,7 @@ def test_to_cloud_run_cleans_temp_dir(
       with_ui=False,
       verbosity="info",
       session_db_url=None,
+      artifact_storage_uri=None,
       adk_version="0.0.5",
   )
 

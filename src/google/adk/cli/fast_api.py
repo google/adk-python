@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 import asyncio
 import sys
@@ -63,7 +64,9 @@ from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
-from ..artifacts import InMemoryArtifactService
+
+from ..artifacts.gcs_artifact_service import GcsArtifactService
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
@@ -199,6 +202,7 @@ def get_fast_api_app(
     *,
     agent_dir: str,
     session_db_url: str = "",
+    artifact_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
     trace_to_cloud: bool = False,
@@ -318,11 +322,16 @@ def get_fast_api_app(
 
   runner_dict = {}
 
-  # Build the Artifact service
+
   artifact_service = InMemoryArtifactService()
   memory_service = InMemoryMemoryService()
 
   eval_sets_manager = LocalEvalSetsManager(agents_dir=agent_dir)
+
+  eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
+
+  # Build the Memory service
+  memory_service = InMemoryMemoryService()
 
   # Build the Session service
   agent_engine_id = ""
@@ -341,6 +350,18 @@ def get_fast_api_app(
       session_service = DatabaseSessionService(db_url=session_db_url)
   else:
     session_service = InMemorySessionService()
+
+  # Build the Artifact service
+  if artifact_storage_uri:
+    if artifact_storage_uri.startswith("gs://"):
+      gcs_bucket = artifact_storage_uri.split("://")[1]
+      artifact_service = GcsArtifactService(bucket_name=gcs_bucket)
+    else:
+      raise click.ClickException(
+          "Unsupported artifact storage URI: %s" % artifact_storage_uri
+      )
+  else:
+    artifact_service = InMemoryArtifactService()
 
   # initialize Agent Loader
   agent_loader = AgentLoader(agents_dir)
