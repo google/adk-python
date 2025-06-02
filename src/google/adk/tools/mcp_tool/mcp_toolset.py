@@ -21,6 +21,8 @@ from typing import Optional
 from typing import TextIO
 from typing import Union
 
+from contextlib import AsyncExitStack
+
 from ...agents.readonly_context import ReadonlyContext
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
@@ -110,11 +112,13 @@ class MCPToolset(BaseToolset):
 
     self._connection_params = connection_params
     self._errlog = errlog
+    self._exit_stack = AsyncExitStack()
 
     # Create the session manager that will handle the MCP connection
     self._mcp_session_manager = MCPSessionManager(
         connection_params=self._connection_params,
         errlog=self._errlog,
+        exit_stack=self._exit_stack,
     )
 
     self._session = None
@@ -135,7 +139,10 @@ class MCPToolset(BaseToolset):
     """
     # Get session from session manager
     if not self._session:
-      self._session = await self._mcp_session_manager.create_session()
+      # create_session returns a tuple (session, process)
+      # We only need the session object here
+      session_obj, _ = await self._mcp_session_manager.create_session()
+      self._session = session_obj
 
     # Fetch available tools from the MCP server
     tools_response: ListToolsResult = await self._session.list_tools()
@@ -156,7 +163,10 @@ class MCPToolset(BaseToolset):
     """Reinitializes the session when connection is lost."""
     # Close the old session and clear cache
     await self._mcp_session_manager.close()
-    self._session = await self._mcp_session_manager.create_session()
+    # create_session returns a tuple (session, process)
+    # We only need the session object here
+    session_obj, _ = await self._mcp_session_manager.create_session()
+    self._session = session_obj
 
     # Tools will be reloaded on next get_tools call
 
@@ -169,6 +179,7 @@ class MCPToolset(BaseToolset):
     """
     try:
       await self._mcp_session_manager.close()
+      await self._exit_stack.aclose()
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)

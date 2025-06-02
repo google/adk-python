@@ -15,10 +15,17 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+
 from contextlib import asynccontextmanager
+import importlib
+import inspect
+import json
 import logging
 import os
 from pathlib import Path
+import signal
+
 import time
 import traceback
 import typing
@@ -51,19 +58,17 @@ from starlette.types import Lifespan
 from typing_extensions import override
 
 from ..agents import RunConfig
+from ..agents.base_agent import BaseAgent
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
+from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import StreamingMode
+
 from ..artifacts.gcs_artifact_service import GcsArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
-from ..evaluation.eval_metrics import EvalMetric
-from ..evaluation.eval_metrics import EvalMetricResult
-from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
-from ..evaluation.eval_result import EvalSetResult
-from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
@@ -72,9 +77,13 @@ from ..sessions.database_session_service import DatabaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
+from ..tools.base_toolset import BaseToolset
 from .cli_eval import EVAL_SESSION_ID_PREFIX
+from .cli_eval import EvalMetric
+from .cli_eval import EvalMetricResult
+from .cli_eval import EvalMetricResultPerInvocation
+from ..evaluation.eval_result import EvalSetResult
 from .cli_eval import EvalStatus
-from .utils import cleanup
 from .utils import common
 from .utils import create_empty_state
 from .utils import envs
@@ -191,7 +200,7 @@ class GetEventGraphResult(common.BaseModel):
 
 def get_fast_api_app(
     *,
-    agents_dir: str,
+    agent_dir: str,
     session_db_url: str = "",
     artifact_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
@@ -211,7 +220,7 @@ def get_fast_api_app(
   memory_exporter = InMemoryExporter(session_trace_dict)
   provider.add_span_processor(export.SimpleSpanProcessor(memory_exporter))
   if trace_to_cloud:
-    envs.load_dotenv_for_agent("", agents_dir)
+    envs.load_dotenv_for_agent("", agent_dir)
     if project_id := os.environ.get("GOOGLE_CLOUD_PROJECT", None):
       processor = export.BatchSpanProcessor(
           CloudTraceSpanExporter(project_id=project_id)
@@ -225,8 +234,27 @@ def get_fast_api_app(
 
   trace.set_tracer_provider(provider)
 
+  toolsets_to_close: set[BaseToolset] = set()
+
   @asynccontextmanager
   async def internal_lifespan(app: FastAPI):
+    # Set up signal handlers for graceful shutdown
+    original_sigterm = signal.getsignal(signal.SIGTERM)
+    original_sigint = signal.getsignal(signal.SIGINT)
+
+    def cleanup_handler(sig, frame):
+      # Log the signal
+      logger.info("Received signal %s, performing pre-shutdown cleanup", sig)
+      # Do synchronous cleanup if needed
+      # Then call original handler if it exists
+      if sig == signal.SIGTERM and callable(original_sigterm):
+        original_sigterm(sig, frame)
+      elif sig == signal.SIGINT and callable(original_sigint):
+        original_sigint(sig, frame)
+
+    # Install cleanup handlers
+    signal.signal(signal.SIGTERM, cleanup_handler)
+    signal.signal(signal.SIGINT, cleanup_handler)
 
     try:
       if lifespan:
@@ -235,8 +263,46 @@ def get_fast_api_app(
       else:
         yield
     finally:
-      # Create tasks for all runner closures to run concurrently
-      await cleanup.close_runners(list(runner_dict.values()))
+      # During shutdown, properly clean up all toolsets
+      logger.info(
+          "Server shutdown initiated, cleaning up %s toolsets",
+          len(toolsets_to_close),
+      )
+
+      # Create tasks for all toolset closures to run concurrently
+      cleanup_tasks = []
+      for toolset in toolsets_to_close:
+        task = asyncio.create_task(close_toolset_safely(toolset))
+        cleanup_tasks.append(task)
+
+      if cleanup_tasks:
+        # Wait for all cleanup tasks with timeout
+        done, pending = await asyncio.wait(
+            cleanup_tasks,
+            timeout=10.0,  # 10 second timeout for cleanup
+            return_when=asyncio.ALL_COMPLETED,
+        )
+
+        # If any tasks are still pending, log it
+        if pending:
+          logger.warning(
+              f"{len(pending)} toolset cleanup tasks didn't complete in time"
+          )
+          for task in pending:
+            task.cancel()
+
+      # Restore original signal handlers
+      signal.signal(signal.SIGTERM, original_sigterm)
+      signal.signal(signal.SIGINT, original_sigint)
+
+  async def close_toolset_safely(toolset):
+    """Safely close a toolset with error handling."""
+    try:
+      logger.info(f"Closing toolset: {type(toolset).__name__}")
+      await toolset.close()
+      logger.info(f"Successfully closed toolset: {type(toolset).__name__}")
+    except Exception as e:
+      logger.error(f"Error closing toolset {type(toolset).__name__}: {e}")
 
   # Run the FastAPI server.
   app = FastAPI(lifespan=internal_lifespan)
@@ -250,9 +316,18 @@ def get_fast_api_app(
         allow_headers=["*"],
     )
 
+  if agent_dir not in sys.path:
+    sys.path.append(agent_dir)
+
+
   runner_dict = {}
 
-  eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
+
+  artifact_service = InMemoryArtifactService()
+  memory_service = InMemoryMemoryService()
+
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=agent_dir)
+
   eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
   # Build the Memory service
@@ -266,7 +341,7 @@ def get_fast_api_app(
       agent_engine_id = session_db_url.split("://")[1]
       if not agent_engine_id:
         raise click.ClickException("Agent engine id can not be empty.")
-      envs.load_dotenv_for_agent("", agents_dir)
+      envs.load_dotenv_for_agent("", agent_dir)
       session_service = VertexAiSessionService(
           os.environ["GOOGLE_CLOUD_PROJECT"],
           os.environ["GOOGLE_CLOUD_LOCATION"],
@@ -293,7 +368,7 @@ def get_fast_api_app(
 
   @app.get("/list-apps")
   def list_apps() -> list[str]:
-    base_path = Path.cwd() / agents_dir
+    base_path = Path.cwd() / agent_dir
     if not base_path.exists():
       raise HTTPException(status_code=404, detail="Path not found")
     if not base_path.is_dir():
@@ -409,9 +484,9 @@ def get_fast_api_app(
         app_name=app_name, user_id=user_id, state=state
     )
 
-  def _get_eval_set_file_path(app_name, agents_dir, eval_set_id) -> str:
+  def _get_eval_set_file_path(app_name, agent_dir, eval_set_id) -> str:
     return os.path.join(
-        agents_dir,
+        agent_dir,
         app_name,
         eval_set_id + _EVAL_SET_FILE_EXTENSION,
     )
@@ -501,6 +576,9 @@ def get_fast_api_app(
 
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
+
+    envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
+
     eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
     if req.eval_ids:
@@ -546,9 +624,31 @@ def get_fast_api_app(
       logger.exception("%s", e)
       raise HTTPException(status_code=400, detail=str(e)) from e
 
-    eval_set_results_manager.save_eval_set_result(
-        app_name, eval_set_id, eval_case_results
+    timestamp = time.time()
+    eval_set_result_name = app_name + "_" + eval_set_id + "_" + str(timestamp)
+    eval_set_result = EvalSetResult(
+        eval_set_result_id=eval_set_result_name,
+        eval_set_result_name=eval_set_result_name,
+        eval_set_id=eval_set_id,
+        eval_case_results=eval_case_results,
+        creation_timestamp=timestamp,
     )
+
+    # Write eval result file, with eval_set_result_name.
+    app_eval_history_dir = os.path.join(
+        agent_dir, app_name, ".adk", "eval_history"
+    )
+    if not os.path.exists(app_eval_history_dir):
+      os.makedirs(app_eval_history_dir)
+    # Convert to json and write to file.
+    eval_set_result_json = eval_set_result.model_dump_json()
+    eval_set_result_file_path = os.path.join(
+        app_eval_history_dir,
+        eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
+    )
+    logger.info("Writing eval result to file: %s", eval_set_result_file_path)
+    with open(eval_set_result_file_path, "w") as f:
+      f.write(json.dumps(eval_set_result_json, indent=2))
 
     return run_eval_results
 
@@ -560,15 +660,26 @@ def get_fast_api_app(
       app_name: str,
       eval_result_id: str,
   ) -> EvalSetResult:
-    """Gets the eval result for the given eval id."""
-    try:
-      return eval_set_results_manager.get_eval_set_result(
-          app_name, eval_result_id
+    """Get a single eval result."""
+    # Load the eval set file data
+    maybe_eval_result_file_path = (
+        evals.get_eval_set_result_file_path_if_exists(
+            eval_result_id, agent_dir, app_name
+        )
+    )
+    if not maybe_eval_result_file_path:
+      raise HTTPException(
+          status_code=404, detail=f"Eval result {eval_result_id} not found."
       )
-    except ValueError as ve:
-      raise HTTPException(status_code=404, detail=str(ve)) from ve
-    except ValidationError as ve:
-      raise HTTPException(status_code=500, detail=str(ve)) from ve
+
+    with open(maybe_eval_result_file_path, "r", encoding="utf-8") as file:
+      eval_result_data = json.load(file)  # Load JSON into a list
+    try:
+      eval_result = EvalSetResult.model_validate_json(json.dumps(eval_result_data))
+      return eval_result
+    except ValidationError as e:
+      logger.error(f"Error validating eval result: {e}")
+      raise HTTPException(status_code=500, detail=str(e)) from e
 
   @app.get(
       "/apps/{app_name}/eval_results",
@@ -576,7 +687,19 @@ def get_fast_api_app(
   )
   def list_eval_results(app_name: str) -> list[str]:
     """Lists all eval results for the given app."""
-    return eval_set_results_manager.list_eval_set_results(app_name)
+    app_eval_history_directory = os.path.join(
+        agent_dir, app_name, ".adk", "eval_history"
+    )
+
+    if not os.path.exists(app_eval_history_directory):
+      return []
+
+    eval_result_files = [
+        file.removesuffix(_EVAL_SET_RESULT_FILE_EXTENSION)
+        for file in os.listdir(app_eval_history_directory)
+        if file.endswith(_EVAL_SET_RESULT_FILE_EXTENSION)
+    ]
+    return eval_result_files
 
   @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
   async def delete_session(app_name: str, user_id: str, session_id: str):
@@ -676,9 +799,9 @@ def get_fast_api_app(
   @app.post("/run", response_model_exclude_none=True)
   async def agent_run(req: AgentRunRequest) -> list[Event]:
     # Connect to managed session if agent_engine_id is set.
-    app_name = agent_engine_id if agent_engine_id else req.app_name
+    app_id = agent_engine_id if agent_engine_id else req.app_name
     session = await session_service.get_session(
-        app_name=app_name, user_id=req.user_id, session_id=req.session_id
+        app_name=app_id, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
       raise HTTPException(status_code=404, detail="Session not found")
@@ -697,10 +820,10 @@ def get_fast_api_app(
   @app.post("/run_sse")
   async def agent_run_sse(req: AgentRunRequest) -> StreamingResponse:
     # Connect to managed session if agent_engine_id is set.
-    app_name = agent_engine_id if agent_engine_id else req.app_name
+    app_id = agent_engine_id if agent_engine_id else req.app_name
     # SSE endpoint
     session = await session_service.get_session(
-        app_name=app_name, user_id=req.user_id, session_id=req.session_id
+        app_name=app_id, user_id=req.user_id, session_id=req.session_id
     )
     if not session:
       raise HTTPException(status_code=404, detail="Session not found")
@@ -739,9 +862,9 @@ def get_fast_api_app(
       app_name: str, user_id: str, session_id: str, event_id: str
   ):
     # Connect to managed session if agent_engine_id is set.
-    app_name = agent_engine_id if agent_engine_id else app_name
+    app_id = agent_engine_id if agent_engine_id else app_name
     session = await session_service.get_session(
-        app_name=app_name, user_id=user_id, session_id=session_id
+        app_name=app_id, user_id=user_id, session_id=session_id
     )
     session_events = session.events if session else []
     event = next((x for x in session_events if x.id == event_id), None)
@@ -796,9 +919,9 @@ def get_fast_api_app(
     await websocket.accept()
 
     # Connect to managed session if agent_engine_id is set.
-    app_name = agent_engine_id if agent_engine_id else app_name
+    app_id = agent_engine_id if agent_engine_id else app_name
     session = await session_service.get_session(
-        app_name=app_name, user_id=user_id, session_id=session_id
+        app_name=app_id, user_id=user_id, session_id=session_id
     )
     if not session:
       # Accept first so that the client is aware of connection establishment,
@@ -853,9 +976,33 @@ def get_fast_api_app(
       for task in pending:
         task.cancel()
 
+  def _get_all_toolsets(agent: BaseAgent) -> set[BaseToolset]:
+    toolsets = set()
+    if isinstance(agent, LlmAgent):
+      for tool_union in agent.tools:
+        if isinstance(tool_union, BaseToolset):
+          toolsets.add(tool_union)
+    for sub_agent in agent.sub_agents:
+      toolsets.update(_get_all_toolsets(sub_agent))
+    return toolsets
+
+  async def _get_root_agent_async(app_name: str) -> Agent:
+    """Returns the root agent for the given app."""
+    if app_name in root_agent_dict:
+      return root_agent_dict[app_name]
+    agent_module = importlib.import_module(app_name)
+    if getattr(agent_module.agent, "root_agent"):
+      root_agent = agent_module.agent.root_agent
+    else:
+      raise ValueError(f'Unable to find "root_agent" from {app_name}.')
+
+    root_agent_dict[app_name] = root_agent
+    toolsets_to_close.update(_get_all_toolsets(root_agent))
+    return root_agent
+
   async def _get_runner_async(app_name: str) -> Runner:
     """Returns the runner for the given app."""
-    envs.load_dotenv_for_agent(os.path.basename(app_name), agents_dir)
+    envs.load_dotenv_for_agent(os.path.basename(app_name), agent_dir)
     if app_name in runner_dict:
       return runner_dict[app_name]
     root_agent = agent_loader.load_agent(app_name)

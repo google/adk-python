@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
+import asyncio
+from contextlib import asynccontextmanager
 
 from contextlib import AsyncExitStack
 from datetime import timedelta
@@ -27,14 +28,22 @@ from typing import Union
 import anyio
 from pydantic import BaseModel
 
+# Attempt to import MCP and cbor2 at the top level
 try:
   from mcp import ClientSession
   from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
-  from mcp.client.streamable_http import streamablehttp_client
+  from mcp.shared import message as mcp_messages
+  # Removed MCPJsonEncoder import as it caused ModuleNotFoundError
+  import cbor2
+  MCP_DEPENDENCIES_AVAILABLE = True
+
 except ImportError as e:
-  import sys
+  MCP_DEPENDENCIES_AVAILABLE = False
+  # Simplified atexit_ensure_closeddependency check as mcp.common.json was problematic
+  if 'mcp.shared.message' in str(e) or 'cbor2' in str(e):
+    pass
 
   if sys.version_info < (3, 10):
     raise ImportError(
@@ -42,7 +51,8 @@ except ImportError as e:
         ' version.'
     ) from e
   else:
-    raise e
+    if not ('mcp.shared.message' in str(e) or 'cbor2' in str(e)):
+        raise e
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -88,27 +98,29 @@ def retry_on_closed_resource(async_reinit_func_name: str):
 
   Usage:
   class MCPTool:
-      ...
-      async def create_session(self):
-          self.session = ...
+    ...
+    async def create_session(self):
+      self.session = ...
 
-      @retry_on_closed_resource('create_session')
-      async def use_session(self):
-          await self.session.call_tool()
+    @retry_on_closed_resource('create_session')
+    async def use_session(self):
+      await self.session.call_tool()
 
   Args:
-      async_reinit_func_name: The name of the async function to recreate session.
+    async_reinit_func_name: The name of the async function to recreate session.
 
   Returns:
-      The decorated function.
+    The decorated function.
   """
 
   def decorator(func):
-    @functools.wraps(func)  # Preserves original function metadata
+    @functools.wraps(
+        func
+    )  # Preserves original function metadata (name, docstring)
     async def wrapper(self, *args, **kwargs):
       try:
         return await func(self, *args, **kwargs)
-      except anyio.ClosedResourceError as close_err:
+      except anyio.ClosedResourceError:
         try:
           if hasattr(self, async_reinit_func_name) and callable(
               getattr(self, async_reinit_func_name)
@@ -120,7 +132,7 @@ def retry_on_closed_resource(async_reinit_func_name: str):
                 f'Function {async_reinit_func_name} does not exist in decorated'
                 ' class. Please check the function name in'
                 ' retry_on_closed_resource decorator.'
-            ) from close_err
+            )
         except Exception as reinit_err:
           raise RuntimeError(
               f'Error reinitializing: {reinit_err}'
@@ -130,6 +142,45 @@ def retry_on_closed_resource(async_reinit_func_name: str):
     return wrapper
 
   return decorator
+
+
+@asynccontextmanager
+async def tracked_stdio_client(server, errlog, process=None):
+  """A wrapper around stdio_client that ensures proper process tracking and cleanup."""
+  our_process = process
+
+  # If no process was provided, create one
+  if our_process is None:
+    our_process = await asyncio.create_subprocess_exec(
+        server.command,
+        *server.args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=errlog,
+    )
+
+  # Use the original stdio_client, but ensure process cleanup
+  try:
+    async with stdio_client(server=server, errlog=errlog) as client:
+      yield client, our_process
+  finally:
+    # Ensure the process is properly terminated if it still exists
+    if our_process and our_process.returncode is None:
+      try:
+        logger.info(
+            f'Terminating process {our_process.pid} from tracked_stdio_client'
+        )
+        our_process.terminate()
+        try:
+          await asyncio.wait_for(our_process.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+          # Force kill if it doesn't terminate quickly
+          if our_process.returncode is None:
+            logger.warning(f'Forcing kill of process {our_process.pid}')
+            our_process.kill()
+      except ProcessLookupError:
+        # Process already gone, that's fine
+        logger.info(f'Process {our_process.pid} already terminated')
 
 
 class MCPSessionManager:
@@ -144,29 +195,110 @@ class MCPSessionManager:
       connection_params: Union[
           StdioServerParameters, SseServerParams, StreamableHTTPServerParams
       ],
+      exit_stack: AsyncExitStack,
       errlog: TextIO = sys.stderr,
   ):
     """Initializes the MCP session manager.
+
+    Example usage:
+    ```
+    mcp_session_manager = MCPSessionManager(
+        connection_params=connection_params,
+        exit_stack=exit_stack,
+    )
+    session = await mcp_session_manager.create_session()
+    ```
 
     Args:
         connection_params: Parameters for the MCP connection (Stdio, SSE or
           Streamable HTTP). Stdio by default also has a 5s read timeout as other
           parameters but it's not configurable for now.
+          
+        exit_stack: AsyncExitStack to manage the session lifecycle.
+
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
     """
-    self._connection_params = connection_params
-    self._errlog = errlog
-    # Each session manager maintains its own exit stack for proper cleanup
-    self._exit_stack: Optional[AsyncExitStack] = None
-    self._session: Optional[ClientSession] = None
 
-  async def create_session(self) -> ClientSession:
-    """Creates and initializes an MCP client session.
+    self._connection_params = connection_params
+    self._exit_stack = exit_stack
+    self._errlog = errlog
+    self._process = None  # Track the subprocess
+    self._active_processes = set()  # Track all processes created
+    self._active_file_handles = set()  # Track file handles
+
+  async def create_session(
+      self,
+  ) -> tuple[ClientSession, Optional[asyncio.subprocess.Process]]:
+    """Creates a new MCP session and tracks the associated process."""
+    session, process = await self._initialize_session(
+        connection_params=self._connection_params,
+        exit_stack=self._exit_stack,
+        errlog=self._errlog,
+    )
+    self._process = process  # Store reference to process
+
+    # Track the process
+    if process:
+      self._active_processes.add(process)
+
+    return session, process
+
+  @classmethod
+  async def _initialize_session(
+      cls,
+      *,
+      connection_params: Union[
+        StdioServerParameters, SseServerParams, StreamableHTTPServerParams
+      ],
+      exit_stack: AsyncExitStack,
+      errlog: TextIO = sys.stderr,
+  ) -> tuple[ClientSession, Optional[asyncio.subprocess.Process]]:
+    """Initializes an MCP client session.
+
+    Args:
+        connection_params: Parameters for the MCP connection (Stdio or SSE pr StreamableHTTP).
+        exit_stack: AsyncExitStack to manage the session lifecycle.
+        errlog: (Optional) TextIO stream for error logging. Use only for
+          initializing a local stdio MCP session.
 
     Returns:
         ClientSession: The initialized MCP client session.
     """
+    process = None
+
+    if isinstance(connection_params, StdioServerParameters):
+      # For stdio connections, we need to track the subprocess
+      client, process = await cls._create_stdio_client(
+          server=connection_params,
+          errlog=errlog,
+          exit_stack=exit_stack,
+      )
+    elif isinstance(connection_params, SseServerParams):
+      # For SSE connections, create the client without a subprocess
+      client = sse_client(
+          url=connection_params.url,
+          headers=connection_params.headers,
+          timeout=connection_params.timeout,
+          sse_read_timeout=connection_params.sse_read_timeout,
+      )
+     elif isinstance(connection_params, StreamableHTTPServerParams):
+       client = streamablehttp_client(
+           url=connection_params.url,
+           headers=connection_params.headers,
+           timeout=timedelta(seconds=connection_params.timeout),
+           sse_read_timeout=timedelta(
+               seconds=connection_params.sse_read_timeout
+           ),
+           terminate_on_close=connection_params.terminate_on_close,
+       )
+    else:
+      raise ValueError(
+          'Unable to initialize connection. Connection should be'
+          ' StdioServerParameters or SseServerParams, or StreamableHTTPServerParams but got'
+          f' {connection_params}'
+      )
+
     if self._session is not None:
       return self._session
 
@@ -205,55 +337,73 @@ class MCPSessionManager:
             f' {self._connection_params}'
         )
 
-      transports = await self._exit_stack.enter_async_context(client)
-      # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
-      # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
-      # The StdioServerParameters does not provide a timeout parameter for the
-      # session, so we need to set a default timeout for it. Other clients
-      # (SseServerParams and StreamableHTTPServerParams) already provide a
-      # timeout parameter in their configuration.
-      if isinstance(self._connection_params, StdioServerParameters):
-        # Default timeout for MCP session is 5 seconds, same as SseServerParams
-        # and StreamableHTTPServerParams.
-        # TODO :
-        #   1. make timeout configurable
-        #   2. Add StdioConnectionParams to include StdioServerParameters as a
-        #      field and rename other two params to XXXXConnetionParams. Ohter
-        #      two params are actually connection params, while stdio is
-        #      special, stdio_client takes the resposibility of starting the
-        #      server and working as a client.
-        session = await self._exit_stack.enter_async_context(
-            ClientSession(
-                *transports[:2],
-                read_timeout_seconds=timedelta(seconds=5),
-            )
-        )
-      else:
-        session = await self._exit_stack.enter_async_context(
-            ClientSession(*transports[:2])
-        )
-      await session.initialize()
+    # Create the session with the client
+    transports = await exit_stack.enter_async_context(client)
+    session = await exit_stack.enter_async_context(ClientSession(*transports[:2]))
+    await session.initialize()
 
-      self._session = session
-      return session
+    return session, process
 
-    except Exception:
-      # If session creation fails, clean up the exit stack
-      if self._exit_stack:
-        await self._exit_stack.aclose()
-        self._exit_stack = None
-      raise
+  @classmethod
+  async def _create_stdio_client(
+      cls,
+      server: StdioServerParameters,
+      errlog: TextIO,
+      exit_stack: AsyncExitStack, # exit_stack is not used by stdio_client directly but kept for signature consistency if needed later
+  ) -> tuple[Any, Optional[asyncio.subprocess.Process]]:
+    """Create stdio client and return the client and potentially a process."""
+    # Simplified: Always use mcp.client.stdio.stdio_client for stdio connections
+    # This avoids the complexities and brittleness of the manual StreamWriterWrapper path.
+    # stdio_client itself handles subprocess creation and management if not given one.
+    
+    # stdio_client is an async context manager that yields the client and manages the process.
+    # To fit the expected return type (client, process), we need to manage the process separately if stdio_client doesn't return it.
+    # However, mcp.client.stdio.stdio_client *does* manage its own process internally if not given one.
+    # For simplicity and robustness, we let stdio_client manage its process.
+    # The `tracked_stdio_client` context manager can wrap this if finer-grained process tracking by ADK is still desired.
+    # For now, return None for the process, as stdio_client handles it internally.
+    
+    # The stdio_client itself is the async context manager yielding the (reader, writer) transport tuple.
+    # We return the stdio_client instance itself, which ClientSession will then enter.
+    client = stdio_client(server=server, errlog=errlog)
+    process = None # stdio_client manages its own process
+    
+    # This entire block is replaced by the simpler stdio_client usage above.
+    # if sys.platform == "win32":
+    #     ...
+    # else:
+    #     ...
 
-  async def close(self):
-    """Closes the session and cleans up resources."""
-    if self._exit_stack:
+    if client is None: # Should not happen if stdio_client() call is successful
+        raise RuntimeError("MCP Client (stdio_client) was not initialized in _create_stdio_client")
+
+    return client, process
+
+  async def _emergency_cleanup(self):
+    """Perform emergency cleanup of resources when normal cleanup fails."""
+    logger.info('Performing emergency cleanup of MCPSessionManager resources')
+
+    # Clean up any tracked processes
+    for proc in list(self._active_processes):
       try:
-        await self._exit_stack.aclose()
+        if proc and proc.returncode is None:
+          logger.info(f'Emergency termination of process {proc.pid}')
+          proc.terminate()
+          try:
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+          except asyncio.TimeoutError:
+            logger.warning(f"Process {proc.pid} didn't terminate, forcing kill")
+            proc.kill()
+        self._active_processes.remove(proc)
       except Exception as e:
-        # Log the error but don't re-raise to avoid blocking shutdown
-        print(
-            f'Warning: Error during MCP session cleanup: {e}', file=self._errlog
-        )
-      finally:
-        self._exit_stack = None
-        self._session = None
+        logger.error(f'Error during process cleanup: {e}')
+
+    # Clean up any tracked file handles
+    for handle in list(self._active_file_handles):
+      try:
+        if not handle.closed:
+          logger.info('Closing file handle')
+          handle.close()
+        self._active_file_handles.remove(handle)
+      except Exception as e:
+        logger.error(f'Error closing file handle: {e}')

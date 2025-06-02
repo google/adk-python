@@ -117,14 +117,17 @@ class MCPTool(BaseTool):
         Any: The response from the tool.
     """
     # Get the session from the session manager
-    session = await self._mcp_session_manager.create_session()
+    # create_session() returns a tuple (session_object, process_object)
+    session_obj, _ = await self._mcp_session_manager.create_session()
 
     # TODO(cheliu): Support passing tool context to MCP Server.
-    response = await session.call_tool(self.name, arguments=args)
+    response = await session_obj.call_tool(self.name, arguments=args)
     return response
 
   async def _reinitialize_session(self):
     """Reinitializes the session when connection is lost."""
     # Close the old session and create a new one
     await self._mcp_session_manager.close()
+    # create_session() returns a tuple (session_object, process_object)
+    # We don't need to store it here as run_async will fetch it again.
     await self._mcp_session_manager.create_session()
