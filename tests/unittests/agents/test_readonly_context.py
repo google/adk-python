@@ -8,11 +8,19 @@ import pytest
 @pytest.fixture
 def mock_invocation_context():
   mock_context = MagicMock()
+
+  mock_context.user_id = "test-user-id"
   mock_context.invocation_id = "test-invocation-id"
   mock_context.agent.name = "test-agent-name"
   mock_context.session.state = {"key1": "value1", "key2": "value2"}
 
   return mock_context
+
+
+def test_user_id(mock_invocation_context):
+  readonly_context = ReadonlyContext(mock_invocation_context)
+  print(readonly_context.__dict__)
+  assert readonly_context.user_id == "test-user-id"
 
 
 def test_invocation_id(mock_invocation_context):
