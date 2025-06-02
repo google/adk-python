@@ -767,3 +767,126 @@ def cli_deploy_cloud_run(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+
+
+@deploy.command("agent_engine")
+@click.option(
+    "--project",
+    type=str,
+    help="Required. Google Cloud project to deploy the agent.",
+)
+@click.option(
+    "--region",
+    type=str,
+    help="Required. Google Cloud region to deploy the agent.",
+)
+@click.option(
+    "--staging_bucket",
+    type=str,
+    help="Required. GCS bucket for staging the deployment artifacts.",
+)
+@click.option(
+    "--trace_to_cloud",
+    type=bool,
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to enable Cloud Trace for Agent Engine.",
+)
+@click.option(
+    "--adk_app",
+    type=str,
+    default="agent_engine_app",
+    help=(
+        "Optional. Python file for defining the ADK application"
+        " (default: a file named agent_engine_app.py)"
+    ),
+)
+@click.option(
+    "--temp_folder",
+    type=str,
+    default=os.path.join(
+        tempfile.gettempdir(),
+        "agent_engine_deploy_src",
+        datetime.now().strftime("%Y%m%d_%H%M%S"),
+    ),
+    help=(
+        "Optional. Temp folder for the generated Agent Engine source files."
+        " If the folder already exists, its contents will be removed."
+        " (default: a timestamped folder in the system temp directory)."
+    ),
+)
+@click.option(
+    "--env_file",
+    type=str,
+    default="",
+    help=(
+        "Optional. The filepath to the `.env` file for environment variables."
+        " (default: the `.env` file in the `agent` directory, if any.)"
+    ),
+)
+@click.option(
+    "--requirements_file",
+    type=str,
+    default="",
+    help=(
+        "Optional. The filepath to the `requirements.txt` file to use."
+        " (default: the `requirements.txt` file in the `agent` directory, if"
+        " any.)"
+    ),
+)
+@click.argument(
+    "agent",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+def cli_deploy_agent_engine(
+    agent: str,
+    project: str,
+    region: str,
+    staging_bucket: str,
+    trace_to_cloud: bool,
+    adk_app: str,
+    temp_folder: str,
+    env_file: str,
+    requirements_file: str,
+):
+  """Deploys an agent to Agent Engine.
+
+  Args:
+    agent (str): Required. The path to the agent to be deloyed.
+    project (str): Required. Google Cloud project to deploy the agent.
+    region (str): Required. Google Cloud region to deploy the agent.
+    staging_bucket (str): Required. GCS bucket for staging the deployment
+      artifacts.
+    trace_to_cloud (bool): Required. Whether to enable Cloud Trace.
+    adk_app (str): Required. Python file for defining the ADK application.
+    temp_folder (str): Required. The folder for the generated Agent Engine
+      files. If the folder already exists, its contents will be replaced.
+    env_file (str): Required. The filepath to the `.env` file for environment
+      variables. If it is an empty string, the `.env` file in the `agent`
+      directory will be used if it exists.
+    requirements_file (str): Required. The filepath to the `requirements.txt`
+      file to use. If it is an empty string, the `requirements.txt` file in the
+      `agent` directory will be used if exists.
+
+  Example:
+
+    adk deploy agent_engine --project=[project] --region=[region]
+      --staging_bucket=[staging_bucket] path/to/my_agent
+  """
+  try:
+    cli_deploy.to_agent_engine(
+        agent_folder=agent,
+        project=project,
+        region=region,
+        staging_bucket=staging_bucket,
+        trace_to_cloud=trace_to_cloud,
+        adk_app=adk_app,
+        temp_folder=temp_folder,
+        env_file=env_file,
+        requirements_file=requirements_file,
+    )
+  except Exception as e:
+    click.secho(f"Deploy failed: {e}", fg="red", err=True)
