@@ -23,6 +23,7 @@ import logging
 import os
 import tempfile
 from typing import Optional
+from pathlib import Path
 
 import click
 from fastapi import FastAPI
@@ -30,6 +31,7 @@ import uvicorn
 
 from . import cli_create
 from . import cli_deploy
+from . import cli_samples
 from .. import version
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..sessions.in_memory_session_service import InMemorySessionService
@@ -582,7 +584,7 @@ def cli_api_server(
     trace_to_cloud: bool = False,
     reload: bool = True,
 ):
-  """Starts a FastAPI server for agents.
+    """Starts a FastAPI server for agents.
 
   AGENTS_DIR: The directory of agents, where each sub-directory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
@@ -591,9 +593,9 @@ def cli_api_server(
 
     adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
   """
-  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+    logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
-  config = uvicorn.Config(
+    config = uvicorn.Config(
       get_fast_api_app(
           agents_dir=agents_dir,
           session_db_url=session_db_url,
@@ -606,8 +608,41 @@ def cli_api_server(
       port=port,
       reload=reload,
   )
-  server = uvicorn.Server(config)
-  server.run()
+    server = uvicorn.Server(config)
+    server.run()
+
+
+@main.command("samples", cls=HelpfulCommand)
+@click.argument("sample_name", required=False, type=str)
+@click.option(
+    "--cache-path",
+    type=click.Path(file_okay=False, dir_okay=True, writable=True, resolve_path=True),
+    help="Optional. Specify a custom directory to cache downloaded samples. Defaults to ~/.adk/cache/samples/.",
+    default=None,
+)
+@click.option( 
+    "--output-path",
+    type=click.Path(file_okay=False, dir_okay=True, writable=True, resolve_path=True),
+    help="Optional. Specify a base directory where the 'adk-samples' folder will be created. Defaults to the current working directory.",
+    default=None,
+)
+def cli_samples_cmd(
+    sample_name: Optional[str],
+    cache_path: Optional[str],
+    output_path: Optional[str],
+):
+    """Lists available samples or prepares a specific sample.
+
+    If not cached, samples are downloaded from the official repository.
+    The prepared sample will be placed inside an 'adk-samples' directory.
+    If SAMPLE_NAME is provided, attempts to prepare that sample.
+    Otherwise, lists available samples for interactive preparation.
+    """
+    cli_samples.run_samples_command(
+        sample_name_arg=sample_name,
+        user_cache_path_str=cache_path,
+        user_output_base_path_str=output_path,
+    )
 
 
 @deploy.command("cloud_run")
