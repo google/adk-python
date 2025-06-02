@@ -20,7 +20,6 @@ from .operation_parser import OperationParser
 from .rest_api_tool import AuthPreparationState
 from .rest_api_tool import RestApiTool
 from .rest_api_tool import snake_to_lower_camel
-from .rest_api_tool import to_gemini_schema
 from .tool_auth_handler import ToolAuthHandler
 
 __all__ = [
@@ -30,7 +29,6 @@ __all__ = [
     'OpenAPIToolset',
     'OperationParser',
     'RestApiTool',
-    'to_gemini_schema',
     'snake_to_lower_camel',
     'AuthPreparationState',
     'ToolAuthHandler',
