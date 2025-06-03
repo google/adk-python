@@ -52,7 +52,7 @@ jobs:
 
             # Run isort --check
             set +e
-            isort --check $CHANGED_FILES
+            isort --check --diff $CHANGED_FILES
             RESULT=$?
             set -e
             if [ $RESULT -ne 0 ]; then
