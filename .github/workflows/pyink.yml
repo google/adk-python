@@ -46,6 +46,7 @@ jobs:
           git fetch origin ${{ github.base_ref }}
           CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
           echo "CHANGED_FILES=${CHANGED_FILES}" >> $GITHUB_ENV
+          echo "${CHANGED_FILES}"
 
       - name: Run pyink on changed files
         if: env.CHANGED_FILES != ''
