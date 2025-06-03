@@ -47,7 +47,7 @@ jobs:
           if [ -n "$CHANGED_FILES" ]; then
             echo "Changed Python files:"
             echo "$CHANGED_FILES"
-            FORMATTED_FILES=$(echo "$CHANGED_FILES" | tr '\n' ' \')
+            FORMATTED_FILES=$(echo "$CHANGED_FILES" | tr '\n' ' ')
 
             # Run pyink --check
             set +e
