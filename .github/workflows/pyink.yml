@@ -28,6 +28,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -38,12 +40,14 @@ jobs:
         run: |
           pip install pyink
 
-      - name: Detect changed Python files
-        id: detect_changes
+      - name: Find changed Python files
+        id: find_changes
         run: |
-          git fetch origin ${{ github.base_ref }}
-          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
-          echo "CHANGED_FILES=${CHANGED_FILES}" >> $GITHUB_ENV
+          # Get the list of changed .py files
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only ${{ github.base_ref }} ${{ github.head_ref }} -- '*.py')
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "CHANGED_FILES=${CHANGED_FILES}" >> $GITHUB_ENV
+          fi
 
       - name: Run pyink on changed files
         if: env.CHANGED_FILES != ''
@@ -53,7 +57,7 @@ jobs:
 
           # Run pyink --check
           set +e
-          pyink --check --config pyproject.toml $CHANGED_FILES
+          pyink --check --diff --config pyproject.toml $CHANGED_FILES
           RESULT=$?
           set -e
 
@@ -67,7 +71,7 @@ jobs:
             exit $RESULT
           fi
 
-      - name: No changed Python files detected
+      - name: No changed Python files found
         if: env.CHANGED_FILES == ''
         run: |
           echo "No Python files changed. Skipping pyink check."
