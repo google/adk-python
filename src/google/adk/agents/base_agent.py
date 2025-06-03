@@ -378,6 +378,9 @@ class BaseAgent(BaseModel):
     return value
 
   def __set_parent_agent_for_sub_agents(self) -> BaseAgent:
+
+
+    
     for sub_agent in self.sub_agents:
       if sub_agent.parent_agent is not None:
         raise ValueError(
