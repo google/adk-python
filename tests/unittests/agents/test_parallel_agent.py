@@ -20,6 +20,7 @@ from typing import AsyncGenerator
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.parallel_agent import ParallelAgent
+from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.events import Event
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
@@ -86,7 +87,51 @@ async def test_run_async(request: pytest.FixtureRequest):
   # and agent1 has a delay.
   assert events[0].author == agent2.name
   assert events[1].author == agent1.name
-  assert events[0].branch.endswith(agent2.name)
-  assert events[1].branch.endswith(agent1.name)
+  assert events[0].branch.endswith(f'{parallel_agent.name}.{agent2.name}')
+  assert events[1].branch.endswith(f'{parallel_agent.name}.{agent1.name}')
   assert events[0].content.parts[0].text == f'Hello, async {agent2.name}!'
   assert events[1].content.parts[0].text == f'Hello, async {agent1.name}!'
+
+
+@pytest.mark.asyncio
+async def test_run_async_branches(request: pytest.FixtureRequest):
+  agent1 = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent_1',
+      delay=0.5,
+  )
+  agent2 = _TestingAgent(name=f'{request.function.__name__}_test_agent_2')
+  agent3 = _TestingAgent(name=f'{request.function.__name__}_test_agent_3')
+  sequential_agent = SequentialAgent(
+      name=f'{request.function.__name__}_test_sequential_agent',
+      sub_agents=[agent2, agent3],
+  )
+  parallel_agent = ParallelAgent(
+      name=f'{request.function.__name__}_test_parallel_agent',
+      sub_agents=[
+          sequential_agent,
+          agent1,
+      ],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, parallel_agent
+  )
+  events = [e async for e in parallel_agent.run_async(parent_ctx)]
+
+  assert len(events) == 3
+  assert (
+      events[0].author == agent2.name
+      and events[0].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+  )
+  assert (
+      events[1].author == agent3.name
+      and events[0].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+  )
+  # Descendants of the same sub-agent should have the same branch.
+  assert events[0].branch == events[1].branch
+  assert (
+      events[2].author == agent1.name
+      and events[2].branch == f'{parallel_agent.name}.{agent1.name}'
+  )
+  # Sub-agents should have different branches.
+  assert events[2].branch != events[1].branch
+  assert events[2].branch != events[0].branch

@@ -246,8 +246,6 @@ class BaseAgent(BaseModel):
   ) -> InvocationContext:
     """Creates a new invocation context for this agent."""
     invocation_context = parent_context.model_copy(update={'agent': self})
-    if parent_context.branch:
-      invocation_context.branch = f'{parent_context.branch}.{self.name}'
     return invocation_context
 
   @property

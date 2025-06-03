@@ -159,7 +159,7 @@ async def test_run_async_with_branch(request: pytest.FixtureRequest):
   assert len(events) == 1
   assert events[0].author == agent.name
   assert events[0].content.parts[0].text == 'Hello, world!'
-  assert events[0].branch.endswith(agent.name)
+  assert events[0].branch == 'parent_branch'
 
 
 @pytest.mark.asyncio
@@ -625,7 +625,7 @@ async def test_run_live_with_branch(request: pytest.FixtureRequest):
   assert len(events) == 1
   assert events[0].author == agent.name
   assert events[0].content.parts[0].text == 'Hello, live!'
-  assert events[0].branch.endswith(agent.name)
+  assert events[0].branch == 'parent_branch'
 
 
 @pytest.mark.asyncio

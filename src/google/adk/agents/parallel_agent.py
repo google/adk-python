@@ -26,14 +26,20 @@ from ..events.event import Event
 from .base_agent import BaseAgent
 
 
-def _set_branch_for_current_agent(
-    current_agent: BaseAgent, invocation_context: InvocationContext
-):
+def _create_branch_ctx_for_sub_agent(
+    agent: BaseAgent,
+    sub_agent: BaseAgent,
+    invocation_context: InvocationContext,
+) -> InvocationContext:
+  """Create isolated branch for every sub-agent."""
+  invocation_context = invocation_context.model_copy()
+  branch_suffix = f"{agent.name}.{sub_agent.name}"
   invocation_context.branch = (
-      f"{invocation_context.branch}.{current_agent.name}"
+      f"{invocation_context.branch}.{branch_suffix}"
       if invocation_context.branch
-      else current_agent.name
+      else branch_suffix
   )
+  return invocation_context
 
 
 async def _merge_agent_run(
@@ -90,8 +96,12 @@ class ParallelAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    _set_branch_for_current_agent(self, ctx)
-    agent_runs = [agent.run_async(ctx) for agent in self.sub_agents]
+    agent_runs = [
+        sub_agent.run_async(
+            _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
+        )
+        for sub_agent in self.sub_agents
+    ]
     async for event in _merge_agent_run(agent_runs):
       yield event
 
