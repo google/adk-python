@@ -47,7 +47,7 @@ jobs:
           echo "CHANGED_FILES=${CHANGED_FILES}" >> $GITHUB_ENV
 
       - name: Run pyink on changed files
-        if: ${CHANGED_FILES} != ''
+        if: env.CHANGED_FILES != ''
         run: |
           echo "Changed Python files:"
           echo "$CHANGED_FILES"
@@ -69,6 +69,6 @@ jobs:
           fi
 
       - name: No changed Python files found
-        if: ${CHANGED_FILES} == ''
+        if: env.CHANGED_FILES == ''
         run: |
           echo "No Python files changed. Skipping pyink check."
