@@ -64,11 +64,7 @@ class IntegrationConnectorTool(BaseTool):
       'dynamic_auth_config',
   ]
 
-  OPTIONAL_FIELDS = [
-      'page_size',
-      'page_token',
-      'filter',
-  ]
+  OPTIONAL_FIELDS = ['page_size', 'page_token', 'filter', 'sortByColumns']
 
   def __init__(
       self,
