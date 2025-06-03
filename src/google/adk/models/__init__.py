@@ -26,6 +26,4 @@ __all__ = [
     'LLMRegistry',
 ]
 
-
-for regex in Gemini.supported_models():
-  LLMRegistry.register(Gemini)
+LLMRegistry.register(Gemini)
