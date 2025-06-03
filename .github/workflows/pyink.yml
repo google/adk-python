@@ -43,6 +43,8 @@ jobs:
         id: find_changes
         run: |
           git fetch origin ${{ github.base_ref }}
+          GIT_DIFF=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD)
+          echo "${GIT_DIFF}"
           CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
           echo "CHANGED_FILES=${CHANGED_FILES}" >> $GITHUB_ENV
 
