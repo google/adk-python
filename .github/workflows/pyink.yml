@@ -17,8 +17,7 @@ name: Check Pyink Formatting
 on:
   pull_request:
     paths:
-      - 'src/**/*.py'
-      - 'tests/**/*.py'
+      - '**.py'
       - 'pyproject.toml'
 
 jobs:
@@ -29,7 +28,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 2
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,10 +45,9 @@ jobs:
           git fetch origin ${{ github.base_ref }}
           CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
           echo "CHANGED_FILES=${CHANGED_FILES}" >> $GITHUB_ENV
-          echo "${CHANGED_FILES}"
 
       - name: Run pyink on changed files
-        if: env.CHANGED_FILES != ''
+        if: $CHANGED_FILES != ''
         run: |
           echo "Changed Python files:"
           echo "$CHANGED_FILES"
@@ -71,6 +69,6 @@ jobs:
           fi
 
       - name: No changed Python files found
-        if: env.CHANGED_FILES == ''
+        if: $CHANGED_FILES == ''
         run: |
           echo "No Python files changed. Skipping pyink check."
