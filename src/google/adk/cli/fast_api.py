@@ -64,6 +64,8 @@ from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
 from ..evaluation.eval_result import EvalSetResult
+from ..evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
+from ..evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
@@ -197,6 +199,7 @@ def get_fast_api_app(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    evals_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
     trace_to_cloud: bool = False,
@@ -255,8 +258,23 @@ def get_fast_api_app(
 
   runner_dict = {}
 
-  eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
-  eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
+  # Set up eval managers.
+  if evals_storage_uri:
+    if evals_storage_uri.startswith("gs://"):
+      gcs_bucket = evals_storage_uri.split("://")[1]
+      eval_sets_manager = GcsEvalSetsManager(
+          bucket_name=gcs_bucket, project=os.environ["GOOGLE_CLOUD_PROJECT"]
+      )
+      eval_set_results_manager = GcsEvalSetResultsManager(
+          bucket_name=gcs_bucket, project=os.environ["GOOGLE_CLOUD_PROJECT"]
+      )
+    else:
+      raise click.ClickException(
+          "Unsupported evals storage URI: %s" % evals_storage_uri
+      )
+  else:
+    eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
+    eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
   # Build the Memory service
   if memory_service_uri:
