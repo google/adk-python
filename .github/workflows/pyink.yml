@@ -46,17 +46,17 @@ jobs:
           GIT_DIFF=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD)
           echo "${GIT_DIFF}"
           CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
-          echo "CHANGED_FILES=${CHANGED_FILES}" >> $GITHUB_ENV
+          echo "changed_files=${CHANGED_FILES}" >> $GITHUB_ENV
 
       - name: Run pyink on changed files
-        if: env.CHANGED_FILES != ''
+        if: env.changed_files != ''
         run: |
           echo "Changed Python files:"
-          echo "$CHANGED_FILES"
+          echo "$changed_files"
 
           # Run pyink --check
           set +e
-          pyink --check --diff --config pyproject.toml $CHANGED_FILES
+          pyink --check --diff --config pyproject.toml $changed_files
           RESULT=$?
           set -e
 
@@ -65,12 +65,12 @@ jobs:
             echo "❌ Pyink formatting check failed!"
             echo "👉 To fix formatting, run locally:"
             echo ""
-            echo "    pyink --config pyproject.toml $CHANGED_FILES"
+            echo "    pyink --config pyproject.toml $changed_files"
             echo ""
             exit $RESULT
           fi
 
       - name: No changed Python files found
-        if: env.CHANGED_FILES == ''
+        if: env.changed_files == ''
         run: |
           echo "No Python files changed. Skipping pyink check."
