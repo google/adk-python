@@ -43,7 +43,8 @@ jobs:
       - name: Find changed Python files
         id: find_changes
         run: |
-          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/main...HEAD | grep -E '\.py$' || true)
+          git fetch origin ${{ github.base_ref }}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
           echo "CHANGED_FILES=${CHANGED_FILES}" >> $GITHUB_ENV
 
       - name: Run pyink on changed files
