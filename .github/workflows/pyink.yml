@@ -44,10 +44,10 @@ jobs:
         run: |
           git fetch origin ${{ github.base_ref }}
           CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
-
           if [ -n "$CHANGED_FILES" ]; then
             echo "Changed Python files:"
             echo "$CHANGED_FILES"
+            FORMATTED_FILES=$(echo "$CHANGED_FILES" | tr '\n' ' \')
 
             # Run pyink --check
             set +e
@@ -59,7 +59,7 @@ jobs:
               echo "❌ Pyink formatting check failed!"
               echo "👉 To fix formatting, run locally:"
               echo ""
-              echo "    pyink --config pyproject.toml $CHANGED_FILES"
+              echo "    pyink --config pyproject.toml $FORMATTED_FILES"
               echo ""
               exit $RESULT
             fi
