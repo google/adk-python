@@ -252,6 +252,12 @@ class ConnectionsClient:
                         "Timeout in seconds for execution of custom query"
                     ),
                 },
+                "sortByColumns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [],
+                    "description": "Column to sort the results by",
+                },
                 "connectorOutputPayload": {"type": "object"},
                 "nextPageToken": {"type": "string"},
                 "execute-connector_Response": {
@@ -665,6 +671,7 @@ class ConnectionsClient:
             "serviceName": {"$ref": "#/components/schemas/serviceName"},
             "host": {"$ref": "#/components/schemas/host"},
             "entity": {"$ref": "#/components/schemas/entity"},
+            "sortByColumns": {"$ref": "#/components/schemas/sortByColumns"},
             "dynamicAuthConfig": {
                 "$ref": "#/components/schemas/dynamicAuthConfig"
             },

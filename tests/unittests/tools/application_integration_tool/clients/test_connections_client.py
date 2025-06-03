@@ -511,6 +511,7 @@ class TestConnectionsClient:
     assert schema["type"] == "object"
     assert "properties" in schema
     assert "filterClause" in schema["properties"]
+    assert "sortByColumns" in schema["properties"]
 
   def test_action_request(self):
     schema = ConnectionsClient.action_request("TestAction")
