@@ -360,6 +360,9 @@ def test_function_get_auth_response_partial():
       [
           types.Part.from_text(text='response2'),
       ],
+      [
+          types.Part.from_text(text='final response'),
+      ],
   ]
 
   mock_model = testing_utils.MockModel.create(responses=responses)

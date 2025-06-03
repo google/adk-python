@@ -88,7 +88,7 @@ prime_agent = LlmAgent(
 )
 
 root_agent = SequentialAgent(
-    name="code_pipeline_agent",
+    name="simple_sequential_agent",
     sub_agents=[roll_agent, prime_agent],
     # The agents will run in the order provided: roll_agent -> prime_agent
 )

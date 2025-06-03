@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import copy
 from typing import Any
 from typing import Dict
@@ -23,8 +25,8 @@ from pydantic import BaseModel
 
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ..._gemini_schema_util import _to_snake_case
 from ..common.common import ApiParameter
-from ..common.common import to_snake_case
 from .operation_parser import OperationParser
 
 
@@ -112,7 +114,7 @@ class OpenApiSpecParser:
         # If operation ID is missing, assign an operation id based on path
         # and method
         if "operationId" not in operation_dict:
-          temp_id = to_snake_case(f"{path}_{method}")
+          temp_id = _to_snake_case(f"{path}_{method}")
           operation_dict["operationId"] = temp_id
 
         url = OperationEndpoint(base_url=base_url, path=path, method=method)
