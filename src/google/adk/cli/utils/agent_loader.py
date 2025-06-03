@@ -61,15 +61,23 @@ class AgentLoader:
               "Root agent found is not an instance of BaseAgent. But a type %s",
               type(module_candidate.root_agent),
           )
+      else:
+        logger.debug(
+            "Module %s has no root_agent. Trying next pattern.",
+            agent_name,
+        )
 
-    except ModuleNotFoundError:
-      logger.debug("Module %s itself not found.", agent_name)
-      # Re-raise as ValueError to be caught by the final error message construction
-      raise ValueError(
-          f"Module {agent_name} not found during import attempts."
-      ) from None
-    except ImportError as e:
-      logger.warning("Error importing %s: %s", agent_name, e)
+    except ModuleNotFoundError as e:
+      if e.name == agent_name:
+        logger.debug("Module %s itself not found.", agent_name)
+      else:
+        # it's the case the module imported by {agent_name}.agent module is not
+        # found
+        e.msg = f"Fail to load '{agent_name}' module. " + e.msg
+        raise e
+    except Exception as e:
+      e.msg = f"Fail to load '{agent_name}' module. " + e.msg
+      raise e
 
     return None
 
@@ -87,12 +95,23 @@ class AgentLoader:
               "Root agent found is not an instance of BaseAgent. But a type %s",
               type(module_candidate.root_agent),
           )
-    except ModuleNotFoundError:
-      logger.debug(
-          "Module %s.agent not found, trying next pattern.", agent_name
-      )
-    except ImportError as e:
-      logger.warning("Error importing %s.agent: %s", agent_name, e)
+      else:
+        logger.debug(
+            "Module %s.agent has no root_agent.",
+            agent_name,
+        )
+    except ModuleNotFoundError as e:
+      # if it's agent module not found, it's fine, search for next pattern
+      if e.name == f"{agent_name}.agent" or e.name == agent_name:
+        logger.debug("Module %s.agent not found.", agent_name)
+      else:
+        # it's the case the module imported by {agent_name}.agent module is not
+        # found
+        e.msg = f"Fail to load '{agent_name}.agent' module. " + e.msg
+        raise e
+    except Exception as e:
+      e.msg = f"Fail to load '{agent_name}.agent' module. " + e.msg
+      raise e
 
     return None
 
@@ -107,10 +126,10 @@ class AgentLoader:
     )
     envs.load_dotenv_for_agent(agent_name, str(self.agents_dir))
 
-    if root_agent := self._load_from_submodule(agent_name):
+    if root_agent := self._load_from_module_or_package(agent_name):
       return root_agent
 
-    if root_agent := self._load_from_module_or_package(agent_name):
+    if root_agent := self._load_from_submodule(agent_name):
       return root_agent
 
     # If no root_agent was found by any pattern
