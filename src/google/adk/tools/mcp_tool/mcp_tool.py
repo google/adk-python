@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 import logging
 from typing import Optional
@@ -19,6 +20,7 @@ from typing import Optional
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
+from .._gemini_schema_util import _to_gemini_schema
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
 
@@ -41,7 +43,6 @@ except ImportError as e:
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ..base_tool import BaseTool
-from ..openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
 from ..tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -98,7 +99,7 @@ class MCPTool(BaseTool):
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
     schema_dict = self._mcp_tool.inputSchema
-    parameters = to_gemini_schema(schema_dict)
+    parameters = _to_gemini_schema(schema_dict)
     function_decl = FunctionDeclaration(
         name=self.name, description=self.description, parameters=parameters
     )

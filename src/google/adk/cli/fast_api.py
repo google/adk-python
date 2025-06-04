@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from __future__ import annotations
 
 import asyncio
@@ -56,6 +55,7 @@ from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
 from ..agents.run_config import StreamingMode
+from ..artifacts.gcs_artifact_service import GcsArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
@@ -98,7 +98,7 @@ class ApiServerSpanExporter(export.SpanExporter):
       if (
           span.name == "call_llm"
           or span.name == "send_data"
-          or span.name.startswith("tool_response")
+          or span.name.startswith("execute_tool")
       ):
         attributes = dict(span.attributes)
         attributes["trace_id"] = span.get_span_context().trace_id
@@ -193,6 +193,7 @@ def get_fast_api_app(
     *,
     agents_dir: str,
     session_db_url: str = "",
+    artifact_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
     trace_to_cloud: bool = False,
@@ -251,12 +252,11 @@ def get_fast_api_app(
 
   runner_dict = {}
 
-  # Build the Artifact service
-  artifact_service = InMemoryArtifactService()
-  memory_service = InMemoryMemoryService()
-
   eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
   eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
+
+  # Build the Memory service
+  memory_service = InMemoryMemoryService()
 
   # Build the Session service
   agent_engine_id = ""
@@ -275,6 +275,18 @@ def get_fast_api_app(
       session_service = DatabaseSessionService(db_url=session_db_url)
   else:
     session_service = InMemorySessionService()
+
+  # Build the Artifact service
+  if artifact_storage_uri:
+    if artifact_storage_uri.startswith("gs://"):
+      gcs_bucket = artifact_storage_uri.split("://")[1]
+      artifact_service = GcsArtifactService(bucket_name=gcs_bucket)
+    else:
+      raise click.ClickException(
+          "Unsupported artifact storage URI: %s" % artifact_storage_uri
+      )
+  else:
+    artifact_service = InMemoryArtifactService()
 
   # initialize Agent Loader
   agent_loader = AgentLoader(agents_dir)
@@ -501,34 +513,38 @@ def get_fast_api_app(
     root_agent = agent_loader.load_agent(app_name)
     run_eval_results = []
     eval_case_results = []
-    async for eval_case_result in run_evals(
-        eval_set_to_evals,
-        root_agent,
-        getattr(root_agent, "reset_data", None),
-        req.eval_metrics,
-        session_service=session_service,
-        artifact_service=artifact_service,
-    ):
-      run_eval_results.append(
-          RunEvalResult(
-              app_name=app_name,
-              eval_set_file=eval_case_result.eval_set_file,
-              eval_set_id=eval_set_id,
-              eval_id=eval_case_result.eval_id,
-              final_eval_status=eval_case_result.final_eval_status,
-              eval_metric_results=eval_case_result.eval_metric_results,
-              overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
-              eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
-              user_id=eval_case_result.user_id,
-              session_id=eval_case_result.session_id,
-          )
-      )
-      eval_case_result.session_details = await session_service.get_session(
-          app_name=app_name,
-          user_id=eval_case_result.user_id,
-          session_id=eval_case_result.session_id,
-      )
-      eval_case_results.append(eval_case_result)
+    try:
+      async for eval_case_result in run_evals(
+          eval_set_to_evals,
+          root_agent,
+          getattr(root_agent, "reset_data", None),
+          req.eval_metrics,
+          session_service=session_service,
+          artifact_service=artifact_service,
+      ):
+        run_eval_results.append(
+            RunEvalResult(
+                app_name=app_name,
+                eval_set_file=eval_case_result.eval_set_file,
+                eval_set_id=eval_set_id,
+                eval_id=eval_case_result.eval_id,
+                final_eval_status=eval_case_result.final_eval_status,
+                eval_metric_results=eval_case_result.eval_metric_results,
+                overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
+                eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
+                user_id=eval_case_result.user_id,
+                session_id=eval_case_result.session_id,
+            )
+        )
+        eval_case_result.session_details = await session_service.get_session(
+            app_name=app_name,
+            user_id=eval_case_result.user_id,
+            session_id=eval_case_result.session_id,
+        )
+        eval_case_results.append(eval_case_result)
+    except ModuleNotFoundError as e:
+      logger.exception("%s", e)
+      raise HTTPException(status_code=400, detail=str(e)) from e
 
     eval_set_results_manager.save_eval_set_result(
         app_name, eval_set_id, eval_case_results
@@ -854,6 +870,11 @@ def get_fast_api_app(
     return runner
 
   if web:
+    import mimetypes
+
+    mimetypes.add_type("application/javascript", ".js", True)
+    mimetypes.add_type("text/javascript", ".js", True)
+
     BASE_DIR = Path(__file__).parent.resolve()
     ANGULAR_DIST_PATH = BASE_DIR / "browser"
 

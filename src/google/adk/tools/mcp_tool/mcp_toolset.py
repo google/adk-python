@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import logging
 import sys
 from typing import List
@@ -83,7 +85,9 @@ class MCPToolset(BaseToolset):
   def __init__(
       self,
       *,
-      connection_params: StdioServerParameters | SseServerParams | StreamableHTTPServerParams,
+      connection_params: (
+          StdioServerParameters | SseServerParams | StreamableHTTPServerParams
+      ),
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       errlog: TextIO = sys.stderr,
   ):
@@ -95,9 +99,9 @@ class MCPToolset(BaseToolset):
         `python3`); or `SseServerParams` for a local/remote SSE server; or
         `StreamableHTTPServerParams` for local/remote Streamable http server.
       tool_filter: Optional filter to select specific tools. Can be either:
-            - A list of tool names to include
-            - A ToolPredicate function for custom filtering logic
-        errlog: TextIO stream for error logging.
+        - A list of tool names to include
+        - A ToolPredicate function for custom filtering logic
+      errlog: TextIO stream for error logging.
     """
     super().__init__(tool_filter=tool_filter)
 

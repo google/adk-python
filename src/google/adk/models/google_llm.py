@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 from functools import cached_property
 import logging
+import os
 import sys
 from typing import AsyncGenerator
 from typing import cast
@@ -28,6 +29,7 @@ from google.genai import types
 from typing_extensions import override
 
 from .. import version
+from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
 from .gemini_llm_connection import GeminiLlmConnection
@@ -40,6 +42,8 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
+_AGENT_ENGINE_TELEMETRY_TAG = 'remote_reasoning_engine'
+_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_AGENT_ENGINE_ID'
 
 
 class Gemini(BaseLlm):
@@ -80,7 +84,7 @@ class Gemini(BaseLlm):
     Yields:
       LlmResponse: The model response.
     """
-
+    self._preprocess_request(llm_request)
     self._maybe_append_user_content(llm_request)
     logger.info(
         'Sending out request, model: %s, backend: %s, stream: %s',
@@ -97,6 +101,7 @@ class Gemini(BaseLlm):
           config=llm_request.config,
       )
       response = None
+      thought_text = ''
       text = ''
       usage_metadata = None
       # for sse, similar as bidi (see receive method in gemini_llm_connecton.py),
@@ -113,32 +118,43 @@ class Gemini(BaseLlm):
             and llm_response.content.parts
             and llm_response.content.parts[0].text
         ):
-          text += llm_response.content.parts[0].text
+          part0 = llm_response.content.parts[0]
+          if part0.thought:
+            thought_text += part0.text
+          else:
+            text += part0.text
           llm_response.partial = True
-        elif text and (
+        elif (thought_text or text) and (
             not llm_response.content
             or not llm_response.content.parts
             # don't yield the merged text event when receiving audio data
             or not llm_response.content.parts[0].inline_data
         ):
+          parts = []
+          if thought_text:
+            parts.append(types.Part(text=thought_text, thought=True))
+          if text:
+            parts.append(types.Part.from_text(text=text))
           yield LlmResponse(
-              content=types.ModelContent(
-                  parts=[types.Part.from_text(text=text)],
-              ),
-              usage_metadata=usage_metadata,
+              content=types.ModelContent(parts=parts),
+              usage_metadata=llm_response.usage_metadata,
           )
+          thought_text = ''
           text = ''
         yield llm_response
       if (
-          text
+          (text or thought_text)
           and response
           and response.candidates
           and response.candidates[0].finish_reason == types.FinishReason.STOP
       ):
+        parts = []
+        if thought_text:
+          parts.append(types.Part(text=thought_text, thought=True))
+        if text:
+          parts.append(types.Part.from_text(text=text))
         yield LlmResponse(
-            content=types.ModelContent(
-                parts=[types.Part.from_text(text=text)],
-            ),
+            content=types.ModelContent(parts=parts),
             usage_metadata=usage_metadata,
         )
 
@@ -163,12 +179,18 @@ class Gemini(BaseLlm):
     )
 
   @cached_property
-  def _api_backend(self) -> str:
-    return 'vertex' if self.api_client.vertexai else 'ml_dev'
+  def _api_backend(self) -> GoogleLLMVariant:
+    return (
+        GoogleLLMVariant.VERTEX_AI
+        if self.api_client.vertexai
+        else GoogleLLMVariant.GEMINI_API
+    )
 
   @cached_property
   def _tracking_headers(self) -> dict[str, str]:
     framework_label = f'google-adk/{version.__version__}'
+    if os.environ.get(_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME):
+      framework_label = f'{framework_label}+{_AGENT_ENGINE_TELEMETRY_TAG}'
     language_label = 'gl-python/' + sys.version.split()[0]
     version_header_value = f'{framework_label} {language_label}'
     tracking_headers = {
@@ -179,7 +201,7 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
-    if self._api_backend == 'vertex':
+    if self._api_backend == GoogleLLMVariant.VERTEX_AI:
       # use beta version for vertex api
       api_version = 'v1beta1'
       # use default api version for vertex
@@ -189,7 +211,7 @@ class Gemini(BaseLlm):
           )
       )
     else:
-      # use v1alpha for ml_dev
+      # use v1alpha for using API KEY from Google AI Studio
       api_version = 'v1alpha'
       return Client(
           http_options=types.HttpOptions(
@@ -219,6 +241,12 @@ class Gemini(BaseLlm):
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(live_session)
+
+  def _preprocess_request(self, llm_request: LlmRequest) -> None:
+
+    if llm_request.config and self._api_backend == GoogleLLMVariant.GEMINI_API:
+      # Using API key from Google AI Studio to call model doesn't support labels.
+      llm_request.config.labels = None
 
 
 def _build_function_declaration_log(

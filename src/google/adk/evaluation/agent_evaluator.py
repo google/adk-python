@@ -158,7 +158,7 @@ class AgentEvaluator:
       agent_module: The path to python module that contains the definition of
         the agent. There is convention in place here, where the code is going to
         look for 'root_agent' in the loaded module.
-      eval_dataset: The eval data set. This can be either a string representing
+      eval_dataset_file_path_or_dir: The eval data set. This can be either a string representing
         full path to the file containing eval dataset, or a directory that is
         recursively explored for all files that have a `.test.json` suffix.
       num_runs: Number of times all entries in the eval dataset should be

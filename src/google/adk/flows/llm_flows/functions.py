@@ -34,6 +34,7 @@ from ...approval.approval_request_processor import REQUEST_APPROVAL_FUNCTION_CAL
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
+from ...telemetry import trace_merged_tool_calls
 from ...sessions import State
 from ...telemetry import trace_tool_call
 from ...telemetry import trace_tool_response
@@ -200,66 +201,68 @@ async def handle_function_calls_async(
         function_call,
         tools_dict,
     )
-    # do not use "args" as the variable name, because it is a reserved keyword
-    # in python debugger.
-    function_args = function_call.args or {}
+    with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+      # do not use "args" as the variable name, because it is a reserved keyword
+      # in python debugger.
+      function_args = function_call.args or {}
 
-    function_response: Optional[dict] = None
+      function_response: Optional[dict] = None
 
-    for callback in agent.canonical_before_tool_callbacks:
-      function_response = callback(
-          tool=tool, args=function_args, tool_context=tool_context
-      )
-      if inspect.isawaitable(function_response):
-        function_response = await function_response
-      if function_response:
-        break
+      for callback in agent.canonical_before_tool_callbacks:
+        function_response = callback(
+            tool=tool, args=function_args, tool_context=tool_context
+        )
+        if inspect.isawaitable(function_response):
+          function_response = await function_response
+        if function_response:
+          break
 
-    # Check if an approval is required *before* attempting to call the tool.
-    # This allows the system to suspend a tool call if its policies are not met by existing grants.
-    if not function_response:
-      function_response = ApprovalHandler.get_approval_request(
-          function_call,
-          invocation_context.session.state,
-          tool_context,
-          user_id=invocation_context.user_id,
-          session_id=invocation_context.session.id,
-      )
-
-    if not function_response:
-      function_response = await __call_tool_async(
-          tool, args=function_args, tool_context=tool_context
-      )
-
-    for callback in agent.canonical_after_tool_callbacks:
-      altered_function_response = callback(
-          tool=tool,
-          args=function_args,
-          tool_context=tool_context,
-          tool_response=function_response,
-      )
-      if inspect.isawaitable(altered_function_response):
-        altered_function_response = await altered_function_response
-      if altered_function_response is not None:
-        function_response = altered_function_response
-        break
-
-    if tool.is_long_running:
-      # Allow long running function to return None to not provide function response.
+      # Check if an approval is required *before* attempting to call the tool.
+      # This allows the system to suspend a tool call if its policies are not met by existing grants.
       if not function_response:
-        continue
+        function_response = ApprovalHandler.get_approval_request(
+            function_call,
+            invocation_context.session.state,
+            tool_context,
+            user_id=invocation_context.user_id,
+            session_id=invocation_context.session.id,
+        )
 
-    # Builds the function response event.
-    function_response_event = __build_response_event(
-        tool, function_response, tool_context, invocation_context
-    )
-    function_response_events.append(function_response_event)
+      if not function_response:
+        function_response = await __call_tool_async(
+            tool, args=function_args, tool_context=tool_context
+        )
+
+      for callback in agent.canonical_after_tool_callbacks:
+        altered_function_response = callback(
+            tool=tool,
+            args=function_args,
+            tool_context=tool_context,
+            tool_response=function_response,
+        )
+        if inspect.isawaitable(altered_function_response):
+          altered_function_response = await altered_function_response
+        if altered_function_response is not None:
+          function_response = altered_function_response
+          break
+
+      if tool.is_long_running:
+        # Allow long running function to return None to not provide function response.
+        if not function_response:
+          continue
+
+        # Builds the function response event.
+        function_response_event = __build_response_event(
+            tool, function_response, tool_context, invocation_context
+        )
+        function_response_events.append(function_response_event)
 
   if not function_response_events:
     return None
   merged_event = merge_parallel_function_response_events(
       function_response_events
   )
+
   if len(function_response_events) > 1:
     # this is needed for debug traces of parallel calls
     # individual response with tool.name is traced in __build_response_event
@@ -270,7 +273,7 @@ async def handle_function_calls_async(
           event_id=merged_event.id,
           function_response_event=merged_event,
       )
-  return merged_event  # TODO work out when / how to include a suitable state delta for clearing the suspended tool calls
+  return merged_event
 
 
 async def handle_function_calls_live(
@@ -289,65 +292,81 @@ async def handle_function_calls_live(
     tool, tool_context = _get_tool_and_context(
         invocation_context, function_call_event, function_call, tools_dict
     )
-    # do not use "args" as the variable name, because it is a reserved keyword
-    # in python debugger.
-    function_args = function_call.args or {}
-    function_response = None
-    # # Calls the tool if before_tool_callback does not exist or returns None.
-    # if agent.before_tool_callback:
-    #   function_response = agent.before_tool_callback(
-    #       tool, function_args, tool_context
-    #   )
-    if agent.before_tool_callback:
-      function_response = agent.before_tool_callback(
-          tool=tool, args=function_args, tool_context=tool_context
-      )
-      if inspect.isawaitable(function_response):
-        function_response = await function_response
+    with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+      # do not use "args" as the variable name, because it is a reserved keyword
+      # in python debugger.
+      function_args = function_call.args or {}
+      function_response = None
+      # # Calls the tool if before_tool_callback does not exist or returns None.
+      # if agent.before_tool_callback:
+      #   function_response = agent.before_tool_callback(
+      #       tool, function_args, tool_context
+      #   )
+      if agent.before_tool_callback:
+        function_response = agent.before_tool_callback(
+            tool=tool, args=function_args, tool_context=tool_context
+        )
+        if inspect.isawaitable(function_response):
+          function_response = await function_response
 
-    if not function_response:
-      function_response = await _process_function_live_helper(
-          tool, tool_context, function_call, function_args, invocation_context
-      )
+      if not function_response:
+        function_response = await _process_function_live_helper(
+            tool, tool_context, function_call, function_args, invocation_context
+        )
 
-    # Calls after_tool_callback if it exists.
-    # if agent.after_tool_callback:
-    #   new_response = agent.after_tool_callback(
-    #       tool,
-    #       function_args,
-    #       tool_context,
-    #       function_response,
-    #   )
-    #   if new_response:
-    #     function_response = new_response
-    if agent.after_tool_callback:
-      altered_function_response = agent.after_tool_callback(
+      # Calls after_tool_callback if it exists.
+      # if agent.after_tool_callback:
+      #   new_response = agent.after_tool_callback(
+      #       tool,
+      #       function_args,
+      #       tool_context,
+      #       function_response,
+      #   )
+      #   if new_response:
+      #     function_response = new_response
+      if agent.after_tool_callback:
+        altered_function_response = agent.after_tool_callback(
+            tool=tool,
+            args=function_args,
+            tool_context=tool_context,
+            tool_response=function_response,
+        )
+        if inspect.isawaitable(altered_function_response):
+          altered_function_response = await altered_function_response
+        if altered_function_response is not None:
+          function_response = altered_function_response
+
+      if tool.is_long_running:
+        # Allow async function to return None to not provide function response.
+        if not function_response:
+          continue
+
+      # Builds the function response event.
+      function_response_event = __build_response_event(
+          tool, function_response, tool_context, invocation_context
+      )
+      trace_tool_call(
           tool=tool,
           args=function_args,
-          tool_context=tool_context,
-          tool_response=function_response,
+          response_event_id=function_response_event.id,
+          function_response=function_response,
       )
-      if inspect.isawaitable(altered_function_response):
-        altered_function_response = await altered_function_response
-      if altered_function_response is not None:
-        function_response = altered_function_response
-
-    if tool.is_long_running:
-      # Allow async function to return None to not provide function response.
-      if not function_response:
-        continue
-
-    # Builds the function response event.
-    function_response_event = __build_response_event(
-        tool, function_response, tool_context, invocation_context
-    )
-    function_response_events.append(function_response_event)
+      function_response_events.append(function_response_event)
 
   if not function_response_events:
     return None
   merged_event = merge_parallel_function_response_events(
       function_response_events
   )
+  if len(function_response_events) > 1:
+    # this is needed for debug traces of parallel calls
+    # individual response with tool.name is traced in __build_response_event
+    # (we drop tool.name from span name here as this is merged event)
+    with tracer.start_as_current_span('execute_tool (merged)'):
+      trace_merged_tool_calls(
+          response_event_id=merged_event.id,
+          function_response_event=merged_event,
+      )
   return merged_event
 
 
@@ -474,14 +493,12 @@ async def __call_tool_live(
     invocation_context: InvocationContext,
 ) -> AsyncGenerator[Event, None]:
   """Calls the tool asynchronously (awaiting the coroutine)."""
-  with tracer.start_as_current_span(f'tool_call [{tool.name}]'):
-    trace_tool_call(args=args)
-    async for item in tool._call_live(
-        args=args,
-        tool_context=tool_context,
-        invocation_context=invocation_context,
-    ):
-      yield item
+  async for item in tool._call_live(
+      args=args,
+      tool_context=tool_context,
+      invocation_context=invocation_context,
+  ):
+    yield item
 
 
 async def __call_tool_async(
@@ -490,9 +507,7 @@ async def __call_tool_async(
     tool_context: ToolContext,
 ) -> Any:
   """Calls the tool."""
-  with tracer.start_as_current_span(f'tool_call [{tool.name}]'):
-    trace_tool_call(args=args)
-    return await tool.run_async(args=args, tool_context=tool_context)
+  return await tool.run_async(args=args, tool_context=tool_context)
 
 
 def __build_response_event(
@@ -501,35 +516,29 @@ def __build_response_event(
     tool_context: ToolContext,
     invocation_context: InvocationContext,
 ) -> Event:
-  with tracer.start_as_current_span(f'tool_response [{tool.name}]'):
-    # Specs requires the result to be a dict.
-    if not isinstance(function_result, dict):
-      function_result = {'result': function_result}
+  # Specs requires the result to be a dict.
+  if not isinstance(function_result, dict):
+    function_result = {'result': function_result}
 
-    part_function_response = types.Part.from_function_response(
-        name=tool.name, response=function_result
-    )
-    part_function_response.function_response.id = tool_context.function_call_id
+  part_function_response = types.Part.from_function_response(
+      name=tool.name, response=function_result
+  )
+  part_function_response.function_response.id = tool_context.function_call_id
 
-    content = types.Content(
-        role='user',
-        parts=[part_function_response],
-    )
+  content = types.Content(
+      role='user',
+      parts=[part_function_response],
+  )
 
-    function_response_event = Event(
-        invocation_id=invocation_context.invocation_id,
-        author=invocation_context.agent.name,
-        content=content,
-        actions=tool_context.actions,
-        branch=invocation_context.branch,
-    )
+  function_response_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=invocation_context.agent.name,
+      content=content,
+      actions=tool_context.actions,
+      branch=invocation_context.branch,
+  )
 
-    trace_tool_response(
-        invocation_context=invocation_context,
-        event_id=function_response_event.id,
-        function_response_event=function_response_event,
-    )
-    return function_response_event
+  return function_response_event
 
 
 def merge_parallel_function_response_events(
