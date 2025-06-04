@@ -62,10 +62,7 @@ async def main():
   print('Start time:', start_time)
   print('------------------------------------')
   await run_prompt(session_11, 'Hi')
-  await run_prompt(session_11, 'Roll a die four times, and tell me the results.')
-  # await run_prompt(session_11, 'Roll a die with 100 sides')
-  # await run_prompt(session_11, 'Roll a die again with 100 sides.')
-  # await run_prompt(session_11, 'What numbers did I got?')
+  await run_prompt(session_11, 'I have an urgent meeting. I need to check weather in New York, London, and Tokyo as soon as possible.')
   print(
       await artifact_service.list_artifact_keys(
           app_name=app_name, user_id=user_id_1, session_id=session_11.id

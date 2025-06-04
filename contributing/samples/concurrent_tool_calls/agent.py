@@ -21,24 +21,33 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 
-async def roll_die(sides: int, tool_context: ToolContext) -> int:
-  """Roll a die and return the rolled result.
+async def get_weather(city: str, tool_context: ToolContext) -> str:
+  """Get weather information for a specified city.
 
   Args:
-    sides: The integer number of sides the die has.
+    city: The name of the city to get weather information for.
 
   Returns:
-    An integer of the result of rolling the die.
+    A string containing weather information for the city.
   """
-  print('@roll_die is starting', datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
+  print('@get_weather is starting', datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
   import asyncio
-  await asyncio.sleep(3)  # Use async sleep for non-blocking delay
-  result = random.randint(1, sides)
-  if not 'rolls' in tool_context.state:
-    tool_context.state['rolls'] = []
+  # Use async sleep for non-blocking delay to simulate a real-world weather API call.
+  await asyncio.sleep(3)
+  
+  # Mock weather data for demonstration
+  weather_conditions = ["sunny", "cloudy", "rainy", "snowy", "partly cloudy", "stormy"]
+  temperature = random.randint(-10, 35)  # Temperature in Celsius
+  condition = random.choice(weather_conditions)
+  humidity = random.randint(30, 90)
+  
+  weather_info = f"Weather in {city}: {condition}, {temperature}°C, humidity {humidity}%"
+  
+  if not 'weather_queries' in tool_context.state:
+    tool_context.state['weather_queries'] = []
 
-  tool_context.state['rolls'] = tool_context.state['rolls'] + [result]
-  return result
+  tool_context.state['weather_queries'] = tool_context.state['weather_queries'] + [{"city": city, "weather": weather_info}]
+  return weather_info
 
 def before_tool_cb(tool, args, tool_context):
   print('@before_tool_cb1', datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
@@ -49,31 +58,23 @@ def after_tool_cb(tool, args, tool_context, tool_response):
 
 root_agent = Agent(
     model='gemini-2.0-flash',
-    name='data_processing_agent',
+    name='weather_agent',
     description=(
-        'hello world agent that can roll a dice of 8 sides and check prime'
-        ' numbers.'
+        'Weather information agent that can provide current weather conditions'
+        ' for different cities around the world.'
     ),
     instruction="""
-      You roll dice and answer questions about the outcome of the dice rolls.
-      You can roll dice of different sizes.
+      You provide weather information for cities and answer questions about weather conditions.
+      You can check weather for different cities around the world.
       You can use multiple tools in parallel by calling functions in parallel (in one request and in one round).
-      It is ok to discuss previous dice roles, and comment on the dice rolls.
-      When you are asked to roll a die, you must call the roll_die tool with the number of sides. Be sure to pass in an integer. Do not pass in a string.
+      It is ok to discuss previous weather queries and compare weather conditions between cities.
+      When you are asked to check weather for a city, you must call the get_weather tool with the city name. Be sure to pass in a string with the city name.
       
-      IMPORTANT: When you are asked to roll multiple dice (e.g., "roll a die four times"), you MUST make ALL the roll_die function calls in parallel (simultaneously in one turn) to provide a faster response. Do NOT wait between dice rolls.
+      IMPORTANT: When you are asked to check weather for multiple cities (e.g., "check weather in New York, London, and Tokyo"), you MUST make ALL the get_weather function calls in parallel (simultaneously in one turn) to provide a faster response. Do NOT wait between weather queries.
     """,
     tools=[
-        roll_die,
+        get_weather,
     ],
-    generate_content_config=types.GenerateContentConfig(
-        safety_settings=[
-            types.SafetySetting(  # avoid false alarm about rolling dice.
-                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=types.HarmBlockThreshold.OFF,
-            ),
-        ]
-    ),
     before_tool_callback=[before_tool_cb],
     after_tool_callback=[after_tool_cb],
 )
