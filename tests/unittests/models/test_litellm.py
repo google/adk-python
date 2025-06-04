@@ -889,15 +889,16 @@ def test_content_to_message_param_function_call():
   content = types.Content(
       role="assistant",
       parts=[
+          types.Part.from_text(text="test response"),
           types.Part.from_function_call(
               name="test_function", args={"test_arg": "test_value"}
-          )
+          ),
       ],
   )
-  content.parts[0].function_call.id = "test_tool_call_id"
+  content.parts[1].function_call.id = "test_tool_call_id"
   message = _content_to_message_param(content)
   assert message["role"] == "assistant"
-  assert message["content"] == None
+  assert message["content"] == "test response"
 
   tool_call = message["tool_calls"][0]
   assert tool_call["type"] == "function"
