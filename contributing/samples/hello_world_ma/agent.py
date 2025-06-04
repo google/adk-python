@@ -19,7 +19,6 @@ from google.adk.tools.example_tool import ExampleTool
 from google.genai import types
 
 
-# --- Roll Die Sub-Agent ---
 def roll_die(sides: int) -> int:
   """Roll a die and return the rolled result."""
   return random.randint(1, sides)
