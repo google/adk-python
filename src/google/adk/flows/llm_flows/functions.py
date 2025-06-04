@@ -250,11 +250,11 @@ async def handle_function_calls_async(
         if not function_response:
           continue
 
-        # Builds the function response event.
-        function_response_event = __build_response_event(
-            tool, function_response, tool_context, invocation_context
-        )
-        function_response_events.append(function_response_event)
+      # Builds the function response event.
+      function_response_event = __build_response_event(
+          tool, function_response, tool_context, invocation_context
+      )
+      function_response_events.append(function_response_event)
 
   if not function_response_events:
     return None
@@ -266,10 +266,9 @@ async def handle_function_calls_async(
     # this is needed for debug traces of parallel calls
     # individual response with tool.name is traced in __build_response_event
     # (we drop tool.name from span name here as this is merged event)
-    with tracer.start_as_current_span('tool_response'):
-      trace_tool_response(
-          invocation_context=invocation_context,
-          event_id=merged_event.id,
+    with tracer.start_as_current_span('execute_tool (merged)'):
+      trace_merged_tool_calls(
+          response_event_id=merged_event.id,
           function_response_event=merged_event,
       )
   return merged_event
