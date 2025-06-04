@@ -60,6 +60,7 @@ def request_answer_factory(
          `_ = tool_context`
 
     """
+
     if request_type == "approve":
         return request_approve_factory(tool=tool, when_reject_callback=when_reject_callback)
     elif request_type == "text_content":
@@ -159,7 +160,10 @@ def request_approve_factory(
             )
 
     async def _before_agent_callback(callback_context: CallbackContext) -> Union[None, Content]:
-        current_status = callback_context.state.get(tool_id, {}).get("status", "requesting")
+        current_status = callback_context.state.get(tool_id, {}).get("status")
+        if current_status is None:
+            return
+
         tool_calling_args = callback_context.state.get(tool_id, {}).get("args", {})
         if current_status == "requesting":
 
