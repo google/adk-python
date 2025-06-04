@@ -17,7 +17,7 @@ from google.adk.tools.application_integration_tool.application_integration_tools
 jira_tool = ApplicationIntegrationToolset(
     project="your-gcp-project-id",  # replace with your GCP project ID
     location="your-regions",  # replace your regions
-    connection="your-integration-connection-name", #replace with your connection name
+    connection="your-integration-connection-name",  # replace with your connection name
     entity_operations={
         "Issues": ["GET", "LIST"],
     },
@@ -30,5 +30,4 @@ jira_tool = ApplicationIntegrationToolset(
     This tool is to call an integration to search for issues in JIRA
     
     """,
-
 )

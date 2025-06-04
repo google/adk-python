@@ -42,6 +42,13 @@ isort tests/
 echo 'All done! ✨ 🍰 ✨'
 
 echo '---------------------------------------'
+echo '|  Organizing imports for contributing/...'
+echo '---------------------------------------'
+
+isort contributing/
+echo 'All done! ✨ 🍰 ✨'
+
+echo '---------------------------------------'
 echo '|  Auto-formatting src/...'
 echo '---------------------------------------'
 
@@ -52,3 +59,9 @@ echo '|  Auto-formatting tests/...'
 echo '---------------------------------------'
 
 find -L tests/ -type f -name "*.py" -exec pyink --config pyproject.toml {} +
+
+echo '---------------------------------------'
+echo '|  Auto-formatting contributing/...'
+echo '---------------------------------------'
+
+find -L contributing/ -type f -name "*.py" -exec pyink --config pyproject.toml {} +

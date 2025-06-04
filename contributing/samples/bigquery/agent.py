@@ -19,7 +19,6 @@ from google.adk.tools.bigquery import BigQueryCredentialsConfig
 from google.adk.tools.bigquery import BigQueryToolset
 import google.auth
 
-
 RUN_WITH_ADC = False
 
 
