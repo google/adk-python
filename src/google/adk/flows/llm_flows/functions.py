@@ -221,9 +221,9 @@ async def handle_function_calls_async(
   # Create tasks for concurrent execution
   tasks = []
   for function_call in filtered_function_calls:
-    task = _execute_single_function_call_async(
+    task = asyncio.create_task(_execute_single_function_call_async(
         invocation_context, function_call_event, function_call, tools_dict
-    )
+    ))
     tasks.append(task)
 
   # Execute all function calls concurrently
@@ -350,9 +350,9 @@ async def handle_function_calls_live(
   # Create tasks for concurrent execution
   tasks = []
   for function_call in function_calls:
-    task = _execute_single_function_call_live(
+    task = asyncio.create_task(_execute_single_function_call_live(
         invocation_context, function_call_event, function_call, tools_dict
-    )
+    ))
     tasks.append(task)
 
   # Execute all function calls concurrently
