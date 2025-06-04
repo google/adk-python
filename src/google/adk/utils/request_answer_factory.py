@@ -63,7 +63,7 @@ def request_answer_factory(
     if request_type == "approve":
         return request_approve_factory(tool=tool, when_reject_callback=when_reject_callback)
     elif request_type == "text_content":
-        raise ValueError("Not enable yet.")  # TODO
+        raise ValueError("Not enable yet.")
     else:
         raise ValueError(f"Unexpected `request_type`: {request_type}.")
 
