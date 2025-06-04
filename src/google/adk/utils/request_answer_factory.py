@@ -173,7 +173,7 @@ def request_approve_factory(
                 return await _execute_tool(callback_context=callback_context, **tool_calling_args)
 
             elif last_event.author == "user" and last_event.content.parts[0].text == "reject":
-                return await _execute_tool(callback_context=callback_context, **tool_calling_args)
+                return await _reject_tool(callback_context=callback_context, **tool_calling_args)
 
             else:
                 return
