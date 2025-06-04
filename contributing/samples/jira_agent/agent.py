@@ -13,12 +13,13 @@
 # limitations under the License.
 
 from google.adk.agents import Agent
+
 from .tools import jira_tool
 
 root_agent = Agent(
     model='gemini-2.0-flash-001',
     name='jira_connector_agent',
-    description="This agent helps search issues in JIRA",
+    description='This agent helps search issues in JIRA',
     instruction="""
         To start with, greet the user
         First, you will be given a description of what you can do.
@@ -49,5 +50,4 @@ root_agent = Agent(
         - I currently support only **GET** and **LIST** operations.
     """,
     tools=jira_tool.get_tools(),
-
 )
