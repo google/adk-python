@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/google/adk-python/compare/v1.2.0...v1.2.1) (2025-06-04)
+
+
+### Bug Fixes
+
+* Import deprecated from typing_extensions ([068df04](https://github.com/google/adk-python/commit/068df04bcef694725dd36e09f4476b5e67f1b456))
+
+
 ## [1.2.0](https://github.com/google/adk-python/compare/v1.1.1...v1.2.0) (2025-06-04)
 
 
