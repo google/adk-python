@@ -74,45 +74,73 @@ def _to_snake_case(text: str) -> str:
   return text
 
 
-def _sanitize_schema_formats_for_gemini(schema_node: Any) -> Any:
-  """Helper function to sanitize schema formats for Gemini compatibility"""
-  if isinstance(schema_node, dict):
-    new_node = {}
-    current_type = schema_node.get("type")
+def _sanitize_schema_type(schema: dict[str, Any]) -> dict[str, Any]:
+  if ("type" not in schema or not schema["type"]) and schema.keys().isdisjoint(
+      schema
+  ):
+    schema["type"] = "object"
+  if isinstance(schema.get("type"), list):
+    nullable = False
+    non_null_type = None
+    for t in schema["type"]:
+      if t == "null":
+        nullable = True
+      elif not non_null_type:
+        non_null_type = t
+    if not non_null_type:
+      non_null_type = "object"
+    if nullable:
+      schema["type"] = [non_null_type, "null"]
+    else:
+      schema["type"] = non_null_type
+  elif schema.get("type") == "null":
+    schema["type"] = ["object", "null"]
 
-    for key, value in schema_node.items():
-      key = _to_snake_case(key)
+  return schema
 
-      # special handle of format field
-      if key == "format":
-        current_format = value
-        format_to_keep = None
-        if current_format:
-          if current_type == "integer" or current_type == "number":
-            if current_format in ("int32", "int64"):
-              format_to_keep = current_format
-          elif current_type == "string":
-            # only 'enum' and 'date-time' are supported for STRING type"
-            if current_format in ("date-time", "enum"):
-              format_to_keep = current_format
-          # For any other type or unhandled format
-          # the 'format' key will be effectively removed for that node.
-          if format_to_keep:
-            new_node[key] = format_to_keep
-        continue
-      # don't change property name
-      if key == "properties":
-        new_node[key] = {
-            k: _sanitize_schema_formats_for_gemini(v) for k, v in value.items()
-        }
-        continue
-      # Recursively sanitize other parts of the schema
-      new_node[key] = _sanitize_schema_formats_for_gemini(value)
-    return new_node
-  elif isinstance(schema_node, list):
-    return [_sanitize_schema_formats_for_gemini(item) for item in schema_node]
-  else:
-    return schema_node
+
+def _sanitize_schema_formats_for_gemini(
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+  """Filters the schema to only include fields that are supported by JSONSchema."""
+  supported_fields: set[str] = set(_ExtendedJSONSchema.model_fields.keys())
+  schema_field_names: set[str] = {"items"}  # 'additional_properties' to come
+  list_schema_field_names: set[str] = {
+      "any_of",  # 'one_of', 'all_of', 'not' to come
+  }
+  snake_case_schema = {}
+  dict_schema_field_names: tuple[str] = ("properties",)  # 'defs' to come
+  for field_name, field_value in schema.items():
+    field_name = _to_snake_case(field_name)
+    if field_name in schema_field_names:
+      snake_case_schema[field_name] = _sanitize_schema_formats_for_gemini(
+          field_value
+      )
+    elif field_name in list_schema_field_names:
+      snake_case_schema[field_name] = [
+          _sanitize_schema_formats_for_gemini(value) for value in field_value
+      ]
+    elif field_name in dict_schema_field_names:
+      snake_case_schema[field_name] = {
+          key: _sanitize_schema_formats_for_gemini(value)
+          for key, value in field_value.items()
+      }
+    # special handle of format field
+    elif field_name == "format" and field_value:
+      current_type = schema.get("type")
+      if (
+          # only "int32" and "int64" are supported for integer or number type
+          (current_type == "integer" or current_type == "number")
+          and field_value in ("int32", "int64")
+          or
+          # only 'enum' and 'date-time' are supported for STRING type"
+          (current_type == "string" and field_value in ("date-time", "enum"))
+      ):
+        snake_case_schema[field_name] = field_value
+    elif field_name in supported_fields and field_value is not None:
+      snake_case_schema[field_name] = field_value
+
+  return _sanitize_schema_type(snake_case_schema)
 
 
 def _to_gemini_schema(openapi_schema: dict[str, Any]) -> Schema:

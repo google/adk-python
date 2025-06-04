@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk.tools._gemini_schema_util import _sanitize_schema_formats_for_gemini
 from google.adk.tools._gemini_schema_util import _to_gemini_schema
 from google.adk.tools._gemini_schema_util import _to_snake_case
 from google.genai.types import Schema
@@ -31,7 +32,7 @@ class TestToGeminiSchema:
   def test_to_gemini_schema_empty_dict(self):
     result = _to_gemini_schema({})
     assert isinstance(result, Schema)
-    assert result.type is None
+    assert result.type is Type.OBJECT
     assert result.properties is None
 
   def test_to_gemini_schema_dict_with_only_object_type(self):
@@ -64,10 +65,8 @@ class TestToGeminiSchema:
             "nonnullable_string": {"type": ["string"]},
             "nullable_string": {"type": ["string", "null"]},
             "nullable_number": {"type": ["null", "integer"]},
-            "object_nullable": {"type": "null"},  # invalid
-            "multi_types_nullable": {
-                "type": ["string", "null", "integer"]
-            },  # invalid
+            "object_nullable": {"type": "null"},
+            "multi_types_nullable": {"type": ["string", "null", "integer"]},
             "empty_default_object": {},
         },
     }
@@ -85,14 +84,14 @@ class TestToGeminiSchema:
     assert gemini_schema.properties["nullable_number"].type == Type.INTEGER
     assert gemini_schema.properties["nullable_number"].nullable
 
-    assert gemini_schema.properties["object_nullable"].type is None
+    assert gemini_schema.properties["object_nullable"].type == Type.OBJECT
     assert gemini_schema.properties["object_nullable"].nullable
 
-    assert gemini_schema.properties["multi_types_nullable"].type is None
+    assert gemini_schema.properties["multi_types_nullable"].type == Type.STRING
     assert gemini_schema.properties["multi_types_nullable"].nullable
 
-    assert gemini_schema.properties["empty_default_object"].type is None
-    assert not gemini_schema.properties["empty_default_object"].nullable
+    assert gemini_schema.properties["empty_default_object"].type == Type.OBJECT
+    assert gemini_schema.properties["empty_default_object"].nullable is None
 
   def test_to_gemini_schema_nested_objects(self):
     openapi_schema = {
@@ -381,6 +380,136 @@ class TestToGeminiSchema:
 
     gemini_schema = _to_gemini_schema(openapi_schema)
     assert gemini_schema.property_ordering == ["name", "age"]
+
+  def test_sanitize_schema_formats_for_gemini(self):
+    schema = {
+        "type": "object",
+        "description": "Test schema",  # Top-level description
+        "properties": {
+            "valid_int": {"type": "integer", "format": "int32"},
+            "invalid_format_prop": {"type": "integer", "format": "unsigned"},
+            "valid_string": {"type": "string", "format": "date-time"},
+            "camelCaseKey": {"type": "string"},
+            "prop_with_extra_key": {
+                "type": "boolean",
+                "unknownInternalKey": "discard_this_value",
+            },
+        },
+        "required": ["valid_int"],
+        "additionalProperties": False,  # This is an unsupported top-level key
+        "unknownTopLevelKey": (
+            "discard_me_too"
+        ),  # Another unsupported top-level key
+    }
+    sanitized = _sanitize_schema_formats_for_gemini(schema)
+
+    # Check description is preserved
+    assert sanitized["description"] == "Test schema"
+
+    # Check properties and their sanitization
+    assert "properties" in sanitized
+    sanitized_props = sanitized["properties"]
+
+    assert "valid_int" in sanitized_props
+    assert sanitized_props["valid_int"]["type"] == "integer"
+    assert sanitized_props["valid_int"]["format"] == "int32"
+
+    assert "invalid_format_prop" in sanitized_props
+    assert sanitized_props["invalid_format_prop"]["type"] == "integer"
+    assert (
+        "format" not in sanitized_props["invalid_format_prop"]
+    )  # Invalid format removed
+
+    assert "valid_string" in sanitized_props
+    assert sanitized_props["valid_string"]["type"] == "string"
+    assert sanitized_props["valid_string"]["format"] == "date-time"
+
+    # Check camelCase keys not changed for properties
+    assert "camel_case_key" not in sanitized_props
+    assert "camelCaseKey" in sanitized_props
+    assert sanitized_props["camelCaseKey"]["type"] == "string"
+
+    # Check removal of unsupported keys within a property definition
+    assert "prop_with_extra_key" in sanitized_props
+    assert sanitized_props["prop_with_extra_key"]["type"] == "boolean"
+    assert (
+        "unknown_internal_key"  # snake_cased version of unknownInternalKey
+        not in sanitized_props["prop_with_extra_key"]
+    )
+
+    # Check removal of unsupported top-level fields (after snake_casing)
+    assert "additional_properties" not in sanitized
+    assert "unknown_top_level_key" not in sanitized
+
+    # Check original unsupported top-level field names are not there either
+    assert "additionalProperties" not in sanitized
+    assert "unknownTopLevelKey" not in sanitized
+
+    # Check required is preserved
+    assert sanitized["required"] == ["valid_int"]
+
+    # Test with a schema that has a list of types for a property
+    schema_with_list_type = {
+        "type": "object",
+        "properties": {
+            "nullable_field": {"type": ["string", "null"], "format": "uuid"}
+        },
+    }
+    sanitized_list_type = _sanitize_schema_formats_for_gemini(
+        schema_with_list_type
+    )
+    # format should be removed because 'uuid' is not supported for string
+    assert "format" not in sanitized_list_type["properties"]["nullable_field"]
+    # type should be processed by _sanitize_schema_type and preserved
+    assert sanitized_list_type["properties"]["nullable_field"]["type"] == [
+        "string",
+        "null",
+    ]
+
+  def test_sanitize_schema_formats_for_gemini_nullable(self):
+    openapi_schema = {
+        "properties": {
+            "case_id": {
+                "description": "The ID of the case.",
+                "title": "Case Id",
+                "type": "string",
+            },
+            "next_page_token": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": None,
+                "description": (
+                    "The nextPageToken to fetch the next page of results."
+                ),
+                "title": "Next Page Token",
+            },
+        },
+        "required": ["case_id"],
+        "title": "list_alerts_by_caseArguments",
+        "type": "object",
+    }
+    openapi_schema = _sanitize_schema_formats_for_gemini(openapi_schema)
+    assert openapi_schema == {
+        "properties": {
+            "case_id": {
+                "description": "The ID of the case.",
+                "title": "Case Id",
+                "type": "string",
+            },
+            "next_page_token": {
+                "any_of": [
+                    {"type": "string"},
+                    {"type": ["object", "null"]},
+                ],
+                "description": (
+                    "The nextPageToken to fetch the next page of results."
+                ),
+                "title": "Next Page Token",
+            },
+        },
+        "required": ["case_id"],
+        "title": "list_alerts_by_caseArguments",
+        "type": "object",
+    }
 
 
 class TestToSnakeCase:
