@@ -12,18 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Any
 from typing import Tuple
 
-from deprecated import deprecated
 from google.genai import types as genai_types
+from typing_extensions import deprecated
 
 from ...evaluation.eval_case import IntermediateData
 from ...evaluation.eval_case import Invocation
 from ...sessions.session import Session
 
 
-@deprecated(reason='Use convert_session_to_eval_invocations instead.')
+@deprecated('Use convert_session_to_eval_invocations instead.')
 def convert_session_to_eval_format(session: Session) -> list[dict[str, Any]]:
   """Converts a session data into eval format.
 

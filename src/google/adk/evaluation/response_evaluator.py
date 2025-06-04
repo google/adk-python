@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Any
 from typing import Optional
 
-from deprecated import deprecated
 from google.genai import types as genai_types
 import pandas as pd
 from tabulate import tabulate
+from typing_extensions import deprecated
 from typing_extensions import override
 from vertexai.preview.evaluation import EvalTask
 from vertexai.preview.evaluation import MetricPromptTemplateExamples
@@ -124,10 +126,8 @@ class ResponseEvaluator(Evaluator):
 
   @staticmethod
   @deprecated(
-      reason=(
-          "This method has been deprecated and will be removed soon. Please use"
-          " evaluate_invocations instead."
-      )
+      "This method has been deprecated and will be removed soon. Please use"
+      " evaluate_invocations instead."
   )
   def evaluate(
       raw_eval_dataset: list[list[dict[str, Any]]],
