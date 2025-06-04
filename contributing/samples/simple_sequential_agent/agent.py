@@ -66,7 +66,6 @@ def check_prime(nums: list[int]) -> str:
   )
 
 
-# --- Check Prime Sub-Agent ---
 prime_agent = LlmAgent(
     name="prime_agent",
     description="Handles checking if numbers are prime.",
