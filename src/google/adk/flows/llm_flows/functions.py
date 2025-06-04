@@ -37,7 +37,6 @@ from ...events.event_actions import EventActions
 from ...telemetry import trace_merged_tool_calls
 from ...sessions import State
 from ...telemetry import trace_tool_call
-from ...telemetry import trace_tool_response
 from ...telemetry import tracer
 from ...tools.base_tool import BaseTool
 from ...tools.tool_context import ToolContext

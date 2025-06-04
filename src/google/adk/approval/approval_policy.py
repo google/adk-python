@@ -11,6 +11,7 @@ This module provides:
 
 Policies determine what actions on what resources require approval before a tool can be executed.
 """
+from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from pydantic import BaseModel
