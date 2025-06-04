@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from __future__ import annotations
 
 import copy
 import logging
@@ -224,7 +223,6 @@ class InMemorySessionService(BaseSessionService):
       sessions_without_events.append(copied_session)
     return ListSessionsResponse(sessions=sessions_without_events)
 
-  @override
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
@@ -249,7 +247,7 @@ class InMemorySessionService(BaseSessionService):
         )
         is None
     ):
-      return
+      return None
 
     self.sessions[app_name][user_id].pop(session_id)
 
@@ -263,20 +261,11 @@ class InMemorySessionService(BaseSessionService):
     app_name = session.app_name
     user_id = session.user_id
     session_id = session.id
-
-    def _warning(message: str) -> None:
-      logger.warning(
-          f'Failed to append event to session {session_id}: {message}'
-      )
-
     if app_name not in self.sessions:
-      _warning(f'app_name {app_name} not in sessions')
       return event
     if user_id not in self.sessions[app_name]:
-      _warning(f'user_id {user_id} not in sessions[app_name]')
       return event
     if session_id not in self.sessions[app_name][user_id]:
-      _warning(f'session_id {session_id} not in sessions[app_name][user_id]')
       return event
 
     if event.actions and event.actions.state_delta:
