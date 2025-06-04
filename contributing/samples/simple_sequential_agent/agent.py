@@ -68,7 +68,7 @@ def check_prime(nums: list[int]) -> str:
 
 prime_agent = LlmAgent(
     name="prime_agent",
-    description="Handles checking if numbers are prime.",
+    description="Checks if numbers are prime.",
     model="gemini-2.0-flash",
     instruction="""
       You are responsible for checking whether numbers are prime.
