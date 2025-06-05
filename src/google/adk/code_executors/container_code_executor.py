@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import atexit
+import logging
 import os
 from typing import Optional
 
@@ -27,6 +30,7 @@ from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 
+logger = logging.getLogger('google_adk.' + __name__)
 DEFAULT_IMAGE_TAG = 'adk-code-executor:latest'
 
 
@@ -151,13 +155,13 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     if not os.path.exists(self.docker_path):
       raise FileNotFoundError(f'Invalid Docker path: {self.docker_path}')
 
-    print('Building Docker image...')
+    logger.info('Building Docker image...')
     self._client.images.build(
         path=self.docker_path,
         tag=self.image,
         rm=True,
     )
-    print(f'Docker image: {self.image} built.')
+    logger.info('Docker image: %s built.', self.image)
 
   def _verify_python_installation(self):
     """Verifies the container has python3 installed."""
@@ -173,13 +177,13 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     if self.docker_path:
       self._build_docker_image()
 
-    print('Starting container for ContainerCodeExecutor...')
+    logger.info('Starting container for ContainerCodeExecutor...')
     self._container = self._client.containers.run(
         image=self.image,
         detach=True,
         tty=True,
     )
-    print(f'Container {self._container.id} started.')
+    logger.info('Container %s started.', self._container.id)
 
     # Verify the container is able to run python3.
     self._verify_python_installation()
@@ -189,7 +193,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     if not self._container:
       return
 
-    print('[Cleanup] Stopping the container...')
+    logger.info('[Cleanup] Stopping the container...')
     self._container.stop()
     self._container.remove()
-    print(f'Container {self._container.id} stopped and removed.')
+    logger.info('Container %s stopped and removed.', self._container.id)
