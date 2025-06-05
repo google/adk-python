@@ -31,8 +31,8 @@ from ...auth.auth_schemes import AuthScheme
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
+from .mcp_session_manager import ContextToEnvMapperCallback
 from .mcp_session_manager import MCPSessionManager
-from .mcp_session_manager import EnvTransformCallback
 from .mcp_session_manager import retry_on_closed_resource
 from .mcp_session_manager import SseServerParams
 from .mcp_session_manager import StreamableHTTPServerParams
@@ -102,7 +102,9 @@ class MCPToolset(BaseToolset):
       ),
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       auth_transform_callback: Optional[AuthTransformCallback] = None,
-      env_transform_callback: Optional[EnvTransformCallback] = None,
+      context_to_env_mapper_callback: Optional[
+          ContextToEnvMapperCallback
+      ] = None,
       errlog: TextIO = sys.stderr,
   ):
     """Initializes the MCPToolset.
@@ -115,12 +117,12 @@ class MCPToolset(BaseToolset):
       tool_filter: Optional filter to select specific tools. Can be either:
         - A list of tool names to include
         - A ToolPredicate function for custom filtering logic
-      auth_transform_callback: Optional callback function to transform auth data 
+      auth_transform_callback: Optional callback function to transform auth data
         from ReadonlyContext.state into AuthScheme and AuthCredential. If None,
-        the toolset will look for 'auth_scheme' and 'auth_credential' keys 
+        the toolset will look for 'auth_scheme' and 'auth_credential' keys
         directly in the context state.
-      env_transform_callback: Optional callback function to transform session
-        state into environment variables for the MCP connection. Takes a 
+      context_to_env_mapper_callback: Optional callback function to transform session
+        state into environment variables for the MCP connection. Takes a
         dictionary of session state and returns a dictionary of environment
         variables to be injected into the MCP connection.
       errlog: TextIO stream for error logging.
@@ -132,14 +134,14 @@ class MCPToolset(BaseToolset):
 
     self._connection_params = connection_params
     self._auth_transform_callback = auth_transform_callback
-    self._env_transform_callback = env_transform_callback
+    self._context_to_env_mapper_callback = context_to_env_mapper_callback
     self._errlog = errlog
 
     # Create the session manager that will handle the MCP connection
     self._mcp_session_manager = MCPSessionManager(
         connection_params=self._connection_params,
         errlog=self._errlog,
-        env_transform_callback=self._env_transform_callback,
+        context_to_env_mapper_callback=self._context_to_env_mapper_callback,
     )
 
     self._session = None
@@ -148,48 +150,59 @@ class MCPToolset(BaseToolset):
       self, readonly_context: Optional[ReadonlyContext]
   ) -> Tuple[Optional[AuthScheme], Optional[AuthCredential]]:
     """Extracts auth scheme and credential from readonly context.
-    
+
     Args:
         readonly_context: The readonly context containing state information.
-        
+
     Returns:
         Tuple of (AuthScheme, AuthCredential) or (None, None) if not found.
     """
     if not readonly_context or not readonly_context.state:
       return None, None
-    
+
     state_dict = dict(readonly_context.state)
-    
+
     # If a custom auth transform callback is provided, use it
     if self._auth_transform_callback:
       try:
         return self._auth_transform_callback(state_dict)
       except Exception as e:
         logger.warning(
-            f"Auth transform callback failed: {e}. Falling back to direct extraction."
+            f"Auth transform callback failed: {e}. Falling back to direct"
+            " extraction."
         )
-    
+
     # Direct extraction: look for 'auth_scheme' and 'auth_credential' keys
     auth_scheme = state_dict.get("auth_scheme")
     auth_credential = state_dict.get("auth_credential")
-    
+
     # Validate types - auth_scheme should be an AuthScheme instance
     if auth_scheme is not None:
       try:
         # Check if it's a valid AuthScheme (Union of SecurityScheme types)
         from fastapi.openapi.models import SecurityScheme
+
         from ...auth.auth_schemes import OpenIdConnectWithConfig
-        if not isinstance(auth_scheme, (SecurityScheme, OpenIdConnectWithConfig)):
-          logger.warning(f"Invalid auth_scheme type in context: {type(auth_scheme)}")
+
+        if not isinstance(
+            auth_scheme, (SecurityScheme, OpenIdConnectWithConfig)
+        ):
+          logger.warning(
+              f"Invalid auth_scheme type in context: {type(auth_scheme)}"
+          )
           auth_scheme = None
       except Exception as e:
         logger.warning(f"Error validating auth_scheme: {e}")
         auth_scheme = None
-        
-    if auth_credential is not None and not isinstance(auth_credential, AuthCredential):
-      logger.warning(f"Invalid auth_credential type in context: {type(auth_credential)}")
+
+    if auth_credential is not None and not isinstance(
+        auth_credential, AuthCredential
+    ):
+      logger.warning(
+          f"Invalid auth_credential type in context: {type(auth_credential)}"
+      )
       auth_credential = None
-    
+
     return auth_scheme, auth_credential
 
   @retry_on_closed_resource("_reinitialize_session")
@@ -209,10 +222,14 @@ class MCPToolset(BaseToolset):
     """
     # Get session from session manager
     if not self._session:
-      self._session = await self._mcp_session_manager.create_session(readonly_context)
+      self._session = await self._mcp_session_manager.create_session(
+          readonly_context
+      )
 
     # Extract auth information from context
-    auth_scheme, auth_credential = self._extract_auth_from_context(readonly_context)
+    auth_scheme, auth_credential = self._extract_auth_from_context(
+        readonly_context
+    )
 
     # Fetch available tools from the MCP server
     tools_response: ListToolsResult = await self._session.list_tools()
@@ -235,7 +252,7 @@ class MCPToolset(BaseToolset):
     """Reinitializes the session when connection is lost."""
     # Close the old session and clear cache
     await self._mcp_session_manager.close()
-    # Note: We'll need the readonly_context for reinitializing, but it's not 
+    # Note: We'll need the readonly_context for reinitializing, but it's not
     # available here. The session will be recreated on the next get_tools call
     # with the proper context.
     self._session = None
