@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
+from __future__ import annotations
+
+import logging
 import mimetypes
 import os
 from typing import Any
@@ -26,6 +28,8 @@ from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 from .code_execution_utils import File
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 _SUPPORTED_IMAGE_TYPES = ['png', 'jpg', 'jpeg']
 _SUPPORTED_DATA_FILE_TYPES = ['csv']
@@ -89,7 +93,9 @@ def _get_code_interpreter_extension(resource_name: str = None):
   if resource_name:
     new_code_interpreter = Extension(resource_name)
   else:
-    print('No CODE_INTERPRETER_ID found in the environment. Create a new one.')
+    logger.info(
+        'No CODE_INTERPRETER_ID found in the environment. Create a new one.'
+    )
     new_code_interpreter = Extension.from_hub('code_interpreter')
     os.environ['CODE_INTERPRETER_EXTENSION_NAME'] = (
         new_code_interpreter.gca_resource.name
