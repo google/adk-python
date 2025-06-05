@@ -136,13 +136,13 @@ def test_function_request_euc():
   function_call_ids = list(events[2].actions.requested_auth_configs.keys())
 
   for idx, part in enumerate(events[1].content.parts):
-    reqeust_euc_function_call = part.function_call
-    assert reqeust_euc_function_call is not None
+    request_euc_function_call = part.function_call
+    assert request_euc_function_call is not None
     assert (
-        reqeust_euc_function_call.name
+        request_euc_function_call.name
         == functions.REQUEST_EUC_FUNCTION_CALL_NAME
     )
-    args = AuthToolArguments.model_validate(reqeust_euc_function_call.args)
+    args = AuthToolArguments.model_validate(request_euc_function_call.args)
 
     assert args.function_call_id == function_call_ids[idx]
     args.auth_config.auth_scheme.model_extra.clear()
@@ -336,11 +336,226 @@ def test_function_get_auth_response():
   )
 
   assert function_invoked == 4
-  reqeust = mock_model.requests[-1]
-  content = reqeust.contents[-1]
+  request = mock_model.requests[-1]
+  content = request.contents[-1]
   parts = content.parts
   assert len(parts) == 2
   assert parts[0].function_response.name == 'call_external_api1'
   assert parts[0].function_response.response == {'result': 1}
+  assert parts[1].function_response.name == 'call_external_api2'
+  assert parts[1].function_response.response == {'result': 2}
+
+
+def test_function_get_auth_response_partial():
+  id_1 = 'id_1'
+  id_2 = 'id_2'
+  responses = [
+      [
+          function_call(id_1, 'call_external_api1', {}),
+          function_call(id_2, 'call_external_api2', {}),
+      ],
+      [
+          types.Part.from_text(text='response1'),
+      ],
+      [
+          types.Part.from_text(text='response2'),
+      ],
+      [
+          types.Part.from_text(text='final response'),
+      ],
+  ]
+
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  function_invoked = 0
+
+  auth_config1 = AuthConfig(
+      auth_scheme=OAuth2(
+          flows=OAuthFlows(
+              authorizationCode=OAuthFlowAuthorizationCode(
+                  authorizationUrl='https://accounts.google.com/o/oauth2/auth',
+                  tokenUrl='https://oauth2.googleapis.com/token',
+                  scopes={
+                      'https://www.googleapis.com/auth/calendar': (
+                          'See, edit, share, and permanently delete all the'
+                          ' calendars you can access using Google Calendar'
+                      )
+                  },
+              )
+          )
+      ),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='oauth_client_id_1',
+              client_secret='oauth_client_secret1',
+          ),
+      ),
+  )
+  auth_config2 = AuthConfig(
+      auth_scheme=OAuth2(
+          flows=OAuthFlows(
+              authorizationCode=OAuthFlowAuthorizationCode(
+                  authorizationUrl='https://accounts.google.com/o/oauth2/auth',
+                  tokenUrl='https://oauth2.googleapis.com/token',
+                  scopes={
+                      'https://www.googleapis.com/auth/calendar': (
+                          'See, edit, share, and permanently delete all the'
+                          ' calendars you can access using Google Calendar'
+                      )
+                  },
+              )
+          )
+      ),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='oauth_client_id_2',
+              client_secret='oauth_client_secret2',
+          ),
+      ),
+  )
+
+  auth_response1 = AuthConfig(
+      auth_scheme=OAuth2(
+          flows=OAuthFlows(
+              authorizationCode=OAuthFlowAuthorizationCode(
+                  authorizationUrl='https://accounts.google.com/o/oauth2/auth',
+                  tokenUrl='https://oauth2.googleapis.com/token',
+                  scopes={
+                      'https://www.googleapis.com/auth/calendar': (
+                          'See, edit, share, and permanently delete all the'
+                          ' calendars you can access using Google Calendar'
+                      )
+                  },
+              )
+          )
+      ),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='oauth_client_id_1',
+              client_secret='oauth_client_secret1',
+          ),
+      ),
+      exchanged_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='oauth_client_id_1',
+              client_secret='oauth_client_secret1',
+              access_token='token1',
+          ),
+      ),
+  )
+  auth_response2 = AuthConfig(
+      auth_scheme=OAuth2(
+          flows=OAuthFlows(
+              authorizationCode=OAuthFlowAuthorizationCode(
+                  authorizationUrl='https://accounts.google.com/o/oauth2/auth',
+                  tokenUrl='https://oauth2.googleapis.com/token',
+                  scopes={
+                      'https://www.googleapis.com/auth/calendar': (
+                          'See, edit, share, and permanently delete all the'
+                          ' calendars you can access using Google Calendar'
+                      )
+                  },
+              )
+          )
+      ),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='oauth_client_id_2',
+              client_secret='oauth_client_secret2',
+          ),
+      ),
+      exchanged_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='oauth_client_id_2',
+              client_secret='oauth_client_secret2',
+              access_token='token2',
+          ),
+      ),
+  )
+
+  def call_external_api1(tool_context: ToolContext) -> int:
+    nonlocal function_invoked
+    function_invoked += 1
+    auth_response = tool_context.get_auth_response(auth_config1)
+    if not auth_response:
+      tool_context.request_credential(auth_config1)
+      return
+    assert auth_response == auth_response1.exchanged_auth_credential
+    return 1
+
+  def call_external_api2(tool_context: ToolContext) -> int:
+    nonlocal function_invoked
+    function_invoked += 1
+    auth_response = tool_context.get_auth_response(auth_config2)
+    if not auth_response:
+      tool_context.request_credential(auth_config2)
+      return
+    assert auth_response == auth_response2.exchanged_auth_credential
+    return 2
+
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[call_external_api1, call_external_api2],
+  )
+  runner = testing_utils.InMemoryRunner(agent)
+  runner.run('test')
+  request_euc_function_call_event = runner.session.events[-3]
+  function_response1 = types.FunctionResponse(
+      name=request_euc_function_call_event.content.parts[0].function_call.name,
+      response=auth_response1.model_dump(),
+  )
+  function_response1.id = request_euc_function_call_event.content.parts[
+      0
+  ].function_call.id
+
+  function_response2 = types.FunctionResponse(
+      name=request_euc_function_call_event.content.parts[1].function_call.name,
+      response=auth_response2.model_dump(),
+  )
+  function_response2.id = request_euc_function_call_event.content.parts[
+      1
+  ].function_call.id
+  runner.run(
+      new_message=types.Content(
+          role='user',
+          parts=[
+              types.Part(function_response=function_response1),
+          ],
+      ),
+  )
+
+  assert function_invoked == 3
+  assert len(mock_model.requests) == 3
+  request = mock_model.requests[-1]
+  content = request.contents[-1]
+  parts = content.parts
+  assert len(parts) == 2
+  assert parts[0].function_response.name == 'call_external_api1'
+  assert parts[0].function_response.response == {'result': 1}
+  assert parts[1].function_response.name == 'call_external_api2'
+  assert parts[1].function_response.response == {'result': None}
+
+  runner.run(
+      new_message=types.Content(
+          role='user',
+          parts=[
+              types.Part(function_response=function_response2),
+          ],
+      ),
+  )
+  # assert function_invoked == 4
+  assert len(mock_model.requests) == 4
+  request = mock_model.requests[-1]
+  content = request.contents[-1]
+  parts = content.parts
+  assert len(parts) == 2
+  assert parts[0].function_response.name == 'call_external_api1'
+  assert parts[0].function_response.response == {'result': None}
   assert parts[1].function_response.name == 'call_external_api2'
   assert parts[1].function_response.response == {'result': 2}

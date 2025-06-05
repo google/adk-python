@@ -18,6 +18,7 @@ import asyncio
 import collections
 from contextlib import asynccontextmanager
 from datetime import datetime
+import functools
 import logging
 import os
 import tempfile
@@ -416,57 +417,78 @@ def cli_eval(
       print(eval_result.model_dump_json(indent=2))
 
 
+def fast_api_common_options():
+  """Decorator to add common fast api options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--session_db_url",
+        help=(
+            """Optional. The database URL to store the session.
+          - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+          - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+          - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
+        ),
+    )
+    @click.option(
+        "--artifact_storage_uri",
+        type=str,
+        help=(
+            "Optional. The artifact storage URI to store the artifacts,"
+            " supported URIs: gs://<bucket name> for GCS artifact service."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--host",
+        type=str,
+        help="Optional. The binding host of the server",
+        default="127.0.0.1",
+        show_default=True,
+    )
+    @click.option(
+        "--port",
+        type=int,
+        help="Optional. The port of the server",
+        default=8000,
+    )
+    @click.option(
+        "--allow_origins",
+        help="Optional. Any additional origins to allow for CORS.",
+        multiple=True,
+    )
+    @click.option(
+        "--log_level",
+        type=click.Choice(
+            ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+            case_sensitive=False,
+        ),
+        default="INFO",
+        help="Optional. Set the logging level",
+    )
+    @click.option(
+        "--trace_to_cloud",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help="Optional. Whether to enable cloud trace for telemetry.",
+    )
+    @click.option(
+        "--reload/--no-reload",
+        default=True,
+        help="Optional. Whether to enable auto reload for server.",
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
 @main.command("web")
-@click.option(
-    "--session_db_url",
-    help=(
-        """Optional. The database URL to store the session.
-
-  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
-
-  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
-
-  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
-    ),
-)
-@click.option(
-    "--host",
-    type=str,
-    help="Optional. The binding host of the server",
-    default="127.0.0.1",
-    show_default=True,
-)
-@click.option(
-    "--port",
-    type=int,
-    help="Optional. The port of the server",
-    default=8000,
-)
-@click.option(
-    "--allow_origins",
-    help="Optional. Any additional origins to allow for CORS.",
-    multiple=True,
-)
-@click.option(
-    "--log_level",
-    type=click.Choice(
-        ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False
-    ),
-    default="INFO",
-    help="Optional. Set the logging level",
-)
-@click.option(
-    "--trace_to_cloud",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Optional. Whether to enable cloud trace for telemetry.",
-)
-@click.option(
-    "--reload/--no-reload",
-    default=True,
-    help="Optional. Whether to enable auto reload for server.",
-)
+@fast_api_common_options()
 @click.argument(
     "agents_dir",
     type=click.Path(
@@ -477,6 +499,7 @@ def cli_eval(
 def cli_web(
     agents_dir: str,
     session_db_url: str = "",
+    artifact_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
@@ -520,6 +543,7 @@ def cli_web(
   app = get_fast_api_app(
       agents_dir=agents_dir,
       session_db_url=session_db_url,
+      artifact_storage_uri=artifact_storage_uri,
       allow_origins=allow_origins,
       web=True,
       trace_to_cloud=trace_to_cloud,
@@ -537,56 +561,6 @@ def cli_web(
 
 
 @main.command("api_server")
-@click.option(
-    "--session_db_url",
-    help=(
-        """Optional. The database URL to store the session.
-
-  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
-
-  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
-
-  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
-    ),
-)
-@click.option(
-    "--host",
-    type=str,
-    help="Optional. The binding host of the server",
-    default="127.0.0.1",
-    show_default=True,
-)
-@click.option(
-    "--port",
-    type=int,
-    help="Optional. The port of the server",
-    default=8000,
-)
-@click.option(
-    "--allow_origins",
-    help="Optional. Any additional origins to allow for CORS.",
-    multiple=True,
-)
-@click.option(
-    "--log_level",
-    type=click.Choice(
-        ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False
-    ),
-    default="INFO",
-    help="Optional. Set the logging level",
-)
-@click.option(
-    "--trace_to_cloud",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Optional. Whether to enable cloud trace for telemetry.",
-)
-@click.option(
-    "--reload/--no-reload",
-    default=True,
-    help="Optional. Whether to enable auto reload for server.",
-)
 # The directory of agents, where each sub-directory is a single agent.
 # By default, it is the current working directory
 @click.argument(
@@ -596,9 +570,11 @@ def cli_web(
     ),
     default=os.getcwd(),
 )
+@fast_api_common_options()
 def cli_api_server(
     agents_dir: str,
     session_db_url: str = "",
+    artifact_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
@@ -621,6 +597,7 @@ def cli_api_server(
       get_fast_api_app(
           agents_dir=agents_dir,
           session_db_url=session_db_url,
+          artifact_storage_uri=artifact_storage_uri,
           allow_origins=allow_origins,
           web=False,
           trace_to_cloud=trace_to_cloud,
@@ -724,6 +701,15 @@ def cli_api_server(
   - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
     ),
 )
+@click.option(
+    "--artifact_storage_uri",
+    type=str,
+    help=(
+        "Optional. The artifact storage URI to store the artifacts, supported"
+        " URIs: gs://<bucket name> for GCS artifact service."
+    ),
+    default=None,
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -752,6 +738,7 @@ def cli_deploy_cloud_run(
     with_ui: bool,
     verbosity: str,
     session_db_url: str,
+    artifact_storage_uri: Optional[str],
     adk_version: str,
 ):
   """Deploys an agent to Cloud Run.
@@ -775,7 +762,131 @@ def cli_deploy_cloud_run(
         with_ui=with_ui,
         verbosity=verbosity,
         session_db_url=session_db_url,
+        artifact_storage_uri=artifact_storage_uri,
         adk_version=adk_version,
+    )
+  except Exception as e:
+    click.secho(f"Deploy failed: {e}", fg="red", err=True)
+
+
+@deploy.command("agent_engine")
+@click.option(
+    "--project",
+    type=str,
+    help="Required. Google Cloud project to deploy the agent.",
+)
+@click.option(
+    "--region",
+    type=str,
+    help="Required. Google Cloud region to deploy the agent.",
+)
+@click.option(
+    "--staging_bucket",
+    type=str,
+    help="Required. GCS bucket for staging the deployment artifacts.",
+)
+@click.option(
+    "--trace_to_cloud",
+    type=bool,
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to enable Cloud Trace for Agent Engine.",
+)
+@click.option(
+    "--adk_app",
+    type=str,
+    default="agent_engine_app",
+    help=(
+        "Optional. Python file for defining the ADK application"
+        " (default: a file named agent_engine_app.py)"
+    ),
+)
+@click.option(
+    "--temp_folder",
+    type=str,
+    default=os.path.join(
+        tempfile.gettempdir(),
+        "agent_engine_deploy_src",
+        datetime.now().strftime("%Y%m%d_%H%M%S"),
+    ),
+    help=(
+        "Optional. Temp folder for the generated Agent Engine source files."
+        " If the folder already exists, its contents will be removed."
+        " (default: a timestamped folder in the system temp directory)."
+    ),
+)
+@click.option(
+    "--env_file",
+    type=str,
+    default="",
+    help=(
+        "Optional. The filepath to the `.env` file for environment variables."
+        " (default: the `.env` file in the `agent` directory, if any.)"
+    ),
+)
+@click.option(
+    "--requirements_file",
+    type=str,
+    default="",
+    help=(
+        "Optional. The filepath to the `requirements.txt` file to use."
+        " (default: the `requirements.txt` file in the `agent` directory, if"
+        " any.)"
+    ),
+)
+@click.argument(
+    "agent",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+def cli_deploy_agent_engine(
+    agent: str,
+    project: str,
+    region: str,
+    staging_bucket: str,
+    trace_to_cloud: bool,
+    adk_app: str,
+    temp_folder: str,
+    env_file: str,
+    requirements_file: str,
+):
+  """Deploys an agent to Agent Engine.
+
+  Args:
+    agent (str): Required. The path to the agent to be deloyed.
+    project (str): Required. Google Cloud project to deploy the agent.
+    region (str): Required. Google Cloud region to deploy the agent.
+    staging_bucket (str): Required. GCS bucket for staging the deployment
+      artifacts.
+    trace_to_cloud (bool): Required. Whether to enable Cloud Trace.
+    adk_app (str): Required. Python file for defining the ADK application.
+    temp_folder (str): Required. The folder for the generated Agent Engine
+      files. If the folder already exists, its contents will be replaced.
+    env_file (str): Required. The filepath to the `.env` file for environment
+      variables. If it is an empty string, the `.env` file in the `agent`
+      directory will be used if it exists.
+    requirements_file (str): Required. The filepath to the `requirements.txt`
+      file to use. If it is an empty string, the `requirements.txt` file in the
+      `agent` directory will be used if exists.
+
+  Example:
+
+    adk deploy agent_engine --project=[project] --region=[region]
+      --staging_bucket=[staging_bucket] path/to/my_agent
+  """
+  try:
+    cli_deploy.to_agent_engine(
+        agent_folder=agent,
+        project=project,
+        region=region,
+        staging_bucket=staging_bucket,
+        trace_to_cloud=trace_to_cloud,
+        adk_app=adk_app,
+        temp_folder=temp_folder,
+        env_file=env_file,
+        requirements_file=requirements_file,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

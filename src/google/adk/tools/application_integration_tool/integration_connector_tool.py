@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import logging
 from typing import Any
 from typing import Dict
@@ -24,8 +26,8 @@ from typing_extensions import override
 from .. import BaseTool
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from .._gemini_schema_util import _to_gemini_schema
 from ..openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
-from ..openapi_tool.openapi_spec_parser.rest_api_tool import to_gemini_schema
 from ..openapi_tool.openapi_spec_parser.tool_auth_handler import ToolAuthHandler
 from ..tool_context import ToolContext
 
@@ -62,11 +64,7 @@ class IntegrationConnectorTool(BaseTool):
       'dynamic_auth_config',
   ]
 
-  OPTIONAL_FIELDS = [
-      'page_size',
-      'page_token',
-      'filter',
-  ]
+  OPTIONAL_FIELDS = ['page_size', 'page_token', 'filter', 'sortByColumns']
 
   def __init__(
       self,
@@ -128,7 +126,7 @@ class IntegrationConnectorTool(BaseTool):
       if field in schema_dict['required']:
         schema_dict['required'].remove(field)
 
-    parameters = to_gemini_schema(schema_dict)
+    parameters = _to_gemini_schema(schema_dict)
     function_decl = FunctionDeclaration(
         name=self.name, description=self.description, parameters=parameters
     )
