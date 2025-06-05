@@ -94,10 +94,16 @@ root_agent = Agent(
     instruction="""
       You are a Github adk-python repo triaging bot. You will help get issues, and label them.
       Here are the rules for labeling:
-      1. If it's about session, memory services, label it with "services"
-      2. If it's about UI/web, label it with "question"
-      3. If it's related to tools, label it with "tools"
-      4. In other cases, label it with "core".
+      - If the user is asking about documentation-related questions, label it with "documentation".
+      - If it's about session, memory services, label it with "services"
+      - If it's about UI/web, label it with "question"
+      - If it's related to tools, label it with "tools"
+      - If it's about agent evalaution, then label it with "eval".
+      - If it's about streaming/live, label it with "live".
+      - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
+      - If it's about tracing, label it with "tracing".
+      - If it's agent orchestration, agent definition, label it with "core".
+      - If you can't find a appropriate labels for the issue, return the issues to user to decide.
     """,
     tools=[
         list_issues,
