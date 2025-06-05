@@ -28,6 +28,7 @@ from .preload_memory_tool import preload_memory_tool as preload_memory
 from .tool_context import ToolContext
 from .transfer_to_agent_tool import transfer_to_agent
 from .vertex_ai_search_tool import VertexAiSearchTool
+from .tool_error_notifier import tool_error_notifier
 
 __all__ = [
     'APIHubToolset',
@@ -45,4 +46,5 @@ __all__ = [
     'preload_memory',
     'ToolContext',
     'transfer_to_agent',
+    'tool_error_notifier',
 ]
