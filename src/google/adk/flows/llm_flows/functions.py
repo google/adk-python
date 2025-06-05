@@ -254,6 +254,11 @@ async def handle_function_calls_async(
       function_response_event = __build_response_event(
           tool, function_response, tool_context, invocation_context
       )
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+      )
       function_response_events.append(function_response_event)
 
   if not function_response_events:
