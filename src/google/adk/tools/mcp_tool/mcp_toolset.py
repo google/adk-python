@@ -27,7 +27,10 @@ from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
+from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import SseServerParams
+from .mcp_session_manager import StdioConnectionParams
+from .mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_session_manager import StreamableHTTPServerParams
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
@@ -85,9 +88,12 @@ class MCPToolset(BaseToolset):
   def __init__(
       self,
       *,
-      connection_params: (
-          StdioServerParameters | SseServerParams | StreamableHTTPServerParams
-      ),
+      connection_params: Union[
+          StdioServerParameters,
+          StdioConnectionParams,
+          SseConnectionParams,
+          StreamableHTTPConnectionParams,
+      ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       errlog: TextIO = sys.stderr,
   ):
@@ -95,12 +101,16 @@ class MCPToolset(BaseToolset):
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
-        `StdioServerParameters` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseServerParams` for a local/remote SSE server; or
-        `StreamableHTTPServerParams` for local/remote Streamable http server.
-      tool_filter: Optional filter to select specific tools. Can be either:
-        - A list of tool names to include
-        - A ToolPredicate function for custom filtering logic
+        `StdioConnectionParams` for using local mcp server (e.g. using `npx` or
+        `python3`); or `SseConnectionParams` for a local/remote SSE server; or
+        `StreamableHTTPConnectionParams` for local/remote Streamable http
+        server. Note, `StdioServerParameters` is also supported for using local
+        mcp server (e.g. using `npx` or `python3` ), but it does not support
+        timeout, and we recommend to use `StdioConnectionParams` instead when
+        timeout is needed.
+      tool_filter: Optional filter to select specific tools. Can be either: - A
+        list of tool names to include - A ToolPredicate function for custom
+        filtering logic
       errlog: TextIO stream for error logging.
     """
     super().__init__(tool_filter=tool_filter)
