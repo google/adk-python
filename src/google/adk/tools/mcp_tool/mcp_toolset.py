@@ -34,8 +34,9 @@ from ..base_toolset import ToolPredicate
 from .mcp_session_manager import ContextToEnvMapperCallback
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
-from .mcp_session_manager import SseServerParams
-from .mcp_session_manager import StreamableHTTPServerParams
+from .mcp_session_manager import SseConnectionParams
+from .mcp_session_manager import StdioConnectionParams
+from .mcp_session_manager import StreamableHTTPConnectionParams
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
@@ -97,9 +98,12 @@ class MCPToolset(BaseToolset):
   def __init__(
       self,
       *,
-      connection_params: (
-          StdioServerParameters | SseServerParams | StreamableHTTPServerParams
-      ),
+      connection_params: Union[
+          StdioServerParameters,
+          StdioConnectionParams,
+          SseConnectionParams,
+          StreamableHTTPConnectionParams,
+      ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       auth_transform_callback: Optional[AuthTransformCallback] = None,
       context_to_env_mapper_callback: Optional[
@@ -111,12 +115,16 @@ class MCPToolset(BaseToolset):
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
-        `StdioServerParameters` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseServerParams` for a local/remote SSE server; or
-        `StreamableHTTPServerParams` for local/remote Streamable http server.
-      tool_filter: Optional filter to select specific tools. Can be either:
-        - A list of tool names to include
-        - A ToolPredicate function for custom filtering logic
+        `StdioConnectionParams` for using local mcp server (e.g. using `npx` or
+        `python3`); or `SseConnectionParams` for a local/remote SSE server; or
+        `StreamableHTTPConnectionParams` for local/remote Streamable http
+        server. Note, `StdioServerParameters` is also supported for using local
+        mcp server (e.g. using `npx` or `python3` ), but it does not support
+        timeout, and we recommend to use `StdioConnectionParams` instead when
+        timeout is needed.
+      tool_filter: Optional filter to select specific tools. Can be either: - A
+        list of tool names to include - A ToolPredicate function for custom
+        filtering logic
       auth_transform_callback: Optional callback function to transform auth data
         from ReadonlyContext.state into AuthScheme and AuthCredential. If None,
         the toolset will look for 'auth_scheme' and 'auth_credential' keys
@@ -272,6 +280,5 @@ class MCPToolset(BaseToolset):
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
     finally:
-      # Clear cached tools
-      self._tools_cache = None
-      self._tools_loaded = False
+      # Clear session reference
+      self._session = None

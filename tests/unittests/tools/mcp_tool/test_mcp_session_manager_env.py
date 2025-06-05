@@ -41,14 +41,41 @@ def mock_mcp_imports():
           'mcp.client.streamable_http': MagicMock(),
       },
   ):
-    # Mock the specific classes we need
-    mock_stdio_params = MagicMock()
+    # Create mock classes for both StdioServerParameters and StdioConnectionParams
+    class MockStdioServerParameters:
+
+      def __init__(
+          self,
+          command,
+          args,
+          env=None,
+          cwd=None,
+          encoding=None,
+          encoding_error_handler=None,
+      ):
+        self.command = command
+        self.args = args
+        self.env = env or {}
+        self.cwd = cwd
+        self.encoding = encoding
+        self.encoding_error_handler = encoding_error_handler
+
+    class MockStdioConnectionParams:
+
+      def __init__(self, server_params, timeout=5.0):
+        self.server_params = server_params
+        self.timeout = timeout
+
     mock_client_session = MagicMock()
 
     with (
         patch(
             'google.adk.tools.mcp_tool.mcp_session_manager.StdioServerParameters',
-            mock_stdio_params,
+            MockStdioServerParameters,
+        ),
+        patch(
+            'google.adk.tools.mcp_tool.mcp_session_manager.StdioConnectionParams',
+            MockStdioConnectionParams,
         ),
         patch(
             'google.adk.tools.mcp_tool.mcp_session_manager.ClientSession',
@@ -65,24 +92,26 @@ from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager, Con
 @pytest.fixture
 def mock_stdio_params():
   """Create a mock StdioServerParameters instance."""
-  from unittest.mock import MagicMock
+  from google.adk.tools.mcp_tool.mcp_session_manager import StdioServerParameters
 
-  mock_params = MagicMock()
-  mock_params.command = 'npx'
-  mock_params.args = ['-y', '@modelcontextprotocol/server-filesystem']
-  mock_params.env = {'EXISTING_VAR': 'existing_value'}
-  mock_params.cwd = None
-  mock_params.encoding = None
-  mock_params.encoding_error_handler = None
-  return mock_params
+  # Since StdioServerParameters is now mocked as MockStdioServerParameters,
+  # we can create an instance directly
+  return StdioServerParameters(
+      command='npx',
+      args=['-y', '@modelcontextprotocol/server-filesystem'],
+      env={'EXISTING_VAR': 'existing_value'},
+      cwd=None,
+      encoding=None,
+      encoding_error_handler=None,
+  )
 
 
 @pytest.fixture
 def mock_sse_params():
-  """Create a mock SseServerParams instance."""
-  from google.adk.tools.mcp_tool.mcp_session_manager import SseServerParams
+  """Create a mock SseConnectionParams instance."""
+  from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 
-  return SseServerParams(
+  return SseConnectionParams(
       url='http://localhost:3000/sse',
       headers={'Authorization': 'Bearer token'},
       timeout=5,
@@ -133,14 +162,18 @@ class TestMCPSessionManagerEnv:
         session_manager._context_to_env_mapper_callback
         == sample_context_to_env_mapper_callback
     )
-    assert session_manager._connection_params == mock_stdio_params
+    # After __init__, the params are wrapped in StdioConnectionParams
+    assert hasattr(session_manager._connection_params, 'server_params')
+    assert session_manager._connection_params.server_params == mock_stdio_params
 
   def test_init_without_env_callback(self, mock_stdio_params):
     """Test MCPSessionManager initialization without environment callback."""
     session_manager = MCPSessionManager(connection_params=mock_stdio_params)
 
     assert session_manager._context_to_env_mapper_callback is None
-    assert session_manager._connection_params == mock_stdio_params
+    # After __init__, the params are wrapped in StdioConnectionParams
+    assert hasattr(session_manager._connection_params, 'server_params')
+    assert session_manager._connection_params.server_params == mock_stdio_params
 
   def test_extract_env_from_context_with_callback(
       self,
@@ -204,9 +237,6 @@ class TestMCPSessionManagerEnv:
 
   def test_inject_env_vars_stdio_params(self, mock_stdio_params):
     """Test environment variable injection for StdioServerParameters."""
-    # Mock the isinstance check to return True for our mock
-    mock_stdio_params.__class__.__name__ = 'StdioServerParameters'
-
     session_manager = MCPSessionManager(connection_params=mock_stdio_params)
 
     new_env_vars = {'API_KEY': 'test_key', 'NEW_VAR': 'new_value'}
@@ -232,9 +262,8 @@ class TestMCPSessionManagerEnv:
 
   def test_inject_env_vars_no_existing_env(self, mock_stdio_params):
     """Test environment variable injection when no existing env vars."""
-    # Set up mock with no existing env and set class name
+    # Set up mock with no existing env
     mock_stdio_params.env = None
-    mock_stdio_params.__class__.__name__ = 'StdioServerParameters'
 
     session_manager = MCPSessionManager(connection_params=mock_stdio_params)
 
@@ -257,8 +286,6 @@ class TestMCPSessionManagerEnv:
 
   def test_inject_env_vars_empty_env(self, mock_stdio_params):
     """Test environment variable injection with empty env vars."""
-    mock_stdio_params.__class__.__name__ = 'StdioServerParameters'
-
     session_manager = MCPSessionManager(connection_params=mock_stdio_params)
 
     # No new env vars to inject
@@ -267,7 +294,7 @@ class TestMCPSessionManagerEnv:
     updated_params = session_manager._inject_env_vars(empty_env_vars)
 
     # Should return original params when no env vars to inject
-    assert updated_params == mock_stdio_params
+    assert updated_params == session_manager._connection_params.server_params
 
   def test_inject_env_vars_non_stdio_params(self, mock_sse_params):
     """Test that _inject_env_vars is not called for non-StdioServerParameters.
@@ -282,9 +309,9 @@ class TestMCPSessionManagerEnv:
     non_empty_env_vars = {'API_KEY': 'test_key'}
 
     # This test verifies that if _inject_env_vars were called with non-stdio params,
-    # it would fail because SseServerParams doesn't have 'command' attribute
+    # it would fail because SseConnectionParams doesn't have 'command' attribute
     with pytest.raises(AttributeError):
-      # This should fail because SseServerParams doesn't have 'command' attribute
+      # This should fail because SseConnectionParams doesn't have 'command' attribute
       session_manager._inject_env_vars(non_empty_env_vars)
 
   @pytest.mark.asyncio
@@ -295,8 +322,6 @@ class TestMCPSessionManagerEnv:
       mock_readonly_context,
   ):
     """Test create_session with environment variable injection."""
-    from unittest.mock import AsyncMock
-
     session_manager = MCPSessionManager(
         connection_params=mock_stdio_params,
         context_to_env_mapper_callback=sample_context_to_env_mapper_callback,
@@ -321,48 +346,8 @@ class TestMCPSessionManagerEnv:
             'google.adk.tools.mcp_tool.mcp_session_manager.ClientSession',
             return_value=mock_session,
         ),
-        patch(
-            'google.adk.tools.mcp_tool.mcp_session_manager.isinstance'
-        ) as mock_isinstance,
     ):
 
-      # Make isinstance return True only for StdioServerParameters check
-      def isinstance_side_effect(obj, cls):
-        # Check if this is our mock stdio params
-        if obj == mock_stdio_params:
-          # For our mock object, check the class name/type
-          if (
-              hasattr(cls, '__name__')
-              and cls.__name__ == 'StdioServerParameters'
-          ):
-            return True
-          elif 'StdioServerParameters' in str(cls):
-            return True
-          elif hasattr(cls, '__name__') and cls.__name__ in [
-              'SseServerParams',
-              'StreamableHTTPServerParams',
-          ]:
-            return False
-          elif any(
-              name in str(cls)
-              for name in ['SseServerParams', 'StreamableHTTPServerParams']
-          ):
-            return False
-          # If it's the first call with the mocked class, return True (this is the StdioServerParameters check)
-          elif str(cls).startswith('<MagicMock'):
-            return True
-        # For other objects, use the original isinstance
-        try:
-          original_result = (
-              isinstance.__wrapped__(obj, cls)
-              if hasattr(isinstance, '__wrapped__')
-              else type(obj) is cls
-          )
-          return original_result
-        except:
-          return False
-
-      mock_isinstance.side_effect = isinstance_side_effect
       mock_exit_stack.enter_async_context.side_effect = [
           mock_transports,
           mock_session,
@@ -379,8 +364,6 @@ class TestMCPSessionManagerEnv:
       self, mock_stdio_params, sample_context_to_env_mapper_callback
   ):
     """Test create_session without readonly_context."""
-    from unittest.mock import AsyncMock
-
     session_manager = MCPSessionManager(
         connection_params=mock_stdio_params,
         context_to_env_mapper_callback=sample_context_to_env_mapper_callback,
@@ -405,48 +388,8 @@ class TestMCPSessionManagerEnv:
             'google.adk.tools.mcp_tool.mcp_session_manager.ClientSession',
             return_value=mock_session,
         ),
-        patch(
-            'google.adk.tools.mcp_tool.mcp_session_manager.isinstance'
-        ) as mock_isinstance,
     ):
 
-      # Make isinstance return True only for StdioServerParameters check
-      def isinstance_side_effect(obj, cls):
-        # Check if this is our mock stdio params
-        if obj == mock_stdio_params:
-          # For our mock object, check the class name/type
-          if (
-              hasattr(cls, '__name__')
-              and cls.__name__ == 'StdioServerParameters'
-          ):
-            return True
-          elif 'StdioServerParameters' in str(cls):
-            return True
-          elif hasattr(cls, '__name__') and cls.__name__ in [
-              'SseServerParams',
-              'StreamableHTTPServerParams',
-          ]:
-            return False
-          elif any(
-              name in str(cls)
-              for name in ['SseServerParams', 'StreamableHTTPServerParams']
-          ):
-            return False
-          # If it's the first call with the mocked class, return True (this is the StdioServerParameters check)
-          elif str(cls).startswith('<MagicMock'):
-            return True
-        # For other objects, use the original isinstance
-        try:
-          original_result = (
-              isinstance.__wrapped__(obj, cls)
-              if hasattr(isinstance, '__wrapped__')
-              else type(obj) is cls
-          )
-          return original_result
-        except:
-          return False
-
-      mock_isinstance.side_effect = isinstance_side_effect
       mock_exit_stack.enter_async_context.side_effect = [
           mock_transports,
           mock_session,
