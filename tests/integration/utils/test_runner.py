@@ -29,7 +29,7 @@ from google.genai import types
 
 class TestRunner:
   """Agents runner for testing."""
-  
+
   # Prevent pytest from collecting this as a test class
   __test__ = False
 
@@ -72,7 +72,9 @@ class TestRunner:
 
   def new_session(self, session_id: Optional[str] = None) -> None:
     """Create a new session (sync version)."""
-    return asyncio.get_event_loop().run_until_complete(self.new_session_async(session_id))
+    return asyncio.get_event_loop().run_until_complete(
+        self.new_session_async(session_id)
+    )
 
   async def run_async(self, prompt: str) -> list[Event]:
     await self._ensure_session()
@@ -108,7 +110,9 @@ class TestRunner:
 
   def get_current_session(self) -> Optional[Session]:
     """Get current session (sync version)."""
-    return asyncio.get_event_loop().run_until_complete(self.get_current_session_async())
+    return asyncio.get_event_loop().run_until_complete(
+        self.get_current_session_async()
+    )
 
   async def get_events_async(self) -> list[Event]:
     session = await self.get_current_session_async()
@@ -131,7 +135,9 @@ class TestRunner:
 
   def get_current_agent_name(self) -> str:
     """Get current agent name (sync version)."""
-    return asyncio.get_event_loop().run_until_complete(self.get_current_agent_name_async())
+    return asyncio.get_event_loop().run_until_complete(
+        self.get_current_agent_name_async()
+    )
 
   # Sync wrapper methods for backward compatibility
   def run_sync(self, prompt: str) -> list[Event]:
@@ -144,8 +150,12 @@ class TestRunner:
 
   def get_current_agent_name_sync(self) -> str:
     """Synchronous wrapper for get_current_agent_name method."""
-    return asyncio.get_event_loop().run_until_complete(self.get_current_agent_name())
+    return asyncio.get_event_loop().run_until_complete(
+        self.get_current_agent_name()
+    )
 
   def new_session_sync(self, session_id: Optional[str] = None) -> None:
     """Synchronous wrapper for new_session method."""
-    return asyncio.get_event_loop().run_until_complete(self.new_session(session_id))
+    return asyncio.get_event_loop().run_until_complete(
+        self.new_session(session_id)
+    )

@@ -123,7 +123,7 @@ class MCPTool(BaseTool):
           f"scheme={type(self._auth_scheme).__name__ if self._auth_scheme else None}, "
           f"credential={type(self._auth_credential).__name__ if self._auth_credential else None}"
       )
-    
+
     # Get the session from the session manager
     session = await self._mcp_session_manager.create_session()
 
@@ -132,7 +132,7 @@ class MCPTool(BaseTool):
     # to the session.call_tool method or configure them at the session level.
     # For now, the auth information is available in self._auth_scheme and self._auth_credential
     # and can be used by future implementations.
-    
+
     response = await session.call_tool(self.name, arguments=args)
     return response
 

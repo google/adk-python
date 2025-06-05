@@ -50,9 +50,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 # Type definition for environment variable transformation callback
-EnvTransformCallback = Callable[
-    [Dict[str, Any]], Dict[str, str]
-]
+ContextToEnvMapperCallback = Callable[[Dict[str, Any]], Dict[str, str]]
 
 
 class SseServerParams(BaseModel):
@@ -153,7 +151,9 @@ class MCPSessionManager:
           StdioServerParameters, SseServerParams, StreamableHTTPServerParams
       ],
       errlog: TextIO = sys.stderr,
-      env_transform_callback: Optional[EnvTransformCallback] = None,
+      context_to_env_mapper_callback: Optional[
+          ContextToEnvMapperCallback
+      ] = None,
   ):
     """Initializes the MCP session manager.
 
@@ -163,14 +163,14 @@ class MCPSessionManager:
           parameters but it's not configurable for now.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
-        env_transform_callback: Optional callback function to extract environment
-          variables from session state. Takes a dictionary of session state and 
+        context_to_env_mapper_callback: Optional callback function to extract environment
+          variables from session state. Takes a dictionary of session state and
           returns a dictionary of environment variables to be injected into the
           MCP connection.
     """
     self._connection_params = connection_params
     self._errlog = errlog
-    self._env_transform_callback = env_transform_callback
+    self._context_to_env_mapper_callback = context_to_env_mapper_callback
     # Each session manager maintains its own exit stack for proper cleanup
     self._exit_stack: Optional[AsyncExitStack] = None
     self._session: Optional[ClientSession] = None
@@ -204,9 +204,7 @@ class MCPSessionManager:
         # So far timeout is not configurable. Given MCP is still evolving, we
         # would expect stdio_client to evolve to accept timeout parameter like
         # other client.
-        client = stdio_client(
-            server=connection_params, errlog=self._errlog
-        )
+        client = stdio_client(server=connection_params, errlog=self._errlog)
       elif isinstance(connection_params, SseServerParams):
         client = sse_client(
             url=connection_params.url,
@@ -288,47 +286,45 @@ class MCPSessionManager:
       self, readonly_context: Optional[Any]
   ) -> Dict[str, str]:
     """Extracts environment variables from readonly context using callback.
-    
+
     Args:
         readonly_context: The readonly context containing state information.
-        
+
     Returns:
         Dictionary of environment variables to inject.
     """
-    if not self._env_transform_callback or not readonly_context:
+    if not self._context_to_env_mapper_callback or not readonly_context:
       return {}
-    
+
     try:
       # Get state from readonly context if available
       if hasattr(readonly_context, 'state') and readonly_context.state:
         state_dict = dict(readonly_context.state)
-        return self._env_transform_callback(state_dict)
+        return self._context_to_env_mapper_callback(state_dict)
       else:
         return {}
     except Exception as e:
-      logger.warning(f"Environment transform callback failed: {e}")
+      logger.warning(f'Context to env mapper callback failed: {e}')
       return {}
 
-  def _inject_env_vars(
-      self, env_vars: Dict[str, str]
-  ) -> StdioServerParameters:
+  def _inject_env_vars(self, env_vars: Dict[str, str]) -> StdioServerParameters:
     """Injects environment variables into StdioServerParameters.
-    
+
     Args:
         env_vars: Dictionary of environment variables to inject.
-        
+
     Returns:
         Updated StdioServerParameters with injected environment variables.
     """
     if not env_vars:
       return self._connection_params
-    
+
     # Get existing env vars from connection params
     existing_env = getattr(self._connection_params, 'env', None) or {}
-    
+
     # Merge existing and new env vars (new ones take precedence)
     merged_env = {**existing_env, **env_vars}
-    
+
     # Create new connection params with merged environment variables
     return StdioServerParameters(
         command=self._connection_params.command,
@@ -336,5 +332,7 @@ class MCPSessionManager:
         env=merged_env,
         cwd=getattr(self._connection_params, 'cwd', None),
         encoding=getattr(self._connection_params, 'encoding', None),
-        encoding_error_handler=getattr(self._connection_params, 'encoding_error_handler', None),
+        encoding_error_handler=getattr(
+            self._connection_params, 'encoding_error_handler', None
+        ),
     )
