@@ -12,19 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import random
 import os
-import requests
+import random
 import time
+
 from google.adk import Agent
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
-
+import requests
 
 # Read the PAT from the environment variable
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Ensure you've set this in your shell
 if not GITHUB_TOKEN:
-    raise ValueError("GITHUB_TOKEN environment variable not set")
+  raise ValueError("GITHUB_TOKEN environment variable not set")
 
 # Repository information
 OWNER = "google"
@@ -36,61 +36,59 @@ BASE_URL = "https://api.github.com"
 # Headers including the Authorization header
 headers = {
     "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json"
+    "Accept": "application/vnd.github.v3+json",
 }
 
 
-def list_issues(per_page:int):
-    """
-    Generator to list all issues for the repository by handling pagination.
+def list_issues(per_page: int):
+  """
+  Generator to list all issues for the repository by handling pagination.
 
-    Args:
-      per_page: number of pages to return per page.
+  Args:
+    per_page: number of pages to return per page.
 
-    """
-    state="open"
-    # only process the 1st page for testing for now
-    page = 1
-    results = []
-    url = f"{BASE_URL}/repos/{OWNER}/{REPO}/issues"  # :contentReference[oaicite:16]{index=16}
-    # Warning: let's only handle max 10 issues at a time to avoid bad results
-    params = {
-        "state": state,
-        "per_page": per_page,
-        "page": page
-    }
-    response = requests.get(url, headers=headers, params=params)
-    response.raise_for_status()  # :contentReference[oaicite:17]{index=17}
-    issues = response.json()
-    if not issues:
-        return []
-    for issue in issues:
-        # Skip pull requests (issues API returns PRs as well)
-        if "pull_request" in issue:
-            continue
-        results.append(issue)
-    return results
+  """
+  state = "open"
+  # only process the 1st page for testing for now
+  page = 1
+  results = []
+  url = (  # :contentReference[oaicite:16]{index=16}
+      f"{BASE_URL}/repos/{OWNER}/{REPO}/issues"
+  )
+  # Warning: let's only handle max 10 issues at a time to avoid bad results
+  params = {"state": state, "per_page": per_page, "page": page}
+  response = requests.get(url, headers=headers, params=params)
+  response.raise_for_status()  # :contentReference[oaicite:17]{index=17}
+  issues = response.json()
+  if not issues:
+    return []
+  for issue in issues:
+    # Skip pull requests (issues API returns PRs as well)
+    if "pull_request" in issue:
+      continue
+    results.append(issue)
+  return results
 
-def add_label_to_issue(issue_number:str, label:str):
-    """
-    Add the specified label to the given issue number.
 
-    Args:
-      issue_number: issue number of the Github issue, in string foramt.
-      label: label to assign
-    """
-    url = f"{BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/labels"
-    payload = [label]
-    response = requests.post(url, headers=headers, json=payload)
-    response.raise_for_status()
-    return response.json()
+def add_label_to_issue(issue_number: str, label: str):
+  """
+  Add the specified label to the given issue number.
+
+  Args:
+    issue_number: issue number of the Github issue, in string foramt.
+    label: label to assign
+  """
+  url = f"{BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/labels"
+  payload = [label]
+  response = requests.post(url, headers=headers, json=payload)
+  response.raise_for_status()
+  return response.json()
+
 
 root_agent = Agent(
-    model='gemini-2.5-pro-preview-05-06',
-    name='adk_triaging_assistant',
-    description=(
-        'Triage ADK issues.'
-    ),
+    model="gemini-2.5-pro-preview-05-06",
+    name="adk_triaging_assistant",
+    description="Triage ADK issues.",
     instruction="""
       You are a Github adk-python repo triaging bot. You will help get issues, and label them.
       Here are the rules for labeling:
