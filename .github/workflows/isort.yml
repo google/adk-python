@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Check Pyink Formatting
+name: Check sorting of imports
 
 on:
   pull_request:
@@ -21,7 +21,7 @@ on:
       - 'pyproject.toml'
 
 jobs:
-  pyink-check:
+  isort-check:
     runs-on: ubuntu-latest
 
     steps:
@@ -35,12 +35,12 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install pyink
+      - name: Install isort
         run: |
-          pip install pyink
+          pip install isort
 
-      - name: Run pyink on changed files
-        id: run_pyink
+      - name: Run isort on changed files
+        id: run_isort
         run: |
           git fetch origin ${{ github.base_ref }}
           CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
@@ -50,20 +50,20 @@ jobs:
             echo ""
             FORMATTED_FILES=$(echo "$CHANGED_FILES" | tr '\n' ' ')
 
-            # Run pyink --check
+            # Run isort --check
             set +e
-            pyink --check --diff --config pyproject.toml $CHANGED_FILES
+            isort --check $CHANGED_FILES
             RESULT=$?
             set -e
             if [ $RESULT -ne 0 ]; then
               echo ""
-              echo "❌ Pyink formatting check failed!"
-              echo "👉 To fix formatting, run locally:"
+              echo "❌ isort check failed!"
+              echo "👉 To fix import order, run locally:"
               echo ""
-              echo "    pyink --config pyproject.toml $FORMATTED_FILES"
+              echo "    isort $FORMATTED_FILES"
               echo ""
               exit $RESULT
             fi
           else
-            echo "No Python files changed. Skipping pyink check."
+            echo "No Python files changed. Skipping isort check."
           fi

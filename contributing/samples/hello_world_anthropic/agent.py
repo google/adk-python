@@ -12,16 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import random
 
 from google.adk import Agent
-from google.adk.planners import BuiltInPlanner
-from google.adk.planners import PlanReActPlanner
-from google.adk.tools.tool_context import ToolContext
-from google.genai import types
+from google.adk.models.anthropic_llm import Claude
 
 
-def roll_die(sides: int, tool_context: ToolContext) -> int:
+def roll_die(sides: int) -> int:
   """Roll a die and return the rolled result.
 
   Args:
@@ -30,12 +28,7 @@ def roll_die(sides: int, tool_context: ToolContext) -> int:
   Returns:
     An integer of the result of rolling the die.
   """
-  result = random.randint(1, sides)
-  if not 'rolls' in tool_context.state:
-    tool_context.state['rolls'] = []
-
-  tool_context.state['rolls'] = tool_context.state['rolls'] + [result]
-  return result
+  return random.randint(1, sides)
 
 
 async def check_prime(nums: list[int]) -> str:
@@ -60,18 +53,18 @@ async def check_prime(nums: list[int]) -> str:
     if is_prime:
       primes.add(number)
   return (
-      'No prime numbers found.'
+      "No prime numbers found."
       if not primes
       else f"{', '.join(str(num) for num in primes)} are prime numbers."
   )
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash',
-    name='hello_world_agent',
+    model=Claude(model="claude-3-5-sonnet-v2@20241022"),
+    name="hello_world_agent",
     description=(
-        'hello world agent that can roll a dice of 8 sides and check prime'
-        ' numbers.'
+        "hello world agent that can roll a dice of 8 sides and check prime"
+        " numbers."
     ),
     instruction="""
       You roll dice and answer questions about the outcome of the dice rolls.
@@ -94,17 +87,4 @@ root_agent = Agent(
         roll_die,
         check_prime,
     ],
-    # planner=BuiltInPlanner(
-    #     thinking_config=types.ThinkingConfig(
-    #         include_thoughts=True,
-    #     ),
-    # ),
-    generate_content_config=types.GenerateContentConfig(
-        safety_settings=[
-            types.SafetySetting(  # avoid false alarm about rolling dice.
-                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=types.HarmBlockThreshold.OFF,
-            ),
-        ]
-    ),
 )

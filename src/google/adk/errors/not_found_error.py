@@ -12,18 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk import Agent
-from google.adk.tools import google_search
-from google.genai import Client
+from __future__ import annotations
 
-# Only Vertex AI supports image generation for now.
-client = Client()
 
-root_agent = Agent(
-    model='gemini-2.0-flash-001',
-    name='root_agent',
-    description="""an agent whose job it is to perform Google search queries and answer questions about the results.""",
-    instruction="""You are an agent whose job is to perform Google search queries and answer questions about the results.
-""",
-    tools=[google_search],
-)
+class NotFoundError(Exception):
+  """Represents an error that occurs when an entity is not found."""
+
+  def __init__(self, message="The requested item was not found."):
+    """Initializes the NotFoundError exception.
+
+    Args:
+        message (str): An optional custom message to describe the error.
+    """
+    self.message = message
+    super().__init__(self.message)

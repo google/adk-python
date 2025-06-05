@@ -258,10 +258,10 @@ def _build_function_declaration_log(
         k: v.model_dump(exclude_none=True)
         for k, v in func_decl.parameters.properties.items()
     })
-  return_str = 'None'
+  return_str = ''
   if func_decl.response:
-    return_str = str(func_decl.response.model_dump(exclude_none=True))
-  return f'{func_decl.name}: {param_str} -> {return_str}'
+    return_str = '-> ' + str(func_decl.response.model_dump(exclude_none=True))
+  return f'{func_decl.name}: {param_str} {return_str}'
 
 
 def _build_request_log(req: LlmRequest) -> str:
