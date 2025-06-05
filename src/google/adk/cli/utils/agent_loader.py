@@ -69,6 +69,7 @@ class AgentLoader:
 
     except ModuleNotFoundError as e:
       if e.name == agent_name:
+        print(f" [DEBUG] {e}")
         logger.debug("Module %s itself not found.", agent_name)
       else:
         # it's the case the module imported by {agent_name}.agent module is not
@@ -108,6 +109,7 @@ class AgentLoader:
     except ModuleNotFoundError as e:
       # if it's agent module not found, it's fine, search for next pattern
       if e.name == f"{agent_name}.agent" or e.name == agent_name:
+        print(f" [DEBUG] {e}")
         logger.debug("Module %s.agent not found.", agent_name)
       else:
         # it's the case the module imported by {agent_name}.agent module is not
