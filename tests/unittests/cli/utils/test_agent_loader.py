@@ -351,7 +351,7 @@ class TestAgentLoader:
       assert f"Fail to load '{agent_name}' module." in str(exc_info.value)
       assert "No module named 'non_existent_module'" in str(exc_info.value)
 
-  def test_agent_internal_import_error(self):
+  def test_agent_internal_syntax_error(self):
     """Test other import errors within an agent's code (e.g., SyntaxError)."""
     with tempfile.TemporaryDirectory() as temp_dir:
       temp_path = Path(temp_dir)
@@ -380,9 +380,46 @@ class TestAgentLoader:
       ) as exc_info:  # Or potentially ImportError depending on Python version specifics with importlib
         loader.load_agent(agent_name)
 
-      assert f"Fail to load '{agent_name}' module." in str(exc_info.value)
+      assert str(exc_info.value).startswith(
+          f"Fail to load '{agent_name}' module."
+      )
       # Check for part of the original SyntaxError message
       assert "invalid syntax" in str(exc_info.value).lower()
+
+  def test_agent_internal_name_error(self):
+    """Test other import errors within an agent's code (e.g., SyntaxError)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_name = "name_error_agent"
+
+      # Create agent with a syntax error (which leads to ImportError)
+      agent_file = temp_path / f"{agent_name}.py"
+      agent_file.write_text(dedent(f"""
+                from google.adk.agents.base_agent import BaseAgent
+
+                # name is not defined
+                print(non_existing_name)
+
+                class {agent_name.title()}Agent(BaseAgent):
+                    def __init__(self):
+                        super().__init__(name="{agent_name}")
+
+                root_agent = {agent_name.title()}Agent()
+            """))
+
+      loader = AgentLoader(str(temp_path))
+      # SyntaxError is a subclass of Exception, and importlib might wrap it
+      # The loader is expected to prepend its message and re-raise.
+      with pytest.raises(
+          NameError
+      ) as exc_info:  # Or potentially ImportError depending on Python version specifics with importlib
+        loader.load_agent(agent_name)
+
+      assert str(exc_info.value).startswith(
+          f"Fail to load '{agent_name}' module."
+      )
+      # Check for part of the original SyntaxError message
+      assert "is not defined" in str(exc_info.value).lower()
 
   def test_sys_path_modification(self):
     """Test that agents_dir is added to sys.path correctly."""
