@@ -31,12 +31,6 @@ class EvalMetric(BaseModel):
       alias_generator=alias_generators.to_camel,
       populate_by_name=True,
   )
-
-  model_config = ConfigDict(
-      alias_generator=alias_generators.to_camel,
-      populate_by_name=True,
-  )
-
   metric_name: str
   """The name of the metric."""
 

@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import asynccontextmanager
+import json
 import logging
 import os
 from pathlib import Path
@@ -31,6 +33,7 @@ import click
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
@@ -41,7 +44,6 @@ from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
 import graphviz
 from opentelemetry import trace
-from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
@@ -50,10 +52,10 @@ from pydantic import ValidationError
 from starlette.types import Lifespan
 from typing_extensions import override
 
-from ..agents import RunConfig
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
+from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
 from ..artifacts.gcs_artifact_service import GcsArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -69,7 +71,6 @@ from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
-from ..sessions.database_session_service import DatabaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
@@ -81,6 +82,34 @@ from .utils import create_empty_state
 from .utils import envs
 from .utils import evals
 from .utils.agent_loader import AgentLoader
+
+
+def dump_to_jsonable_dict(obj: Any) -> Any:
+  """Helper function to dump a Pydantic model or structure to a JSON-ready Python dict/list.
+
+  This is needed to properly serialize the Pydantic models to camelCase json
+  when we've set the
+  response_model=None in the FastAPI endpoint configuration.
+
+  Args:
+    obj: The object to dump. Should be the instance of the Pydantic type you
+      annotated the FastAPI endpointfunction signature with
+
+  Returns:
+    The JSON-dumpable object.
+  """
+  if hasattr(obj, "model_dump") and callable(getattr(obj, "model_dump")):
+    return dump_to_jsonable_dict(
+        obj.model_dump(mode="json", exclude_none=True, by_alias=True)
+    )
+  elif isinstance(obj, list):
+    return [dump_to_jsonable_dict(item) for item in obj]
+  elif isinstance(obj, dict):
+    return {key: dump_to_jsonable_dict(value) for key, value in obj.items()}
+  elif isinstance(obj, bytes):
+    return base64.b64encode(obj).decode("utf-8")
+  return obj
+
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -199,6 +228,7 @@ def get_fast_api_app(
     web: bool,
     trace_to_cloud: bool = False,
     lifespan: Optional[Lifespan[FastAPI]] = None,
+    web_assets_path: Optional[Path] = None,
 ) -> FastAPI:
   # InMemory tracing dict.
   trace_dict: dict[str, Any] = {}
@@ -214,6 +244,8 @@ def get_fast_api_app(
   if trace_to_cloud:
     envs.load_dotenv_for_agent("", agents_dir)
     if project_id := os.environ.get("GOOGLE_CLOUD_PROJECT", None):
+      from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter  # pylint: disable=g-import-not-at-top
+
       processor = export.BatchSpanProcessor(
           CloudTraceSpanExporter(project_id=project_id)
       )
@@ -273,6 +305,8 @@ def get_fast_api_app(
           os.environ["GOOGLE_CLOUD_LOCATION"],
       )
     else:
+      from ..sessions.database_session_service import DatabaseSessionService  # pylint: disable=g-import-not-at-top
+
       session_service = DatabaseSessionService(db_url=session_db_url)
   else:
     session_service = InMemorySessionService()
@@ -337,6 +371,7 @@ def get_fast_api_app(
   @app.get(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def get_session(
       app_name: str, user_id: str, session_id: str
@@ -348,11 +383,12 @@ def get_fast_api_app(
     )
     if not session:
       raise HTTPException(status_code=404, detail="Session not found")
-    return session
+    return dump_to_jsonable_dict(session)
 
   @app.get(
       "/apps/{app_name}/users/{user_id}/sessions",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def list_sessions(app_name: str, user_id: str) -> list[Session]:
     # Connect to managed session if agent_engine_id is set.
@@ -361,7 +397,7 @@ def get_fast_api_app(
         app_name=app_name, user_id=user_id
     )
     return [
-        session
+        dump_to_jsonable_dict(session)
         for session in list_sessions_response.sessions
         # Remove sessions that were generated as a part of Eval.
         if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
@@ -370,6 +406,7 @@ def get_fast_api_app(
   @app.post(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def create_session_with_id(
       app_name: str,
@@ -390,13 +427,19 @@ def get_fast_api_app(
           status_code=400, detail=f"Session already exists: {session_id}"
       )
     logger.info("New session created: %s", session_id)
-    return await session_service.create_session(
-        app_name=app_name, user_id=user_id, state=state, session_id=session_id
+    return dump_to_jsonable_dict(
+        await session_service.create_session(
+            app_name=app_name,
+            user_id=user_id,
+            state=state,
+            session_id=session_id,
+        )
     )
 
   @app.post(
       "/apps/{app_name}/users/{user_id}/sessions",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def create_session(
       app_name: str,
@@ -406,8 +449,10 @@ def get_fast_api_app(
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else app_name
     logger.info("New session created")
-    return await session_service.create_session(
-        app_name=app_name, user_id=user_id, state=state
+    return dump_to_jsonable_dict(
+        await session_service.create_session(
+            app_name=app_name, user_id=user_id, state=state
+        )
     )
 
   def _get_eval_set_file_path(app_name, agents_dir, eval_set_id) -> str:
@@ -420,6 +465,7 @@ def get_fast_api_app(
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}",
       response_model_exclude_none=True,
+      response_model=None,
   )
   def create_eval_set(
       app_name: str,
@@ -437,6 +483,7 @@ def get_fast_api_app(
   @app.get(
       "/apps/{app_name}/eval_sets",
       response_model_exclude_none=True,
+      response_model=None,
   )
   def list_eval_sets(app_name: str) -> list[str]:
     """Lists all eval sets for the given app."""
@@ -444,11 +491,18 @@ def get_fast_api_app(
 
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
+      response_model=None,
       response_model_exclude_none=True,
   )
   async def add_session_to_eval_set(
-      app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
+      app_name: str, eval_set_id: str, raw_req: Request
   ):
+    body = await raw_req.body()
+    try:
+      req = AddSessionToEvalSetRequest.model_validate_json(body)
+    except ValidationError as e:
+      raise HTTPException(status_code=422, detail=e.errors()) from e
+
     # Get the session
     session = await session_service.get_session(
         app_name=app_name, user_id=req.user_id, session_id=req.session_id
@@ -480,6 +534,7 @@ def get_fast_api_app(
   @app.get(
       "/apps/{app_name}/eval_sets/{eval_set_id}/evals",
       response_model_exclude_none=True,
+      response_model=None,
   )
   def list_evals_in_eval_set(
       app_name: str,
@@ -498,6 +553,7 @@ def get_fast_api_app(
   @app.get(
       "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
       response_model_exclude_none=True,
+      response_model=None,
   )
   def get_eval(app_name: str, eval_set_id: str, eval_case_id: str) -> EvalCase:
     """Gets an eval case in an eval set."""
@@ -506,7 +562,7 @@ def get_fast_api_app(
     )
 
     if eval_case_to_find:
-      return eval_case_to_find
+      return dump_to_jsonable_dict(eval_case_to_find)
 
     raise HTTPException(
         status_code=404,
@@ -516,13 +572,19 @@ def get_fast_api_app(
   @app.put(
       "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
       response_model_exclude_none=True,
+      response_model=None,
   )
-  def update_eval(
+  async def update_eval(
       app_name: str,
       eval_set_id: str,
       eval_case_id: str,
-      updated_eval_case: EvalCase,
+      raw_req: Request,
   ):
+    body = await raw_req.body()
+    try:
+      updated_eval_case = EvalCase.model_validate_json(body)
+    except ValidationError as e:
+      raise HTTPException(status_code=422, detail=e.errors()) from e
     if updated_eval_case.eval_id and updated_eval_case.eval_id != eval_case_id:
       raise HTTPException(
           status_code=400,
@@ -535,8 +597,10 @@ def get_fast_api_app(
     # field.
     updated_eval_case.eval_id = eval_case_id
     try:
-      eval_sets_manager.update_eval_case(
-          app_name, eval_set_id, updated_eval_case
+      dump_to_jsonable_dict(
+          eval_sets_manager.update_eval_case(
+              app_name, eval_set_id, updated_eval_case
+          )
       )
     except NotFoundError as nfe:
       raise HTTPException(status_code=404, detail=str(nfe)) from nfe
@@ -551,9 +615,10 @@ def get_fast_api_app(
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def run_eval(
-      app_name: str, eval_set_id: str, req: RunEvalRequest
+      app_name: str, eval_set_id: str, raw_req: Request
   ) -> list[RunEvalResult]:
     """Runs an eval given the details in the eval request."""
     from .cli_eval import run_evals
@@ -561,6 +626,11 @@ def get_fast_api_app(
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
     eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
+    body = await raw_req.body()
+    try:
+      req = RunEvalRequest.model_validate_json(body)
+    except ValidationError as e:
+      raise HTTPException(status_code=422, detail=e.errors()) from e
 
     if not eval_set:
       raise HTTPException(
@@ -587,18 +657,19 @@ def get_fast_api_app(
           artifact_service=artifact_service,
       ):
         run_eval_results.append(
-            RunEvalResult(
-                app_name=app_name,
-                eval_set_file=eval_case_result.eval_set_file,
-                eval_set_id=eval_set_id,
-                eval_id=eval_case_result.eval_id,
-                final_eval_status=eval_case_result.final_eval_status,
-                eval_metric_results=eval_case_result.eval_metric_results,
-                overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
-                eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
-                user_id=eval_case_result.user_id,
-                session_id=eval_case_result.session_id,
-            )
+            dump_to_jsonable_dict(
+                RunEvalResult(
+                    eval_set_file=eval_case_result.eval_set_file,
+                    eval_set_id=eval_set_id,
+                    eval_id=eval_case_result.eval_id,
+                    final_eval_status=eval_case_result.final_eval_status,
+                    eval_metric_results=eval_case_result.eval_metric_results,
+                    overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
+                    eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
+                    user_id=eval_case_result.user_id,
+                    session_id=eval_case_result.session_id,
+                )
+            ),
         )
         eval_case_result.session_details = await session_service.get_session(
             app_name=app_name,
@@ -619,6 +690,7 @@ def get_fast_api_app(
   @app.get(
       "/apps/{app_name}/eval_results/{eval_result_id}",
       response_model_exclude_none=True,
+      response_model=None,
   )
   def get_eval_result(
       app_name: str,
@@ -626,8 +698,8 @@ def get_fast_api_app(
   ) -> EvalSetResult:
     """Gets the eval result for the given eval id."""
     try:
-      return eval_set_results_manager.get_eval_set_result(
-          app_name, eval_result_id
+      return dump_to_jsonable_dict(
+          eval_set_results_manager.get_eval_set_result(app_name, eval_result_id)
       )
     except ValueError as ve:
       raise HTTPException(status_code=404, detail=str(ve)) from ve
@@ -637,6 +709,7 @@ def get_fast_api_app(
   @app.get(
       "/apps/{app_name}/eval_results",
       response_model_exclude_none=True,
+      response_model=None,
   )
   def list_eval_results(app_name: str) -> list[str]:
     """Lists all eval results for the given app."""
@@ -653,6 +726,7 @@ def get_fast_api_app(
   @app.get(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def load_artifact(
       app_name: str,
@@ -671,11 +745,12 @@ def get_fast_api_app(
     )
     if not artifact:
       raise HTTPException(status_code=404, detail="Artifact not found")
-    return artifact
+    return dump_to_jsonable_dict(artifact)
 
   @app.get(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def load_artifact_version(
       app_name: str,
@@ -694,11 +769,12 @@ def get_fast_api_app(
     )
     if not artifact:
       raise HTTPException(status_code=404, detail="Artifact not found")
-    return artifact
+    return dump_to_jsonable_dict(artifact)
 
   @app.get(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def list_artifact_names(
       app_name: str, user_id: str, session_id: str
@@ -711,6 +787,7 @@ def get_fast_api_app(
   @app.get(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def list_artifact_versions(
       app_name: str, user_id: str, session_id: str, artifact_name: str
@@ -737,8 +814,17 @@ def get_fast_api_app(
         filename=artifact_name,
     )
 
-  @app.post("/run", response_model_exclude_none=True)
-  async def agent_run(req: AgentRunRequest) -> list[Event]:
+  @app.post(
+      "/run",
+      response_model_exclude_none=True,
+      response_model=None,
+  )
+  async def agent_run(raw_req: Request) -> list[Event]:
+    body = await raw_req.body()
+    try:
+      req = AgentRunRequest.model_validate_json(body)
+    except ValidationError as e:
+      raise HTTPException(status_code=422, detail=e.errors()) from e
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else req.app_name
     session = await session_service.get_session(
@@ -756,10 +842,19 @@ def get_fast_api_app(
         )
     ]
     logger.info("Generated %s events in agent run: %s", len(events), events)
-    return events
+    return [
+        json.loads(event.model_dump_json(exclude_none=True, by_alias=True))
+        for event in events
+    ]
 
   @app.post("/run_sse")
-  async def agent_run_sse(req: AgentRunRequest) -> StreamingResponse:
+  async def agent_run_sse(raw_req: Request) -> StreamingResponse:
+    body = await raw_req.body()
+    try:
+      req = AgentRunRequest.model_validate_json(body)
+    except ValidationError as e:
+      raise HTTPException(status_code=422, detail=e.errors()) from e
+
     # Connect to managed session if agent_engine_id is set.
     app_name = agent_engine_id if agent_engine_id else req.app_name
     # SSE endpoint
@@ -798,6 +893,7 @@ def get_fast_api_app(
   @app.get(
       "/apps/{app_name}/users/{user_id}/sessions/{session_id}/events/{event_id}/graph",
       response_model_exclude_none=True,
+      response_model=None,
   )
   async def get_event_graph(
       app_name: str, user_id: str, session_id: str, event_id: str
@@ -843,7 +939,9 @@ def get_fast_api_app(
           root_agent, [(from_name, to_name)]
       )
     if dot_graph and isinstance(dot_graph, graphviz.Digraph):
-      return GetEventGraphResult(dot_src=dot_graph.source)
+      return dump_to_jsonable_dict(
+          GetEventGraphResult(dot_src=dot_graph.source)
+      )
     else:
       return {}
 
@@ -939,8 +1037,9 @@ def get_fast_api_app(
     mimetypes.add_type("application/javascript", ".js", True)
     mimetypes.add_type("text/javascript", ".js", True)
 
-    BASE_DIR = Path(__file__).parent.resolve()
-    ANGULAR_DIST_PATH = BASE_DIR / "browser"
+    if not web_assets_path:
+      base_dir = Path(__file__).parent.resolve()
+      web_assets_path = base_dir / "browser"
 
     @app.get("/")
     async def redirect_root_to_dev_ui():
@@ -952,7 +1051,7 @@ def get_fast_api_app(
 
     app.mount(
         "/dev-ui/",
-        StaticFiles(directory=ANGULAR_DIST_PATH, html=True),
+        StaticFiles(directory=web_assets_path, html=True),
         name="static",
     )
   return app

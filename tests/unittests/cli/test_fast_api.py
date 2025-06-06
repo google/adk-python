@@ -31,8 +31,10 @@ from google.adk.evaluation.eval_set import EvalSet
 from google.adk.events import Event
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
+from google.adk.sessions.session import Session
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 # Configure logging to help diagnose server startup issues
@@ -40,7 +42,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 # Here we create a dummy agent module that get_fast_api_app expects
@@ -124,9 +126,9 @@ class _MockEvalCaseResult(BaseModel):
   user_id: str
   session_id: str
   eval_set_file: str
-  eval_metric_results: list = {}
-  overall_eval_metric_results: list = ({},)
-  eval_metric_result_per_invocation: list = {}
+  eval_metric_results: list = Field(default_factory=list)
+  overall_eval_metric_results: list = Field(default_factory=list)
+  eval_metric_result_per_invocation: list = Field(default_factory=list)
 
 
 # Mock for the run_evals function, tailored for test_run_eval
@@ -147,6 +149,7 @@ async def mock_run_evals_for_fast_api(*args, **kwargs):
       # Provide other fields if RunEvalResult or subsequent processing needs them
       eval_metric_results=[],
       eval_metric_result_per_invocation=[],
+      eval_set_file="test_eval_set_file.json",
   )
 
 
@@ -194,14 +197,14 @@ def mock_session_service():
   session_data = {
       "test_app": {
           "test_user": {
-              "test_session": {
-                  "id": "test_session",
-                  "app_name": "test_app",
-                  "user_id": "test_user",
-                  "events": [],
-                  "state": {},
-                  "created_at": time.time(),
-              }
+              "test_session": Session(
+                  id="test_session",
+                  app_name="test_app",
+                  user_id="test_user",
+                  events=[],
+                  state={},
+                  last_update_time=time.time(),
+              )
           }
       }
   }
@@ -233,13 +236,14 @@ def mock_session_service():
         session_data[app_name][user_id] = {}
 
       # Create the session
-      session = {
-          "id": session_id,
-          "app_name": app_name,
-          "user_id": user_id,
-          "events": [],
-          "state": state or {},
-      }
+      session = Session(
+          id=session_id,
+          app_name=app_name,
+          user_id=user_id,
+          events=[],
+          state=state or {},
+          last_update_time=time.time(),
+      )
 
       session_data[app_name][user_id][session_id] = session
       return session
@@ -481,7 +485,7 @@ async def create_test_session(
       state={},
   )
 
-  logger.info(f"Created test session: {session['id']}")
+  logger.info(f"Created test session: {session.id}")
   return test_session_info
 
 
@@ -700,8 +704,16 @@ def test_run_eval(test_app, create_test_eval_set):
             "evalStatus": 1,
         }],
     }
-    for k, v in expected_eval_case_result.items():
-      assert actual_eval_case_result[k] == v
+    for key, expected_value in expected_eval_case_result.items():
+      if key == "overallEvalMetricResults":
+        for i, metric_result in enumerate(expected_value):
+          for metric_key, metric_expected_value in metric_result.items():
+            assert (
+                actual_eval_case_result[key][i][metric_key]
+                == metric_expected_value
+            )
+      else:
+        assert actual_eval_case_result[key] == expected_value
 
   info = create_test_eval_set
   url = f"/apps/{info['app_name']}/eval_sets/test_eval_set_id/run_eval"
