@@ -23,6 +23,31 @@ from .eval_case import EvalCase
 from .eval_set import EvalSet
 
 
+class EvalSetStorageManager(ABC):
+  """This class is currently under development and should be used with caution.
+
+  Its API may change without notice.
+
+  An interface to manage storage of eval sets.
+  """
+
+  @abstractmethod
+  def get_eval_set_path(self, app_name: str, eval_set_id: str) -> str:
+    """Gets the path to the EvalSet identified by app_name and eval_set_id."""
+
+  @abstractmethod
+  def list_eval_sets(self, app_name: str) -> list[str]:
+    """Lists all eval sets for the given app_name."""
+
+  @abstractmethod
+  def save_eval_set(self, path: str, eval_set: EvalSet):
+    """Writes the EvalSet to the given path."""
+
+  @abstractmethod
+  def load_eval_set(self, path: str) -> Optional[EvalSet]:
+    """Loads the EvalSet from the given path."""
+
+
 class EvalSetsManager(ABC):
   """An interface to manage an Eval Sets."""
 
