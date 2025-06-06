@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -505,11 +507,12 @@ def main():
     converter = GoogleApiToOpenApiConverter(args.api_name, args.api_version)
     converter.convert()
     converter.save_openapi_spec(args.output)
-    print(
-        f"Successfully converted {args.api_name} {args.api_version} to"
-        " OpenAPI v3"
+    logger.info(
+        "Successfully converted %s %s to OpenAPI v3",
+        args.api_name,
+        args.api_version,
     )
-    print(f"Output saved to {args.output}")
+    logger.info("Output saved to %s", args.output)
   except Exception as e:
     logger.error("Conversion failed: %s", e)
     return 1
