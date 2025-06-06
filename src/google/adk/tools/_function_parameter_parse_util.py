@@ -37,6 +37,7 @@ _py_builtin_type_to_schema_type = {
     bool: types.Type.BOOLEAN,
     list: types.Type.ARRAY,
     dict: types.Type.OBJECT,
+    None: types.Type.NULL,
 }
 
 logger = logging.getLogger('google_adk.' + __name__)

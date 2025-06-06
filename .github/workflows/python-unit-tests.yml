@@ -49,5 +49,5 @@ jobs:
       run: |
         source .venv/bin/activate
         pytest tests/unittests \
-          --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py        
-          
+          --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
+
