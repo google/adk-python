@@ -12,5 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: date+base_cl
-__version__ = "1.1.1"
+# version: major.minor.patch
+__version__ = "1.2.1"
