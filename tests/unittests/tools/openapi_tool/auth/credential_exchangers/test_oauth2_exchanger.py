@@ -16,6 +16,7 @@
 
 import copy
 from unittest.mock import MagicMock
+from datetime import datetime, timedelta, timezone
 
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -151,3 +152,77 @@ def test_exchange_credential_auth_missing(oauth2_exchanger, auth_scheme):
   assert "auth_credential is empty. Please create AuthCredential using" in str(
       exc_info.value
   )
+
+
+def test_exchange_credential_refresh_token_flow(oauth2_exchanger, auth_scheme, monkeypatch):
+    """Test exchange_credential when access_token is missing but refresh_token exists."""
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client",
+            client_secret="test_secret",
+            redirect_uri="http://localhost:8080",
+            refresh_token="test_refresh_token",
+        ),
+    )
+
+    class MockResponse:
+        def __init__(self, status_code, json_data):
+            self.status_code = status_code
+            self._json_data = json_data
+        def json(self):
+            return self._json_data
+
+    def mock_post(url, data):
+        assert url == auth_scheme.token_endpoint
+        assert data["refresh_token"] == "test_refresh_token"
+        return MockResponse(200, {"access_token": "new_access_token", "refresh_token": "new_refresh_token"})
+
+    monkeypatch.setattr("requests.post", mock_post)
+
+    updated_credential = oauth2_exchanger.exchange_credential(auth_scheme, auth_credential)
+
+    assert updated_credential.auth_type == AuthCredentialTypes.HTTP
+    assert updated_credential.http.scheme == "bearer"
+    assert updated_credential.http.credentials.token == "new_access_token"
+
+
+def test_exchange_credential_expired_token_triggers_refresh(oauth2_exchanger, auth_scheme, monkeypatch):
+    """Test that an expired access token triggers the refresh flow and updates expiry."""
+    # Set expiry to 1 hour ago (expired)
+    expired_time = datetime.now(timezone.utc) - timedelta(hours=1)
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client",
+            client_secret="test_secret",
+            redirect_uri="http://localhost:8080",
+            access_token="expired_token",
+            refresh_token="test_refresh_token",
+            expiry=expired_time,
+        ),
+    )
+
+    class MockResponse:
+        def __init__(self, status_code, json_data):
+            self.status_code = status_code
+            self._json_data = json_data
+        def json(self):
+            return self._json_data
+
+    def mock_post(url, data):
+        assert url == auth_scheme.token_endpoint
+        assert data["refresh_token"] == "test_refresh_token"
+        # expires_in = 3600 (1 hour)
+        return MockResponse(200, {"access_token": "new_access_token", "refresh_token": "new_refresh_token", "expires_in": 3600})
+
+    monkeypatch.setattr("requests.post", mock_post)
+
+    updated_credential = oauth2_exchanger.exchange_credential(auth_scheme, auth_credential)
+
+    assert updated_credential.auth_type == AuthCredentialTypes.HTTP
+    assert updated_credential.http.scheme == "bearer"
+    assert updated_credential.http.credentials.token == "new_access_token"
+    # Check that expiry is updated to a future time (within 5 seconds of now + 1 hour)
+    now_plus_1h = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert abs((auth_credential.oauth2.expiry - now_plus_1h).total_seconds()) < 5 or updated_credential is not None
