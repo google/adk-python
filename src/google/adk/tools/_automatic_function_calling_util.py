@@ -230,6 +230,7 @@ def build_function_declaration(
       )
       new_func.__signature__ = new_sig
       new_func.__doc__ = func.__doc__
+      new_func.__annotations__ = func.__annotations__
 
   return (
       from_function_with_options(func, variant)
