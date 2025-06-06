@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from .auth_credential import AuthCredential
 from .auth_credential import BaseModelWithConfig
 from .auth_schemes import AuthScheme
@@ -42,6 +44,34 @@ class AuthConfig(BaseModelWithConfig):
   authorization uri, state, etc. then it's copied to this field. Client will use
   this field to guide the user through the OAuth2 flow and fill auth response in
   this field"""
+
+  def get_credential_key(self):
+    """Generates a hash key based on auth_scheme and raw_auth_credential. This
+    hash key can be used to store / retrieve exchanged_auth_credential in a
+    credentials store.
+    """
+    auth_scheme = self.auth_scheme
+
+    if auth_scheme.model_extra:
+      auth_scheme = auth_scheme.model_copy(deep=True)
+      auth_scheme.model_extra.clear()
+    scheme_name = (
+        f"{auth_scheme.type_.name}_{hash(auth_scheme.model_dump_json())}"
+        if auth_scheme
+        else ""
+    )
+
+    auth_credential = self.raw_auth_credential
+    if auth_credential.model_extra:
+      auth_credential = auth_credential.model_copy(deep=True)
+      auth_credential.model_extra.clear()
+    credential_name = (
+        f"{auth_credential.auth_type.value}_{hash(auth_credential.model_dump_json())}"
+        if auth_credential
+        else ""
+    )
+
+    return f"adk_{scheme_name}_{credential_name}"
 
 
 class AuthToolArguments(BaseModelWithConfig):
