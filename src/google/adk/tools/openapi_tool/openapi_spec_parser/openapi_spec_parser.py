@@ -110,6 +110,12 @@ class OpenApiSpecParser:
         operation_dict = path_item.get(method)
         if operation_dict is None:
           continue
+      
+        # Append path-level parameters
+        operation_dict['parameters'] = (
+            operation_dict.get("parameters", [])
+            + path_item.get("parameters", [])
+        )
 
         # If operation ID is missing, assign an operation id based on path
         # and method
