@@ -15,48 +15,13 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from typing import Optional
+from typing import Tuple
 
 import click
 
-_DOCKERFILE_TEMPLATE = """
-FROM python:3.11-slim
-WORKDIR /app
-
-# Create a non-root user
-RUN adduser --disabled-password --gecos "" myuser
-
-# Change ownership of /app to myuser
-RUN chown -R myuser:myuser /app
-
-# Switch to the non-root user
-USER myuser
-
-# Set up environment variables - Start
-ENV PATH="/home/myuser/.local/bin:$PATH"
-
-ENV GOOGLE_GENAI_USE_VERTEXAI=1
-ENV GOOGLE_CLOUD_PROJECT={gcp_project_id}
-ENV GOOGLE_CLOUD_LOCATION={gcp_region}
-
-# Set up environment variables - End
-
-# Install ADK - Start
-RUN pip install google-adk=={adk_version}
-# Install ADK - End
-
-# Copy agent - Start
-
-COPY "agents/{app_name}/" "/app/agents/{app_name}/"
-{install_agent_deps}
-
-# Copy agent - End
-
-EXPOSE {port}
-
-CMD adk {command} --port={port} {host_option} {session_db_option} {trace_to_cloud_option} "/app/agents"
-"""
+from .config.dockerfile_template import _DOCKERFILE_TEMPLATE
+from .deployers.deployer_factory import DeployerFactory
 
 _AGENT_ENGINE_APP_TEMPLATE = """
 from agent import root_agent
@@ -69,24 +34,10 @@ adk_app = AdkApp(
 """
 
 
-def _resolve_project(project_in_option: Optional[str]) -> str:
-  if project_in_option:
-    return project_in_option
-
-  result = subprocess.run(
-      ['gcloud', 'config', 'get-value', 'project'],
-      check=True,
-      capture_output=True,
-      text=True,
-  )
-  project = result.stdout.strip()
-  click.echo(f'Use default project: {project}')
-  return project
-
-
-def to_cloud_run(
+def run(
     *,
     agent_folder: str,
+    provider: str,
     project: Optional[str],
     region: Optional[str],
     service_name: str,
@@ -99,6 +50,8 @@ def to_cloud_run(
     session_db_url: str,
     artifact_storage_uri: Optional[str],
     adk_version: str,
+    provider_args: Tuple[str],
+    env: Tuple[str],
 ):
   """Deploys an agent to Google Cloud Run.
 
@@ -117,6 +70,7 @@ def to_cloud_run(
 
   Args:
     agent_folder: The folder (absolute path) containing the agent source code.
+    provider: Target deployment platform (cloud_run, docker, etc).
     project: Google Cloud project id.
     region: Google Cloud region.
     service_name: The service name in Cloud Run.
@@ -129,10 +83,15 @@ def to_cloud_run(
     session_db_url: The database URL to connect the session.
     artifact_storage_uri: The artifact storage URI to store the artifacts.
     adk_version: The ADK version to use in Cloud Run.
+    provider_args: The arguments specific to cloud provider
+    env: The environment valriables provided
+
   """
   app_name = app_name or os.path.basename(agent_folder)
+  mode = 'web' if with_ui else 'api_server'
+  trace_to_cloud_option = '--trace_to_cloud' if trace_to_cloud else ''
 
-  click.echo(f'Start generating Cloud Run source files in {temp_folder}')
+  click.echo(f'Start generating deployment files in {temp_folder}')
 
   # remove temp_folder if exists
   if os.path.exists(temp_folder):
@@ -160,15 +119,15 @@ def to_cloud_run(
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command=mode,
         install_agent_deps=install_agent_deps,
         session_db_option=f'--session_db_url={session_db_url}'
         if session_db_url
         else '',
+        trace_to_cloud_option=trace_to_cloud_option,
         artifact_storage_option=f'--artifact_storage_uri={artifact_storage_uri}'
         if artifact_storage_uri
         else '',
-        trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         adk_version=adk_version,
         host_option=host_option,
     )
@@ -179,31 +138,22 @@ def to_cloud_run(
           dockerfile_content,
       )
     click.echo(f'Creating Dockerfile complete: {dockerfile_path}')
-
-    # Deploy to Cloud Run
-    click.echo('Deploying to Cloud Run...')
-    region_options = ['--region', region] if region else []
-    project = _resolve_project(project)
-    subprocess.run(
-        [
-            'gcloud',
-            'run',
-            'deploy',
-            service_name,
-            '--source',
-            temp_folder,
-            '--project',
-            project,
-            *region_options,
-            '--port',
-            str(port),
-            '--verbosity',
-            verbosity,
-            '--labels',
-            'created-by=adk',
-        ],
-        check=True,
+    click.echo(f'Deploying to {provider}...')
+    deployer = DeployerFactory.get_deployer(provider)
+    deployer.deploy(
+        agent_folder=agent_folder,
+        temp_folder=temp_folder,
+        service_name=service_name,
+        provider_args=provider_args,
+        env_vars=env,
+        project=project,
+        region=region,
+        port=port,
+        verbosity=verbosity,
     )
+
+    click.echo(f'Deployment to {provider} complete.')
+
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(temp_folder)
