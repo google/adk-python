@@ -80,7 +80,7 @@ class EvalSetResult(BaseModel):
       populate_by_name=True,
   )
   eval_set_result_id: str
-  eval_set_result_name: str
+  eval_set_result_name: Optional[str] = None
   eval_set_id: str
   eval_case_results: list[EvalCaseResult] = Field(default_factory=list)
   creation_timestamp: float = 0.0

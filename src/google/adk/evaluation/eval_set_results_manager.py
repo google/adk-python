@@ -16,9 +16,32 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from typing import Optional
 
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
+
+
+class EvalSetResultsStorageManager(ABC):
+  """An interface to manage storage of eval set results."""
+
+  @abstractmethod
+  def get_eval_set_result_path(
+      self, app_name: str, eval_set_result_id: str
+  ) -> str:
+    """Gets the path to the EvalSetResult identified by app_name and eval_set_result_id."""
+
+  @abstractmethod
+  def list_eval_set_results(self, app_name: str) -> list[str]:
+    """Gets the EvalSetResult id from the given path."""
+
+  @abstractmethod
+  def save_eval_set_result(self, path: str, eval_set_result: EvalSetResult):
+    """Writes the EvalSetResult to the given path."""
+
+  @abstractmethod
+  def load_eval_set_result(self, path: str) -> Optional[EvalSetResult]:
+    """Loads the EvalSetResult from the given path."""
 
 
 class EvalSetResultsManager(ABC):
