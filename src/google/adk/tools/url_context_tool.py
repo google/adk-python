@@ -26,8 +26,8 @@ if TYPE_CHECKING:
   from ..models import LlmRequest
 
 
-class GoogleSearchTool(BaseTool):
-  """A built-in tool that is automatically invoked by Gemini 2 models to retrieve search results from Google Search.
+class UrlContextTool(BaseTool):
+  """A built-in tool that is automatically invoked by Gemini 2 models to retrieve content from the URLs and use that content to inform and shape its response.
 
   This tool operates internally within the model and does not require or perform
   local code execution.
@@ -35,7 +35,7 @@ class GoogleSearchTool(BaseTool):
 
   def __init__(self):
     # Name and description are not used because this is a model built-in tool.
-    super().__init__(name='google_search', description='google_search')
+    super().__init__(name='url_context', description='url_context')
 
   @override
   async def process_llm_request(
@@ -47,21 +47,15 @@ class GoogleSearchTool(BaseTool):
     llm_request.config = llm_request.config or types.GenerateContentConfig()
     llm_request.config.tools = llm_request.config.tools or []
     if llm_request.model and 'gemini-1' in llm_request.model:
-      if llm_request.config.tools:
-        raise ValueError(
-            'Google search tool can not be used with other tools in Gemini 1.x.'
-        )
-      llm_request.config.tools.append(
-          types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())
-      )
+      raise ValueError('Url context tool can not be used in Gemini 1.x.')
     elif llm_request.model and 'gemini-2' in llm_request.model:
       llm_request.config.tools.append(
-          types.Tool(google_search=types.GoogleSearch())
+          types.Tool(url_context=types.UrlContext())
       )
     else:
       raise ValueError(
-          f'Google search tool is not supported for model {llm_request.model}'
+          f'Url context tool is not supported for model {llm_request.model}'
       )
 
 
-google_search = GoogleSearchTool()
+url_context = UrlContextTool()
