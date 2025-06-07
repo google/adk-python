@@ -128,8 +128,13 @@ class ApprovalPolicyRegistry(object):
     """
     if policy.policy_name is None:
       raise ValueError("Policy name cannot be None")
-    if policy not in cls.tool_policies:
-      cls.tool_policies.append(policy)
+    for existing_policy in cls.tool_policies:
+      if existing_policy.policy_name != policy.policy_name:
+        continue
+      if existing_policy.actions != policy.actions:
+        continue
+      return
+    cls.tool_policies.append(policy)
 
   @classmethod
   def get_tool_policies(cls, tool_name: str) -> list[FunctionToolPolicy]:
