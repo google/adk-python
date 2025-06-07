@@ -4,141 +4,116 @@ This template provides a specialized agent for data analysis tasks, including da
 
 ## Features
 
-- **Data Loading**: Load data from various sources and formats (CSV, JSON, Excel)
-- **Data Preprocessing**: Clean and prepare data for analysis
-  - Handle missing values (drop, fill with mean/median/mode/constant)
-  - Detect and handle outliers (z-score, IQR, percentile methods)
-  - Engineer features (polynomial, interaction, binning, date features)
-  - Encode categorical variables (one-hot, label, ordinal, target encoding)
-  - Normalize data (min-max, z-score, robust scaling)
-  - Remove duplicates
-  - Convert data types
-- **Data Analysis**: Analyze data to extract insights
-  - Summary statistics
-  - Correlation analysis
-  - Distribution analysis
-  - Outlier detection
-  - Time series analysis
-- **Data Visualization**: Create visualizations to illustrate findings
-  - Line plots
-  - Bar plots
-  - Scatter plots
-  - Histograms
-  - Box plots
-  - Heatmaps
-  - Pie charts
+- **Multiple Data Sources**: Load data from various sources including file uploads, Google Sheets, databases, and APIs.
+- **Comprehensive Preprocessing**: Clean and prepare data with operations for handling missing values, outliers, categorical encoding, and more.
+- **Automatic Analysis Detection**: Automatically detect appropriate analysis types and objectives based on dataset characteristics.
+- **Rich Analysis Capabilities**: Perform various types of analysis including summary statistics, correlation analysis, time series analysis, clustering, regression, and more.
+- **Visualization Generation**: Create visualizations to illustrate insights, with support for various chart types.
 
 ## Usage
 
 ```python
-from google.adk.agents.templates.data_analysis import DataAnalysisAgent
+from google.adk.agents.templates.data_analysis.data_analysis_agent import DataAnalysisAgent
 
-# Create a data analysis agent
+# Create a Data Analysis Agent
 agent = DataAnalysisAgent(
-    name="data_analyst",
+    name="data_analysis_agent",
     model="gemini-1.5-pro",
-    data_sources=["data.csv", "data.json", "data.xlsx"],
-    analysis_types=["summary", "correlation", "distribution", "outliers", "time_series"],
-    visualization_types=["line", "bar", "scatter", "histogram", "boxplot", "heatmap", "pie"],
-    preprocessing_operations=["clean_missing_values", "handle_outliers", "engineer_features", 
-                             "encode_categorical", "normalize_data", "remove_duplicates", "convert_types"]
+    description="A specialized agent for data analysis tasks.",
 )
 
-# Start a conversation with the agent
-response = agent.generate_content("Can you help me analyze this dataset?")
-print(response.text)
+# Use the agent to analyze data
+response = await agent.generate_content("Analyze the sales data in sales.csv and identify trends.")
 ```
+
+## Data Sources
+
+The agent supports loading data from various sources:
+
+- **File Upload**: Load data from local files (CSV, Excel, JSON, etc.)
+- **Google Sheets**: Connect to and load data from Google Sheets
+- **Databases**: Connect to databases (MySQL, PostgreSQL, SQLite, etc.)
+- **APIs**: Fetch data from APIs
 
 ## Preprocessing Operations
 
-The Data Analysis Agent includes a comprehensive set of preprocessing operations:
+The agent supports various preprocessing operations:
 
-### 1. Clean Missing Values
-- **Strategy**: drop, fill_mean, fill_median, fill_mode, fill_constant, fill_forward, fill_backward, fill_interpolate
-- **Example**: `{"strategy": "fill_mean", "columns": ["numeric_col1", "numeric_col2"]}`
-
-### 2. Handle Outliers
-- **Method**: zscore, iqr, percentile
-- **Treatment**: remove, cap, null
-- **Example**: `{"method": "zscore", "columns": ["numeric_col"], "threshold": 3, "treatment": "cap"}`
-
-### 3. Engineer Features
-- **Operation**: polynomial, interaction, binning, date_features, text_features
-- **Example**: `{"operation": "date_features", "column": "date_col", "features": ["year", "month", "day"]}`
-
-### 4. Encode Categorical
-- **Method**: one_hot, label, ordinal, target
-- **Example**: `{"method": "one_hot", "columns": ["categorical_col"], "drop_first": true}`
-
-### 5. Normalize Data
-- **Method**: minmax, zscore, robust, log
-- **Example**: `{"method": "minmax", "columns": ["numeric_col"], "feature_range": [0, 1]}`
-
-### 6. Remove Duplicates
-- **Example**: `{"subset": ["col1", "col2"], "keep": "first"}`
-
-### 7. Convert Types
-- **Example**: `{"type_mappings": {"col1": "float32", "col2": "category", "col3": "datetime"}}`
+- **clean_missing_values**: Handle missing values in the data (drop, fill with mean/median/mode/constant)
+- **handle_outliers**: Detect and handle outliers (z-score, IQR, percentile methods)
+- **engineer_features**: Create new features (polynomial, interaction, binning, date features)
+- **encode_categorical**: Encode categorical variables (one-hot, label, ordinal, target encoding)
+- **normalize_data**: Normalize or standardize numeric data (min-max, z-score, robust scaling)
+- **remove_duplicates**: Remove duplicate rows from the data
+- **convert_types**: Convert column data types (numeric, datetime, category)
 
 ## Analysis Types
 
-The Data Analysis Agent supports various analysis types:
+The agent supports various types of analysis:
 
-- **Summary**: Generate a summary of the data (shape, columns, data types, missing values, numeric summary)
-- **Correlation**: Calculate correlation matrix for numeric columns
-- **Distribution**: Analyze the distribution of a column (min, max, mean, median, std, quantiles for numeric; value counts for categorical)
-- **Outliers**: Detect outliers in a column using z-score or IQR method
-- **Time Series**: Analyze time series data (start/end date, duration, data points, trends)
+- **summary**: Generate basic statistics and summary of the data
+- **correlation**: Calculate correlation matrix between numeric columns
+- **distribution**: Analyze the distribution of values in a column
+- **outliers**: Detect outliers in numeric columns
+- **time_series**: Analyze time-based patterns and trends
+- **clustering**: Identify natural groupings in the data
+- **regression**: Build predictive models for numeric targets
+- **classification**: Build predictive models for categorical targets
+- **text_analysis**: Analyze text content and extract insights
+- **automatic**: Automatically detect the best analysis types for the data
 
 ## Visualization Types
 
-The Data Analysis Agent supports various visualization types:
+The agent supports various types of visualizations:
 
-- **Line**: Create a line plot (requires x and y parameters)
-- **Bar**: Create a bar plot (requires x and y parameters)
-- **Scatter**: Create a scatter plot (requires x and y parameters)
-- **Histogram**: Create a histogram (requires column parameter)
-- **Boxplot**: Create a box plot (requires column parameter, optional by parameter)
-- **Heatmap**: Create a correlation heatmap (optional columns parameter)
-- **Pie**: Create a pie chart (requires column parameter)
+- **bar**: Create bar charts for categorical data
+- **line**: Create line charts for time series or trends
+- **scatter**: Create scatter plots to show relationships between variables
+- **histogram**: Create histograms to show distributions
+- **box**: Create box plots to show distributions and outliers
+- **heatmap**: Create heatmaps to show correlations or patterns
+- **pie**: Create pie charts to show proportions
+- **pair**: Create pair plots to show relationships between multiple variables
+- **violin**: Create violin plots to show distributions
+- **count**: Create count plots for categorical data
+- **joint**: Create joint plots to show distributions and relationships
 
-## Customization
+## Automatic Analysis Detection
 
-You can customize the agent by:
+The agent can automatically detect the best analysis types and objectives for a dataset. This feature:
 
-- Specifying allowed data sources
-- Limiting available analysis types
-- Restricting visualization types
-- Providing additional tools
-- Customizing the instruction
+1. Creates a profile of the dataset (column types, missing values, etc.)
+2. Detects suitable analysis types based on the data characteristics
+3. Identifies potential analysis objectives (e.g., correlation analysis, time series analysis, clustering)
+4. Suggests relevant columns for each analysis objective
+5. Recommends appropriate visualizations for each objective
 
 ## Example
 
+See [data_analysis_example.py](../../examples/data_analysis_example.py) for a complete example of using the Data Analysis Agent.
+
+## Customization
+
+You can customize the agent by specifying:
+
+- **data_sources**: List of data sources to analyze
+- **analysis_types**: List of analysis types to perform
+- **visualization_types**: List of visualization types to generate
+- **preprocessing_operations**: List of preprocessing operations to perform
+- **memory_service**: Optional memory service for persisting analysis results
+
 ```python
-# Example of a complete data analysis workflow
-async def analyze_data(agent):
-    # Load data
-    load_response = await agent.generate_content(
-        "Load data from data.csv"
-    )
-    print(load_response.text)
-    
-    # Preprocess data
-    preprocess_response = await agent.generate_content(
-        "Clean missing values using mean imputation and handle outliers using the IQR method"
-    )
-    print(preprocess_response.text)
-    
-    # Analyze data
-    analysis_response = await agent.generate_content(
-        "Provide a summary of the data and analyze the correlation between columns"
-    )
-    print(analysis_response.text)
-    
-    # Visualize data
-    visualization_response = await agent.generate_content(
-        "Create a scatter plot of column1 vs column2 and a histogram of column3"
-    )
-    print(visualization_response.text)
+from google.adk.agents.templates.data_analysis.data_analysis_agent import DataAnalysisAgent
+
+# Create a customized Data Analysis Agent
+agent = DataAnalysisAgent(
+    name="custom_data_analysis_agent",
+    model="gemini-1.5-pro",
+    description="A customized agent for financial data analysis.",
+    data_sources=["file_upload", "database"],
+    analysis_types=["summary", "correlation", "time_series"],
+    visualization_types=["line", "bar", "scatter"],
+    preprocessing_operations=["clean_missing_values", "handle_outliers"],
+)
 ```
 

@@ -156,12 +156,22 @@ class DataAnalysisAgent(LlmAgent):
         "7. If you encounter limitations or need more information, ask the user.\n\n"
     )
     
-    # Add data sources information if provided
+    # Add data sources information
+    instruction += "Available data sources:\n"
+    default_sources = [
+        "file_upload: Upload local files (CSV, Excel, JSON, etc.)",
+        "google_sheet: Connect to Google Sheets",
+        "database: Connect to databases (MySQL, PostgreSQL, SQLite, etc.)",
+        "api: Fetch data from APIs"
+    ]
+    
     if data_sources:
-      instruction += "Available data sources:\n"
-      for source in data_sources:
-        instruction += f"- {source}\n"
-      instruction += "\n"
+        for source in data_sources:
+            instruction += f"- {source}\n"
+    else:
+        for source in default_sources:
+            instruction += f"- {source}\n"
+    instruction += "\n"
     
     # Add preprocessing operations information
     preprocessing_ops = preprocessing_operations or [
@@ -185,30 +195,77 @@ class DataAnalysisAgent(LlmAgent):
         instruction += f"- {op}: {description}\n"
     instruction += "\n"
     
-    # Add analysis types information if provided
-    if analysis_types:
-      instruction += "Available analysis types:\n"
-      for analysis_type in analysis_types:
-        instruction += f"- {analysis_type}\n"
-      instruction += "\n"
+    # Add analysis types information
+    default_analysis_types = [
+        "summary: Generate basic statistics and summary of the data",
+        "correlation: Calculate correlation matrix between numeric columns",
+        "distribution: Analyze the distribution of values in a column",
+        "outliers: Detect outliers in numeric columns",
+        "time_series: Analyze time-based patterns and trends",
+        "clustering: Identify natural groupings in the data",
+        "regression: Build predictive models for numeric targets",
+        "classification: Build predictive models for categorical targets",
+        "text_analysis: Analyze text content and extract insights",
+        "automatic: Automatically detect the best analysis types for the data"
+    ]
     
-    # Add visualization types information if provided
+    instruction += "Available analysis types:\n"
+    if analysis_types:
+        for analysis_type in analysis_types:
+            instruction += f"- {analysis_type}\n"
+    else:
+        for analysis_type in default_analysis_types:
+            instruction += f"- {analysis_type}\n"
+    instruction += "\n"
+    
+    # Add visualization types information
+    default_visualization_types = [
+        "bar: Create bar charts for categorical data",
+        "line: Create line charts for time series or trends",
+        "scatter: Create scatter plots to show relationships between variables",
+        "histogram: Create histograms to show distributions",
+        "box: Create box plots to show distributions and outliers",
+        "heatmap: Create heatmaps to show correlations or patterns",
+        "pie: Create pie charts to show proportions",
+        "pair: Create pair plots to show relationships between multiple variables",
+        "violin: Create violin plots to show distributions",
+        "count: Create count plots for categorical data",
+        "joint: Create joint plots to show distributions and relationships"
+    ]
+    
+    instruction += "Available visualization types:\n"
     if visualization_types:
-      instruction += "Available visualization types:\n"
-      for viz_type in visualization_types:
-        instruction += f"- {viz_type}\n"
-      instruction += "\n"
+        for viz_type in visualization_types:
+            instruction += f"- {viz_type}\n"
+    else:
+        for viz_type in default_visualization_types:
+            instruction += f"- {viz_type}\n"
+    instruction += "\n"
+    
+    # Add automatic analysis detection information
+    instruction += (
+        "Automatic Analysis Detection:\n"
+        "You can automatically detect the best analysis types and objectives for a dataset using the "
+        "`detect_analysis_type` method or by specifying `analysis_type=\"automatic\"` in the `analyze_data` method. "
+        "This will:\n"
+        "1. Create a profile of the dataset (column types, missing values, etc.)\n"
+        "2. Detect suitable analysis types based on the data characteristics\n"
+        "3. Identify potential analysis objectives (e.g., correlation analysis, time series analysis, clustering)\n"
+        "4. Suggest relevant columns for each analysis objective\n"
+        "5. Recommend appropriate visualizations for each objective\n\n"
+    )
     
     # Add data analysis workflow guidance
     instruction += (
         "Recommended data analysis workflow:\n"
-        "1. Load data from the appropriate source\n"
+        "1. Load data from the appropriate source (file upload, Google Sheet, database, API)\n"
         "2. Explore the data to understand its structure and quality\n"
-        "3. Preprocess the data to handle missing values, outliers, and other quality issues\n"
-        "4. Transform the data as needed for analysis (filtering, selecting, grouping)\n"
-        "5. Perform analysis to extract insights\n"
-        "6. Create visualizations to illustrate key findings\n"
-        "7. Summarize results and provide recommendations\n\n"
+        "3. Use automatic analysis detection to identify potential analysis objectives\n"
+        "4. Preprocess the data to handle missing values, outliers, and other quality issues\n"
+        "5. Transform the data as needed for analysis (filtering, selecting, grouping)\n"
+        "6. Perform analysis to extract insights\n"
+        "7. Create visualizations to illustrate key findings\n"
+        "8. Summarize results and provide recommendations\n\n"
     )
     
     return instruction
