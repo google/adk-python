@@ -23,6 +23,7 @@ from google.adk.artifacts import GcsArtifactService
 from google.adk.artifacts import InMemoryArtifactService
 from google.genai import types
 import pytest
+import asyncio
 
 Enum = enum.Enum
 
@@ -171,6 +172,56 @@ async def test_load_empty(service_type):
 @pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
+async def test_delete_empty(service_type):
+  """ Tests deleting an empty artifact"""
+  artifact_service = get_artifact_service(service_type)
+  assert not await artifact_service.delete_artifact(
+    app_name="test_app",
+    user_id="test_user",
+    session_id="session_id",
+    filename="emptyfile",
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_load_each_version_correctly(service_type):
+    artifact_service = get_artifact_service(service_type)
+
+    app_name = "app"
+    user_id = "user"
+    session_id = "1234"
+    filename = "versioned_file"
+    versions = [
+        types.Part.from_bytes(data=f"version-{i}".encode(), mime_type="text/plain")
+        for i in range(3)
+    ]
+
+    for artifact in versions:
+        await artifact_service.save_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            artifact=artifact,
+        )
+    for i, expected_artifact in enumerate(versions):
+        loaded_artifact = await artifact_service.load_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            version=i,
+        )
+        assert loaded_artifact == expected_artifact, f"Version {i} mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
 async def test_save_load_delete(service_type):
   """Tests saving, loading, and deleting an artifact."""
   artifact_service = get_artifact_service(service_type)
@@ -209,6 +260,134 @@ async def test_save_load_delete(service_type):
       session_id=session_id,
       filename=filename,
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS])
+async def test_concurrent_saves(service_type):
+    artifact_service = get_artifact_service(service_type)
+    app_name, user_id, session_id = "app", "user", "123"
+    filename = "concurrent_file"
+
+    artifact_v1 = types.Part.from_bytes(data=b"v1", mime_type="text/plain")
+    artifact_v2 = types.Part.from_bytes(data=b"v2", mime_type="text/plain")
+
+
+    await asyncio.gather(
+        artifact_service.save_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            artifact=artifact_v1,
+    ),    
+        artifact_service.save_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            artifact=artifact_v2,
+    ),
+    )
+
+
+    loaded = await artifact_service.load_artifact(
+                app_name=app_name,
+                user_id=user_id,
+                session_id=session_id,
+                filename=filename,
+    
+             )
+    assert loaded in [artifact_v1, artifact_v2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_namespace_isolation(service_type):
+  """Tests that artifacts are isolated by app_name, user_id, and session_id."""
+  artifact_service = get_artifact_service(service_type)
+
+  artifact1 = types.Part.from_bytes(data=b"data_user1", mime_type="text/plain")
+  artifact2 = types.Part.from_bytes(data=b"data_user2", mime_type="text/plain")
+  artifact3 = types.Part.from_bytes(data=b"data_app2", mime_type="text/plain")
+  artifact4 = types.Part.from_bytes(data=b"data_session2", mime_type="text/plain")
+
+  app_name1, app_name2 = "app_A", "app_B"
+  user_id1, user_id2 = "user_X", "user_Y"
+  session_id1, session_id2 = "session_123", "session_456"
+  filename = "isolated_file.txt"
+
+  await artifact_service.save_artifact(
+      app_name=app_name1,
+      user_id=user_id1,
+      session_id=session_id1,
+      filename=filename,
+      artifact=artifact1,
+  )
+
+  await artifact_service.save_artifact(
+      app_name=app_name1,
+      user_id=user_id2,
+      session_id=session_id1,
+      filename=filename,
+      artifact=artifact2,
+  )
+
+  await artifact_service.save_artifact(
+      app_name=app_name2,
+      user_id=user_id1,
+      session_id=session_id1,
+      filename=filename,
+      artifact=artifact3,
+  )
+
+  await artifact_service.save_artifact(
+      app_name=app_name1,
+      user_id=user_id1,
+      session_id=session_id2,
+      filename=filename,
+      artifact=artifact4,
+  )
+
+  loaded_artifact1 = await artifact_service.load_artifact(
+      app_name=app_name1, user_id=user_id1, session_id=session_id1, filename=filename
+  )
+  assert loaded_artifact1 == artifact1
+
+  loaded_artifact2 = await artifact_service.load_artifact(
+      app_name=app_name1, user_id=user_id2, session_id=session_id1, filename=filename
+  )
+  assert loaded_artifact2 == artifact2
+  assert loaded_artifact2 != artifact1
+
+  loaded_artifact3 = await artifact_service.load_artifact(
+      app_name=app_name2, user_id=user_id1, session_id=session_id1, filename=filename
+  )
+  assert loaded_artifact3 == artifact3
+  assert loaded_artifact3 != artifact1
+
+  loaded_artifact4 = await artifact_service.load_artifact(
+      app_name=app_name1, user_id=user_id1, session_id=session_id2, filename=filename
+  )
+  assert loaded_artifact4 == artifact4
+  assert loaded_artifact4 != artifact1
+
+  keys_user1 = await artifact_service.list_artifact_keys(
+      app_name=app_name1, user_id=user_id1, session_id=session_id1
+  )
+  assert keys_user1 == [filename]
+
+  keys_user2 = await artifact_service.list_artifact_keys(
+      app_name=app_name1, user_id=user_id2, session_id=session_id1
+  )
+  assert keys_user2 == [filename]
+
+  keys_empty = await artifact_service.list_artifact_keys(
+      app_name="non_existent_app", user_id="non_existent_user", session_id="non_existent_session"
+  )
+  assert keys_empty == []
 
 
 @pytest.mark.asyncio
