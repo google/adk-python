@@ -15,7 +15,7 @@
 from google.cloud import bigquery
 from google.oauth2.credentials import Credentials
 
-from ...tools.bigquery import client
+from . import client
 
 
 def list_dataset_ids(project_id: str, credentials: Credentials) -> list[str]:

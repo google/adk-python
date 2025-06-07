@@ -92,7 +92,9 @@ class TestBigQueryTool:
     The tool should properly inherit from FunctionTool while adding
     Google API specific credential management capabilities.
     """
-    tool = BigQueryTool(func=sample_function, credentials=credentials_config)
+    tool = BigQueryTool(
+        func=sample_function, credentials_config=credentials_config
+    )
 
     assert tool.func == sample_function
     assert tool.credentials_manager is not None
@@ -106,7 +108,7 @@ class TestBigQueryTool:
     Some tools might handle authentication externally or use service
     accounts, so credential management should be optional.
     """
-    tool = BigQueryTool(func=sample_function, credentials=None)
+    tool = BigQueryTool(func=sample_function, credentials_config=None)
 
     assert tool.func == sample_function
     assert tool.credentials_manager is None
@@ -120,7 +122,9 @@ class TestBigQueryTool:
     This tests the main happy path where credentials are available
     and the underlying function executes successfully.
     """
-    tool = BigQueryTool(func=sample_function, credentials=credentials_config)
+    tool = BigQueryTool(
+        func=sample_function, credentials_config=credentials_config
+    )
 
     # Mock the credentials manager to return valid credentials
     mock_creds = Mock(spec=Credentials)
@@ -147,7 +151,9 @@ class TestBigQueryTool:
     When credentials aren't available and OAuth flow is needed,
     the tool should return a user-friendly message rather than failing.
     """
-    tool = BigQueryTool(func=sample_function, credentials=credentials_config)
+    tool = BigQueryTool(
+        func=sample_function, credentials_config=credentials_config
+    )
 
     # Mock credentials manager to return None (OAuth flow in progress)
     with patch.object(
@@ -171,7 +177,7 @@ class TestBigQueryTool:
     Tools without credential managers should execute normally,
     passing None for credentials if the function accepts them.
     """
-    tool = BigQueryTool(func=sample_function, credentials=None)
+    tool = BigQueryTool(func=sample_function, credentials_config=None)
 
     result = await tool.run_async(
         args={"param1": "test_value"}, tool_context=mock_tool_context
@@ -190,7 +196,7 @@ class TestBigQueryTool:
     which is important for tools that make async API calls.
     """
     tool = BigQueryTool(
-        func=async_sample_function, credentials=credentials_config
+        func=async_sample_function, credentials_config=credentials_config
     )
 
     mock_creds = Mock(spec=Credentials)
@@ -220,7 +226,9 @@ class TestBigQueryTool:
     def failing_function(param1: str, credentials: Credentials = None) -> dict:
       raise ValueError("Something went wrong")
 
-    tool = BigQueryTool(func=failing_function, credentials=credentials_config)
+    tool = BigQueryTool(
+        func=failing_function, credentials_config=credentials_config
+    )
 
     mock_creds = Mock(spec=Credentials)
     with patch.object(
@@ -250,7 +258,9 @@ class TestBigQueryTool:
     ) -> dict:
       return {"success": True}
 
-    tool = BigQueryTool(func=complex_function, credentials=credentials_config)
+    tool = BigQueryTool(
+        func=complex_function, credentials_config=credentials_config
+    )
 
     # The 'credentials' parameter should be ignored in mandatory args analysis
     mandatory_args = tool._get_mandatory_args()

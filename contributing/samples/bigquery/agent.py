@@ -16,10 +16,13 @@ import os
 
 from google.adk.agents import llm_agent
 from google.adk.tools.bigquery import BigQueryCredentialsConfig
+from google.adk.tools.bigquery import BigQueryToolConfig
 from google.adk.tools.bigquery import BigQueryToolset
 import google.auth
 
 RUN_WITH_ADC = False
+
+tool_config = BigQueryToolConfig(write_protected=True)
 
 
 if RUN_WITH_ADC:
@@ -37,7 +40,9 @@ else:
       client_secret=os.getenv("OAUTH_CLIENT_SECRET"),
   )
 
-bigquery_toolset = BigQueryToolset(credentials_config=credentials_config)
+bigquery_toolset = BigQueryToolset(
+    credentials_config=credentials_config, tool_config=tool_config
+)
 
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI

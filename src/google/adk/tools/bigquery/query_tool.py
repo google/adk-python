@@ -12,14 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.cloud import bigquery
 from google.oauth2.credentials import Credentials
 
-from ...tools.bigquery import client
+from . import client
+from .config import BigQueryToolConfig
 
 MAX_DOWNLOADED_QUERY_RESULT_ROWS = 50
 
 
-def execute_sql(project_id: str, query: str, credentials: Credentials) -> dict:
+def execute_sql(
+    project_id: str,
+    query: str,
+    credentials: Credentials,
+    config: BigQueryToolConfig,
+) -> dict:
   """Run a BigQuery SQL query in the project and return the result.
 
   Args:
@@ -58,6 +65,20 @@ def execute_sql(project_id: str, query: str, credentials: Credentials) -> dict:
 
   try:
     bq_client = client.get_bigquery_client(credentials=credentials)
+    if config and config.write_protected:
+      query_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=bigquery.QueryJobConfig(dry_run=True),
+      )
+      if query_job.statement_type != "SELECT":
+        return {
+            "status": "ERROR",
+            "error_details": (
+                "Write protected mode does not support non-SELECT statements."
+            ),
+        }
+
     row_iterator = bq_client.query_and_wait(
         query, project=project_id, max_results=MAX_DOWNLOADED_QUERY_RESULT_ROWS
     )

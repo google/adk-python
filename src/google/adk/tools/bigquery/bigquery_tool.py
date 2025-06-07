@@ -25,6 +25,7 @@ from ..function_tool import FunctionTool
 from ..tool_context import ToolContext
 from .bigquery_credentials import BigQueryCredentialsConfig
 from .bigquery_credentials import BigQueryCredentialsManager
+from .config import BigQueryToolConfig
 
 
 class BigQueryTool(FunctionTool):
@@ -41,21 +42,26 @@ class BigQueryTool(FunctionTool):
   def __init__(
       self,
       func: Callable[..., Any],
-      credentials: Optional[BigQueryCredentialsConfig] = None,
+      credentials_config: Optional[BigQueryCredentialsConfig] = None,
+      tool_config: Optional[BigQueryToolConfig] = None,
   ):
     """Initialize the Google API tool.
 
     Args:
         func: callable that impelments the tool's logic, can accept one
           'credential" parameter
-        credentials: credentials used to call Google API. If None, then we don't
-          hanlde the auth logic
+        credentials_config: credentials config used to call Google API. If None,
+          then we don't hanlde the auth logic
     """
     super().__init__(func=func)
     self._ignore_params.append("credentials")
+    self._ignore_params.append("config")
     self.credentials_manager = (
-        BigQueryCredentialsManager(credentials) if credentials else None
+        BigQueryCredentialsManager(credentials_config)
+        if credentials_config
+        else None
     )
+    self.tool_config = tool_config
 
   @override
   async def run_async(
@@ -84,7 +90,7 @@ class BigQueryTool(FunctionTool):
       # Execute the tool's specific logic with valid credentials
 
       return await self._run_async_with_credential(
-          credentials, args, tool_context
+          credentials, self.tool_config, args, tool_context
       )
 
     except Exception as ex:
@@ -96,6 +102,7 @@ class BigQueryTool(FunctionTool):
   async def _run_async_with_credential(
       self,
       credentials: Credentials,
+      tool_config: BigQueryToolConfig,
       args: dict[str, Any],
       tool_context: ToolContext,
   ) -> Any:
@@ -113,4 +120,6 @@ class BigQueryTool(FunctionTool):
     signature = inspect.signature(self.func)
     if "credentials" in signature.parameters:
       args_to_call["credentials"] = credentials
+    if "config" in signature.parameters:
+      args_to_call["config"] = tool_config
     return await super().run_async(args=args_to_call, tool_context=tool_context)
