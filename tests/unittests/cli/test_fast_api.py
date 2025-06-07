@@ -262,6 +262,24 @@ def mock_session_service():
       ):
         del session_data[app_name][user_id][session_id]
 
+    async def append_event(self, session, event):
+      """Append an event to a session."""
+      session_id = session["id"]
+      app_name = session["app_name"]
+      user_id = session["user_id"]
+
+      if (
+        app_name in session_data
+        and user_id in session_data[app_name]
+        and session_id in session_data[app_name][user_id]
+      ):
+        session_data[app_name][user_id][session_id]["events"].append(event)
+
+        # Apply state_delta if present
+        if event.actions and hasattr(event.actions, "state_delta"):
+          state_delta = event.actions.state_delta
+          session_data[app_name][user_id][session_id]["state"].update(state_delta)
+
   # Return an instance of our mock service
   return MockSessionService()
 
@@ -603,6 +621,43 @@ def test_delete_session(test_app, create_test_session):
   response = test_app.get(url)
   assert response.status_code == 404
   logger.info("Session deleted successfully")
+
+
+def test_update_session_state(test_app, create_test_session):
+    """Test the /state endpoint updates session state successfully."""
+    info = create_test_session
+    url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}/state"
+    payload = {"dummy": "modified"}
+
+    response = test_app.post(url, json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Session state updated successfully."
+
+    session = test_app.get(
+        f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}"
+    ).json()
+    assert session["state"]["dummy"] == "modified"
+
+
+def test_update_state_nonexistent_session(test_app):
+    """Test that updating state on a nonexistent session returns 404 or 500 depending on implementation."""
+    url = "/apps/invalid_app/users/invalid_user/sessions/invalid_session/state"
+    payload = {"dummy": "value"}
+
+    response = test_app.post(url, json=payload)
+
+    assert response.status_code == 404
+
+
+def test_update_state_invalid_payload(test_app, create_test_session):
+    """Test that invalid input to the /state endpoint returns 422."""
+    info = create_test_session
+    url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}/state"
+
+    response = test_app.post(url, json="invalid_string")
+
+    assert response.status_code == 422
 
 
 def test_agent_run(test_app, create_test_session):
