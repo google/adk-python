@@ -1,0 +1,165 @@
+{
+  "prompt_schema_version": "1.0",
+  "project_overview": {
+    "project_name": "Agent Versatility Gear (AVG) - Financial Expert Implementation",
+    "project_goal": "To develop a modular, ADK-agnostic wrapper toolkit (AVG) that simplifies the creation and orchestration of sophisticated AI agents. This specific implementation will focus on showcasing AVG by building a 'Financial Expert' agent using the Google Agent Development Kit (ADK). The Financial Expert will demonstrate advanced capabilities like leveraging diverse knowledge sources (structured and unstructured), dynamic information retrieval (e.g., web search, APIs), complex reasoning through managed expertise pipelines, and generating actionable financial insights and reports.",
+    "target_adk": "Google Agent Development Kit (ADK) - Python",
+    "key_avg_principles_to_showcase": [
+      "Modularity: Clearly separated components for knowledge handling, pipeline orchestration, and agent wrapping.",
+      "Portability: Design components with future ADK-agnosticism in mind, even though this instance uses Google ADK.",
+      "Configurability: Agent abilities, knowledge sources, and pipelines should be configurable.",
+      "Deep Expertise: Enable complex reasoning and information synthesis for specialized domains like finance."
+    ]
+  },
+  "target_repository_setup": {
+    "creation_mode": "new_repository",
+    "repository_name": "avg_financial_expert_demo",
+    "description": "A demonstration project for the Agent Versatility Gear (AVG) toolkit, featuring a Financial Expert agent built with Google ADK.",
+    "initialize_with_readme": true,
+    "gitignore_template": "Python",
+    "license_type": "Apache-2.0"
+  },
+  "directory_structure": {
+    "root": ".",
+    "main_avg_toolkit_package": {
+      "path": "adk_avg_toolkit",
+      "description": "Core AVG toolkit components.",
+      "files": [
+        {"name": "__init__.py", "content_generation_key": "avg_toolkit_init_py"},
+        {"name": "knowledge_config_loader.py", "content_generation_key": "knowledge_config_loader_py"},
+        {"name": "expertise_pipeline_manager.py", "content_generation_key": "expertise_pipeline_manager_py"},
+        {"name": "base_expert_wrapper.py", "content_generation_key": "base_expert_wrapper_py"}
+      ]
+    },
+    "financial_expert_implementation_package": {
+      "path": "financial_expert_agent",
+      "description": "Implementation of the Financial Expert agent using AVG and Google ADK.",
+      "files": [
+        {"name": "__init__.py", "content_generation_key": "financial_expert_init_py"},
+        {"name": "financial_expert_main_agent.py", "content_generation_key": "financial_expert_main_agent_py"},
+        {"name": "expert_wrappers.py", "content_generation_key": "financial_expert_wrappers_py"},
+        {"name": "tools.py", "content_generation_key": "financial_expert_tools_py"}
+      ],
+      "subdirectories": [
+        {
+          "path": "configs",
+          "description": "Configuration files for the financial expert.",
+          "files": [
+            {"name": "financial_knowledge_config.yaml", "content_generation_key": "financial_knowledge_config_yaml"}
+          ]
+        },
+        {
+          "path": "data_schemas",
+          "description": "JSON schemas for structured data sources.",
+          "files": [
+            {"name": "sec_filing_schema.json", "content_generation_key": "sec_filing_schema_json", "optional": true}
+          ]
+        },
+        {
+          "path": "models",
+          "description": "Serialized decision models or other ML models.",
+          "files": [
+            {"name": "investment_suitability_v1.pkl", "content_generation_key": "investment_suitability_model_pkl", "optional": true, "is_binary": true}
+          ]
+        }
+      ]
+    },
+    "demo_application": {
+        "path": "demo",
+        "description": "Files related to running a demonstration of the financial expert.",
+        "files": [
+            {"name": "run_demo.py", "content_generation_key": "demo_runner_py"},
+            {"name": "sample_queries.txt", "content_generation_key": "demo_sample_queries_txt"}
+        ]
+    },
+    "top_level_files": [
+        {"name": "requirements.txt", "content_generation_key": "requirements_txt"},
+        {"name": "README.md", "content_generation_key": "main_readme_md"},
+        {"name": ".env.example", "content_generation_key": "env_example_file"}
+    ]
+  },
+  "content_generation_details": {
+    "avg_toolkit_init_py": {
+      "type": "python_code",
+      "description": "Initializes the adk_avg_toolkit package. Can export key classes for convenience.",
+      "content_prompt": "Create a Python __init__.py file for the 'adk_avg_toolkit' package. It should include a brief module-level docstring explaining that this package contains the core components of the Agent Versatility Gear (AVG) toolkit. For now, it can be simple, but consider future imports of main classes like KnowledgeConfigLoader, ExpertisePipelineManager, and BaseExpertWrapper from their respective modules."
+    },
+    "knowledge_config_loader_py": {
+      "type": "python_code",
+      "description": "Python class KnowledgeConfigLoader for loading and validating configurations for knowledge sources, ingestion pipelines, RAG, ontologies, decision models, etc. Must handle YAML and JSON.",
+      "content_prompt": "Generate the Python code for knowledge_config_loader.py as discussed. It should include the KnowledgeConfigLoader class with methods to load from YAML/JSON, validate (with extensible validation for sections like 'knowledge_sources', 'ingestion_pipelines', 'knowledge_graphs', 'vector_stores', 'decision_models'), and provide getter methods for these top-level configuration sections. Include the example if __name__ == '__main__': block that loads a dummy YAML config for testing, similar to what we discussed. Ensure it handles potential file errors gracefully."
+    },
+    "expertise_pipeline_manager_py": {
+      "type": "python_code",
+      "description": "Python class ExpertisePipelineManager for managing definition, loading, and execution of expertise pipelines. Orchestrates BaseExpertWrapper instances.",
+      "content_prompt": "Generate the Python code for expertise_pipeline_manager.py. This file should define the ExpertisePipelineManager class. It should be initializable with pipeline configurations, a knowledge loader instance, and an expert wrapper factory. Key methods include execute_pipeline(pipeline_name, query, **kwargs) and internal methods to handle pipeline execution, possibly differentiating between explicitly defined handlers and generic step-based execution. The generic execution should be able to process a list of steps, instantiate expert wrappers using the factory, and pass data between steps, including a shared context. Include the example if __name__ == '__main__': block with dummy components to test various pipeline execution scenarios (RAG, KG query, multi-step generic), as previously outlined."
+    },
+    "base_expert_wrapper_py": {
+      "type": "python_code",
+      "description": "Python Abstract Base Class BaseExpertWrapper for wrapping underlying ADK agents or other expert system components.",
+      "content_prompt": "Generate the Python code for base_expert_wrapper.py. This should define the BaseExpertWrapper Abstract Base Class (ABC). It needs an __init__ method that accepts avg_expert_config and an optional adk_agent_instance. It must define abstract methods _initialize_adk_agent(self, **kwargs) and process(self, input_data: Dict[str, Any], **kwargs) -> Any. Also include get_capabilities() and get_underlying_agent() methods. Include the example concrete implementation ADKLlmExpert within this file (or clearly state it should be a separate file if that's better for the LLM to generate later), making sure its _initialize_adk_agent and process methods are implemented with placeholders for actual ADK LlmAgent and Runner interactions, as discussed. The if __name__ == '__main__': block should test instantiating and using ADKLlmExpert."
+    },
+    "financial_expert_init_py": {
+        "type": "python_code",
+        "description": "Initializes the financial_expert_agent package.",
+        "content_prompt": "Create a Python __init__.py file for the 'financial_expert_agent' package. Include a brief module-level docstring. It can export the main financial agent class for easier access."
+    },
+    "financial_expert_main_agent_py": {
+        "type": "python_code",
+        "description": "The main logic for the Financial Expert agent. This agent will use AVG components to perform its tasks. It might be a Google ADK WorkflowAgent or a complex LlmAgent that uses other experts as tools.",
+        "content_prompt": "Generate the Python code for financial_expert_main_agent.py. This file should define the primary Financial Expert agent class (e.g., FinancialAdvisorMasterAgent). This agent will be responsible for understanding user queries related to finance, breaking them down, and delegating tasks to various specialized expert wrappers via the ExpertisePipelineManager. It should be designed to be runnable by Google ADK (e.g., inherit from an ADK agent class or be structured to be called by an ADK Runner). Outline its main interaction loop or request handling method. It should instantiate KnowledgeConfigLoader (pointing to financial_knowledge_config.yaml) and ExpertisePipelineManager. Define how it translates user requests into pipeline executions (e.g., 'get company overview for X', 'analyze market sentiment for Y', 'generate investment suitability report for profile Z')."
+    },
+    "financial_expert_wrappers_py": {
+        "type": "python_code",
+        "description": "Concrete implementations of BaseExpertWrapper tailored for specific financial tasks, using Google ADK LlmAgents.",
+        "content_prompt": "Generate the Python code for financial_expert_agent/expert_wrappers.py. This file should contain concrete subclasses of BaseExpertWrapper (from adk_avg_toolkit.base_expert_wrapper) for financial tasks. Examples: \n1. CompanyDataRetriever(BaseExpertWrapper): Wraps an ADK LlmAgent configured to fetch company data using tools (e.g., from SEC API, configured knowledge sources). Its process method would take a company identifier and return structured data. \n2. MarketNewsAnalyzer(BaseExpertWrapper): Wraps an ADK LlmAgent that performs sentiment analysis or summarization on news articles (retrieved via a RAG pipeline). \n3. ReportGenerator(BaseExpertWrapper): Wraps an ADK LlmAgent that takes structured data and analysis results to generate a formatted report. \nEnsure each class implements _initialize_adk_agent to set up its specific LlmAgent (model, instructions, tools) and process to handle its task."
+    },
+    "financial_expert_tools_py": {
+        "type": "python_code",
+        "description": "Custom Google ADK tools for the Financial Expert agent (e.g., web search for financial news, specific financial API callers).",
+        "content_prompt": "Generate the Python code for financial_expert_agent/tools.py. This file should define custom Google ADK tools. Examples: \n1. financial_web_search_tool: A tool using GoogleSearchTool or a direct web request library, configured to prioritize financial news sites. \n2. sec_edgar_api_tool: A tool to interact with the SEC EDGAR API (using details from KnowledgeConfigLoader). It should have methods for specific queries (e.g., get_latest_filing_for_cik). \n3. stock_price_api_tool: A tool to fetch current or historical stock prices from a financial API. \nEach tool should be a function or class compatible with Google ADK's tool definition requirements (e.g., a function that returns a dict with 'status' and 'report'/'error_message')."
+    },
+    "financial_knowledge_config_yaml": {
+        "type": "yaml_code",
+        "description": "Configuration file for all knowledge aspects of the financial expert: data sources (APIs, DBs, document collections), ingestion pipelines, KGs, vector stores, decision models.",
+        "content_prompt": "Generate the YAML content for financial_knowledge_config.yaml as previously discussed and refined. It should include sections for knowledge_sources (with examples like SEC API, unstructured news, structured fundamentals DB), knowledge_graphs, ingestion_pipelines (e.g., PDF to vector store), vector_stores, and decision_models (e.g., investment suitability, market trend probability). Ensure the structure is detailed enough to be parsed by KnowledgeConfigLoader and to inform the setup of various expert wrappers and pipelines."
+    },
+    "sec_filing_schema_json": {
+        "type": "json_code",
+        "description": "An example JSON schema for SEC filing data.",
+        "optional": true,
+        "content_prompt": "Create a simple example JSON schema that might represent key fields from an SEC filing (e.g., CIK, companyName, filingType, filingDate, reportURL). This is illustrative for the data_schema_pointer in financial_knowledge_config.yaml."
+    },
+    "investment_suitability_model_pkl": {
+        "type": "placeholder_binary",
+        "description": "A placeholder for a pickled scikit-learn decision tree model. The LLM should note that a real binary file would be here.",
+        "optional": true,
+        "content_prompt": "Acknowledge that investment_suitability_v1.pkl would be a binary file (e.g., a scikit-learn pickled model). The generated project should include a note or an empty file with this name, indicating it's a placeholder for a trained machine learning model."
+    },
+    "demo_runner_py": {
+        "type": "python_code",
+        "description": "A Python script to run a command-line demonstration of the Financial Expert agent.",
+        "content_prompt": "Generate the Python code for demo/run_demo.py. This script should: \n1. Initialize the FinancialAdvisorMasterAgent (from financial_expert_agent.financial_expert_main_agent). \n2. Load sample queries (from demo/sample_queries.txt). \n3. For each query, invoke the FinancialAdvisorMasterAgent. \n4. Print the agent's responses in a clear, readable format. \n5. Handle basic command-line arguments if necessary (e.g., to specify a single query). \nEnsure it sets up any necessary environment (like loading .env files if used by the agent for API keys)."
+    },
+    "demo_sample_queries_txt": {
+        "type": "text_plain",
+        "description": "A text file with sample queries to test the financial advisor demo.",
+        "content_prompt": "Create a plain text file demo/sample_queries.txt with 3-5 example user queries for the Financial Expert agent. Examples: \n- 'What are the latest SEC filings for ticker GOOGL?' \n- 'Analyze the market sentiment for the semiconductor industry based on recent news.' \n- 'Generate an investment suitability report for a client with a moderate risk profile interested in tech stocks.' \n- 'Fetch the Q4 earnings report for Microsoft and summarize key takeaways.'"
+    },
+    "requirements_txt": {
+        "type": "text_plain",
+        "description": "Standard Python requirements file.",
+        "content_prompt": "Generate a requirements.txt file. It must include: \n- google-adk \n- google-adk[web] \n- google-cloud-aiplatform \n- python-dotenv \n- PyYAML \n- Potentially libraries for financial APIs if specific ones are assumed (e.g., yfinance, sec-api), or web requests (requests, httpx). Add a comment that these might need to be expanded based on specific tool implementations."
+    },
+    "main_readme_md": {
+        "type": "markdown_code",
+        "description": "The main README for the generated project.",
+        "content_prompt": "Generate a comprehensive README.md for the root of the avg_financial_expert_demo project. It should include: \n- Project Title (Agent Versatility Gear - Financial Expert Demo) \n- Overview: Briefly explain AVG and the Financial Expert agent. \n- Features: List key capabilities. \n- Architecture: Briefly describe the AVG components and how the Financial Expert uses them with Google ADK. (The LLM can refer to the directory_structure and core_avg_components sections of this JSON prompt for details). \n- Setup Instructions: Cloning, Python version (3.9+), virtual environment, pip install -r requirements.txt, .env file setup (referencing .env.example), gcloud auth application-default login. \n- How to Run the Demo: Instructions for python demo/run_demo.py. \n- How to Use ADK Web UI (Conceptual): Brief mention of how one might use adk web if specific agents are exposed for it. \n- Project Structure Overview: Briefly explain the layout of key directories and files. \n- Configuration: Mention financial_knowledge_config.yaml and its role. \n- Disclaimer (e.g., 'This is a demo and not financial advice')."
+    },
+    "env_example_file": {
+        "type": "text_plain",
+        "description": "Example environment file.",
+        "content_prompt": "Generate an .env.example file. It should include: \n- GOOGLE_GENAI_USE_VERTEXAI=True \n- GOOGLE_CLOUD_PROJECT=\"YOUR_GCP_PROJECT_ID_HERE\" \n- GOOGLE_CLOUD_LOCATION=\"YOUR_GCP_REGION_HERE\" \n- ADK_LOG_LEVEL=\"INFO\" \n- Placeholder for SEC_API_KEY=\"YOUR_SEC_API_KEY_HERE\" (commented out, if used by tools). \n- Placeholders for any other API keys that might be anticipated for financial data."
+    }
+  }
+}
