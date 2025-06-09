@@ -344,5 +344,5 @@ def _remove_display_name_if_present(
   This backend does not support the display_name parameter for file uploads,
   so it must be removed to prevent request failures.
   """
-  if data_obj and hasattr(data_obj, 'display_name'):
+  if data_obj and data_obj.display_name:
     data_obj.display_name = None
