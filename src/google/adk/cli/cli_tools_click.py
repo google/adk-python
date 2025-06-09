@@ -854,22 +854,7 @@ def cli_deploy_agent_engine(
 ):
   """Deploys an agent to Agent Engine.
 
-  Args:
-    agent (str): Required. The path to the agent to be deloyed.
-    project (str): Required. Google Cloud project to deploy the agent.
-    region (str): Required. Google Cloud region to deploy the agent.
-    staging_bucket (str): Required. GCS bucket for staging the deployment
-      artifacts.
-    trace_to_cloud (bool): Required. Whether to enable Cloud Trace.
-    adk_app (str): Required. Python file for defining the ADK application.
-    temp_folder (str): Required. The folder for the generated Agent Engine
-      files. If the folder already exists, its contents will be replaced.
-    env_file (str): Required. The filepath to the `.env` file for environment
-      variables. If it is an empty string, the `.env` file in the `agent`
-      directory will be used if it exists.
-    requirements_file (str): Required. The filepath to the `requirements.txt`
-      file to use. If it is an empty string, the `requirements.txt` file in the
-      `agent` directory will be used if exists.
+  AGENT: The path to the agent source code folder.
 
   Example:
 
