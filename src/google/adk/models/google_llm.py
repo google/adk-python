@@ -23,6 +23,7 @@ import sys
 from typing import AsyncGenerator
 from typing import cast
 from typing import TYPE_CHECKING
+from typing import Union
 
 from google.genai import Client
 from google.genai import types
@@ -244,9 +245,18 @@ class Gemini(BaseLlm):
 
   def _preprocess_request(self, llm_request: LlmRequest) -> None:
 
-    if llm_request.config and self._api_backend == GoogleLLMVariant.GEMINI_API:
+    if self._api_backend == GoogleLLMVariant.GEMINI_API:
       # Using API key from Google AI Studio to call model doesn't support labels.
-      llm_request.config.labels = None
+      if llm_request.config:
+        llm_request.config.labels = None
+
+      if llm_request.contents:
+        for content in llm_request.contents:
+          if not content.parts:
+            continue
+          for part in content.parts:
+            _remove_display_name_if_present(part.inline_data)
+            _remove_display_name_if_present(part.file_data)
 
 
 def _build_function_declaration_log(
@@ -324,3 +334,15 @@ Raw response:
 {resp.model_dump_json(exclude_none=True)}
 -----------------------------------------------------------
 """
+
+
+def _remove_display_name_if_present(
+    data_obj: Union[types.Blob, types.FileData, None],
+):
+  """Sets display_name to None for the Gemini API (non-Vertex) backend.
+
+  This backend does not support the display_name parameter for file uploads,
+  so it must be removed to prevent request failures.
+  """
+  if data_obj and data_obj.display_name:
+    data_obj.display_name = None
