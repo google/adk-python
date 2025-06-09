@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from __future__ import annotations
 
 import asyncio
@@ -56,7 +55,9 @@ from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
 from ..agents.run_config import StreamingMode
+from ..artifacts.gcs_artifact_service import GcsArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
+from ..errors.not_found_error import NotFoundError
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
 from ..evaluation.eval_metrics import EvalMetric
@@ -193,6 +194,7 @@ def get_fast_api_app(
     *,
     agents_dir: str,
     session_db_url: str = "",
+    artifact_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
     trace_to_cloud: bool = False,
@@ -251,12 +253,11 @@ def get_fast_api_app(
 
   runner_dict = {}
 
-  # Build the Artifact service
-  artifact_service = InMemoryArtifactService()
-  memory_service = InMemoryMemoryService()
-
   eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
   eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
+
+  # Build the Memory service
+  memory_service = InMemoryMemoryService()
 
   # Build the Session service
   agent_engine_id = ""
@@ -275,6 +276,18 @@ def get_fast_api_app(
       session_service = DatabaseSessionService(db_url=session_db_url)
   else:
     session_service = InMemorySessionService()
+
+  # Build the Artifact service
+  if artifact_storage_uri:
+    if artifact_storage_uri.startswith("gs://"):
+      gcs_bucket = artifact_storage_uri.split("://")[1]
+      artifact_service = GcsArtifactService(bucket_name=gcs_bucket)
+    else:
+      raise click.ClickException(
+          "Unsupported artifact storage URI: %s" % artifact_storage_uri
+      )
+  else:
+    artifact_service = InMemoryArtifactService()
 
   # initialize Agent Loader
   agent_loader = AgentLoader(agents_dir)
@@ -475,7 +488,65 @@ def get_fast_api_app(
     """Lists all evals in an eval set."""
     eval_set_data = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
+    if not eval_set_data:
+      raise HTTPException(
+          status_code=400, detail=f"Eval set `{eval_set_id}` not found."
+      )
+
     return sorted([x.eval_id for x in eval_set_data.eval_cases])
+
+  @app.get(
+      "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+      response_model_exclude_none=True,
+  )
+  def get_eval(app_name: str, eval_set_id: str, eval_case_id: str) -> EvalCase:
+    """Gets an eval case in an eval set."""
+    eval_case_to_find = eval_sets_manager.get_eval_case(
+        app_name, eval_set_id, eval_case_id
+    )
+
+    if eval_case_to_find:
+      return eval_case_to_find
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Eval set `{eval_set_id}` or Eval `{eval_case_id}` not found.",
+    )
+
+  @app.put(
+      "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+      response_model_exclude_none=True,
+  )
+  def update_eval(
+      app_name: str,
+      eval_set_id: str,
+      eval_case_id: str,
+      updated_eval_case: EvalCase,
+  ):
+    if updated_eval_case.eval_id and updated_eval_case.eval_id != eval_case_id:
+      raise HTTPException(
+          status_code=400,
+          detail=(
+              "Eval id in EvalCase should match the eval id in the API route."
+          ),
+      )
+
+    # Overwrite the value. We are either overwriting the same value or an empty
+    # field.
+    updated_eval_case.eval_id = eval_case_id
+    try:
+      eval_sets_manager.update_eval_case(
+          app_name, eval_set_id, updated_eval_case
+      )
+    except NotFoundError as nfe:
+      raise HTTPException(status_code=404, detail=str(nfe)) from nfe
+
+  @app.delete("/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}")
+  def delete_eval(app_name: str, eval_set_id: str, eval_case_id: str):
+    try:
+      eval_sets_manager.delete_eval_case(app_name, eval_set_id, eval_case_id)
+    except NotFoundError as nfe:
+      raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
@@ -490,6 +561,11 @@ def get_fast_api_app(
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
     eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
+
+    if not eval_set:
+      raise HTTPException(
+          status_code=400, detail=f"Eval set `{eval_set_id}` not found."
+      )
 
     if req.eval_ids:
       eval_cases = [e for e in eval_set.eval_cases if e.eval_id in req.eval_ids]
@@ -858,6 +934,11 @@ def get_fast_api_app(
     return runner
 
   if web:
+    import mimetypes
+
+    mimetypes.add_type("application/javascript", ".js", True)
+    mimetypes.add_type("text/javascript", ".js", True)
+
     BASE_DIR = Path(__file__).parent.resolve()
     ANGULAR_DIST_PATH = BASE_DIR / "browser"
 

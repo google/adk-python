@@ -2,8 +2,7 @@
 
 We'd love to accept your patches and contributions to this project.
 
-## Table of Contents
-
+- [How to contribute](#how-to-contribute)
 - [Before you begin](#before-you-begin)
   - [Sign our Contributor License Agreement](#sign-our-contributor-license-agreement)
   - [Review our community guidelines](#review-our-community-guidelines)
@@ -12,16 +11,16 @@ We'd love to accept your patches and contributions to this project.
   - [Requirement for PRs](#requirement-for-prs)
   - [Large or Complex Changes](#large-or-complex-changes)
   - [Testing Requirements](#testing-requirements)
-  - [Unit Tests](#unit-tests)
-  - [End-to-End (E2E) Tests](#manual-end-to-end-e2e-tests)
+    - [Unit Tests](#unit-tests)
+    - [Manual End-to-End (E2E) Tests](#manual-end-to-end-e2e-tests)
   - [Documentation](#documentation)
   - [Development Setup](#development-setup)
-- [Code reviews](#code-reviews)
+  - [Code reviews](#code-reviews)
 
 
-## Before you begin
+# Before you begin
 
-### Sign our Contributor License Agreement
+## Sign our Contributor License Agreement
 
 Contributions to this project must be accompanied by a
 [Contributor License Agreement](https://cla.developers.google.com/about) (CLA).
@@ -35,38 +34,38 @@ was for a different project), you probably don't need to do it again.
 Visit <https://cla.developers.google.com/> to see your current agreements or to
 sign a new one.
 
-### Review our community guidelines
+## Review our community guidelines
 
 This project follows
 [Google's Open Source Community Guidelines](https://opensource.google/conduct/).
 
-## Contribution workflow
+# Contribution workflow
 
-### Finding Issues to Work On
+## Finding Issues to Work On
 
 - Browse issues labeled **`good first issue`** (newcomer-friendly) or **`help wanted`** (general contributions).
 - For other issues, please kindly ask before contributing to avoid duplication.
 
 
-### Requirement for PRs
+## Requirement for PRs
 
 - All PRs, other than small documentation or typo fixes, should have a Issue assoicated. If not, please create one.
 - Small, focused PRs. Keep changes minimal—one concern per PR.
 - For bug fixes or features, please provide logs or screenshot after the fix is applied to help reviewers better understand the fix.
 - Please include a `testing plan` section in your PR to talk about how you will test. This will save time for PR review. See `Testing Requirements` section for more details.
 
-### Large or Complex Changes
+## Large or Complex Changes
 For substantial features or architectural revisions:
 
 - Open an Issue First: Outline your proposal, including design considerations and impact.
 - Gather Feedback: Discuss with maintainers and the community to ensure alignment and avoid duplicate work
 
-### Testing Requirements
+## Testing Requirements
 
 To maintain code quality and prevent regressions, all code changes must include comprehensive tests and verifiable end-to-end (E2E) evidence.
 
 
-#### Unit Tests
+### Unit Tests
 
 Please add or update unit tests for your change. Please include a summary of passed `pytest` results.
 
@@ -80,7 +79,7 @@ Requirements for unit tests:
   - Free of external dependencies (use mocks or fixtures as needed).
 - **Quality:** Aim for high readability and maintainability; include docstrings or comments for complex scenarios.
 
-#### Manual End-to-End (E2E) Tests
+### Manual End-to-End (E2E) Tests
 
 Manual E2E tests ensure integrated flows work as intended. Your tests should cover all scenarios. Sometimes, it's also good to ensure relevant functionality is not impacted.
 
@@ -97,22 +96,33 @@ Depending on your change:
   - Include the command used and console output showing test results.
   - Highlight sections of the log that directly relate to your change.
 
-### Documentation
+## Documentation
 
 For any changes that impact user-facing documentation (guides, API reference, tutorials), please open a PR in the [adk-docs](https://github.com/google/adk-docs) repository to update relevant part before or alongside your code PR.
 
-### Development Setup
+## Development Setup
 1.  **Clone the repository:**
 
     ```shell
-    git clone git@github.com:google/adk-python.git
+    gh repo clone google/adk-python
     cd adk-python
     ```
-2.  **Create and activate a virtual environment:**
+
+2.  **Install uv:**
+
+    Check out [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
+
+3.  **Create and activate a virtual environment:**
+
+    **NOTE**: ADK supports Python 3.9+. Python 3.11 and above is strongly recommended.
+
+    Create a workspace venv using uv.
 
     ```shell
-    python -m venv .venv
+    uv venv --python "python3.11" ".venv"
     ```
+
+    Activate the workspace venv.
 
     ```shell
     source .venv/bin/activate
@@ -123,39 +133,77 @@ For any changes that impact user-facing documentation (guides, API reference, tu
     source .\.venv\Scripts\activate
     ```
 
-3.  **Install dependencies:**
+4.  **Install dependencies:**
 
     ```shell
-    pip install uv
     uv sync --all-extras
     ```
-4.  **Run unit tests:**
+
+    **NOTE**: for convenience, installing all extra deps as a starting point.
+
+5.  **Run unit tests:**
 
     ```shell
-    uv run pytest ./tests/unittests
+    pytest ./tests/unittests
     ```
-5.  **Run pyink to format codebase:**
+
+    NOTE: for accurately repro test failure, only include `test` and `eval` as
+    extra dependencies.
 
     ```shell
-    uv run pyink  --config pyproject.toml ./src
+    uv sync --extra test --extra eval
+    pytest ./tests/unittests
     ```
 
-6. **Build the package**
+6.  **Auto-format the code:**
+
+    **NOTE**: We use `isort` and `pyink` for styles. Use the included
+    autoformat.sh to auto-format.
+
+    ```shell
+    ./autoformat.sh
+    ```
+
+7. **Build the wheel file:**
+
     ```shell
     uv build
     ```
 
-7. **Local Testing**
-    Have a simple testing folder setup as mentioned in the [quickstart](https://google.github.io/adk-docs/get-started/quickstart/)
-    then install the local package with changes after building it using the below command to test the changes.
+8.  **Test the locally built wheel file:**
+    Have a simple testing folder setup as mentioned in the
+    [quickstart](https://google.github.io/adk-docs/get-started/quickstart/).
+
+    Then following below steps to test your changes:
+
+    Create a clean venv and activate it:
 
     ```shell
-    uv pip install <YOUR_WHL_FILE_PATH>
-
-    [eg]: uv pip install <ADK_PROJECT_PATH>/dist/google_adk-0.4.0-py3-none-any.whl
+    VENV_PATH=~/venvs/adk-quickstart
     ```
 
-### Code reviews
+    ```shell
+    command -v deactivate >/dev/null 2>&1 && deactivate
+    ```
+
+    ```shell
+    rm -rf $VENV_PATH \
+      && python3 -m venv $VENV_PATH \
+      && source $VENV_PATH/bin/activate
+    ```
+
+    Install the locally built wheel file:
+
+    ```shell
+    pip install dist/google_adk-<version>-py3-none-any.whl
+    ```
+
+## Contributing Resources
+
+[Contributing folder](https://github.com/google/adk-python/tree/main/contributing/samples) has resources that is helpful for contributors.
+
+
+## Code reviews
 
 All submissions, including submissions by project members, require review. We
 use GitHub pull requests for this purpose. Consult

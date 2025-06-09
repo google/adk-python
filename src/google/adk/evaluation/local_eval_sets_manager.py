@@ -20,12 +20,14 @@ import os
 import re
 import time
 from typing import Any
+from typing import Optional
 import uuid
 
 from google.genai import types as genai_types
 from pydantic import ValidationError
 from typing_extensions import override
 
+from ..errors.not_found_error import NotFoundError
 from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -188,11 +190,14 @@ class LocalEvalSetsManager(EvalSetsManager):
     self._agents_dir = agents_dir
 
   @override
-  def get_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
+  def get_eval_set(self, app_name: str, eval_set_id: str) -> Optional[EvalSet]:
     """Returns an EvalSet identified by an app_name and eval_set_id."""
     # Load the eval set file data
-    eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
-    return load_eval_set_from_file(eval_set_file_path, eval_set_id)
+    try:
+      eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
+      return load_eval_set_from_file(eval_set_file_path, eval_set_id)
+    except FileNotFoundError:
+      return None
 
   @override
   def create_eval_set(self, app_name: str, eval_set_id: str):
@@ -230,11 +235,18 @@ class LocalEvalSetsManager(EvalSetsManager):
 
   @override
   def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: EvalCase):
-    """Adds the given EvalCase to an existing EvalSet identified by app_name and eval_set_id."""
+    """Adds the given EvalCase to an existing EvalSet identified by app_name and eval_set_id.
+
+    Raises:
+      NotFoundError: If the eval set is not found.
+    """
     eval_case_id = eval_case.eval_id
     self._validate_id(id_name="Eval Case Id", id_value=eval_case_id)
 
     eval_set = self.get_eval_set(app_name, eval_set_id)
+
+    if not eval_set:
+      raise NotFoundError(f"Eval set `{eval_set_id}` not found.")
 
     if [x for x in eval_set.eval_cases if x.eval_id == eval_case_id]:
       raise ValueError(
@@ -246,6 +258,87 @@ class LocalEvalSetsManager(EvalSetsManager):
 
     eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
     self._write_eval_set(eval_set_file_path, eval_set)
+
+  @override
+  def get_eval_case(
+      self, app_name: str, eval_set_id: str, eval_case_id: str
+  ) -> Optional[EvalCase]:
+    """Returns an EvalCase if found, otherwise None."""
+    eval_set = self.get_eval_set(app_name, eval_set_id)
+
+    if not eval_set:
+      return None
+
+    eval_case_to_find = None
+
+    # Look up the eval case by eval_case_id
+    for eval_case in eval_set.eval_cases:
+      if eval_case.eval_id == eval_case_id:
+        eval_case_to_find = eval_case
+        break
+
+    return eval_case_to_find
+
+  @override
+  def update_eval_case(
+      self, app_name: str, eval_set_id: str, updated_eval_case: EvalCase
+  ):
+    """Updates an existing EvalCase give the app_name and eval_set_id.
+
+    Raises:
+      NotFoundError: If the eval set or the eval case is not found.
+    """
+    eval_case_id = updated_eval_case.eval_id
+
+    # Find the eval case to be updated.
+    eval_case_to_update = self.get_eval_case(
+        app_name, eval_set_id, eval_case_id
+    )
+
+    if eval_case_to_update:
+      # Remove the eval case from the existing eval set.
+      eval_set = self.get_eval_set(app_name, eval_set_id)
+      eval_set.eval_cases.remove(eval_case_to_update)
+
+      # Add the updated eval case to the existing eval set.
+      eval_set.eval_cases.append(updated_eval_case)
+
+      # Persit the eval set.
+      eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
+      self._write_eval_set(eval_set_file_path, eval_set)
+    else:
+      raise NotFoundError(
+          f"Eval Set `{eval_set_id}` or Eval id `{eval_case_id}` not found.",
+      )
+
+  @override
+  def delete_eval_case(
+      self, app_name: str, eval_set_id: str, eval_case_id: str
+  ):
+    """Deletes the given EvalCase identified by app_name, eval_set_id and eval_case_id.
+
+    Raises:
+      NotFoundError: If the eval set or the eval case to delete is not found.
+    """
+    # Find the eval case that needs to be deleted.
+    eval_case_to_remove = self.get_eval_case(
+        app_name, eval_set_id, eval_case_id
+    )
+
+    if eval_case_to_remove:
+      logger.info(
+          "EvalCase`%s` was found in the eval set. It will be removed"
+          " permanently.",
+          eval_case_id,
+      )
+      eval_set = self.get_eval_set(app_name, eval_set_id)
+      eval_set.eval_cases.remove(eval_case_to_remove)
+      eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
+      self._write_eval_set(eval_set_file_path, eval_set)
+    else:
+      raise NotFoundError(
+          f"Eval Set `{eval_set_id}` or Eval id `{eval_case_id}` not found.",
+      )
 
   def _get_eval_set_file_path(self, app_name: str, eval_set_id: str) -> str:
     return os.path.join(
