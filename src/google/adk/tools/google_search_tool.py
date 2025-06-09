@@ -48,7 +48,6 @@ class GoogleSearchTool(BaseTool):
     llm_request.config.tools = llm_request.config.tools or []
     if llm_request.model and 'gemini-1' in llm_request.model:
       if llm_request.config.tools:
-        print(llm_request.config.tools)
         raise ValueError(
             'Google search tool can not be used with other tools in Gemini 1.x.'
         )

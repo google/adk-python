@@ -219,6 +219,40 @@ class TestAgentLoader:
       assert agent.config == "production"
       assert os.environ.get("AGENT_SECRET") == "test_secret_123"
 
+  def test_loading_order_preference(self):
+    """Test that module/package is preferred over agent.py in a sub-package."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_name = "order_test_agent"
+
+      # Create structure 1: agents_dir/agent_name.py (expected to be loaded)
+      agent_module_file = temp_path / f"{agent_name}.py"
+      agent_module_file.write_text(dedent(f"""
+                from google.adk.agents.base_agent import BaseAgent
+                class ModuleAgent(BaseAgent):
+                    def __init__(self):
+                        super().__init__(name="{agent_name}_module_version")
+                root_agent = ModuleAgent()
+            """))
+
+      # Create structure 2: agents_dir/agent_name/agent.py (should be ignored)
+      agent_package_dir = temp_path / agent_name
+      agent_package_dir.mkdir()
+      agent_submodule_file = agent_package_dir / "agent.py"
+      agent_submodule_file.write_text(dedent(f"""
+                from google.adk.agents.base_agent import BaseAgent
+                class SubmoduleAgent(BaseAgent):
+                    def __init__(self):
+                        super().__init__(name="{agent_name}_submodule_version")
+                root_agent = SubmoduleAgent()
+            """))
+
+      loader = AgentLoader(str(temp_path))
+      agent = loader.load_agent(agent_name)
+
+      # Assert that the module version was loaded due to the new loading order
+      assert agent.name == f"{agent_name}_module_version"
+
   def test_load_multiple_different_agents(self):
     """Test loading multiple different agents."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -249,12 +283,24 @@ class TestAgentLoader:
     """Test that appropriate error is raised when agent is not found."""
     with tempfile.TemporaryDirectory() as temp_dir:
       loader = AgentLoader(temp_dir)
+      agents_dir = temp_dir  # For use in the expected message string
 
       # Try to load non-existent agent
       with pytest.raises(ValueError) as exc_info:
         loader.load_agent("nonexistent_agent")
 
-      assert "Module nonexistent_agent not found" in str(exc_info.value)
+      expected_msg_part_1 = "No root_agent found for 'nonexistent_agent'."
+      expected_msg_part_2 = (
+          "Searched in 'nonexistent_agent.agent.root_agent',"
+          " 'nonexistent_agent.root_agent'."
+      )
+      expected_msg_part_3 = (
+          f"Ensure '{agents_dir}/nonexistent_agent' is structured correctly"
+      )
+
+      assert expected_msg_part_1 in str(exc_info.value)
+      assert expected_msg_part_2 in str(exc_info.value)
+      assert expected_msg_part_3 in str(exc_info.value)
 
   def test_agent_without_root_agent_error(self):
     """Test that appropriate error is raised when agent has no root_agent."""
@@ -278,6 +324,102 @@ class TestAgentLoader:
         loader.load_agent("broken_agent")
 
       assert "No root_agent found for 'broken_agent'" in str(exc_info.value)
+
+  def test_agent_internal_module_not_found_error(self):
+    """Test error when an agent tries to import a non-existent module."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_name = "importer_agent"
+
+      # Create agent that imports a non-existent module
+      agent_file = temp_path / f"{agent_name}.py"
+      agent_file.write_text(dedent(f"""
+                from google.adk.agents.base_agent import BaseAgent
+                import non_existent_module  # This will fail
+
+                class {agent_name.title()}Agent(BaseAgent):
+                    def __init__(self):
+                        super().__init__(name="{agent_name}")
+
+                root_agent = {agent_name.title()}Agent()
+            """))
+
+      loader = AgentLoader(str(temp_path))
+      with pytest.raises(ModuleNotFoundError) as exc_info:
+        loader.load_agent(agent_name)
+
+      assert f"Fail to load '{agent_name}' module." in str(exc_info.value)
+      assert "No module named 'non_existent_module'" in str(exc_info.value)
+
+  def test_agent_internal_syntax_error(self):
+    """Test other import errors within an agent's code (e.g., SyntaxError)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_name = "syntax_error_agent"
+
+      # Create agent with a syntax error (which leads to ImportError)
+      agent_file = temp_path / f"{agent_name}.py"
+      agent_file.write_text(dedent(f"""
+                from google.adk.agents.base_agent import BaseAgent
+
+                # Invalid syntax
+                this is not valid python code
+
+                class {agent_name.title()}Agent(BaseAgent):
+                    def __init__(self):
+                        super().__init__(name="{agent_name}")
+
+                root_agent = {agent_name.title()}Agent()
+            """))
+
+      loader = AgentLoader(str(temp_path))
+      # SyntaxError is a subclass of Exception, and importlib might wrap it
+      # The loader is expected to prepend its message and re-raise.
+      with pytest.raises(
+          SyntaxError
+      ) as exc_info:  # Or potentially ImportError depending on Python version specifics with importlib
+        loader.load_agent(agent_name)
+
+      assert str(exc_info.value).startswith(
+          f"Fail to load '{agent_name}' module."
+      )
+      # Check for part of the original SyntaxError message
+      assert "invalid syntax" in str(exc_info.value).lower()
+
+  def test_agent_internal_name_error(self):
+    """Test other import errors within an agent's code (e.g., SyntaxError)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_name = "name_error_agent"
+
+      # Create agent with a syntax error (which leads to ImportError)
+      agent_file = temp_path / f"{agent_name}.py"
+      agent_file.write_text(dedent(f"""
+                from google.adk.agents.base_agent import BaseAgent
+
+                # name is not defined
+                print(non_existing_name)
+
+                class {agent_name.title()}Agent(BaseAgent):
+                    def __init__(self):
+                        super().__init__(name="{agent_name}")
+
+                root_agent = {agent_name.title()}Agent()
+            """))
+
+      loader = AgentLoader(str(temp_path))
+      # SyntaxError is a subclass of Exception, and importlib might wrap it
+      # The loader is expected to prepend its message and re-raise.
+      with pytest.raises(
+          NameError
+      ) as exc_info:  # Or potentially ImportError depending on Python version specifics with importlib
+        loader.load_agent(agent_name)
+
+      assert str(exc_info.value).startswith(
+          f"Fail to load '{agent_name}' module."
+      )
+      # Check for part of the original SyntaxError message
+      assert "is not defined" in str(exc_info.value).lower()
 
   def test_sys_path_modification(self):
     """Test that agents_dir is added to sys.path correctly."""
