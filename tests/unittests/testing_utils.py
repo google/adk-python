@@ -56,7 +56,7 @@ class ModelContent(types.Content):
     super().__init__(role='model', parts=parts)
 
 
-async def create_invocation_context(agent: Agent, user_content: str = ''):
+async def create_invocation_context(agent: Agent, user_content: str = '', run_config: RunConfig = None):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
   session_service = InMemorySessionService()
@@ -73,7 +73,7 @@ async def create_invocation_context(agent: Agent, user_content: str = ''):
       user_content=types.Content(
           role='user', parts=[types.Part.from_text(text=user_content)]
       ),
-      run_config=RunConfig(),
+      run_config=run_config or RunConfig(),
   )
   if user_content:
     append_user_content(
