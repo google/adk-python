@@ -204,11 +204,6 @@ class LlmAgent(BaseAgent):
   """
   # Advance features - End
 
-  # TODO: remove below fields after migration. - Start
-  # These fields are added back for easier migration.
-  examples: Optional[ExamplesUnion] = None
-  # TODO: remove above fields after migration. - End
-
   # Callbacks - Start
   before_model_callback: Optional[BeforeModelCallback] = None
   """Callback or list of callbacks to be called before calling the LLM.
