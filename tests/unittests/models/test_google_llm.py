@@ -14,6 +14,7 @@
 
 import os
 import sys
+from typing import Optional
 from unittest import mock
 
 from google.adk import version as adk_version
@@ -365,9 +366,9 @@ async def test_connect(gemini_llm, llm_request):
 def test_preprocess_request_handles_backend_specific_fields(
     gemini_llm: Gemini,
     api_backend: GoogleLLMVariant,
-    expected_file_display_name: str | None,
-    expected_inline_display_name: str | None,
-    expected_labels: dict | None,
+    expected_file_display_name: Optional[str],
+    expected_inline_display_name: Optional[str],
+    expected_labels: Optional[str],
 ):
   """
   Tests that _preprocess_request correctly sanitizes fields based on the API backend.
