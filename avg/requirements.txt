@@ -1,0 +1,17 @@
+# Purpose: Standard Python requirements file for the AVG Financial Expert demo.
+# Based on avg.json content_prompt for requirements_txt.
+#
+# Core Dependencies:
+google-adk
+google-adk[web]
+google-cloud-aiplatform
+python-dotenv
+PyYAML
+
+# Potential additional libraries for financial APIs or web requests.
+# These might need to be expanded based on specific tool implementations.
+# Example:
+# yfinance
+# sec-api
+# requests
+# httpx

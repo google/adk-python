@@ -1,0 +1,13 @@
+# Purpose: Create a plain text file demo/sample_queries.txt with 3-5 example user queries for the Financial Expert agent.
+# Based on avg.json content_prompt for demo_sample_queries_txt.
+#
+# Example Queries:
+# - 'What are the latest SEC filings for ticker GOOGL?'
+# - 'Analyze the market sentiment for the semiconductor industry based on recent news.'
+# - 'Generate an investment suitability report for a client with a moderate risk profile interested in tech stocks.'
+# - 'Fetch the Q4 earnings report for Microsoft and summarize key takeaways.'
+
+What are the latest SEC filings for ticker GOOGL?
+Analyze the market sentiment for the semiconductor industry based on recent news.
+Generate an investment suitability report for a client with a moderate risk profile interested in tech stocks.
+Fetch the Q4 earnings report for Microsoft and summarize key takeaways.

@@ -1,0 +1,14 @@
+# Purpose: Configuration for knowledge aspects of the financial expert. Based on avg.json content_prompt for financial_knowledge_config_yaml.
+# Content: Generate the YAML content for financial_knowledge_config.yaml as previously discussed and refined.
+# It should include sections for knowledge_sources (with examples like SEC API, unstructured news, structured fundamentals DB),
+# knowledge_graphs, ingestion_pipelines (e.g., PDF to vector store), vector_stores, and decision_models (e.g., investment suitability, market trend probability).
+# Ensure the structure is detailed enough to be parsed by KnowledgeConfigLoader and to inform the setup of various expert wrappers and pipelines.
+
+# Minimal valid YAML structure
+version: 1.0
+# Placeholder for actual configuration sections
+knowledge_sources: []
+knowledge_graphs: []
+ingestion_pipelines: []
+vector_stores: []
+decision_models: []
