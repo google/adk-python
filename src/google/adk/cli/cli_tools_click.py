@@ -23,6 +23,7 @@ import logging
 import os
 import tempfile
 from typing import Optional
+from typing import Tuple
 
 import click
 from fastapi import FastAPI
@@ -106,6 +107,131 @@ logger = logging.getLogger("google_adk." + __name__)
 def main():
   """Agent Development Kit CLI tools."""
   pass
+
+
+def add_common_deploy_options(command):
+  """Add common options to deploy subcommands."""
+  options = [
+      click.option(
+          "--service_name",
+          type=str,
+          default="adk-default-service-name",
+          help=(
+              "Optional. The service name to use in target environment"
+              " (default: 'adk-default-service-name')."
+          ),
+      ),
+      click.option(
+          "--env",
+          multiple=True,
+          help=(
+              "Optional. Environment variables as multiple --env key=value"
+              " pairs."
+          ),
+      ),
+      click.option(
+          "--provider-args",
+          multiple=True,
+          help=(
+              "Optional. Provider-specific arguments as multiple"
+              " --provider-args key=value pairs."
+          ),
+      ),
+      click.option(
+          "--app_name",
+          type=str,
+          default="",
+          help=(
+              "Optional. App name of the ADK API server (default: the folder"
+              " name of the AGENT source code)."
+          ),
+      ),
+      click.option(
+          "--port",
+          type=int,
+          default=8000,
+          help="Optional. The port of the ADK API server (default: 8000).",
+      ),
+      click.option(
+          "--trace_to_cloud",
+          is_flag=True,
+          show_default=True,
+          default=False,
+          help="Optional. Whether to enable cloud tracing for deployment.",
+      ),
+      click.option(
+          "--with_ui",
+          is_flag=True,
+          show_default=True,
+          default=False,
+          help=(
+              "Optional. Deploy ADK Web UI if set. (default: deploy ADK API"
+              " server only)"
+          ),
+      ),
+      click.option(
+          "--temp_folder",
+          type=str,
+          default=lambda: os.path.join(
+              tempfile.gettempdir(),
+              "deploy_src",
+              datetime.now().strftime("%Y%m%d_%H%M%S"),
+          ),
+          help=(
+              "Optional. Temp folder for the generated source files"
+              " (default: a timestamped folder in the system temp directory)."
+          ),
+      ),
+      click.option(
+          "--verbosity",
+          type=click.Choice(
+              ["debug", "info", "warning", "error", "critical"],
+              case_sensitive=False,
+          ),
+          default="WARNING",
+          help="Optional. Override the default verbosity level.",
+      ),
+      click.option(
+          "--session_db_url",
+          help=(
+              """Optional. The database URL to store the session.
+
+  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+
+  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+
+  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
+          ),
+      ),
+      click.option(
+          "--artifact_storage_uri",
+          type=str,
+          help=(
+              "Optional. The artifact storage URI to store the artifacts,"
+              " supported URIs: gs://<bucket name> for GCS artifact service."
+          ),
+          default=None,
+      ),
+      click.option(
+          "--adk_version",
+          type=str,
+          default=version.__version__,
+          show_default=True,
+          help=(
+              "Optional. The ADK version used in deployment. (default: the"
+              " version in the dev environment)"
+          ),
+      ),
+      click.argument(
+          "agent",
+          type=click.Path(
+              exists=True, dir_okay=True, file_okay=False, resolve_path=True
+          ),
+      ),
+  ]
+  for option in options:
+    command = option(command)
+  return command
 
 
 @main.group()
@@ -610,7 +736,7 @@ def cli_api_server(
   server.run()
 
 
-@deploy.command("cloud_run")
+@deploy.command("cloud_run", cls=HelpfulCommand)
 @click.option(
     "--project",
     type=str,
@@ -627,106 +753,8 @@ def cli_api_server(
         " gcloud run deploy will prompt later."
     ),
 )
-@click.option(
-    "--service_name",
-    type=str,
-    default="adk-default-service-name",
-    help=(
-        "Optional. The service name to use in Cloud Run (default:"
-        " 'adk-default-service-name')."
-    ),
-)
-@click.option(
-    "--app_name",
-    type=str,
-    default="",
-    help=(
-        "Optional. App name of the ADK API server (default: the folder name"
-        " of the AGENT source code)."
-    ),
-)
-@click.option(
-    "--port",
-    type=int,
-    default=8000,
-    help="Optional. The port of the ADK API server (default: 8000).",
-)
-@click.option(
-    "--trace_to_cloud",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Optional. Whether to enable Cloud Trace for cloud run.",
-)
-@click.option(
-    "--with_ui",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Deploy ADK Web UI if set. (default: deploy ADK API server"
-        " only)"
-    ),
-)
-@click.option(
-    "--temp_folder",
-    type=str,
-    default=os.path.join(
-        tempfile.gettempdir(),
-        "cloud_run_deploy_src",
-        datetime.now().strftime("%Y%m%d_%H%M%S"),
-    ),
-    help=(
-        "Optional. Temp folder for the generated Cloud Run source files"
-        " (default: a timestamped folder in the system temp directory)."
-    ),
-)
-@click.option(
-    "--verbosity",
-    type=click.Choice(
-        ["debug", "info", "warning", "error", "critical"], case_sensitive=False
-    ),
-    default="WARNING",
-    help="Optional. Override the default verbosity level.",
-)
-@click.option(
-    "--session_db_url",
-    help=(
-        """Optional. The database URL to store the session.
-
-  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
-
-  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
-
-  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
-    ),
-)
-@click.option(
-    "--artifact_storage_uri",
-    type=str,
-    help=(
-        "Optional. The artifact storage URI to store the artifacts, supported"
-        " URIs: gs://<bucket name> for GCS artifact service."
-    ),
-    default=None,
-)
-@click.argument(
-    "agent",
-    type=click.Path(
-        exists=True, dir_okay=True, file_okay=False, resolve_path=True
-    ),
-)
-@click.option(
-    "--adk_version",
-    type=str,
-    default=version.__version__,
-    show_default=True,
-    help=(
-        "Optional. The ADK version used in Cloud Run deployment. (default: the"
-        " version in the dev environment)"
-    ),
-)
-def cli_deploy_cloud_run(
+@add_common_deploy_options
+def cli_deploy_to_cloud_run(
     agent: str,
     project: Optional[str],
     region: Optional[str],
@@ -740,6 +768,8 @@ def cli_deploy_cloud_run(
     session_db_url: str,
     artifact_storage_uri: Optional[str],
     adk_version: str,
+    provider_args: Tuple[str],
+    env: Tuple[str],
 ):
   """Deploys an agent to Cloud Run.
 
@@ -750,8 +780,9 @@ def cli_deploy_cloud_run(
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
   """
   try:
-    cli_deploy.to_cloud_run(
+    cli_deploy.run(
         agent_folder=agent,
+        provider="cloud_run",
         project=project,
         region=region,
         service_name=service_name,
@@ -764,6 +795,55 @@ def cli_deploy_cloud_run(
         session_db_url=session_db_url,
         artifact_storage_uri=artifact_storage_uri,
         adk_version=adk_version,
+        provider_args=provider_args,
+        env=env,
+    )
+  except Exception as e:
+    click.secho(f"Deploy failed: {e}", fg="red", err=True)
+
+
+@deploy.command("docker", cls=HelpfulCommand)
+@add_common_deploy_options
+def cli_deploy_docker(
+    agent: str,
+    service_name: str,
+    app_name: str,
+    temp_folder: str,
+    port: int,
+    trace_to_cloud: bool,
+    with_ui: bool,
+    verbosity: str,
+    session_db_url: str,
+    artifact_storage_uri: Optional[str],
+    adk_version: str,
+    provider_args: Tuple[str],
+    env: Tuple[str],
+):
+  """Deploys an agent to Docker container.
+
+  AGENT: The path to the agent source code folder.
+
+  Example:
+      adk deploy docker path/to/my_agent
+  """
+  try:
+    cli_deploy.run(
+        agent_folder=agent,
+        project=None,
+        region=None,
+        provider="docker",
+        service_name=service_name,
+        app_name=app_name,
+        temp_folder=temp_folder,
+        port=port,
+        trace_to_cloud=trace_to_cloud,
+        with_ui=with_ui,
+        verbosity=verbosity,
+        session_db_url=session_db_url,
+        artifact_storage_uri=artifact_storage_uri,
+        adk_version=adk_version,
+        provider_args=provider_args,
+        env=env,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
