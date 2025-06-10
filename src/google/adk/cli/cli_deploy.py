@@ -218,6 +218,8 @@ def to_agent_engine(
     region: str,
     staging_bucket: str,
     trace_to_cloud: bool,
+    display_name: Optional[str] = None,
+    description: Optional[str] = None,
     requirements_file: Optional[str] = None,
     env_file: Optional[str] = None,
 ):
@@ -342,6 +344,8 @@ def to_agent_engine(
     agent_engines.create(
         agent_engine=agent_engine,
         requirements=requirements_file,
+        display_name=display_name,
+        description=description,
         env_vars=env_vars,
         extra_packages=[temp_folder],
     )

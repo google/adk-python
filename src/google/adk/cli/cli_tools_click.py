@@ -794,6 +794,20 @@ def cli_deploy_cloud_run(
     help="Optional. Whether to enable Cloud Trace for Agent Engine.",
 )
 @click.option(
+    "--display_name",
+    type=str,
+    show_default=True,
+    default="",
+    help="Optional. Display name of the agent in Agent Engine.",
+)
+@click.option(
+    "--description",
+    type=str,
+    show_default=True,
+    default="",
+    help="Optional. Description of the agent in Agent Engine.",
+)
+@click.option(
     "--adk_app",
     type=str,
     default="agent_engine_app",
@@ -847,6 +861,8 @@ def cli_deploy_agent_engine(
     region: str,
     staging_bucket: str,
     trace_to_cloud: bool,
+    display_name: str,
+    description: str,
     adk_app: str,
     temp_folder: str,
     env_file: str,
@@ -859,7 +875,7 @@ def cli_deploy_agent_engine(
   Example:
 
     adk deploy agent_engine --project=[project] --region=[region]
-      --staging_bucket=[staging_bucket] path/to/my_agent
+      --staging_bucket=[staging_bucket] --display_name=[app_name] path/to/my_agent
   """
   try:
     cli_deploy.to_agent_engine(
@@ -868,6 +884,8 @@ def cli_deploy_agent_engine(
         region=region,
         staging_bucket=staging_bucket,
         trace_to_cloud=trace_to_cloud,
+        display_name=display_name,
+        description=description,
         adk_app=adk_app,
         temp_folder=temp_folder,
         env_file=env_file,
