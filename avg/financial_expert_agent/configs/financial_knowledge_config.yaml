@@ -1,14 +1,177 @@
-# Purpose: Configuration for knowledge aspects of the financial expert. Based on avg.json content_prompt for financial_knowledge_config_yaml.
-# Content: Generate the YAML content for financial_knowledge_config.yaml as previously discussed and refined.
-# It should include sections for knowledge_sources (with examples like SEC API, unstructured news, structured fundamentals DB),
-# knowledge_graphs, ingestion_pipelines (e.g., PDF to vector store), vector_stores, and decision_models (e.g., investment suitability, market trend probability).
-# Ensure the structure is detailed enough to be parsed by KnowledgeConfigLoader and to inform the setup of various expert wrappers and pipelines.
+# AVG Financial Expert - Knowledge Configuration File
+# This file defines various knowledge aspects, data sources, and pipeline
+# configurations used by the Financial Expert agent.
 
-# Minimal valid YAML structure
-version: 1.0
-# Placeholder for actual configuration sections
-knowledge_sources: []
-knowledge_graphs: []
-ingestion_pipelines: []
-vector_stores: []
-decision_models: []
+version: "1.1" # Example version for this config file
+
+# --- Knowledge Sources ---
+# Defines where the agent can get information from.
+knowledge_sources:
+  - name: "sec_edgar_api_source"
+    type: "api"
+    description: "Source for SEC EDGAR filings via an API."
+    uri: "https://api.example-sec.com/v1/filings" # Placeholder URI
+    access_params:
+      api_key_env_var: "SEC_API_KEY" # Agent would fetch this from environment
+      rate_limit: "10_per_second"
+    # Optional: If data from this source needs specific ingestion processing
+    # ingestion_pipeline_ref: "sec_filing_processor"
+    # Schema can also be defined or referenced here for validation/parsing
+    # data_schema_ref: "schemas/sec_filing_schema.json"
+
+  - name: "internal_research_reports_pdf"
+    type: "document_collection"
+    description: "Collection of internal PDF research reports for RAG."
+    uri: "file:///app/data/internal_reports/" # Example local path accessible by the agent
+    access_params:
+      file_types: [".pdf"]
+      recursive_scan: true
+    ingestion_pipeline_ref: "pdf_to_vector_store_pipeline" # Reference to an ingestion pipeline
+
+  - name: "market_data_api_alpha_vantage"
+    type: "api"
+    description: "Alpha Vantage API for stock prices, forex, crypto, etc."
+    uri: "https://www.alphavantage.co/query"
+    access_params:
+      api_key_env_var: "ALPHA_VANTAGE_API_KEY"
+      # Parameters for specific functions would be part of tool/expert using this
+    # data_schema_ref: "schemas/alphavantage_stock_quote_schema.json"
+
+
+# --- Ingestion Pipelines ---
+# Defines how data from knowledge sources is processed and stored (e.g., for RAG).
+ingestion_pipelines:
+  - name: "pdf_to_vector_store_pipeline"
+    description: "Processes PDF documents into a vector store for retrieval."
+    source_ref: "internal_research_reports_pdf" # Optional: links to a knowledge source
+    steps:
+      - service: "pdf_text_extractor"
+        params: {"ocr_enabled": false}
+      - service: "recursive_text_chunker"
+        params: {"chunk_size": 512, "chunk_overlap": 50}
+      - service: "text_embedding_generator"
+        params: {"model": "text-embedding-ada-002"} # Example embedding model
+      - service: "vector_db_writer"
+        params: {"target_vector_store": "internal_reports_faiss"}
+
+
+# --- Vector Stores ---
+# Defines configured vector stores for RAG.
+vector_stores:
+  - name: "internal_reports_faiss"
+    type: "faiss_local" # Example type
+    description: "FAISS vector store for internal research reports."
+    path: "/app/data/vector_stores/internal_reports.faiss"
+    embedding_model_ref: "text-embedding-ada-002" # Reference to the embedding model used
+
+
+# --- Decision Models ---
+# Defines other models used by the agent (e.g., classification, regression).
+decision_models:
+  - name: "investment_suitability_classifier_v1"
+    type: "scikit_learn_random_forest" # Example type
+    description: "Classifies investment suitability based on client profile and product risk."
+    model_path: "avg/financial_expert_agent/models/investment_suitability_v1.pkl" # Relative to repo root
+    # feature_schema_ref: "schemas/suitability_features.json"
+    # output_schema_ref: "schemas/suitability_output.json"
+
+
+# --- Expertise Pipelines ---
+# Defines sequences of expert actions to fulfill complex queries.
+# These are directly used by the FinancialAdvisorMasterAgent.
+# The `expert_type` is a hint for the factory to know which wrapper class to instantiate.
+# `init_params` are passed to the expert wrapper's constructor/initializer.
+# `input_mapping` uses $initial_input for the original query data and $shared_context for intermediate results.
+expertise_pipelines:
+  - name: "company_overview_pipeline"
+    description: "Retrieves and presents comprehensive company overview data."
+    steps:
+      - expert_id: "company_data_retriever_1" # Unique ID for caching this expert instance
+        expert_type: "CompanyDataRetriever"   # Hint for the factory
+        description: "Fetches core company data (profile, financials, filings)."
+        init_params: # Passed to CompanyDataRetriever's _initialize_adk_agent or __init__
+          model_name: "gemini-1.5-pro-data-retrieval"
+          sec_api_tool_config: {"api_key_env_var": "SEC_API_KEY"} # Example tool config
+          # Could also include knowledge_source_refs here if the expert needs specific sources
+          # knowledge_source_refs: ["sec_edgar_api_source", "market_data_api_alpha_vantage"]
+        input_mapping: # Maps data into the expert's process method's input_data
+          company_identifier: "$initial_input.query" # Assuming initial_input.query holds company ticker/name
+        output_to_shared_context: "retrieved_company_data" # Output of this step goes here
+
+      - expert_id: "company_report_formatter_1"
+        expert_type: "ReportGenerator"
+        description: "Formats the retrieved company data into a presentable report."
+        init_params:
+          model_name: "gemini-1.0-pro-formatting"
+          report_template: "standard_company_overview_v1" # Conceptual template name
+        input_mapping:
+          structured_data: "$shared_context.retrieved_company_data"
+          report_title: "$initial_input.query Overview" # Construct title
+        # No output_to_shared_context, so this step's output is the pipeline's final output
+
+  - name: "market_sentiment_pipeline"
+    description: "Searches for market news and analyzes its sentiment."
+    steps:
+      - expert_id: "financial_news_searcher_1"
+        expert_type: "ADKLlmExpertWrapper" # Using a generic wrapper that might use a search tool
+        description: "Searches for recent financial news based on the query."
+        init_params:
+          model_name: "gemini-1.5-flash-search-tool-user"
+          instructions: "You are a financial news search assistant. Use the provided web search tool to find relevant articles for the user's query."
+          # Conceptual: tools_config would tell ADKLlmExpertWrapper which tools to make available to its underlying LLM
+          # tools_config:
+          #   - name: "financial_web_search_tool"
+          #     parameters: {"site_filter": "reuters.com,bloomberg.com"} # Default params for the tool usage
+        input_mapping:
+          query: "$initial_input.query" # The user query becomes the search query
+        output_to_shared_context: "searched_news_articles_raw" # Raw search results
+
+      - expert_id: "market_news_analyzer_1"
+        expert_type: "MarketNewsAnalyzer"
+        description: "Analyzes the sentiment and key themes from the searched news articles."
+        init_params:
+          model_name: "gemini-1.5-pro-sentiment-analysis"
+        input_mapping:
+          news_articles_input: "$shared_context.searched_news_articles_raw" # Pass the whole output dict
+          topic: "$initial_input.query" # Pass original query as topic
+        # No output_to_shared_context, this step's output is the pipeline's final output
+
+  - name: "investment_suitability_report_pipeline" # Example for a more complex pipeline
+    description: "Generates an investment suitability report based on client profile and product data."
+    steps:
+      - expert_id: "client_profile_fetcher_1"
+        expert_type: "ProfileRetriever" # Hypothetical expert
+        description: "Fetches client profile data."
+        init_params: {"model_name": "crm-data-expert"}
+        input_mapping: {"client_id": "$initial_input.client_id"}
+        output_to_shared_context: "client_profile"
+
+      - expert_id: "product_data_fetcher_1"
+        expert_type: "CompanyDataRetriever" # Reusing an existing type
+        description: "Fetches financial product data."
+        init_params: {"model_name": "product-db-expert"}
+        input_mapping: {"company_identifier": "$initial_input.product_ticker"} # Changed key for clarity
+        output_to_shared_context: "product_data"
+
+      - expert_id: "suitability_analyzer_1"
+        expert_type: "DecisionModelExecutor" # Hypothetical expert using a decision_model
+        description: "Analyzes suitability using a pre-trained model."
+        init_params: {"model_ref": "investment_suitability_classifier_v1"}
+        input_mapping: {
+            "client_features": "$shared_context.client_profile.profile_data.features",
+            "product_features": "$shared_context.product_data.data.risk_metrics"
+          }
+        output_to_shared_context: "suitability_analysis_output"
+
+      - expert_id: "investment_report_generator_1"
+        expert_type: "ReportGenerator"
+        description: "Generates the final investment suitability report."
+        init_params: {"model_name": "gemini-pro-investment-report", "report_template": "investment_suitability_report_v2"}
+        input_mapping:
+          structured_data:
+            client_info: "$shared_context.client_profile"
+            product_info: "$shared_context.product_data"
+          analysis_results: "$shared_context.suitability_analysis_output"
+          # Pass client_id for title construction by the expert, not direct title string.
+          client_id_for_title: "$initial_input.client_id"
+        # Final output of this step is the pipeline output

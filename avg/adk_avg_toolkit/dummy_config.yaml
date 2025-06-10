@@ -1,0 +1,30 @@
+# Dummy configuration for testing KnowledgeConfigLoader
+knowledge_sources:
+  - name: "SEC API"
+    type: "api"
+    details:
+      url: "https://api.sec.gov"
+  - name: "Local News Articles"
+    type: "file_system"
+    details:
+      path: "/data/news_articles"
+
+ingestion_pipelines:
+  - name: "PDF to Vector Store"
+    steps: ["load_pdf", "chunk_text", "embed_text", "store_vectors"]
+
+expertise_pipelines:
+  - name: "Company Overview"
+    description: "Generates a company overview using SEC data and news analysis."
+    steps:
+      - expert: "CompanyDataRetriever"
+        inputs: ["company_ticker"]
+        outputs: ["company_profile_data"]
+      - expert: "MarketNewsAnalyzer"
+        inputs: ["company_name"] # Assuming company_name can be derived from company_profile_data
+        outputs: ["sentiment_analysis"]
+
+vector_stores:
+  - name: "CompanyDocsVS"
+    type: "chroma"
+    path: "/data/vector_stores/company_docs"
