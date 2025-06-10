@@ -1,0 +1,32 @@
+# Dummy Financial Expert Knowledge Configuration
+# Used for testing FinancialAdvisorMasterAgent
+
+# This file needs to be a valid YAML parsable by KnowledgeConfigLoader.
+# The content doesn't need to be extensive for this specific test,
+# as the FinancialAdvisorMasterAgent primarily uses it to initialize
+# KnowledgeConfigLoader, which is then passed to ExpertisePipelineManager.
+# The actual content might be used by experts within pipelines, but our
+# dummy experts in the test block won't rely on it heavily.
+
+version: "1.0"
+
+knowledge_sources:
+  - name: "Dummy Stock API"
+    type: "api_placeholder"
+    config:
+      api_key_env: "DUMMY_STOCK_API_KEY"
+      endpoint: "https://api.example.com/stocks"
+
+decision_models:
+  - name: "Dummy Risk Assessor"
+    type: "placeholder_model"
+    path: "models/dummy_risk_v1.pkl"
+
+# Sections expected by KnowledgeConfigLoader's getters
+ingestion_pipelines: []
+knowledge_graphs: []
+vector_stores: []
+expertise_pipelines: [] # This would normally be loaded by KnowledgeConfigLoader
+                        # if pipelines were defined within this file.
+                        # For this test, pipeline_configs are passed directly
+                        # to FinancialAdvisorMasterAgent.

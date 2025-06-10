@@ -1,0 +1,7 @@
+# Purpose: This file provides information about 'investment_suitability_v1.pkl'.
+# Based on avg.json content_prompt for investment_suitability_model_pkl.
+
+The file 'investment_suitability_v1.pkl' is a placeholder for a binary file,
+such as a scikit-learn pickled model. It would typically contain a trained
+machine learning model for investment suitability assessment.
+This placeholder file is empty. Replace it with an actual trained model file.

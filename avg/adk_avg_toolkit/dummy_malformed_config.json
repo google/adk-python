@@ -1,0 +1,8 @@
+{
+  "name": "Malformed JSON Example",
+  "version": 1.0,
+  "description": "This JSON file is intentionally malformed to test error handling."
+  "details": { // Missing comma here
+    "status": "broken"
+  }
+}

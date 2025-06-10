@@ -1,0 +1,21 @@
+// Purpose: Create a simple example JSON schema that might represent key fields from an SEC filing (e.g., CIK, companyName, filingType, filingDate, reportURL). This is illustrative for the data_schema_pointer in financial_knowledge_config.yaml. Based on avg.json content_prompt for sec_filing_schema_json.
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SECFiling",
+  "description": "Schema for an SEC filing data structure",
+  "type": "object",
+  "properties": {
+    "CIK": { "type": "string" },
+    "companyName": { "type": "string" },
+    "filingType": { "type": "string" },
+    "filingDate": { "type": "string", "format": "date" },
+    "reportURL": { "type": "string", "format": "uri" }
+  },
+  "required": [
+    "CIK",
+    "companyName",
+    "filingType",
+    "filingDate",
+    "reportURL"
+  ]
+}
