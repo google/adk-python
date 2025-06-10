@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.oauth2.credentials import Credentials
+from __future__ import annotations
+
+from google.auth.credentials import Credentials
 
 from ...tools.bigquery import client
 
