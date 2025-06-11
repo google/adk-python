@@ -81,6 +81,7 @@ eval = [
 
 test = [
   # go/keep-sorted start
+  "aiosqlite>=0.21.0",
   "anthropic>=0.43.0",               # For anthropic model tests
   "langchain-community>=0.3.17",
   "langgraph>=0.2.60",               # For LangGraphAgent
