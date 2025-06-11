@@ -98,7 +98,7 @@ root_agent = Agent(
       - If it's related to tools, label it with "tools"
       - If it's about agent evalaution, then label it with "eval".
       - If it's about streaming/live, label it with "live".
-      - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
+      - If it's about model support(non-Gemini, like Litellm, Portkey, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
       - If it's agent orchestration, agent definition, label it with "core".
       - If you can't find a appropriate labels for the issue, return the issues to user to decide.
