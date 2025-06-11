@@ -68,6 +68,7 @@ from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManag
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
 from ..runners import Runner
 from ..sessions.database_session_service import DatabaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
@@ -193,8 +194,9 @@ class GetEventGraphResult(common.BaseModel):
 def get_fast_api_app(
     *,
     agents_dir: str,
-    session_db_url: str = "",
-    artifact_storage_uri: Optional[str] = None,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
     trace_to_cloud: bool = False,
@@ -257,14 +259,28 @@ def get_fast_api_app(
   eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
   # Build the Memory service
-  memory_service = InMemoryMemoryService()
+  if memory_service_uri:
+    if memory_service_uri.startswith("rag://"):
+      rag_corpus = memory_service_uri.split("://")[1]
+      if not rag_corpus:
+        raise click.ClickException("Rag corpus can not be empty.")
+      envs.load_dotenv_for_agent("", agents_dir)
+      memory_service = VertexAiRagMemoryService(
+          rag_corpus=f'projects/{os.environ["GOOGLE_CLOUD_PROJECT"]}/locations/{os.environ["GOOGLE_CLOUD_LOCATION"]}/ragCorpora/{rag_corpus}'
+      )
+    else:
+      raise click.ClickException(
+          "Unsupported memory service URI: %s" % memory_service_uri
+      )
+  else:
+    memory_service = InMemoryMemoryService()
 
   # Build the Session service
   agent_engine_id = ""
-  if session_db_url:
-    if session_db_url.startswith("agentengine://"):
+  if session_service_uri:
+    if session_service_uri.startswith("agentengine://"):
       # Create vertex session service
-      agent_engine_id = session_db_url.split("://")[1]
+      agent_engine_id = session_service_uri.split("://")[1]
       if not agent_engine_id:
         raise click.ClickException("Agent engine id can not be empty.")
       envs.load_dotenv_for_agent("", agents_dir)
@@ -273,18 +289,18 @@ def get_fast_api_app(
           os.environ["GOOGLE_CLOUD_LOCATION"],
       )
     else:
-      session_service = DatabaseSessionService(db_url=session_db_url)
+      session_service = DatabaseSessionService(db_url=session_service_uri)
   else:
     session_service = InMemorySessionService()
 
   # Build the Artifact service
-  if artifact_storage_uri:
-    if artifact_storage_uri.startswith("gs://"):
-      gcs_bucket = artifact_storage_uri.split("://")[1]
+  if artifact_service_uri:
+    if artifact_service_uri.startswith("gs://"):
+      gcs_bucket = artifact_service_uri.split("://")[1]
       artifact_service = GcsArtifactService(bucket_name=gcs_bucket)
     else:
       raise click.ClickException(
-          "Unsupported artifact storage URI: %s" % artifact_storage_uri
+          "Unsupported artifact service URI: %s" % artifact_service_uri
       )
   else:
     artifact_service = InMemoryArtifactService()

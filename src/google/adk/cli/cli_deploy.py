@@ -55,7 +55,7 @@ COPY "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {session_db_option} {trace_to_cloud_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} "/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE = """
@@ -84,6 +84,32 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   return project
 
 
+def _get_service_option_by_adk_version(
+    adk_version: str,
+    session_uri: Optional[str],
+    artifact_uri: Optional[str],
+    memory_uri: Optional[str],
+) -> str:
+  """Returns service option string based on adk_version."""
+  if adk_version >= '1.3.0':
+    session_option = (
+        f'--session_service_uri={session_uri}' if session_uri else ''
+    )
+    artifact_option = (
+        f'--artifact_service_uri={artifact_uri}' if artifact_uri else ''
+    )
+    memory_option = f'--memory_service_uri={memory_uri}' if memory_uri else ''
+    return f'{session_option} {artifact_option} {memory_option}'
+  elif adk_version >= '1.2.0':
+    session_option = f'--session_db_url={session_uri}' if session_uri else ''
+    artifact_option = (
+        f'--artifact_storage_uri={artifact_uri}' if artifact_uri else ''
+    )
+    return f'{session_option} {artifact_option}'
+  else:
+    return f'--session_db_url={session_uri}' if session_uri else ''
+
+
 def to_cloud_run(
     *,
     agent_folder: str,
@@ -96,9 +122,10 @@ def to_cloud_run(
     trace_to_cloud: bool,
     with_ui: bool,
     verbosity: str,
-    session_db_url: str,
-    artifact_storage_uri: Optional[str],
     adk_version: str,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
 ):
   """Deploys an agent to Google Cloud Run.
 
@@ -126,9 +153,10 @@ def to_cloud_run(
     trace_to_cloud: Whether to enable Cloud Trace.
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
-    session_db_url: The database URL to connect the session.
-    artifact_storage_uri: The artifact storage URI to store the artifacts.
     adk_version: The ADK version to use in Cloud Run.
+    session_service_uri: The URI of the session service.
+    artifact_service_uri: The URI of the artifact service.
+    memory_service_uri: The URI of the memory service.
   """
   app_name = app_name or os.path.basename(agent_folder)
 
@@ -162,12 +190,12 @@ def to_cloud_run(
         port=port,
         command='web' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
-        session_db_option=f'--session_db_url={session_db_url}'
-        if session_db_url
-        else '',
-        artifact_storage_option=f'--artifact_storage_uri={artifact_storage_uri}'
-        if artifact_storage_uri
-        else '',
+        service_option=_get_service_option_by_adk_version(
+            adk_version,
+            session_service_uri,
+            artifact_service_uri,
+            memory_service_uri,
+        ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         adk_version=adk_version,
         host_option=host_option,
