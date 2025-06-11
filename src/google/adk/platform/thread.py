@@ -12,4 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import agent
+from __future__ import annotations
+
+import threading
+from typing import Callable
+
+internal_thread = None
+try:
+  from .internal import thread as internal_thread
+except ImportError:
+  internal_thread = None
+
+
+def create_thread(target: Callable[..., None], *args, **kwargs):
+  """Creates a thread."""
+  if internal_thread:
+    return internal_thread.create_thread(target, *args, **kwargs)
+  return threading.Thread(target=target, args=args, kwargs=kwargs)
