@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.3.0](https://github.com/google/adk-python/compare/v1.2.1...v1.3.0) (2025-06-11)
+
+
+### Features
+
+* Add memory_service option to CLI ([416dc6f](https://github.com/google/adk-python/commit/416dc6feed26e55586d28f8c5132b31413834c88))
+* Add support for display_name and description when deploying to agent engine ([aaf1f9b](https://github.com/google/adk-python/commit/aaf1f9b930d12657bfc9b9d0abd8e2248c1fc469))
+* Dev UI: Trace View
+  * New trace tab which contains all traces grouped by user messages
+  * Click each row will open corresponding event details
+  * Hover each row will highlight the corresponding message in dialog
+* Dev UI: Evaluation
+  * Evaluation Configuration: users can now configure custom threshold for the metrics used for each eval run ([d1b0587](https://github.com/google/adk-python/commit/d1b058707eed72fd4987d8ec8f3b47941a9f7d64))
+  * Each eval case added can now be viewed and edited. Right now we only support edit of text.
+  * Show the used metric in evaluation history ([6ed6351](https://github.com/google/adk-python/commit/6ed635190c86d5b2ba0409064cf7bcd797fd08da))
+* Tool enhancements:
+  * Add url_context_tool ([fe1de7b](https://github.com/google/adk-python/commit/fe1de7b10326a38e0d5943d7002ac7889c161826))
+  * Support to customize timeout for mcpstdio connections ([54367dc](https://github.com/google/adk-python/commit/54367dcc567a2b00e80368ea753a4fc0550e5b57))
+  * Introduce write protected mode to BigQuery tools ([6c999ca](https://github.com/google/adk-python/commit/6c999caa41dca3a6ec146ea42b0a794b14238ec2))
+
+
+
+### Bug Fixes
+
+* Agent Engine deployment:
+  * Correct help text formatting for `adk deploy agent_engine` ([13f98c3](https://github.com/google/adk-python/commit/13f98c396a2fa21747e455bb5eed503a553b5b22))
+  * Handle project and location in the .env properly when deploying to Agent Engine ([0c40542](https://github.com/google/adk-python/commit/0c4054200fd50041f0dce4b1c8e56292b99a8ea8))
+* Fix broken agent graphs ([3b1f2ae](https://github.com/google/adk-python/commit/3b1f2ae9bfdb632b52e6460fc5b7c9e04748bd50))
+* Forward `__annotations__` to the fake func for FunctionTool inspection ([9abb841](https://github.com/google/adk-python/commit/9abb8414da1055ab2f130194b986803779cd5cc5))
+* Handle the case when agent loading error doesn't have msg attribute in agent loader ([c224626](https://github.com/google/adk-python/commit/c224626ae189d02e5c410959b3631f6bd4d4d5c1))
+* Prevent agent_graph.py throwing when workflow agent is root agent ([4b1c218](https://github.com/google/adk-python/commit/4b1c218cbe69f7fb309b5a223aa2487b7c196038))
+* Remove display_name for non-Vertex file uploads ([cf5d701](https://github.com/google/adk-python/commit/cf5d7016a0a6ccf2b522df6f2d608774803b6be4))
+
+
+### Documentation
+
+* Add DeepWiki badge to README ([f38c08b](https://github.com/google/adk-python/commit/f38c08b3057b081859178d44fa2832bed46561a9))
+* Update code example in tool declaration to reflect BigQuery artifact description ([3ae6ce1](https://github.com/google/adk-python/commit/3ae6ce10bc5a120c48d84045328c5d78f6eb85d4))
+
+
 ## [1.2.1](https://github.com/google/adk-python/compare/v1.2.0...v1.2.1) (2025-06-04)
 
 
