@@ -242,10 +242,10 @@ def to_agent_engine(
     agent_folder: str,
     temp_folder: str,
     adk_app: str,
-    project: str,
-    region: str,
     staging_bucket: str,
     trace_to_cloud: bool,
+    project: Optional[str] = None,
+    region: Optional[str] = None,
     display_name: Optional[str] = None,
     description: Optional[str] = None,
     requirements_file: Optional[str] = None,
@@ -287,7 +287,9 @@ def to_agent_engine(
       If not specified, the `requirements.txt` file in the `agent_folder` will
       be used.
     env_file (str): The filepath to the `.env` file for environment variables.
-      If not specified, the `.env` file in the `agent_folder` will be used.
+      If not specified, the `.env` file in the `agent_folder` will be used. The
+      values of `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` will be
+      overridden by `project` and `region` if they are specified.
   """
   # remove temp_folder if it exists
   if os.path.exists(temp_folder):
@@ -306,13 +308,7 @@ def to_agent_engine(
     from vertexai import agent_engines
 
     sys.path.append(temp_folder)
-
-    vertexai.init(
-        project=_resolve_project(project),
-        location=region,
-        staging_bucket=staging_bucket,
-    )
-    click.echo('Vertex AI initialized.')
+    project = _resolve_project(project)
 
     click.echo('Resolving files and dependencies...')
     if not requirements_file:
@@ -333,6 +329,37 @@ def to_agent_engine(
 
       click.echo(f'Reading environment variables from {env_file}')
       env_vars = dotenv_values(env_file)
+      if 'GOOGLE_CLOUD_PROJECT' in env_vars:
+        env_project = env_vars.pop('GOOGLE_CLOUD_PROJECT')
+        if env_project:
+          if project:
+            click.secho(
+                'Ignoring GOOGLE_CLOUD_PROJECT in .env as `--project` was'
+                ' explicitly passed and takes precedence',
+                fg='yellow',
+            )
+          else:
+            project = env_project
+            click.echo(f'{project=} set by GOOGLE_CLOUD_PROJECT in {env_file}')
+      if 'GOOGLE_CLOUD_LOCATION' in env_vars:
+        env_region = env_vars.pop('GOOGLE_CLOUD_LOCATION')
+        if env_region:
+          if region:
+            click.secho(
+                'Ignoring GOOGLE_CLOUD_LOCATION in .env as `--region` was'
+                ' explicitly passed and takes precedence',
+                fg='yellow',
+            )
+          else:
+            region = env_region
+            click.echo(f'{region=} set by GOOGLE_CLOUD_LOCATION in {env_file}')
+
+    vertexai.init(
+        project=project,
+        location=region,
+        staging_bucket=staging_bucket,
+    )
+    click.echo('Vertex AI initialized.')
 
     adk_app_file = f'{adk_app}.py'
     with open(
