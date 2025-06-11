@@ -30,12 +30,13 @@ class SessionServiceType(enum.Enum):
   DATABASE = 'DATABASE'
 
 
-def get_session_service(
+async def get_session_service(
     service_type: SessionServiceType = SessionServiceType.IN_MEMORY,
 ):
   """Creates a session service for testing."""
   if service_type == SessionServiceType.DATABASE:
-    return DatabaseSessionService('sqlite:///:memory:')
+    service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+    await service.initialize_tables()
   return InMemorySessionService()
 
 
@@ -44,7 +45,7 @@ def get_session_service(
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 async def test_get_empty_session(service_type):
-  session_service = get_session_service(service_type)
+  session_service = await get_session_service(service_type)
   assert not await session_service.get_session(
       app_name='my_app', user_id='test_user', session_id='123'
   )
@@ -55,7 +56,7 @@ async def test_get_empty_session(service_type):
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 async def test_create_get_session(service_type):
-  session_service = get_session_service(service_type)
+  session_service = await get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'test_user'
   state = {'key': 'value'}
@@ -99,7 +100,7 @@ async def test_create_get_session(service_type):
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 async def test_create_and_list_sessions(service_type):
-  session_service = get_session_service(service_type)
+  session_service = await get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'test_user'
 
@@ -126,7 +127,7 @@ async def test_create_and_list_sessions(service_type):
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 async def test_session_state(service_type):
-  session_service = get_session_service(service_type)
+  session_service = await get_session_service(service_type)
   app_name = 'my_app'
   user_id_1 = 'user1'
   user_id_2 = 'user2'
@@ -218,7 +219,7 @@ async def test_session_state(service_type):
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 async def test_create_new_session_will_merge_states(service_type):
-  session_service = get_session_service(service_type)
+  session_service = await get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'user'
   session_id_1 = 'session1'
@@ -264,7 +265,7 @@ async def test_create_new_session_will_merge_states(service_type):
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 async def test_append_event_bytes(service_type):
-  session_service = get_session_service(service_type)
+  session_service = await get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'user'
 
@@ -305,7 +306,7 @@ async def test_append_event_bytes(service_type):
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 async def test_append_event_complete(service_type):
-  session_service = get_session_service(service_type)
+  session_service = await get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'user'
 
@@ -345,7 +346,7 @@ async def test_append_event_complete(service_type):
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 async def test_get_session_with_config(service_type):
-  session_service = get_session_service(service_type)
+  session_service = await get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'user'
 
@@ -409,7 +410,7 @@ async def test_get_session_with_config(service_type):
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
 async def test_append_event_with_fields(service_type):
-  session_service = get_session_service(service_type)
+  session_service = await get_session_service(service_type)
   app_name = 'my_app'
   user_id = 'test_user'
   session = await session_service.create_session(
