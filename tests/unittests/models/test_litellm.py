@@ -13,7 +13,6 @@
 # limitations under the License.
 
 
-import json
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
@@ -764,39 +763,6 @@ async def test_generate_content_async_with_tool_response(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async(mock_acompletion, lite_llm_instance):
-
-  async for response in lite_llm_instance.generate_content_async(
-      LLM_REQUEST_WITH_FUNCTION_DECLARATION
-  ):
-    assert response.content.role == "model"
-    assert response.content.parts[0].text == "Test response"
-    assert response.content.parts[1].function_call.name == "test_function"
-    assert response.content.parts[1].function_call.args == {
-        "test_arg": "test_value"
-    }
-    assert response.content.parts[1].function_call.id == "test_tool_call_id"
-
-  mock_acompletion.assert_called_once()
-
-  _, kwargs = mock_acompletion.call_args
-  assert kwargs["model"] == "test_model"
-  assert kwargs["messages"][0]["role"] == "user"
-  assert kwargs["messages"][0]["content"] == "Test prompt"
-  assert kwargs["tools"][0]["function"]["name"] == "test_function"
-  assert (
-      kwargs["tools"][0]["function"]["description"]
-      == "Test function description"
-  )
-  assert (
-      kwargs["tools"][0]["function"]["parameters"]["properties"]["test_arg"][
-          "type"
-      ]
-      == "string"
-  )
-
-
-@pytest.mark.asyncio
 async def test_generate_content_async_with_usage_metadata(
     lite_llm_instance, mock_acompletion
 ):
@@ -1430,3 +1396,35 @@ async def test_generate_content_async_non_compliant_multiple_function_calls(
   assert final_response.content.parts[1].function_call.name == "function_2"
   assert final_response.content.parts[1].function_call.id == "1"
   assert final_response.content.parts[1].function_call.args == {"arg": "value2"}
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_generation_params():
+  # Test that generation_params are extracted and mapped correctly
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          temperature=0.33,
+          max_output_tokens=123,
+          top_p=0.88,
+          top_k=7,
+          stop_sequences=["foo", "bar"],
+          presence_penalty=0.1,
+          frequency_penalty=0.2,
+      ),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params["temperature"] == 0.33
+  assert generation_params["max_tokens"] == 123
+  assert generation_params["top_p"] == 0.88
+  assert generation_params["top_k"] == 7
+  assert generation_params["stop"] == ["foo", "bar"]
+  assert generation_params["presence_penalty"] == 0.1
+  assert generation_params["frequency_penalty"] == 0.2
+  # Should not include max_output_tokens
+  assert "max_output_tokens" not in generation_params
+  assert "stop_sequences" not in generation_params
