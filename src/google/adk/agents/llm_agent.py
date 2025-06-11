@@ -129,7 +129,7 @@ class LlmAgent(BaseAgent):
   global_instruction: Union[str, InstructionProvider] = ''
   """Instructions for all the agents in the entire agent tree.
 
-  global_instruction ONLY takes effect in root agent.
+  ONLY the global_instruction in root agent will take effect.
 
   For example: use global_instruction to make all agents have a stable identity
   or personality.
@@ -203,11 +203,6 @@ class LlmAgent(BaseAgent):
   NOTE: to use model's built-in code executor, use the `BuiltInCodeExecutor`.
   """
   # Advance features - End
-
-  # TODO: remove below fields after migration. - Start
-  # These fields are added back for easier migration.
-  examples: Optional[ExamplesUnion] = None
-  # TODO: remove above fields after migration. - End
 
   # Callbacks - Start
   before_model_callback: Optional[BeforeModelCallback] = None

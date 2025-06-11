@@ -25,6 +25,7 @@ from . import _automatic_function_calling_util
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
 from ..sessions.in_memory_session_service import InMemorySessionService
+from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -123,9 +124,7 @@ class AgentTool(BaseTool):
     runner = Runner(
         app_name=self.agent.name,
         agent=self.agent,
-        # TODO(kech): Remove the access to the invocation context.
-        #   It seems we don't need re-use artifact_service if we forward below.
-        artifact_service=tool_context._invocation_context.artifact_service,
+        artifact_service=ForwardingArtifactService(tool_context),
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
     )
@@ -143,24 +142,6 @@ class AgentTool(BaseTool):
       if event.actions.state_delta:
         tool_context.state.update(event.actions.state_delta)
       last_event = event
-
-    if runner.artifact_service:
-      # Forward all artifacts to parent session.
-      artifact_names = await runner.artifact_service.list_artifact_keys(
-          app_name=session.app_name,
-          user_id=session.user_id,
-          session_id=session.id,
-      )
-      for artifact_name in artifact_names:
-        if artifact := await runner.artifact_service.load_artifact(
-            app_name=session.app_name,
-            user_id=session.user_id,
-            session_id=session.id,
-            filename=artifact_name,
-        ):
-          await tool_context.save_artifact(
-              filename=artifact_name, artifact=artifact
-          )
 
     if not last_event or not last_event.content or not last_event.content.parts:
       return ''

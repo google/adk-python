@@ -15,14 +15,14 @@
 from __future__ import annotations
 
 from abc import ABC
-import os
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from deprecated import deprecated
 from google.genai import types
 
+from ..utils.variant_utils import get_google_llm_variant
+from ..utils.variant_utils import GoogleLLMVariant
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
@@ -119,12 +119,8 @@ class BaseTool(ABC):
       )
 
   @property
-  def _api_variant(self) -> str:
-    use_vertexai = os.environ.get('GOOGLE_GENAI_USE_VERTEXAI', '0').lower() in [
-        'true',
-        '1',
-    ]
-    return 'VERTEX_AI' if use_vertexai else 'GOOGLE_AI'
+  def _api_variant(self) -> GoogleLLMVariant:
+    return get_google_llm_variant()
 
 
 def _find_tool_with_function_declarations(
