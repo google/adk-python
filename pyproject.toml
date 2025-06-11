@@ -85,6 +85,7 @@ test = [
   "langchain-community>=0.3.17",
   "langgraph>=0.2.60",               # For LangGraphAgent
   "litellm>=1.71.2",                # For LiteLLM tests
+  "portkey-ai>=1.0.0",               # For PortkeyLlm tests
   "llama-index-readers-file>=0.4.0", # For retrieval tests
 
   "pytest-asyncio>=0.25.0",
@@ -113,6 +114,7 @@ extensions = [
   "litellm>=1.63.11",                     # For LiteLLM support
   "llama-index-readers-file>=0.4.0",      # For retrieval using LlamaIndex.
   "lxml>=5.3.0",                          # For load_web_page tool.
+  "portkey-ai>=1.0.0",                    # For PortkeyLlm wrapper
   "toolbox-core>=0.1.0",                  # For tools.toolbox_toolset.ToolboxToolset
 ]
 
