@@ -417,28 +417,87 @@ def cli_eval(
       print(eval_result.model_dump_json(indent=2))
 
 
-def fast_api_common_options():
-  """Decorator to add common fast api options to click commands."""
+def adk_services_options():
+  """Decorator to add ADK services options to click commands."""
 
   def decorator(func):
     @click.option(
-        "--session_db_url",
+        "--session_service_uri",
         help=(
-            """Optional. The database URL to store the session.
+            """Optional. The URI of the session service.
           - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
           - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
-          - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
+          - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported database URIs."""
         ),
     )
     @click.option(
-        "--artifact_storage_uri",
+        "--artifact_service_uri",
         type=str,
         help=(
-            "Optional. The artifact storage URI to store the artifacts,"
+            "Optional. The URI of the artifact service,"
             " supported URIs: gs://<bucket name> for GCS artifact service."
         ),
         default=None,
     )
+    @click.option(
+        "--memory_service_uri",
+        type=str,
+        help=(
+            """Optional. The URI of the memory service.
+            - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service."""
+        ),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
+def deprecated_adk_services_options():
+  """Depracated ADK services options."""
+
+  def warn(alternative_param, ctx, param, value):
+    if value:
+      click.echo(
+          click.style(
+              f"WARNING: Deprecated option {param.name} is used. Please use"
+              f" {alternative_param} instead.",
+              fg="yellow",
+          ),
+          err=True,
+      )
+    return value
+
+  def decorator(func):
+    @click.option(
+        "--session_db_url",
+        help="Deprecated. Use --session_service_uri instead.",
+        callback=functools.partial(warn, "--session_service_uri"),
+    )
+    @click.option(
+        "--artifact_storage_uri",
+        type=str,
+        help="Deprecated. Use --artifact_service_uri instead.",
+        callback=functools.partial(warn, "--artifact_service_uri"),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
+def fast_api_common_options():
+  """Decorator to add common fast api options to click commands."""
+
+  def decorator(func):
     @click.option(
         "--host",
         type=str,
@@ -489,6 +548,8 @@ def fast_api_common_options():
 
 @main.command("web")
 @fast_api_common_options()
+@adk_services_options()
+@deprecated_adk_services_options()
 @click.argument(
     "agents_dir",
     type=click.Path(
@@ -498,14 +559,17 @@ def fast_api_common_options():
 )
 def cli_web(
     agents_dir: str,
-    session_db_url: str = "",
-    artifact_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
     reload: bool = True,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
+    session_db_url: Optional[str] = None,  # Deprecated
+    artifact_storage_uri: Optional[str] = None,  # Deprecated
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -514,7 +578,7 @@ def cli_web(
 
   Example:
 
-    adk web --session_db_url=[db_url] --port=[port] path/to/agents_dir
+    adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
@@ -540,10 +604,13 @@ def cli_web(
         fg="green",
     )
 
+  session_service_uri = session_service_uri or session_db_url
+  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   app = get_fast_api_app(
       agents_dir=agents_dir,
-      session_db_url=session_db_url,
-      artifact_storage_uri=artifact_storage_uri,
+      session_service_uri=session_service_uri,
+      artifact_service_uri=artifact_service_uri,
+      memory_service_uri=memory_service_uri,
       allow_origins=allow_origins,
       web=True,
       trace_to_cloud=trace_to_cloud,
@@ -571,16 +638,21 @@ def cli_web(
     default=os.getcwd(),
 )
 @fast_api_common_options()
+@adk_services_options()
+@deprecated_adk_services_options()
 def cli_api_server(
     agents_dir: str,
-    session_db_url: str = "",
-    artifact_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
     reload: bool = True,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
+    session_db_url: Optional[str] = None,  # Deprecated
+    artifact_storage_uri: Optional[str] = None,  # Deprecated
 ):
   """Starts a FastAPI server for agents.
 
@@ -589,15 +661,18 @@ def cli_api_server(
 
   Example:
 
-    adk api_server --session_db_url=[db_url] --port=[port] path/to/agents_dir
+    adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
+  session_service_uri = session_service_uri or session_db_url
+  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   config = uvicorn.Config(
       get_fast_api_app(
           agents_dir=agents_dir,
-          session_db_url=session_db_url,
-          artifact_storage_uri=artifact_storage_uri,
+          session_service_uri=session_service_uri,
+          artifact_service_uri=artifact_service_uri,
+          memory_service_uri=memory_service_uri,
           allow_origins=allow_origins,
           web=False,
           trace_to_cloud=trace_to_cloud,
@@ -689,27 +764,6 @@ def cli_api_server(
     default="WARNING",
     help="Optional. Override the default verbosity level.",
 )
-@click.option(
-    "--session_db_url",
-    help=(
-        """Optional. The database URL to store the session.
-
-  - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
-
-  - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
-
-  - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported DB URLs."""
-    ),
-)
-@click.option(
-    "--artifact_storage_uri",
-    type=str,
-    help=(
-        "Optional. The artifact storage URI to store the artifacts, supported"
-        " URIs: gs://<bucket name> for GCS artifact service."
-    ),
-    default=None,
-)
 @click.argument(
     "agent",
     type=click.Path(
@@ -726,6 +780,8 @@ def cli_api_server(
         " version in the dev environment)"
     ),
 )
+@adk_services_options()
+@deprecated_adk_services_options()
 def cli_deploy_cloud_run(
     agent: str,
     project: Optional[str],
@@ -737,9 +793,12 @@ def cli_deploy_cloud_run(
     trace_to_cloud: bool,
     with_ui: bool,
     verbosity: str,
-    session_db_url: str,
-    artifact_storage_uri: Optional[str],
     adk_version: str,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
+    session_db_url: Optional[str] = None,  # Deprecated
+    artifact_storage_uri: Optional[str] = None,  # Deprecated
 ):
   """Deploys an agent to Cloud Run.
 
@@ -749,6 +808,8 @@ def cli_deploy_cloud_run(
 
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
   """
+  session_service_uri = session_service_uri or session_db_url
+  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   try:
     cli_deploy.to_cloud_run(
         agent_folder=agent,
@@ -761,9 +822,10 @@ def cli_deploy_cloud_run(
         trace_to_cloud=trace_to_cloud,
         with_ui=with_ui,
         verbosity=verbosity,
-        session_db_url=session_db_url,
-        artifact_storage_uri=artifact_storage_uri,
         adk_version=adk_version,
+        session_service_uri=session_service_uri,
+        artifact_service_uri=artifact_service_uri,
+        memory_service_uri=memory_service_uri,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
