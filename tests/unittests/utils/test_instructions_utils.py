@@ -214,3 +214,113 @@ async def test_inject_session_state_artifact_service_not_initialized_raises_valu
     await instructions_utils.inject_session_state(
         instruction_template, invocation_context
     )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_dot_notation():
+  instruction_template = "User name: {user.profile.name}, Age: {user.profile.age}"
+  invocation_context = await _create_test_readonly_context(
+      state={
+          "user": {
+              "profile": {
+                  "name": "John Doe",
+                  "age": 30
+              }
+          }
+      }
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "User name: John Doe, Age: 30"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_bracket_notation():
+  instruction_template = "User name: {user['profile']['name']}, City: {user['address']['city']}"
+  invocation_context = await _create_test_readonly_context(
+      state={
+          "user": {
+              "profile": {"name": "Jane Smith"},
+              "address": {"city": "New York"}
+          }
+      }
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "User name: Jane Smith, City: New York"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_mixed_notation():
+  instruction_template = "Data: {config.database['host']}, Port: {config['database'].port}"
+  invocation_context = await _create_test_readonly_context(
+      state={
+          "config": {
+              "database": {
+                  "host": "localhost",
+                  "port": 5432
+              }
+          }
+      }
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Data: localhost, Port: 5432"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_optional():
+  instruction_template = "Optional nested: {user.profile.nickname?}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"profile": {"name": "John"}}}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Optional nested: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_missing_raises_error():
+  instruction_template = "Missing: {user.profile.missing}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"profile": {"name": "John"}}}
+  )
+
+  with pytest.raises(KeyError, match="Context variable not found: `user.profile.missing`"):
+    await instructions_utils.inject_session_state(
+        instruction_template, invocation_context
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_invalid_nested_path():
+  instruction_template = "Invalid: {user.profile[unclosed}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"profile": {"name": "John"}}}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Invalid: {user.profile[unclosed}"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_backward_compatibility():
+  instruction_template = "Hello {user_name}, status: {app_status}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user_name": "Alice", "app_status": "active"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Hello Alice, status: active"
