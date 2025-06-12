@@ -201,7 +201,7 @@ def function_declaration_to_tool_param(
 
 
 class Claude(BaseLlm):
-  """ "Integration with Claude models served from Vertex AI.
+  """Integration with Claude models served from Vertex AI.
 
   Attributes:
     model: The name of the Claude model.
