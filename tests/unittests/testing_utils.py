@@ -312,9 +312,7 @@ class MockLlmConnection(BaseLlmConnection):
   async def send(self, data):
     pass
 
-  async def send_realtime(
-      self, blob: types.Blob, automatic_activity_detection: bool = True
-  ):
+  async def send_realtime(self, blob: types.Blob):
     pass
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
