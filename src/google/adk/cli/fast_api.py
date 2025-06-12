@@ -33,6 +33,7 @@ from fastapi import HTTPException
 from fastapi import Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -67,6 +68,7 @@ from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
+from ..events.event_actions import EventActions
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
 from ..runners import Runner
@@ -416,6 +418,37 @@ def get_fast_api_app(
     logger.info("New session created")
     return await session_service.create_session(
         app_name=app_name, user_id=user_id, state=state
+    )
+
+  @app.post(
+    "/apps/{app_name}/users/{user_id}/sessions/{session_id}/state",
+    response_model_exclude_none=True,
+  )
+  async def update_session_state(
+    app_name: str,
+    user_id: str,
+    session_id: str,
+    state_changes: dict[str, Any],
+  ) -> JSONResponse:
+    logger.info(f"Updating session state for app='{app_name}', user='{user_id}', session='{session_id}'")
+    logger.debug(f"State changes to apply: {state_changes}")
+
+    session = await get_session(app_name, user_id, session_id)
+    logger.debug(f"Retrieved session: {session_id if session else 'None'}")
+
+    actions_with_update = EventActions(state_delta=state_changes)
+
+    system_event = Event(
+      invocation_id="inv_login_update",
+      author="system",
+      actions=actions_with_update,
+      timestamp=time.time()
+    )
+    await session_service.append_event(session, system_event)
+
+    return JSONResponse(
+      status_code=200,
+      content={"message": "Session state updated successfully."}
     )
 
   def _get_eval_set_file_path(app_name, agents_dir, eval_set_id) -> str:
