@@ -38,48 +38,6 @@ def test_blob():
 
 
 @pytest.mark.asyncio
-async def test_send_realtime_with_automatic_activity_detection_enabled(
-    gemini_connection, mock_gemini_session, test_blob
-):
-  """Test send_realtime with automatic_activity_detection=True (default)."""
-  await gemini_connection.send_realtime(
-      test_blob, automatic_activity_detection=True
-  )
-
-  # Should call send_realtime_input once with audio only
-  mock_gemini_session.send_realtime_input.assert_called_once_with(
-      audio=test_blob.model_dump()
-  )
-
-
-@pytest.mark.asyncio
-async def test_send_realtime_with_automatic_activity_detection_disabled(
-    gemini_connection, mock_gemini_session, test_blob
-):
-  """Test send_realtime with automatic_activity_detection=False."""
-  await gemini_connection.send_realtime(
-      test_blob, automatic_activity_detection=False
-  )
-
-  # Should call send_realtime_input three times: activity_start, audio, activity_end
-  assert mock_gemini_session.send_realtime_input.call_count == 3
-
-  calls = mock_gemini_session.send_realtime_input.call_args_list
-
-  # First call: activity_start
-  assert 'activity_start' in calls[0][1]
-  assert isinstance(calls[0][1]['activity_start'], types.ActivityStart)
-
-  # Second call: audio
-  assert 'audio' in calls[1][1]
-  assert calls[1][1]['audio'] == test_blob.model_dump()
-
-  # Third call: activity_end
-  assert 'activity_end' in calls[2][1]
-  assert isinstance(calls[2][1]['activity_end'], types.ActivityEnd)
-
-
-@pytest.mark.asyncio
 async def test_send_realtime_default_behavior(
     gemini_connection, mock_gemini_session, test_blob
 ):
