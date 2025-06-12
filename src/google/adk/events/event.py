@@ -14,9 +14,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-import random
-import string
 from typing import Optional
+import uuid
 
 from google.genai import types
 from pydantic import alias_generators
@@ -132,5 +131,4 @@ class Event(LlmResponse):
 
   @staticmethod
   def new_id():
-    characters = string.ascii_letters + string.digits
-    return ''.join(random.choice(characters) for _ in range(8))
+    return str(uuid.uuid4())
