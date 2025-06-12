@@ -45,9 +45,7 @@ async def test_send_realtime_default_behavior(
   await gemini_connection.send_realtime(test_blob)
 
   # Should call send once
-  mock_gemini_session.send.assert_called_once_with(
-      input=test_blob.model_dump()
-  )
+  mock_gemini_session.send.assert_called_once_with(input=test_blob.model_dump())
 
 
 @pytest.mark.asyncio
