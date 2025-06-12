@@ -98,12 +98,11 @@ class GeminiLlmConnection(BaseLlmConnection):
 
     Args:
       blob: The blob to send to the model.
-      automatic_activity_detection: Whether to use automatic activity detection.
     """
 
     input_blob = blob.model_dump()
     logger.debug('Sending LLM Blob: %s', input_blob)
-    await self._gemini_session.send_realtime_input(audio=input_blob)
+    await self._gemini_session.send(input=input_blob)
 
   def __build_full_text_response(self, text: str):
     """Builds a full text response.
