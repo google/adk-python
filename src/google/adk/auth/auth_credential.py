@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
+from datetime import datetime
 from typing import Any
 from typing import Dict
 from typing import List
@@ -75,6 +76,7 @@ class OAuth2Auth(BaseModelWithConfig):
   auth_code: Optional[str] = None
   access_token: Optional[str] = None
   refresh_token: Optional[str] = None
+  expiry: Optional[datetime] = None  # UTC expiration time for access_token
 
 
 class ServiceAccountCredential(BaseModelWithConfig):
