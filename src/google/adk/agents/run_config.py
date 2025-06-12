@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from enum import Enum
 import logging
 import sys
@@ -67,6 +69,9 @@ class RunConfig(BaseModel):
 
   input_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
   """Input transcription for live agents with audio input from user."""
+
+  realtime_input_config: Optional[types.RealtimeInputConfig] = None
+  """Realtime input config for live agents with audio input from user."""
 
   max_llm_calls: int = 500
   """
