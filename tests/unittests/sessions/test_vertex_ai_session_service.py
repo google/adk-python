@@ -245,8 +245,14 @@ class MockApiClient:
       raise ValueError(f'Unsupported http method: {http_method}')
 
 
-def mock_vertex_ai_session_service():
+def mock_vertex_ai_session_service(agent_engine_id: Optional[str] = None):
   """Creates a mock Vertex AI Session service for testing."""
+  if agent_engine_id:
+    return VertexAiSessionService(
+        project='test-project',
+        location='test-location',
+        agent_engine_id=agent_engine_id,
+    )
   return VertexAiSessionService(
       project='test-project', location='test-location'
   )
@@ -265,7 +271,7 @@ def mock_get_api_client():
       '2': (MOCK_EVENT_JSON_2, 'my_token'),
   }
   with mock.patch(
-      'google.adk.sessions.vertex_ai_session_service._get_api_client',
+      'google.adk.sessions.vertex_ai_session_service.VertexAiSessionService._get_api_client',
       return_value=api_client,
   ):
     yield
@@ -273,8 +279,12 @@ def mock_get_api_client():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
-async def test_get_empty_session():
-  session_service = mock_vertex_ai_session_service()
+@pytest.mark.parametrize('agent_engine_id', [None, '123'])
+async def test_get_empty_session(agent_engine_id):
+  if agent_engine_id:
+    session_service = mock_vertex_ai_session_service(agent_engine_id)
+  else:
+    session_service = mock_vertex_ai_session_service()
   with pytest.raises(ValueError) as excinfo:
     await session_service.get_session(
         app_name='123', user_id='user', session_id='0'
