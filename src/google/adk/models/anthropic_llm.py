@@ -135,6 +135,10 @@ def content_block_to_part(
 def message_to_generate_content_response(
     message: anthropic_types.Message,
 ) -> LlmResponse:
+  logger.info(
+      "Claude response: %s",
+      message.model_dump_json(indent=2, exclude_none=True),
+  )
 
   return LlmResponse(
       content=types.Content(
@@ -229,14 +233,11 @@ class Claude(BaseLlm):
           for tool in llm_request.config.tools[0].function_declarations
       ]
     tool_choice = (
-        anthropic_types.ToolChoiceAutoParam(
-            type="auto",
-            # TODO: allow parallel tool use.
-            disable_parallel_tool_use=True,
-        )
+        anthropic_types.ToolChoiceAutoParam(type="auto")
         if llm_request.tools_dict
         else NOT_GIVEN
     )
+    # TODO(b/421255973): Enable streaming for anthropic models.
     message = self._anthropic_client.messages.create(
         model=llm_request.model,
         system=llm_request.config.system_instruction,
@@ -244,10 +245,6 @@ class Claude(BaseLlm):
         tools=tools,
         tool_choice=tool_choice,
         max_tokens=MAX_TOKEN,
-    )
-    logger.info(
-        "Claude response: %s",
-        message.model_dump_json(indent=2, exclude_none=True),
     )
     yield message_to_generate_content_response(message)
 
