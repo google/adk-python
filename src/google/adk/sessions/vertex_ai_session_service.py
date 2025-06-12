@@ -69,6 +69,7 @@ class VertexAiSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      events: Optional[list[Event]] = None,
   ) -> Session:
     if session_id:
       raise ValueError(
@@ -128,7 +129,13 @@ class VertexAiSessionService(BaseSessionService):
         id=str(session_id),
         state=get_session_api_response.get('sessionState', {}),
         last_update_time=update_timestamp,
+        events=events or [],
     )
+
+    if events:
+      for event in events:
+        await self.append_event(session, event)
+
     return session
 
   @override

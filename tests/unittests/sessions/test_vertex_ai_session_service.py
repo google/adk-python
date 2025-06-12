@@ -359,6 +359,45 @@ async def test_create_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_events():
+  session_service = mock_vertex_ai_session_service()
+
+  state = {'key': 'value'}
+  events = [
+      Event(
+          id='id',
+          timestamp=1749753154.73047,
+          invocation_id='invocation',
+          author='user',
+          content=types.Content(role='user', parts=[types.Part(text='text')]),
+          actions=EventActions(
+              state_delta={
+                  'app:key': 'value',
+                  'user:key1': 'value1',
+                  'temp:key': 'temp',
+                  'key11': 'value11_new',
+              }
+          ),
+      )
+  ]
+
+  session = await session_service.create_session(
+      app_name='123', user_id='user', state=state, events=events
+  )
+  assert session.state == state
+  assert session.app_name == '123'
+  assert session.user_id == 'user'
+  assert session.last_update_time is not None
+  assert session.events == events
+
+  session_id = session.id
+  assert session == await session_service.get_session(
+      app_name='123', user_id='user', session_id=session_id
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_create_session_with_custom_session_id():
   session_service = mock_vertex_ai_session_service()
 

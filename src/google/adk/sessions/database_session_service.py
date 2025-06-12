@@ -49,8 +49,8 @@ from sqlalchemy.types import TypeDecorator
 from typing_extensions import override
 from tzlocal import get_localzone
 
-from . import _session_util
 from ..events.event import Event
+from . import _session_util
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -350,6 +350,7 @@ class DatabaseSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      events: Optional[list[Event]] = None,
   ) -> Session:
     # 1. Populate states.
     # 2. Build storage session object
@@ -393,27 +394,40 @@ class DatabaseSessionService(BaseSessionService):
       if user_state_delta:
         storage_user_state.state = user_state
 
+      session = Session(
+          app_name=str(app_name),
+          user_id=str(user_id),
+          id=str(session_id),
+      )
+
       # Store the session
       storage_session = StorageSession(
           app_name=app_name,
           user_id=user_id,
           id=session_id,
           state=session_state,
+          storage_events=[
+              StorageEvent.from_event(session, event)
+              for event in (events or [])
+          ],
       )
+
       session_factory.add(storage_session)
       session_factory.commit()
 
       session_factory.refresh(storage_session)
 
+      # Write events to database table
+      if events:
+        for event in events:
+          await self.append_event(session, event)
+
       # Merge states for response
       merged_state = _merge_state(app_state, user_state, session_state)
-      session = Session(
-          app_name=str(storage_session.app_name),
-          user_id=str(storage_session.user_id),
-          id=str(storage_session.id),
-          state=merged_state,
-          last_update_time=storage_session.update_time.timestamp(),
-      )
+      session.state = merged_state
+      session.last_update_time = storage_session.update_time.timestamp()
+      session.events = events or []
+
       return session
 
   @override

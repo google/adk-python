@@ -52,12 +52,14 @@ class InMemorySessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      events: Optional[list[Event]] = None,
   ) -> Session:
     return self._create_session_impl(
         app_name=app_name,
         user_id=user_id,
         state=state,
         session_id=session_id,
+        events=events,
     )
 
   def create_session_sync(
@@ -83,6 +85,7 @@ class InMemorySessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      events: Optional[list[Event]] = None,
   ) -> Session:
     session_id = (
         session_id.strip()
@@ -95,6 +98,7 @@ class InMemorySessionService(BaseSessionService):
         id=session_id,
         state=state or {},
         last_update_time=time.time(),
+        events=events or [],
     )
 
     if app_name not in self.sessions:

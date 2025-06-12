@@ -89,6 +89,62 @@ async def test_create_get_session(service_type):
 @pytest.mark.parametrize(
     'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
 )
+async def test_create_get_session_with_events(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id = 'test_user'
+  state = {'key': 'value'}
+  events = [
+      Event(
+          id='id',
+          timestamp=1749753154.73047,
+          invocation_id='invocation',
+          author='user',
+          content=types.Content(role='user', parts=[types.Part(text='text')]),
+          actions=EventActions(
+              state_delta={
+                  'app:key': 'value',
+                  'user:key1': 'value1',
+                  'temp:key': 'temp',
+                  'key11': 'value11_new',
+              }
+          ),
+      )
+  ]
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, state=state, events=events
+  )
+  assert session.app_name == app_name
+  assert session.user_id == user_id
+  assert session.id
+  assert session.state == state
+  assert session.events == events
+
+  assert (
+      await session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session.id
+      )
+      == session
+  )
+
+  session_id = session.id
+  await session_service.delete_session(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  )
+
+  assert (
+      await session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session.id
+      )
+      != session
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+)
 async def test_create_and_list_sessions(service_type):
   session_service = get_session_service(service_type)
   app_name = 'my_app'
