@@ -21,22 +21,15 @@ import tempfile
 import time
 from unittest.mock import patch
 
+from google.adk.errors.not_found_error import NotFoundError
+from google.adk.evaluation._eval_set_results_manager_utils import _sanitize_eval_set_result_name
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.local_eval_set_results_manager import _ADK_EVAL_HISTORY_DIR
 from google.adk.evaluation.local_eval_set_results_manager import _EVAL_SET_RESULT_FILE_EXTENSION
-from google.adk.evaluation.local_eval_set_results_manager import _sanitize_eval_set_result_name
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 import pytest
-
-
-def test_sanitize_eval_set_result_name():
-  assert _sanitize_eval_set_result_name("app/name") == "app_name"
-  assert _sanitize_eval_set_result_name("app_name") == "app_name"
-  assert _sanitize_eval_set_result_name("app/name/with/slashes") == (
-      "app_name_with_slashes"
-  )
 
 
 class TestLocalEvalSetResultsManager:
@@ -115,10 +108,8 @@ class TestLocalEvalSetResultsManager:
   def test_get_eval_set_result_not_found(self, mock_time):
     mock_time.return_value = self.timestamp
 
-    with pytest.raises(ValueError) as e:
+    with pytest.raises(NotFoundError) as e:
       self.manager.get_eval_set_result(self.app_name, "non_existent_id")
-
-    assert "does not exist" in str(e.value)
 
   @patch("time.time")
   def test_list_eval_set_results(self, mock_time):
