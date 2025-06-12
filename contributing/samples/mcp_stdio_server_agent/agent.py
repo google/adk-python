@@ -16,8 +16,9 @@
 import os
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.tools.mcp_tool import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-from google.adk.tools.mcp_tool.mcp_toolset import StdioServerParameters
+from mcp import StdioServerParameters
 
 _allowed_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -31,13 +32,16 @@ Allowed directory: {_allowed_path}
     """,
     tools=[
         MCPToolset(
-            connection_params=StdioServerParameters(
-                command='npx',
-                args=[
-                    '-y',  # Arguments for the command
-                    '@modelcontextprotocol/server-filesystem',
-                    _allowed_path,
-                ],
+            connection_params=StdioConnectionParams(
+                server_params=StdioServerParameters(
+                    command='npx',
+                    args=[
+                        '-y',  # Arguments for the command
+                        '@modelcontextprotocol/server-filesystem',
+                        _allowed_path,
+                    ],
+                ),
+                timeout=5,
             ),
             # don't want agent to do write operation
             # you can also do below

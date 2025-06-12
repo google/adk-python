@@ -19,15 +19,12 @@ from google.genai import types
 
 
 async def log_query(tool_context: ToolContext, query: str):
-    """Saves the provided query string as a 'text/plain' artifact named 'query'."""
-    query_bytes = query.encode('utf-8')
-    artifact_part = types.Part(
-      inline_data=types.Blob(
-          mime_type='text/plain',
-          data=query_bytes
-      )
-    )
-    await tool_context.save_artifact('query', artifact_part)
+  """Saves the provided query string as a 'text/plain' artifact named 'query'."""
+  query_bytes = query.encode('utf-8')
+  artifact_part = types.Part(
+      inline_data=types.Blob(mime_type='text/plain', data=query_bytes)
+  )
+  await tool_context.save_artifact('query', artifact_part)
 
 
 root_agent = Agent(
