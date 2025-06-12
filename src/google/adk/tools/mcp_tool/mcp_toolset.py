@@ -36,8 +36,8 @@ from .mcp_session_manager import StreamableHTTPServerParams
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
 try:
-  from mcp import StdioServerParameters
   from mcp.types import ListToolsResult
+  from mcp import StdioServerParameters
 except ImportError as e:
   import sys
 
@@ -68,7 +68,8 @@ class MCPToolset(BaseToolset):
           command='npx',
           args=["-y", "@modelcontextprotocol/server-filesystem"],
       ),
-      tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
+      tool_filter=['read_file', 'list_directory'],  # Optional: filter specific tools
+      tool_name_prefix="sfs_",  # Optional: add_name_prefix
   )
 
   # Use in an agent
@@ -96,6 +97,7 @@ class MCPToolset(BaseToolset):
       ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       errlog: TextIO = sys.stderr,
+      tool_name_prefix: str = "",
   ):
     """Initializes the MCPToolset.
 
@@ -108,10 +110,15 @@ class MCPToolset(BaseToolset):
         mcp server (e.g. using `npx` or `python3` ), but it does not support
         timeout, and we recommend to use `StdioConnectionParams` instead when
         timeout is needed.
-      tool_filter: Optional filter to select specific tools. Can be either: - A
-        list of tool names to include - A ToolPredicate function for custom
-        filtering logic
+      tool_filter: Optional filter to select specific tools. Can be either:
+        - A list of tool names to include
+        - A ToolPredicate function for custom filtering logic
+        In both cases, the tool name WILL include the `tool_name_prefix` when
+        matching.
       errlog: TextIO stream for error logging.
+      tool_name_prefix: string to add to the start of the name of all return tools.
+        For example, `prefix="ns_"` would change a returned tool name from
+        `my_tool` to `ns_my_tool`.
     """
     super().__init__(tool_filter=tool_filter)
 
@@ -120,6 +127,7 @@ class MCPToolset(BaseToolset):
 
     self._connection_params = connection_params
     self._errlog = errlog
+    self._tool_name_prefix = tool_name_prefix
 
     # Create the session manager that will handle the MCP connection
     self._mcp_session_manager = MCPSessionManager(
