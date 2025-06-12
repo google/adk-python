@@ -76,7 +76,7 @@ async def test_send_to_model_with_disabled_vad(test_blob, mock_llm_connection):
   # Run _send_to_model
   await flow._send_to_model(mock_llm_connection, invocation_context)
 
-  mock_llm_connection.send_realtime.assert_not_called()
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
 
 @pytest.mark.asyncio
@@ -110,7 +110,7 @@ async def test_send_to_model_with_enabled_vad(test_blob, mock_llm_connection):
   # Run _send_to_model
   await flow._send_to_model(mock_llm_connection, invocation_context)
 
-  mock_llm_connection.send_realtime.assert_not_called()
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_send_to_model_without_realtime_config(
   # Run _send_to_model
   await flow._send_to_model(mock_llm_connection, invocation_context)
 
-  mock_llm_connection.send_realtime.assert_not_called()
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
 
 @pytest.mark.asyncio
@@ -169,7 +169,7 @@ async def test_send_to_model_with_none_automatic_activity_detection(
   # Run _send_to_model
   await flow._send_to_model(mock_llm_connection, invocation_context)
 
-  mock_llm_connection.send_realtime.assert_not_called()
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
 
 @pytest.mark.asyncio
