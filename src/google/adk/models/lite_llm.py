@@ -183,36 +183,36 @@ def _content_to_message_param(
   role = _to_litellm_role(content.role)
   message_content = _get_content(content.parts) or None
 
-  if role == "user":
-    return ChatCompletionUserMessage(role="user", content=message_content)
-  else:  # assistant/model
-    tool_calls = []
-    content_present = False
-    for part in content.parts:
-      if part.function_call:
-        tool_calls.append(
-            ChatCompletionAssistantToolCall(
-                type="function",
-                id=part.function_call.id,
-                function=Function(
-                    name=part.function_call.name,
-                    arguments=_safe_json_serialize(part.function_call.args),
-                ),
-            )
-        )
-      elif part.text or part.inline_data:
-        content_present = True
-
-    final_content = message_content if content_present else None
-    if final_content and isinstance(final_content, list):
-      # when the content is a single text object, we can use it directly.
-      # this is needed for ollama_chat provider which fails if content is a list
-      final_content = (
-          final_content[0].get("text", "")
-          if final_content[0].get("type", None) == "text"
-          else final_content
+  tool_calls = []
+  content_present = False
+  for part in content.parts:
+    if part.function_call:
+      tool_calls.append(
+          ChatCompletionAssistantToolCall(
+              type="function",
+              id=part.function_call.id,
+              function=Function(
+                  name=part.function_call.name,
+                  arguments=_safe_json_serialize(part.function_call.args),
+              ),
+          )
       )
+    elif part.text or part.inline_data:
+      content_present = True
 
+  final_content = message_content if content_present else None
+  if final_content and isinstance(final_content, list):
+    # when the content is a single text object, we can use it directly.
+    # this is needed for ollama_chat provider which fails if content is a list
+    final_content = (
+        final_content[0].get("text", "")
+        if final_content[0].get("type", None) == "text"
+        else final_content
+    )
+
+  if role == "user":
+    return ChatCompletionUserMessage(role="user", content=final_content)
+  else:  # assistant/model
     return ChatCompletionAssistantMessage(
         role=role,
         content=final_content,
