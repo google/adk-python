@@ -205,9 +205,18 @@ class BaseLlmFlow(ABC):
           )
         # if the automatic activity detection is disabled, then we need to send the activity start and end events to the model
         run_config = invocation_context.run_config
-        realtime_input_config = run_config.realtime_input_config if run_config else None
-        disabled_vad = realtime_input_config is not None and realtime_input_config.automatic_activity_detection is not None and realtime_input_config.automatic_activity_detection.disabled is True
-        await llm_connection.send_realtime(live_request.blob, automatic_activity_detection=not disabled_vad)
+        realtime_input_config = (
+            run_config.realtime_input_config if run_config else None
+        )
+        disabled_vad = (
+            realtime_input_config is not None
+            and realtime_input_config.automatic_activity_detection is not None
+            and realtime_input_config.automatic_activity_detection.disabled
+            is True
+        )
+        await llm_connection.send_realtime(
+            live_request.blob, automatic_activity_detection=not disabled_vad
+        )
         # if the save_input_blobs_as_artifacts is enabled, then we need to save the input blob as an artifact
         if run_config.save_input_blobs_as_artifacts:
           await llm_connection.save_input_blob(live_request.blob)

@@ -56,7 +56,9 @@ class ModelContent(types.Content):
     super().__init__(role='model', parts=parts)
 
 
-async def create_invocation_context(agent: Agent, user_content: str = '', run_config: RunConfig = None):
+async def create_invocation_context(
+    agent: Agent, user_content: str = '', run_config: RunConfig = None
+):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
   session_service = InMemorySessionService()
@@ -205,7 +207,9 @@ class InMemoryRunner:
       events.append(event)
     return events
 
-  def run_live(self, live_request_queue: LiveRequestQueue, run_config: RunConfig = None) -> list[Event]:
+  def run_live(
+      self, live_request_queue: LiveRequestQueue, run_config: RunConfig = None
+  ) -> list[Event]:
     collected_responses = []
 
     async def consume_responses(session: Session):
@@ -308,7 +312,9 @@ class MockLlmConnection(BaseLlmConnection):
   async def send(self, data):
     pass
 
-  async def send_realtime(self, blob: types.Blob, automatic_activity_detection: bool = True):
+  async def send_realtime(
+      self, blob: types.Blob, automatic_activity_detection: bool = True
+  ):
     pass
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:

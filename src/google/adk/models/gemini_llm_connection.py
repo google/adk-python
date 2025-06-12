@@ -91,7 +91,9 @@ class GeminiLlmConnection(BaseLlmConnection):
           )
       )
 
-  async def send_realtime(self, blob: types.Blob, automatic_activity_detection: bool = True):
+  async def send_realtime(
+      self, blob: types.Blob, automatic_activity_detection: bool = True
+  ):
     """Sends a chunk of audio or a frame of video to the model in realtime.
 
     Args:
@@ -104,9 +106,13 @@ class GeminiLlmConnection(BaseLlmConnection):
     if automatic_activity_detection:
       await self._gemini_session.send_realtime_input(audio=input_blob)
     else:
-      await self._gemini_session.send_realtime_input(activity_start=types.ActivityStart())
+      await self._gemini_session.send_realtime_input(
+          activity_start=types.ActivityStart()
+      )
       await self._gemini_session.send_realtime_input(audio=input_blob)
-      await self._gemini_session.send_realtime_input(activity_end=types.ActivityEnd())
+      await self._gemini_session.send_realtime_input(
+          activity_end=types.ActivityEnd()
+      )
 
   def __build_full_text_response(self, text: str):
     """Builds a full text response.

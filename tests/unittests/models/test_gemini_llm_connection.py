@@ -42,8 +42,10 @@ async def test_send_realtime_with_automatic_activity_detection_enabled(
     gemini_connection, mock_gemini_session, test_blob
 ):
   """Test send_realtime with automatic_activity_detection=True (default)."""
-  await gemini_connection.send_realtime(test_blob, automatic_activity_detection=True)
-  
+  await gemini_connection.send_realtime(
+      test_blob, automatic_activity_detection=True
+  )
+
   # Should call send_realtime_input once with audio only
   mock_gemini_session.send_realtime_input.assert_called_once_with(
       audio=test_blob.model_dump()
@@ -55,21 +57,23 @@ async def test_send_realtime_with_automatic_activity_detection_disabled(
     gemini_connection, mock_gemini_session, test_blob
 ):
   """Test send_realtime with automatic_activity_detection=False."""
-  await gemini_connection.send_realtime(test_blob, automatic_activity_detection=False)
-  
+  await gemini_connection.send_realtime(
+      test_blob, automatic_activity_detection=False
+  )
+
   # Should call send_realtime_input three times: activity_start, audio, activity_end
   assert mock_gemini_session.send_realtime_input.call_count == 3
-  
+
   calls = mock_gemini_session.send_realtime_input.call_args_list
-  
+
   # First call: activity_start
   assert 'activity_start' in calls[0][1]
   assert isinstance(calls[0][1]['activity_start'], types.ActivityStart)
-  
+
   # Second call: audio
   assert 'audio' in calls[1][1]
   assert calls[1][1]['audio'] == test_blob.model_dump()
-  
+
   # Third call: activity_end
   assert 'activity_end' in calls[2][1]
   assert isinstance(calls[2][1]['activity_end'], types.ActivityEnd)
@@ -81,7 +85,7 @@ async def test_send_realtime_default_behavior(
 ):
   """Test send_realtime with default automatic_activity_detection value (True)."""
   await gemini_connection.send_realtime(test_blob)
-  
+
   # Should call send_realtime_input once with audio only (default is True)
   mock_gemini_session.send_realtime_input.assert_called_once_with(
       audio=test_blob.model_dump()
@@ -92,18 +96,14 @@ async def test_send_realtime_default_behavior(
 async def test_send_history(gemini_connection, mock_gemini_session):
   """Test send_history method."""
   history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='Hello')]),
       types.Content(
-          role='user',
-          parts=[types.Part.from_text(text='Hello')]
+          role='model', parts=[types.Part.from_text(text='Hi there!')]
       ),
-      types.Content(
-          role='model',
-          parts=[types.Part.from_text(text='Hi there!')]
-      )
   ]
-  
+
   await gemini_connection.send_history(history)
-  
+
   mock_gemini_session.send.assert_called_once()
   call_args = mock_gemini_session.send.call_args[1]
   assert 'input' in call_args
@@ -115,12 +115,11 @@ async def test_send_history(gemini_connection, mock_gemini_session):
 async def test_send_content_text(gemini_connection, mock_gemini_session):
   """Test send_content with text content."""
   content = types.Content(
-      role='user',
-      parts=[types.Part.from_text(text='Hello')]
+      role='user', parts=[types.Part.from_text(text='Hello')]
   )
-  
+
   await gemini_connection.send_content(content)
-  
+
   mock_gemini_session.send.assert_called_once()
   call_args = mock_gemini_session.send.call_args[1]
   assert 'input' in call_args
@@ -129,19 +128,19 @@ async def test_send_content_text(gemini_connection, mock_gemini_session):
 
 
 @pytest.mark.asyncio
-async def test_send_content_function_response(gemini_connection, mock_gemini_session):
+async def test_send_content_function_response(
+    gemini_connection, mock_gemini_session
+):
   """Test send_content with function response."""
   function_response = types.FunctionResponse(
-      name='test_function',
-      response={'result': 'success'}
+      name='test_function', response={'result': 'success'}
   )
   content = types.Content(
-      role='user',
-      parts=[types.Part(function_response=function_response)]
+      role='user', parts=[types.Part(function_response=function_response)]
   )
-  
+
   await gemini_connection.send_content(content)
-  
+
   mock_gemini_session.send.assert_called_once()
   call_args = mock_gemini_session.send.call_args[1]
   assert 'input' in call_args
@@ -152,5 +151,5 @@ async def test_send_content_function_response(gemini_connection, mock_gemini_ses
 async def test_close(gemini_connection, mock_gemini_session):
   """Test close method."""
   await gemini_connection.close()
-  
+
   mock_gemini_session.close.assert_called_once()
