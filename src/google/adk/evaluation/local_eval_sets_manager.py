@@ -27,7 +27,11 @@ from google.genai import types as genai_types
 from pydantic import ValidationError
 from typing_extensions import override
 
-from ..errors.not_found_error import NotFoundError
+from ._eval_sets_manager_utils import add_eval_case_to_eval_set
+from ._eval_sets_manager_utils import delete_eval_case_from_eval_set
+from ._eval_sets_manager_utils import get_eval_case_from_eval_set
+from ._eval_sets_manager_utils import get_eval_set_from_app_and_id
+from ._eval_sets_manager_utils import update_eval_case_in_eval_set
 from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -218,7 +222,7 @@ class LocalEvalSetsManager(EvalSetsManager):
           eval_cases=[],
           creation_timestamp=time.time(),
       )
-      self._write_eval_set(new_eval_set_path, new_eval_set)
+      self._write_eval_set_to_path(new_eval_set_path, new_eval_set)
 
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
@@ -234,50 +238,26 @@ class LocalEvalSetsManager(EvalSetsManager):
     return sorted(eval_sets)
 
   @override
+  def get_eval_case(
+      self, app_name: str, eval_set_id: str, eval_case_id: str
+  ) -> Optional[EvalCase]:
+    """Returns an EvalCase if found, otherwise None."""
+    eval_set = self.get_eval_set(app_name, eval_set_id)
+    if not eval_set:
+      return None
+    return get_eval_case_from_eval_set(eval_set, eval_case_id)
+
+  @override
   def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: EvalCase):
     """Adds the given EvalCase to an existing EvalSet identified by app_name and eval_set_id.
 
     Raises:
       NotFoundError: If the eval set is not found.
     """
-    eval_case_id = eval_case.eval_id
-    self._validate_id(id_name="Eval Case Id", id_value=eval_case_id)
+    eval_set = get_eval_set_from_app_and_id(self, app_name, eval_set_id)
+    updated_eval_set = add_eval_case_to_eval_set(eval_set, eval_case)
 
-    eval_set = self.get_eval_set(app_name, eval_set_id)
-
-    if not eval_set:
-      raise NotFoundError(f"Eval set `{eval_set_id}` not found.")
-
-    if [x for x in eval_set.eval_cases if x.eval_id == eval_case_id]:
-      raise ValueError(
-          f"Eval id `{eval_case_id}` already exists in `{eval_set_id}`"
-          " eval set.",
-      )
-
-    eval_set.eval_cases.append(eval_case)
-
-    eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
-    self._write_eval_set(eval_set_file_path, eval_set)
-
-  @override
-  def get_eval_case(
-      self, app_name: str, eval_set_id: str, eval_case_id: str
-  ) -> Optional[EvalCase]:
-    """Returns an EvalCase if found, otherwise None."""
-    eval_set = self.get_eval_set(app_name, eval_set_id)
-
-    if not eval_set:
-      return None
-
-    eval_case_to_find = None
-
-    # Look up the eval case by eval_case_id
-    for eval_case in eval_set.eval_cases:
-      if eval_case.eval_id == eval_case_id:
-        eval_case_to_find = eval_case
-        break
-
-    return eval_case_to_find
+    self._save_eval_set(app_name, eval_set_id, updated_eval_set)
 
   @override
   def update_eval_case(
@@ -288,28 +268,9 @@ class LocalEvalSetsManager(EvalSetsManager):
     Raises:
       NotFoundError: If the eval set or the eval case is not found.
     """
-    eval_case_id = updated_eval_case.eval_id
-
-    # Find the eval case to be updated.
-    eval_case_to_update = self.get_eval_case(
-        app_name, eval_set_id, eval_case_id
-    )
-
-    if eval_case_to_update:
-      # Remove the eval case from the existing eval set.
-      eval_set = self.get_eval_set(app_name, eval_set_id)
-      eval_set.eval_cases.remove(eval_case_to_update)
-
-      # Add the updated eval case to the existing eval set.
-      eval_set.eval_cases.append(updated_eval_case)
-
-      # Persit the eval set.
-      eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
-      self._write_eval_set(eval_set_file_path, eval_set)
-    else:
-      raise NotFoundError(
-          f"Eval Set `{eval_set_id}` or Eval id `{eval_case_id}` not found.",
-      )
+    eval_set = get_eval_set_from_app_and_id(self, app_name, eval_set_id)
+    updated_eval_set = update_eval_case_in_eval_set(eval_set, updated_eval_case)
+    self._save_eval_set(app_name, eval_set_id, updated_eval_set)
 
   @override
   def delete_eval_case(
@@ -320,25 +281,9 @@ class LocalEvalSetsManager(EvalSetsManager):
     Raises:
       NotFoundError: If the eval set or the eval case to delete is not found.
     """
-    # Find the eval case that needs to be deleted.
-    eval_case_to_remove = self.get_eval_case(
-        app_name, eval_set_id, eval_case_id
-    )
-
-    if eval_case_to_remove:
-      logger.info(
-          "EvalCase`%s` was found in the eval set. It will be removed"
-          " permanently.",
-          eval_case_id,
-      )
-      eval_set = self.get_eval_set(app_name, eval_set_id)
-      eval_set.eval_cases.remove(eval_case_to_remove)
-      eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
-      self._write_eval_set(eval_set_file_path, eval_set)
-    else:
-      raise NotFoundError(
-          f"Eval Set `{eval_set_id}` or Eval id `{eval_case_id}` not found.",
-      )
+    eval_set = get_eval_set_from_app_and_id(self, app_name, eval_set_id)
+    updated_eval_set = delete_eval_case_from_eval_set(eval_set, eval_case_id)
+    self._save_eval_set(app_name, eval_set_id, updated_eval_set)
 
   def _get_eval_set_file_path(self, app_name: str, eval_set_id: str) -> str:
     return os.path.join(
@@ -354,6 +299,10 @@ class LocalEvalSetsManager(EvalSetsManager):
           f"Invalid {id_name}. {id_name} should have the `{pattern}` format",
       )
 
-  def _write_eval_set(self, eval_set_path: str, eval_set: EvalSet):
+  def _write_eval_set_to_path(self, eval_set_path: str, eval_set: EvalSet):
     with open(eval_set_path, "w") as f:
       f.write(eval_set.model_dump_json(indent=2))
+
+  def _save_eval_set(self, app_name: str, eval_set_id: str, eval_set: EvalSet):
+    eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
+    self._write_eval_set_to_path(eval_set_file_path, eval_set)
