@@ -87,6 +87,41 @@ def test_resolve_project_from_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
     mocked_echo.assert_called_once()
 
 
+# _get_service_option_by_adk_version
+def test_get_service_option_by_adk_version() -> None:
+  """It should return the explicit project value untouched."""
+  assert cli_deploy._get_service_option_by_adk_version(
+      adk_version="1.3.0",
+      session_uri="sqlite://",
+      artifact_uri="gs://bucket",
+      memory_uri="rag://",
+  ) == (
+      "--session_service_uri=sqlite:// "
+      "--artifact_service_uri=gs://bucket "
+      "--memory_service_uri=rag://"
+  )
+
+  assert (
+      cli_deploy._get_service_option_by_adk_version(
+          adk_version="1.2.0",
+          session_uri="sqlite://",
+          artifact_uri="gs://bucket",
+          memory_uri="rag://",
+      )
+      == "--session_db_url=sqlite:// --artifact_storage_uri=gs://bucket"
+  )
+
+  assert (
+      cli_deploy._get_service_option_by_adk_version(
+          adk_version="0.5.0",
+          session_uri="sqlite://",
+          artifact_uri="gs://bucket",
+          memory_uri="rag://",
+      )
+      == "--session_db_url=sqlite://"
+  )
+
+
 # to_cloud_run
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_to_cloud_run_happy_path(
@@ -127,7 +162,9 @@ def test_to_cloud_run_happy_path(
       trace_to_cloud=True,
       with_ui=True,
       verbosity="info",
-      session_db_url="sqlite://",
+      session_service_uri="sqlite://",
+      artifact_service_uri="gs://bucket",
+      memory_service_uri="rag://",
       adk_version="0.0.5",
   )
 
@@ -169,8 +206,10 @@ def test_to_cloud_run_cleans_temp_dir(
       trace_to_cloud=False,
       with_ui=False,
       verbosity="info",
-      session_db_url=None,
-      adk_version="0.0.5",
+      adk_version="1.0.0",
+      session_service_uri=None,
+      artifact_service_uri=None,
+      memory_service_uri=None,
   )
 
   assert deleted["path"] == tmp_dir

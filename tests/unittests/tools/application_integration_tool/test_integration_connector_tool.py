@@ -157,7 +157,11 @@ async def test_run_with_auth_async_none_token(
     integration_tool_with_auth, mock_rest_api_tool
 ):
   """Tests run_async when auth credential token is None."""
-  input_args = {"user_id": "user456", "filter": "some_filter"}
+  input_args = {
+      "user_id": "user456",
+      "filter": "some_filter",
+      "sortByColumns": ["a", "b"],
+  }
   expected_call_args = {
       "user_id": "user456",
       "filter": "some_filter",
@@ -168,6 +172,7 @@ async def test_run_with_auth_async_none_token(
       "entity": "TestEntity",
       "operation": "LIST",
       "action": "TestAction",
+      "sortByColumns": ["a", "b"],
   }
 
   with mock.patch(
