@@ -122,10 +122,12 @@ def _is_valid_state_name(var_name):
   """
   parts = var_name.split(':')
   if len(parts) == 1:
-    return var_name.isidentifier()
+    return parts[0].isidentifier()
 
   if len(parts) == 2:
     prefixes = [State.APP_PREFIX, State.USER_PREFIX, State.TEMP_PREFIX]
     if (parts[0] + ':') in prefixes:
       return parts[1].isidentifier()
   return False
+
+
