@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import logging
 from typing import AsyncGenerator
 
@@ -91,8 +93,7 @@ class GeminiLlmConnection(BaseLlmConnection):
           )
       )
 
-  async def send_realtime(
-      self, blob: types.Blob):
+  async def send_realtime(self, blob: types.Blob):
     """Sends a chunk of audio or a frame of video to the model in realtime.
 
     Args:

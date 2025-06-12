@@ -77,15 +77,13 @@ async def test_send_to_model_with_disabled_vad(test_blob, mock_llm_connection):
   await flow._send_to_model(mock_llm_connection, invocation_context)
 
   # Verify send_realtime was called with automatic_activity_detection=False
-  mock_llm_connection.send_realtime.assert_called_once_with(
-      test_blob
-  )
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
 
 @pytest.mark.asyncio
 async def test_send_to_model_with_enabled_vad(test_blob, mock_llm_connection):
   """Test _send_to_model with automatic_activity_detection.disabled=False.
-  
+
   Custom VAD activity signal is not supported so we should still disable it.
   """
   # Create LlmRequest with enabled VAD
@@ -114,9 +112,7 @@ async def test_send_to_model_with_enabled_vad(test_blob, mock_llm_connection):
   await flow._send_to_model(mock_llm_connection, invocation_context)
 
   # Verify send_realtime was called with automatic_activity_detection=True
-  mock_llm_connection.send_realtime.assert_called_once_with(
-      test_blob
-  )
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
 
 @pytest.mark.asyncio
@@ -143,9 +139,7 @@ async def test_send_to_model_without_realtime_config(
   await flow._send_to_model(mock_llm_connection, invocation_context)
 
   # Verify send_realtime was called with automatic_activity_detection=True (default)
-  mock_llm_connection.send_realtime.assert_called_once_with(
-      test_blob
-  )
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
 
 @pytest.mark.asyncio
@@ -179,9 +173,7 @@ async def test_send_to_model_with_none_automatic_activity_detection(
   await flow._send_to_model(mock_llm_connection, invocation_context)
 
   # Verify send_realtime was called with automatic_activity_detection=True (default)
-  mock_llm_connection.send_realtime.assert_called_once_with(
-      test_blob
-  )
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
 
 @pytest.mark.asyncio
