@@ -44,9 +44,9 @@ async def test_send_realtime_default_behavior(
   """Test send_realtime with default automatic_activity_detection value (True)."""
   await gemini_connection.send_realtime(test_blob)
 
-  # Should call send_realtime_input once with audio only (default is True)
+  # Should call send once
   mock_gemini_session.send.assert_called_once_with(
-      input=test_blob
+      input=test_blob.model_dump()
   )
 
 
