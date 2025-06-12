@@ -12,5 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.3.0"
+from __future__ import annotations
+
+from google.adk.tools.bigquery.config import BigQueryToolConfig
+import pytest
+
+
+def test_bigquery_tool_config_experimental_warning():
+  """Test BigQueryToolConfig experimental warning."""
+  with pytest.warns(
+      UserWarning,
+      match="Config defaults may have breaking change in the future.",
+  ):
+    BigQueryToolConfig()
