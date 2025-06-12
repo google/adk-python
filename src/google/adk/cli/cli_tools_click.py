@@ -23,6 +23,8 @@ import logging
 import os
 import tempfile
 from typing import Optional
+from typing import Mapping
+from typing import Any
 
 import click
 from fastapi import FastAPI
@@ -569,6 +571,7 @@ def cli_web(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     session_db_url: Optional[str] = None,  # Deprecated
+    session_db_kwargs: Optional[Mapping[str, Any]] = None,
     artifact_storage_uri: Optional[str] = None,  # Deprecated
 ):
   """Starts a FastAPI server with Web UI for agents.
@@ -609,6 +612,7 @@ def cli_web(
   app = get_fast_api_app(
       agents_dir=agents_dir,
       session_service_uri=session_service_uri,
+      session_db_kwargs=session_db_kwargs,
       artifact_service_uri=artifact_service_uri,
       memory_service_uri=memory_service_uri,
       allow_origins=allow_origins,
@@ -652,6 +656,7 @@ def cli_api_server(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     session_db_url: Optional[str] = None,  # Deprecated
+    session_db_kwargs: Optional[Mapping[str, Any]] = None,
     artifact_storage_uri: Optional[str] = None,  # Deprecated
 ):
   """Starts a FastAPI server for agents.
@@ -671,6 +676,7 @@ def cli_api_server(
       get_fast_api_app(
           agents_dir=agents_dir,
           session_service_uri=session_service_uri,
+          session_db_kwargs=session_db_kwargs,
           artifact_service_uri=artifact_service_uri,
           memory_service_uri=memory_service_uri,
           allow_origins=allow_origins,
