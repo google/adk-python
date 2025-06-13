@@ -21,6 +21,8 @@ from .loop_agent import LoopAgent
 from .parallel_agent import ParallelAgent
 from .run_config import RunConfig
 from .sequential_agent import SequentialAgent
+from .callback_context import CallbackContext
+
 
 __all__ = [
     'Agent',
@@ -29,4 +31,5 @@ __all__ = [
     'LoopAgent',
     'ParallelAgent',
     'SequentialAgent',
+    'CallbackContext',
 ]
