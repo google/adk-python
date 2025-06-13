@@ -76,8 +76,8 @@ class VertexAiSearchTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    if llm_request.model and llm_request.model.startswith('gemini-'):
-      if llm_request.model.startswith('gemini-1') and llm_request.config.tools:
+    if llm_request.model and 'gemini-' in llm_request.model:
+      if 'gemini-1' in llm_request.model and llm_request.config.tools:
         raise ValueError(
             'Vertex AI search tool can not be used with other tools in Gemini'
             ' 1.x.'
