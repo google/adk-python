@@ -14,6 +14,7 @@
 
 from typing import Optional
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
@@ -147,10 +148,11 @@ def test_openid_connect_with_auth_response(
   tool_context = create_mock_tool_context()
 
   mock_auth_handler = MagicMock()
-  mock_auth_handler.get_auth_response.return_value = AuthCredential(
+  returned_credentail = AuthCredential(
       auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
       oauth2=OAuth2Auth(auth_response_uri='test_auth_response_uri'),
   )
+  mock_auth_handler.get_auth_response.return_value = returned_credentail
   mock_auth_handler_path = 'google.adk.tools.tool_context.AuthHandler'
   monkeypatch.setattr(
       mock_auth_handler_path, lambda *args, **kwargs: mock_auth_handler
@@ -172,7 +174,7 @@ def test_openid_connect_with_auth_response(
   stored_credential = credential_store.get_credential(
       openid_connect_scheme, openid_connect_credential
   )
-  assert stored_credential == result.auth_credential
+  assert stored_credential == returned_credentail
   mock_auth_handler.get_auth_response.assert_called_once()
 
 
@@ -199,3 +201,66 @@ def test_openid_connect_existing_token(
   result = handler.prepare_auth_credentials()
   assert result.state == 'done'
   assert result.auth_credential == existing_credential
+
+
+@patch(
+    'google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler.OAuth2CredentialFetcher'
+)
+def test_openid_connect_existing_oauth2_token_refresh(
+    mock_oauth2_fetcher, openid_connect_scheme, openid_connect_credential
+):
+  """Test that OAuth2 tokens are refreshed when existing credentials are found."""
+  # Create existing OAuth2 credential
+  existing_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='test_client_id',
+          client_secret='test_client_secret',
+          access_token='existing_token',
+          refresh_token='refresh_token',
+      ),
+  )
+
+  # Mock the refreshed credential
+  refreshed_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='test_client_id',
+          client_secret='test_client_secret',
+          access_token='refreshed_token',
+          refresh_token='new_refresh_token',
+      ),
+  )
+
+  # Setup mock OAuth2CredentialFetcher
+  mock_fetcher_instance = MagicMock()
+  mock_fetcher_instance.refresh.return_value = refreshed_credential
+  mock_oauth2_fetcher.return_value = mock_fetcher_instance
+
+  tool_context = create_mock_tool_context()
+  credential_store = ToolContextCredentialStore(tool_context=tool_context)
+
+  # Store the existing credential
+  key = credential_store.get_credential_key(
+      openid_connect_scheme, openid_connect_credential
+  )
+  credential_store.store_credential(key, existing_credential)
+
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+      credential_store=credential_store,
+  )
+
+  result = handler.prepare_auth_credentials()
+
+  # Verify OAuth2CredentialFetcher was called for refresh
+  mock_oauth2_fetcher.assert_called_once_with(
+      openid_connect_scheme, existing_credential
+  )
+  mock_fetcher_instance.refresh.assert_called_once()
+
+  assert result.state == 'done'
+  # The result should contain the refreshed credential after exchange
+  assert result.auth_credential is not None
