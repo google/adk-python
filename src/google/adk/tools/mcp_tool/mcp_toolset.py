@@ -28,10 +28,8 @@ from ..base_toolset import ToolPredicate
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
 from .mcp_session_manager import SseConnectionParams
-from .mcp_session_manager import SseServerParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
-from .mcp_session_manager import StreamableHTTPServerParams
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
@@ -127,9 +125,7 @@ class MCPToolset(BaseToolset):
         errlog=self._errlog,
     )
 
-    self._session = None
-
-  @retry_on_closed_resource("_reinitialize_session")
+  @retry_on_closed_resource("_mcp_session_manager")
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
@@ -144,11 +140,10 @@ class MCPToolset(BaseToolset):
         List[BaseTool]: A list of tools available under the specified context.
     """
     # Get session from session manager
-    if not self._session:
-      self._session = await self._mcp_session_manager.create_session()
+    session = await self._mcp_session_manager.create_session()
 
     # Fetch available tools from the MCP server
-    tools_response: ListToolsResult = await self._session.list_tools()
+    tools_response: ListToolsResult = await session.list_tools()
 
     # Apply filtering based on context and tool_filter
     tools = []
@@ -162,14 +157,6 @@ class MCPToolset(BaseToolset):
         tools.append(mcp_tool)
     return tools
 
-  async def _reinitialize_session(self):
-    """Reinitializes the session when connection is lost."""
-    # Close the old session and clear cache
-    await self._mcp_session_manager.close()
-    self._session = await self._mcp_session_manager.create_session()
-
-    # Tools will be reloaded on next get_tools call
-
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
@@ -182,7 +169,3 @@ class MCPToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
-    finally:
-      # Clear cached tools
-      self._tools_cache = None
-      self._tools_loaded = False
