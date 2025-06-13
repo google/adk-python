@@ -13,61 +13,73 @@
 # limitations under the License.
 
 import os
-import random
-import time
 
 from google.adk import Agent
-from google.adk.tools.tool_context import ToolContext
-from google.genai import types
 import requests
 
-# Read the PAT from the environment variable
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Ensure you've set this in your shell
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 if not GITHUB_TOKEN:
   raise ValueError("GITHUB_TOKEN environment variable not set")
 
-# Repository information
-OWNER = "google"
-REPO = "adk-python"
+OWNER = os.getenv("OWNER", "google")
+REPO = os.getenv("REPO", "adk-python")
+BOT_LABEL = os.getenv("BOT_LABEL", "bot_triaged")
 
-# Base URL for the GitHub API
 BASE_URL = "https://api.github.com"
 
-# Headers including the Authorization header
 headers = {
     "Authorization": f"token {GITHUB_TOKEN}",
     "Accept": "application/vnd.github.v3+json",
 }
 
+ALLOWED_LABELS = [
+    "documentation",
+    "services",
+    "question",
+    "tools",
+    "eval",
+    "live",
+    "models",
+    "tracing",
+    "core",
+    "web",
+]
 
-def list_issues(per_page: int):
+
+def is_interactive():
+  return os.environ.get("INTERACTIVE", "1").lower() in ["true", "1"]
+
+
+def list_issues(issue_count: int):
   """
   Generator to list all issues for the repository by handling pagination.
 
   Args:
-    per_page: number of pages to return per page.
+    issue_count: number of issues to return
 
   """
-  state = "open"
-  # only process the 1st page for testing for now
-  page = 1
-  results = []
-  url = (  # :contentReference[oaicite:16]{index=16}
-      f"{BASE_URL}/repos/{OWNER}/{REPO}/issues"
-  )
-  # Warning: let's only handle max 10 issues at a time to avoid bad results
-  params = {"state": state, "per_page": per_page, "page": page}
-  response = requests.get(url, headers=headers, params=params)
-  response.raise_for_status()  # :contentReference[oaicite:17]{index=17}
-  issues = response.json()
+  query = f"repo:{OWNER}/{REPO} is:open is:issue no:label"
+
+  unlabelled_issues = []
+  url = f"{BASE_URL}/search/issues"
+
+  params = {
+      "q": query,
+      "sort": "created",
+      "order": "desc",
+      "per_page": issue_count,
+      "page": 1,
+  }
+  response = requests.get(url, headers=headers, params=params, timeout=60)
+  response.raise_for_status()
+  json_response = response.json()
+  issues = json_response.get("items", None)
   if not issues:
     return []
   for issue in issues:
-    # Skip pull requests (issues API returns PRs as well)
-    if "pull_request" in issue:
-      continue
-    results.append(issue)
-  return results
+    if not issue.get("labels", None) or len(issue["labels"]) == 0:
+      unlabelled_issues.append(issue)
+  return unlabelled_issues
 
 
 def add_label_to_issue(issue_number: str, label: str):
@@ -78,41 +90,56 @@ def add_label_to_issue(issue_number: str, label: str):
     issue_number: issue number of the Github issue, in string foramt.
     label: label to assign
   """
+  print(f"Attempting to add label '{label}' to issue #{issue_number}")
+  if label not in ALLOWED_LABELS:
+    error_message = (
+        f"Error: Label '{label}' is not an allowed label. Will not apply."
+    )
+    print(error_message)
+    return {"status": "error", "message": error_message, "applied_label": None}
+
   url = f"{BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/labels"
-  payload = [label]
-  response = requests.post(url, headers=headers, json=payload)
+  payload = [label, BOT_LABEL]
+  response = requests.post(url, headers=headers, json=payload, timeout=60)
   response.raise_for_status()
   return response.json()
 
+
+approval_instruction = (
+    "Only label them when the user approves the labeling!"
+    if is_interactive()
+    else (
+        "Do not ask for user approval for labeling! If you can't find a"
+        " appropriate labels for the issue, do not label it."
+    )
+)
 
 root_agent = Agent(
     model="gemini-2.5-pro-preview-05-06",
     name="adk_triaging_assistant",
     description="Triage ADK issues.",
-    instruction="""
-      You are a Github adk-python repo triaging bot. You will help get issues, and label them.
+    instruction=f"""
+      You are a Github adk-python repo triaging bot. You will help get issues, and recommend a label.
+      IMPORTANT: {approval_instruction}
       Here are the rules for labeling:
       - If the user is asking about documentation-related questions, label it with "documentation".
       - If it's about session, memory services, label it with "services"
-      - If it's about UI/web, label it with "question"
+      - If it's about UI/web, label it with "web"
+      - If the user is asking about a question, label it with "question"
       - If it's related to tools, label it with "tools"
       - If it's about agent evalaution, then label it with "eval".
       - If it's about streaming/live, label it with "live".
       - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
       - If it's agent orchestration, agent definition, label it with "core".
-      - If you can't find a appropriate labels for the issue, return the issues to user to decide.
+      - If you can't find a appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
+
+      Present the followings in an easy to read format highlighting issue number and your label.
+      - the issue summary in a few sentence
+      - your label recommendation and justification
     """,
     tools=[
         list_issues,
         add_label_to_issue,
     ],
-    generate_content_config=types.GenerateContentConfig(
-        safety_settings=[
-            types.SafetySetting(  # avoid false alarm about rolling dice.
-                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=types.HarmBlockThreshold.OFF,
-            ),
-        ]
-    ),
 )
