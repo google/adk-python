@@ -44,6 +44,7 @@ from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry import tracer
 from .tools.base_toolset import BaseToolset
+from .errors.not_found_error import NotFoundError
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -177,7 +178,7 @@ class Runner:
           app_name=self.app_name, user_id=user_id, session_id=session_id
       )
       if not session:
-        raise ValueError(f'Session not found: {session_id}')
+        raise NotFoundError(f'Session not found: {session_id}')
 
       invocation_context = self._new_invocation_context(
           session,
@@ -292,7 +293,7 @@ class Runner:
           app_name=self.app_name, user_id=user_id, session_id=session_id
       )
       if not session:
-        raise ValueError(f'Session not found: {session_id}')
+        raise NotFoundError(f'Session not found: {session_id}')
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
