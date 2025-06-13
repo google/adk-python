@@ -14,13 +14,17 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional
 from typing import TYPE_CHECKING
 
 from ..agents.callback_context import CallbackContext
+from ..approval.approval_request import ApprovalRequest
 from ..auth.auth_credential import AuthCredential
 from ..auth.auth_handler import AuthHandler
 from ..auth.auth_tool import AuthConfig
+# from ..approval.approval_credential import ApprovalCredential, ApprovalStatus, ApprovalType
+# from ..approval.approval_handler import ApprovalHandler
+# from ..approval.approval_tool import ApprovalConfig
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
@@ -68,6 +72,38 @@ class ToolContext(CallbackContext):
 
   def get_auth_response(self, auth_config: AuthConfig) -> AuthCredential:
     return AuthHandler(auth_config).get_auth_response(self.state)
+
+  def request_approval(
+      self,
+      approval_request: ApprovalRequest,
+  ) -> None:
+    """Allows a tool to explicitly request an approval during its execution.
+
+    When a tool, during its `run_async` or `_call_live` method, determines that
+    it needs a specific permission that might not have been covered by initial
+    policy checks (or for dynamic conditions), it can call this method.
+
+    This adds the provided `ApprovalRequest` to the `_event_actions.requested_approvals`
+    list. The `ApprovalHandler` or the flow (e.g., `generate_approval_event` in
+    `llm_flows.functions`) will then typically process these requests, potentially
+    suspending further execution and prompting the user.
+
+    Note: This is a lower-level mechanism. Typically, approvals are checked *before*
+    a tool is run, based on registered `ApprovalPolicy` objects. This method is for
+    cases where a tool itself needs to initiate an approval mid-flight.
+
+    Args:
+        approval_request: An `ApprovalRequest` object detailing the function call,
+                          challenges, and grantee for the requested approval.
+
+    Raises:
+        ValueError: If `self.function_call_id` is not set, which is necessary to
+                    associate the approval request with the correct tool invocation.
+    """
+    if not self.function_call_id:
+      raise ValueError('function_call_id is not set.')
+
+    self._event_actions.requested_approvals.append(approval_request)
 
   async def list_artifacts(self) -> list[str]:
     """Lists the filenames of the artifacts attached to the current session."""

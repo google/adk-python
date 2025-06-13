@@ -439,15 +439,29 @@ class BaseLlmFlow(ABC):
       function_response_event = await functions.handle_function_calls_live(
           invocation_context, model_response_event, llm_request.tools_dict
       )
-      yield function_response_event
 
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
         agent_to_run = self._get_agent_to_run(
             invocation_context, transfer_to_agent
         )
-        async for item in agent_to_run.run_live(invocation_context):
-          yield item
+        transfer_successful = False
+        try:
+          async for item in agent_to_run.run_live(invocation_context):
+            if not transfer_successful:
+              yield function_response_event
+              transfer_successful = True
+            yield item
+        finally:
+          if not transfer_successful:
+            function_response_event.content.parts[
+                0
+            ].function_response.response = {
+                'result': f'Error transferring to {transfer_to_agent}'
+            }
+            yield function_response_event
+      else:
+        yield function_response_event
 
   async def _postprocess_run_processors_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
@@ -465,20 +479,44 @@ class BaseLlmFlow(ABC):
     if function_response_event := await functions.handle_function_calls_async(
         invocation_context, function_call_event, llm_request.tools_dict
     ):
+      # If the function responses triggered any approval requests (e.g., a tool call was suspended),
+      # generate an event to send these approval requests to the client/user.
+      approval_event = functions.generate_approval_event(
+      # If the function responses triggered any approval requests (e.g., a tool call was suspended),
+      # generate an event to send these approval requests to the client/user.
+          invocation_context, function_response_event
+      )
+      if approval_event:
+        yield approval_event
+
       auth_event = functions.generate_auth_event(
           invocation_context, function_response_event
       )
       if auth_event:
         yield auth_event
 
-      yield function_response_event
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
         agent_to_run = self._get_agent_to_run(
             invocation_context, transfer_to_agent
         )
-        async for event in agent_to_run.run_async(invocation_context):
-          yield event
+        transfer_successful = False
+        try:
+          async for event in agent_to_run.run_async(invocation_context):
+            if not transfer_successful:
+              yield function_response_event
+              transfer_successful = True
+            yield event
+        finally:
+          if not transfer_successful:
+            function_response_event.content.parts[
+                0
+            ].function_response.response = {
+                'result': f'Error transferring to {transfer_to_agent}'
+            }
+            yield function_response_event
+      else:
+        yield function_response_event
 
   def _get_agent_to_run(
       self, invocation_context: InvocationContext, agent_name: str

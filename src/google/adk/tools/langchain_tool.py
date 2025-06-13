@@ -25,6 +25,7 @@ from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from .function_tool import FunctionTool
+from ..approval.approval_policy import FunctionToolPolicy, register_policy_for_tool
 
 
 class LangchainTool(FunctionTool):
@@ -59,7 +60,24 @@ class LangchainTool(FunctionTool):
       tool: Union[BaseTool, object],
       name: Optional[str] = None,
       description: Optional[str] = None,
+      policies: list[FunctionToolPolicy] = None,
   ):
+    """Initializes a LangchainTool, wrapping a Langchain tool, and registers policies.
+
+    The wrapped tool can be a Langchain `BaseTool` subclass or any object with a
+    `run` (or `_run`) method and a `pydantic_schema` (or `args_schema`, or `tool_args`).
+
+    Args:
+        tool: The Langchain tool or compatible object to wrap.
+        name: Optional name for the tool. If None, it's inferred from `tool.name`.
+        description: Optional description. If None, inferred from `tool.description`.
+        policies: An optional list of `FunctionToolPolicy` objects to register for this tool.
+                  Each policy defines actions and resource mappings for approval.
+
+    Raises:
+        ValueError: If the provided tool object does not have a callable 'run' or '_run' method,
+                    or if its argument schema cannot be determined.
+    """
     # Check if the tool has a 'run' method
     if not hasattr(tool, 'run') and not hasattr(tool, '_run'):
       raise ValueError("Langchain tool must have a 'run' or '_run' method")
@@ -87,6 +105,9 @@ class LangchainTool(FunctionTool):
     elif hasattr(tool, 'description') and tool.description:
       self.description = tool.description
     # else: keep default from FunctionTool
+
+    for policy in policies or []:
+      register_policy_for_tool(self, policy)
 
   @override
   def _get_declaration(self) -> types.FunctionDeclaration:
