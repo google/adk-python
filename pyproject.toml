@@ -25,6 +25,7 @@ classifiers = [ # List of https://pypi.org/classifiers/
 ]
 dependencies = [
   # go/keep-sorted start
+  "anyio>=4.9.0;python_version>='3.10'",            # For MCP Session Manager
   "authlib>=1.5.1",                                 # For RestAPI Tool
   "click>=8.1.8",                                   # For CLI tools
   "fastapi>=0.115.0",                               # FastAPI framework
@@ -40,12 +41,16 @@ dependencies = [
   "opentelemetry-exporter-gcp-trace>=1.9.0",
   "opentelemetry-sdk>=1.31.0",
   "pydantic>=2.0, <3.0.0",                          # For data validation/models
+  "python-dateutil>=2.9.0.post0",                   # For Vertext AI Session Service
   "python-dotenv>=1.0.0",                           # To manage environment variables
   "PyYAML>=6.0.2",                                  # For APIHubToolset.
+  "requests>=2.32.4",
   "sqlalchemy>=2.0",                                # SQL database ORM
-  "tzlocal>=5.3",                                   # Time zone utilities
+  "starlette>=0.46.2",                              # For FastAPI CLI
   "typing-extensions>=4.5, <5",
+  "tzlocal>=5.3",                                   # Time zone utilities
   "uvicorn>=0.34.0",                                # ASGI server for FastAPI
+  "websockets>=15.0.1",                             # For BaseLlmFlow
   # go/keep-sorted end
 ]
 dynamic = ["version"]
