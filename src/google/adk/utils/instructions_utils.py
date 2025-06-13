@@ -93,17 +93,95 @@ async def inject_session_state(
         raise KeyError(f'Artifact {var_name} not found.')
       return str(artifact)
     else:
-      if not _is_valid_state_name(var_name):
+      if not _is_valid_state_name_or_nested(var_name):
         return match.group()
-      if var_name in invocation_context.session.state:
-        return str(invocation_context.session.state[var_name])
-      else:
+      
+      try:
+        keys = _parse_nested_path(var_name)
+        value = _get_nested_value(invocation_context.session.state, keys)
+        return str(value)
+      except KeyError as e:
         if optional:
           return ''
         else:
-          raise KeyError(f'Context variable not found: `{var_name}`.')
+          raise KeyError(f'Context variable not found: `{var_name}`. {str(e)}')
 
   return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
+
+
+def _parse_nested_path(var_name: str) -> list[str]:
+  """Parse a nested variable path into individual keys.
+  
+  Supports both dot notation (key.subkey) and bracket notation (key['subkey']).
+  Mixed notation is also supported (key.subkey['nested']).
+  
+  Args:
+    var_name: The variable name to parse (e.g., "user.profile.name" or "user['profile']['name']")
+    
+  Returns:
+    List of keys to traverse the nested structure.
+  """
+  if '.' not in var_name and '[' not in var_name:
+    return [var_name]
+  
+  keys = []
+  current_key = ""
+  i = 0
+  
+  while i < len(var_name):
+    char = var_name[i]
+    
+    if char == '.':
+      if current_key:
+        keys.append(current_key)
+        current_key = ""
+    elif char == '[':
+      if current_key:
+        keys.append(current_key)
+        current_key = ""
+      bracket_end = var_name.find(']', i)
+      if bracket_end == -1:
+        raise ValueError(f"Unclosed bracket in variable name: {var_name}")
+      
+      bracket_content = var_name[i+1:bracket_end]
+      if (bracket_content.startswith('"') and bracket_content.endswith('"')) or \
+         (bracket_content.startswith("'") and bracket_content.endswith("'")):
+        bracket_content = bracket_content[1:-1]
+      
+      keys.append(bracket_content)
+      i = bracket_end
+    else:
+      current_key += char
+    
+    i += 1
+  
+  if current_key:
+    keys.append(current_key)
+  
+  return keys
+
+
+def _get_nested_value(data: dict, keys: list[str]):
+  """Get a value from nested dictionary structure using a list of keys.
+  
+  Args:
+    data: The dictionary to traverse
+    keys: List of keys to traverse the nested structure
+    
+  Returns:
+    The value at the nested path
+    
+  Raises:
+    KeyError: If any key in the path doesn't exist
+  """
+  current = data
+  for key in keys:
+    if not isinstance(current, dict):
+      raise KeyError(f"Cannot access key '{key}' on non-dict value")
+    if key not in current:
+      raise KeyError(f"Key '{key}' not found")
+    current = current[key]
+  return current
 
 
 def _is_valid_state_name(var_name):
@@ -129,3 +207,32 @@ def _is_valid_state_name(var_name):
     if (parts[0] + ':') in prefixes:
       return parts[1].isidentifier()
   return False
+
+
+def _is_valid_state_name_or_nested(var_name: str) -> bool:
+  """Checks if the variable name is a valid state name or nested path.
+  
+  Valid state is either:
+    - Valid identifier (existing behavior)
+    - <Valid prefix>:<Valid identifier> (existing behavior)  
+    - Nested path with dot notation (key.subkey.nested)
+    - Nested path with bracket notation (key['subkey']['nested'])
+    - Mixed notation (key.subkey['nested'])
+  
+  Args:
+    var_name: The variable name to check.
+    
+  Returns:
+    True if the variable name is valid, False otherwise.
+  """
+  if _is_valid_state_name(var_name):
+    return True
+  
+  try:
+    keys = _parse_nested_path(var_name)
+    for key in keys:
+      if not _is_valid_state_name(key):
+        return False
+    return len(keys) > 1
+  except ValueError:
+    return False
