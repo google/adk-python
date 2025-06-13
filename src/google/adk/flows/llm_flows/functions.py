@@ -24,6 +24,7 @@ from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
 import uuid
+from pydantic import BaseModel
 
 from google.genai import types
 
@@ -452,16 +453,22 @@ async def __call_tool_async(
 
 def __build_response_event(
     tool: BaseTool,
-    function_result: dict[str, object],
+    function_result: Any, # Changed type hint
     tool_context: ToolContext,
     invocation_context: InvocationContext,
 ) -> Event:
-  # Specs requires the result to be a dict.
-  if not isinstance(function_result, dict):
-    function_result = {'result': function_result}
+  processed_result: dict # This will hold the dict to be used in FunctionResponse
+
+  if isinstance(function_result, BaseModel):
+    processed_result = function_result.model_dump(exclude_none=True)
+  elif isinstance(function_result, dict):
+    processed_result = function_result
+  else:
+    # For strings or other types, wrap them.
+    processed_result = {'result': function_result}
 
   part_function_response = types.Part.from_function_response(
-      name=tool.name, response=function_result
+      name=tool.name, response=processed_result # Use processed_result here
   )
   part_function_response.function_response.id = tool_context.function_call_id
 

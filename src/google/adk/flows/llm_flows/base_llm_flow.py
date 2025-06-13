@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 from abc import ABC
+import json
 import asyncio
+from pydantic import BaseModel
 import inspect
 import logging
 from typing import AsyncGenerator
@@ -35,6 +37,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...agents.transcription_entry import TranscriptionEntry
 from ...events.event import Event
+from ...events.event_actions import EventActions
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -465,13 +468,77 @@ class BaseLlmFlow(ABC):
     if function_response_event := await functions.handle_function_calls_async(
         invocation_context, function_call_event, llm_request.tools_dict
     ):
+      # Check if skip_summarization is set by the tool's execution (e.g., via after_tool_callback)
+      if function_response_event.actions.skip_summarization:
+        if function_response_event.content and function_response_event.content.parts:
+          # Assuming the first part is the FunctionResponsePart we're interested in
+          tool_result_part = function_response_event.content.parts[0]
+          if tool_result_part.function_response:
+            raw_tool_output = tool_result_part.function_response.response
+
+            # Convert the raw tool output to a JSON string
+            # AgentTool (parent) expects a string, which it might parse to JSON.
+            json_output_string: str
+            if isinstance(raw_tool_output, str):
+              json_output_string = raw_tool_output
+            elif isinstance(raw_tool_output, BaseModel): # Check if it's a Pydantic model
+              json_output_string = raw_tool_output.model_dump_json(exclude_none=True) # Produce JSON string directly
+            else:
+              # For other dicts or list, etc.
+              json_output_string = json.dumps(raw_tool_output)
+
+            # Create a new event with this JSON string as a text part.
+            # This event will be the final output of this agent for this turn.
+            final_event_content = types.Content(parts=[types.Part.from_text(text=json_output_string)])
+
+            # We need to signal that this is the final response for the current agent's turn.
+            # Yielding the event and then returning from this generator will stop further processing in this flow path.
+            # The LlmAgent._run_async_impl loop will see this as the last event for the current _run_one_step_async.
+            # To make it truly final for the agent's turn, LlmResponse should have turn_complete=True.
+            # We can create a minimal LlmResponse that wraps this.
+            # However, the run_async loop in BaseLlmFlow terminates when is_final_response() is true.
+            # Let's create an Event that, when processed by LlmAgent, results in a final response.
+            # The simplest way is to ensure this is the *last* event yielded by _run_one_step_async.
+            # The LlmAgent.py _run_async_impl loop will then break if is_final_response() is true.
+            # Setting content directly on an event and making it the last one.
+
+            skipped_event = Event(
+                id=Event.new_id(), # New ID for this specific event
+                invocation_id=invocation_context.invocation_id,
+                author=invocation_context.agent.name,
+                branch=invocation_context.branch,
+                content=final_event_content,
+                # Ensure actions from the function_response_event are not lost if relevant,
+                # but typically skip_summarization means we just want the content.
+                # For now, let's use fresh actions or carry minimal ones.
+                actions=EventActions(skip_summarization=True), # Carry over the critical action
+                # usage_metadata, partial, turn_complete can be set if needed,
+                # but run_async loop in BaseLlmFlow primarily checks is_final_response() on the event.
+                # An event is final if its underlying LlmResponse has turn_complete=True.
+                # Let's make this event appear as if it came from an LLM response that is final.
+                # We can achieve this by setting turn_complete on the event if Event model supports it,
+                # or by how LlmAgent interprets the end of the _run_one_step_async generator.
+                # For now, yielding and returning should suffice for _run_one_step_async.
+                # The LlmAgent's main run_async loop will then decide if it's the end.
+            )
+            # To make the event effectively final for the LlmAgent's current call to _run_one_step_async,
+            # we can set the turn_complete attribute if the Event model directly supports it,
+            # or rely on the LlmAgent's interpretation.
+            # The Event model includes fields from LlmResponse like `turn_complete`.
+            skipped_event.turn_complete = True # Mark this event as completing the turn.
+
+            yield skipped_event
+            return # Stop further processing in this handler for this turn.
+
+      # Original logic if skip_summarization is false
       auth_event = functions.generate_auth_event(
           invocation_context, function_response_event
       )
       if auth_event:
         yield auth_event
 
-      yield function_response_event
+      yield function_response_event # This is the FunctionResponsePart event
+
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
         agent_to_run = self._get_agent_to_run(

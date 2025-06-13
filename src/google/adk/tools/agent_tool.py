@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from pydantic import model_validator
 from typing_extensions import override
+import json
 
 from . import _automatic_function_calling_util
 from ..memory.in_memory_memory_service import InMemoryMemoryService
@@ -144,16 +145,35 @@ class AgentTool(BaseTool):
       last_event = event
 
     if not last_event or not last_event.content or not last_event.content.parts:
-      return ''
+        return ''
+
+    # Priority 1: Sub-agent skipped summarization and produced a JSON string.
+    if last_event.actions and last_event.actions.skip_summarization:
+        raw_json_string = '\n'.join([p.text for p in last_event.content.parts if p.text])
+        try:
+            stripped_text = raw_json_string.strip()
+            if (stripped_text.startswith('{') and stripped_text.endswith('}')) or \
+               (stripped_text.startswith('[') and stripped_text.endswith(']')):
+                return json.loads(raw_json_string)
+            return raw_json_string
+        except json.JSONDecodeError:
+            return raw_json_string
+
+    # Priority 2: AgentTool itself is configured to skip summarization (tool_context refers to AgentTool's context).
+    if tool_context.actions.skip_summarization: # This is AgentTool's own context
+        raw_output_text = '\n'.join([p.text for p in last_event.content.parts if p.text])
+        try:
+            stripped_text = raw_output_text.strip()
+            if (stripped_text.startswith('{') and stripped_text.endswith('}')) or \
+               (stripped_text.startswith('[') and stripped_text.endswith(']')):
+                return json.loads(raw_output_text)
+        except json.JSONDecodeError:
+            pass
+        return raw_output_text
+
+    # Priority 3: Default processing by AgentTool (sub-agent did not skip, AgentTool does not skip).
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
-      merged_text = '\n'.join(
-          [p.text for p in last_event.content.parts if p.text]
-      )
-      tool_result = self.agent.output_schema.model_validate_json(
-          merged_text
-      ).model_dump(exclude_none=True)
+        merged_text = '\n'.join([p.text for p in last_event.content.parts if p.text])
+        return self.agent.output_schema.model_validate_json(merged_text).model_dump(exclude_none=True)
     else:
-      tool_result = '\n'.join(
-          [p.text for p in last_event.content.parts if p.text]
-      )
-    return tool_result
+        return '\n'.join([p.text for p in last_event.content.parts if p.text])
