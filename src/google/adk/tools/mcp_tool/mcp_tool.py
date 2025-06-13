@@ -105,7 +105,7 @@ class MCPTool(BaseTool):
     )
     return function_decl
 
-  @retry_on_closed_resource("_reinitialize_session")
+  @retry_on_closed_resource("_mcp_session_manager")
   async def run_async(self, *, args, tool_context: ToolContext):
     """Runs the tool asynchronously.
 
@@ -122,9 +122,3 @@ class MCPTool(BaseTool):
     # TODO(cheliu): Support passing tool context to MCP Server.
     response = await session.call_tool(self.name, arguments=args)
     return response
-
-  async def _reinitialize_session(self):
-    """Reinitializes the session when connection is lost."""
-    # Close the old session and create a new one
-    await self._mcp_session_manager.close()
-    await self._mcp_session_manager.create_session()
