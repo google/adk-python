@@ -739,12 +739,13 @@ class LiteLlm(BaseLlm):
                 _message_to_generate_content_response(
                     ChatCompletionAssistantMessage(
                         role="assistant",
-                        content="",
+                        content=text,
                         tool_calls=tool_calls,
                     )
                 )
             )
             function_calls.clear()
+            text = ""
           elif finish_reason == "stop" and text:
             aggregated_llm_response = _message_to_generate_content_response(
                 ChatCompletionAssistantMessage(role="assistant", content=text)
