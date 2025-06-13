@@ -23,6 +23,7 @@ import sys
 from typing import AsyncGenerator
 from typing import cast
 from typing import TYPE_CHECKING
+from typing import Union
 
 from google.genai import Client
 from google.genai import types
@@ -93,6 +94,13 @@ class Gemini(BaseLlm):
         stream,
     )
     logger.info(_build_request_log(llm_request))
+
+    # add tracking headers to custom headers given it will override the headers
+    # set in the api client constructor
+    if llm_request.config and llm_request.config.http_options:
+      if not llm_request.config.http_options.headers:
+        llm_request.config.http_options.headers = {}
+      llm_request.config.http_options.headers.update(self._tracking_headers)
 
     if stream:
       responses = await self.api_client.aio.models.generate_content_stream(
@@ -200,24 +208,21 @@ class Gemini(BaseLlm):
     return tracking_headers
 
   @cached_property
-  def _live_api_client(self) -> Client:
+  def _live_api_version(self) -> str:
     if self._api_backend == GoogleLLMVariant.VERTEX_AI:
       # use beta version for vertex api
-      api_version = 'v1beta1'
-      # use default api version for vertex
-      return Client(
-          http_options=types.HttpOptions(
-              headers=self._tracking_headers, api_version=api_version
-          )
-      )
+      return 'v1beta1'
     else:
       # use v1alpha for using API KEY from Google AI Studio
-      api_version = 'v1alpha'
-      return Client(
-          http_options=types.HttpOptions(
-              headers=self._tracking_headers, api_version=api_version
-          )
-      )
+      return 'v1alpha'
+
+  @cached_property
+  def _live_api_client(self) -> Client:
+    return Client(
+        http_options=types.HttpOptions(
+            headers=self._tracking_headers, api_version=self._live_api_version
+        )
+    )
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
@@ -229,6 +234,21 @@ class Gemini(BaseLlm):
     Yields:
       BaseLlmConnection, the connection to the Gemini model.
     """
+    # add tracking headers to custom headers and set api_version given
+    # the customized http options will override the one set in the api client
+    # constructor
+    if (
+        llm_request.live_connect_config
+        and llm_request.live_connect_config.http_options
+    ):
+      if not llm_request.live_connect_config.http_options.headers:
+        llm_request.live_connect_config.http_options.headers = {}
+      llm_request.live_connect_config.http_options.headers.update(
+          self._tracking_headers
+      )
+      llm_request.live_connect_config.http_options.api_version = (
+          self._live_api_version
+      )
 
     llm_request.live_connect_config.system_instruction = types.Content(
         role='system',
@@ -244,9 +264,18 @@ class Gemini(BaseLlm):
 
   def _preprocess_request(self, llm_request: LlmRequest) -> None:
 
-    if llm_request.config and self._api_backend == GoogleLLMVariant.GEMINI_API:
+    if self._api_backend == GoogleLLMVariant.GEMINI_API:
       # Using API key from Google AI Studio to call model doesn't support labels.
-      llm_request.config.labels = None
+      if llm_request.config:
+        llm_request.config.labels = None
+
+      if llm_request.contents:
+        for content in llm_request.contents:
+          if not content.parts:
+            continue
+          for part in content.parts:
+            _remove_display_name_if_present(part.inline_data)
+            _remove_display_name_if_present(part.file_data)
 
 
 def _build_function_declaration_log(
@@ -324,3 +353,15 @@ Raw response:
 {resp.model_dump_json(exclude_none=True)}
 -----------------------------------------------------------
 """
+
+
+def _remove_display_name_if_present(
+    data_obj: Union[types.Blob, types.FileData, None],
+):
+  """Sets display_name to None for the Gemini API (non-Vertex) backend.
+
+  This backend does not support the display_name parameter for file uploads,
+  so it must be removed to prevent request failures.
+  """
+  if data_obj and data_obj.display_name:
+    data_obj.display_name = None
