@@ -373,11 +373,8 @@ class TestAgentLoader:
             """))
 
       loader = AgentLoader(str(temp_path))
-      # SyntaxError is a subclass of Exception, and importlib might wrap it
-      # The loader is expected to prepend its message and re-raise.
-      with pytest.raises(
-          SyntaxError
-      ) as exc_info:  # Or potentially ImportError depending on Python version specifics with importlib
+      # SyntaxError is now wrapped in RuntimeError by the loader
+      with pytest.raises(RuntimeError) as exc_info:
         loader.load_agent(agent_name)
 
       assert str(exc_info.value).startswith(
@@ -387,7 +384,7 @@ class TestAgentLoader:
       assert "invalid syntax" in str(exc_info.value).lower()
 
   def test_agent_internal_name_error(self):
-    """Test other import errors within an agent's code (e.g., SyntaxError)."""
+    """Test other import errors within an agent's code (e.g., NameError)."""
     with tempfile.TemporaryDirectory() as temp_dir:
       temp_path = Path(temp_dir)
       agent_name = "name_error_agent"
@@ -408,17 +405,14 @@ class TestAgentLoader:
             """))
 
       loader = AgentLoader(str(temp_path))
-      # SyntaxError is a subclass of Exception, and importlib might wrap it
-      # The loader is expected to prepend its message and re-raise.
-      with pytest.raises(
-          NameError
-      ) as exc_info:  # Or potentially ImportError depending on Python version specifics with importlib
+      # NameError is now wrapped in RuntimeError by the loader
+      with pytest.raises(RuntimeError) as exc_info:
         loader.load_agent(agent_name)
 
       assert str(exc_info.value).startswith(
           f"Fail to load '{agent_name}' module."
       )
-      # Check for part of the original SyntaxError message
+      # Check for part of the original NameError message
       assert "is not defined" in str(exc_info.value).lower()
 
   def test_sys_path_modification(self):
@@ -443,3 +437,40 @@ class TestAgentLoader:
       # Now assert path was added
       assert str(temp_path) in sys.path
       assert agent.name == "path_agent"
+
+  def test_load_agent_with_pydantic_v2_validation_error(self):
+    """Test that a Pydantic v2 style ValidationError is handled correctly."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        agent_name = "pydantic_v2_error_agent"
+
+        # Create a mock ValidationError class
+        # No need to define it here, it's defined in the agent code string
+
+        # Create agent file that raises this mock error
+        agent_file = temp_path / f"{agent_name}.py"
+        agent_file.write_text(dedent(f"""
+            # This import is just to make it a valid module for the loader
+            from google.adk.agents.base_agent import BaseAgent
+
+            class MockValidationError(Exception):
+                def __init__(self, message):
+                    super().__init__(message)
+                    # Intentionally do not set a 'msg' attribute
+
+            # Raise the error when this module is imported
+            raise MockValidationError("This is a Pydantic v2 style error")
+
+            # The rest of the agent definition is not reached
+            class {agent_name.title().replace("_", "")}Agent(BaseAgent):
+                def __init__(self):
+                    super().__init__(name="{agent_name}")
+            root_agent = {agent_name.title().replace("_", "")}Agent()
+        """))
+
+        loader = AgentLoader(str(temp_path))
+        with pytest.raises(RuntimeError) as exc_info:
+            loader.load_agent(agent_name)
+
+        assert str(exc_info.value).startswith(f"Fail to load '{agent_name}' module.")
+        assert "This is a Pydantic v2 style error" in str(exc_info.value)
