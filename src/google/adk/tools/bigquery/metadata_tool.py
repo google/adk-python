@@ -15,7 +15,7 @@
 from google.cloud import bigquery
 from google.oauth2.credentials import Credentials
 
-from ...tools.bigquery import client
+from . import client
 
 
 def list_dataset_ids(project_id: str, credentials: Credentials) -> list[str]:
@@ -69,33 +69,37 @@ def get_dataset_info(
       dict: Dictionary representing the properties of the dataset.
 
   Examples:
-      >>> get_dataset_info("bigquery-public-data", "penguins")
+      >>> get_dataset_info("bigquery-public-data", "cdc_places")
       {
         "kind": "bigquery#dataset",
-        "etag": "PNC5907iQbzeVcAru/2L3A==",
-        "id": "bigquery-public-data:ml_datasets",
-        "selfLink":
-          "https://bigquery.googleapis.com/bigquery/v2/projects/bigquery-public-data/datasets/ml_datasets",
+        "etag": "fz9BaiXKgbGi53EpI2rJug==",
+        "id": "bigquery-public-data:cdc_places",
+        "selfLink": "https://content-bigquery.googleapis.com/bigquery/v2/projects/bigquery-public-data/datasets/cdc_places",
         "datasetReference": {
-            "datasetId": "ml_datasets",
-            "projectId": "bigquery-public-data"
+          "datasetId": "cdc_places",
+          "projectId": "bigquery-public-data"
         },
+        "description": "Local Data for Better Health, County Data",
         "access": [
-            {
-                "role": "OWNER",
-                "groupByEmail": "cloud-datasets-eng@google.com"
-            },
-            {
-                "role": "READER",
-                "iamMember": "allUsers"
-            },
-            {
-                "role": "READER",
-                "groupByEmail": "bqml-eng@google.com"
-            }
+          {
+            "role": "WRITER",
+            "specialGroup": "projectWriters"
+          },
+          {
+            "role": "OWNER",
+            "specialGroup": "projectOwners"
+          },
+          {
+            "role": "OWNER",
+            "userByEmail": "some-redacted-email@bigquery-public-data.iam.gserviceaccount.com"
+          },
+          {
+            "role": "READER",
+            "specialGroup": "projectReaders"
+          }
         ],
-        "creationTime": "1553208775542",
-        "lastModifiedTime": "1686338918114",
+        "creationTime": "1640891845643",
+        "lastModifiedTime": "1640891845643",
         "location": "US",
         "type": "DEFAULT",
         "maxTimeTravelHours": "168"
@@ -128,13 +132,9 @@ def list_table_ids(
       list[str]: List of the tables ids present in the dataset.
 
   Examples:
-      >>> list_table_ids("bigquery-public-data", "ml_datasets")
-      ['census_adult_income',
-       'credit_card_default',
-       'holidays_and_events_for_forecasting',
-       'iris',
-       'penguins',
-       'ulb_fraud_detection']
+      >>> list_table_ids("bigquery-public-data", "cdc_places")
+      ['chronic_disease_indicators',
+       'local_data_for_better_health_county_data']
   """
   try:
     bq_client = client.get_bigquery_client(credentials=credentials)
@@ -167,72 +167,87 @@ def get_table_info(
       dict: Dictionary representing the properties of the table.
 
   Examples:
-      >>> get_table_info("bigquery-public-data", "ml_datasets", "penguins")
+      >>> get_table_info("bigquery-public-data", "cdc_places", "local_data_for_better_health_county_data")
       {
         "kind": "bigquery#table",
-        "etag": "X0ZkRohSGoYvWemRYEgOHA==",
-        "id": "bigquery-public-data:ml_datasets.penguins",
-        "selfLink":
-        "https://bigquery.googleapis.com/bigquery/v2/projects/bigquery-public-data/datasets/ml_datasets/tables/penguins",
+        "etag": "wx23aDqmgc39oUSiNuYTAA==",
+        "id": "bigquery-public-data:cdc_places.local_data_for_better_health_county_data",
+        "selfLink": "https://content-bigquery.googleapis.com/bigquery/v2/projects/bigquery-public-data/datasets/cdc_places/tables/local_data_for_better_health_county_data",
         "tableReference": {
-            "projectId": "bigquery-public-data",
-            "datasetId": "ml_datasets",
-            "tableId": "penguins"
+          "projectId": "bigquery-public-data",
+          "datasetId": "cdc_places",
+          "tableId": "local_data_for_better_health_county_data"
         },
+        "description": "Local Data for Better Health, County Data",
         "schema": {
-            "fields": [
-                {
-                    "name": "species",
-                    "type": "STRING",
-                    "mode": "REQUIRED"
-                },
-                {
-                    "name": "island",
-                    "type": "STRING",
-                    "mode": "NULLABLE"
-                },
-                {
-                    "name": "culmen_length_mm",
-                    "type": "FLOAT",
-                    "mode": "NULLABLE"
-                },
-                {
-                    "name": "culmen_depth_mm",
-                    "type": "FLOAT",
-                    "mode": "NULLABLE"
-                },
-                {
-                    "name": "flipper_length_mm",
-                    "type": "FLOAT",
-                    "mode": "NULLABLE"
-                },
-                {
-                    "name": "body_mass_g",
-                    "type": "FLOAT",
-                    "mode": "NULLABLE"
-                },
-                {
-                    "name": "sex",
-                    "type": "STRING",
-                    "mode": "NULLABLE"
-                }
-            ]
+          "fields": [
+            {
+              "name": "year",
+              "type": "INTEGER",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "stateabbr",
+              "type": "STRING",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "statedesc",
+              "type": "STRING",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "locationname",
+              "type": "STRING",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "datasource",
+              "type": "STRING",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "category",
+              "type": "STRING",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "measure",
+              "type": "STRING",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "data_value_unit",
+              "type": "STRING",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "data_value_type",
+              "type": "STRING",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "data_value",
+              "type": "FLOAT",
+              "mode": "NULLABLE"
+            }
+          ]
         },
-        "numBytes": "28947",
-        "numLongTermBytes": "28947",
-        "numRows": "344",
-        "creationTime": "1619804743188",
-        "lastModifiedTime": "1634584675234",
+        "numBytes": "234849",
+        "numLongTermBytes": "0",
+        "numRows": "1000",
+        "creationTime": "1640891846119",
+        "lastModifiedTime": "1749427268137",
         "type": "TABLE",
         "location": "US",
-        "numTimeTravelPhysicalBytes": "0",
-        "numTotalLogicalBytes": "28947",
-        "numActiveLogicalBytes": "0",
-        "numLongTermLogicalBytes": "28947",
-        "numTotalPhysicalBytes": "5350",
-        "numActivePhysicalBytes": "0",
-        "numLongTermPhysicalBytes": "5350",
-        "numCurrentPhysicalBytes": "5350"
+        "numTimeTravelPhysicalBytes": "285737",
+        "numTotalLogicalBytes": "234849",
+        "numActiveLogicalBytes": "234849",
+        "numLongTermLogicalBytes": "0",
+        "numTotalPhysicalBytes": "326557",
+        "numActivePhysicalBytes": "326557",
+        "numLongTermPhysicalBytes": "0",
+        "numCurrentPhysicalBytes": "40820"
       }
   """
   try:
