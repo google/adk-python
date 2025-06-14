@@ -30,6 +30,31 @@ class ExperimentalClass:
     return "running experimental"
 
 
+# Test classes/functions for new usage patterns
+@experimental
+class ExperimentalClassNoParens:
+
+  def run(self):
+    return "running experimental without parens"
+
+
+@experimental()
+class ExperimentalClassEmptyParens:
+
+  def run(self):
+    return "running experimental with empty parens"
+
+
+@experimental
+def experimental_fn_no_parens():
+  return "executing without parens"
+
+
+@experimental()
+def experimental_fn_empty_parens():
+  return "executing with empty parens"
+
+
 def test_working_in_progress_class_raises_error():
   """Test that WIP class raises RuntimeError by default."""
   # Ensure environment variable is not set
@@ -208,3 +233,69 @@ def test_experimental_class_warns():
     assert issubclass(w[0].category, UserWarning)
     assert "[EXPERIMENTAL] ExperimentalClass:" in str(w[0].message)
     assert "class may change" in str(w[0].message)
+
+
+def test_experimental_class_no_parens_warns():
+  """Test that experimental class without parentheses shows default warning."""
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+
+    exp_class = ExperimentalClassNoParens()
+    result = exp_class.run()
+
+    assert result == "running experimental without parens"
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[EXPERIMENTAL] ExperimentalClassNoParens:" in str(w[0].message)
+    assert "This feature is experimental and may change or be removed" in str(
+        w[0].message
+    )
+
+
+def test_experimental_class_empty_parens_warns():
+  """Test that experimental class with empty parentheses shows default warning."""
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+
+    exp_class = ExperimentalClassEmptyParens()
+    result = exp_class.run()
+
+    assert result == "running experimental with empty parens"
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[EXPERIMENTAL] ExperimentalClassEmptyParens:" in str(w[0].message)
+    assert "This feature is experimental and may change or be removed" in str(
+        w[0].message
+    )
+
+
+def test_experimental_function_no_parens_warns():
+  """Test that experimental function without parentheses shows default warning."""
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+
+    result = experimental_fn_no_parens()
+
+    assert result == "executing without parens"
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[EXPERIMENTAL] experimental_fn_no_parens:" in str(w[0].message)
+    assert "This feature is experimental and may change or be removed" in str(
+        w[0].message
+    )
+
+
+def test_experimental_function_empty_parens_warns():
+  """Test that experimental function with empty parentheses shows default warning."""
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+
+    result = experimental_fn_empty_parens()
+
+    assert result == "executing with empty parens"
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[EXPERIMENTAL] experimental_fn_empty_parens:" in str(w[0].message)
+    assert "This feature is experimental and may change or be removed" in str(
+        w[0].message
+    )
