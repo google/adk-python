@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 import inspect
 from typing import Any
@@ -21,6 +22,7 @@ from typing import Optional
 from google.oauth2.credentials import Credentials
 from typing_extensions import override
 
+from ...utils.feature_decorator import experimental
 from ..function_tool import FunctionTool
 from ..tool_context import ToolContext
 from .bigquery_credentials import BigQueryCredentialsConfig
@@ -28,6 +30,7 @@ from .bigquery_credentials import BigQueryCredentialsManager
 from .config import BigQueryToolConfig
 
 
+@experimental
 class BigQueryTool(FunctionTool):
   """GoogleApiTool class for tools that call Google APIs.
 

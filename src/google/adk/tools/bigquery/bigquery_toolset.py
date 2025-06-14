@@ -26,11 +26,13 @@ from . import query_tool
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
+from ...utils.feature_decorator import experimental
 from .bigquery_credentials import BigQueryCredentialsConfig
 from .bigquery_tool import BigQueryTool
 from .config import BigQueryToolConfig
 
 
+@experimental
 class BigQueryToolset(BaseToolset):
   """BigQuery Toolset contains tools for interacting with BigQuery data and metadata."""
 
