@@ -49,7 +49,7 @@ class AuthHandler:
 
   def parse_and_store_auth_response(self, state: State) -> None:
 
-    credential_key = "temp:" + self.auth_config.get_credential_key()
+    credential_key = "temp:" + self.auth_config.credential_key
 
     state[credential_key] = self.auth_config.exchanged_auth_credential
     if not isinstance(
@@ -67,7 +67,7 @@ class AuthHandler:
       raise ValueError("auth_scheme is empty.")
 
   def get_auth_response(self, state: State) -> AuthCredential:
-    credential_key = "temp:" + self.auth_config.get_credential_key()
+    credential_key = "temp:" + self.auth_config.credential_key
     return state.get(credential_key, None)
 
   def generate_auth_request(self) -> AuthConfig:
