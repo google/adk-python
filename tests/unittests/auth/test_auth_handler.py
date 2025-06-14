@@ -387,7 +387,7 @@ class TestGetAuthResponse:
     state = MockState()
 
     # Store a credential in the state
-    credential_key = auth_config.get_credential_key()
+    credential_key = auth_config.credential_key
     state["temp:" + credential_key] = oauth2_credentials_with_auth_uri
 
     result = handler.get_auth_response(state)
@@ -418,7 +418,7 @@ class TestParseAndStoreAuthResponse:
 
     handler.parse_and_store_auth_response(state)
 
-    credential_key = auth_config.get_credential_key()
+    credential_key = auth_config.credential_key
     assert (
         state["temp:" + credential_key] == auth_config.exchanged_auth_credential
     )
@@ -436,7 +436,7 @@ class TestParseAndStoreAuthResponse:
 
     handler.parse_and_store_auth_response(state)
 
-    credential_key = auth_config_with_exchanged.get_credential_key()
+    credential_key = auth_config_with_exchanged.credential_key
     assert state["temp:" + credential_key] == mock_exchange_token.return_value
     assert mock_exchange_token.called
 
