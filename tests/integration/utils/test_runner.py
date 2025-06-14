@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import importlib
 from typing import Optional
 
@@ -28,6 +29,9 @@ from google.genai import types
 
 class TestRunner:
   """Agents runner for testing."""
+
+  # Prevent pytest from collecting this as a test class
+  __test__ = False
 
   app_name = "test_app"
   user_id = "test_user"
@@ -46,17 +50,35 @@ class TestRunner:
         session_service=session_service,
     )
     self.session_service = session_service
-    self.current_session_id = session_service.create_session(
-        app_name=self.app_name, user_id=self.user_id
-    ).id
+    self.current_session_id = None
+    self._session_initialized = False
+
+  async def _ensure_session(self) -> str:
+    """Ensure a session is created and return the session ID."""
+    if not self._session_initialized:
+      session = await self.session_service.create_session(
+          app_name=self.app_name, user_id=self.user_id
+      )
+      self.current_session_id = session.id
+      self._session_initialized = True
+    return self.current_session_id
+
+  async def new_session_async(self, session_id: Optional[str] = None) -> None:
+    session = await self.session_service.create_session(
+        app_name=self.app_name, user_id=self.user_id, session_id=session_id
+    )
+    self.current_session_id = session.id
+    self._session_initialized = True
 
   def new_session(self, session_id: Optional[str] = None) -> None:
-    self.current_session_id = self.session_service.create_session(
-        app_name=self.app_name, user_id=self.user_id, session_id=session_id
-    ).id
+    """Create a new session (sync version)."""
+    return asyncio.get_event_loop().run_until_complete(
+        self.new_session_async(session_id)
+    )
 
-  def run(self, prompt: str) -> list[Event]:
-    current_session = self.session_service.get_session(
+  async def run_async(self, prompt: str) -> list[Event]:
+    await self._ensure_session()
+    current_session = await self.session_service.get_session(
         app_name=self.app_name,
         user_id=self.user_id,
         session_id=self.current_session_id,
@@ -74,15 +96,31 @@ class TestRunner:
         )
     )
 
-  def get_current_session(self) -> Optional[Session]:
-    return self.session_service.get_session(
+  def run(self, prompt: str) -> list[Event]:
+    """Run the agent with a prompt (sync version)."""
+    return asyncio.get_event_loop().run_until_complete(self.run_async(prompt))
+
+  async def get_current_session_async(self) -> Optional[Session]:
+    await self._ensure_session()
+    return await self.session_service.get_session(
         app_name=self.app_name,
         user_id=self.user_id,
         session_id=self.current_session_id,
     )
 
+  def get_current_session(self) -> Optional[Session]:
+    """Get current session (sync version)."""
+    return asyncio.get_event_loop().run_until_complete(
+        self.get_current_session_async()
+    )
+
+  async def get_events_async(self) -> list[Event]:
+    session = await self.get_current_session_async()
+    return session.events
+
   def get_events(self) -> list[Event]:
-    return self.get_current_session().events
+    """Get events from current session (sync version)."""
+    return asyncio.get_event_loop().run_until_complete(self.get_events_async())
 
   @classmethod
   def from_agent_name(cls, agent_name: str):
@@ -91,7 +129,33 @@ class TestRunner:
     agent: Agent = agent_module.agent.root_agent
     return cls(agent)
 
+  async def get_current_agent_name_async(self) -> str:
+    session = await self.get_current_session_async()
+    return self.agent_client._find_agent_to_run(session, self.agent).name
+
   def get_current_agent_name(self) -> str:
-    return self.agent_client._find_agent_to_run(
-        self.get_current_session(), self.agent
-    ).name
+    """Get current agent name (sync version)."""
+    return asyncio.get_event_loop().run_until_complete(
+        self.get_current_agent_name_async()
+    )
+
+  # Sync wrapper methods for backward compatibility
+  def run_sync(self, prompt: str) -> list[Event]:
+    """Synchronous wrapper for run method."""
+    return asyncio.get_event_loop().run_until_complete(self.run(prompt))
+
+  def get_events_sync(self) -> list[Event]:
+    """Synchronous wrapper for get_events method."""
+    return asyncio.get_event_loop().run_until_complete(self.get_events())
+
+  def get_current_agent_name_sync(self) -> str:
+    """Synchronous wrapper for get_current_agent_name method."""
+    return asyncio.get_event_loop().run_until_complete(
+        self.get_current_agent_name()
+    )
+
+  def new_session_sync(self, session_id: Optional[str] = None) -> None:
+    """Synchronous wrapper for new_session method."""
+    return asyncio.get_event_loop().run_until_complete(
+        self.new_session(session_id)
+    )
