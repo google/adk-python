@@ -85,7 +85,7 @@ def test_supported_models():
 
 def test_client_version_header():
   model = Gemini(model="gemini-1.5-flash")
-  client = model.api_client
+  client = model._api_client
   adk_header = (
       f"google-adk/{adk_version.__version__} gl-python/{sys.version.split()[0]}"
   )
@@ -106,7 +106,7 @@ def test_client_version_header():
 def test_client_version_header_with_agent_engine(mock_os_environ):
   os.environ[_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME] = "my_test_project"
   model = Gemini(model="gemini-1.5-flash")
-  client = model.api_client
+  client = model._api_client
   adk_header_base = f"google-adk/{adk_version.__version__}"
   adk_header_with_telemetry = (
       f"{adk_header_base}+{_AGENT_ENGINE_TELEMETRY_TAG}"

@@ -103,7 +103,7 @@ class Gemini(BaseLlm):
       llm_request.config.http_options.headers.update(self._tracking_headers)
 
     if stream:
-      responses = await self.api_client.aio.models.generate_content_stream(
+      responses = await self._api_client.aio.models.generate_content_stream(
           model=llm_request.model,
           contents=llm_request.contents,
           config=llm_request.config,
@@ -167,7 +167,7 @@ class Gemini(BaseLlm):
         )
 
     else:
-      response = await self.api_client.aio.models.generate_content(
+      response = await self._api_client.aio.models.generate_content(
           model=llm_request.model,
           contents=llm_request.contents,
           config=llm_request.config,
@@ -176,7 +176,7 @@ class Gemini(BaseLlm):
       yield LlmResponse.create(response)
 
   @cached_property
-  def api_client(self) -> Client:
+  def _api_client(self, llm_request: LlmRequest = None) -> Client:
     """Provides the api client.
 
     Returns:
@@ -190,7 +190,7 @@ class Gemini(BaseLlm):
   def _api_backend(self) -> GoogleLLMVariant:
     return (
         GoogleLLMVariant.VERTEX_AI
-        if self.api_client.vertexai
+        if self._api_client.vertexai
         else GoogleLLMVariant.GEMINI_API
     )
 
