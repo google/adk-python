@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import functools
@@ -34,7 +35,6 @@ try:
   from mcp.client.stdio import stdio_client
   from mcp.client.streamable_http import streamablehttp_client
 except ImportError as e:
-  import sys
 
   if sys.version_info < (3, 10):
     raise ImportError(
@@ -105,30 +105,29 @@ class StreamableHTTPConnectionParams(BaseModel):
   terminate_on_close: bool = True
 
 
-def retry_on_closed_resource(async_reinit_func_name: str):
+def retry_on_closed_resource(session_manager_field_name: str):
   """Decorator to automatically reinitialize session and retry action.
 
   When MCP session was closed, the decorator will automatically recreate the
   session and retry the action with the same parameters.
 
   Note:
-  1. async_reinit_func_name is the name of the class member function that
-  reinitializes the MCP session.
-  2. Both the decorated function and the async_reinit_func_name must be async
-  functions.
+  1. session_manager_field_name is the name of the class member field that
+  contains the MCPSessionManager instance.
+  2. The session manager must have a reinitialize_session() async method.
 
   Usage:
   class MCPTool:
-      ...
-      async def create_session(self):
-          self.session = ...
+      def __init__(self):
+          self._mcp_session_manager = MCPSessionManager(...)
 
-      @retry_on_closed_resource('create_session')
+      @retry_on_closed_resource('_mcp_session_manager')
       async def use_session(self):
-          await self.session.call_tool()
+          session = await self._mcp_session_manager.create_session()
+          await session.call_tool()
 
   Args:
-      async_reinit_func_name: The name of the async function to recreate session.
+      session_manager_field_name: The name of the session manager field.
 
   Returns:
       The decorated function.
@@ -141,15 +140,21 @@ def retry_on_closed_resource(async_reinit_func_name: str):
         return await func(self, *args, **kwargs)
       except anyio.ClosedResourceError as close_err:
         try:
-          if hasattr(self, async_reinit_func_name) and callable(
-              getattr(self, async_reinit_func_name)
-          ):
-            async_init_fn = getattr(self, async_reinit_func_name)
-            await async_init_fn()
+          if hasattr(self, session_manager_field_name):
+            session_manager = getattr(self, session_manager_field_name)
+            if hasattr(session_manager, 'reinitialize_session') and callable(
+                getattr(session_manager, 'reinitialize_session')
+            ):
+              await session_manager.reinitialize_session()
+            else:
+              raise ValueError(
+                  f'Session manager {session_manager_field_name} does not have'
+                  ' reinitialize_session method.'
+              ) from close_err
           else:
             raise ValueError(
-                f'Function {async_reinit_func_name} does not exist in decorated'
-                ' class. Please check the function name in'
+                f'Session manager field {session_manager_field_name} does not'
+                ' exist in decorated class. Please check the field name in'
                 ' retry_on_closed_resource decorator.'
             ) from close_err
         except Exception as reinit_err:
@@ -207,6 +212,8 @@ class MCPSessionManager:
     # Each session manager maintains its own exit stack for proper cleanup
     self._exit_stack: Optional[AsyncExitStack] = None
     self._session: Optional[ClientSession] = None
+    # Lock to prevent race conditions in session creation
+    self._session_lock = asyncio.Lock()
 
   async def create_session(self) -> ClientSession:
     """Creates and initializes an MCP client session.
@@ -214,83 +221,102 @@ class MCPSessionManager:
     Returns:
         ClientSession: The initialized MCP client session.
     """
+    # Fast path: if session already exists, return it without acquiring lock
     if self._session is not None:
       return self._session
 
-    # Create a new exit stack for this session
-    self._exit_stack = AsyncExitStack()
+    # Use async lock to prevent race conditions
+    async with self._session_lock:
+      # Double-check: session might have been created while waiting for lock
+      if self._session is not None:
+        return self._session
 
-    try:
-      if isinstance(self._connection_params, StdioConnectionParams):
-        client = stdio_client(
-            server=self._connection_params.server_params,
-            errlog=self._errlog,
-        )
-      elif isinstance(self._connection_params, SseConnectionParams):
-        client = sse_client(
-            url=self._connection_params.url,
-            headers=self._connection_params.headers,
-            timeout=self._connection_params.timeout,
-            sse_read_timeout=self._connection_params.sse_read_timeout,
-        )
-      elif isinstance(self._connection_params, StreamableHTTPConnectionParams):
-        client = streamablehttp_client(
-            url=self._connection_params.url,
-            headers=self._connection_params.headers,
-            timeout=timedelta(seconds=self._connection_params.timeout),
-            sse_read_timeout=timedelta(
-                seconds=self._connection_params.sse_read_timeout
-            ),
-            terminate_on_close=self._connection_params.terminate_on_close,
-        )
-      else:
-        raise ValueError(
-            'Unable to initialize connection. Connection should be'
-            ' StdioServerParameters or SseServerParams, but got'
-            f' {self._connection_params}'
-        )
+      # Create a new exit stack for this session
+      self._exit_stack = AsyncExitStack()
 
-      transports = await self._exit_stack.enter_async_context(client)
-      # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
-      # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
-      if isinstance(self._connection_params, StdioConnectionParams):
-        session = await self._exit_stack.enter_async_context(
-            ClientSession(
-                *transports[:2],
-                read_timeout_seconds=timedelta(
-                    seconds=self._connection_params.timeout
-                ),
-            )
-        )
-      else:
-        session = await self._exit_stack.enter_async_context(
-            ClientSession(*transports[:2])
-        )
-      await session.initialize()
+      try:
+        if isinstance(self._connection_params, StdioConnectionParams):
+          client = stdio_client(
+              server=self._connection_params.server_params,
+              errlog=self._errlog,
+          )
+        elif isinstance(self._connection_params, SseConnectionParams):
+          client = sse_client(
+              url=self._connection_params.url,
+              headers=self._connection_params.headers,
+              timeout=self._connection_params.timeout,
+              sse_read_timeout=self._connection_params.sse_read_timeout,
+          )
+        elif isinstance(
+            self._connection_params, StreamableHTTPConnectionParams
+        ):
+          client = streamablehttp_client(
+              url=self._connection_params.url,
+              headers=self._connection_params.headers,
+              timeout=timedelta(seconds=self._connection_params.timeout),
+              sse_read_timeout=timedelta(
+                  seconds=self._connection_params.sse_read_timeout
+              ),
+              terminate_on_close=self._connection_params.terminate_on_close,
+          )
+        else:
+          raise ValueError(
+              'Unable to initialize connection. Connection should be'
+              ' StdioServerParameters or SseServerParams, but got'
+              f' {self._connection_params}'
+          )
 
-      self._session = session
-      return session
+        transports = await self._exit_stack.enter_async_context(client)
+        # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
+        # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
+        if isinstance(self._connection_params, StdioConnectionParams):
+          session = await self._exit_stack.enter_async_context(
+              ClientSession(
+                  *transports[:2],
+                  read_timeout_seconds=timedelta(
+                      seconds=self._connection_params.timeout
+                  ),
+              )
+          )
+        else:
+          session = await self._exit_stack.enter_async_context(
+              ClientSession(*transports[:2])
+          )
+        await session.initialize()
 
-    except Exception:
-      # If session creation fails, clean up the exit stack
-      if self._exit_stack:
-        await self._exit_stack.aclose()
-        self._exit_stack = None
-      raise
+        self._session = session
+        return session
+
+      except Exception:
+        # If session creation fails, clean up the exit stack
+        if self._exit_stack:
+          await self._exit_stack.aclose()
+          self._exit_stack = None
+        raise
 
   async def close(self):
     """Closes the session and cleans up resources."""
-    if self._exit_stack:
-      try:
-        await self._exit_stack.aclose()
-      except Exception as e:
-        # Log the error but don't re-raise to avoid blocking shutdown
-        print(
-            f'Warning: Error during MCP session cleanup: {e}', file=self._errlog
-        )
-      finally:
-        self._exit_stack = None
-        self._session = None
+    if not self._exit_stack:
+      return
+    async with self._session_lock:
+      if self._exit_stack:
+        try:
+          await self._exit_stack.aclose()
+        except Exception as e:
+          # Log the error but don't re-raise to avoid blocking shutdown
+          print(
+              f'Warning: Error during MCP session cleanup: {e}',
+              file=self._errlog,
+          )
+        finally:
+          self._exit_stack = None
+          self._session = None
+
+  async def reinitialize_session(self):
+    """Reinitializes the session when connection is lost."""
+    # Close the old session and create a new one
+    await self.close()
+    await self.create_session()
 
 
 SseServerParams = SseConnectionParams
