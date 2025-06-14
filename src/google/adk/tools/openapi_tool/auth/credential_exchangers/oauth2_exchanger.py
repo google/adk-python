@@ -14,7 +14,9 @@
 
 """Credential fetcher for OpenID Connect."""
 
-from typing import Optional
+from typing import Optional, Dict
+from authlib.integrations.requests_client import OAuth2Session
+import logging
 
 from .....auth.auth_credential import AuthCredential
 from .....auth.auth_credential import AuthCredentialTypes
@@ -24,6 +26,7 @@ from .....auth.auth_schemes import AuthScheme
 from .....auth.auth_schemes import AuthSchemeType
 from .base_credential_exchanger import BaseAuthCredentialExchanger
 
+logger = logging.getLogger(__name__)
 
 class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
   """Fetches credentials for OAuth2 and OpenID Connect."""
@@ -84,6 +87,51 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
     )
     return updated_credential
 
+  def _refresh_token(
+      self,
+      auth_credential: AuthCredential,
+      auth_scheme: AuthScheme,
+  ) -> Dict[str, str]:
+    """Refreshes the OAuth2 access token using the refresh token.
+
+    Args:
+        auth_credential: The auth credential containing the refresh token.
+        auth_scheme: The auth scheme containing OAuth2 configuration.
+
+    Returns:
+        A dictionary containing the new access token and related information.
+
+    Raises:
+        ValueError: If refresh token is missing or refresh fails.
+    """
+    if not auth_credential.oauth2.token or "refresh_token" not in auth_credential.oauth2.token:
+      raise ValueError("No refresh token available for token refresh")
+
+    # Get token URL from either OpenID Connect or OAuth2 configuration
+    token_url = None
+    if auth_scheme.type_ == AuthSchemeType.openIdConnect and auth_scheme.openIdConnect:
+      token_url = auth_scheme.openIdConnect.get("tokenUrl")
+    elif auth_scheme.type_ == AuthSchemeType.oauth2 and auth_scheme.oauth2:
+      token_url = auth_scheme.oauth2.tokenUrl
+
+    if not token_url:
+      raise ValueError("No token URL available for token refresh")
+
+    try:
+      client = OAuth2Session(
+          auth_credential.oauth2.client_id,
+          auth_credential.oauth2.client_secret,
+          token=auth_credential.oauth2.token,
+      )
+      new_token = client.refresh_token(
+          token_url,
+          refresh_token=auth_credential.oauth2.token["refresh_token"],
+      )
+      return new_token
+    except Exception as e:
+      logger.error("Failed to refresh token: %s", str(e))
+      raise ValueError(f"Token refresh failed: {str(e)}")
+
   def exchange_credential(
       self,
       auth_scheme: AuthScheme,
@@ -101,17 +149,29 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
     Raises:
         ValueError: If the auth scheme or auth credential is invalid.
     """
-    # TODO(cheliu): Implement token refresh flow
-
     self._check_scheme_credential_type(auth_scheme, auth_credential)
 
-    # If token is already HTTPBearer token, do nothing assuming that this token
-    #  is valid.
+    # If token is already HTTPBearer token, try to refresh if needed
     if auth_credential.http:
-      return auth_credential
+      try:
+        # Attempt to use the current token
+        return auth_credential
+      except Exception as e:
+        logger.info("Token may be expired, attempting refresh: %s", str(e))
+        # Continue to refresh flow
 
-    # If access token is exchanged, exchange a HTTPBearer token.
-    if auth_credential.oauth2.access_token:
+    # Try to refresh the token if we have a refresh token
+    if auth_credential.oauth2.token and "refresh_token" in auth_credential.oauth2.token:
+      try:
+        new_token = self._refresh_token(auth_credential, auth_scheme)
+        auth_credential.oauth2.token = new_token
+        return self.generate_auth_token(auth_credential)
+      except ValueError as e:
+        logger.error("Token refresh failed: %s", str(e))
+        # Fall through to try other methods
+
+    # If access token is available, exchange for HTTPBearer token
+    if auth_credential.oauth2.token:
       return self.generate_auth_token(auth_credential)
 
     return None
