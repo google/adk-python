@@ -31,6 +31,8 @@ import uvicorn
 from . import cli_create
 from . import cli_deploy
 from .. import version
+from ..evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
+from ..evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..sessions.in_memory_session_service import InMemorySessionService
 from .cli import run_cli
@@ -277,11 +279,21 @@ def cli_run(
     default=False,
     help="Optional. Whether to print detailed results on console or not.",
 )
+@click.option(
+    "--evals_storage_uri",
+    type=str,
+    help=(
+        "Optional. The evals storage URI to store agent evals,"
+        " supported URIs: gs://<bucket name>."
+    ),
+    default=None,
+)
 def cli_eval(
     agent_module_file_path: str,
-    eval_set_file_path: tuple[str],
+    eval_set_file_path: list[str],
     config_file_path: str,
     print_detailed_results: bool,
+    evals_storage_uri: Optional[str] = None,
 ):
   """Evaluates an agent given the eval sets.
 
@@ -333,12 +345,40 @@ def cli_eval(
   root_agent = get_root_agent(agent_module_file_path)
   reset_func = try_get_reset_func(agent_module_file_path)
 
+  gcs_eval_sets_manager = None
+  if evals_storage_uri:
+    if evals_storage_uri.startswith("gs://"):
+      gcs_bucket = evals_storage_uri.split("://")[1]
+      eval_set_results_manager = GcsEvalSetResultsManager(
+          bucket_name=gcs_bucket, project=os.environ["GOOGLE_CLOUD_PROJECT"]
+      )
+      gcs_eval_sets_manager = GcsEvalSetsManager(
+          bucket_name=gcs_bucket, project=os.environ["GOOGLE_CLOUD_PROJECT"]
+      )
+    else:
+      raise click.ClickException(
+          "Unsupported evals storage URI: %s. Supported URIs: gs://<bucket"
+          " name>" % evals_storage_uri
+      )
+  else:
+    eval_set_results_manager = LocalEvalSetResultsManager(
+        agents_dir=os.path.dirname(agent_module_file_path)
+    )
   eval_set_file_path_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
   eval_set_id_to_eval_cases = {}
 
   # Read the eval_set files and get the cases.
   for eval_set_file_path, eval_case_ids in eval_set_file_path_to_evals.items():
-    eval_set = load_eval_set_from_file(eval_set_file_path, eval_set_file_path)
+    if gcs_eval_sets_manager:
+      eval_set = gcs_eval_sets_manager._load_eval_set_from_blob(
+          eval_set_file_path
+      )
+      if not eval_set:
+        raise click.ClickException(
+            f"Eval set {eval_set_file_path} not found in GCS."
+        )
+    else:
+      eval_set = load_eval_set_from_file(eval_set_file_path, eval_set_file_path)
     eval_cases = eval_set.eval_cases
 
     if eval_case_ids:
@@ -373,16 +413,13 @@ def cli_eval(
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
 
   # Write eval set results.
-  local_eval_set_results_manager = LocalEvalSetResultsManager(
-      agents_dir=os.path.dirname(agent_module_file_path)
-  )
   eval_set_id_to_eval_results = collections.defaultdict(list)
   for eval_case_result in eval_results:
     eval_set_id = eval_case_result.eval_set_id
     eval_set_id_to_eval_results[eval_set_id].append(eval_case_result)
 
   for eval_set_id, eval_case_results in eval_set_id_to_eval_results.items():
-    local_eval_set_results_manager.save_eval_set_result(
+    eval_set_results_manager.save_eval_set_result(
         app_name=os.path.basename(agent_module_file_path),
         eval_set_id=eval_set_id,
         eval_case_results=eval_case_results,
@@ -436,6 +473,15 @@ def adk_services_options():
         help=(
             "Optional. The URI of the artifact service,"
             " supported URIs: gs://<bucket name> for GCS artifact service."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--evals_storage_uri",
+        type=str,
+        help=(
+            "Optional. The evals storage URI to store agent evals,"
+            " supported URIs: gs://<bucket name>."
         ),
         default=None,
     )
@@ -559,6 +605,7 @@ def fast_api_common_options():
 )
 def cli_web(
     agents_dir: str,
+    evals_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
@@ -611,6 +658,7 @@ def cli_web(
       session_service_uri=session_service_uri,
       artifact_service_uri=artifact_service_uri,
       memory_service_uri=memory_service_uri,
+      evals_storage_uri=evals_storage_uri,
       allow_origins=allow_origins,
       web=True,
       trace_to_cloud=trace_to_cloud,
@@ -642,6 +690,7 @@ def cli_web(
 @deprecated_adk_services_options()
 def cli_api_server(
     agents_dir: str,
+    evals_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
@@ -673,6 +722,7 @@ def cli_api_server(
           session_service_uri=session_service_uri,
           artifact_service_uri=artifact_service_uri,
           memory_service_uri=memory_service_uri,
+          evals_storage_uri=evals_storage_uri,
           allow_origins=allow_origins,
           web=False,
           trace_to_cloud=trace_to_cloud,
@@ -780,6 +830,15 @@ def cli_api_server(
         " version in the dev environment)"
     ),
 )
+@click.option(
+    "--evals_storage_uri",
+    type=str,
+    help=(
+        "Optional. The evals storage URI to store agent evals,"
+        " supported URIs: gs://<bucket name>."
+    ),
+    default=None,
+)
 @adk_services_options()
 @deprecated_adk_services_options()
 def cli_deploy_cloud_run(
@@ -797,6 +856,7 @@ def cli_deploy_cloud_run(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    evals_storage_uri: Optional[str] = None,
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
 ):
