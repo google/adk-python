@@ -14,14 +14,34 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Optional
+from typing import Union
 
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from typing_extensions import TypeAlias
 
 from .eval_case import Invocation
 from .evaluator import EvalStatus
+
+
+class MetricNames(Enum):
+  TOOL_TRAJECTORY_AVG_SCORE = "tool_trajectory_avg_score"
+
+  # This is an alias of TOOL_TRAJECTORY_AVG_SCORE.
+  TOOL_TRAJECTORY_MATCH_V1 = "tool_trajectory_match_v1"
+
+  RESPONSE_EVALUATION_SCORE = "response_evaluation_score"
+
+  RESPONSE_MATCH_SCORE = "response_match_score"
+
+  # This is an alias of RESPONSE_MATCH_SCORE.
+  FINAL_RESPONSE_MATCH_V1 = "final_response_match_v1"
+
+
+MetricName: TypeAlias = Union[str, MetricNames]
 
 
 class EvalMetric(BaseModel):
