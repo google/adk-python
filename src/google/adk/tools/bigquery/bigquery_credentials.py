@@ -27,16 +27,18 @@ from google.oauth2.credentials import Credentials
 from pydantic import BaseModel
 from pydantic import model_validator
 
-from ...auth import AuthConfig
-from ...auth import AuthCredential
-from ...auth import AuthCredentialTypes
-from ...auth import OAuth2Auth
+from ...auth.auth_credential import AuthCredential
+from ...auth.auth_credential import AuthCredentialTypes
+from ...auth.auth_credential import OAuth2Auth
+from ...auth.auth_tool import AuthConfig
+from ...utils.feature_decorator import experimental
 from ..tool_context import ToolContext
 
 BIGQUERY_TOKEN_CACHE_KEY = "bigquery_token_cache"
 BIGQUERY_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/bigquery"]
 
 
+@experimental
 class BigQueryCredentialsConfig(BaseModel):
   """Configuration for Google API tools. (Experimental)"""
 

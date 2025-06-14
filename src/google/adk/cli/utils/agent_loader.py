@@ -76,7 +76,12 @@ class AgentLoader:
         e.msg = f"Fail to load '{agent_name}' module. " + e.msg
         raise e
     except Exception as e:
-      e.msg = f"Fail to load '{agent_name}' module. " + e.msg
+      if hasattr(e, "msg"):
+        e.msg = f"Fail to load '{agent_name}' module. " + e.msg
+        raise e
+      e.args = (
+          f"Fail to load '{agent_name}' module. {e.args[0] if e.args else ''}",
+      ) + e.args[1:]
       raise e
 
     return None
@@ -110,7 +115,15 @@ class AgentLoader:
         e.msg = f"Fail to load '{agent_name}.agent' module. " + e.msg
         raise e
     except Exception as e:
-      e.msg = f"Fail to load '{agent_name}.agent' module. " + e.msg
+      if hasattr(e, "msg"):
+        e.msg = f"Fail to load '{agent_name}.agent' module. " + e.msg
+        raise e
+      e.args = (
+          (
+              f"Fail to load '{agent_name}.agent' module."
+              f" {e.args[0] if e.args else ''}"
+          ),
+      ) + e.args[1:]
       raise e
 
     return None

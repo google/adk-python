@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import Optional
+
+from typing_extensions import deprecated
+
 from .auth_credential import AuthCredential
 from .auth_credential import BaseModelWithConfig
 from .auth_schemes import AuthScheme
@@ -42,6 +48,46 @@ class AuthConfig(BaseModelWithConfig):
   authorization uri, state, etc. then it's copied to this field. Client will use
   this field to guide the user through the OAuth2 flow and fill auth response in
   this field"""
+
+  credential_key: Optional[str] = None
+  """A user specified key used to load and save this credential in a credential
+  service.
+  """
+
+  def __init__(self, **data):
+    super().__init__(**data)
+    if self.credential_key:
+      return
+    self.credential_key = self.get_credential_key()
+
+  @deprecated("This method is deprecated. Use credential_key instead.")
+  def get_credential_key(self):
+    """Builds a hash key based on auth_scheme and raw_auth_credential used to
+    save / load this credential to / from a credentials service.
+    """
+
+    auth_scheme = self.auth_scheme
+
+    if auth_scheme.model_extra:
+      auth_scheme = auth_scheme.model_copy(deep=True)
+      auth_scheme.model_extra.clear()
+    scheme_name = (
+        f"{auth_scheme.type_.name}_{hash(auth_scheme.model_dump_json())}"
+        if auth_scheme
+        else ""
+    )
+
+    auth_credential = self.raw_auth_credential
+    if auth_credential and auth_credential.model_extra:
+      auth_credential = auth_credential.model_copy(deep=True)
+      auth_credential.model_extra.clear()
+    credential_name = (
+        f"{auth_credential.auth_type.value}_{hash(auth_credential.model_dump_json())}"
+        if auth_credential
+        else ""
+    )
+
+    return f"adk_{scheme_name}_{credential_name}"
 
 
 class AuthToolArguments(BaseModelWithConfig):

@@ -38,6 +38,7 @@ from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
+from .platform.thread import create_thread
 from .sessions.base_session_service import BaseSessionService
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
@@ -139,7 +140,7 @@ class Runner:
       finally:
         event_queue.put(None)
 
-    thread = threading.Thread(target=_asyncio_thread_main)
+    thread = create_thread(target=_asyncio_thread_main)
     thread.start()
 
     # consumes and re-yield the events from background thread.

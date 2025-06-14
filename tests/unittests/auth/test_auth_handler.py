@@ -209,31 +209,6 @@ class TestAuthHandlerInit:
     assert handler.auth_config == auth_config
 
 
-class TestGetCredentialKey:
-  """Tests for the get_credential_key method."""
-
-  def test_get_credential_key(self, auth_config):
-    """Test generating a unique credential key."""
-    handler = AuthHandler(auth_config)
-    key = handler.get_credential_key()
-    assert key.startswith("temp:adk_oauth2_")
-    assert "_oauth2_" in key
-
-  def test_get_credential_key_with_extras(self, auth_config):
-    """Test generating a key when model_extra exists."""
-    # Add model_extra to test cleanup
-
-    original_key = AuthHandler(auth_config).get_credential_key()
-    key = AuthHandler(auth_config).get_credential_key()
-
-    auth_config.auth_scheme.model_extra["extra_field"] = "value"
-    auth_config.raw_auth_credential.model_extra["extra_field"] = "value"
-
-    assert original_key == key
-    assert "extra_field" in auth_config.auth_scheme.model_extra
-    assert "extra_field" in auth_config.raw_auth_credential.model_extra
-
-
 class TestGenerateAuthUri:
   """Tests for the generate_auth_uri method."""
 
@@ -412,8 +387,8 @@ class TestGetAuthResponse:
     state = MockState()
 
     # Store a credential in the state
-    credential_key = handler.get_credential_key()
-    state[credential_key] = oauth2_credentials_with_auth_uri
+    credential_key = auth_config.credential_key
+    state["temp:" + credential_key] = oauth2_credentials_with_auth_uri
 
     result = handler.get_auth_response(state)
     assert result == oauth2_credentials_with_auth_uri
@@ -443,8 +418,10 @@ class TestParseAndStoreAuthResponse:
 
     handler.parse_and_store_auth_response(state)
 
-    credential_key = handler.get_credential_key()
-    assert state[credential_key] == auth_config.exchanged_auth_credential
+    credential_key = auth_config.credential_key
+    assert (
+        state["temp:" + credential_key] == auth_config.exchanged_auth_credential
+    )
 
   @patch("google.adk.auth.auth_handler.AuthHandler.exchange_auth_token")
   def test_oauth_scheme(self, mock_exchange_token, auth_config_with_exchanged):
@@ -459,8 +436,8 @@ class TestParseAndStoreAuthResponse:
 
     handler.parse_and_store_auth_response(state)
 
-    credential_key = handler.get_credential_key()
-    assert state[credential_key] == mock_exchange_token.return_value
+    credential_key = auth_config_with_exchanged.credential_key
+    assert state["temp:" + credential_key] == mock_exchange_token.return_value
     assert mock_exchange_token.called
 
 
@@ -472,7 +449,7 @@ class TestExchangeAuthToken:
   ):
     """Test when token exchange is not supported."""
     monkeypatch.setattr(
-        "google.adk.auth.auth_handler.SUPPORT_TOKEN_EXCHANGE", False
+        "google.adk.auth.oauth2_credential_fetcher.AUTHLIB_AVIALABLE", False
     )
 
     handler = AuthHandler(auth_config_with_auth_code)
@@ -560,7 +537,10 @@ class TestExchangeAuthToken:
 
     assert result == oauth2_credentials_with_token
 
-  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  @patch(
+      "google.adk.auth.oauth2_credential_fetcher.OAuth2Session",
+      MockOAuth2Session,
+  )
   def test_successful_token_exchange(self, auth_config_with_auth_code):
     """Test a successful token exchange."""
     handler = AuthHandler(auth_config_with_auth_code)

@@ -34,8 +34,9 @@ from ..base_toolset import ToolPredicate
 from .mcp_session_manager import ContextToEnvMapperCallback
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
-from .mcp_session_manager import SseServerParams
-from .mcp_session_manager import StreamableHTTPServerParams
+from .mcp_session_manager import SseConnectionParams
+from .mcp_session_manager import StdioConnectionParams
+from .mcp_session_manager import StreamableHTTPConnectionParams
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
@@ -97,9 +98,12 @@ class MCPToolset(BaseToolset):
   def __init__(
       self,
       *,
-      connection_params: (
-          StdioServerParameters | SseServerParams | StreamableHTTPServerParams
-      ),
+      connection_params: Union[
+          StdioServerParameters,
+          StdioConnectionParams,
+          SseConnectionParams,
+          StreamableHTTPConnectionParams,
+      ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       auth_transform_callback: Optional[AuthTransformCallback] = None,
       context_to_env_mapper_callback: Optional[
@@ -111,20 +115,16 @@ class MCPToolset(BaseToolset):
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
-        `StdioServerParameters` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseServerParams` for a local/remote SSE server; or
-        `StreamableHTTPServerParams` for local/remote Streamable http server.
-      tool_filter: Optional filter to select specific tools. Can be either:
-        - A list of tool names to include
-        - A ToolPredicate function for custom filtering logic
-      auth_transform_callback: Optional callback function to transform auth data
-        from ReadonlyContext.state into AuthScheme and AuthCredential. If None,
-        the toolset will look for 'auth_scheme' and 'auth_credential' keys
-        directly in the context state.
-      context_to_env_mapper_callback: Optional callback function to transform session
-        state into environment variables for the MCP connection. Takes a
-        dictionary of session state and returns a dictionary of environment
-        variables to be injected into the MCP connection.
+        `StdioConnectionParams` for using local mcp server (e.g. using `npx` or
+        `python3`); or `SseConnectionParams` for a local/remote SSE server; or
+        `StreamableHTTPConnectionParams` for local/remote Streamable http
+        server. Note, `StdioServerParameters` is also supported for using local
+        mcp server (e.g. using `npx` or `python3` ), but it does not support
+        timeout, and we recommend to use `StdioConnectionParams` instead when
+        timeout is needed.
+      tool_filter: Optional filter to select specific tools. Can be either: - A
+        list of tool names to include - A ToolPredicate function for custom
+        filtering logic
       errlog: TextIO stream for error logging.
     """
     super().__init__(tool_filter=tool_filter)
@@ -144,68 +144,7 @@ class MCPToolset(BaseToolset):
         context_to_env_mapper_callback=self._context_to_env_mapper_callback,
     )
 
-    self._session = None
-
-  def _extract_auth_from_context(
-      self, readonly_context: Optional[ReadonlyContext]
-  ) -> Tuple[Optional[AuthScheme], Optional[AuthCredential]]:
-    """Extracts auth scheme and credential from readonly context.
-
-    Args:
-        readonly_context: The readonly context containing state information.
-
-    Returns:
-        Tuple of (AuthScheme, AuthCredential) or (None, None) if not found.
-    """
-    if not readonly_context or not readonly_context.state:
-      return None, None
-
-    state_dict = dict(readonly_context.state)
-
-    # If a custom auth transform callback is provided, use it
-    if self._auth_transform_callback:
-      try:
-        return self._auth_transform_callback(state_dict)
-      except Exception as e:
-        logger.warning(
-            f"Auth transform callback failed: {e}. Falling back to direct"
-            " extraction."
-        )
-
-    # Direct extraction: look for 'auth_scheme' and 'auth_credential' keys
-    auth_scheme = state_dict.get("auth_scheme")
-    auth_credential = state_dict.get("auth_credential")
-
-    # Validate types - auth_scheme should be an AuthScheme instance
-    if auth_scheme is not None:
-      try:
-        # Check if it's a valid AuthScheme (Union of SecurityScheme types)
-        from fastapi.openapi.models import SecurityScheme
-
-        from ...auth.auth_schemes import OpenIdConnectWithConfig
-
-        if not isinstance(
-            auth_scheme, (SecurityScheme, OpenIdConnectWithConfig)
-        ):
-          logger.warning(
-              f"Invalid auth_scheme type in context: {type(auth_scheme)}"
-          )
-          auth_scheme = None
-      except Exception as e:
-        logger.warning(f"Error validating auth_scheme: {e}")
-        auth_scheme = None
-
-    if auth_credential is not None and not isinstance(
-        auth_credential, AuthCredential
-    ):
-      logger.warning(
-          f"Invalid auth_credential type in context: {type(auth_credential)}"
-      )
-      auth_credential = None
-
-    return auth_scheme, auth_credential
-
-  @retry_on_closed_resource("_reinitialize_session")
+  @retry_on_closed_resource("_mcp_session_manager")
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
@@ -221,18 +160,10 @@ class MCPToolset(BaseToolset):
         List[BaseTool]: A list of tools available under the specified context.
     """
     # Get session from session manager
-    if not self._session:
-      self._session = await self._mcp_session_manager.create_session(
-          readonly_context
-      )
-
-    # Extract auth information from context
-    auth_scheme, auth_credential = self._extract_auth_from_context(
-        readonly_context
-    )
+    session = await self._mcp_session_manager.create_session()
 
     # Fetch available tools from the MCP server
-    tools_response: ListToolsResult = await self._session.list_tools()
+    tools_response: ListToolsResult = await session.list_tools()
 
     # Apply filtering based on context and tool_filter
     tools = []
@@ -248,17 +179,6 @@ class MCPToolset(BaseToolset):
         tools.append(mcp_tool)
     return tools
 
-  async def _reinitialize_session(self):
-    """Reinitializes the session when connection is lost."""
-    # Close the old session and clear cache
-    await self._mcp_session_manager.close()
-    # Note: We'll need the readonly_context for reinitializing, but it's not
-    # available here. The session will be recreated on the next get_tools call
-    # with the proper context.
-    self._session = None
-
-    # Tools will be reloaded on next get_tools call
-
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
@@ -271,7 +191,3 @@ class MCPToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
-    finally:
-      # Clear cached tools
-      self._tools_cache = None
-      self._tools_loaded = False

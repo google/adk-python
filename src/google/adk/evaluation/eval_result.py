@@ -36,8 +36,9 @@ class EvalCaseResult(BaseModel):
       populate_by_name=True,
   )
 
-  eval_set_file: str = Field(
+  eval_set_file: Optional[str] = Field(
       deprecated=True,
+      default=None,
       description="This field is deprecated, use eval_set_id instead.",
   )
   eval_set_id: str = ""
@@ -49,11 +50,15 @@ class EvalCaseResult(BaseModel):
   final_eval_status: EvalStatus
   """Final eval status for this eval case."""
 
-  eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]] = Field(
-      deprecated=True,
-      description=(
-          "This field is deprecated, use overall_eval_metric_results instead."
-      ),
+  eval_metric_results: Optional[list[tuple[EvalMetric, EvalMetricResult]]] = (
+      Field(
+          deprecated=True,
+          default=None,
+          description=(
+              "This field is deprecated, use overall_eval_metric_results"
+              " instead."
+          ),
+      )
   )
 
   overall_eval_metric_results: list[EvalMetricResult]
@@ -80,7 +85,7 @@ class EvalSetResult(BaseModel):
       populate_by_name=True,
   )
   eval_set_result_id: str
-  eval_set_result_name: str
+  eval_set_result_name: Optional[str] = None
   eval_set_id: str
   eval_case_results: list[EvalCaseResult] = Field(default_factory=list)
   creation_timestamp: float = 0.0
