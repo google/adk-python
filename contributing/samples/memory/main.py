@@ -20,8 +20,10 @@ from typing import cast
 import agent
 from dotenv import load_dotenv
 from google.adk.cli.utils import logs
-from google.adk.runners import InMemoryRunner
+from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
+from google.adk.runners import Runner
 from google.adk.sessions import Session
+from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai import types
 
 load_dotenv(override=True)
@@ -29,11 +31,21 @@ logs.log_to_tmp_folder()
 
 
 async def main():
-  app_name = 'my_app'
+  app_name = 'app'
   user_id_1 = 'user1'
-  runner = InMemoryRunner(
+  runner = Runner(
       app_name=app_name,
       agent=agent.root_agent,
+      session_service=VertexAiSessionService(
+          'model-extend-test',
+          'us-central1',
+          agent_engine_id='2951441052671672320', # Test purpose, will remove
+      ),
+      memory_service=VertexAiMemoryBankService(
+          'model-extend-test',
+          'us-central1',
+          agent_engine_id='2951441052671672320',
+      ),
   )
 
   async def run_prompt(session: Session, new_message: str) -> Session:
