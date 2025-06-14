@@ -15,29 +15,52 @@
 from __future__ import annotations
 
 import functools
+import os
 from typing import Callable
 from typing import cast
+from typing import Optional
 from typing import TypeVar
 from typing import Union
 import warnings
+
+from dotenv import load_dotenv
 
 T = TypeVar("T", bound=Union[Callable, type])
 
 
 def _make_feature_decorator(
-    *, label: str, default_message: str
+    *,
+    label: str,
+    default_message: str,
+    block_usage: bool = False,
+    bypass_env_var: Optional[str] = None,
 ) -> Callable[[str], Callable[[T], T]]:
   def decorator_factory(message: str = default_message) -> Callable[[T], T]:
     def decorator(obj: T) -> T:
       obj_name = getattr(obj, "__name__", type(obj).__name__)
-      warn_msg = f"[{label.upper()}] {obj_name}: {message}"
+      msg = f"[{label.upper()}] {obj_name}: {message}"
 
       if isinstance(obj, type):  # decorating a class
         orig_init = obj.__init__
 
         @functools.wraps(orig_init)
         def new_init(self, *args, **kwargs):
-          warnings.warn(warn_msg, category=UserWarning, stacklevel=2)
+          # Load .env file if dotenv is available
+          load_dotenv()
+
+          # Check if usage should be bypassed via environment variable at call time
+          should_bypass = (
+              bypass_env_var is not None
+              and os.environ.get(bypass_env_var, "").lower() == "true"
+          )
+
+          if should_bypass:
+            # Bypass completely - no warning, no error
+            pass
+          elif block_usage:
+            raise RuntimeError(msg)
+          else:
+            warnings.warn(msg, category=UserWarning, stacklevel=2)
           return orig_init(self, *args, **kwargs)
 
         obj.__init__ = new_init  # type: ignore[attr-defined]
@@ -47,7 +70,22 @@ def _make_feature_decorator(
 
         @functools.wraps(obj)
         def wrapper(*args, **kwargs):
-          warnings.warn(warn_msg, category=UserWarning, stacklevel=2)
+          # Load .env file if dotenv is available
+          load_dotenv()
+
+          # Check if usage should be bypassed via environment variable at call time
+          should_bypass = (
+              bypass_env_var is not None
+              and os.environ.get(bypass_env_var, "").lower() == "true"
+          )
+
+          if should_bypass:
+            # Bypass completely - no warning, no error
+            pass
+          elif block_usage:
+            raise RuntimeError(msg)
+          else:
+            warnings.warn(msg, category=UserWarning, stacklevel=2)
           return obj(*args, **kwargs)
 
         return cast(T, wrapper)
@@ -65,10 +103,17 @@ def _make_feature_decorator(
 working_in_progress = _make_feature_decorator(
     label="WIP",
     default_message=(
-        "This feature is a work in progress and may be incomplete or unstable."
+        "This feature is a work in progress and is not working completely. ADK"
+        " users are not supposed to use it."
     ),
+    block_usage=True,
+    bypass_env_var="ADK_ALLOW_WIP_FEATURES",
 )
 """Mark a class or function as a work in progress.
+
+By default, decorated functions/classes will raise RuntimeError when used.
+Set ADK_ALLOW_WIP_FEATURES=true environment variable to bypass this restriction.
+ADK users are not supposed to set this environment variable.
 
 Sample usage:
 
