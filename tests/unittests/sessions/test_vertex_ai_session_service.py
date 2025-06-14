@@ -39,6 +39,7 @@ MOCK_SESSION_JSON_1 = {
         'key': {'value': 'test_value'},
     },
     'userId': 'user',
+    'title': 'Test Session 1',
 }
 MOCK_SESSION_JSON_2 = {
     'name': (
@@ -47,6 +48,7 @@ MOCK_SESSION_JSON_2 = {
     ),
     'updateTime': '2024-12-13T12:12:12.123456Z',
     'userId': 'user',
+    'title': 'Test Session 2',
 }
 MOCK_SESSION_JSON_3 = {
     'name': (
@@ -55,6 +57,7 @@ MOCK_SESSION_JSON_3 = {
     ),
     'updateTime': '2024-12-14T12:12:12.123456Z',
     'userId': 'user2',
+    'title': 'Test Session 3',
 }
 MOCK_EVENT_JSON = [
     {
@@ -112,6 +115,7 @@ MOCK_SESSION = Session(
     app_name='123',
     user_id='user',
     id='1',
+    title='Test Session 1',
     state=MOCK_SESSION_JSON_1['sessionState'],
     last_update_time=isoparse(MOCK_SESSION_JSON_1['updateTime']).timestamp(),
     events=[
@@ -138,6 +142,7 @@ MOCK_SESSION_2 = Session(
     app_name='123',
     user_id='user',
     id='2',
+    title='Test Session 2',
     last_update_time=isoparse(MOCK_SESSION_JSON_2['updateTime']).timestamp(),
     events=[
         Event(
@@ -225,9 +230,11 @@ class MockApiClient:
               + new_session_id
           ),
           'userId': request_dict['user_id'],
+          'title': request_dict.get('title'),
           'sessionState': request_dict.get('session_state', {}),
           'updateTime': '2024-12-12T12:12:12.123456Z',
       }
+      # Return LRO for session creation
       return {
           'name': (
               'projects/test_project/locations/test_location/'
@@ -343,18 +350,23 @@ async def test_create_session():
   session_service = mock_vertex_ai_session_service()
 
   state = {'key': 'value'}
+  title = "test_create_title"
   session = await session_service.create_session(
-      app_name='123', user_id='user', state=state
+      app_name='123', user_id='user', state=state, title=title
   )
   assert session.state == state
   assert session.app_name == '123'
   assert session.user_id == 'user'
+  assert session.title == title
   assert session.last_update_time is not None
 
   session_id = session.id
-  assert session == await session_service.get_session(
+  # Retrieve the session again to ensure persistence and correctness
+  retrieved_session = await session_service.get_session(
       app_name='123', user_id='user', session_id=session_id
   )
+  assert session == retrieved_session
+  assert retrieved_session.title == title
 
 
 @pytest.mark.asyncio

@@ -49,6 +49,8 @@ class Session(BaseModel):
   """The name of the app."""
   user_id: str
   """The id of the user."""
+  title: str | None = None
+  """An optional title for the session."""
   state: dict[str, Any] = Field(default_factory=dict)
   """The state of the session."""
   events: list[Event] = Field(default_factory=list)
