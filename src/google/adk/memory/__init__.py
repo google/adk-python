@@ -15,12 +15,14 @@ import logging
 
 from .base_memory_service import BaseMemoryService
 from .in_memory_memory_service import InMemoryMemoryService
+from .langchain_vector_store_memory_service import LangchainVectorStoreMemoryService
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 __all__ = [
     'BaseMemoryService',
     'InMemoryMemoryService',
+    'LangchainVectorStoreMemoryService',
 ]
 
 try:
