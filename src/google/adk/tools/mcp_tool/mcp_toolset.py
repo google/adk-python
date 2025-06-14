@@ -152,7 +152,7 @@ class MCPToolset(BaseToolset):
         context_to_env_mapper_callback=self._context_to_env_mapper_callback,
     )
 
-    self._session = None
+    # self._session = None
 
   def _extract_auth_from_context(
       self, readonly_context: Optional[ReadonlyContext]
@@ -213,7 +213,7 @@ class MCPToolset(BaseToolset):
 
     return auth_scheme, auth_credential
 
-  @retry_on_closed_resource("_reinitialize_session")
+  @retry_on_closed_resource("_mcp_session_manager")
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
@@ -229,10 +229,7 @@ class MCPToolset(BaseToolset):
         List[BaseTool]: A list of tools available under the specified context.
     """
     # Get session from session manager
-    if not self._session:
-      self._session = await self._mcp_session_manager.create_session(
-          readonly_context
-      )
+    session = await self._mcp_session_manager.create_session(readonly_context)
 
     # Extract auth information from context
     auth_scheme, auth_credential = self._extract_auth_from_context(
@@ -240,7 +237,7 @@ class MCPToolset(BaseToolset):
     )
 
     # Fetch available tools from the MCP server
-    tools_response: ListToolsResult = await self._session.list_tools()
+    tools_response: ListToolsResult = await session.list_tools()
 
     # Apply filtering based on context and tool_filter
     tools = []
@@ -256,17 +253,6 @@ class MCPToolset(BaseToolset):
         tools.append(mcp_tool)
     return tools
 
-  async def _reinitialize_session(self):
-    """Reinitializes the session when connection is lost."""
-    # Close the old session and clear cache
-    await self._mcp_session_manager.close()
-    # Note: We'll need the readonly_context for reinitializing, but it's not
-    # available here. The session will be recreated on the next get_tools call
-    # with the proper context.
-    self._session = None
-
-    # Tools will be reloaded on next get_tools call
-
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
@@ -279,6 +265,3 @@ class MCPToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
-    finally:
-      # Clear session reference
-      self._session = None

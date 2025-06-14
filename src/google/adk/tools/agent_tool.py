@@ -97,17 +97,6 @@ class AgentTool(BaseTool):
 
     if isinstance(self.agent, LlmAgent) and self.agent.input_schema:
       input_value = self.agent.input_schema.model_validate(args)
-    else:
-      input_value = args['request']
-
-    if isinstance(self.agent, LlmAgent) and self.agent.input_schema:
-      if isinstance(input_value, dict):
-        input_value = self.agent.input_schema.model_validate(input_value)
-      if not isinstance(input_value, self.agent.input_schema):
-        raise ValueError(
-            f'Input value {input_value} is not of type'
-            f' `{self.agent.input_schema}`.'
-        )
       content = types.Content(
           role='user',
           parts=[
@@ -119,7 +108,7 @@ class AgentTool(BaseTool):
     else:
       content = types.Content(
           role='user',
-          parts=[types.Part.from_text(text=input_value)],
+          parts=[types.Part.from_text(text=args['request'])],
       )
     runner = Runner(
         app_name=self.agent.name,
@@ -145,15 +134,11 @@ class AgentTool(BaseTool):
 
     if not last_event or not last_event.content or not last_event.content.parts:
       return ''
+    merged_text = '\n'.join(p.text for p in last_event.content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
-      merged_text = '\n'.join(
-          [p.text for p in last_event.content.parts if p.text]
-      )
       tool_result = self.agent.output_schema.model_validate_json(
           merged_text
       ).model_dump(exclude_none=True)
     else:
-      tool_result = '\n'.join(
-          [p.text for p in last_event.content.parts if p.text]
-      )
+      tool_result = merged_text
     return tool_result

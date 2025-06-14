@@ -199,32 +199,7 @@ class TestMCPToolsetEnv:
       # Verify create_session was called with None
       mock_session_manager.create_session.assert_called_once_with(None)
 
-  @pytest.mark.asyncio
-  async def test_reinitialize_session_clears_session(
-      self, mock_stdio_params, sample_context_to_env_mapper_callback
-  ):
-    """Test that _reinitialize_session properly clears the session."""
-    with patch(
-        'google.adk.tools.mcp_tool.mcp_toolset.MCPSessionManager'
-    ) as mock_session_manager_class:
-      # Set up mock session manager instance
-      mock_session_manager = AsyncMock()
-      mock_session_manager_class.return_value = mock_session_manager
 
-      toolset = MCPToolset(
-          connection_params=mock_stdio_params,
-          context_to_env_mapper_callback=sample_context_to_env_mapper_callback,
-      )
-
-      # Set up an existing session
-      toolset._session = AsyncMock()
-
-      # Call _reinitialize_session
-      await toolset._reinitialize_session()
-
-      # Verify the session manager was closed and session was cleared
-      mock_session_manager.close.assert_called_once()
-      assert toolset._session is None
 
   def test_both_auth_and_env_callbacks(self, mock_stdio_params):
     """Test MCPToolset initialization with both auth and env callbacks."""
