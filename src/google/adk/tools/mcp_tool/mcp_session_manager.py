@@ -49,6 +49,10 @@ except ImportError as e:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+# Type definition for environment variable transformation callback
+ContextToEnvMapperCallback = Callable[[Dict[str, Any]], Dict[str, str]]
+
+
 class StdioConnectionParams(BaseModel):
   """Parameters for the MCP Stdio connection.
 
@@ -252,10 +256,16 @@ class MCPSessionManager:
 
       try:
         if isinstance(self._connection_params, StdioConnectionParams):
-          client = stdio_client(
-              server=self._connection_params.server_params,
-              errlog=self._errlog,
-          )
+          # Use original connection params as starting point
+          connection_params = self._connection_params.server_params
+
+          # Extract and inject environment variables for StdioServerParameters only
+          env_vars = self._extract_env_from_context(readonly_context)
+          connection_params = self._inject_env_vars(env_vars)
+          # So far timeout is not configurable. Given MCP is still evolving, we
+          # would expect stdio_client to evolve to accept timeout parameter like
+          # other client.
+          client = stdio_client(server=connection_params, errlog=self._errlog)
         elif isinstance(self._connection_params, SseConnectionParams):
           client = sse_client(
               url=self._connection_params.url,
@@ -334,7 +344,63 @@ class MCPSessionManager:
     await self.close()
     await self.create_session()
 
+  def _extract_env_from_context(
+      self, readonly_context: Optional[Any]
+  ) -> Dict[str, str]:
+    """Extracts environment variables from readonly context using callback.
 
-SseServerParams = SseConnectionParams
+    Args:
+        readonly_context: The readonly context containing state information.
 
-StreamableHTTPServerParams = StreamableHTTPConnectionParams
+    Returns:
+        Dictionary of environment variables to inject.
+    """
+    if not self._context_to_env_mapper_callback or not readonly_context:
+      return {}
+
+    try:
+      # Get state from readonly context if available
+      if hasattr(readonly_context, 'state') and readonly_context.state:
+        state_dict = dict(readonly_context.state)
+        return self._context_to_env_mapper_callback(state_dict)
+      else:
+        return {}
+    except Exception as e:
+      logger.warning(f'Context to env mapper callback failed: {e}')
+      return {}
+
+  def _inject_env_vars(self, env_vars: Dict[str, str]) -> StdioServerParameters:
+    """Injects environment variables into StdioServerParameters.
+
+    Args:
+        env_vars: Dictionary of environment variables to inject.
+
+    Returns:
+        Updated StdioServerParameters with injected environment variables.
+    """
+    if not env_vars:
+      return self._connection_params.server_params
+
+    # Get existing env vars from connection params
+    existing_env = (
+        getattr(self._connection_params.server_params, 'env', None) or {}
+    )
+
+    # Merge existing and new env vars (new ones take precedence)
+    merged_env = {**existing_env, **env_vars}
+
+    # Create new connection params with merged environment variables
+    return StdioServerParameters(
+        command=self._connection_params.server_params.command,
+        args=self._connection_params.server_params.args,
+        env=merged_env,
+        cwd=getattr(self._connection_params.server_params, 'cwd', None),
+        encoding=getattr(
+            self._connection_params.server_params, 'encoding', None
+        ),
+        encoding_error_handler=getattr(
+            self._connection_params.server_params,
+            'encoding_error_handler',
+            None,
+        ),
+    )
