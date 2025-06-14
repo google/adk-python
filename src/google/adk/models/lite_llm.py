@@ -482,13 +482,13 @@ def _message_to_generate_content_response(
 def _get_completion_inputs(
     llm_request: LlmRequest,
 ) -> tuple[Iterable[Message], Iterable[dict]]:
-  """Converts an LlmRequest to litellm inputs.
+  """Converts an LlmRequest to litellm inputs and extracts generation params.
 
   Args:
     llm_request: The LlmRequest to convert.
 
   Returns:
-    The litellm inputs (message list, tool dictionary and response format).
+    The litellm inputs (message list, tool dictionary, response format, and generation params).
   """
   messages = []
   for content in llm_request.contents or []:
@@ -523,7 +523,28 @@ def _get_completion_inputs(
   if llm_request.config.response_schema:
     response_format = llm_request.config.response_schema
 
-  return messages, tools, response_format
+  # Extract generation params
+  generation_params = {}
+  if llm_request.config is not None:
+    config_dict = llm_request.config.model_dump(exclude_none=True)
+    for key in (
+        "temperature",
+        "max_output_tokens",
+        "top_p",
+        "top_k",
+        "stop_sequences",
+        "presence_penalty",
+        "frequency_penalty",
+    ):
+      if key in config_dict:
+        if key == "max_output_tokens":
+          generation_params["max_tokens"] = config_dict[key]
+        elif key == "stop_sequences":
+          generation_params["stop"] = config_dict[key]
+        else:
+          generation_params[key] = config_dict[key]
+
+  return messages, tools, response_format, generation_params
 
 
 def _build_function_declaration_log(
@@ -660,7 +681,9 @@ class LiteLlm(BaseLlm):
     self._maybe_append_user_content(llm_request)
     logger.debug(_build_request_log(llm_request))
 
-    messages, tools, response_format = _get_completion_inputs(llm_request)
+    messages, tools, response_format, generation_params = (
+        _get_completion_inputs(llm_request)
+    )
 
     completion_args = {
         "model": self.model,
@@ -669,6 +692,7 @@ class LiteLlm(BaseLlm):
         "response_format": response_format,
     }
     completion_args.update(self._additional_args)
+    completion_args.update(generation_params)
 
     if stream:
       text = ""
