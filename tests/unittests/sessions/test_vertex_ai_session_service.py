@@ -21,6 +21,7 @@ from typing import Tuple
 from unittest import mock
 
 from dateutil.parser import isoparse
+from google.adk.errors.not_found_error import NotFoundError
 from google.adk.events import Event
 from google.adk.events import EventActions
 from google.adk.sessions import Session
@@ -186,7 +187,7 @@ class MockApiClient:
           if session_id in self.session_dict:
             return self.session_dict[session_id]
           else:
-            raise ValueError(f'Session not found: {session_id}')
+            raise NotFoundError(f'Session not found: {session_id}')
       elif re.match(SESSIONS_REGEX, path):
         match = re.match(SESSIONS_REGEX, path)
         return {
@@ -285,7 +286,7 @@ async def test_get_empty_session(agent_engine_id):
     session_service = mock_vertex_ai_session_service(agent_engine_id)
   else:
     session_service = mock_vertex_ai_session_service()
-  with pytest.raises(ValueError) as excinfo:
+  with pytest.raises(NotFoundError) as excinfo:
     await session_service.get_session(
         app_name='123', user_id='user', session_id='0'
     )
@@ -307,7 +308,7 @@ async def test_get_and_delete_session():
   await session_service.delete_session(
       app_name='123', user_id='user', session_id='1'
   )
-  with pytest.raises(ValueError) as excinfo:
+  with pytest.raises(NotFoundError) as excinfo:
     await session_service.get_session(
         app_name='123', user_id='user', session_id='1'
     )
