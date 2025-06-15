@@ -23,12 +23,11 @@ import pytest
 
 litellm.add_function_to_prompt = True
 
-_TEST_MODEL_NAME = "vertex_ai/meta/llama-4-maverick-17b-128e-instruct-maas"
-
+_TEST_MODEL_NAME = "vertex_ai/meta/llama-3.1-405b-instruct-maas"
 
 _SYSTEM_PROMPT = """
 You are a helpful assistant, and call tools optionally.
-If call tools, the tool format should be in json, and the tool arguments should be parsed from users inputs.
+If call tools, the tool format should be in json body, and the tool argument values should be parsed from users inputs.
 """
 
 
@@ -40,7 +39,7 @@ _FUNCTIONS = [{
         "properties": {
             "city": {
                 "type": "string",
-                "description": "The city, e.g. San Francisco",
+                "description": "The city to get the weather for.",
             },
         },
         "required": ["city"],
@@ -87,8 +86,6 @@ def llm_request():
   )
 
 
-# Note that, this test disabled streaming because streaming is not supported
-# properly in the current test model for now.
 @pytest.mark.asyncio
 async def test_generate_content_asyn_with_function(
     oss_llm_with_function, llm_request
@@ -100,5 +97,20 @@ async def test_generate_content_asyn_with_function(
       )
   ]
   function_call = responses[0].content.parts[0].function_call
+  assert function_call.name == "get_weather"
+  assert function_call.args["city"] == "San Francisco"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_asyn_stream_with_function(
+    oss_llm_with_function, llm_request
+):
+  responses = [
+      resp
+      async for resp in oss_llm_with_function.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+  function_call = responses[-1].content.parts[0].function_call
   assert function_call.name == "get_weather"
   assert function_call.args["city"] == "San Francisco"
