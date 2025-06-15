@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import copy
+import time
+from unittest.mock import Mock
 from unittest.mock import patch
 
+from authlib.oauth2.rfc6749 import OAuth2Token
 from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import OAuth2
@@ -448,9 +451,7 @@ class TestExchangeAuthToken:
       self, auth_config_with_auth_code, monkeypatch
   ):
     """Test when token exchange is not supported."""
-    monkeypatch.setattr(
-        "google.adk.auth.oauth2_credential_fetcher.AUTHLIB_AVIALABLE", False
-    )
+    monkeypatch.setattr("google.adk.auth.auth_handler.AUTHLIB_AVIALABLE", False)
 
     handler = AuthHandler(auth_config_with_auth_code)
     result = handler.exchange_auth_token()
@@ -537,12 +538,22 @@ class TestExchangeAuthToken:
 
     assert result == oauth2_credentials_with_token
 
-  @patch(
-      "google.adk.auth.oauth2_credential_fetcher.OAuth2Session",
-      MockOAuth2Session,
-  )
-  def test_successful_token_exchange(self, auth_config_with_auth_code):
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  def test_successful_token_exchange(
+      self, mock_oauth2_session, auth_config_with_auth_code
+  ):
     """Test a successful token exchange."""
+    # Setup mock OAuth2Session
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_tokens = OAuth2Token({
+        "access_token": "mock_access_token",
+        "refresh_token": "mock_refresh_token",
+        "expires_at": int(time.time()) + 3600,
+        "expires_in": 3600,
+    })
+    mock_client.fetch_token.return_value = mock_tokens
+
     handler = AuthHandler(auth_config_with_auth_code)
     result = handler.exchange_auth_token()
 
