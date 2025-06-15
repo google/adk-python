@@ -123,88 +123,130 @@ def generate_auth_event(
   )
 
 
+async def _execute_single_function_call_async(
+    invocation_context: InvocationContext,
+    function_call_event: Event,
+    function_call: types.FunctionCall,
+    tools_dict: dict[str, BaseTool],
+) -> Optional[Event]:
+  """Executes a single function call and returns the function response event."""
+  from ...agents.llm_agent import LlmAgent
+
+  agent = invocation_context.agent
+  if not isinstance(agent, LlmAgent):
+    return None
+
+  tool, tool_context = _get_tool_and_context(
+      invocation_context,
+      function_call_event,
+      function_call,
+      tools_dict,
+  )
+
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    # do not use "args" as the variable name, because it is a reserved keyword
+    # in python debugger.
+    function_args = function_call.args or {}
+    function_response: Optional[dict] = None
+
+    for callback in agent.canonical_before_tool_callbacks:
+      function_response = callback(
+          tool=tool, args=function_args, tool_context=tool_context
+      )
+      if inspect.isawaitable(function_response):
+        function_response = await function_response
+      if function_response:
+        break
+
+    if not function_response:
+      function_response = await __call_tool_async(
+          tool, args=function_args, tool_context=tool_context
+      )
+
+    for callback in agent.canonical_after_tool_callbacks:
+      altered_function_response = callback(
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+          tool_response=function_response,
+      )
+      if inspect.isawaitable(altered_function_response):
+        altered_function_response = await altered_function_response
+      if altered_function_response is not None:
+        function_response = altered_function_response
+        break
+
+    if tool.is_long_running:
+      # Allow long running function to return None to not provide function response.
+      if not function_response:
+        return None
+
+    # Builds the function response event.
+    function_response_event = __build_response_event(
+        tool, function_response, tool_context, invocation_context
+    )
+    trace_tool_call(
+        tool=tool,
+        args=function_args,
+        function_response_event=function_response_event,
+    )
+    return function_response_event
+
+
 async def handle_function_calls_async(
     invocation_context: InvocationContext,
     function_call_event: Event,
     tools_dict: dict[str, BaseTool],
     filters: Optional[set[str]] = None,
 ) -> Optional[Event]:
-  """Calls the functions and returns the function response event."""
+  """Calls the functions concurrently and returns the function response event."""
   from ...agents.llm_agent import LlmAgent
 
   agent = invocation_context.agent
   if not isinstance(agent, LlmAgent):
-    return
+    return None
 
   function_calls = function_call_event.get_function_calls()
 
-  function_response_events: list[Event] = []
+  # Filter function calls based on filters if provided
+  filtered_function_calls = []
   for function_call in function_calls:
     if filters and function_call.id not in filters:
       continue
-    tool, tool_context = _get_tool_and_context(
-        invocation_context,
-        function_call_event,
-        function_call,
-        tools_dict,
-    )
+    filtered_function_calls.append(function_call)
 
-    with tracer.start_as_current_span(f'execute_tool {tool.name}'):
-      # do not use "args" as the variable name, because it is a reserved keyword
-      # in python debugger.
-      function_args = function_call.args or {}
-      function_response: Optional[dict] = None
-
-      for callback in agent.canonical_before_tool_callbacks:
-        function_response = callback(
-            tool=tool, args=function_args, tool_context=tool_context
-        )
-        if inspect.isawaitable(function_response):
-          function_response = await function_response
-        if function_response:
-          break
-
-      if not function_response:
-        function_response = await __call_tool_async(
-            tool, args=function_args, tool_context=tool_context
-        )
-
-      for callback in agent.canonical_after_tool_callbacks:
-        altered_function_response = callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=function_response,
-        )
-        if inspect.isawaitable(altered_function_response):
-          altered_function_response = await altered_function_response
-        if altered_function_response is not None:
-          function_response = altered_function_response
-          break
-
-      if tool.is_long_running:
-        # Allow long running function to return None to not provide function response.
-        if not function_response:
-          continue
-
-      # Builds the function response event.
-      function_response_event = __build_response_event(
-          tool, function_response, tool_context, invocation_context
-      )
-      trace_tool_call(
-          tool=tool,
-          args=function_args,
-          function_response_event=function_response_event,
-      )
-      function_response_events.append(function_response_event)
-
-  if not function_response_events:
+  if not filtered_function_calls:
     return None
+
+  # Create tasks for concurrent execution
+  tasks = []
+  for function_call in filtered_function_calls:
+    task = asyncio.create_task(_execute_single_function_call_async(
+        invocation_context, function_call_event, function_call, tools_dict
+    ))
+    tasks.append(task)
+
+  # Execute all function calls concurrently
+  function_response_events = await asyncio.gather(*tasks, return_exceptions=True)
+
+  # Filter out None results and handle exceptions
+  valid_function_response_events: list[Event] = []
+  for result in function_response_events:
+    if isinstance(result, Exception):
+      # Log the exception but continue processing other function calls
+      logger.error(f"Error executing function call: {result}")
+      continue
+    if result is not None:
+      valid_function_response_events.append(result)
+
+  if not valid_function_response_events:
+    return None
+
   merged_event = merge_parallel_function_response_events(
-      function_response_events
+      valid_function_response_events
   )
 
-  if len(function_response_events) > 1:
+  if len(valid_function_response_events) > 1:
     # this is needed for debug traces of parallel calls
     # individual response with tool.name is traced in __build_response_event
     # (we drop tool.name from span name here as this is merged event)
@@ -216,89 +258,123 @@ async def handle_function_calls_async(
   return merged_event
 
 
+async def _execute_single_function_call_live(
+    invocation_context: InvocationContext,
+    function_call_event: Event,
+    function_call: types.FunctionCall,
+    tools_dict: dict[str, BaseTool],
+) -> Optional[Event]:
+  """Executes a single function call for live handling and returns the function response event."""
+  from ...agents.llm_agent import LlmAgent
+
+  agent = cast(LlmAgent, invocation_context.agent)
+  tool, tool_context = _get_tool_and_context(
+      invocation_context, function_call_event, function_call, tools_dict
+  )
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    # do not use "args" as the variable name, because it is a reserved keyword
+    # in python debugger.
+    function_args = function_call.args or {}
+    function_response = None
+    # # Calls the tool if before_tool_callback does not exist or returns None.
+    # if agent.before_tool_callback:
+    #   function_response = agent.before_tool_callback(
+    #       tool, function_args, tool_context
+    #   )
+    if agent.before_tool_callback:
+      function_response = agent.before_tool_callback(
+          tool=tool, args=function_args, tool_context=tool_context
+      )
+      if inspect.isawaitable(function_response):
+        function_response = await function_response
+
+    if not function_response:
+      function_response = await _process_function_live_helper(
+          tool, tool_context, function_call, function_args, invocation_context
+      )
+
+    # Calls after_tool_callback if it exists.
+    # if agent.after_tool_callback:
+    #   new_response = agent.after_tool_callback(
+    #       tool,
+    #       function_args,
+    #       tool_context,
+    #       function_response,
+    #   )
+    #   if new_response:
+    #     function_response = new_response
+    if agent.after_tool_callback:
+      altered_function_response = agent.after_tool_callback(
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+          tool_response=function_response,
+      )
+      if inspect.isawaitable(altered_function_response):
+        altered_function_response = await altered_function_response
+      if altered_function_response is not None:
+        function_response = altered_function_response
+
+    if tool.is_long_running:
+      # Allow async function to return None to not provide function response.
+      if not function_response:
+        return None
+
+    # Builds the function response event.
+    function_response_event = __build_response_event(
+        tool, function_response, tool_context, invocation_context
+    )
+    trace_tool_call(
+        tool=tool,
+        args=function_args,
+        response_event_id=function_response_event.id,
+        function_response=function_response,
+    )
+    return function_response_event
+
+
 async def handle_function_calls_live(
     invocation_context: InvocationContext,
     function_call_event: Event,
     tools_dict: dict[str, BaseTool],
 ) -> Event:
-  """Calls the functions and returns the function response event."""
+  """Calls the functions concurrently and returns the function response event."""
   from ...agents.llm_agent import LlmAgent
 
   agent = cast(LlmAgent, invocation_context.agent)
   function_calls = function_call_event.get_function_calls()
 
-  function_response_events: list[Event] = []
-  for function_call in function_calls:
-    tool, tool_context = _get_tool_and_context(
-        invocation_context, function_call_event, function_call, tools_dict
-    )
-    with tracer.start_as_current_span(f'execute_tool {tool.name}'):
-      # do not use "args" as the variable name, because it is a reserved keyword
-      # in python debugger.
-      function_args = function_call.args or {}
-      function_response = None
-      # # Calls the tool if before_tool_callback does not exist or returns None.
-      # if agent.before_tool_callback:
-      #   function_response = agent.before_tool_callback(
-      #       tool, function_args, tool_context
-      #   )
-      if agent.before_tool_callback:
-        function_response = agent.before_tool_callback(
-            tool=tool, args=function_args, tool_context=tool_context
-        )
-        if inspect.isawaitable(function_response):
-          function_response = await function_response
-
-      if not function_response:
-        function_response = await _process_function_live_helper(
-            tool, tool_context, function_call, function_args, invocation_context
-        )
-
-      # Calls after_tool_callback if it exists.
-      # if agent.after_tool_callback:
-      #   new_response = agent.after_tool_callback(
-      #       tool,
-      #       function_args,
-      #       tool_context,
-      #       function_response,
-      #   )
-      #   if new_response:
-      #     function_response = new_response
-      if agent.after_tool_callback:
-        altered_function_response = agent.after_tool_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=function_response,
-        )
-        if inspect.isawaitable(altered_function_response):
-          altered_function_response = await altered_function_response
-        if altered_function_response is not None:
-          function_response = altered_function_response
-
-      if tool.is_long_running:
-        # Allow async function to return None to not provide function response.
-        if not function_response:
-          continue
-
-      # Builds the function response event.
-      function_response_event = __build_response_event(
-          tool, function_response, tool_context, invocation_context
-      )
-      trace_tool_call(
-          tool=tool,
-          args=function_args,
-          response_event_id=function_response_event.id,
-          function_response=function_response,
-      )
-      function_response_events.append(function_response_event)
-
-  if not function_response_events:
+  if not function_calls:
     return None
+
+  # Create tasks for concurrent execution
+  tasks = []
+  for function_call in function_calls:
+    task = asyncio.create_task(_execute_single_function_call_live(
+        invocation_context, function_call_event, function_call, tools_dict
+    ))
+    tasks.append(task)
+
+  # Execute all function calls concurrently
+  function_response_events = await asyncio.gather(*tasks, return_exceptions=True)
+
+  # Filter out None results and handle exceptions
+  valid_function_response_events: list[Event] = []
+  for result in function_response_events:
+    if isinstance(result, Exception):
+      # Log the exception but continue processing other function calls
+      logger.error(f"Error executing function call: {result}")
+      continue
+    if result is not None:
+      valid_function_response_events.append(result)
+
+  if not valid_function_response_events:
+    return None
+
   merged_event = merge_parallel_function_response_events(
-      function_response_events
+      valid_function_response_events
   )
-  if len(function_response_events) > 1:
+  if len(valid_function_response_events) > 1:
     # this is needed for debug traces of parallel calls
     # individual response with tool.name is traced in __build_response_event
     # (we drop tool.name from span name here as this is merged event)
