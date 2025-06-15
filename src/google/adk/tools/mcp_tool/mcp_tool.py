@@ -62,6 +62,7 @@ class MCPTool(BaseTool):
       mcp_session_manager: MCPSessionManager,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
+      tool_name_prefix: str = "",
   ):
     """Initializes an MCPTool.
 
@@ -73,6 +74,8 @@ class MCPTool(BaseTool):
         mcp_session_manager: The MCP session manager to use for communication.
         auth_scheme: The authentication scheme to use.
         auth_credential: The authentication credential to use.
+        tool_name_prefix: string to add to the start of the tool name. For example,
+          `prefix="ns_"` would name `my_tool` as `ns_my_tool`.
 
     Raises:
         ValueError: If mcp_tool or mcp_session_manager is None.
@@ -81,8 +84,10 @@ class MCPTool(BaseTool):
       raise ValueError("mcp_tool cannot be None")
     if mcp_session_manager is None:
       raise ValueError("mcp_session_manager cannot be None")
+    raw_name = mcp_tool.name
+    name = tool_name_prefix + raw_name
     super().__init__(
-        name=mcp_tool.name,
+        name=name,
         description=mcp_tool.description if mcp_tool.description else "",
     )
     self._mcp_tool = mcp_tool
@@ -90,6 +95,8 @@ class MCPTool(BaseTool):
     # TODO(cheliu): Support passing auth to MCP Server.
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._tool_name_prefix = tool_name_prefix
+    self._raw_name = raw_name
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
