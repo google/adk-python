@@ -14,10 +14,13 @@
 
 import os
 
+import pytest
 from pytest import fixture
 from pytest import FixtureRequest
 from pytest import hookimpl
 from pytest import Metafunc
+
+from google.adk.approval.approval_policy import ApprovalPolicyRegistry
 
 _ENV_VARS = {
     'GOOGLE_API_KEY': 'fake_google_api_key',
@@ -72,3 +75,18 @@ def _is_explicitly_marked(mark_name: str, metafunc: Metafunc) -> bool:
       if mark.name == 'parametrize' and mark.args[0] == mark_name:
         return True
   return False
+
+
+@pytest.fixture(autouse=True)
+def isolate_policy_registry():
+  backup_policies = ApprovalPolicyRegistry.tool_policies[:]
+  ApprovalPolicyRegistry.tool_policies.clear()
+  yield backup_policies
+  ApprovalPolicyRegistry.tool_policies.clear()
+  ApprovalPolicyRegistry.tool_policies.extend(backup_policies)
+
+
+@pytest.fixture()
+def use_system_policies(isolate_policy_registry):
+  ApprovalPolicyRegistry.tool_policies.extend(isolate_policy_registry)
+  yield
