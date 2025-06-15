@@ -29,6 +29,7 @@ from typing import Tuple
 from typing import Union
 
 from google.genai import types
+import litellm
 from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
@@ -627,6 +628,8 @@ class LiteLlm(BaseLlm):
 
   _additional_args: Dict[str, Any] = None
 
+  add_function_to_prompt: bool = False
+
   def __init__(self, model: str, **kwargs):
     """Initializes the LiteLlm class.
 
@@ -643,6 +646,11 @@ class LiteLlm(BaseLlm):
     self._additional_args.pop("tools", None)
     # public api called from runner determines to stream or not
     self._additional_args.pop("stream", None)
+
+    if "add_function_to_prompt" in kwargs:
+      self.add_function_to_prompt = kwargs["add_function_to_prompt"]
+      if self.add_function_to_prompt:
+        litellm.add_function_to_prompt = True
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
@@ -661,6 +669,10 @@ class LiteLlm(BaseLlm):
     logger.debug(_build_request_log(llm_request))
 
     messages, tools, response_format = _get_completion_inputs(llm_request)
+
+    if self.add_function_to_prompt:
+      # LiteLLM does not support both tools and functions together.
+      tools = None
 
     completion_args = {
         "model": self.model,
