@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
-import threading
 from typing import AsyncGenerator
 from typing import Generator
 from typing import Optional
@@ -34,6 +33,7 @@ from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
+from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .memory.base_memory_service import BaseMemoryService
@@ -73,6 +73,8 @@ class Runner:
   """The session service for the runner."""
   memory_service: Optional[BaseMemoryService] = None
   """The memory service for the runner."""
+  credential_service: Optional[BaseCredentialService] = None
+  """The credential service for the runner."""
 
   def __init__(
       self,
@@ -82,6 +84,7 @@ class Runner:
       artifact_service: Optional[BaseArtifactService] = None,
       session_service: BaseSessionService,
       memory_service: Optional[BaseMemoryService] = None,
+      credential_service: Optional[BaseCredentialService] = None,
   ):
     """Initializes the Runner.
 
@@ -97,6 +100,7 @@ class Runner:
     self.artifact_service = artifact_service
     self.session_service = session_service
     self.memory_service = memory_service
+    self.credential_service = credential_service
 
   def run(
       self,
@@ -418,6 +422,7 @@ class Runner:
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
+        credential_service=self.credential_service,
         invocation_id=invocation_id,
         agent=self.agent,
         session=session,

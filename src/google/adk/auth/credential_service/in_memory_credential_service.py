@@ -14,22 +14,26 @@
 
 from __future__ import annotations
 
-from abc import ABC
-from abc import abstractmethod
 from typing import Optional
+
+from typing_extensions import override
 
 from ...tools.tool_context import ToolContext
 from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
 from ..auth_tool import AuthConfig
+from .base_credential_service import BaseCredentialService
 
 
 @experimental
-class BaseCredentialService(ABC):
-  """Abstract class for Service that loads / saves tool credentials from / to
-  the backend credential store."""
+class InMemoryCredentialService(BaseCredentialService):
+  """Class for in memory implementation of credential service(Experimental)"""
 
-  @abstractmethod
+  def __init__(self):
+    super().__init__()
+    self._store: dict[str, AuthCredential] = {}
+
+  @override
   async def load_credential(
       self,
       auth_config: AuthConfig,
@@ -51,8 +55,10 @@ class BaseCredentialService(ABC):
         Optional[AuthCredential]: the credential saved in the store.
 
     """
+    storage = self._get_storage_for_current_context(tool_context)
+    return storage.get(auth_config.credential_key)
 
-  @abstractmethod
+  @override
   async def save_credential(
       self,
       auth_config: AuthConfig,
@@ -73,3 +79,15 @@ class BaseCredentialService(ABC):
     Returns:
         None
     """
+    storage = self._get_storage_for_current_context(tool_context)
+    storage[auth_config.credential_key] = auth_config.exchanged_auth_credential
+
+  def _get_storage_for_current_context(self, tool_context: ToolContext) -> str:
+    app_name = tool_context._invocation_context.app_name
+    user_id = tool_context._invocation_context.user_id
+
+    if app_name not in self._store:
+      self._store[app_name] = {}
+    if user_id not in self._store[app_name]:
+      self._store[app_name][user_id] = {}
+    return self._store[app_name][user_id]
