@@ -22,7 +22,7 @@ from .auth_credential import AuthCredential
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
-from .oauth2_credential_fetcher import OAuth2CredentialFetcher
+from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 
 if TYPE_CHECKING:
   from ..sessions.state import State
@@ -43,9 +43,10 @@ class AuthHandler:
   def exchange_auth_token(
       self,
   ) -> AuthCredential:
-    return OAuth2CredentialFetcher(
-        self.auth_config.auth_scheme, self.auth_config.exchanged_auth_credential
-    ).exchange()
+    exchanger = OAuth2CredentialExchanger()
+    return exchanger.exchange(
+        self.auth_config.exchanged_auth_credential, self.auth_config.auth_scheme
+    )
 
   def parse_and_store_auth_response(self, state: State) -> None:
 

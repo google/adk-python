@@ -20,9 +20,9 @@ from typing import Tuple
 
 from fastapi.openapi.models import OAuth2
 
+from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_schemes import AuthScheme
-from .auth_schemes import OAuthGrantType
 from .auth_schemes import OpenIdConnectWithConfig
 
 try:
@@ -37,8 +37,9 @@ except ImportError:
 logger = logging.getLogger("google_adk." + __name__)
 
 
-class OAuth2CredentialFetcher:
-  """Exchanges and refreshes an OAuth2 access token."""
+@experimental
+class OAuth2SessionHelper:
+  """Helper class for managing OAuth2 sessions and token operations."""
 
   def __init__(
       self,
@@ -48,7 +49,14 @@ class OAuth2CredentialFetcher:
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
 
-  def _oauth2_session(self) -> Tuple[Optional[OAuth2Session], Optional[str]]:
+  def create_oauth2_session(
+      self,
+  ) -> Tuple[Optional[OAuth2Session], Optional[str]]:
+    """Create an OAuth2 session for token operations.
+
+    Returns:
+        Tuple of (OAuth2Session, token_endpoint) or (None, None) if cannot create session.
+    """
     auth_scheme = self._auth_scheme
     auth_credential = self._auth_credential
 
@@ -87,7 +95,12 @@ class OAuth2CredentialFetcher:
         token_endpoint,
     )
 
-  def _update_credential(self, tokens: OAuth2Token) -> None:
+  def update_credential_with_tokens(self, tokens: OAuth2Token) -> None:
+    """Update the credential with new tokens.
+
+    Args:
+        tokens: The OAuth2Token object containing new token information.
+    """
     self._auth_credential.oauth2.access_token = tokens.get("access_token")
     self._auth_credential.oauth2.refresh_token = tokens.get("refresh_token")
     self._auth_credential.oauth2.expires_at = (
@@ -96,74 +109,3 @@ class OAuth2CredentialFetcher:
     self._auth_credential.oauth2.expires_in = (
         int(tokens.get("expires_in")) if tokens.get("expires_in") else None
     )
-
-  def exchange(self) -> AuthCredential:
-    """Exchange an oauth token from the authorization response.
-
-    Returns:
-        An AuthCredential object containing the access token.
-    """
-    if not AUTHLIB_AVIALABLE:
-      return self._auth_credential
-
-    if (
-        self._auth_credential.oauth2
-        and self._auth_credential.oauth2.access_token
-    ):
-      return self._auth_credential
-
-    client, token_endpoint = self._oauth2_session()
-    if not client:
-      logger.warning("Could not create OAuth2 session for token exchange")
-      return self._auth_credential
-
-    try:
-      tokens = client.fetch_token(
-          token_endpoint,
-          authorization_response=self._auth_credential.oauth2.auth_response_uri,
-          code=self._auth_credential.oauth2.auth_code,
-          grant_type=OAuthGrantType.AUTHORIZATION_CODE,
-      )
-      self._update_credential(tokens)
-      logger.info("Successfully exchanged OAuth2 tokens")
-    except Exception as e:
-      logger.error("Failed to exchange OAuth2 tokens: %s", e)
-      # Return original credential on failure
-      return self._auth_credential
-
-    return self._auth_credential
-
-  def refresh(self) -> AuthCredential:
-    """Refresh an oauth token.
-
-    Returns:
-        An AuthCredential object containing the refreshed access token.
-    """
-    if not AUTHLIB_AVIALABLE:
-      return self._auth_credential
-    credential = self._auth_credential
-    if not credential.oauth2:
-      return credential
-
-    if OAuth2Token({
-        "expires_at": credential.oauth2.expires_at,
-        "expires_in": credential.oauth2.expires_in,
-    }).is_expired():
-      client, token_endpoint = self._oauth2_session()
-      if not client:
-        logger.warning("Could not create OAuth2 session for token refresh")
-        return credential
-
-      try:
-        tokens = client.refresh_token(
-            url=token_endpoint,
-            refresh_token=credential.oauth2.refresh_token,
-        )
-        self._update_credential(tokens)
-        logger.info("Successfully refreshed OAuth2 tokens")
-      except Exception as e:
-        logger.error("Failed to refresh OAuth2 tokens: %s", e)
-        # Return original credential on failure
-        return credential
-
-    return self._auth_credential

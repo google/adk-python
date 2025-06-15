@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..memory.base_memory_service import BaseMemoryService
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -115,6 +116,7 @@ class InvocationContext(BaseModel):
   artifact_service: Optional[BaseArtifactService] = None
   session_service: BaseSessionService
   memory_service: Optional[BaseMemoryService] = None
+  credential_service: Optional[BaseCredentialService] = None
 
   invocation_id: str
   """The id of this invocation context. Readonly."""

@@ -449,7 +449,7 @@ class TestExchangeAuthToken:
   ):
     """Test when token exchange is not supported."""
     monkeypatch.setattr(
-        "google.adk.auth.oauth2_credential_fetcher.AUTHLIB_AVIALABLE", False
+        "google.adk.auth.oauth2_session_helper.AUTHLIB_AVIALABLE", False
     )
 
     handler = AuthHandler(auth_config_with_auth_code)
@@ -538,7 +538,7 @@ class TestExchangeAuthToken:
     assert result == oauth2_credentials_with_token
 
   @patch(
-      "google.adk.auth.oauth2_credential_fetcher.OAuth2Session",
+      "google.adk.auth.oauth2_session_helper.OAuth2Session",
       MockOAuth2Session,
   )
   def test_successful_token_exchange(self, auth_config_with_auth_code):
