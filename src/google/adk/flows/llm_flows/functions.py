@@ -502,12 +502,21 @@ def merge_parallel_function_response_events(
 
   merged_actions = EventActions()
   merged_requested_auth_configs = {}
+  merged_state_delta = {}
   for event in function_response_events:
-    merged_requested_auth_configs.update(event.actions.requested_auth_configs)
-    merged_actions = merged_actions.model_copy(
-        update=event.actions.model_dump()
-    )
+    if event.actions:
+      if event.actions.requested_auth_configs:
+        merged_requested_auth_configs.update(
+            event.actions.requested_auth_configs
+        )
+      if event.actions.state_delta:
+        merged_state_delta.update(event.actions.state_delta)
+
+      merged_actions = merged_actions.model_copy(
+          update=event.actions.model_dump()
+      )
   merged_actions.requested_auth_configs = merged_requested_auth_configs
+  merged_actions.state_delta = merged_state_delta
   # Create the new merged event
   merged_event = Event(
       invocation_id=Event.new_id(),
