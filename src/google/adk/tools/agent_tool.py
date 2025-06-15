@@ -28,6 +28,7 @@ from ..sessions.in_memory_session_service import InMemorySessionService
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
 from .tool_context import ToolContext
+from ..events.event import Event
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
@@ -124,10 +125,12 @@ class AgentTool(BaseTool):
     )
 
     last_event = None
+    tool_events: list[Event] = []
     async for event in runner.run_async(
         user_id=session.user_id, session_id=session.id, new_message=content
     ):
       # Forward state delta to parent session.
+      tool_events.append(event)
       if event.actions.state_delta:
         tool_context.state.update(event.actions.state_delta)
       last_event = event
@@ -141,4 +144,4 @@ class AgentTool(BaseTool):
       ).model_dump(exclude_none=True)
     else:
       tool_result = merged_text
-    return tool_result
+    return tool_result, tool_events
