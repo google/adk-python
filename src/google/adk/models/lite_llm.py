@@ -279,48 +279,61 @@ def _to_litellm_role(role: Optional[str]) -> Literal["user", "assistant"]:
 
 
 TYPE_LABELS = {
-    "STRING": "string",
-    "NUMBER": "number",
-    "BOOLEAN": "boolean",
-    "OBJECT": "object",
-    "ARRAY": "array",
-    "INTEGER": "integer",
+    types.Type.STRING: "string",
+    types.Type.NUMBER: "number",
+    types.Type.BOOLEAN: "boolean",
+    types.Type.OBJECT: "object",
+    types.Type.ARRAY: "array",
+    types.Type.INTEGER: "integer",
+    types.Type.TYPE_UNSPECIFIED: "null",
 }
 
 
 def _schema_to_dict(schema: types.Schema) -> dict:
-  """Recursively converts a types.Schema to a dictionary.
+  """Recursively converts a types.Schema to a JSON schema compliant dictionary."""
 
-  Args:
-    schema: The schema to convert.
+  result_dict = {}
 
-  Returns:
-    The dictionary representation of the schema.
-  """
+  schema_type = getattr(schema, "type", types.Type.TYPE_UNSPECIFIED)
+  if isinstance(schema_type, types.Type):
+    result_dict["type"] = TYPE_LABELS.get(schema_type, "null")
+  else:
+    result_dict["type"] = str(schema_type).lower() if schema_type else "null"
 
-  schema_dict = schema.model_dump(exclude_none=True)
-  if "type" in schema_dict:
-    schema_dict["type"] = schema_dict["type"].lower()
-  if "items" in schema_dict:
-    if isinstance(schema_dict["items"], dict):
-      schema_dict["items"] = _schema_to_dict(
-          types.Schema.model_validate(schema_dict["items"])
-      )
-    elif isinstance(schema_dict["items"]["type"], types.Type):
-      schema_dict["items"]["type"] = TYPE_LABELS[
-          schema_dict["items"]["type"].value
-      ]
-  if "properties" in schema_dict:
-    properties = {}
-    for key, value in schema_dict["properties"].items():
-      if isinstance(value, types.Schema):
-        properties[key] = _schema_to_dict(value)
-      else:
-        properties[key] = value
-        if "type" in properties[key]:
-          properties[key]["type"] = properties[key]["type"].lower()
-    schema_dict["properties"] = properties
-  return schema_dict
+  dumped = schema.model_dump(
+      exclude={"type", "items", "properties"}, exclude_none=True
+  )
+  result_dict.update(dumped)
+
+  if result_dict.get("type") == "array":
+    items_schema = getattr(schema, "items", None)
+    if isinstance(items_schema, types.Schema):
+      result_dict["items"] = _schema_to_dict(items_schema)
+    elif isinstance(items_schema, dict):
+      if "type" in items_schema and isinstance(
+          items_schema["type"], types.Type
+      ):
+        items_schema["type"] = TYPE_LABELS.get(items_schema["type"], "null")
+      result_dict["items"] = items_schema
+
+  if result_dict.get("type") == "object":
+    properties_schema = getattr(schema, "properties", None)
+    if isinstance(properties_schema, dict):
+      converted_properties = {}
+      for key, value_schema in properties_schema.items():
+        if isinstance(value_schema, types.Schema):
+          converted_properties[key] = _schema_to_dict(value_schema)
+        elif isinstance(value_schema, dict):
+          if "type" in value_schema and isinstance(
+              value_schema["type"], types.Type
+          ):
+            value_schema["type"] = TYPE_LABELS.get(value_schema["type"], "null")
+          converted_properties[key] = value_schema
+      result_dict["properties"] = converted_properties
+    required_list = getattr(schema, "required", None)
+    if required_list:
+      result_dict["required"] = required_list
+  return result_dict
 
 
 def _function_declaration_to_tool_param(
