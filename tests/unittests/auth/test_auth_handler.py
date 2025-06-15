@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import copy
+import time
+from unittest.mock import Mock
 from unittest.mock import patch
 
+from authlib.oauth2.rfc6749 import OAuth2Token
 from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import OAuth2
@@ -405,7 +408,8 @@ class TestGetAuthResponse:
 class TestParseAndStoreAuthResponse:
   """Tests for the parse_and_store_auth_response method."""
 
-  def test_non_oauth_scheme(self, auth_config_with_exchanged):
+  @pytest.mark.asyncio
+  async def test_non_oauth_scheme(self, auth_config_with_exchanged):
     """Test with a non-OAuth auth scheme."""
     # Modify the auth scheme type to be non-OAuth
     auth_config = copy.deepcopy(auth_config_with_exchanged)
@@ -416,7 +420,7 @@ class TestParseAndStoreAuthResponse:
     handler = AuthHandler(auth_config)
     state = MockState()
 
-    handler.parse_and_store_auth_response(state)
+    await handler.parse_and_store_auth_response(state)
 
     credential_key = auth_config.credential_key
     assert (
@@ -424,7 +428,10 @@ class TestParseAndStoreAuthResponse:
     )
 
   @patch("google.adk.auth.auth_handler.AuthHandler.exchange_auth_token")
-  def test_oauth_scheme(self, mock_exchange_token, auth_config_with_exchanged):
+  @pytest.mark.asyncio
+  async def test_oauth_scheme(
+      self, mock_exchange_token, auth_config_with_exchanged
+  ):
     """Test with an OAuth auth scheme."""
     mock_exchange_token.return_value = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
@@ -434,7 +441,7 @@ class TestParseAndStoreAuthResponse:
     handler = AuthHandler(auth_config_with_exchanged)
     state = MockState()
 
-    handler.parse_and_store_auth_response(state)
+    await handler.parse_and_store_auth_response(state)
 
     credential_key = auth_config_with_exchanged.credential_key
     assert state["temp:" + credential_key] == mock_exchange_token.return_value
@@ -444,20 +451,20 @@ class TestParseAndStoreAuthResponse:
 class TestExchangeAuthToken:
   """Tests for the exchange_auth_token method."""
 
-  def test_token_exchange_not_supported(
+  @pytest.mark.asyncio
+  async def test_token_exchange_not_supported(
       self, auth_config_with_auth_code, monkeypatch
   ):
     """Test when token exchange is not supported."""
-    monkeypatch.setattr(
-        "google.adk.auth.oauth2_credential_fetcher.AUTHLIB_AVIALABLE", False
-    )
+    monkeypatch.setattr("google.adk.auth.auth_handler.AUTHLIB_AVIALABLE", False)
 
     handler = AuthHandler(auth_config_with_auth_code)
-    result = handler.exchange_auth_token()
+    result = await handler.exchange_auth_token()
 
     assert result == auth_config_with_auth_code.exchanged_auth_credential
 
-  def test_openid_missing_token_endpoint(
+  @pytest.mark.asyncio
+  async def test_openid_missing_token_endpoint(
       self, openid_auth_scheme, oauth2_credentials_with_auth_code
   ):
     """Test OpenID Connect without a token endpoint."""
@@ -472,11 +479,12 @@ class TestExchangeAuthToken:
     )
 
     handler = AuthHandler(config)
-    result = handler.exchange_auth_token()
+    result = await handler.exchange_auth_token()
 
     assert result == oauth2_credentials_with_auth_code
 
-  def test_oauth2_missing_token_url(
+  @pytest.mark.asyncio
+  async def test_oauth2_missing_token_url(
       self, oauth2_auth_scheme, oauth2_credentials_with_auth_code
   ):
     """Test OAuth2 without a token URL."""
@@ -491,11 +499,12 @@ class TestExchangeAuthToken:
     )
 
     handler = AuthHandler(config)
-    result = handler.exchange_auth_token()
+    result = await handler.exchange_auth_token()
 
     assert result == oauth2_credentials_with_auth_code
 
-  def test_non_oauth_scheme(self, auth_config_with_auth_code):
+  @pytest.mark.asyncio
+  async def test_non_oauth_scheme(self, auth_config_with_auth_code):
     """Test with a non-OAuth auth scheme."""
     # Modify the auth scheme type to be non-OAuth
     auth_config = copy.deepcopy(auth_config_with_auth_code)
@@ -504,11 +513,12 @@ class TestExchangeAuthToken:
     )
 
     handler = AuthHandler(auth_config)
-    result = handler.exchange_auth_token()
+    result = await handler.exchange_auth_token()
 
     assert result == auth_config.exchanged_auth_credential
 
-  def test_missing_credentials(self, oauth2_auth_scheme):
+  @pytest.mark.asyncio
+  async def test_missing_credentials(self, oauth2_auth_scheme):
     """Test with missing credentials."""
     empty_credential = AuthCredential(auth_type=AuthCredentialTypes.OAUTH2)
 
@@ -518,11 +528,12 @@ class TestExchangeAuthToken:
     )
 
     handler = AuthHandler(config)
-    result = handler.exchange_auth_token()
+    result = await handler.exchange_auth_token()
 
     assert result == empty_credential
 
-  def test_credentials_with_token(
+  @pytest.mark.asyncio
+  async def test_credentials_with_token(
       self, auth_config, oauth2_credentials_with_token
   ):
     """Test when credentials already have a token."""
@@ -533,18 +544,29 @@ class TestExchangeAuthToken:
     )
 
     handler = AuthHandler(config)
-    result = handler.exchange_auth_token()
+    result = await handler.exchange_auth_token()
 
     assert result == oauth2_credentials_with_token
 
-  @patch(
-      "google.adk.auth.oauth2_credential_fetcher.OAuth2Session",
-      MockOAuth2Session,
-  )
-  def test_successful_token_exchange(self, auth_config_with_auth_code):
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @pytest.mark.asyncio
+  async def test_successful_token_exchange(
+      self, mock_oauth2_session, auth_config_with_auth_code
+  ):
     """Test a successful token exchange."""
+    # Setup mock OAuth2Session
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_tokens = OAuth2Token({
+        "access_token": "mock_access_token",
+        "refresh_token": "mock_refresh_token",
+        "expires_at": int(time.time()) + 3600,
+        "expires_in": 3600,
+    })
+    mock_client.fetch_token.return_value = mock_tokens
+
     handler = AuthHandler(auth_config_with_auth_code)
-    result = handler.exchange_auth_token()
+    result = await handler.exchange_auth_token()
 
     assert result.oauth2.access_token == "mock_access_token"
     assert result.oauth2.refresh_token == "mock_refresh_token"
