@@ -21,11 +21,11 @@ from typing import Tuple
 from unittest import mock
 
 from dateutil.parser import isoparse
+from google.adk.errors.not_found_error import NotFoundError
 from google.adk.events import Event
 from google.adk.events import EventActions
 from google.adk.sessions import Session
 from google.adk.sessions import VertexAiSessionService
-from google.adk.errors.not_found_error import NotFoundError
 from google.genai import types
 import pytest
 

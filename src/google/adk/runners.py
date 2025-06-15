@@ -35,6 +35,7 @@ from .agents.run_config import RunConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
+from .errors.not_found_error import NotFoundError
 from .events.event import Event
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
@@ -44,7 +45,6 @@ from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry import tracer
 from .tools.base_toolset import BaseToolset
-from .errors.not_found_error import NotFoundError
 
 logger = logging.getLogger('google_adk.' + __name__)
 
