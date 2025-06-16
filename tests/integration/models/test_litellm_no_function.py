@@ -20,7 +20,6 @@ from google.genai.types import Content
 from google.genai.types import Part
 import pytest
 
-
 _TEST_MODEL_NAME = "vertex_ai/meta/llama-3.1-405b-instruct-maas"
 
 _SYSTEM_PROMPT = """You are a helpful assistant."""
