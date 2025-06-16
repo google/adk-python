@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Project Horizon - Live Agent</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#1a1a1a">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+  <!-- <link rel="icon" type="image/x-icon" href="/static/favicon.ico"> -->
+
+  <!-- *** ADD THIS SCRIPT TAG FOR UUID LIBRARY *** -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/uuid/8.3.2/uuid.min.js" integrity="sha512-UNM1njAgOFUa74Z0bADwAq8gbTcqZC8Ej4xPSzpnh0l6KMevwvkBvbldF9uR++qKeJ+MOZHRjV1HZjoRvjDfNQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <!-- ****************************************** -->
+
+</head>
+<body>
+  <div class="header-section">
+    <h1>Project Horizon</h1>
+    <span id="statusIndicator" class="status-indicator offline" title="Disconnected"></span>
+  </div>
+
+  <div id="chatOutput" class="chat-output">
+     <p class="info-message">Click Connect (▶) to start the agent session.</p>
+  </div>
+
+  <div class="controls">
+    <div id="connectButtonContainer" class="centered-button-container">
+      <button id="connectButton" class="action-button connect-button" title="Connect to Agent">
+        <span class="material-symbols-outlined">play_arrow</span>
+      </button>
+    </div>
+    <div id="mediaButtonsContainer" class="media-buttons-container hidden">
+      <button id="stopButton" class="action-button stop-button" title="Disconnect Session">
+        <span class="material-symbols-outlined">stop</span>
+      </button>
+      <button id="micButton" class="action-button mic-button" disabled title="Start/Stop Recording">
+        <span class="material-symbols-outlined">mic</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Load JS Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/eventemitter3@5.0.1/dist/eventemitter3.umd.min.js"></script>
+  <!-- Your main application logic (ensure UUID script is loaded before this) -->
+  <script type="module" src="/static/adk-websocket-api.js"></script>
+</body>
+</html>

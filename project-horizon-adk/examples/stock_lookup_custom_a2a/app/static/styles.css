@@ -1,0 +1,181 @@
+/* app/static/styles.css - Simplified Styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100vh; /* Full viewport height */
+    background-color: #1e1e1e; /* Dark background */
+    color: #e0e0e0; /* Light text */
+    overflow: hidden; /* Prevent body scroll */
+}
+
+.header-section {
+    background-color: #333;
+    color: white;
+    padding: 10px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #444;
+    flex-shrink: 0; /* Prevent header from shrinking */
+}
+
+.header-section h1 {
+    margin: 0;
+    font-size: 1.4em;
+    font-weight: 500;
+}
+
+.status-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background-color: #dc3545; /* Offline: Red */
+    margin-left: 10px;
+    transition: background-color 0.3s ease;
+}
+.status-indicator.online { background-color: #28a745; } /* Online: Green */
+.status-indicator.error { background-color: #ffc107; } /* Error: Yellow/Orange */
+
+.chat-output {
+    flex-grow: 1; /* Takes up remaining vertical space */
+    overflow-y: auto; /* Enable scrolling for chat messages */
+    padding: 15px;
+    background-color: #2a2a2a; /* Slightly lighter dark */
+    display: flex;
+    flex-direction: column;
+}
+
+.chat-output p {
+    margin-bottom: 10px;
+    padding: 10px 15px;
+    border-radius: 18px;
+    max-width: 75%;
+    word-wrap: break-word;
+    line-height: 1.4;
+}
+
+.user-message {
+    background-color: #007bff; /* Blue for user */
+    color: white;
+    align-self: flex-end;
+    margin-left: 25%;
+}
+
+.agent-message {
+    background-color: #444; /* Dark grey for agent */
+    color: #e0e0e0;
+    align-self: flex-start;
+    margin-right: 25%;
+}
+.info-message {
+    font-style: italic;
+    color: #aaa;
+    text-align: center;
+    background-color: transparent;
+    align-self: center;
+}
+.error-message {
+    color: #ff8a80; /* Light red for errors */
+    font-weight: bold;
+    text-align: center;
+    background-color: rgba(255, 0, 0, 0.1);
+    border: 1px solid #f44336;
+    align-self: center;
+    max-width: 90%;
+}
+
+.controls {
+    padding: 15px;
+    background-color: #333;
+    border-top: 1px solid #444;
+    flex-shrink: 0; /* Prevent controls from shrinking */
+}
+
+.centered-button-container, .media-buttons-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 20px; /* Spacing between buttons */
+    height: 70px; /* Fixed height for control area */
+}
+
+.action-button {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: none;
+    background-color: #555; /* Neutral dark grey */
+    color: #e0e0e0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+.action-button:disabled {
+    background-color: #444;
+    color: #777;
+    cursor: not-allowed;
+}
+.action-button:not(:disabled):hover {
+    background-color: #666;
+}
+.action-button:not(:disabled):active {
+    transform: scale(0.92);
+    background-color: #777;
+}
+
+/* Specific Button Styles */
+.connect-button { background-color: #28a745; color: white; } /* Green for connect */
+.connect-button:not(:disabled):hover { background-color: #218838; }
+.stop-button { background-color: #dc3545; color: white; } /* Red for stop */
+.stop-button:not(:disabled):hover { background-color: #c82333; }
+.mic-button.active { background-color: #dc3545; color: white; } /* Red when recording */
+.mic-button.muted { background-color: #6c757d; } /* Grey when muted */
+
+.hidden { display: none !important; } /* Utility to hide elements */
+
+/* Mock Toggle Styles */
+.mock-toggle-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #ccc; /* Lighter text for toggle */
+    background-color: rgba(255, 255, 255, 0.1); /* Slight background */
+    padding: 5px 10px;
+    border-radius: 15px;
+    cursor: pointer; /* Make the whole area clickable */
+}
+.mock-toggle-container input[type="checkbox"] {
+    cursor: pointer;
+}
+.mock-toggle-container label {
+    cursor: pointer;
+    user-select: none; /* Prevent text selection on label click */
+}
+
+/* Material Symbols */
+.material-symbols-outlined {
+  font-variation-settings:
+  'FILL' 0,
+  'wght' 400,
+  'GRAD' 0,
+  'opsz' 24
+}
+
+/* Responsive Adjustments (Optional) */
+@media (max-width: 600px) {
+    .header-section h1 { font-size: 1.2em; }
+    .chat-output p { max-width: 90%; font-size: 0.95em; }
+    .action-button { width: 50px; height: 50px; }
+    .media-buttons-container { gap: 15px; }
+    .mock-toggle-container label { font-size: 0.9em; }
+}

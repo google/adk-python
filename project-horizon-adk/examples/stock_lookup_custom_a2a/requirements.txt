@@ -1,0 +1,21 @@
+# Google Libraries
+google-adk==0.3.0
+google-genai==1.12.1
+
+# Core application & web serving
+python-dotenv==1.1.0
+fastapi==0.115.12
+uvicorn[standard]==0.34.2 # Includes websockets, http-tools
+starlette==0.46.2
+sse-starlette==2.3.3
+httpx==0.28.1
+httpx-sse==0.4.0
+pydantic==2.11.3
+
+# MCP & Tools
+mcp[cli] @ git+https://github.com/modelcontextprotocol/python-sdk.git@b4c7db6a50a5c88bae1db5c1f7fba44d16eebc6e
+finnhub-python==2.4.23
+
+# Testing
+pytest==8.3.5
+pytest-asyncio==0.26.0
