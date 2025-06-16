@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multimodal Streaming Agent</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <h1>Multimodal Streaming Agent</h1>
+    <div class="container">
+        <div class="agent-section">
+            <h2>Camera Agent</h2>
+            <div id="cameraAgentStatus">Status: Unknown</div>
+            <div class="log-display">
+                <h3>Camera Log</h3>
+                <pre id="cameraLogOutput">Loading camera log...</pre>
+            </div>
+        </div>
+        <div class="agent-section">
+            <h2>Audio Agent</h2>
+            <div id="audioAgentStatus">Status: Idle</div>
+            <button id="startAudioButton">Start Audio Interaction</button>
+            <button id="stopAudioButton" disabled>Stop Audio Interaction</button>
+            <div class="log-display">
+                <h3>Audio Log</h3>
+                <pre id="audioLogOutput">Loading audio log...</pre>
+            </div>
+            <div id="currentAgentResponse" class="agent-speech-bubble"></div>
+        </div>
+    </div>
+    <div class="input-area">
+        <input type="text" id="textInput" placeholder="Type message to audio agent..." disabled>
+        <button id="sendTextButton" disabled>Send Text</button>
+    </div>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

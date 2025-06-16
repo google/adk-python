@@ -1,0 +1,1 @@
+FILES in this folder are based on published examples and are verified to work properly by Joel when run locally.  

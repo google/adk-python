@@ -1,0 +1,12 @@
+google-cloud-aiplatform>=1.0.0
+opencv-python-headless
+Flask>=2.0.0
+python-dotenv
+sounddevice
+scipy
+google-cloud-speech
+google-cloud-texttospeech
+# Add other initial dependencies here, e.g., for audio:
+# SoundDevice # This was a comment, actual is sounddevice
+# google-cloud-speech # This was a comment, actual is google-cloud-speech
+# google-cloud-texttospeech # This was a comment, actual is google-cloud-texttospeech

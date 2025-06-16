@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Multimodal Agent Interface</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { display: flex; flex-direction: column; align-items: center; }
+        .video-container { border: 1px solid #ccc; margin-bottom: 20px; min-width: 320px; min-height: 240px; background-color: #000;}
+        .chat-container { width: 80%; max-width: 600px; margin-bottom: 20px; }
+        .chat-box { height: 300px; border: 1px solid #ccc; overflow-y: scroll; padding: 10px; background-color: #fff; margin-bottom: 10px; }
+        .chat-message { margin-bottom: 8px; padding: 5px; border-radius: 4px; }
+        .user-message { background-color: #e1f5fe; text-align: right; }
+        .model-message { background-color: #f0f4c3; }
+        .controls { display: flex; justify-content: center; align-items: center; width: 80%; max-width: 600px; }
+        #chatInput { flex-grow: 1; padding: 8px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px;}
+        button { padding: 8px 15px; border: none; border-radius: 4px; cursor: pointer; background-color: #4CAF50; color: white; margin-left: 5px; } /* Added margin-left to button */
+        button:hover { background-color: #45a049; }
+        .status { margin-top: 10px; font-style: italic; color: #555; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Live Multimodal Agent</h1>
+
+        <div class="video-container">
+            <img id="videoFeed" src="/video_feed" width="640" height="480" alt="Video Feed">
+        </div>
+
+        <div class="chat-container">
+            <div id="chatBox" class="chat-box">
+                <!-- Chat messages will appear here -->
+            </div>
+            <div class="controls">
+                <input type="text" id="chatInput" placeholder="Type your message...">
+                <button onclick="sendChatMessage()">Send</button>
+                <button onclick="sendVoiceMessage()" id="sendVoiceBtn">Send Voice (Record 5s)</button>
+            </div>
+            <div class="status" id="statusArea">Agent status will appear here.</div>
+        </div>
+         <button onclick="startAgent()">Start Agent</button>
+         <button onclick="stopAgent()">Stop Agent</button>
+    </div>
+
+    <script>
+        const chatBox = document.getElementById('chatBox');
+        const chatInput = document.getElementById('chatInput');
+        const statusArea = document.getElementById('statusArea');
+
+        function addMessage(text, sender) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('chat-message', sender + '-message');
+            messageDiv.textContent = text;
+            chatBox.appendChild(messageDiv);
+            chatBox.scrollTop = chatBox.scrollHeight; // Auto-scroll
+        }
+
+        async function sendChatMessage() {
+            const messageText = chatInput.value;
+            if (!messageText.trim()) return;
+
+            addMessage(messageText, 'user');
+            chatInput.value = '';
+
+            try {
+                const response = await fetch('/send_chat_message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: messageText })
+                });
+                const data = await response.json();
+                if (data.reply) {
+                    addMessage(data.reply, 'model');
+                } else if (data.error) {
+                    addMessage('Error: ' + data.error, 'model');
+                }
+            } catch (error) {
+                console.error('Error sending chat message:', error);
+                addMessage('Error connecting to agent.', 'model');
+            }
+        }
+
+        chatInput.addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                sendChatMessage();
+            }
+        });
+
+        async function startAgent() {
+            statusArea.textContent = "Attempting to start agent...";
+            try {
+                const response = await fetch('/start_interaction');
+                const data = await response.json();
+                statusArea.textContent = data.status || data.error;
+                addMessage(data.status || data.error, 'model');
+                // Connect to SSE after agent is confirmed started
+                if (response.ok && data.status && data.status.includes("started")) {
+                    connectToAgentEvents();
+                }
+            } catch (error) {
+                 statusArea.textContent = "Error starting agent.";
+                 addMessage('Error starting agent.', 'model');
+            }
+        }
+
+        async function stopAgent() {
+            statusArea.textContent = "Attempting to stop agent...";
+            try {
+                const response = await fetch('/stop_interaction');
+                const data = await response.json();
+                statusArea.textContent = data.status || data.error;
+                addMessage(data.status || data.error, 'model');
+                if (eventSource) {
+                    eventSource.close();
+                    statusArea.textContent = "Agent stopped. Event stream closed.";
+                }
+            } catch (error) {
+                 statusArea.textContent = "Error stopping agent.";
+                 addMessage('Error stopping agent.', 'model');
+            }
+        }
+
+        async function sendVoiceMessage() {
+            const sendVoiceButton = document.getElementById("sendVoiceBtn");
+            addMessage("🎤 Recording for 5s... Please speak.", "user");
+            statusArea.textContent = "Recording audio...";
+            sendVoiceButton.disabled = true;
+
+            try {
+                const response = await fetch("/send_voice_message", { method: "POST" });
+                const data = await response.json();
+                if (data.status) {
+                    statusArea.textContent = data.status;
+                    // Messages (transcription, model reply) should come via SSE
+                } else if (data.error) {
+                    addMessage("Voice Error: " + data.error, "model");
+                    statusArea.textContent = "Voice error: " + data.error;
+                }
+            } catch (error) {
+                console.error("Error sending voice message:", error);
+                addMessage("Error processing voice input.", "model");
+                statusArea.textContent = "Error processing voice input.";
+            } finally {
+                sendVoiceButton.disabled = false;
+            }
+        }
+
+        // Function to fetch and display video change notifications from the agent
+        let eventSource = null;
+        function connectToAgentEvents() {
+            if (eventSource) {
+                eventSource.close();
+            }
+            statusArea.textContent = "Connecting to agent events...";
+            eventSource = new EventSource("/agent_events");
+
+            eventSource.onopen = function() {
+                statusArea.textContent = "Connected to agent events.";
+                addMessage("Connected to agent for live updates.", "model");
+            };
+
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.type === "video_change_comment") {
+                    addMessage("Video Event: " + data.comment, "model");
+                } else if (data.type === "status") {
+                     statusArea.textContent = data.message;
+                } else if (data.type === "transcription") {
+                    addMessage("You (transcribed): " + data.text, "user");
+                } else if (data.type === "model_response_audio_text") {
+                    addMessage("Agent: " + data.text, "model");
+                }
+            };
+
+            eventSource.onerror = function(err) {
+                console.error("EventSource failed:", err);
+                statusArea.textContent = "Disconnected from agent events.";
+                addMessage("Lost connection to agent live updates.", "model");
+                if (eventSource) eventSource.close();
+            };
+        }
+
+        window.onload = () => {
+            addMessage("Welcome! Click 'Start Agent' to begin.", "model");
+            // Do not automatically connectToAgentEvents here.
+            // connectToAgentEvents will be called by startAgent().
+        };
+
+    </script>
+</body>
+</html>

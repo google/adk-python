@@ -1,0 +1,11 @@
+body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+.container { display: flex; gap: 20px; margin-bottom: 20px; }
+.agent-section { background-color: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); flex: 1; }
+h1, h2, h3 { color: #555; }
+pre { background-color: #eee; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; font-family: monospace; }
+button { padding: 10px 15px; margin: 5px; border: none; border-radius: 4px; background-color: #007bff; color: white; cursor: pointer; }
+button:disabled { background-color: #ccc; }
+button:hover:not(:disabled) { background-color: #0056b3; }
+input[type="text"] { padding: 10px; margin-right: 10px; border: 1px solid #ddd; border-radius: 4px; width: calc(100% - 120px); }
+.input-area { margin-top: 20px; display: flex; }
+.agent-speech-bubble { margin-top: 10px; padding: 10px; background-color: #e9f5ff; border-radius: 5px; min-height: 20px; border: 1px solid #cce4ff; }

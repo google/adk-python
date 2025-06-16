@@ -1,0 +1,1 @@
+FILES in this folder are based on published examples, but they cause errors or I can not get them to work properly when tested.

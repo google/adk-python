@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multimodal Agent Stream</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <h1>Multimodal Streaming Agent</h1>
+    <div class="container">
+        <div class="controls">
+            <button id="startButton" disabled>Start Streaming</button>
+            <button id="stopButton" disabled>Stop Streaming</button>
+        </div>
+
+        <div class="main-content">
+            <div class="video-container">
+                <h2>Live Camera Feed</h2>
+                <img id="video" src="/video_feed" width="480" height="360" alt="Video Feed">
+                <canvas id="videoCanvas" width="480" height="360" style="display:none;"></canvas>
+            </div>
+            
+            <div id="response" class="response-container">
+                </div>
+        </div>
+    </div>
+
+    <script src="/static/js/pcm-recorder-processor.js"></script>
+    <script src="/static/js/audio-recorder.js"></script>
+    <script src="/static/js/pcm-player-processor.js"></script>
+    <script src="/static/js/audio-player.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
