@@ -16,25 +16,39 @@
 
 import requests
 
+from google.adk.utils import retry_on_network_error
 
+
+@retry_on_network_error()
 def load_web_page(url: str) -> str:
   """Fetches the content in the url and returns the text in it.
+
+  This function automatically retries on network errors using exponential backoff.
 
   Args:
       url (str): The url to browse.
 
   Returns:
       str: The text content of the url.
+      
+  Raises:
+      RetryError: If all retry attempts fail.
+      requests.exceptions.HTTPError: For non-transient HTTP errors (4xx).
   """
   from bs4 import BeautifulSoup
 
   response = requests.get(url)
+  
+  # Raise for 5xx errors (will trigger retry) but not 4xx errors
+  if 500 <= response.status_code < 600:
+    response.raise_for_status()
 
   if response.status_code == 200:
     soup = BeautifulSoup(response.content, 'lxml')
     text = soup.get_text(separator='\n', strip=True)
   else:
-    text = f'Failed to fetch url: {url}'
+    # For 4xx errors, don't retry but return error message
+    text = f'Failed to fetch url: {url} (Status: {response.status_code})'
 
   # Split the text into lines, filtering out very short lines
   # (e.g., single words or short subtitles)
