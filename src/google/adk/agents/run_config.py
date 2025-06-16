@@ -73,6 +73,12 @@ class RunConfig(BaseModel):
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
   """Realtime input config for live agents with audio input from user."""
 
+  enable_affective_dialog: Optional[bool] = None
+  """If enabled, the model will detect emotions and adapt its responses accordingly."""
+
+  proactivity: Optional[types.ProactivityConfig] = None
+  """Configures the proactivity of the model. This allows the model to respond proactively to the input and to ignore irrelevant input."""
+
   max_llm_calls: int = 500
   """
   A limit on the total number of llm calls for a given run.

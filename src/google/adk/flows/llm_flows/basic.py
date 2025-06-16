@@ -68,6 +68,12 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     llm_request.live_connect_config.realtime_input_config = (
         invocation_context.run_config.realtime_input_config
     )
+    llm_request.live_connect_config.enable_affective_dialog = (
+        invocation_context.run_config.enable_affective_dialog
+    )
+    llm_request.live_connect_config.proactivity = (
+        invocation_context.run_config.proactivity
+    )
 
     # TODO: handle tool append here, instead of in BaseTool.process_llm_request.
 
