@@ -212,7 +212,7 @@ class Claude(BaseLlm):
   model: str = "claude-3-5-sonnet-v2@20241022"
   project_id: Optional[str] = None
   location: Optional[str] = None
-  
+
   @staticmethod
   @override
   def supported_models() -> list[str]:
@@ -256,13 +256,13 @@ class Claude(BaseLlm):
   def _anthropic_client(self) -> AnthropicVertex:
     project = self.project_id or os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = self.location or os.environ.get("GOOGLE_CLOUD_LOCATION")
-    
+
     if not project or not location:
       raise ValueError(
           "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set for using"
           " Anthropic on Vertex."
       )
-    
+
     return AnthropicVertex(
         project_id=project,
         region=location,

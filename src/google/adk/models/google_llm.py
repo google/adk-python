@@ -22,9 +22,10 @@ import os
 import sys
 from typing import AsyncGenerator
 from typing import cast
+from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
-from typing import Optional
+
 from google.genai import Client
 from google.genai import types
 from typing_extensions import override
@@ -60,7 +61,7 @@ class Gemini(BaseLlm):
   model: str = 'gemini-1.5-flash'
   project_id: Optional[str] = None
   location: Optional[str] = None
-  
+
   @staticmethod
   @override
   def supported_models() -> list[str]:
@@ -192,7 +193,7 @@ class Gemini(BaseLlm):
           vertexai=True,
           project=self.project_id,
           location=self.location,
-          http_options=types.HttpOptions(headers=self._tracking_headers)
+          http_options=types.HttpOptions(headers=self._tracking_headers),
       )
     else:
       return Client(
