@@ -39,6 +39,9 @@ class VertexAiSearchTool(BaseTool):
       self,
       *,
       data_store_id: Optional[str] = None,
+      data_store_specs: Optional[
+          list[types.VertexAISearchDataStoreSpec]
+      ] = None,
       search_engine_id: Optional[str] = None,
       filter: Optional[str] = None,
       max_results: Optional[int] = None,
@@ -49,6 +52,8 @@ class VertexAiSearchTool(BaseTool):
       data_store_id: The Vertex AI search data store resource ID in the format
         of
         "projects/{project}/locations/{location}/collections/{collection}/dataStores/{dataStore}".
+      data_store_specs: Specifications that define the specific DataStores to be
+        searched. It should only be set if engine is used.
       search_engine_id: The Vertex AI search engine resource ID in the format of
         "projects/{project}/locations/{location}/collections/{collection}/engines/{engine}".
 
@@ -64,7 +69,12 @@ class VertexAiSearchTool(BaseTool):
       raise ValueError(
           'Either data_store_id or search_engine_id must be specified.'
       )
+    if data_store_specs is not None and search_engine_id is None:
+      raise ValueError(
+          'search_engine_id must be specified if data_store_specs is specified.'
+      )
     self.data_store_id = data_store_id
+    self.data_store_specs = data_store_specs
     self.search_engine_id = search_engine_id
     self.filter = filter
     self.max_results = max_results
@@ -89,6 +99,7 @@ class VertexAiSearchTool(BaseTool):
               retrieval=types.Retrieval(
                   vertex_ai_search=types.VertexAISearch(
                       datastore=self.data_store_id,
+                      data_store_specs=self.data_store_specs,
                       engine=self.search_engine_id,
                       filter=self.filter,
                       max_results=self.max_results,
