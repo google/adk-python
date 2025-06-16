@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from enum import Enum
 from typing import Any
 from typing import Dict
@@ -75,6 +77,8 @@ class OAuth2Auth(BaseModelWithConfig):
   auth_code: Optional[str] = None
   access_token: Optional[str] = None
   refresh_token: Optional[str] = None
+  expires_at: Optional[int] = None
+  expires_in: Optional[int] = None
 
 
 class ServiceAccountCredential(BaseModelWithConfig):
@@ -226,3 +230,4 @@ class AuthCredential(BaseModelWithConfig):
   http: Optional[HttpAuth] = None
   service_account: Optional[ServiceAccount] = None
   oauth2: Optional[OAuth2Auth] = None
+  google_oauth2_json: Optional[str] = None
