@@ -24,7 +24,7 @@ from typing import AsyncGenerator
 from typing import cast
 from typing import TYPE_CHECKING
 from typing import Union
-
+from typing import Optional
 from google.genai import Client
 from google.genai import types
 from typing_extensions import override
@@ -52,10 +52,15 @@ class Gemini(BaseLlm):
 
   Attributes:
     model: The name of the Gemini model.
+    project_id: Optional Google Cloud project ID. If not provided, uses GOOGLE_CLOUD_PROJECT environment variable.
+    location: Optional Google Cloud location. If not provided, uses GOOGLE_CLOUD_LOCATION environment variable.
+
   """
 
   model: str = 'gemini-1.5-flash'
-
+  project_id: Optional[str] = None
+  location: Optional[str] = None
+  
   @staticmethod
   @override
   def supported_models() -> list[str]:
@@ -177,14 +182,22 @@ class Gemini(BaseLlm):
 
   @cached_property
   def api_client(self) -> Client:
-    """Provides the api client.
+    """Provides the api client with per-instance configuration support.
 
     Returns:
       The api client.
     """
-    return Client(
-        http_options=types.HttpOptions(headers=self._tracking_headers)
-    )
+    if self.project_id or self.location:
+      return Client(
+          vertexai=True,
+          project=self.project_id,
+          location=self.location,
+          http_options=types.HttpOptions(headers=self._tracking_headers)
+      )
+    else:
+      return Client(
+          http_options=types.HttpOptions(headers=self._tracking_headers)
+      )
 
   @cached_property
   def _api_backend(self) -> GoogleLLMVariant:

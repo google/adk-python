@@ -205,10 +205,14 @@ class Claude(BaseLlm):
 
   Attributes:
     model: The name of the Claude model.
+    project_id: Optional Google Cloud project ID. If not provided, uses GOOGLE_CLOUD_PROJECT environment variable.
+    location: Optional Google Cloud location. If not provided, uses GOOGLE_CLOUD_LOCATION environment variable.
   """
 
   model: str = "claude-3-5-sonnet-v2@20241022"
-
+  project_id: Optional[str] = None
+  location: Optional[str] = None
+  
   @staticmethod
   @override
   def supported_models() -> list[str]:
@@ -250,16 +254,16 @@ class Claude(BaseLlm):
 
   @cached_property
   def _anthropic_client(self) -> AnthropicVertex:
-    if (
-        "GOOGLE_CLOUD_PROJECT" not in os.environ
-        or "GOOGLE_CLOUD_LOCATION" not in os.environ
-    ):
+    project = self.project_id or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    location = self.location or os.environ.get("GOOGLE_CLOUD_LOCATION")
+    
+    if not project or not location:
       raise ValueError(
           "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set for using"
           " Anthropic on Vertex."
       )
-
+    
     return AnthropicVertex(
-        project_id=os.environ["GOOGLE_CLOUD_PROJECT"],
-        region=os.environ["GOOGLE_CLOUD_LOCATION"],
+        project_id=project,
+        region=location,
     )
