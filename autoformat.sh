@@ -15,53 +15,41 @@
 
 # Autoformat ADK codebase.
 
-if ! command -v isort &> /dev/null
-then
-    echo "isort not found, refer to CONTRIBUTING.md to set up dev environment first."
-    exit
-fi
-
-if ! command -v pyink &> /dev/null
-then
-    echo "pyink not found, refer to CONTRIBUTING.md to set up dev environment first."
-    exit
-fi
-
 echo '---------------------------------------'
 echo '|  Organizing imports for src/...'
 echo '---------------------------------------'
 
-isort src/
+uv run isort src/
 echo 'All done! ✨ 🍰 ✨'
 
 echo '---------------------------------------'
 echo '|  Organizing imports for tests/...'
 echo '---------------------------------------'
 
-isort tests/
+uv run isort tests/
 echo 'All done! ✨ 🍰 ✨'
 
 echo '---------------------------------------'
 echo '|  Organizing imports for contributing/...'
 echo '---------------------------------------'
 
-isort contributing/
+uv run isort contributing/
 echo 'All done! ✨ 🍰 ✨'
 
 echo '---------------------------------------'
 echo '|  Auto-formatting src/...'
 echo '---------------------------------------'
 
-find -L src/ -type f -name "*.py" -exec pyink --config pyproject.toml {} +
+find -L src/ -type f -name "*.py" -exec uv run pyink --config pyproject.toml {} +
 
 echo '---------------------------------------'
 echo '|  Auto-formatting tests/...'
 echo '---------------------------------------'
 
-find -L tests/ -type f -name "*.py" -exec pyink --config pyproject.toml {} +
+find -L tests/ -type f -name "*.py" -exec uv run pyink --config pyproject.toml {} +
 
 echo '---------------------------------------'
 echo '|  Auto-formatting contributing/...'
 echo '---------------------------------------'
 
-find -L contributing/ -type f -name "*.py" -exec pyink --config pyproject.toml {} +
+find -L contributing/ -type f -name "*.py" -exec uv run pyink --config pyproject.toml {} +

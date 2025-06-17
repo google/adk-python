@@ -35,9 +35,8 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install isort
-        run: |
-          pip install isort
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
       - name: Run isort on changed files
         id: run_isort
@@ -52,7 +51,7 @@ jobs:
 
             # Run isort --check
             set +e
-            isort --check $CHANGED_FILES
+            uv run isort --check $CHANGED_FILES
             RESULT=$?
             set -e
             if [ $RESULT -ne 0 ]; then
@@ -60,7 +59,7 @@ jobs:
               echo "❌ isort check failed!"
               echo "👉 To fix import order, run locally:"
               echo ""
-              echo "    isort $FORMATTED_FILES"
+              echo "    uv run isort $FORMATTED_FILES"
               echo ""
               exit $RESULT
             fi
