@@ -15,19 +15,15 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
-from typing import Tuple
-
-from fastapi.openapi.models import OAuth2
 
 from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_schemes import AuthScheme
 from .auth_schemes import OAuthGrantType
-from .auth_schemes import OpenIdConnectWithConfig
+from .oauth2_credential_util import create_oauth2_session
+from .oauth2_credential_util import update_credential_with_tokens
 
 try:
-  from authlib.integrations.requests_client import OAuth2Session
   from authlib.oauth2.rfc6749 import OAuth2Token
 
   AUTHLIB_AVIALABLE = True
@@ -49,45 +45,6 @@ class OAuth2CredentialFetcher:
   ):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
-
-  def _oauth2_session(self) -> Tuple[Optional[OAuth2Session], Optional[str]]:
-    auth_scheme = self._auth_scheme
-    auth_credential = self._auth_credential
-
-    if isinstance(auth_scheme, OpenIdConnectWithConfig):
-      if not hasattr(auth_scheme, "token_endpoint"):
-        return None, None
-      token_endpoint = auth_scheme.token_endpoint
-      scopes = auth_scheme.scopes
-    elif isinstance(auth_scheme, OAuth2):
-      if (
-          not auth_scheme.flows.authorizationCode
-          or not auth_scheme.flows.authorizationCode.tokenUrl
-      ):
-        return None, None
-      token_endpoint = auth_scheme.flows.authorizationCode.tokenUrl
-      scopes = list(auth_scheme.flows.authorizationCode.scopes.keys())
-    else:
-      return None, None
-
-    if (
-        not auth_credential
-        or not auth_credential.oauth2
-        or not auth_credential.oauth2.client_id
-        or not auth_credential.oauth2.client_secret
-    ):
-      return None, None
-
-    return (
-        OAuth2Session(
-            auth_credential.oauth2.client_id,
-            auth_credential.oauth2.client_secret,
-            scope=" ".join(scopes),
-            redirect_uri=auth_credential.oauth2.redirect_uri,
-            state=auth_credential.oauth2.state,
-        ),
-        token_endpoint,
-    )
 
   def _update_credential(self, tokens: OAuth2Token) -> None:
     self._auth_credential.oauth2.access_token = tokens.get("access_token")
@@ -114,7 +71,9 @@ class OAuth2CredentialFetcher:
     ):
       return self._auth_credential
 
-    client, token_endpoint = self._oauth2_session()
+    client, token_endpoint = create_oauth2_session(
+        self._auth_scheme, self._auth_credential
+    )
     if not client:
       logger.warning("Could not create OAuth2 session for token exchange")
       return self._auth_credential
@@ -126,7 +85,7 @@ class OAuth2CredentialFetcher:
           code=self._auth_credential.oauth2.auth_code,
           grant_type=OAuthGrantType.AUTHORIZATION_CODE,
       )
-      self._update_credential(tokens)
+      update_credential_with_tokens(self._auth_credential, tokens)
       logger.info("Successfully exchanged OAuth2 tokens")
     except Exception as e:
       logger.error("Failed to exchange OAuth2 tokens: %s", e)
@@ -151,7 +110,9 @@ class OAuth2CredentialFetcher:
         "expires_at": credential.oauth2.expires_at,
         "expires_in": credential.oauth2.expires_in,
     }).is_expired():
-      client, token_endpoint = self._oauth2_session()
+      client, token_endpoint = create_oauth2_session(
+          self._auth_scheme, self._auth_credential
+      )
       if not client:
         logger.warning("Could not create OAuth2 session for token refresh")
         return credential
@@ -161,7 +122,7 @@ class OAuth2CredentialFetcher:
             url=token_endpoint,
             refresh_token=credential.oauth2.refresh_token,
         )
-        self._update_credential(tokens)
+        update_credential_with_tokens(self._auth_credential, tokens)
         logger.info("Successfully refreshed OAuth2 tokens")
       except Exception as e:
         logger.error("Failed to refresh OAuth2 tokens: %s", e)

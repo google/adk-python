@@ -538,7 +538,7 @@ class TestExchangeAuthToken:
     assert result == oauth2_credentials_with_token
 
   @patch(
-      "google.adk.auth.oauth2_credential_fetcher.OAuth2Session",
+      "google.adk.auth.oauth2_credential_util.OAuth2Session",
       MockOAuth2Session,
   )
   def test_successful_token_exchange(self, auth_config_with_auth_code):
