@@ -151,7 +151,7 @@ class GcsArtifactService(BaseArtifactService):
         self.bucket, prefix=session_prefix
     )
     for blob in session_blobs:
-      _, _, _, filename, _ = blob.name.split("/")
+      *_, filename, _ = blob.name.split("/")
       filenames.add(filename)
 
     user_namespace_prefix = f"{app_name}/{user_id}/user/"
@@ -159,7 +159,7 @@ class GcsArtifactService(BaseArtifactService):
         self.bucket, prefix=user_namespace_prefix
     )
     for blob in user_namespace_blobs:
-      _, _, _, filename, _ = blob.name.split("/")
+      *_, filename, _ = blob.name.split("/")
       filenames.add(filename)
 
     return sorted(list(filenames))
