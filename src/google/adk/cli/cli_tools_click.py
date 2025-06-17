@@ -835,12 +835,18 @@ def cli_deploy_cloud_run(
 @click.option(
     "--project",
     type=str,
-    help="Required. Google Cloud project to deploy the agent.",
+    help=(
+        "Required. Google Cloud project to deploy the agent. It will override"
+        " GOOGLE_CLOUD_PROJECT in the .env file (if it exists)."
+    ),
 )
 @click.option(
     "--region",
     type=str,
-    help="Required. Google Cloud region to deploy the agent.",
+    help=(
+        "Required. Google Cloud region to deploy the agent. It will override"
+        " GOOGLE_CLOUD_LOCATION in the .env file (if it exists)."
+    ),
 )
 @click.option(
     "--staging_bucket",
