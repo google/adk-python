@@ -15,7 +15,10 @@
 from google.adk.agents import Agent
 from google.adk.agents import SequentialAgent
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.tools import ToolContext
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.google_api_tool.google_api_toolsets import CalendarToolset
 from google.genai.types import Part
 from pydantic import BaseModel
 from pytest import mark
@@ -209,3 +212,67 @@ def test_custom_schema():
   # The second request is the tool agent request.
   assert mock_model.requests[1].config.response_schema == CustomOutput
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
+
+
+def test_tool_auth():
+  def calendar_events_get():
+    return []
+
+  function_call_auth_request = Part.from_function_call(
+      name='calendar_events_get', args={}
+  )
+
+  mock_model_main = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          'response1',
+          'response2',
+      ]
+  )
+
+  mock_model_tool = testing_utils.MockModel.create(
+      responses=[
+          function_call_auth_request,
+          'tool_response1',
+          'tool_response2',
+      ]
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=mock_model_tool,
+      tools=[
+          # calendar_events_get,
+          CalendarToolset(
+              client_id='1234',
+              client_secret='secret',
+              tool_filter=['calendar_events_get'],
+          )
+      ],
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model_main,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  actual_events = testing_utils.simplify_events(runner.run('test1'))
+  credentials_args = actual_events[1][1].function_call.args
+  assert actual_events == [
+      ('root_agent', function_call_no_schema),
+      (
+          'root_agent',
+          Part.from_function_call(
+              name=REQUEST_EUC_FUNCTION_CALL_NAME, args=credentials_args
+          ),
+      ),
+      (
+          'root_agent',
+          Part.from_function_response(
+              name='tool_agent', response={'result': 'tool_response1'}
+          ),
+      ),
+      ('root_agent', 'response1'),
+  ]
