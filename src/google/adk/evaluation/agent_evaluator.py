@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -297,6 +299,7 @@ class AgentEvaluator:
       elif os.path.isfile(input_data):
         return [load_json_file(input_data)]
       else:
+        return [load_json_file(input_data)]
         raise ValueError(f"Input path {input_data} is invalid.")
     elif isinstance(input_data, list):
       if all(isinstance(i, str) and os.path.isfile(i) for i in input_data):

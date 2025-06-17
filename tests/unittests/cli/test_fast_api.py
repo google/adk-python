@@ -428,31 +428,31 @@ def test_app(
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.InMemorySessionService",
+          "google.adk.cli.adk_dev_server.InMemorySessionService",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryArtifactService",
+          "google.adk.cli.adk_dev_server.InMemoryArtifactService",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryMemoryService",
+          "google.adk.cli.adk_dev_server.InMemoryMemoryService",
           return_value=mock_memory_service,
       ),
       patch(
-          "google.adk.cli.fast_api.AgentLoader",
+          "google.adk.cli.adk_dev_server.AgentLoader",
           return_value=mock_agent_loader,
       ),
       patch(
-          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          "google.adk.cli.adk_dev_server.LocalEvalSetsManager",
           return_value=mock_eval_sets_manager,
       ),
       patch(
-          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          "google.adk.cli.adk_dev_server.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
       patch(
-          "google.adk.cli.cli_eval.run_evals",  # Patch where it's imported in fast_api.py
+          "google.adk.cli.cli_eval.run_evals",  # Patch where it's imported in adk_dev_server.py
           new=mock_run_evals_for_fast_api,
       ),
   ):
