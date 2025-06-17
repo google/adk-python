@@ -56,7 +56,9 @@ class ModelContent(types.Content):
     super().__init__(role='model', parts=parts)
 
 
-async def create_invocation_context(agent: Agent, user_content: str = ''):
+async def create_invocation_context(
+    agent: Agent, user_content: str = '', run_config: RunConfig = None
+):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
   session_service = InMemorySessionService()
@@ -73,7 +75,7 @@ async def create_invocation_context(agent: Agent, user_content: str = ''):
       user_content=types.Content(
           role='user', parts=[types.Part.from_text(text=user_content)]
       ),
-      run_config=RunConfig(),
+      run_config=run_config or RunConfig(),
   )
   if user_content:
     append_user_content(
@@ -205,13 +207,16 @@ class InMemoryRunner:
       events.append(event)
     return events
 
-  def run_live(self, live_request_queue: LiveRequestQueue) -> list[Event]:
+  def run_live(
+      self, live_request_queue: LiveRequestQueue, run_config: RunConfig = None
+  ) -> list[Event]:
     collected_responses = []
 
     async def consume_responses(session: Session):
       run_res = self.runner.run_live(
           session=session,
           live_request_queue=live_request_queue,
+          run_config=run_config or RunConfig(),
       )
 
       async for response in run_res:
