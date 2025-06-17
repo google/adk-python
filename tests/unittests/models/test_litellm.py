@@ -416,9 +416,26 @@ class MockLLMClient(LiteLLMClient):
     self.completion_mock = completion_mock
 
   async def acompletion(self, model, messages, tools, **kwargs):
-    return await self.acompletion_mock(
-        model=model, messages=messages, tools=tools, **kwargs
-    )
+    if kwargs.get("stream", False):
+      kwargs_copy = dict(kwargs)
+      kwargs_copy.pop("stream", None)
+
+      async def stream_generator():
+        stream_data = self.completion_mock(
+            model=model,
+            messages=messages,
+            tools=tools,
+            stream=True,
+            **kwargs_copy,
+        )
+        for item in stream_data:
+          yield item
+
+      return stream_generator()
+    else:
+      return await self.acompletion_mock(
+          model=model, messages=messages, tools=tools, **kwargs
+      )
 
   def completion(self, model, messages, tools, stream, **kwargs):
     return self.completion_mock(
