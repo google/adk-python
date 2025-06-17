@@ -25,7 +25,7 @@ from ....auth.auth_credential import AuthCredentialTypes
 from ....auth.auth_schemes import AuthScheme
 from ....auth.auth_schemes import AuthSchemeType
 from ....auth.auth_tool import AuthConfig
-from ....auth.oauth2_credential_fetcher import OAuth2CredentialFetcher
+from ....auth.refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
 from ...tool_context import ToolContext
 from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuthCredentialExchanger
 from ..auth.credential_exchangers.base_credential_exchanger import AuthCredentialMissingError
@@ -156,9 +156,10 @@ class ToolAuthHandler:
       )
       if existing_credential:
         if existing_credential.oauth2:
-          existing_credential = OAuth2CredentialFetcher(
-              self.auth_scheme, existing_credential
-          ).refresh()
+          refresher = OAuth2CredentialRefresher()
+          existing_credential = refresher.refresh(
+              existing_credential, self.auth_scheme
+          )
         return existing_credential
     return None
 
