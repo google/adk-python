@@ -20,6 +20,7 @@ from typing import Tuple
 
 from fastapi.openapi.models import OAuth2
 
+from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_schemes import AuthScheme
 from .auth_schemes import OAuthGrantType
@@ -37,8 +38,9 @@ except ImportError:
 logger = logging.getLogger("google_adk." + __name__)
 
 
+@experimental
 class OAuth2CredentialFetcher:
-  """Exchanges and refreshes an OAuth2 access token."""
+  """Exchanges and refreshes an OAuth2 access token. (Experimental)"""
 
   def __init__(
       self,
