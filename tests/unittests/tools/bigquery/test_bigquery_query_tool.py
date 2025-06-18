@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 import textwrap
 from typing import Optional
 from unittest import mock
@@ -24,6 +25,7 @@ from google.adk.tools.bigquery import BigQueryToolset
 from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.bigquery.config import WriteMode
 from google.adk.tools.bigquery.query_tool import execute_sql
+from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import bigquery
 from google.oauth2.credentials import Credentials
 import pytest
@@ -227,14 +229,8 @@ async def test_execute_sql_declaration_write(tool_config):
 @pytest.mark.parametrize(
     ("write_mode",),
     [
-        pytest.param(
-            WriteMode.BLOCKED,
-            id="blocked",
-        ),
-        pytest.param(
-            WriteMode.ALLOWED,
-            id="allowed",
-        ),
+        pytest.param(WriteMode.BLOCKED, id="blocked"),
+        pytest.param(WriteMode.ALLOWED, id="allowed"),
     ],
 )
 def test_execute_sql_select_stmt(write_mode):
@@ -279,7 +275,7 @@ def test_execute_sql_select_stmt(write_mode):
     ],
 )
 def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
-  """Test execute_sql tool for SELECT query when writes are blocked."""
+  """Test execute_sql tool for non-SELECT query when writes are blocked."""
   project = "my_project"
   query_result = []
   credentials = mock.create_autospec(Credentials, instance=True)
@@ -318,7 +314,7 @@ def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
     ],
 )
 def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
-  """Test execute_sql tool for SELECT query when writes are blocked."""
+  """Test execute_sql tool for non-SELECT query when writes are blocked."""
   project = "my_project"
   query_result = []
   credentials = mock.create_autospec(Credentials, instance=True)
@@ -342,3 +338,45 @@ def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
         "status": "ERROR",
         "error_details": "Read-only mode only supports SELECT statements.",
     }
+
+
+@pytest.mark.parametrize(
+    ("write_mode",),
+    [
+        pytest.param(WriteMode.BLOCKED, id="blocked"),
+        pytest.param(WriteMode.ALLOWED, id="allowed"),
+    ],
+)
+@mock.patch.dict(os.environ, {}, clear=True)
+@mock.patch("google.cloud.bigquery.Client.query_and_wait", autospec=True)
+@mock.patch("google.cloud.bigquery.Client.query", autospec=True)
+@mock.patch("google.auth.default", autospec=True)
+def test_execute_sql_no_default_auth(
+    mock_default_auth, mock_query, mock_query_and_wait, write_mode
+):
+  """Test execute_sql tool invocation does not involve calling default auth."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  query_result = [{"num": 123}]
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(write_mode=write_mode)
+
+  # Simulate the behavior of default auth - on purpose throw exception when
+  # the default auth is called
+  mock_default_auth.side_effect = DefaultCredentialsError(
+      "Your default credentials were not found"
+  )
+
+  # Simulate the result of query API
+  query_job = mock.create_autospec(bigquery.QueryJob)
+  query_job.statement_type = statement_type
+  mock_query.return_value = query_job
+
+  # Simulate the result of query_and_wait API
+  mock_query_and_wait.return_value = query_result
+
+  # Test the tool worked without invoking default auth
+  result = execute_sql(project, query, credentials, tool_config)
+  assert result == {"status": "SUCCESS", "rows": query_result}
+  mock_default_auth.assert_not_called()
