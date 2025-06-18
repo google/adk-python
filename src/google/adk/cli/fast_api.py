@@ -88,6 +88,53 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 
+# Global agents directory for session state preprocessor access
+_agents_dir = None
+
+
+async def _apply_session_state_preprocessor(
+    app_name: str, 
+    state: dict[str, Any]
+) -> dict[str, Any]:
+  """
+  Apply session state preprocessor callback if agent provides one.
+  
+  This allows agents to customize session state before template processing.
+  Useful for loading user data, setting project defaults, etc.
+  
+  Args:
+      app_name: Name of the agent/app
+      state: Current session state
+      
+  Returns:
+      Updated session state with agent-specific modifications
+  """
+  try:
+    # Try to import and call agent's session preprocessor
+    # Use the global agents_dir that was set during app initialization
+    if _agents_dir:
+      agent_module = AgentLoader(_agents_dir).load_agent(app_name)
+    else:
+      # Fallback: try to load without agents_dir (may fail)
+      agent_module = AgentLoader().load_agent(app_name)
+    
+    # Look for session_state_preprocessor function
+    if hasattr(agent_module, 'session_state_preprocessor'):
+      preprocessor = getattr(agent_module, 'session_state_preprocessor')
+      
+      if callable(preprocessor):
+        # Call preprocessor (support both sync and async)
+        if asyncio.iscoroutinefunction(preprocessor):
+          state = await preprocessor(state)
+        else:
+          state = preprocessor(state)
+      
+  except Exception as e:
+    logger.warning(f"Session state preprocessor not available or failed: {e}")
+    # Continue without preprocessor - this is optional
+  
+  return state
+
 
 class ApiServerSpanExporter(export.SpanExporter):
 
@@ -203,6 +250,10 @@ def get_fast_api_app(
     trace_to_cloud: bool = False,
     lifespan: Optional[Lifespan[FastAPI]] = None,
 ) -> FastAPI:
+  # Store agents_dir globally for session state preprocessor access
+  global _agents_dir
+  _agents_dir = agents_dir
+  
   # InMemory tracing dict.
   trace_dict: dict[str, Any] = {}
   session_trace_dict: dict[str, Any] = {}
@@ -404,6 +455,19 @@ def get_fast_api_app(
           status_code=400, detail=f"Session already exists: {session_id}"
       )
     logger.info("New session created: %s", session_id)
+    
+    # Initialize state with ADK Web development defaults
+    if state is None:
+        state = {}
+    
+    # Call session state preprocessor callback if agent provides one
+    state = await _apply_session_state_preprocessor(app_name, state)
+    
+    # Add basic ADK Web development defaults
+    # These defaults only apply when values aren't already set
+    if "user_id" not in state:
+        state["user_id"] = "1"  # Default ADK Web user for development
+    
     return await session_service.create_session(
         app_name=app_name, user_id=user_id, state=state, session_id=session_id
     )
@@ -419,6 +483,14 @@ def get_fast_api_app(
       events: Optional[list[Event]] = None,
   ) -> Session:
     logger.info("New session created")
+    
+    # Initialize state with ADK Web development defaults
+    if state is None:
+        state = {}
+    
+    # Call session state preprocessor callback if agent provides one
+    state = await _apply_session_state_preprocessor(app_name, state)
+    
     session = await session_service.create_session(
         app_name=app_name, user_id=user_id, state=state
     )

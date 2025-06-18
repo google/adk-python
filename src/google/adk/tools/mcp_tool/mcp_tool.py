@@ -116,8 +116,59 @@ class MCPTool(BaseTool):
     Returns:
         Any: The response from the tool.
     """
-    # Get the session from the session manager
-    session = await self._mcp_session_manager.create_session()
-
-    response = await session.call_tool(self.name, arguments=args)
-    return response
+    import asyncio
+    
+    # Check if we're running in uvloop (common issue with ADK Web)
+    current_loop = asyncio.get_running_loop()
+    loop_type = type(current_loop).__name__
+    loop_module = type(current_loop).__module__
+    # More robust uvloop detection
+    is_uvloop = (
+        loop_module.startswith('uvloop') or 
+        'uvloop' in str(type(current_loop)) or
+        hasattr(current_loop, '_ready') and hasattr(current_loop, '_selector')
+    )
+    
+    if is_uvloop:
+      # Handle uvloop compatibility issue by running MCP operations 
+      # in standard asyncio event loop in separate thread
+      import concurrent.futures
+      
+      def _run_with_standard_asyncio():
+        """Run MCP operation with standard asyncio to avoid uvloop conflicts."""
+        # Set standard asyncio policy
+        asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+          async def _mcp_operation():
+            # Create fresh session manager to avoid uvloop contamination
+            fresh_manager = MCPSessionManager(self._mcp_session_manager._connection_params)
+            try:
+              session = await fresh_manager.create_session()
+              result = await session.call_tool(self.name, arguments=args)
+              return result
+            finally:
+              await fresh_manager.close()
+          
+          return loop.run_until_complete(
+            asyncio.wait_for(_mcp_operation(), timeout=20.0)
+          )
+        finally:
+          try:
+            loop.close()
+          except Exception:
+            pass
+      
+      # Run in thread pool to avoid blocking uvloop
+      with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_run_with_standard_asyncio)
+        response = future.result(timeout=25.0)
+      
+      return response
+    else:
+      # Standard execution path for regular asyncio
+      session = await self._mcp_session_manager.create_session()
+      response = await session.call_tool(self.name, arguments=args)
+      return response

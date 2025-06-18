@@ -61,6 +61,55 @@ async def inject_session_state(
   """
 
   invocation_context = readonly_context._invocation_context
+  
+  # Apply session state preprocessor to enhance session state for template processing
+  enhanced_state = dict(invocation_context.session.state)
+  
+  try:
+    # Try to find and call agent's session_state_preprocessor
+    import asyncio
+    
+    app_name = invocation_context.session.app_name
+    
+    # Get agents_dir from fast_api module
+    from google.adk.cli.fast_api import _agents_dir
+    from google.adk.cli.utils.agent_loader import AgentLoader
+    
+    if _agents_dir:
+      # Try to load agent module and look for session_state_preprocessor
+      try:
+        # Import the agent module directly using standard Python import
+        import sys
+        import importlib
+        
+        # Try common agent module patterns
+        for module_pattern in [f"{app_name}", f"agents.{app_name}"]:
+          try:
+            if module_pattern in sys.modules:
+              agent_python_module = importlib.reload(sys.modules[module_pattern])
+            else:
+              agent_python_module = importlib.import_module(module_pattern)
+            
+            if hasattr(agent_python_module, 'session_state_preprocessor'):
+              preprocessor = getattr(agent_python_module, 'session_state_preprocessor')
+              
+              if callable(preprocessor):
+                if asyncio.iscoroutinefunction(preprocessor):
+                  enhanced_state = await preprocessor(enhanced_state)
+                else:
+                  enhanced_state = preprocessor(enhanced_state)
+              break
+              
+          except ImportError:
+            continue
+            
+      except Exception:
+        # Silent fallback - continue with original state
+        pass
+        
+  except Exception:
+    # Silent fallback - use original state if preprocessor fails
+    pass
 
   async def _async_sub(pattern, repl_async_fn, string) -> str:
     result = []
@@ -95,8 +144,8 @@ async def inject_session_state(
     else:
       if not _is_valid_state_name(var_name):
         return match.group()
-      if var_name in invocation_context.session.state:
-        return str(invocation_context.session.state[var_name])
+      if var_name in enhanced_state:
+        return str(enhanced_state[var_name])
       else:
         if optional:
           return ''
