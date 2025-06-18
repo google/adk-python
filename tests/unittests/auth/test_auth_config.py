@@ -68,10 +68,28 @@ def auth_config(oauth2_auth_scheme, oauth2_credentials):
   )
 
 
-def test_get_credential_key(auth_config):
+@pytest.fixture
+def auth_config_with_key(oauth2_auth_scheme, oauth2_credentials):
+  """Create an AuthConfig for testing."""
+
+  return AuthConfig(
+      auth_scheme=oauth2_auth_scheme,
+      raw_auth_credential=oauth2_credentials,
+      credential_key="test_key",
+  )
+
+
+def test_custom_credential_key(auth_config_with_key):
+  """Test using custom credential key."""
+
+  key = auth_config_with_key.credential_key
+  assert key == "test_key"
+
+
+def test_credential_key(auth_config):
   """Test generating a unique credential key."""
 
-  key = auth_config.get_credential_key()
+  key = auth_config.credential_key
   assert key.startswith("adk_oauth2_")
   assert "_oauth2_" in key
 
@@ -80,8 +98,8 @@ def test_get_credential_key_with_extras(auth_config):
   """Test generating a key when model_extra exists."""
   # Add model_extra to test cleanup
 
-  original_key = auth_config.get_credential_key()
-  key = auth_config.get_credential_key()
+  original_key = auth_config.credential_key
+  key = auth_config.credential_key
 
   auth_config.auth_scheme.model_extra["extra_field"] = "value"
   auth_config.raw_auth_credential.model_extra["extra_field"] = "value"

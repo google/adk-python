@@ -22,7 +22,6 @@ from typing import Optional
 import urllib.parse
 
 from dateutil import parser
-from google.genai import types
 from typing_extensions import override
 
 from google import genai
@@ -40,15 +39,27 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 class VertexAiSessionService(BaseSessionService):
-  """Connects to the managed Vertex AI Session Service."""
+  """Connects to the Vertex AI Agent Engine Session Service using GenAI API client.
+
+  https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/sessions/overview
+  """
 
   def __init__(
       self,
-      project: str = None,
-      location: str = None,
+      project: Optional[str] = None,
+      location: Optional[str] = None,
+      agent_engine_id: Optional[str] = None,
   ):
-    self.project = project
-    self.location = location
+    """Initializes the VertexAiSessionService.
+
+    Args:
+      project: The project id of the project to use.
+      location: The location of the project to use.
+      agent_engine_id: The resource ID of the agent engine to use.
+    """
+    self._project = project
+    self._location = location
+    self._agent_engine_id = agent_engine_id
 
   @override
   async def create_session(
@@ -64,14 +75,13 @@ class VertexAiSessionService(BaseSessionService):
           'User-provided Session id is not supported for'
           ' VertexAISessionService.'
       )
-
-    reasoning_engine_id = _parse_reasoning_engine_id(app_name)
+    reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    api_client = self._get_api_client()
 
     session_json_dict = {'user_id': user_id}
     if state:
       session_json_dict['session_state'] = state
 
-    api_client = _get_api_client(self.project, self.location)
     api_response = await api_client.async_request(
         http_method='POST',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions',
@@ -130,10 +140,10 @@ class VertexAiSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
-    reasoning_engine_id = _parse_reasoning_engine_id(app_name)
+    reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    api_client = self._get_api_client()
 
     # Get session resource
-    api_client = _get_api_client(self.project, self.location)
     get_session_api_response = await api_client.async_request(
         http_method='GET',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
@@ -203,14 +213,14 @@ class VertexAiSessionService(BaseSessionService):
   async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
-    reasoning_engine_id = _parse_reasoning_engine_id(app_name)
+    reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    api_client = self._get_api_client()
 
     path = f'reasoningEngines/{reasoning_engine_id}/sessions'
     if user_id:
       parsed_user_id = urllib.parse.quote(f'''"{user_id}"''', safe='')
       path = path + f'?filter=user_id={parsed_user_id}'
 
-    api_client = _get_api_client(self.project, self.location)
     api_response = await api_client.async_request(
         http_method='GET',
         path=path,
@@ -236,8 +246,9 @@ class VertexAiSessionService(BaseSessionService):
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
-    reasoning_engine_id = _parse_reasoning_engine_id(app_name)
-    api_client = _get_api_client(self.project, self.location)
+    reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    api_client = self._get_api_client()
+
     try:
       await api_client.async_request(
           http_method='DELETE',
@@ -253,8 +264,8 @@ class VertexAiSessionService(BaseSessionService):
     # Update the in-memory session.
     await super().append_event(session=session, event=event)
 
-    reasoning_engine_id = _parse_reasoning_engine_id(session.app_name)
-    api_client = _get_api_client(self.project, self.location)
+    reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
+    api_client = self._get_api_client()
     await api_client.async_request(
         http_method='POST',
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}:appendEvent',
@@ -262,15 +273,34 @@ class VertexAiSessionService(BaseSessionService):
     )
     return event
 
+  def _get_reasoning_engine_id(self, app_name: str):
+    if self._agent_engine_id:
+      return self._agent_engine_id
 
-def _get_api_client(project: str, location: str):
-  """Instantiates an API client for the given project and location.
+    if app_name.isdigit():
+      return app_name
 
-  It needs to be instantiated inside each request so that the event loop
-  management.
-  """
-  client = genai.Client(vertexai=True, project=project, location=location)
-  return client._api_client
+    pattern = r'^projects/([a-zA-Z0-9-_]+)/locations/([a-zA-Z0-9-_]+)/reasoningEngines/(\d+)$'
+    match = re.fullmatch(pattern, app_name)
+
+    if not bool(match):
+      raise ValueError(
+          f'App name {app_name} is not valid. It should either be the full'
+          ' ReasoningEngine resource name, or the reasoning engine id.'
+      )
+
+    return match.groups()[-1]
+
+  def _get_api_client(self):
+    """Instantiates an API client for the given project and location.
+
+    It needs to be instantiated inside each request so that the event loop
+    management can be properly propagated.
+    """
+    client = genai.Client(
+        vertexai=True, project=self._project, location=self._location
+    )
+    return client._api_client
 
 
 def _convert_event_to_json(event: Event) -> Dict[str, Any]:
@@ -366,19 +396,3 @@ def _from_api_event(api_event: Dict[str, Any]) -> Event:
     )
 
   return event
-
-
-def _parse_reasoning_engine_id(app_name: str):
-  if app_name.isdigit():
-    return app_name
-
-  pattern = r'^projects/([a-zA-Z0-9-_]+)/locations/([a-zA-Z0-9-_]+)/reasoningEngines/(\d+)$'
-  match = re.fullmatch(pattern, app_name)
-
-  if not bool(match):
-    raise ValueError(
-        f'App name {app_name} is not valid. It should either be the full'
-        ' ReasoningEngine resource name, or the reasoning engine id.'
-    )
-
-  return match.groups()[-1]

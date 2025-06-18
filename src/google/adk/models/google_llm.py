@@ -95,6 +95,13 @@ class Gemini(BaseLlm):
     )
     logger.info(_build_request_log(llm_request))
 
+    # add tracking headers to custom headers given it will override the headers
+    # set in the api client constructor
+    if llm_request.config and llm_request.config.http_options:
+      if not llm_request.config.http_options.headers:
+        llm_request.config.http_options.headers = {}
+      llm_request.config.http_options.headers.update(self._tracking_headers)
+
     if stream:
       responses = await self.api_client.aio.models.generate_content_stream(
           model=llm_request.model,
@@ -201,24 +208,21 @@ class Gemini(BaseLlm):
     return tracking_headers
 
   @cached_property
-  def _live_api_client(self) -> Client:
+  def _live_api_version(self) -> str:
     if self._api_backend == GoogleLLMVariant.VERTEX_AI:
       # use beta version for vertex api
-      api_version = 'v1beta1'
-      # use default api version for vertex
-      return Client(
-          http_options=types.HttpOptions(
-              headers=self._tracking_headers, api_version=api_version
-          )
-      )
+      return 'v1beta1'
     else:
       # use v1alpha for using API KEY from Google AI Studio
-      api_version = 'v1alpha'
-      return Client(
-          http_options=types.HttpOptions(
-              headers=self._tracking_headers, api_version=api_version
-          )
-      )
+      return 'v1alpha'
+
+  @cached_property
+  def _live_api_client(self) -> Client:
+    return Client(
+        http_options=types.HttpOptions(
+            headers=self._tracking_headers, api_version=self._live_api_version
+        )
+    )
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
@@ -230,6 +234,21 @@ class Gemini(BaseLlm):
     Yields:
       BaseLlmConnection, the connection to the Gemini model.
     """
+    # add tracking headers to custom headers and set api_version given
+    # the customized http options will override the one set in the api client
+    # constructor
+    if (
+        llm_request.live_connect_config
+        and llm_request.live_connect_config.http_options
+    ):
+      if not llm_request.live_connect_config.http_options.headers:
+        llm_request.live_connect_config.http_options.headers = {}
+      llm_request.live_connect_config.http_options.headers.update(
+          self._tracking_headers
+      )
+      llm_request.live_connect_config.http_options.api_version = (
+          self._live_api_version
+      )
 
     llm_request.live_connect_config.system_instruction = types.Content(
         role='system',
