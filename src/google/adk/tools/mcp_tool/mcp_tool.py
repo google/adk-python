@@ -20,6 +20,8 @@ from typing import Optional
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
+from mcp.shared.session import ProgressFnT
+
 from .._gemini_schema_util import _to_gemini_schema
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
@@ -106,7 +108,7 @@ class MCPTool(BaseTool):
     return function_decl
 
   @retry_on_closed_resource("_mcp_session_manager")
-  async def run_async(self, *, args, tool_context: ToolContext):
+  async def run_async(self, *, args, tool_context: ToolContext, progress_callback: ProgressFnT | None = None):
     """Runs the tool asynchronously.
 
     Args:
@@ -119,5 +121,5 @@ class MCPTool(BaseTool):
     # Get the session from the session manager
     session = await self._mcp_session_manager.create_session()
 
-    response = await session.call_tool(self.name, arguments=args)
+    response = await session.call_tool(self.name, arguments=args, progress_callback)
     return response
