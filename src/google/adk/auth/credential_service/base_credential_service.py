@@ -19,12 +19,12 @@ from abc import abstractmethod
 from typing import Optional
 
 from ...tools.tool_context import ToolContext
-from ...utils.feature_decorator import working_in_progress
+from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
 from ..auth_tool import AuthConfig
 
 
-@working_in_progress("Implementation are in progress. Don't use it for now.")
+@experimental
 class BaseCredentialService(ABC):
   """Abstract class for Service that loads / saves tool credentials from / to
   the backend credential store."""
