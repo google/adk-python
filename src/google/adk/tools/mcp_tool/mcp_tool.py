@@ -87,7 +87,7 @@ class MCPTool(BaseTool):
     )
     self._mcp_tool = mcp_tool
     self._mcp_session_manager = mcp_session_manager
-    # TODO(cheliu): Support passing auth to MCP Server.
+    # Store auth information for potential future use when MCP supports per-tool authentication
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
 
@@ -116,6 +116,14 @@ class MCPTool(BaseTool):
     Returns:
         Any: The response from the tool.
     """
+    # Log authentication status if available
+    if self._auth_scheme or self._auth_credential:
+      logger.info(
+          f"MCPTool '{self.name}' has authentication configured: "
+          f"scheme={type(self._auth_scheme).__name__ if self._auth_scheme else None}, "
+          f"credential={type(self._auth_credential).__name__ if self._auth_credential else None}"
+      )
+
     # Get the session from the session manager
     session = await self._mcp_session_manager.create_session()
 
