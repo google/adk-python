@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import os
+import re
 from unittest import mock
 
 from google.adk.tools.bigquery.client import get_bigquery_client
@@ -122,4 +123,7 @@ def test_bigquery_client_user_agent():
     # Verify that the tracking user agent was set
     client_info_arg = mock_connection.call_args[1].get("client_info")
     assert client_info_arg is not None
-    assert client_info_arg.user_agent == "adk-bigquery-tool"
+    assert re.search(
+        r"adk-bigquery-tool google-adk/([0-9A-Za-z._\-+/]+)",
+        client_info_arg.user_agent,
+    )

@@ -18,7 +18,9 @@ import google.api_core.client_info
 from google.cloud import bigquery
 from google.oauth2.credentials import Credentials
 
-USER_AGENT = "adk-bigquery-tool"
+from ... import version
+
+USER_AGENT = f"adk-bigquery-tool google-adk/{version.__version__}"
 
 
 def get_bigquery_client(
