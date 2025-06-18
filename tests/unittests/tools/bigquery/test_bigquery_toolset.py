@@ -96,9 +96,7 @@ async def test_bigquery_toolset_tools_selective(selected_tools):
     ],
 )
 @pytest.mark.asyncio
-async def test_bigquery_toolset_unknown_tool_raises(
-    selected_tools, returned_tools
-):
+async def test_bigquery_toolset_unknown_tool(selected_tools, returned_tools):
   """Test BigQuery toolset with filter.
 
   This test verifies the behavior of the BigQuery toolset when filter is
