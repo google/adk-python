@@ -1,0 +1,75 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from abc import ABC
+from abc import abstractmethod
+from typing import Optional
+
+from ...tools.tool_context import ToolContext
+from ...utils.feature_decorator import experimental
+from ..auth_credential import AuthCredential
+from ..auth_tool import AuthConfig
+
+
+@experimental
+class BaseCredentialService(ABC):
+  """Abstract class for Service that loads / saves tool credentials from / to
+  the backend credential store."""
+
+  @abstractmethod
+  async def load_credential(
+      self,
+      auth_config: AuthConfig,
+      tool_context: ToolContext,
+  ) -> Optional[AuthCredential]:
+    """
+    Loads the credential by auth config and current tool context from the
+    backend credential store.
+
+    Args:
+        auth_config: The auth config which contains the auth scheme and auth
+        credential information. auth_config.get_credential_key will be used to
+        build the key to load the credential.
+
+        tool_context: The context of the current invocation when the tool is
+        trying to load the credential.
+
+    Returns:
+        Optional[AuthCredential]: the credential saved in the store.
+
+    """
+
+  @abstractmethod
+  async def save_credential(
+      self,
+      auth_config: AuthConfig,
+      tool_context: ToolContext,
+  ) -> None:
+    """
+    Saves the exchanged_auth_credential in auth config to the backend credential
+    store.
+
+    Args:
+        auth_config: The auth config which contains the auth scheme and auth
+        credential information. auth_config.get_credential_key will be used to
+        build the key to save the credential.
+
+        tool_context: The context of the current invocation when the tool is
+        trying to save the credential.
+
+    Returns:
+        None
+    """
