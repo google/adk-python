@@ -345,9 +345,9 @@ class RestApiTool(BaseTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
   ) -> Dict[str, Any]:
-    return self.call(args=args, tool_context=tool_context)
+    return await self.call(args=args, tool_context=tool_context)
 
-  def call(
+  async def call(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
   ) -> Dict[str, Any]:
     """Executes the REST API call.
@@ -364,7 +364,7 @@ class RestApiTool(BaseTool):
     tool_auth_handler = ToolAuthHandler.from_tool_context(
         tool_context, self.auth_scheme, self.auth_credential
     )
-    auth_result = tool_auth_handler.prepare_auth_credentials()
+    auth_result = await tool_auth_handler.prepare_auth_credentials()
     auth_state, auth_scheme, auth_credential = (
         auth_result.state,
         auth_result.auth_scheme,
