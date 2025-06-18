@@ -388,7 +388,7 @@ class TestGetAuthResponse:
 
     # Store a credential in the state
     credential_key = auth_config.credential_key
-    state["temp:" + credential_key] = oauth2_credentials_with_auth_uri
+    state["temp:" + credential_key] = oauth2_credentials_with_auth_uri.model_dump(mode='json')
 
     result = handler.get_auth_response(state)
     assert result == oauth2_credentials_with_auth_uri
@@ -420,7 +420,8 @@ class TestParseAndStoreAuthResponse:
 
     credential_key = auth_config.credential_key
     assert (
-        state["temp:" + credential_key] == auth_config.exchanged_auth_credential
+        state["temp:" + credential_key]
+        == auth_config.exchanged_auth_credential.model_dump(mode="json")
     )
 
   @patch("google.adk.auth.auth_handler.AuthHandler.exchange_auth_token")
@@ -437,7 +438,10 @@ class TestParseAndStoreAuthResponse:
     handler.parse_and_store_auth_response(state)
 
     credential_key = auth_config_with_exchanged.credential_key
-    assert state["temp:" + credential_key] == mock_exchange_token.return_value
+    assert (
+        state["temp:" + credential_key]
+        == mock_exchange_token.return_value.model_dump(mode="json")
+    )
     assert mock_exchange_token.called
 
 

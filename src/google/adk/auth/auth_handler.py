@@ -51,7 +51,13 @@ class AuthHandler:
 
     credential_key = "temp:" + self.auth_config.credential_key
 
-    state[credential_key] = self.auth_config.exchanged_auth_credential
+    if self.auth_config.exchanged_auth_credential:
+      state[credential_key] = (
+          self.auth_config.exchanged_auth_credential.model_dump(mode="json")
+      )
+    else:
+      state[credential_key] = None
+
     if not isinstance(
         self.auth_config.auth_scheme, SecurityBase
     ) or self.auth_config.auth_scheme.type_ not in (
@@ -60,7 +66,11 @@ class AuthHandler:
     ):
       return
 
-    state[credential_key] = self.exchange_auth_token()
+    exchange_auth_token_result = self.exchange_auth_token()
+    if exchange_auth_token_result:
+      state[credential_key] = exchange_auth_token_result.model_dump(mode="json")
+    else:
+      state[credential_key] = None
 
   def _validate(self) -> None:
     if not self.auth_scheme:
@@ -68,7 +78,10 @@ class AuthHandler:
 
   def get_auth_response(self, state: State) -> AuthCredential:
     credential_key = "temp:" + self.auth_config.credential_key
-    return state.get(credential_key, None)
+    credential_data = state.get(credential_key, None)
+    if credential_data and isinstance(credential_data, dict):
+      return AuthCredential.model_validate(credential_data)
+    return None
 
   def generate_auth_request(self) -> AuthConfig:
     if not isinstance(
@@ -130,7 +143,7 @@ class AuthHandler:
     )
 
   def generate_auth_uri(
-      self,
+      self
   ) -> AuthCredential:
     """Generates an response containing the auth uri for user to sign in.
 
@@ -143,7 +156,7 @@ class AuthHandler:
     """
     if not AUTHLIB_AVIALABLE:
       return (
-          self.auth_config.raw_auth_credential.model_copy(deep=True)
+          self.auth_config.raw_auth_credential.model_copy(deep=True) 
           if self.auth_config.raw_auth_credential
           else None
       )

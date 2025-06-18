@@ -28,18 +28,27 @@ from typing import Literal
 from typing import Optional
 
 import click
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi import HTTPException
 from fastapi import Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket
 from fastapi.websockets import WebSocketDisconnect
+from google.adk.auth.auth_credential import AuthCredential, AuthCredentialTypes, OAuth2Auth
+from google.adk.auth.auth_handler import AuthHandler
+from google.adk.auth.auth_schemes import AuthSchemeType, OpenIdConnectWithConfig
+from google.adk.auth.auth_tool import AuthConfig
 from google.genai import types
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 import graphviz
+import httpx
 from opentelemetry import trace
 from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import export
@@ -47,6 +56,8 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
+from starlette.config import Config
+from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import Lifespan
 from typing_extensions import override
 
@@ -87,6 +98,9 @@ from .utils.agent_loader import AgentLoader
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+
+# Load environment variables for Google credentials
+config = Config(".env")
 
 
 class ApiServerSpanExporter(export.SpanExporter):
@@ -244,6 +258,13 @@ def get_fast_api_app(
 
   # Run the FastAPI server.
   app = FastAPI(lifespan=internal_lifespan)
+  session_secret = config("SESSION_SECRET", default=None)
+  if not session_secret:
+    raise RuntimeError(
+        "SESSION_SECRET environment variable is not set. Application cannot"
+        " start securely."
+    )
+  app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
   if allow_origins:
     app.add_middleware(
@@ -944,6 +965,30 @@ def get_fast_api_app(
     mimetypes.add_type("application/javascript", ".js", True)
     mimetypes.add_type("text/javascript", ".js", True)
 
+    GOOGLE_OAUTH_CLIENT_ID = config("GOOGLE_CLIENT_ID", default=None)
+    GOOGLE_OAUTH_CLIENT_SECRET = config("GOOGLE_CLIENT_SECRET", default=None)
+    BASE_OAUTH_SCOPES = [
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/cloud-platform",
+    ]
+
+    GOOGLE_OAUTH_SCHEME = OpenIdConnectWithConfig(
+        type_=AuthSchemeType.openIdConnect,
+        openIdConnectUrl=(
+            "https://accounts.google.com/.well-known/openid-configuration"
+        ),
+        scopes=BASE_OAUTH_SCOPES,
+        token_endpoint="https://oauth2.googleapis.com/token",
+        userinfo_endpoint="https://openidconnect.googleapis.com/v1/userinfo",
+        authorization_endpoint="https://accounts.google.com/o/oauth2/v2/auth",
+    )
+
+    GOOGLE_OAUTH_REDIRECT_URI = config(
+        "GOOGLE_OAUTH_REDIRECT_URI", default=None
+    )
+
     BASE_DIR = Path(__file__).parent.resolve()
     ANGULAR_DIST_PATH = BASE_DIR / "browser"
 
@@ -955,9 +1000,170 @@ def get_fast_api_app(
     async def redirect_dev_ui_add_slash():
       return RedirectResponse("/dev-ui/")
 
+    @app.get("/login", response_model=None)
+    async def login(request: Request) -> RedirectResponse | JSONResponse:
+      """Redirects the user to Google's authentication page."""
+      if (
+          GOOGLE_OAUTH_CLIENT_ID is None
+          or GOOGLE_OAUTH_CLIENT_SECRET is None
+          or GOOGLE_OAUTH_REDIRECT_URI is None
+      ):
+        return JSONResponse(
+            content={
+                "error": (
+                    "OAuth client ID, secret, or redirect URI not configured."
+                )
+            },
+            status_code=500,
+        )
+      raw_credential = AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id=GOOGLE_OAUTH_CLIENT_ID,
+              client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+              redirect_uri=GOOGLE_OAUTH_REDIRECT_URI,
+          ),
+      )
+      raw_credential.oauth2.redirect_uri = GOOGLE_OAUTH_REDIRECT_URI
+      auth_config = AuthConfig(
+          auth_scheme=GOOGLE_OAUTH_SCHEME, raw_auth_credential=raw_credential
+      )
+
+      try:
+        handler = AuthHandler(auth_config)
+        generated_auth_config = handler.generate_auth_request()
+        request.session["oauth_state"] = (
+            generated_auth_config.exchanged_auth_credential.oauth2.state
+        )
+        return RedirectResponse(
+            url=generated_auth_config.exchanged_auth_credential.oauth2.auth_uri,
+            status_code=302,
+        )
+      except ValueError as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+    @app.get("/auth/google/callback", response_model=None)
+    async def auth_google_callback(
+        request: Request,
+        code: Optional[str] = Query(None),
+        state: Optional[str] = Query(None),
+        error: Optional[str] = Query(None),
+    ) -> RedirectResponse | JSONResponse:
+      """This is the callback endpoint that Google redirects to after successful authentication.
+
+      It exchanges the authorization code for an access token and fetches user
+      info.
+      """
+      if (
+          GOOGLE_OAUTH_CLIENT_ID is None
+          or GOOGLE_OAUTH_CLIENT_SECRET is None
+          or GOOGLE_OAUTH_REDIRECT_URI is None
+      ):
+        return JSONResponse(
+            content={
+                "error": (
+                    "OAuth client ID, secret, or redirect URI not configured."
+                )
+            },
+            status_code=500,
+        )
+
+      if error:
+        logger.error(f"OAuth Error: {error}")
+        return JSONResponse(
+            content={"error": f"OAuth Error: {error}"}, status_code=500
+        )
+
+      stored_state = request.session.pop("oauth_state", None)
+      if stored_state is None or stored_state != state:
+        return JSONResponse(
+            content={"error": "Invalid OAuth state."}, status_code=400
+        )
+
+      exchanged_credential_for_token_exchange = AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id=GOOGLE_OAUTH_CLIENT_ID,
+              client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+              redirect_uri=GOOGLE_OAUTH_REDIRECT_URI,
+              auth_code=code,
+          ),
+      )
+      exchanged_credential_for_token_exchange.oauth2.redirect_uri = str(
+          GOOGLE_OAUTH_REDIRECT_URI
+      )
+      raw_credential = AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id=GOOGLE_OAUTH_CLIENT_ID,
+              client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+              redirect_uri=GOOGLE_OAUTH_REDIRECT_URI,
+          ),
+      )
+      auth_config = AuthConfig(
+          auth_scheme=GOOGLE_OAUTH_SCHEME,
+          raw_auth_credential=raw_credential,
+          exchanged_auth_credential=exchanged_credential_for_token_exchange,
+      )
+      try:
+        handler = AuthHandler(auth_config)
+        handler.parse_and_store_auth_response(state=request.session)
+        stored_credential = handler.get_auth_response(state=request.session)
+        if (
+            not stored_credential
+            or not stored_credential.oauth2
+            or not stored_credential.oauth2.access_token
+        ):
+          logger.error("Failed to retrieve access token.")
+          return JSONResponse(
+              content={"error": "Failed to retrieve access token."},
+              status_code=500,
+          )
+        access_token = stored_credential.oauth2.access_token
+        async with httpx.AsyncClient() as client:
+          userinfo_response = await client.get(
+              GOOGLE_OAUTH_SCHEME.userinfo_endpoint,
+              headers={"Authorization": f"Bearer {access_token}"},
+          )
+          if userinfo_response.status_code != 200:
+            logger.error("Failed to fetch userinfo.")
+            return JSONResponse(
+                content={"error": "Failed to fetch userinfo."}, status_code=500
+            )
+          userinfo = userinfo_response.json()
+        request.session["user"] = userinfo
+        request.session["token"] = {
+            "access_token": access_token,
+            "userinfo": userinfo,
+            "scopes": BASE_OAUTH_SCOPES,
+            "expires_at": stored_credential.oauth2.expires_at,
+            "refresh_token": stored_credential.oauth2.refresh_token,
+        }
+        logger.info("User authenticated successfully, token stored in session.")
+        return RedirectResponse(url="/", status_code=302)
+      except Exception as e:
+        logger.error(f"Token processing error: {e}", exc_info=True)
+        return JSONResponse(
+            content={"error": "Token processing error", "detail": str(e)},
+            status_code=500,
+        )
+
+    @app.get("/logout", response_model=None)
+    async def logout(request: Request) -> RedirectResponse:
+      """Clears the user's session and logs them out."""
+      request.session.pop("user", None)
+      request.session.pop("token", None)
+      request.session.pop("oauth_state", None)
+      request.session.pop(
+          f"temp:{AuthCredentialTypes.OAUTH2.value}_google", None
+      )
+      logger.info("User session cleared.")
+      return RedirectResponse(url="/", status_code=302)
+
     app.mount(
         "/dev-ui/",
         StaticFiles(directory=ANGULAR_DIST_PATH, html=True),
         name="static",
     )
+
   return app
