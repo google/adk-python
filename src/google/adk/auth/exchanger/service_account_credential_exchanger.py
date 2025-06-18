@@ -16,19 +16,22 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import google.auth
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
+from typing_extensions import override
 
-from ..utils.feature_decorator import experimental
-from .auth_credential import AuthCredential
-from .auth_credential import AuthCredentialTypes
-from .auth_credential import HttpAuth
-from .auth_credential import HttpCredentials
+from ...utils.feature_decorator import experimental
+from ..auth_credential import AuthCredential
+from ..auth_credential import AuthCredentialTypes
+from ..auth_schemes import AuthScheme
+from .base_credential_exchanger import BaseCredentialExchanger
 
 
 @experimental
-class ServiceAccountCredentialExchanger:
+class ServiceAccountCredentialExchanger(BaseCredentialExchanger):
   """Exchanges Google Service Account credentials for an access token.
 
   Uses the default service credential if `use_default_credential = True`.
@@ -36,44 +39,56 @@ class ServiceAccountCredentialExchanger:
   credential.
   """
 
-  def __init__(self, credential: AuthCredential):
-    if credential.auth_type != AuthCredentialTypes.SERVICE_ACCOUNT:
-      raise ValueError("Credential is not a service account credential.")
-    self._credential = credential
-
-  def exchange(self) -> AuthCredential:
+  @override
+  async def exchange(
+      self,
+      auth_credential: AuthCredential,
+      auth_scheme: Optional[AuthScheme] = None,
+  ) -> AuthCredential:
     """Exchanges the service account auth credential for an access token.
 
     If the AuthCredential contains a service account credential, it will be used
     to exchange for an access token. Otherwise, if use_default_credential is True,
     the default application credential will be used for exchanging an access token.
 
+    Args:
+        auth_scheme: The authentication scheme.
+        auth_credential: The credential to exchange.
+
     Returns:
-        An AuthCredential in HTTP Bearer format, containing the access token.
+        An AuthCredential in OAUTH2 format, containing the exchanged credential JSON.
 
     Raises:
         ValueError: If service account credentials are missing or invalid.
         Exception: If credential exchange or refresh fails.
     """
+    if auth_credential is None:
+      raise ValueError("Credential cannot be None.")
+
+    if auth_credential.auth_type != AuthCredentialTypes.SERVICE_ACCOUNT:
+      raise ValueError("Credential is not a service account credential.")
+
+    if auth_credential.service_account is None:
+      raise ValueError(
+          "Service account credentials are missing. Please provide them."
+      )
+
     if (
-        self._credential is None
-        or self._credential.service_account is None
-        or (
-            self._credential.service_account.service_account_credential is None
-            and not self._credential.service_account.use_default_credential
-        )
+        auth_credential.service_account.service_account_credential is None
+        and not auth_credential.service_account.use_default_credential
     ):
       raise ValueError(
-          "Service account credentials are missing. Please provide them, or set"
-          " `use_default_credential = True` to use application default"
-          " credential in a hosted service like Google Cloud Run."
+          "Service account credentials are invalid. Please set the"
+          " service_account_credential field or set `use_default_credential ="
+          " True` to use application default credential in a hosted service"
+          " like Google Cloud Run."
       )
 
     try:
-      if self._credential.service_account.use_default_credential:
+      if auth_credential.service_account.use_default_credential:
         credentials, _ = google.auth.default()
       else:
-        config = self._credential.service_account
+        config = auth_credential.service_account
         credentials = service_account.Credentials.from_service_account_info(
             config.service_account_credential.model_dump(), scopes=config.scopes
         )
@@ -82,11 +97,8 @@ class ServiceAccountCredentialExchanger:
       credentials.refresh(Request())
 
       return AuthCredential(
-          auth_type=AuthCredentialTypes.HTTP,
-          http=HttpAuth(
-              scheme="bearer",
-              credentials=HttpCredentials(token=credentials.token),
-          ),
+          auth_type=AuthCredentialTypes.OAUTH2,
+          google_oauth2_json=credentials.to_json(),
       )
     except Exception as e:
       raise ValueError(f"Failed to exchange service account token: {e}") from e

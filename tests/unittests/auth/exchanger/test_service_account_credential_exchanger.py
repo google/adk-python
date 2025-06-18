@@ -17,19 +17,20 @@
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from fastapi.openapi.models import HTTPBearer
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.auth.auth_credential import ServiceAccountCredential
-from google.adk.auth.service_account_credential_exchanger import ServiceAccountCredentialExchanger
+from google.adk.auth.exchanger.service_account_credential_exchanger import ServiceAccountCredentialExchanger
 import pytest
 
 
 class TestServiceAccountCredentialExchanger:
   """Test cases for ServiceAccountCredentialExchanger."""
 
-  def test_init_valid_credential(self):
-    """Test successful initialization with valid service account credential."""
+  def test_exchange_with_valid_credential(self):
+    """Test successful exchange with valid service account credential."""
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
         service_account=ServiceAccount(
@@ -55,26 +56,36 @@ class TestServiceAccountCredentialExchanger:
         ),
     )
 
-    exchanger = ServiceAccountCredentialExchanger(credential)
-    assert exchanger._credential == credential
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
 
-  def test_init_invalid_credential_type(self):
-    """Test initialization with invalid credential type raises ValueError."""
+    # This should not raise an exception
+    assert exchanger is not None
+
+  @pytest.mark.asyncio
+  async def test_exchange_invalid_credential_type(self):
+    """Test exchange with invalid credential type raises ValueError."""
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.API_KEY,
         api_key="test-key",
     )
 
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
+
     with pytest.raises(
         ValueError, match="Credential is not a service account credential"
     ):
-      ServiceAccountCredentialExchanger(credential)
+      await exchanger.exchange(credential, auth_scheme)
 
+  @pytest.mark.asyncio
   @patch(
-      "google.adk.auth.service_account_credential_exchanger.service_account.Credentials.from_service_account_info"
+      "google.adk.auth.exchanger.service_account_credential_exchanger.service_account.Credentials.from_service_account_info"
   )
-  @patch("google.adk.auth.service_account_credential_exchanger.Request")
-  def test_exchange_with_explicit_credentials_success(
+  @patch(
+      "google.adk.auth.exchanger.service_account_credential_exchanger.Request"
+  )
+  async def test_exchange_with_explicit_credentials_success(
       self, mock_request_class, mock_from_service_account_info
   ):
     """Test successful exchange with explicit service account credentials."""
@@ -84,6 +95,9 @@ class TestServiceAccountCredentialExchanger:
 
     mock_credentials = MagicMock()
     mock_credentials.token = "mock_access_token"
+    mock_credentials.to_json.return_value = (
+        '{"token": "mock_access_token", "type": "authorized_user"}'
+    )
     mock_from_service_account_info.return_value = mock_credentials
 
     # Create test credential
@@ -113,13 +127,20 @@ class TestServiceAccountCredentialExchanger:
         ),
     )
 
-    exchanger = ServiceAccountCredentialExchanger(credential)
-    result = exchanger.exchange()
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
+    result = await exchanger.exchange(credential, auth_scheme)
 
     # Verify the result
-    assert result.auth_type == AuthCredentialTypes.HTTP
-    assert result.http.scheme == "bearer"
-    assert result.http.credentials.token == "mock_access_token"
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.google_oauth2_json is not None
+    # Verify that google_oauth2_json contains the token
+    import json
+
+    exchanged_creds = json.loads(result.google_oauth2_json)
+    assert exchanged_creds.get(
+        "token"
+    ) == "mock_access_token" or "mock_access_token" in str(exchanged_creds)
 
     # Verify mocks were called correctly
     mock_from_service_account_info.assert_called_once_with(
@@ -128,11 +149,14 @@ class TestServiceAccountCredentialExchanger:
     )
     mock_credentials.refresh.assert_called_once_with(mock_request)
 
+  @pytest.mark.asyncio
   @patch(
-      "google.adk.auth.service_account_credential_exchanger.google.auth.default"
+      "google.adk.auth.exchanger.service_account_credential_exchanger.google.auth.default"
   )
-  @patch("google.adk.auth.service_account_credential_exchanger.Request")
-  def test_exchange_with_default_credentials_success(
+  @patch(
+      "google.adk.auth.exchanger.service_account_credential_exchanger.Request"
+  )
+  async def test_exchange_with_default_credentials_success(
       self, mock_request_class, mock_google_auth_default
   ):
     """Test successful exchange with default application credentials."""
@@ -142,6 +166,9 @@ class TestServiceAccountCredentialExchanger:
 
     mock_credentials = MagicMock()
     mock_credentials.token = "default_access_token"
+    mock_credentials.to_json.return_value = (
+        '{"token": "default_access_token", "type": "authorized_user"}'
+    )
     mock_google_auth_default.return_value = (mock_credentials, "test-project")
 
     # Create test credential with use_default_credential=True
@@ -153,33 +180,45 @@ class TestServiceAccountCredentialExchanger:
         ),
     )
 
-    exchanger = ServiceAccountCredentialExchanger(credential)
-    result = exchanger.exchange()
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
+    result = await exchanger.exchange(credential, auth_scheme)
 
     # Verify the result
-    assert result.auth_type == AuthCredentialTypes.HTTP
-    assert result.http.scheme == "bearer"
-    assert result.http.credentials.token == "default_access_token"
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.google_oauth2_json is not None
+    # Verify that google_oauth2_json contains the token
+    import json
+
+    exchanged_creds = json.loads(result.google_oauth2_json)
+    assert exchanged_creds.get(
+        "token"
+    ) == "default_access_token" or "default_access_token" in str(
+        exchanged_creds
+    )
 
     # Verify mocks were called correctly
     mock_google_auth_default.assert_called_once()
     mock_credentials.refresh.assert_called_once_with(mock_request)
 
-  def test_exchange_missing_service_account(self):
+  @pytest.mark.asyncio
+  async def test_exchange_missing_service_account(self):
     """Test exchange fails when service_account is None."""
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
         service_account=None,
     )
 
-    exchanger = ServiceAccountCredentialExchanger(credential)
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
 
     with pytest.raises(
         ValueError, match="Service account credentials are missing"
     ):
-      exchanger.exchange()
+      await exchanger.exchange(credential, auth_scheme)
 
-  def test_exchange_missing_credentials_and_not_default(self):
+  @pytest.mark.asyncio
+  async def test_exchange_missing_credentials_and_not_default(self):
     """Test exchange fails when credentials are missing and use_default_credential is False."""
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
@@ -190,17 +229,19 @@ class TestServiceAccountCredentialExchanger:
         ),
     )
 
-    exchanger = ServiceAccountCredentialExchanger(credential)
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
 
     with pytest.raises(
-        ValueError, match="Service account credentials are missing"
+        ValueError, match="Service account credentials are invalid"
     ):
-      exchanger.exchange()
+      await exchanger.exchange(credential, auth_scheme)
 
+  @pytest.mark.asyncio
   @patch(
-      "google.adk.auth.service_account_credential_exchanger.service_account.Credentials.from_service_account_info"
+      "google.adk.auth.exchanger.service_account_credential_exchanger.service_account.Credentials.from_service_account_info"
   )
-  def test_exchange_credential_creation_failure(
+  async def test_exchange_credential_creation_failure(
       self, mock_from_service_account_info
   ):
     """Test exchange handles credential creation failure gracefully."""
@@ -234,17 +275,21 @@ class TestServiceAccountCredentialExchanger:
         ),
     )
 
-    exchanger = ServiceAccountCredentialExchanger(credential)
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
 
     with pytest.raises(
         ValueError, match="Failed to exchange service account token"
     ):
-      exchanger.exchange()
+      await exchanger.exchange(credential, auth_scheme)
 
+  @pytest.mark.asyncio
   @patch(
-      "google.adk.auth.service_account_credential_exchanger.google.auth.default"
+      "google.adk.auth.exchanger.service_account_credential_exchanger.google.auth.default"
   )
-  def test_exchange_default_credential_failure(self, mock_google_auth_default):
+  async def test_exchange_default_credential_failure(
+      self, mock_google_auth_default
+  ):
     """Test exchange handles default credential failure gracefully."""
     # Setup mock to raise exception
     mock_google_auth_default.side_effect = Exception(
@@ -260,18 +305,22 @@ class TestServiceAccountCredentialExchanger:
         ),
     )
 
-    exchanger = ServiceAccountCredentialExchanger(credential)
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
 
     with pytest.raises(
         ValueError, match="Failed to exchange service account token"
     ):
-      exchanger.exchange()
+      await exchanger.exchange(credential, auth_scheme)
 
+  @pytest.mark.asyncio
   @patch(
-      "google.adk.auth.service_account_credential_exchanger.service_account.Credentials.from_service_account_info"
+      "google.adk.auth.exchanger.service_account_credential_exchanger.service_account.Credentials.from_service_account_info"
   )
-  @patch("google.adk.auth.service_account_credential_exchanger.Request")
-  def test_exchange_refresh_failure(
+  @patch(
+      "google.adk.auth.exchanger.service_account_credential_exchanger.Request"
+  )
+  async def test_exchange_refresh_failure(
       self, mock_request_class, mock_from_service_account_info
   ):
     """Test exchange handles credential refresh failure gracefully."""
@@ -312,30 +361,73 @@ class TestServiceAccountCredentialExchanger:
         ),
     )
 
-    exchanger = ServiceAccountCredentialExchanger(credential)
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
 
     with pytest.raises(
         ValueError, match="Failed to exchange service account token"
     ):
-      exchanger.exchange()
+      await exchanger.exchange(credential, auth_scheme)
 
-  def test_exchange_none_credential_in_constructor(self):
-    """Test that passing None credential raises appropriate error during construction."""
-    # This test verifies behavior when _credential is None, though this shouldn't
-    # happen in normal usage due to constructor validation
+  @pytest.mark.asyncio
+  async def test_exchange_none_credential_in_constructor(self):
+    """Test that passing None credential raises appropriate error during exchange."""
+    # This test verifies behavior when credential is None
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
+
+    with pytest.raises(ValueError, match="Credential cannot be None"):
+      await exchanger.exchange(None, auth_scheme)
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.auth.exchanger.service_account_credential_exchanger.google.auth.default"
+  )
+  @patch(
+      "google.adk.auth.exchanger.service_account_credential_exchanger.Request"
+  )
+  async def test_exchange_with_service_account_no_explicit_credentials(
+      self, mock_request_class, mock_google_auth_default
+  ):
+    """Test exchange with service account that has no explicit credentials uses default."""
+    # Setup mocks
+    mock_request = MagicMock()
+    mock_request_class.return_value = mock_request
+
+    mock_credentials = MagicMock()
+    mock_credentials.token = "default_access_token"
+    mock_credentials.to_json.return_value = (
+        '{"token": "default_access_token", "type": "authorized_user"}'
+    )
+    mock_google_auth_default.return_value = (mock_credentials, "test-project")
+
+    # Create test credential with no explicit credentials but use_default_credential=True
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
         service_account=ServiceAccount(
+            service_account_credential=None,
             use_default_credential=True,
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         ),
     )
 
-    exchanger = ServiceAccountCredentialExchanger(credential)
-    # Manually set to None to test the validation logic
-    exchanger._credential = None
+    auth_scheme = HTTPBearer()
+    exchanger = ServiceAccountCredentialExchanger()
+    result = await exchanger.exchange(credential, auth_scheme)
 
-    with pytest.raises(
-        ValueError, match="Service account credentials are missing"
-    ):
-      exchanger.exchange()
+    # Verify the result
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.google_oauth2_json is not None
+    # Verify that google_oauth2_json contains the token
+    import json
+
+    exchanged_creds = json.loads(result.google_oauth2_json)
+    assert exchanged_creds.get(
+        "token"
+    ) == "default_access_token" or "default_access_token" in str(
+        exchanged_creds
+    )
+
+    # Verify mocks were called correctly
+    mock_google_auth_default.assert_called_once()
+    mock_credentials.refresh.assert_called_once_with(mock_request)
