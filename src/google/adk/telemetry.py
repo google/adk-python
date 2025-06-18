@@ -35,7 +35,7 @@ from .models.llm_request import LlmRequest
 from .models.llm_response import LlmResponse
 from .tools.base_tool import BaseTool
 
-tracer = trace.get_tracer('gcp.vertex.agent')
+tracer = trace.get_tracer("gcp.vertex.agent")
 
 
 def _safe_json_serialize(obj) -> str:
@@ -51,16 +51,17 @@ def _safe_json_serialize(obj) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(
-        obj, ensure_ascii=False, default=lambda o: '<not serializable>'
+        obj, ensure_ascii=False, default=lambda o: "<not serializable>"
     )
   except (TypeError, OverflowError):
-    return '<not serializable>'
+    return "<not serializable>"
 
 
 def trace_tool_call(
     tool: BaseTool,
     args: dict[str, Any],
     function_response_event: Event,
+    **kwargs,
 ):
   """Traces tool call.
 
@@ -70,12 +71,12 @@ def trace_tool_call(
     function_response_event: The event with the function response details.
   """
   span = trace.get_current_span()
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
-  span.set_attribute('gen_ai.operation.name', 'execute_tool')
-  span.set_attribute('gen_ai.tool.name', tool.name)
-  span.set_attribute('gen_ai.tool.description', tool.description)
-  tool_call_id = '<not specified>'
-  tool_response = '<not specified>'
+  span.set_attribute("gen_ai.system", "gcp.vertex.agent")
+  span.set_attribute("gen_ai.operation.name", "execute_tool")
+  span.set_attribute("gen_ai.tool.name", tool.name)
+  span.set_attribute("gen_ai.tool.description", tool.description)
+  tool_call_id = "<not specified>"
+  tool_response = "<not specified>"
   if function_response_event.content.parts:
     function_response = function_response_event.content.parts[
         0
@@ -84,25 +85,25 @@ def trace_tool_call(
       tool_call_id = function_response.id
       tool_response = function_response.response
 
-  span.set_attribute('gen_ai.tool.call.id', tool_call_id)
+  span.set_attribute("gen_ai.tool.call.id", tool_call_id)
 
   if not isinstance(tool_response, dict):
-    tool_response = {'result': tool_response}
+    tool_response = {"result": tool_response}
   span.set_attribute(
-      'gcp.vertex.agent.tool_call_args',
+      "gcp.vertex.agent.tool_call_args",
       _safe_json_serialize(args),
   )
-  span.set_attribute('gcp.vertex.agent.event_id', function_response_event.id)
+  span.set_attribute("gcp.vertex.agent.event_id", function_response_event.id)
   span.set_attribute(
-      'gcp.vertex.agent.tool_response',
+      "gcp.vertex.agent.tool_response",
       _safe_json_serialize(tool_response),
   )
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
-  span.set_attribute('gcp.vertex.agent.llm_request', '{}')
+  span.set_attribute("gcp.vertex.agent.llm_request", "{}")
   span.set_attribute(
-      'gcp.vertex.agent.llm_response',
-      '{}',
+      "gcp.vertex.agent.llm_response",
+      "{}",
   )
 
 
@@ -121,31 +122,31 @@ def trace_merged_tool_calls(
   """
 
   span = trace.get_current_span()
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
-  span.set_attribute('gen_ai.operation.name', 'execute_tool')
-  span.set_attribute('gen_ai.tool.name', '(merged tools)')
-  span.set_attribute('gen_ai.tool.description', '(merged tools)')
-  span.set_attribute('gen_ai.tool.call.id', response_event_id)
+  span.set_attribute("gen_ai.system", "gcp.vertex.agent")
+  span.set_attribute("gen_ai.operation.name", "execute_tool")
+  span.set_attribute("gen_ai.tool.name", "(merged tools)")
+  span.set_attribute("gen_ai.tool.description", "(merged tools)")
+  span.set_attribute("gen_ai.tool.call.id", response_event_id)
 
-  span.set_attribute('gcp.vertex.agent.tool_call_args', 'N/A')
-  span.set_attribute('gcp.vertex.agent.event_id', response_event_id)
+  span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
+  span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
   try:
     function_response_event_json = function_response_event.model_dumps_json(
         exclude_none=True
     )
   except Exception:  # pylint: disable=broad-exception-caught
-    function_response_event_json = '<not serializable>'
+    function_response_event_json = "<not serializable>"
 
   span.set_attribute(
-      'gcp.vertex.agent.tool_response',
+      "gcp.vertex.agent.tool_response",
       function_response_event_json,
   )
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
-  span.set_attribute('gcp.vertex.agent.llm_request', '{}')
+  span.set_attribute("gcp.vertex.agent.llm_request", "{}")
   span.set_attribute(
-      'gcp.vertex.agent.llm_response',
-      '{}',
+      "gcp.vertex.agent.llm_response",
+      "{}",
   )
 
 
@@ -169,18 +170,18 @@ def trace_call_llm(
   span = trace.get_current_span()
   # Special standard Open Telemetry GenaI attributes that indicate
   # that this is a span related to a Generative AI system.
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
-  span.set_attribute('gen_ai.request.model', llm_request.model)
+  span.set_attribute("gen_ai.system", "gcp.vertex.agent")
+  span.set_attribute("gen_ai.request.model", llm_request.model)
   span.set_attribute(
-      'gcp.vertex.agent.invocation_id', invocation_context.invocation_id
+      "gcp.vertex.agent.invocation_id", invocation_context.invocation_id
   )
   span.set_attribute(
-      'gcp.vertex.agent.session_id', invocation_context.session.id
+      "gcp.vertex.agent.session_id", invocation_context.session.id
   )
-  span.set_attribute('gcp.vertex.agent.event_id', event_id)
+  span.set_attribute("gcp.vertex.agent.event_id", event_id)
   # Consider removing once GenAI SDK provides a way to record this info.
   span.set_attribute(
-      'gcp.vertex.agent.llm_request',
+      "gcp.vertex.agent.llm_request",
       _safe_json_serialize(_build_llm_request_for_trace(llm_request)),
   )
   # Consider removing once GenAI SDK provides a way to record this info.
@@ -188,10 +189,10 @@ def trace_call_llm(
   try:
     llm_response_json = llm_response.model_dump_json(exclude_none=True)
   except Exception:  # pylint: disable=broad-exception-caught
-    llm_response_json = '<not serializable>'
+    llm_response_json = "<not serializable>"
 
   span.set_attribute(
-      'gcp.vertex.agent.llm_response',
+      "gcp.vertex.agent.llm_response",
       llm_response_json,
   )
 
@@ -213,13 +214,13 @@ def trace_send_data(
   """
   span = trace.get_current_span()
   span.set_attribute(
-      'gcp.vertex.agent.invocation_id', invocation_context.invocation_id
+      "gcp.vertex.agent.invocation_id", invocation_context.invocation_id
   )
-  span.set_attribute('gcp.vertex.agent.event_id', event_id)
+  span.set_attribute("gcp.vertex.agent.event_id", event_id)
   # Once instrumentation is added to the GenAI SDK, consider whether this
   # information still needs to be recorded by the Agent Development Kit.
   span.set_attribute(
-      'gcp.vertex.agent.data',
+      "gcp.vertex.agent.data",
       _safe_json_serialize([
           types.Content(role=content.role, parts=content.parts).model_dump(
               exclude_none=True
@@ -244,16 +245,16 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
   """
   # Some fields in LlmRequest are function pointers and can not be serialized.
   result = {
-      'model': llm_request.model,
-      'config': llm_request.config.model_dump(
-          exclude_none=True, exclude='response_schema'
+      "model": llm_request.model,
+      "config": llm_request.config.model_dump(
+          exclude_none=True, exclude="response_schema"
       ),
-      'contents': [],
+      "contents": [],
   }
   # We do not want to send bytes data to the trace.
   for content in llm_request.contents:
     parts = [part for part in content.parts if not part.inline_data]
-    result['contents'].append(
+    result["contents"].append(
         types.Content(role=content.role, parts=parts).model_dump(
             exclude_none=True
         )

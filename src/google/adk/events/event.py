@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 import random
 import string
+from typing import Dict
 from typing import Optional
 
 from google.genai import types
@@ -47,16 +48,16 @@ class Event(LlmResponse):
   """
 
   model_config = ConfigDict(
-      extra='forbid',
-      ser_json_bytes='base64',
-      val_json_bytes='base64',
+      extra="forbid",
+      ser_json_bytes="base64",
+      val_json_bytes="base64",
       alias_generator=alias_generators.to_camel,
       populate_by_name=True,
   )
   """The pydantic model config."""
 
   # TODO: revert to be required after spark migration
-  invocation_id: str = ''
+  invocation_id: str = ""
   """The invocation ID of the event."""
   author: str
   """'user' or the name of the agent, indicating who appended the event to the
@@ -81,7 +82,7 @@ class Event(LlmResponse):
 
   # The following are computed fields.
   # Do not assign the ID. It will be assigned by the session.
-  id: str = ''
+  id: str = ""
   """The unique identifier of the event."""
   timestamp: float = Field(default_factory=lambda: datetime.now().timestamp())
   """The timestamp of the event."""
@@ -133,4 +134,11 @@ class Event(LlmResponse):
   @staticmethod
   def new_id():
     characters = string.ascii_letters + string.digits
-    return ''.join(random.choice(characters) for _ in range(8))
+    return "".join(random.choice(characters) for _ in range(8))
+
+  def to_dict(self, exclude: Dict = {}) -> dict:
+    return self.model_dump(exclude=exclude, mode="json")
+
+  @staticmethod
+  def from_dict(data: dict) -> "Event":
+    return Event.model_validate(data)

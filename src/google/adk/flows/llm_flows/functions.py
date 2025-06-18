@@ -38,14 +38,14 @@ from ...telemetry import tracer
 from ...tools.base_tool import BaseTool
 from ...tools.tool_context import ToolContext
 
-AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
-REQUEST_EUC_FUNCTION_CALL_NAME = 'adk_request_credential'
+AF_FUNCTION_CALL_ID_PREFIX = "adk-"
+REQUEST_EUC_FUNCTION_CALL_NAME = "adk_request_credential"
 
-logger = logging.getLogger('google_adk.' + __name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def generate_client_function_call_id() -> str:
-  return f'{AF_FUNCTION_CALL_ID_PREFIX}{uuid.uuid4()}'
+  return f"{AF_FUNCTION_CALL_ID_PREFIX}{uuid.uuid4()}"
 
 
 def populate_client_function_call_id(model_response_event: Event) -> None:
@@ -100,7 +100,6 @@ def generate_auth_event(
       function_call_id,
       auth_config,
   ) in function_response_event.actions.requested_auth_configs.items():
-
     request_euc_function_call = types.FunctionCall(
         name=REQUEST_EUC_FUNCTION_CALL_NAME,
         args=AuthToolArguments(
@@ -149,7 +148,7 @@ async def handle_function_calls_async(
         tools_dict,
     )
 
-    with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    with tracer.start_as_current_span(f"execute_tool {tool.name}"):
       # do not use "args" as the variable name, because it is a reserved keyword
       # in python debugger.
       function_args = function_call.args or {}
@@ -208,7 +207,7 @@ async def handle_function_calls_async(
     # this is needed for debug traces of parallel calls
     # individual response with tool.name is traced in __build_response_event
     # (we drop tool.name from span name here as this is merged event)
-    with tracer.start_as_current_span('execute_tool (merged)'):
+    with tracer.start_as_current_span("execute_tool (merged)"):
       trace_merged_tool_calls(
           response_event_id=merged_event.id,
           function_response_event=merged_event,
@@ -232,7 +231,7 @@ async def handle_function_calls_live(
     tool, tool_context = _get_tool_and_context(
         invocation_context, function_call_event, function_call, tools_dict
     )
-    with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    with tracer.start_as_current_span(f"execute_tool {tool.name}"):
       # do not use "args" as the variable name, because it is a reserved keyword
       # in python debugger.
       function_args = function_call.args or {}
@@ -289,7 +288,7 @@ async def handle_function_calls_live(
           tool=tool,
           args=function_args,
           response_event_id=function_response_event.id,
-          function_response=function_response,
+          function_response_event=function_response_event,
       )
       function_response_events.append(function_response_event)
 
@@ -302,7 +301,7 @@ async def handle_function_calls_live(
     # this is needed for debug traces of parallel calls
     # individual response with tool.name is traced in __build_response_event
     # (we drop tool.name from span name here as this is merged event)
-    with tracer.start_as_current_span('execute_tool (merged)'):
+    with tracer.start_as_current_span("execute_tool (merged)"):
       trace_merged_tool_calls(
           response_event_id=merged_event.id,
           function_response_event=merged_event,
@@ -316,10 +315,10 @@ async def _process_function_live_helper(
   function_response = None
   # Check if this is a stop_streaming function call
   if (
-      function_call.name == 'stop_streaming'
-      and 'function_name' in function_args
+      function_call.name == "stop_streaming"
+      and "function_name" in function_args
   ):
-    function_name = function_args['function_name']
+    function_name = function_args["function_name"]
     active_tasks = invocation_context.active_streaming_tools
     if (
         function_name in active_tasks
@@ -334,29 +333,29 @@ async def _process_function_live_helper(
       except (asyncio.CancelledError, asyncio.TimeoutError):
         # Log the specific condition
         if task.cancelled():
-          logging.info(f'Task {function_name} was cancelled successfully')
+          logging.info(f"Task {function_name} was cancelled successfully")
         elif task.done():
-          logging.info(f'Task {function_name} completed during cancellation')
+          logging.info(f"Task {function_name} completed during cancellation")
         else:
           logging.warning(
-              f'Task {function_name} might still be running after'
-              ' cancellation timeout'
+              f"Task {function_name} might still be running after"
+              " cancellation timeout"
           )
           function_response = {
-              'status': f'The task is not cancelled yet for {function_name}.'
+              "status": f"The task is not cancelled yet for {function_name}."
           }
       if not function_response:
         # Clean up the reference
         active_tasks[function_name].task = None
 
         function_response = {
-            'status': f'Successfully stopped streaming function {function_name}'
+            "status": f"Successfully stopped streaming function {function_name}"
         }
     else:
       function_response = {
-          'status': f'No active streaming function named {function_name} found'
+          "status": f"No active streaming function named {function_name} found"
       }
-  elif hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func):
+  elif hasattr(tool, "func") and inspect.isasyncgenfunction(tool.func):
     # for streaming tool use case
     # we require the function to be a async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
@@ -368,10 +367,10 @@ async def _process_function_live_helper(
             invocation_context=invocation_context,
         ):
           updated_content = types.Content(
-              role='user',
+              role="user",
               parts=[
                   types.Part.from_text(
-                      text=f'Function {tool.name} returned: {result}'
+                      text=f"Function {tool.name} returned: {result}"
                   )
               ],
           )
@@ -393,9 +392,9 @@ async def _process_function_live_helper(
     # Immediately return a pending response.
     # This is required by current live model.
     function_response = {
-        'status': (
-            'The function is running asynchronously and the results are'
-            ' pending.'
+        "status": (
+            "The function is running asynchronously and the results are"
+            " pending."
         )
     }
   else:
@@ -413,7 +412,7 @@ def _get_tool_and_context(
 ):
   if function_call.name not in tools_dict:
     raise ValueError(
-        f'Function {function_call.name} is not found in the tools_dict.'
+        f"Function {function_call.name} is not found in the tools_dict."
     )
 
   tool_context = ToolContext(
@@ -458,7 +457,7 @@ def __build_response_event(
 ) -> Event:
   # Specs requires the result to be a dict.
   if not isinstance(function_result, dict):
-    function_result = {'result': function_result}
+    function_result = {"result": function_result}
 
   part_function_response = types.Part.from_function_response(
       name=tool.name, response=function_result
@@ -466,7 +465,7 @@ def __build_response_event(
   part_function_response.function_response.id = tool_context.function_call_id
 
   content = types.Content(
-      role='user',
+      role="user",
       parts=[part_function_response],
   )
 
@@ -482,10 +481,10 @@ def __build_response_event(
 
 
 def merge_parallel_function_response_events(
-    function_response_events: list['Event'],
-) -> 'Event':
+    function_response_events: list["Event"],
+) -> "Event":
   if not function_response_events:
-    raise ValueError('No function response events provided.')
+    raise ValueError("No function response events provided.")
 
   if len(function_response_events) == 1:
     return function_response_events[0]
@@ -513,7 +512,7 @@ def merge_parallel_function_response_events(
       invocation_id=Event.new_id(),
       author=base_event.author,
       branch=base_event.branch,
-      content=types.Content(role='user', parts=merged_parts),
+      content=types.Content(role="user", parts=merged_parts),
       actions=merged_actions,  # Optionally merge actions if required
   )
 
