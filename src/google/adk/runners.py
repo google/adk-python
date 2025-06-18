@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
-import threading
 from typing import AsyncGenerator
 from typing import Generator
 from typing import Optional
@@ -34,10 +33,12 @@ from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
+from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
+from .platform.thread import create_thread
 from .sessions.base_session_service import BaseSessionService
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
@@ -72,6 +73,8 @@ class Runner:
   """The session service for the runner."""
   memory_service: Optional[BaseMemoryService] = None
   """The memory service for the runner."""
+  credential_service: Optional[BaseCredentialService] = None
+  """The credential service for the runner."""
 
   def __init__(
       self,
@@ -81,6 +84,7 @@ class Runner:
       artifact_service: Optional[BaseArtifactService] = None,
       session_service: BaseSessionService,
       memory_service: Optional[BaseMemoryService] = None,
+      credential_service: Optional[BaseCredentialService] = None,
   ):
     """Initializes the Runner.
 
@@ -96,6 +100,7 @@ class Runner:
     self.artifact_service = artifact_service
     self.session_service = session_service
     self.memory_service = memory_service
+    self.credential_service = credential_service
 
   def run(
       self,
@@ -139,7 +144,7 @@ class Runner:
       finally:
         event_queue.put(None)
 
-    thread = threading.Thread(target=_asyncio_thread_main)
+    thread = create_thread(target=_asyncio_thread_main)
     thread.start()
 
     # consumes and re-yield the events from background thread.
@@ -417,6 +422,7 @@ class Runner:
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
+        credential_service=self.credential_service,
         invocation_id=invocation_id,
         agent=self.agent,
         session=session,
