@@ -18,7 +18,6 @@ import os
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPServerParams
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-from google.adk.tools.mcp_tool.mcp_toolset import SseServerParams
 
 _allowed_path = os.path.dirname(os.path.abspath(__file__))
 
