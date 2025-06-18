@@ -72,7 +72,9 @@ def execute_sql(
   """
 
   try:
-    bq_client = client.get_bigquery_client(credentials=credentials)
+    bq_client = client.get_bigquery_client(
+        project=project_id, credentials=credentials
+    )
     if not config or config.write_mode == WriteMode.BLOCKED:
       query_job = bq_client.query(
           query,
