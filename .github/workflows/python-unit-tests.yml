@@ -51,6 +51,7 @@ jobs:
         if [[ "${{ matrix.python-version }}" == "3.9" ]]; then
           pytest tests/unittests \
             --ignore=tests/unittests/a2a \
+            --ignore=tests/unittests/tools/mcp_tool \
             --ignore=tests/unittests/artifacts/test_artifact_service.py \
             --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
         else
