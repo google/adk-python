@@ -260,6 +260,9 @@ def _get_content(
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
 
+  if not content_objects:
+    # assistant message with tool_calls and empty list content can cause litellm crash for Third-Party Models such as OpenAI, DeepSeek, ollama models, etc.
+    return ""
   return content_objects
 
 
