@@ -24,6 +24,8 @@ from pydantic import BaseModel
 from ..agents.llm_agent import LlmAgent
 from ..artifacts import BaseArtifactService
 from ..artifacts import InMemoryArtifactService
+from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
@@ -43,6 +45,7 @@ async def run_input_file(
     root_agent: LlmAgent,
     artifact_service: BaseArtifactService,
     session_service: BaseSessionService,
+    credential_service: BaseCredentialService,
     input_path: str,
 ) -> Session:
   runner = Runner(
@@ -50,6 +53,7 @@ async def run_input_file(
       agent=root_agent,
       artifact_service=artifact_service,
       session_service=session_service,
+      credential_service=credential_service,
   )
   with open(input_path, 'r', encoding='utf-8') as f:
     input_file = InputFile.model_validate_json(f.read())
@@ -75,12 +79,14 @@ async def run_interactively(
     artifact_service: BaseArtifactService,
     session: Session,
     session_service: BaseSessionService,
+    credential_service: BaseCredentialService,
 ) -> None:
   runner = Runner(
       app_name=session.app_name,
       agent=root_agent,
       artifact_service=artifact_service,
       session_service=session_service,
+      credential_service=credential_service,
   )
   while True:
     query = input('[user]: ')
@@ -125,6 +131,7 @@ async def run_cli(
 
   artifact_service = InMemoryArtifactService()
   session_service = InMemorySessionService()
+  credential_service = InMemoryCredentialService()
 
   user_id = 'test_user'
   session = await session_service.create_session(
@@ -141,6 +148,7 @@ async def run_cli(
         root_agent=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
+        credential_service=credential_service,
         input_path=input_file,
     )
   elif saved_session_file:
@@ -163,6 +171,7 @@ async def run_cli(
         artifact_service,
         session,
         session_service,
+        credential_service,
     )
   else:
     click.echo(f'Running agent {root_agent.name}, type exit to exit.')
@@ -171,6 +180,7 @@ async def run_cli(
         artifact_service,
         session,
         session_service,
+        credential_service,
     )
 
   if save_session:
