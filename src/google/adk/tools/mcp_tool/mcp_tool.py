@@ -49,7 +49,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 class MCPTool(BaseTool):
-  """Turns a MCP Tool into a Vertex Agent Framework Tool.
+  """Turns an MCP Tool into an ADK Tool.
 
   Internally, the tool initializes from a MCP Tool, and uses the MCP Session to
   call the tool.
@@ -63,9 +63,9 @@ class MCPTool(BaseTool):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
   ):
-    """Initializes a MCPTool.
+    """Initializes an MCPTool.
 
-    This tool wraps a MCP Tool interface and uses a session manager to
+    This tool wraps an MCP Tool interface and uses a session manager to
     communicate with the MCP server.
 
     Args:
@@ -105,13 +105,13 @@ class MCPTool(BaseTool):
     )
     return function_decl
 
-  @retry_on_closed_resource("_reinitialize_session")
+  @retry_on_closed_resource("_mcp_session_manager")
   async def run_async(self, *, args, tool_context: ToolContext):
     """Runs the tool asynchronously.
 
     Args:
         args: The arguments as a dict to pass to the tool.
-        tool_context: The tool context from upper level ADK agent.
+        tool_context: The tool context of the current invocation.
 
     Returns:
         Any: The response from the tool.
@@ -119,12 +119,5 @@ class MCPTool(BaseTool):
     # Get the session from the session manager
     session = await self._mcp_session_manager.create_session()
 
-    # TODO(cheliu): Support passing tool context to MCP Server.
     response = await session.call_tool(self.name, arguments=args)
     return response
-
-  async def _reinitialize_session(self):
-    """Reinitializes the session when connection is lost."""
-    # Close the old session and create a new one
-    await self._mcp_session_manager.close()
-    await self._mcp_session_manager.create_session()
