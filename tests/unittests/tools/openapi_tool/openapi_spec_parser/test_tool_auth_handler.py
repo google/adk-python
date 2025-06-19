@@ -116,7 +116,8 @@ def openid_connect_credential():
   return credential
 
 
-def test_openid_connect_no_auth_response(
+@pytest.mark.asyncio
+async def test_openid_connect_no_auth_response(
     openid_connect_scheme, openid_connect_credential
 ):
   # Setup Mock exchanger
@@ -132,12 +133,13 @@ def test_openid_connect_no_auth_response(
       credential_exchanger=mock_exchanger,
       credential_store=credential_store,
   )
-  result = handler.prepare_auth_credentials()
+  result = await handler.prepare_auth_credentials()
   assert result.state == 'pending'
   assert result.auth_credential == openid_connect_credential
 
 
-def test_openid_connect_with_auth_response(
+@pytest.mark.asyncio
+async def test_openid_connect_with_auth_response(
     openid_connect_scheme, openid_connect_credential, monkeypatch
 ):
   mock_exchanger = MockOpenIdConnectCredentialExchanger(
@@ -166,7 +168,7 @@ def test_openid_connect_with_auth_response(
       credential_exchanger=mock_exchanger,
       credential_store=credential_store,
   )
-  result = handler.prepare_auth_credentials()
+  result = await handler.prepare_auth_credentials()
   assert result.state == 'done'
   assert result.auth_credential.auth_type == AuthCredentialTypes.HTTP
   assert 'test_access_token' in result.auth_credential.http.credentials.token
@@ -178,7 +180,8 @@ def test_openid_connect_with_auth_response(
   mock_auth_handler.get_auth_response.assert_called_once()
 
 
-def test_openid_connect_existing_token(
+@pytest.mark.asyncio
+async def test_openid_connect_existing_token(
     openid_connect_scheme, openid_connect_credential
 ):
   _, existing_credential = token_to_scheme_credential(
@@ -198,16 +201,17 @@ def test_openid_connect_existing_token(
       openid_connect_credential,
       credential_store=credential_store,
   )
-  result = handler.prepare_auth_credentials()
+  result = await handler.prepare_auth_credentials()
   assert result.state == 'done'
   assert result.auth_credential == existing_credential
 
 
 @patch(
-    'google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler.OAuth2CredentialFetcher'
+    'google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler.OAuth2CredentialRefresher'
 )
-def test_openid_connect_existing_oauth2_token_refresh(
-    mock_oauth2_fetcher, openid_connect_scheme, openid_connect_credential
+@pytest.mark.asyncio
+async def test_openid_connect_existing_oauth2_token_refresh(
+    mock_oauth2_refresher, openid_connect_scheme, openid_connect_credential
 ):
   """Test that OAuth2 tokens are refreshed when existing credentials are found."""
   # Create existing OAuth2 credential
@@ -232,10 +236,13 @@ def test_openid_connect_existing_oauth2_token_refresh(
       ),
   )
 
-  # Setup mock OAuth2CredentialFetcher
-  mock_fetcher_instance = MagicMock()
-  mock_fetcher_instance.refresh.return_value = refreshed_credential
-  mock_oauth2_fetcher.return_value = mock_fetcher_instance
+  # Setup mock OAuth2CredentialRefresher
+  from unittest.mock import AsyncMock
+
+  mock_refresher_instance = MagicMock()
+  mock_refresher_instance.is_refresh_needed = AsyncMock(return_value=True)
+  mock_refresher_instance.refresh = AsyncMock(return_value=refreshed_credential)
+  mock_oauth2_refresher.return_value = mock_refresher_instance
 
   tool_context = create_mock_tool_context()
   credential_store = ToolContextCredentialStore(tool_context=tool_context)
@@ -253,13 +260,17 @@ def test_openid_connect_existing_oauth2_token_refresh(
       credential_store=credential_store,
   )
 
-  result = handler.prepare_auth_credentials()
+  result = await handler.prepare_auth_credentials()
 
-  # Verify OAuth2CredentialFetcher was called for refresh
-  mock_oauth2_fetcher.assert_called_once_with(
-      openid_connect_scheme, existing_credential
+  # Verify OAuth2CredentialRefresher was called for refresh
+  mock_oauth2_refresher.assert_called_once()
+
+  mock_refresher_instance.is_refresh_needed.assert_called_once_with(
+      existing_credential
   )
-  mock_fetcher_instance.refresh.assert_called_once()
+  mock_refresher_instance.refresh.assert_called_once_with(
+      existing_credential, openid_connect_scheme
+  )
 
   assert result.state == 'done'
   # The result should contain the refreshed credential after exchange

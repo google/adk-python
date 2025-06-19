@@ -16,8 +16,8 @@ import functools
 import types
 from typing import Callable
 
+from google.auth.credentials import Credentials
 from google.cloud import bigquery
-from google.oauth2.credentials import Credentials
 
 from . import client
 from .config import BigQueryToolConfig
@@ -72,7 +72,9 @@ def execute_sql(
   """
 
   try:
-    bq_client = client.get_bigquery_client(credentials=credentials)
+    bq_client = client.get_bigquery_client(
+        project=project_id, credentials=credentials
+    )
     if not config or config.write_mode == WriteMode.BLOCKED:
       query_job = bq_client.query(
           query,
