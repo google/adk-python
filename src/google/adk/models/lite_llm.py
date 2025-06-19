@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
+import random
+import time
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
@@ -58,6 +61,124 @@ logger = logging.getLogger("google_adk." + __name__)
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 
+# Retry configuration
+RETRIABLE_ERROR_CODES = {429, 500, 502, 503, 504}
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_INITIAL_DELAY = 1.0
+DEFAULT_MAX_DELAY = 60.0
+DEFAULT_EXPONENTIAL_BASE = 2.0
+DEFAULT_JITTER = True
+
+
+def _should_retry(exception: Exception) -> bool:
+  """Check if an exception should trigger a retry."""
+  if hasattr(exception, "status_code"):
+    return exception.status_code in RETRIABLE_ERROR_CODES
+
+  # Check for rate limit errors in exception message
+  error_msg = str(exception).lower()
+  rate_limit_indicators = [
+      "rate limit",
+      "429",
+      "too many requests",
+      "quota exceeded",
+  ]
+  return any(indicator in error_msg for indicator in rate_limit_indicators)
+
+
+def _calculate_delay(
+    attempt: int,
+    initial_delay: float,
+    max_delay: float,
+    exponential_base: float,
+    jitter: bool,
+) -> float:
+  """Calculate delay for exponential backoff with optional jitter."""
+  delay = initial_delay * (exponential_base**attempt)
+  delay = min(delay, max_delay)
+
+  if jitter:
+    # Add random jitter to avoid thundering herd
+    delay *= 0.5 + random.random() * 0.5
+
+  return delay
+
+
+async def _retry_async(
+    func,
+    *args,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    initial_delay: float = DEFAULT_INITIAL_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+    exponential_base: float = DEFAULT_EXPONENTIAL_BASE,
+    jitter: bool = DEFAULT_JITTER,
+    **kwargs,
+):
+  """Async retry wrapper with exponential backoff."""
+  last_exception = None
+
+  for attempt in range(max_retries + 1):  # +1 for initial attempt
+    try:
+      return await func(*args, **kwargs)
+    except Exception as e:
+      last_exception = e
+
+      if attempt == max_retries or not _should_retry(e):
+        logger.error(
+            f"Max retries ({max_retries}) exceeded or non-retriable error: {e}"
+        )
+        raise e
+
+      delay = _calculate_delay(
+          attempt, initial_delay, max_delay, exponential_base, jitter
+      )
+      logger.warning(
+          f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+          f"Retrying in {delay:.2f} seconds..."
+      )
+
+      await asyncio.sleep(delay)
+
+  raise last_exception
+
+
+def _retry_sync(
+    func,
+    *args,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    initial_delay: float = DEFAULT_INITIAL_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+    exponential_base: float = DEFAULT_EXPONENTIAL_BASE,
+    jitter: bool = DEFAULT_JITTER,
+    **kwargs,
+):
+  """Sync retry wrapper with exponential backoff."""
+  last_exception = None
+
+  for attempt in range(max_retries + 1):  # +1 for initial attempt
+    try:
+      return func(*args, **kwargs)
+    except Exception as e:
+      last_exception = e
+
+      if attempt == max_retries or not _should_retry(e):
+        logger.error(
+            f"Max retries ({max_retries}) exceeded or non-retriable error: {e}"
+        )
+        raise e
+
+      delay = _calculate_delay(
+          attempt, initial_delay, max_delay, exponential_base, jitter
+      )
+      logger.warning(
+          f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+          f"Retrying in {delay:.2f} seconds..."
+      )
+
+      time.sleep(delay)
+
+  raise last_exception
+
 
 class FunctionChunk(BaseModel):
   id: Optional[str]
@@ -79,10 +200,33 @@ class UsageMetadataChunk(BaseModel):
 class LiteLLMClient:
   """Provides acompletion method (for better testability)."""
 
+  def __init__(
+      self,
+      max_retries: int = DEFAULT_MAX_RETRIES,
+      initial_delay: float = DEFAULT_INITIAL_DELAY,
+      max_delay: float = DEFAULT_MAX_DELAY,
+      exponential_base: float = DEFAULT_EXPONENTIAL_BASE,
+      jitter: bool = DEFAULT_JITTER,
+  ):
+    """Initialize LiteLLMClient with retry configuration.
+
+    Args:
+      max_retries: Maximum number of retry attempts (default: 3)
+      initial_delay: Initial delay in seconds (default: 1.0)
+      max_delay: Maximum delay in seconds (default: 60.0)
+      exponential_base: Exponential backoff base (default: 2.0)
+      jitter: Whether to add random jitter (default: True)
+    """
+    self.max_retries = max_retries
+    self.initial_delay = initial_delay
+    self.max_delay = max_delay
+    self.exponential_base = exponential_base
+    self.jitter = jitter
+
   async def acompletion(
       self, model, messages, tools, **kwargs
   ) -> Union[ModelResponse, CustomStreamWrapper]:
-    """Asynchronously calls acompletion.
+    """Asynchronously calls acompletion with retry mechanism.
 
     Args:
       model: The model name.
@@ -94,17 +238,23 @@ class LiteLLMClient:
       The model response as a message.
     """
 
-    return await acompletion(
+    return await _retry_async(
+        acompletion,
         model=model,
         messages=messages,
         tools=tools,
+        max_retries=self.max_retries,
+        initial_delay=self.initial_delay,
+        max_delay=self.max_delay,
+        exponential_base=self.exponential_base,
+        jitter=self.jitter,
         **kwargs,
     )
 
   def completion(
       self, model, messages, tools, stream=False, **kwargs
   ) -> Union[ModelResponse, CustomStreamWrapper]:
-    """Synchronously calls completion. This is used for streaming only.
+    """Synchronously calls completion with retry mechanism.
 
     Args:
       model: The model to use.
@@ -117,11 +267,17 @@ class LiteLLMClient:
       The response from the model.
     """
 
-    return completion(
+    return _retry_sync(
+        completion,
         model=model,
         messages=messages,
         tools=tools,
         stream=stream,
+        max_retries=self.max_retries,
+        initial_delay=self.initial_delay,
+        max_delay=self.max_delay,
+        exponential_base=self.exponential_base,
+        jitter=self.jitter,
         **kwargs,
     )
 
@@ -600,19 +756,39 @@ Functions:
 
 
 class LiteLlm(BaseLlm):
-  """Wrapper around litellm.
+  """Wrapper around litellm with built-in retry mechanism.
 
   This wrapper can be used with any of the models supported by litellm. The
   environment variable(s) needed for authenticating with the model endpoint must
   be set prior to instantiating this class.
+
+  Built-in retry mechanism automatically handles transient API errors including:
+  - 429 Too Many Requests
+  - 500 Internal Server Error
+  - 502 Bad Gateway
+  - 503 Service Unavailable
+  - 504 Gateway Timeout
 
   Example usage:
   ```
   os.environ["VERTEXAI_PROJECT"] = "your-gcp-project-id"
   os.environ["VERTEXAI_LOCATION"] = "your-gcp-location"
 
+  # Basic usage with default retry settings (3 retries, exponential backoff)
   agent = Agent(
       model=LiteLlm(model="vertex_ai/claude-3-7-sonnet@20250219"),
+      ...
+  )
+
+  # Custom retry configuration
+  agent = Agent(
+      model=LiteLlm(
+          model="gemini/gemini-2.5-pro-preview-06-05",
+          max_retries=5,
+          initial_delay=2.0,
+          max_delay=120.0,
+          api_key=os.getenv("GOOGLE_API_KEY")
+      ),
       ...
   )
   ```
@@ -627,14 +803,38 @@ class LiteLlm(BaseLlm):
 
   _additional_args: Dict[str, Any] = None
 
-  def __init__(self, model: str, **kwargs):
+  def __init__(
+      self,
+      model: str,
+      max_retries: int = DEFAULT_MAX_RETRIES,
+      initial_delay: float = DEFAULT_INITIAL_DELAY,
+      max_delay: float = DEFAULT_MAX_DELAY,
+      exponential_base: float = DEFAULT_EXPONENTIAL_BASE,
+      jitter: bool = DEFAULT_JITTER,
+      **kwargs,
+  ):
     """Initializes the LiteLlm class.
 
     Args:
       model: The name of the LiteLlm model.
+      max_retries: Maximum number of retry attempts for API errors (default: 3)
+      initial_delay: Initial delay in seconds for exponential backoff (default: 1.0)
+      max_delay: Maximum delay in seconds for exponential backoff (default: 60.0)
+      exponential_base: Exponential backoff base multiplier (default: 2.0)
+      jitter: Whether to add random jitter to delays (default: True)
       **kwargs: Additional arguments to pass to the litellm completion api.
     """
     super().__init__(model=model, **kwargs)
+
+    # Initialize retry-aware client
+    self.llm_client = LiteLLMClient(
+        max_retries=max_retries,
+        initial_delay=initial_delay,
+        max_delay=max_delay,
+        exponential_base=exponential_base,
+        jitter=jitter,
+    )
+
     self._additional_args = kwargs
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
@@ -643,6 +843,12 @@ class LiteLlm(BaseLlm):
     self._additional_args.pop("tools", None)
     # public api called from runner determines to stream or not
     self._additional_args.pop("stream", None)
+    # Remove retry parameters from additional args
+    self._additional_args.pop("max_retries", None)
+    self._additional_args.pop("initial_delay", None)
+    self._additional_args.pop("max_delay", None)
+    self._additional_args.pop("exponential_base", None)
+    self._additional_args.pop("jitter", None)
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
