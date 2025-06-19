@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import Mock
+from unittest import mock
 
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
 # Mock the Google OAuth and API dependencies
-from google.oauth2.credentials import Credentials
+import google.auth.credentials
+import google.oauth2.credentials
 import pytest
 
 
@@ -27,22 +28,46 @@ class TestBigQueryCredentials:
   either existing credentials or client ID/secret pairs are provided.
   """
 
-  def test_valid_credentials_object(self):
-    """Test that providing valid Credentials object works correctly.
+  def test_valid_credentials_object_auth_credentials(self):
+    """Test that providing valid Credentials object works correctly with
+    google.auth.credentials.Credentials.
 
     When a user already has valid OAuth credentials, they should be able
     to pass them directly without needing to provide client ID/secret.
     """
-    # Create a mock credentials object with the expected attributes
-    mock_creds = Mock(spec=Credentials)
-    mock_creds.client_id = "test_client_id"
-    mock_creds.client_secret = "test_client_secret"
-    mock_creds.scopes = ["https://www.googleapis.com/auth/calendar"]
+    # Create a mock auth credentials object
+    # auth_creds = google.auth.credentials.Credentials()
+    auth_creds = mock.create_autospec(
+        google.auth.credentials.Credentials, instance=True
+    )
 
-    config = BigQueryCredentialsConfig(credentials=mock_creds)
+    config = BigQueryCredentialsConfig(credentials=auth_creds)
 
     # Verify that the credentials are properly stored and attributes are extracted
-    assert config.credentials == mock_creds
+    assert config.credentials == auth_creds
+    assert config.client_id is None
+    assert config.client_secret is None
+    assert config.scopes == ["https://www.googleapis.com/auth/bigquery"]
+
+  def test_valid_credentials_object_oauth2_credentials(self):
+    """Test that providing valid Credentials object works correctly with
+    google.oauth2.credentials.Credentials.
+
+    When a user already has valid OAuth credentials, they should be able
+    to pass them directly without needing to provide client ID/secret.
+    """
+    # Create a mock oauth2 credentials object
+    oauth2_creds = google.oauth2.credentials.Credentials(
+        "test_token",
+        client_id="test_client_id",
+        client_secret="test_client_secret",
+        scopes=["https://www.googleapis.com/auth/calendar"],
+    )
+
+    config = BigQueryCredentialsConfig(credentials=oauth2_creds)
+
+    # Verify that the credentials are properly stored and attributes are extracted
+    assert config.credentials == oauth2_creds
     assert config.client_id == "test_client_id"
     assert config.client_secret == "test_client_secret"
     assert config.scopes == ["https://www.googleapis.com/auth/calendar"]

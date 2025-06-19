@@ -15,8 +15,8 @@
 from __future__ import annotations
 
 import google.api_core.client_info
+from google.auth.credentials import Credentials
 from google.cloud import bigquery
-from google.oauth2.credentials import Credentials
 
 from ... import version
 
