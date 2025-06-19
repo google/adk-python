@@ -60,25 +60,10 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
     Returns:
         True if the credential needs to be refreshed, False otherwise.
     """
-    # Handle Google OAuth2 credentials (from service account exchange)
-    if auth_credential.google_oauth2_json:
-      try:
-        google_credential = Credentials.from_authorized_user_info(
-            json.loads(auth_credential.google_oauth2_json)
-        )
-        return google_credential.expired and bool(
-            google_credential.refresh_token
-        )
-      except Exception as e:
-        logger.warning("Failed to parse Google OAuth2 JSON credential: %s", e)
-        return False
 
     # Handle regular OAuth2 credentials
-    elif auth_credential.oauth2 and auth_scheme:
+    if auth_credential.oauth2:
       if not AUTHLIB_AVIALABLE:
-        return False
-
-      if not auth_credential.oauth2:
         return False
 
       return OAuth2Token({
@@ -105,22 +90,9 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
         The refreshed credential.
 
     """
-    # Handle Google OAuth2 credentials (from service account exchange)
-    if auth_credential.google_oauth2_json:
-      try:
-        google_credential = Credentials.from_authorized_user_info(
-            json.loads(auth_credential.google_oauth2_json)
-        )
-        if google_credential.expired and google_credential.refresh_token:
-          google_credential.refresh(Request())
-          auth_credential.google_oauth2_json = google_credential.to_json()
-          logger.info("Successfully refreshed Google OAuth2 JSON credential")
-      except Exception as e:
-        # TODO reconsider whether we should raise error when refresh failed.
-        logger.error("Failed to refresh Google OAuth2 JSON credential: %s", e)
 
     # Handle regular OAuth2 credentials
-    elif auth_credential.oauth2 and auth_scheme:
+    if auth_credential.oauth2 and auth_scheme:
       if not AUTHLIB_AVIALABLE:
         return auth_credential
 

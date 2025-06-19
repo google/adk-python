@@ -410,39 +410,25 @@ class TestCredentialManager:
 
   @pytest.mark.asyncio
   async def test_exchange_credentials_service_account(self):
-    """Test _exchange_credential with service account credential."""
+    """Test _exchange_credential with service account credential (no exchanger available)."""
     mock_raw_credential = Mock(spec=AuthCredential)
     mock_raw_credential.auth_type = AuthCredentialTypes.SERVICE_ACCOUNT
-
-    mock_exchanged_credential = Mock(spec=AuthCredential)
 
     auth_config = Mock(spec=AuthConfig)
     auth_config.auth_scheme = Mock()
 
     manager = CredentialManager(auth_config)
 
-    # Mock the exchanger that gets created during registration
+    # Mock the exchanger registry to return None (no exchanger available)
     with patch.object(
-        manager._exchanger_registry, "get_exchanger"
-    ) as mock_get_exchanger:
-      mock_exchanger = Mock()
-      mock_exchanger.exchange = AsyncMock(
-          return_value=mock_exchanged_credential
-      )
-      mock_get_exchanger.return_value = mock_exchanger
-
+        manager._exchanger_registry, "get_exchanger", return_value=None
+    ):
       result, was_exchanged = await manager._exchange_credential(
           mock_raw_credential
       )
 
-      assert result == mock_exchanged_credential
-      assert was_exchanged is True
-      mock_get_exchanger.assert_called_once_with(
-          AuthCredentialTypes.SERVICE_ACCOUNT
-      )
-      mock_exchanger.exchange.assert_called_once_with(
-          mock_raw_credential, auth_config.auth_scheme
-      )
+      assert result == mock_raw_credential
+      assert was_exchanged is False
 
   @pytest.mark.asyncio
   async def test_exchange_credential_no_exchanger(self):
