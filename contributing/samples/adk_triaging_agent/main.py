@@ -13,152 +13,90 @@
 # limitations under the License.
 
 import asyncio
-import os
 import time
 
-import agent
-from dotenv import load_dotenv
+from adk_triaging_agent import agent
+from adk_triaging_agent.settings import EVENT_NAME, ISSUE_COUNT_TO_PROCESS, ISSUE_NUMBER, OWNER, REPO
+from adk_triaging_agent.utils import parse_number_string
 from google.adk.agents.run_config import RunConfig
-from google.adk.runners import InMemoryRunner
-from google.adk.sessions import Session
+from google.adk.runners import InMemoryRunner, Runner
 from google.genai import types
-import requests
 
-load_dotenv(override=True)
+APP_NAME = "adk_triage_app"
+USER_ID = "adk_triage_user"
 
-OWNER = os.getenv("OWNER", "google")
-REPO = os.getenv("REPO", "adk-python")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-BASE_URL = "https://api.github.com"
-headers = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json",
-}
 
-if not GITHUB_TOKEN:
-  print(
-      "Warning: GITHUB_TOKEN environment variable not set. API calls might"
-      " fail."
+async def call_agent_async(
+    runner: Runner, user_id: str, session_id: str, prompt: str
+) -> str:
+  """Call the agent asynchronously with the user's prompt."""
+  content = types.Content(
+      role="user", parts=[types.Part.from_text(text=prompt)]
   )
 
+  final_response_text = ""
+  async for event in runner.run_async(
+      user_id=user_id,
+      session_id=session_id,
+      new_message=content,
+      run_config=RunConfig(save_input_blobs_as_artifacts=False),
+  ):
+    if (
+        event.content
+        and event.content.parts
+        and hasattr(event.content.parts[0], "text")
+        and event.content.parts[0].text
+    ):
+      print(f"** {event.author} (ADK): {event.content.parts[0].text}")
+      if event.author == agent.root_agent.name:
+        final_response_text += event.content.parts[0].text
 
-async def fetch_specific_issue_details(issue_number: int):
-  """Fetches details for a single issue if it's unlabelled."""
-  if not GITHUB_TOKEN:
-    print("Cannot fetch issue details: GITHUB_TOKEN is not set.")
-    return None
-
-  url = f"{BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}"
-  print(f"Fetching details for specific issue: {url}")
-  try:
-    response = requests.get(url, headers=headers, timeout=60)
-    response.raise_for_status()
-    issue_data = response.json()
-    if not issue_data.get("labels") or len(issue_data["labels"]) == 0:
-      print(f"Issue #{issue_number} is unlabelled. Proceeding.")
-      return {
-          "number": issue_data["number"],
-          "title": issue_data["title"],
-          "body": issue_data.get("body", ""),
-      }
-    else:
-      print(f"Issue #{issue_number} is already labelled. Skipping.")
-      return None
-  except requests.exceptions.RequestException as e:
-    print(f"Error fetching issue #{issue_number}: {e}")
-    if hasattr(e, "response") and e.response is not None:
-      print(f"Response content: {e.response.text}")
-    return None
+  return final_response_text
 
 
-async def main():
-  app_name = "triage_app"
-  user_id_1 = "triage_user"
+async def main_sync():
   runner = InMemoryRunner(
       agent=agent.root_agent,
-      app_name=app_name,
+      app_name=APP_NAME,
   )
-  session_11 = await runner.session_service.create_session(
-      app_name=app_name, user_id=user_id_1
+  session = await runner.session_service.create_session(
+      user_id=USER_ID,
+      app_name=APP_NAME,
   )
 
-  async def run_agent_prompt(session: Session, prompt_text: str):
-    content = types.Content(
-        role="user", parts=[types.Part.from_text(text=prompt_text)]
-    )
-    print(f"\n>>>> Agent Prompt: {prompt_text}")
-    final_agent_response_parts = []
-    async for event in runner.run_async(
-        user_id=user_id_1,
-        session_id=session.id,
-        new_message=content,
-        run_config=RunConfig(save_input_blobs_as_artifacts=False),
-    ):
-      if event.content.parts and event.content.parts[0].text:
-        print(f"** {event.author} (ADK): {event.content.parts[0].text}")
-        if event.author == agent.root_agent.name:
-          final_agent_response_parts.append(event.content.parts[0].text)
-    print(f"<<<< Agent Final Output: {''.join(final_agent_response_parts)}\n")
-
-  event_name = os.getenv("EVENT_NAME")
-  issue_number_str = os.getenv("ISSUE_NUMBER")
-
-  if event_name == "issues" and issue_number_str:
-    print(f"EVENT: Processing specific issue due to '{event_name}' event.")
-    try:
-      issue_number = int(issue_number_str)
-      specific_issue = await fetch_specific_issue_details(issue_number)
-
-      if specific_issue:
-        prompt = (
-            f"A new GitHub issue #{specific_issue['number']} has been opened or"
-            f" reopened. Title: \"{specific_issue['title']}\"\nBody:"
-            f" \"{specific_issue['body']}\"\n\nBased on the rules, recommend an"
-            " appropriate label and its justification."
-            " Then, use the 'add_label_to_issue' tool to apply the label "
-            "directly to this issue."
-            f" The issue number is {specific_issue['number']}."
-        )
-        await run_agent_prompt(session_11, prompt)
-      else:
-        print(
-            f"No unlabelled issue details found for #{issue_number} or an error"
-            " occurred. Skipping agent interaction."
-        )
-
-    except ValueError:
-      print(f"Error: Invalid ISSUE_NUMBER received: {issue_number_str}")
-
-  else:
-    print(f"EVENT: Processing batch of issues (event: {event_name}).")
-    issue_count_str = os.getenv("ISSUE_COUNT_TO_PROCESS", "3")
-    try:
-      num_issues_to_process = int(issue_count_str)
-    except ValueError:
-      print(f"Warning: Invalid ISSUE_COUNT_TO_PROCESS. Defaulting to 3.")
-      num_issues_to_process = 3
-
+  if EVENT_NAME == "issues" and ISSUE_NUMBER:
+    print(f"EVENT: Processing specific issue due to '{EVENT_NAME}' event.")
+    issume_number = parse_number_string(ISSUE_NUMBER)
+    if not issume_number:
+      print(f"Error: Invalid issue number received: {ISSUE_NUMBER}.")
+      return
     prompt = (
-        f"List the first {num_issues_to_process} unlabelled open issues from"
-        f" the {OWNER}/{REPO} repository. For each issue, provide a summary,"
-        " recommend a label with justification, and then use the"
-        " 'add_label_to_issue' tool to apply the recommended label directly."
+        f"Please triage issue #{issume_number}. If the issue is already"
+        " labelled, please don't change it, just return the labels. If the"
+        " issue is not labelled, please label it. Only label it, do not"
+        " process any other issues."
     )
-    await run_agent_prompt(session_11, prompt)
+  else:
+    print(f"EVENT: Processing batch of issues (event: {EVENT_NAME}).")
+    issue_count = parse_number_string(ISSUE_COUNT_TO_PROCESS, default_value=3)
+    prompt = f"Please triage the most recent {issue_count} issues."
+
+  response = await call_agent_async(runner, USER_ID, session.id, prompt)
+  print(f"<<<< Agent Final Output: {response}\n")
 
 
 if __name__ == "__main__":
   start_time = time.time()
   print(
-      "Script start time:",
-      time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(start_time)),
+      f"Start traging {OWNER}/{REPO} issues at"
+      f" {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(start_time))}"
   )
-  print("------------------------------------")
-  asyncio.run(main())
+  print("-" * 80)
+  asyncio.run(main_sync())
+  print("-" * 80)
   end_time = time.time()
-  print("------------------------------------")
   print(
-      "Script end time:",
-      time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(end_time)),
+      "Traging finished at"
+      f" {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(end_time))}",
   )
   print("Total script execution time:", f"{end_time - start_time:.2f} seconds")
