@@ -40,7 +40,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 # Here we create a dummy agent module that get_fast_api_app expects
@@ -138,6 +138,7 @@ async def mock_run_evals_for_fast_api(*args, **kwargs):
       final_eval_status=1,  # Matches expected (assuming 1 is PASSED)
       user_id="test_user",  # Placeholder, adapt if needed
       session_id="test_session_for_eval_case",  # Placeholder
+      eval_set_file="test_eval_set_file",  # Placeholder
       overall_eval_metric_results=[{  # Matches expected
           "metricName": "tool_trajectory_avg_score",
           "threshold": 0.5,
@@ -372,7 +373,7 @@ def mock_eval_sets_manager():
 
 @pytest.fixture
 def mock_eval_set_results_manager():
-  """Create a mock eval set results manager."""
+  """Create a mock local eval set results manager."""
 
   # Storage for eval set results.
   eval_set_results = {}
