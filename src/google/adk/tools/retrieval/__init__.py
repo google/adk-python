@@ -16,11 +16,24 @@ from .base_retrieval_tool import BaseRetrievalTool
 from .files_retrieval import FilesRetrieval
 from .llama_index_retrieval import LlamaIndexRetrieval
 
-__all__ = [
-    'BaseRetrievalTool',
-    'FilesRetrieval',
-    'LlamaIndexRetrieval',
-]
+__all__ = ['BaseRetrievalTool']
+
+try:
+  from .files_retrieval import FilesRetrieval
+  from .llama_index_retrieval import LlamaIndexRetrieval
+
+  __all__.append('FilesRetrieval')
+  __all__.append('LlamaIndexRetrieval')
+except ImportError:
+  import logging
+
+  logger = logging.getLogger('google_adk.' + __name__)
+  logger.debug(
+      'The llama-index-readers-file is not installed. If you want to use the'
+      ' FileRetrieval or LLamaIndexRetrieval RAG with agents, please install'
+      ' it. If not, you can ignore this warning.'
+  )
+
 
 try:
   from .vertex_ai_rag_retrieval import VertexAiRagRetrieval
