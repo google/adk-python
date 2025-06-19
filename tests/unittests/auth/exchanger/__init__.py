@@ -12,10 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Credential exchanger module."""
-
-from .base_credential_exchanger import BaseCredentialExchanger
-
-__all__ = [
-    "BaseCredentialExchanger",
-]
+"""Tests for credential exchanger."""

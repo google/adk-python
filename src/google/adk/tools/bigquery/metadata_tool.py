@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.auth.credentials import Credentials
 from google.cloud import bigquery
-from google.oauth2.credentials import Credentials
 
 from . import client
 
@@ -42,7 +42,9 @@ def list_dataset_ids(project_id: str, credentials: Credentials) -> list[str]:
        'bbc_news']
   """
   try:
-    bq_client = client.get_bigquery_client(credentials=credentials)
+    bq_client = client.get_bigquery_client(
+        project=project_id, credentials=credentials
+    )
 
     datasets = []
     for dataset in bq_client.list_datasets(project_id):
@@ -106,7 +108,9 @@ def get_dataset_info(
       }
   """
   try:
-    bq_client = client.get_bigquery_client(credentials=credentials)
+    bq_client = client.get_bigquery_client(
+        project=project_id, credentials=credentials
+    )
     dataset = bq_client.get_dataset(
         bigquery.DatasetReference(project_id, dataset_id)
     )
@@ -137,7 +141,9 @@ def list_table_ids(
        'local_data_for_better_health_county_data']
   """
   try:
-    bq_client = client.get_bigquery_client(credentials=credentials)
+    bq_client = client.get_bigquery_client(
+        project=project_id, credentials=credentials
+    )
 
     tables = []
     for table in bq_client.list_tables(
@@ -251,7 +257,9 @@ def get_table_info(
       }
   """
   try:
-    bq_client = client.get_bigquery_client(credentials=credentials)
+    bq_client = client.get_bigquery_client(
+        project=project_id, credentials=credentials
+    )
     return bq_client.get_table(
         bigquery.TableReference(
             bigquery.DatasetReference(project_id, dataset_id), table_id

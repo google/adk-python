@@ -150,7 +150,7 @@ class IntegrationConnectorTool(BaseTool):
     tool_auth_handler = ToolAuthHandler.from_tool_context(
         tool_context, self._auth_scheme, self._auth_credential
     )
-    auth_result = tool_auth_handler.prepare_auth_credentials()
+    auth_result = await tool_auth_handler.prepare_auth_credentials()
 
     if auth_result.state == 'pending':
       return {
@@ -178,7 +178,7 @@ class IntegrationConnectorTool(BaseTool):
     args['operation'] = self._operation
     args['action'] = self._action
     logger.info('Running tool: %s with args: %s', self.name, args)
-    return self._rest_api_tool.call(args=args, tool_context=tool_context)
+    return await self._rest_api_tool.call(args=args, tool_context=tool_context)
 
   def __str__(self):
     return (
