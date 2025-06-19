@@ -61,7 +61,7 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     )
     logger.info("Writing eval result to file: %s", eval_set_result_file_path)
     with open(eval_set_result_file_path, "w") as f:
-      f.write(json.dumps(eval_set_result_json, indent=2))
+      f.write(eval_set_result_json))
 
   @override
   def get_eval_set_result(
