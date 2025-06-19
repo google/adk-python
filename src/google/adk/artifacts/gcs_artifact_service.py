@@ -151,7 +151,7 @@ class GcsArtifactService(BaseArtifactService):
         self.bucket, prefix=session_prefix
     )
     for blob in session_blobs:
-      _, _, _, filename, _ = blob.name.split("/")
+      filename = get_full_file_name_from_blob_name(blob.name)
       filenames.add(filename)
 
     user_namespace_prefix = f"{app_name}/{user_id}/user/"
@@ -159,7 +159,7 @@ class GcsArtifactService(BaseArtifactService):
         self.bucket, prefix=user_namespace_prefix
     )
     for blob in user_namespace_blobs:
-      _, _, _, filename, _ = blob.name.split("/")
+      filename = get_full_file_name_from_blob_name(blob.name)
       filenames.add(filename)
 
     return sorted(list(filenames))
@@ -190,6 +190,20 @@ class GcsArtifactService(BaseArtifactService):
     blobs = self.storage_client.list_blobs(self.bucket, prefix=prefix)
     versions = []
     for blob in blobs:
-      _, _, _, _, version = blob.name.split("/")
+      version = get_version_from_blob_name(blob.name)
       versions.append(int(version))
     return versions
+
+def get_version_from_blob_name(blob_name: str) -> int:
+  name_parts = blob_name.split("/")
+  return int(name_parts[-1])
+
+def get_full_file_name_from_blob_name(blob_name: str) -> str:
+    """Gets the full file name even if it contains slashes."""
+    name_parts = blob_name.split("/")
+    # cut the well-known {app_name}/{user_id}/{session_id} or "user"/
+    name_parts = name_parts[3:]
+    # cut the version
+    name_parts = name_parts[:-1]
+    # all that's left is the full file name
+    return "/".join(name_parts)
