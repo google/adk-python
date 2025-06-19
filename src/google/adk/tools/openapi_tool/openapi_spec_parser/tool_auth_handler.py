@@ -233,7 +233,6 @@ class ToolAuthHandler:
             AuthCredentialTypes.OPEN_ID_CONNECT,
         )
         and not credential.oauth2.access_token
-        and not credential.google_oauth2_json
     )
 
   async def prepare_auth_credentials(

@@ -76,11 +76,7 @@ class CredentialManager:
     self._refresher_registry = CredentialRefresherRegistry()
 
     # Register default exchangers and refreshers
-    from .exchanger.service_account_credential_exchanger import ServiceAccountCredentialExchanger
-
-    self._exchanger_registry.register(
-        AuthCredentialTypes.SERVICE_ACCOUNT, ServiceAccountCredentialExchanger()
-    )
+    # TODO: support service account credential exchanger
     from .refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
 
     oauth2_refresher = OAuth2CredentialRefresher()
