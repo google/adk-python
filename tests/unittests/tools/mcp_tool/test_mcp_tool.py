@@ -264,40 +264,6 @@ class TestMCPTool:
     assert headers == {"X-API-Key": "my_api_key"}
 
   @pytest.mark.asyncio
-  @patch("google.adk.tools.mcp_tool.mcp_tool.json")
-  @patch("google.adk.tools.mcp_tool.mcp_tool.Credentials")
-  async def test_get_headers_google_oauth2_json(
-      self, mock_credentials, mock_json
-  ):
-    """Test header generation for Google OAuth2 JSON credentials."""
-    tool = MCPTool(
-        mcp_tool=self.mock_mcp_tool,
-        mcp_session_manager=self.mock_session_manager,
-    )
-
-    # Mock the JSON parsing and Credentials creation
-    mock_json.loads.return_value = {"token": "google_token"}
-    mock_google_credential = Mock()
-    mock_google_credential.token = "google_access_token"
-    mock_credentials.from_authorized_user_info.return_value = (
-        mock_google_credential
-    )
-
-    credential = AuthCredential(
-        auth_type=AuthCredentialTypes.OAUTH2,
-        google_oauth2_json='{"token": "google_token"}',
-    )
-
-    tool_context = Mock(spec=ToolContext)
-    headers = await tool._get_headers(tool_context, credential)
-
-    assert headers == {"Authorization": "Bearer google_access_token"}
-    mock_json.loads.assert_called_once_with('{"token": "google_token"}')
-    mock_credentials.from_authorized_user_info.assert_called_once_with(
-        {"token": "google_token"}
-    )
-
-  @pytest.mark.asyncio
   async def test_get_headers_no_credential(self):
     """Test header generation with no credentials."""
     tool = MCPTool(
@@ -311,14 +277,14 @@ class TestMCPTool:
     assert headers is None
 
   @pytest.mark.asyncio
-  async def test_get_headers_service_account_no_json(self):
-    """Test header generation for service account credentials without google_oauth2_json."""
+  async def test_get_headers_service_account(self):
+    """Test header generation for service account credentials."""
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
         mcp_session_manager=self.mock_session_manager,
     )
 
-    # Create service account credential without google_oauth2_json
+    # Create service account credential
     service_account = ServiceAccount(scopes=["test"])
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
@@ -328,7 +294,7 @@ class TestMCPTool:
     tool_context = Mock(spec=ToolContext)
     headers = await tool._get_headers(tool_context, credential)
 
-    # Should return None as no google_oauth2_json is provided
+    # Should return None as service account credentials are not supported for direct header generation
     assert headers is None
 
   @pytest.mark.asyncio

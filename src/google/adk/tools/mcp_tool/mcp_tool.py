@@ -138,11 +138,6 @@ class MCPTool(BaseAuthenticatedTool):
     if credential:
       if credential.oauth2:
         headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
-      elif credential.google_oauth2_json:
-        google_credential = Credentials.from_authorized_user_info(
-            json.loads(credential.google_oauth2_json)
-        )
-        headers = {"Authorization": f"Bearer {google_credential.token}"}
       elif credential.http:
         # Handle HTTP authentication schemes
         if (
@@ -178,10 +173,9 @@ class MCPTool(BaseAuthenticatedTool):
         headers = {"X-API-Key": credential.api_key}
       elif credential.service_account:
         # Service accounts should be exchanged for access tokens before reaching this point
-        # If we reach here, we can try to use google_oauth2_json or log a warning
         logger.warning(
-            "Service account credentials should be exchanged for access"
-            " tokens before MCP session creation"
+            "Service account credentials should be exchanged before MCP"
+            " session creation"
         )
 
     return headers
