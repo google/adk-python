@@ -247,14 +247,14 @@ def _get_content(
         content_objects.append(
             ChatCompletionImageUrlObject(
                 type="image_url",
-                image_url=data_uri,
+                image_url={"url":data_uri},
             )
         )
       elif part.inline_data.mime_type.startswith("video"):
         content_objects.append(
             ChatCompletionVideoUrlObject(
                 type="video_url",
-                video_url=data_uri,
+                video_url={"url":data_uri},
             )
         )
       else:
