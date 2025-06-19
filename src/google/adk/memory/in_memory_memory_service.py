@@ -45,12 +45,12 @@ class InMemoryMemoryService(BaseMemoryService):
   Uses keyword matching instead of semantic search.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._session_events: dict[str, dict[str, list[Event]]] = {}
     """Keys are app_name/user_id, session_id. Values are session event lists."""
 
   @override
-  async def add_session_to_memory(self, session: Session):
+  async def add_session_to_memory(self, session: Session) -> None:
     user_key = _user_key(session.app_name, session.user_id)
     self._session_events[user_key] = self._session_events.get(
         _user_key(session.app_name, session.user_id), {}
