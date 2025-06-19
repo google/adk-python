@@ -43,11 +43,19 @@ jobs:
       run: |
         uv venv .venv
         source .venv/bin/activate
-        uv sync --extra test --extra eval
+        uv sync --extra test --extra eval --extra a2a
 
     - name: Run unit tests with pytest
       run: |
         source .venv/bin/activate
-        pytest tests/unittests \
-          --ignore=tests/unittests/artifacts/test_artifact_service.py \
-          --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
+        if [[ "${{ matrix.python-version }}" == "3.9" ]]; then
+          pytest tests/unittests \
+            --ignore=tests/unittests/a2a \
+            --ignore=tests/unittests/tools/mcp_tool \
+            --ignore=tests/unittests/artifacts/test_artifact_service.py \
+            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
+        else
+          pytest tests/unittests \
+            --ignore=tests/unittests/artifacts/test_artifact_service.py \
+            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
+        fi
