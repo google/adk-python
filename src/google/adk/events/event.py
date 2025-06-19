@@ -17,6 +17,8 @@ from datetime import datetime
 import random
 import string
 from typing import Optional
+from typing import Any
+
 
 from google.genai import types
 from pydantic import alias_generators
@@ -85,6 +87,10 @@ class Event(LlmResponse):
   """The unique identifier of the event."""
   timestamp: float = Field(default_factory=lambda: datetime.now().timestamp())
   """The timestamp of the event."""
+  debug_metadata: Optional[dict[str, Any]] = None
+  """The debug metadata of the event.
+  e.g. the corresponding a2a request and response that generate this event.
+  """
 
   def model_post_init(self, __context):
     """Post initialization logic for the event."""
