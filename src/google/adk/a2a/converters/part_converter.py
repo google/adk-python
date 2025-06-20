@@ -23,6 +23,8 @@ import logging
 import sys
 from typing import Optional
 
+from .utils import _get_adk_metadata_key
+
 try:
   from a2a import types as a2a_types
 except ImportError as e:
@@ -84,7 +86,7 @@ def convert_a2a_part_to_genai_part(
     # logic accordinlgy
     if part.metadata and A2A_DATA_PART_METADATA_TYPE_KEY in part.metadata:
       if (
-          part.metadata[A2A_DATA_PART_METADATA_TYPE_KEY]
+          part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
           == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
       ):
         return genai_types.Part(
@@ -93,7 +95,7 @@ def convert_a2a_part_to_genai_part(
             )
         )
       if (
-          part.metadata[A2A_DATA_PART_METADATA_TYPE_KEY]
+          part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
           == A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
       ):
         return genai_types.Part(

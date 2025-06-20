@@ -125,7 +125,8 @@ class TestConvertA2aPartToGenaiPart:
             metadata={
                 A2A_DATA_PART_METADATA_TYPE_KEY: (
                     A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-                )
+                ),
+                "adk_type": A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
             },
         )
     )
@@ -153,7 +154,8 @@ class TestConvertA2aPartToGenaiPart:
             metadata={
                 A2A_DATA_PART_METADATA_TYPE_KEY: (
                     A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
-                )
+                ),
+                "adk_type": A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE,
             },
         )
     )
