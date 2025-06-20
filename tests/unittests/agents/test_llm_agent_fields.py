@@ -26,8 +26,9 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.agents.content_config import ContentConfig, SummarizationConfig
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 import pytest
 
 
@@ -280,3 +281,105 @@ def test_allow_transfer_by_default():
 
   assert not agent.disallow_transfer_to_parent
   assert not agent.disallow_transfer_to_peers
+
+
+# Tests for canonical_content_config
+def test_canonical_content_config_default_string():
+    agent = LlmAgent(name='test_agent', include_contents='default')
+    config = agent.canonical_content_config
+    assert isinstance(config, ContentConfig)
+    assert config.enabled is True
+
+
+def test_canonical_content_config_none_string():
+    agent = LlmAgent(name='test_agent', include_contents='none')
+    config = agent.canonical_content_config
+    assert isinstance(config, ContentConfig)
+    assert config.enabled is False
+
+
+def test_canonical_content_config_object():
+    custom_config = ContentConfig(enabled=True, max_events=5)
+    agent = LlmAgent(name='test_agent', include_contents=custom_config)
+    config = agent.canonical_content_config
+    assert config is custom_config  # Should be the same object
+    assert config.max_events == 5
+
+
+# Tests for ContentConfig and SummarizationConfig models
+def test_summarization_config_defaults():
+    config = SummarizationConfig()
+    assert config.model is None
+    assert config.instruction is None
+    assert config.max_tokens is None
+
+
+def test_summarization_config_custom():
+    config = SummarizationConfig(model="gemini-2.0-flash", instruction="Summarize.", max_tokens=123)
+    assert config.model == "gemini-2.0-flash"
+    assert config.instruction == "Summarize."
+    assert config.max_tokens == 123
+
+
+def test_content_config_defaults():
+    config = ContentConfig()
+    assert config.enabled is True
+    assert config.include_authors is None
+    assert config.exclude_authors is None
+    assert config.max_events is None
+    assert config.summarize is False
+    assert config.summary_template == "Previous conversation summary: {summary}"
+    assert config.summarization_config is None
+    assert config.summarization_window is None
+    assert config.always_include_last_n is None
+    assert config.context_from_state is None
+    assert config.state_template == "Session Information:\n{context}"
+
+
+def test_content_config_custom():
+    summ_cfg = SummarizationConfig(model="gemini-2.0-flash", instruction="Summarize.", max_tokens=50)
+    config = ContentConfig(
+        enabled=False,
+        include_authors=["user", "agent"],
+        max_events=10,
+        summarize=True,
+        summary_template="Summary: {summary}",
+        summarization_config=summ_cfg,
+        summarization_window=5,
+        always_include_last_n=2,
+        context_from_state=["foo", "bar"],
+        state_template="CTX: {context}"
+    )
+    assert config.enabled is False
+    assert config.include_authors == ["user", "agent"]
+    assert config.exclude_authors is None
+    assert config.max_events == 10
+    assert config.summarize is True
+    assert config.summary_template == "Summary: {summary}"
+    assert config.summarization_config == summ_cfg
+    assert config.summarization_window == 5
+    assert config.always_include_last_n == 2
+    assert config.context_from_state == ["foo", "bar"]
+    assert config.state_template == "CTX: {context}"
+
+
+def test_content_config_serialization():
+    data = {
+        "enabled": False,
+        "include_authors": ["user"],
+        "summarize": True,
+        "summarization_config": {"model": "gemini-2.0-flash", "instruction": "Summarize briefly", "max_tokens": 100}
+    }
+    config = ContentConfig(**data)
+    dumped = config.model_dump()
+    assert dumped["enabled"] is False
+    assert dumped["include_authors"] == ["user"]
+    assert dumped["summarize"] is True
+    assert dumped["summarization_config"]["model"] == "gemini-2.0-flash"
+
+
+def test_content_config_type_validation():
+    with pytest.raises(ValidationError):
+        ContentConfig(enabled="not_a_valid_boolean")  # This should now raise ValidationError
+    with pytest.raises(ValidationError):
+        SummarizationConfig(max_tokens="thousand")  # This should correctly raise ValidationError
