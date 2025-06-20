@@ -19,7 +19,7 @@ from typing import Any
 from typing import Callable
 from typing import Optional
 
-from google.oauth2.credentials import Credentials
+from google.auth.credentials import Credentials
 from typing_extensions import override
 
 from ...utils.feature_decorator import experimental
