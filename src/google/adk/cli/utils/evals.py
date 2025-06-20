@@ -166,7 +166,7 @@ def convert_session_to_eval_invocations(session: Session) -> list[Invocation]:
               parts=intermediate_responses[-1][1]
           )
       else:
-          final_response = []
+          final_response = genai_types.Content(parts=[])
 
       invocations.append(
           Invocation(
@@ -177,9 +177,7 @@ def convert_session_to_eval_invocations(session: Session) -> list[Invocation]:
                   tool_uses=tool_uses,
                   intermediate_responses=intermediate_responses[:-1],
               ),
-              final_response=genai_types.Content(
-                  parts=final_response
-              ),
+              final_response=final_response,
           )
       )
 
