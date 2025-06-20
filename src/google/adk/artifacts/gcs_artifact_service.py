@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """An artifact service implementation using Google Cloud Storage (GCS)."""
+from __future__ import annotations
 
 import logging
 from typing import Optional
