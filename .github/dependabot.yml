@@ -1,0 +1,16 @@
+# GitHub Dependabot configuration
+# Note: there is no interaction between this configuration and dependabot security updates.
+# See here for more information:
+# https://docs.github.com/en/code-security/dependabot/dependabot-security-updates/about-dependabot-security-updates#about-dependabot-security-updates
+
+version: 2
+updates:
+  # GitHub Actions checks
+  # See here for more information:
+  # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuring-dependabot-version-updates
+  - package-ecosystem: "github-actions"
+    # checks for updates by default under `/.github/workflows`
+    directory: "/"
+    schedule:
+      # Check for updates to GitHub Actions every week
+      interval: "weekly"
