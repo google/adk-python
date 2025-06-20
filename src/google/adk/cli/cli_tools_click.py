@@ -39,6 +39,11 @@ from .fast_api import get_fast_api_app
 from .utils import envs
 from .utils import logs
 
+LOG_LEVELS = click.Choice(
+    ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+    case_sensitive=False,
+)
+
 
 class HelpfulCommand(click.Command):
   """Command that shows full help on error instead of just the error message.
@@ -499,13 +504,6 @@ def fast_api_common_options():
 
   def decorator(func):
     @click.option(
-        "--host",
-        type=str,
-        help="Optional. The binding host of the server",
-        default="127.0.0.1",
-        show_default=True,
-    )
-    @click.option(
         "--port",
         type=int,
         help="Optional. The port of the server",
@@ -518,10 +516,7 @@ def fast_api_common_options():
     )
     @click.option(
         "--log_level",
-        type=click.Choice(
-            ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-            case_sensitive=False,
-        ),
+        type=LOG_LEVELS,
         default="INFO",
         help="Optional. Set the logging level",
     )
@@ -535,7 +530,10 @@ def fast_api_common_options():
     @click.option(
         "--reload/--no-reload",
         default=True,
-        help="Optional. Whether to enable auto reload for server.",
+        help=(
+            "Optional. Whether to enable auto reload for server. Not supported"
+            " for Cloud Run."
+        ),
     )
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -547,6 +545,13 @@ def fast_api_common_options():
 
 
 @main.command("web")
+@click.option(
+    "--host",
+    type=str,
+    help="Optional. The binding host of the server",
+    default="127.0.0.1",
+    show_default=True,
+)
 @fast_api_common_options()
 @adk_services_options()
 @deprecated_adk_services_options()
@@ -578,7 +583,7 @@ def cli_web(
 
   Example:
 
-    adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
+    adk web --port=[port] path/to/agents_dir
   """
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
@@ -628,6 +633,16 @@ def cli_web(
 
 
 @main.command("api_server")
+@click.option(
+    "--host",
+    type=str,
+    help="Optional. The binding host of the server",
+    default="127.0.0.1",
+    show_default=True,
+)
+@fast_api_common_options()
+@adk_services_options()
+@deprecated_adk_services_options()
 # The directory of agents, where each sub-directory is a single agent.
 # By default, it is the current working directory
 @click.argument(
@@ -637,9 +652,6 @@ def cli_web(
     ),
     default=os.getcwd(),
 )
-@fast_api_common_options()
-@adk_services_options()
-@deprecated_adk_services_options()
 def cli_api_server(
     agents_dir: str,
     log_level: str = "INFO",
@@ -661,7 +673,7 @@ def cli_api_server(
 
   Example:
 
-    adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
+    adk api_server --port=[port] path/to/agents_dir
   """
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
@@ -720,19 +732,7 @@ def cli_api_server(
         " of the AGENT source code)."
     ),
 )
-@click.option(
-    "--port",
-    type=int,
-    default=8000,
-    help="Optional. The port of the ADK API server (default: 8000).",
-)
-@click.option(
-    "--trace_to_cloud",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Optional. Whether to enable Cloud Trace for cloud run.",
-)
+@fast_api_common_options()
 @click.option(
     "--with_ui",
     is_flag=True,
@@ -742,6 +742,11 @@ def cli_api_server(
         "Optional. Deploy ADK Web UI if set. (default: deploy ADK API server"
         " only)"
     ),
+)
+@click.option(
+    "--verbosity",
+    type=LOG_LEVELS,
+    help="Deprecated. Use --log_level instead.",
 )
 @click.option(
     "--temp_folder",
@@ -757,20 +762,6 @@ def cli_api_server(
     ),
 )
 @click.option(
-    "--verbosity",
-    type=click.Choice(
-        ["debug", "info", "warning", "error", "critical"], case_sensitive=False
-    ),
-    default="WARNING",
-    help="Optional. Override the default verbosity level.",
-)
-@click.argument(
-    "agent",
-    type=click.Path(
-        exists=True, dir_okay=True, file_okay=False, resolve_path=True
-    ),
-)
-@click.option(
     "--adk_version",
     type=str,
     default=version.__version__,
@@ -782,6 +773,12 @@ def cli_api_server(
 )
 @adk_services_options()
 @deprecated_adk_services_options()
+@click.argument(
+    "agent",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
 def cli_deploy_cloud_run(
     agent: str,
     project: Optional[str],
@@ -792,8 +789,11 @@ def cli_deploy_cloud_run(
     port: int,
     trace_to_cloud: bool,
     with_ui: bool,
-    verbosity: str,
     adk_version: str,
+    log_level: Optional[str] = None,
+    verbosity: str = "WARNING",
+    reload: bool = True,
+    allow_origins: Optional[list[str]] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
@@ -808,6 +808,7 @@ def cli_deploy_cloud_run(
 
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
   """
+  log_level = log_level or verbosity
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
   try:
@@ -820,7 +821,9 @@ def cli_deploy_cloud_run(
         temp_folder=temp_folder,
         port=port,
         trace_to_cloud=trace_to_cloud,
+        allow_origins=allow_origins,
         with_ui=with_ui,
+        log_level=log_level,
         verbosity=verbosity,
         adk_version=adk_version,
         session_service_uri=session_service_uri,
