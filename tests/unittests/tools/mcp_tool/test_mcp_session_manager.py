@@ -20,12 +20,34 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
-from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_closed_resource
-from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
-from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 import pytest
+
+# Skip all tests in this module if Python version is less than 3.10
+pytestmark = pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
+)
+
+# Import dependencies with version checking
+try:
+  from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+  from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_closed_resource
+  from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
+  from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+  from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+except ImportError as e:
+  if sys.version_info < (3, 10):
+    # Create dummy classes to prevent NameError during test collection
+    # Tests will be skipped anyway due to pytestmark
+    class DummyClass:
+      pass
+
+    MCPSessionManager = DummyClass
+    retry_on_closed_resource = lambda x: x
+    SseConnectionParams = DummyClass
+    StdioConnectionParams = DummyClass
+    StreamableHTTPConnectionParams = DummyClass
+  else:
+    raise e
 
 # Import real MCP classes
 try:
