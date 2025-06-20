@@ -114,6 +114,9 @@ For any changes that impact user-facing documentation (guides, API reference, tu
 
 3.  **Create and activate a virtual environment:**
 
+    `uv` automatically installs you environment when using `uv run`.
+    You may also manually control the `venv` as seen below.
+
     **NOTE**: ADK supports Python 3.9+. Python 3.11 and above is strongly recommended.
 
     Create a workspace venv using uv.
