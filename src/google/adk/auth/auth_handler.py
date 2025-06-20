@@ -22,7 +22,7 @@ from .auth_credential import AuthCredential
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
-from .oauth2_credential_fetcher import OAuth2CredentialFetcher
+from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 
 if TYPE_CHECKING:
   from ..sessions.state import State
@@ -36,20 +36,25 @@ except ImportError:
 
 
 class AuthHandler:
+  """A handler that handles the auth flow in Agent Development Kit to help
+  orchestrate the credential request and response flow (e.g. OAuth flow)
+  This class should only be used by Agent Development Kit.
+  """
 
   def __init__(self, auth_config: AuthConfig):
     self.auth_config = auth_config
 
-  def exchange_auth_token(
+  async def exchange_auth_token(
       self,
   ) -> AuthCredential:
-    return OAuth2CredentialFetcher(
-        self.auth_config.auth_scheme, self.auth_config.exchanged_auth_credential
-    ).exchange()
+    exchanger = OAuth2CredentialExchanger()
+    return await exchanger.exchange(
+        self.auth_config.exchanged_auth_credential, self.auth_config.auth_scheme
+    )
 
-  def parse_and_store_auth_response(self, state: State) -> None:
+  async def parse_and_store_auth_response(self, state: State) -> None:
 
-    credential_key = "temp:" + self.auth_config.get_credential_key()
+    credential_key = "temp:" + self.auth_config.credential_key
 
     state[credential_key] = self.auth_config.exchanged_auth_credential
     if not isinstance(
@@ -60,14 +65,14 @@ class AuthHandler:
     ):
       return
 
-    state[credential_key] = self.exchange_auth_token()
+    state[credential_key] = await self.exchange_auth_token()
 
   def _validate(self) -> None:
     if not self.auth_scheme:
       raise ValueError("auth_scheme is empty.")
 
   def get_auth_response(self, state: State) -> AuthCredential:
-    credential_key = "temp:" + self.auth_config.get_credential_key()
+    credential_key = "temp:" + self.auth_config.credential_key
     return state.get(credential_key, None)
 
   def generate_auth_request(self) -> AuthConfig:

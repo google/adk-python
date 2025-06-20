@@ -57,6 +57,7 @@ from ..agents.llm_agent import Agent
 from ..agents.run_config import StreamingMode
 from ..artifacts.gcs_artifact_service import GcsArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
+from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
@@ -305,6 +306,9 @@ def get_fast_api_app(
   else:
     artifact_service = InMemoryArtifactService()
 
+  # Build  the Credential service
+  credential_service = InMemoryCredentialService()
+
   # initialize Agent Loader
   agent_loader = AgentLoader(agents_dir)
 
@@ -412,11 +416,18 @@ def get_fast_api_app(
       app_name: str,
       user_id: str,
       state: Optional[dict[str, Any]] = None,
+      events: Optional[list[Event]] = None,
   ) -> Session:
     logger.info("New session created")
-    return await session_service.create_session(
+    session = await session_service.create_session(
         app_name=app_name, user_id=user_id, state=state
     )
+
+    if events:
+      for event in events:
+        await session_service.append_event(session=session, event=event)
+
+    return session
 
   def _get_eval_set_file_path(app_name, agents_dir, eval_set_id) -> str:
     return os.path.join(
@@ -922,6 +933,7 @@ def get_fast_api_app(
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
+        credential_service=credential_service,
     )
     runner_dict[app_name] = runner
     return runner

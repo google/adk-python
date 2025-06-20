@@ -14,6 +14,7 @@
 
 
 import json
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -194,7 +195,8 @@ class TestRestApiTool:
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
   )
-  def test_call_success(
+  @pytest.mark.asyncio
+  async def test_call_success(
       self,
       mock_request,
       mock_tool_context,
@@ -217,7 +219,7 @@ class TestRestApiTool:
     )
 
     # Call the method
-    result = tool.call(args={}, tool_context=mock_tool_context)
+    result = await tool.call(args={}, tool_context=mock_tool_context)
 
     # Check the result
     assert result == {"result": "success"}
@@ -225,7 +227,8 @@ class TestRestApiTool:
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
   )
-  def test_call_auth_pending(
+  @pytest.mark.asyncio
+  async def test_call_auth_pending(
       self,
       mock_request,
       sample_endpoint,
@@ -246,12 +249,14 @@ class TestRestApiTool:
         "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.ToolAuthHandler.from_tool_context"
     ) as mock_from_tool_context:
       mock_tool_auth_handler_instance = MagicMock()
-      mock_tool_auth_handler_instance.prepare_auth_credentials.return_value.state = (
-          "pending"
+      mock_prepare_result = MagicMock()
+      mock_prepare_result.state = "pending"
+      mock_tool_auth_handler_instance.prepare_auth_credentials = AsyncMock(
+          return_value=mock_prepare_result
       )
       mock_from_tool_context.return_value = mock_tool_auth_handler_instance
 
-      response = tool.call(args={}, tool_context=None)
+      response = await tool.call(args={}, tool_context=None)
       assert response == {
           "pending": True,
           "message": "Needs your authorization to access your data.",

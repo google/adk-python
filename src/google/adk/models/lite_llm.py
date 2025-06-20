@@ -744,6 +744,7 @@ class LiteLlm(BaseLlm):
                     )
                 )
             )
+            text = ""
             function_calls.clear()
             text = ""
           elif finish_reason == "stop" and text:

@@ -25,7 +25,7 @@ from ....auth.auth_credential import AuthCredentialTypes
 from ....auth.auth_schemes import AuthScheme
 from ....auth.auth_schemes import AuthSchemeType
 from ....auth.auth_tool import AuthConfig
-from ....auth.oauth2_credential_fetcher import OAuth2CredentialFetcher
+from ....auth.refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
 from ...tool_context import ToolContext
 from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuthCredentialExchanger
 from ..auth.credential_exchangers.base_credential_exchanger import AuthCredentialMissingError
@@ -146,7 +146,7 @@ class ToolAuthHandler:
         credential_store,
     )
 
-  def _get_existing_credential(
+  async def _get_existing_credential(
       self,
   ) -> Optional[AuthCredential]:
     """Checks for and returns an existing, exchanged credential."""
@@ -156,9 +156,11 @@ class ToolAuthHandler:
       )
       if existing_credential:
         if existing_credential.oauth2:
-          existing_credential = OAuth2CredentialFetcher(
-              self.auth_scheme, existing_credential
-          ).refresh()
+          refresher = OAuth2CredentialRefresher()
+          if await refresher.is_refresh_needed(existing_credential):
+            existing_credential = await refresher.refresh(
+                existing_credential, self.auth_scheme
+            )
         return existing_credential
     return None
 
@@ -231,10 +233,9 @@ class ToolAuthHandler:
             AuthCredentialTypes.OPEN_ID_CONNECT,
         )
         and not credential.oauth2.access_token
-        and not credential.google_oauth2_json
     )
 
-  def prepare_auth_credentials(
+  async def prepare_auth_credentials(
       self,
   ) -> AuthPreparationResult:
     """Prepares authentication credentials, handling exchange and user interaction."""
@@ -244,7 +245,7 @@ class ToolAuthHandler:
       return AuthPreparationResult(state="done")
 
     # Check for existing credential.
-    existing_credential = self._get_existing_credential()
+    existing_credential = await self._get_existing_credential()
 
     credential = existing_credential or self.auth_credential
     # fetch credential from adk framework
