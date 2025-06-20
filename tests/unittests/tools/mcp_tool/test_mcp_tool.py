@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
+import sys
+from typing import Any
+from typing import Dict
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -23,13 +25,32 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
-from google.adk.auth.auth_schemes import AuthScheme
-from google.adk.auth.auth_schemes import AuthSchemeType
-from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-from google.adk.tools.mcp_tool.mcp_tool import MCPTool
-from google.adk.tools.tool_context import ToolContext
-from google.genai.types import FunctionDeclaration
 import pytest
+
+# Skip all tests in this module if Python version is less than 3.10
+pytestmark = pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
+)
+
+# Import dependencies with version checking
+try:
+  from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+  from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+  from google.adk.tools.tool_context import ToolContext
+  from google.genai.types import FunctionDeclaration
+except ImportError as e:
+  if sys.version_info < (3, 10):
+    # Create dummy classes to prevent NameError during test collection
+    # Tests will be skipped anyway due to pytestmark
+    class DummyClass:
+      pass
+
+    MCPSessionManager = DummyClass
+    MCPTool = DummyClass
+    ToolContext = DummyClass
+    FunctionDeclaration = DummyClass
+  else:
+    raise e
 
 
 # Mock MCP Tool from mcp.types
