@@ -1,0 +1,5 @@
+releaseType: python
+handleGHRelease: true
+bumpMinorPreMajor: false
+extraFiles:
+  - src/google/adk/version.py

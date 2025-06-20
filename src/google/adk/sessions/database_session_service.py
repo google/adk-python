@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import copy
 from datetime import datetime
 import json
@@ -19,6 +21,7 @@ from typing import Any
 from typing import Optional
 import uuid
 
+from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
@@ -89,6 +92,18 @@ class DynamicJSON(TypeDecorator):
     return value
 
 
+class PreciseTimestamp(TypeDecorator):
+  """Represents a timestamp precise to the microsecond."""
+
+  impl = DateTime
+  cache_ok = True
+
+  def load_dialect_impl(self, dialect):
+    if dialect.name == "mysql":
+      return dialect.type_descriptor(mysql.DATETIME(fsp=6))
+    return self.impl
+
+
 class Base(DeclarativeBase):
   """Base class for database tables."""
 
@@ -153,7 +168,9 @@ class StorageEvent(Base):
   branch: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
   )
-  timestamp: Mapped[DateTime] = mapped_column(DateTime(), default=func.now())
+  timestamp: Mapped[PreciseTimestamp] = mapped_column(
+      PreciseTimestamp, default=func.now()
+  )
   content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
   actions: Mapped[MutableDict[str, Any]] = mapped_column(PickleType)
 
@@ -199,6 +216,55 @@ class StorageEvent(Base):
     else:
       self.long_running_tool_ids_json = json.dumps(list(value))
 
+  @classmethod
+  def from_event(cls, session: Session, event: Event) -> StorageEvent:
+    storage_event = StorageEvent(
+        id=event.id,
+        invocation_id=event.invocation_id,
+        author=event.author,
+        branch=event.branch,
+        actions=event.actions,
+        session_id=session.id,
+        app_name=session.app_name,
+        user_id=session.user_id,
+        timestamp=datetime.fromtimestamp(event.timestamp),
+        long_running_tool_ids=event.long_running_tool_ids,
+        partial=event.partial,
+        turn_complete=event.turn_complete,
+        error_code=event.error_code,
+        error_message=event.error_message,
+        interrupted=event.interrupted,
+    )
+    if event.content:
+      storage_event.content = event.content.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.grounding_metadata:
+      storage_event.grounding_metadata = event.grounding_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
+    return storage_event
+
+  def to_event(self) -> Event:
+    return Event(
+        id=self.id,
+        invocation_id=self.invocation_id,
+        author=self.author,
+        branch=self.branch,
+        actions=self.actions,
+        timestamp=self.timestamp.timestamp(),
+        content=_session_util.decode_content(self.content),
+        long_running_tool_ids=self.long_running_tool_ids,
+        partial=self.partial,
+        turn_complete=self.turn_complete,
+        error_code=self.error_code,
+        error_message=self.error_message,
+        interrupted=self.interrupted,
+        grounding_metadata=_session_util.decode_grounding_metadata(
+            self.grounding_metadata
+        ),
+    )
+
 
 class StorageAppState(Base):
   """Represents an app state stored in the database."""
@@ -238,14 +304,14 @@ class StorageUserState(Base):
 class DatabaseSessionService(BaseSessionService):
   """A session service that uses a database for storage."""
 
-  def __init__(self, db_url: str):
+  def __init__(self, db_url: str, **kwargs: Any):
     """Initializes the database session service with a database URL."""
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
     # 3. Initialize all properties
 
     try:
-      db_engine = create_engine(db_url)
+      db_engine = create_engine(db_url, **kwargs)
     except Exception as e:
       if isinstance(e, ArgumentError):
         raise ValueError(
@@ -409,25 +475,7 @@ class DatabaseSessionService(BaseSessionService):
           state=merged_state,
           last_update_time=storage_session.update_time.timestamp(),
       )
-      session.events = [
-          Event(
-              id=e.id,
-              author=e.author,
-              branch=e.branch,
-              invocation_id=e.invocation_id,
-              content=_session_util.decode_content(e.content),
-              actions=e.actions,
-              timestamp=e.timestamp.timestamp(),
-              long_running_tool_ids=e.long_running_tool_ids,
-              grounding_metadata=e.grounding_metadata,
-              partial=e.partial,
-              turn_complete=e.turn_complete,
-              error_code=e.error_code,
-              error_message=e.error_message,
-              interrupted=e.interrupted,
-          )
-          for e in reversed(storage_events)
-      ]
+      session.events = [e.to_event() for e in reversed(storage_events)]
     return session
 
   @override
@@ -512,38 +560,18 @@ class DatabaseSessionService(BaseSessionService):
               _extract_state_delta(event.actions.state_delta)
           )
 
-      # Merge state
-      app_state.update(app_state_delta)
-      user_state.update(user_state_delta)
-      session_state.update(session_state_delta)
+      # Merge state and update storage
+      if app_state_delta:
+        app_state.update(app_state_delta)
+        storage_app_state.state = app_state
+      if user_state_delta:
+        user_state.update(user_state_delta)
+        storage_user_state.state = user_state
+      if session_state_delta:
+        session_state.update(session_state_delta)
+        storage_session.state = session_state
 
-      # Update storage
-      storage_app_state.state = app_state
-      storage_user_state.state = user_state
-      storage_session.state = session_state
-
-      storage_event = StorageEvent(
-          id=event.id,
-          invocation_id=event.invocation_id,
-          author=event.author,
-          branch=event.branch,
-          actions=event.actions,
-          session_id=session.id,
-          app_name=session.app_name,
-          user_id=session.user_id,
-          timestamp=datetime.fromtimestamp(event.timestamp),
-          long_running_tool_ids=event.long_running_tool_ids,
-          grounding_metadata=event.grounding_metadata,
-          partial=event.partial,
-          turn_complete=event.turn_complete,
-          error_code=event.error_code,
-          error_message=event.error_message,
-          interrupted=event.interrupted,
-      )
-      if event.content:
-        storage_event.content = _session_util.encode_content(event.content)
-
-      session_factory.add(storage_event)
+      session_factory.add(StorageEvent.from_event(session, event))
 
       session_factory.commit()
       session_factory.refresh(storage_session)
@@ -554,19 +582,6 @@ class DatabaseSessionService(BaseSessionService):
     # Also update the in-memory session
     await super().append_event(session=session, event=event)
     return event
-
-
-def convert_event(event: StorageEvent) -> Event:
-  """Converts a storage event to an event."""
-  return Event(
-      id=event.id,
-      author=event.author,
-      branch=event.branch,
-      invocation_id=event.invocation_id,
-      content=event.content,
-      actions=event.actions,
-      timestamp=event.timestamp.timestamp(),
-  )
 
 
 def _extract_state_delta(state: dict[str, Any]):

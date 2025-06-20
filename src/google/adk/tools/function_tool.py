@@ -46,14 +46,14 @@ class FunctionTool(BaseTool):
 
     # Get documentation (prioritize direct __doc__ if available)
     if hasattr(func, '__doc__') and func.__doc__:
-      doc = func.__doc__
+      doc = inspect.cleandoc(func.__doc__)
     elif (
         hasattr(func, '__call__')
         and hasattr(func.__call__, '__doc__')
         and func.__call__.__doc__
     ):
       # For callable objects, try to get docstring from __call__ method
-      doc = func.__call__.__doc__
+      doc = inspect.cleandoc(func.__call__.__doc__)
 
     super().__init__(name=name, description=doc)
     self.func = func
@@ -107,9 +107,9 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         or hasattr(self.func, '__call__')
         and inspect.iscoroutinefunction(self.func.__call__)
     ):
-      return await self.func(**args_to_call) or {}
+      return await self.func(**args_to_call)
     else:
-      return self.func(**args_to_call) or {}
+      return self.func(**args_to_call)
 
   # TODO(hangfei): fix call live for function stream.
   async def _call_live(

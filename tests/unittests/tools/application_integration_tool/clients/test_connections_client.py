@@ -181,6 +181,7 @@ class TestConnectionsClient:
     mock_response = mock.MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
+        "name": "test-connection",
         "serviceDirectory": "test_service",
         "host": "test.host",
         "tlsServiceDirectory": "tls_test_service",
@@ -192,13 +193,37 @@ class TestConnectionsClient:
     ):
       details = client.get_connection_details()
       assert details == {
+          "name": "test-connection",
           "serviceName": "tls_test_service",
           "host": "test.host",
           "authOverrideEnabled": True,
-          "name": "",
       }
 
   def test_get_connection_details_success_without_host(
+      self, project, location, connection_name, mock_credentials
+  ):
+    credentials = {"email": "test@example.com"}
+    client = ConnectionsClient(project, location, connection_name, credentials)
+    mock_response = mock.MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "name": "test-connection",
+        "serviceDirectory": "test_service",
+        "authOverrideEnabled": False,
+    }
+
+    with mock.patch.object(
+        client, "_execute_api_call", return_value=mock_response
+    ):
+      details = client.get_connection_details()
+      assert details == {
+          "name": "test-connection",
+          "serviceName": "test_service",
+          "host": "",
+          "authOverrideEnabled": False,
+      }
+
+  def test_get_connection_details_without_name(
       self, project, location, connection_name, mock_credentials
   ):
     credentials = {"email": "test@example.com"}
@@ -215,10 +240,10 @@ class TestConnectionsClient:
     ):
       details = client.get_connection_details()
       assert details == {
+          "name": "",
           "serviceName": "test_service",
           "host": "",
           "authOverrideEnabled": False,
-          "name": "",
       }
 
   def test_get_connection_details_error(
@@ -486,6 +511,7 @@ class TestConnectionsClient:
     assert schema["type"] == "object"
     assert "properties" in schema
     assert "filterClause" in schema["properties"]
+    assert "sortByColumns" in schema["properties"]
 
   def test_action_request(self):
     schema = ConnectionsClient.action_request("TestAction")

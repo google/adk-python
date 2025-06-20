@@ -12,10 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from datetime import datetime
-import importlib
-import os
-import sys
 from typing import Optional
 
 import click
@@ -25,11 +24,14 @@ from pydantic import BaseModel
 from ..agents.llm_agent import LlmAgent
 from ..artifacts import BaseArtifactService
 from ..artifacts import InMemoryArtifactService
+from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from .utils import envs
+from .utils.agent_loader import AgentLoader
 
 
 class InputFile(BaseModel):
@@ -43,6 +45,7 @@ async def run_input_file(
     root_agent: LlmAgent,
     artifact_service: BaseArtifactService,
     session_service: BaseSessionService,
+    credential_service: BaseCredentialService,
     input_path: str,
 ) -> Session:
   runner = Runner(
@@ -50,6 +53,7 @@ async def run_input_file(
       agent=root_agent,
       artifact_service=artifact_service,
       session_service=session_service,
+      credential_service=credential_service,
   )
   with open(input_path, 'r', encoding='utf-8') as f:
     input_file = InputFile.model_validate_json(f.read())
@@ -75,12 +79,14 @@ async def run_interactively(
     artifact_service: BaseArtifactService,
     session: Session,
     session_service: BaseSessionService,
+    credential_service: BaseCredentialService,
 ) -> None:
   runner = Runner(
       app_name=session.app_name,
       agent=root_agent,
       artifact_service=artifact_service,
       session_service=session_service,
+      credential_service=credential_service,
   )
   while True:
     query = input('[user]: ')
@@ -122,19 +128,18 @@ async def run_cli(
     save_session: bool, whether to save the session on exit.
     session_id: Optional[str], the session ID to save the session to on exit.
   """
-  if agent_parent_dir not in sys.path:
-    sys.path.append(agent_parent_dir)
 
   artifact_service = InMemoryArtifactService()
   session_service = InMemorySessionService()
+  credential_service = InMemoryCredentialService()
 
-  agent_module_path = os.path.join(agent_parent_dir, agent_folder_name)
-  agent_module = importlib.import_module(agent_folder_name)
   user_id = 'test_user'
   session = await session_service.create_session(
       app_name=agent_folder_name, user_id=user_id
   )
-  root_agent = agent_module.agent.root_agent
+  root_agent = AgentLoader(agents_dir=agent_parent_dir).load_agent(
+      agent_folder_name
+  )
   envs.load_dotenv_for_agent(agent_folder_name, agent_parent_dir)
   if input_file:
     session = await run_input_file(
@@ -143,6 +148,7 @@ async def run_cli(
         root_agent=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
+        credential_service=credential_service,
         input_path=input_file,
     )
   elif saved_session_file:
@@ -165,6 +171,7 @@ async def run_cli(
         artifact_service,
         session,
         session_service,
+        credential_service,
     )
   else:
     click.echo(f'Running agent {root_agent.name}, type exit to exit.')
@@ -173,11 +180,14 @@ async def run_cli(
         artifact_service,
         session,
         session_service,
+        credential_service,
     )
 
   if save_session:
     session_id = session_id or input('Session ID to save: ')
-    session_path = f'{agent_module_path}/{session_id}.session.json'
+    session_path = (
+        f'{agent_parent_dir}/{agent_folder_name}/{session_id}.session.json'
+    )
 
     # Fetch the session again to get all the details.
     session = await session_service.get_session(

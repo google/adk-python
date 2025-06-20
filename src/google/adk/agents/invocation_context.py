@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..memory.base_memory_service import BaseMemoryService
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -39,9 +40,9 @@ class LlmCallsLimitExceededError(Exception):
 class _InvocationCostManager(BaseModel):
   """A container to keep track of the cost of invocation.
 
-  While we don't expected the metrics captured here to be a direct
-  representatative of monetary cost incurred in executing the current
-  invocation, but they, in someways have an indirect affect.
+  While we don't expect the metrics captured here to be a direct
+  representative of monetary cost incurred in executing the current
+  invocation, they in some ways have an indirect effect.
   """
 
   _number_of_llm_calls: int = 0
@@ -115,6 +116,7 @@ class InvocationContext(BaseModel):
   artifact_service: Optional[BaseArtifactService] = None
   session_service: BaseSessionService
   memory_service: Optional[BaseMemoryService] = None
+  credential_service: Optional[BaseCredentialService] = None
 
   invocation_id: str
   """The id of this invocation context. Readonly."""

@@ -39,7 +39,12 @@ class VertexAiSearchTool(BaseTool):
       self,
       *,
       data_store_id: Optional[str] = None,
+      data_store_specs: Optional[
+          list[types.VertexAISearchDataStoreSpec]
+      ] = None,
       search_engine_id: Optional[str] = None,
+      filter: Optional[str] = None,
+      max_results: Optional[int] = None,
   ):
     """Initializes the Vertex AI Search tool.
 
@@ -47,6 +52,8 @@ class VertexAiSearchTool(BaseTool):
       data_store_id: The Vertex AI search data store resource ID in the format
         of
         "projects/{project}/locations/{location}/collections/{collection}/dataStores/{dataStore}".
+      data_store_specs: Specifications that define the specific DataStores to be
+        searched. It should only be set if engine is used.
       search_engine_id: The Vertex AI search engine resource ID in the format of
         "projects/{project}/locations/{location}/collections/{collection}/engines/{engine}".
 
@@ -62,8 +69,15 @@ class VertexAiSearchTool(BaseTool):
       raise ValueError(
           'Either data_store_id or search_engine_id must be specified.'
       )
+    if data_store_specs is not None and search_engine_id is None:
+      raise ValueError(
+          'search_engine_id must be specified if data_store_specs is specified.'
+      )
     self.data_store_id = data_store_id
+    self.data_store_specs = data_store_specs
     self.search_engine_id = search_engine_id
+    self.filter = filter
+    self.max_results = max_results
 
   @override
   async def process_llm_request(
@@ -72,8 +86,8 @@ class VertexAiSearchTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    if llm_request.model and llm_request.model.startswith('gemini-'):
-      if llm_request.model.startswith('gemini-1') and llm_request.config.tools:
+    if llm_request.model and 'gemini-' in llm_request.model:
+      if 'gemini-1' in llm_request.model and llm_request.config.tools:
         raise ValueError(
             'Vertex AI search tool can not be used with other tools in Gemini'
             ' 1.x.'
@@ -84,7 +98,11 @@ class VertexAiSearchTool(BaseTool):
           types.Tool(
               retrieval=types.Retrieval(
                   vertex_ai_search=types.VertexAISearch(
-                      datastore=self.data_store_id, engine=self.search_engine_id
+                      datastore=self.data_store_id,
+                      data_store_specs=self.data_store_specs,
+                      engine=self.search_engine_id,
+                      filter=self.filter,
+                      max_results=self.max_results,
                   )
               )
           )
