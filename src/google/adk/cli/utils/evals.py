@@ -160,6 +160,14 @@ def convert_session_to_eval_invocations(session: Session) -> list[Invocation]:
       # This, basically means an end of turn.
       # We assume that the last natural language intermediate response is the
       # final response from the agent/model. We treat that as a reference.
+
+      if intermediate_responses:  # 检查 intermediate_responses 是否非空
+          final_response = genai_types.Content(
+              parts=intermediate_responses[-1][1]
+          )
+      else:
+          final_response = genai_types.Content(parts=[])
+
       invocations.append(
           Invocation(
               user_content=user_content,
@@ -169,9 +177,7 @@ def convert_session_to_eval_invocations(session: Session) -> list[Invocation]:
                   tool_uses=tool_uses,
                   intermediate_responses=intermediate_responses[:-1],
               ),
-              final_response=genai_types.Content(
-                  parts=intermediate_responses[-1][1]
-              ),
+              final_response=final_response,
           )
       )
 
