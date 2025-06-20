@@ -288,8 +288,7 @@ async def handle_function_calls_live(
       trace_tool_call(
           tool=tool,
           args=function_args,
-          response_event_id=function_response_event.id,
-          function_response=function_response,
+          function_response_event=function_response_event,
       )
       function_response_events.append(function_response_event)
 
