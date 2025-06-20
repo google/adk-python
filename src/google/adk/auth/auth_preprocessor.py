@@ -67,9 +67,9 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
         # function call
         request_euc_function_call_ids.add(function_call_response.id)
         auth_config = AuthConfig.model_validate(function_call_response.response)
-        AuthHandler(auth_config=auth_config).parse_and_store_auth_response(
-            state=invocation_context.session.state
-        )
+        await AuthHandler(
+            auth_config=auth_config
+        ).parse_and_store_auth_response(state=invocation_context.session.state)
       break
 
     if not request_euc_function_call_ids:

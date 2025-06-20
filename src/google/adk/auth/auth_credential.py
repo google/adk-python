@@ -230,4 +230,3 @@ class AuthCredential(BaseModelWithConfig):
   http: Optional[HttpAuth] = None
   service_account: Optional[ServiceAccount] = None
   oauth2: Optional[OAuth2Auth] = None
-  google_oauth2_json: Optional[str] = None
