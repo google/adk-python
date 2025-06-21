@@ -163,8 +163,8 @@ class LlmAgent(BaseAgent):
   include_contents: Literal['default', 'none'] = 'default'
   """Whether to include contents in the model request.
 
-  When set to 'none', the model request will not include any contents, such as
-  user messages, tool results, etc.
+  When set to 'none', the model receives no prior contents. It operates based
+  solely on its current instruction and any input provided in the current turn.
   """
 
   # Controlled input/output configurations - Start
