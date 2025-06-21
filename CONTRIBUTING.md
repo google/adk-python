@@ -200,7 +200,7 @@ For any changes that impact user-facing documentation (guides, API reference, tu
 
 ## Contributing Resources
 
-[Contributing folder](https://github.com/google/adk-python/tree/main/contributing/samples) has resources that is helpful for contributors.
+[Contributing folder](https://github.com/google/adk-python/tree/main/contributing) has resources that is helpful for contributors.
 
 
 ## Code reviews
