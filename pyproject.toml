@@ -44,6 +44,7 @@ dependencies = [
   "python-dateutil>=2.9.0.post0",                   # For Vertext AI Session Service
   "python-dotenv>=1.0.0",                           # To manage environment variables
   "PyYAML>=6.0.2",                                  # For APIHubToolset.
+  "rank-bm25>=0.2.2",                               # For BM25 ranking
   "requests>=2.32.4",
   "sqlalchemy>=2.0",                                # SQL database ORM
   "starlette>=0.46.2",                              # For FastAPI CLI
