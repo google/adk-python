@@ -153,7 +153,8 @@ async def handle_function_calls_async(
       # do not use "args" as the variable name, because it is a reserved keyword
       # in python debugger.
       function_args = function_call.args or {}
-      function_response: Optional[dict] = None
+      function_response: Optional[dict] = None  
+      tool_events: Optional[list[Event]] = None
 
       for callback in agent.canonical_before_tool_callbacks:
         function_response = callback(
@@ -168,6 +169,9 @@ async def handle_function_calls_async(
         function_response = await __call_tool_async(
             tool, args=function_args, tool_context=tool_context
         )
+        if isinstance(function_response, tuple):
+          function_response, tool_events = function_response
+          
 
       for callback in agent.canonical_after_tool_callbacks:
         altered_function_response = callback(
@@ -189,7 +193,7 @@ async def handle_function_calls_async(
 
       # Builds the function response event.
       function_response_event = __build_response_event(
-          tool, function_response, tool_context, invocation_context
+          tool, function_response, tool_context, invocation_context, tool_events
       )
       trace_tool_call(
           tool=tool,
@@ -228,6 +232,7 @@ async def handle_function_calls_live(
   function_calls = function_call_event.get_function_calls()
 
   function_response_events: list[Event] = []
+  tool_events: Optional[list[Event]] = None
   for function_call in function_calls:
     tool, tool_context = _get_tool_and_context(
         invocation_context, function_call_event, function_call, tools_dict
@@ -250,7 +255,7 @@ async def handle_function_calls_live(
           function_response = await function_response
 
       if not function_response:
-        function_response = await _process_function_live_helper(
+        function_response, tool_events = await _process_function_live_helper(
             tool, tool_context, function_call, function_args, invocation_context
         )
 
@@ -283,7 +288,7 @@ async def handle_function_calls_live(
 
       # Builds the function response event.
       function_response_event = __build_response_event(
-          tool, function_response, tool_context, invocation_context
+          tool, function_response, tool_context, invocation_context, tool_events
       )
       trace_tool_call(
           tool=tool,
@@ -313,6 +318,7 @@ async def _process_function_live_helper(
     tool, tool_context, function_call, function_args, invocation_context
 ):
   function_response = None
+  tool_events = None
   # Check if this is a stop_streaming function call
   if (
       function_call.name == 'stop_streaming'
@@ -401,7 +407,10 @@ async def _process_function_live_helper(
     function_response = await __call_tool_async(
         tool, args=function_args, tool_context=tool_context
     )
-  return function_response
+    if isinstance(function_response, tuple):
+      function_response, tool_events = function_response
+      
+  return function_response, tool_events
 
 
 def _get_tool_and_context(
@@ -454,6 +463,7 @@ def __build_response_event(
     function_result: dict[str, object],
     tool_context: ToolContext,
     invocation_context: InvocationContext,
+    tool_events: Optional[list[Event]],
 ) -> Event:
   # Specs requires the result to be a dict.
   if not isinstance(function_result, dict):
@@ -475,6 +485,7 @@ def __build_response_event(
       content=content,
       actions=tool_context.actions,
       branch=invocation_context.branch,
+      tool_events=tool_events
   )
 
   return function_response_event
