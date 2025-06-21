@@ -15,6 +15,7 @@
 import os
 
 from google.adk import Agent
+from google.genai import types
 import requests
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -115,7 +116,7 @@ approval_instruction = (
 )
 
 root_agent = Agent(
-    model="gemini-2.5-pro-preview-05-06",
+    model="gemini-2.5-pro",
     name="adk_triaging_assistant",
     description="Triage ADK issues.",
     instruction=f"""
@@ -142,4 +143,7 @@ root_agent = Agent(
         list_issues,
         add_label_to_issue,
     ],
+    generate_content_config=types.GenerateContentConfig(
+        temperature=0.0,
+    ),
 )

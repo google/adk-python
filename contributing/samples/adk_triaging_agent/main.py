@@ -116,7 +116,8 @@ async def main():
             f" \"{specific_issue['body']}\"\n\nBased on the rules, recommend an"
             " appropriate label and its justification."
             " Then, use the 'add_label_to_issue' tool to apply the label "
-            "directly to this issue."
+            "directly to this issue. Only label this issue, do not process"
+            " any other issues!"
             f" The issue number is {specific_issue['number']}."
         )
         await run_agent_prompt(session_11, prompt)
