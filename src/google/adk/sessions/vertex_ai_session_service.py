@@ -91,7 +91,11 @@ class VertexAiSessionService(BaseSessionService):
     api_response = _convert_api_response(api_response)
     logger.info(f'Create Session response {api_response}')
 
-    session_id = api_response['name'].split('/')[-3]
+    if isinstance(api_response, dict):
+        session_id = api_response['name'].split('/')[-3]
+    else:
+        session_json = await api_response.json()
+        session_id = session_json['name'].split('/')[-3]
     operation_id = api_response['name'].split('/')[-1]
 
     max_retry_attempt = 5
