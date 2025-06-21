@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 ADK_METADATA_KEY_PREFIX = "adk_"
+ADK_CONTEXT_ID_PREFIX = "ADK"
 
 
 def _get_adk_metadata_key(key: str) -> str:
@@ -32,3 +33,39 @@ def _get_adk_metadata_key(key: str) -> str:
   if not key:
     raise ValueError("Metadata key cannot be empty or None")
   return f"{ADK_METADATA_KEY_PREFIX}{key}"
+
+
+def _to_a2a_context_id(app_name: str, user_id: str, session_id: str) -> str:
+  """Converts app name, user id and session id to an A2A context id.
+
+  Args:
+    app_name: The app name.
+    user_id: The user id.
+    session_id: The session id.
+
+  Returns:
+    The A2A context id.
+  """
+  return [ADK_CONTEXT_ID_PREFIX, app_name, user_id, session_id].join("$")
+
+
+def _from_a2a_context_id(context_id: str) -> tuple[str, str, str]:
+  """Converts an A2A context id to app name, user id and session id.
+  if context_id is None, return None, None, None
+  if context_id is not None, but not in the format of
+  ADK$app_name$user_id$session_id, return None, None, None
+
+  Args:
+    context_id: The A2A context id.
+
+  Returns:
+    The app name, user id and session id.
+  """
+  if not context_id:
+    return None, None, None
+
+  prefix, app_name, user_id, session_id = context_id.split("$")
+  if prefix == "ADK" and app_name and user_id and session_id:
+    return app_name, user_id, session_id
+
+  return None, None, None
