@@ -20,9 +20,22 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from typing import Optional
 
-from a2a import types as a2a_types
+from .utils import _get_adk_metadata_key
+
+try:
+  from a2a import types as a2a_types
+except ImportError as e:
+  if sys.version_info < (3, 10):
+    raise ImportError(
+        'A2A Tool requires Python 3.10 or above. Please upgrade your Python'
+        ' version.'
+    ) from e
+  else:
+    raise e
+
 from google.genai import types as genai_types
 
 from ...utils.feature_decorator import working_in_progress
@@ -73,7 +86,7 @@ def convert_a2a_part_to_genai_part(
     # logic accordinlgy
     if part.metadata and A2A_DATA_PART_METADATA_TYPE_KEY in part.metadata:
       if (
-          part.metadata[A2A_DATA_PART_METADATA_TYPE_KEY]
+          part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
           == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
       ):
         return genai_types.Part(
@@ -82,7 +95,7 @@ def convert_a2a_part_to_genai_part(
             )
         )
       if (
-          part.metadata[A2A_DATA_PART_METADATA_TYPE_KEY]
+          part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
           == A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
       ):
         return genai_types.Part(

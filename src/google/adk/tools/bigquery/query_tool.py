@@ -16,8 +16,8 @@ import functools
 import types
 from typing import Callable
 
+from google.auth.credentials import Credentials
 from google.cloud import bigquery
-from google.oauth2.credentials import Credentials
 
 from . import client
 from .config import BigQueryToolConfig
