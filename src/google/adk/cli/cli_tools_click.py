@@ -31,10 +31,10 @@ import uvicorn
 from . import cli_create
 from . import cli_deploy
 from .. import version
+from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..sessions.in_memory_session_service import InMemorySessionService
 from .cli import run_cli
-from .cli_eval import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .fast_api import get_fast_api_app
 from .utils import envs
 from .utils import logs
