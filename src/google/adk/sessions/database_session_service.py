@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 from typing import Any
@@ -143,6 +143,12 @@ class StorageSession(Base):
 
   def __repr__(self):
     return f"<StorageSession(id={self.id}, update_time={self.update_time})>"
+
+  def create_timestamp_utc(self) -> datetime:
+    return self.create_time.replace(tzinfo=timezone.utc).timestamp()
+
+  def update_timestamp_utc(self) -> datetime:
+    return self.update_time.replace(tzinfo=timezone.utc).timestamp()
 
 
 class StorageEvent(Base):
@@ -412,7 +418,7 @@ class DatabaseSessionService(BaseSessionService):
           user_id=str(storage_session.user_id),
           id=str(storage_session.id),
           state=merged_state,
-          last_update_time=storage_session.update_time.timestamp(),
+          last_update_time=storage_session.update_timestamp_utc(),
       )
       return session
 
@@ -473,7 +479,7 @@ class DatabaseSessionService(BaseSessionService):
           user_id=user_id,
           id=session_id,
           state=merged_state,
-          last_update_time=storage_session.update_time.timestamp(),
+          last_update_time=storage_session.update_timestamp_utc(),
       )
       session.events = [e.to_event() for e in reversed(storage_events)]
     return session
@@ -496,7 +502,7 @@ class DatabaseSessionService(BaseSessionService):
             user_id=user_id,
             id=storage_session.id,
             state={},
-            last_update_time=storage_session.update_time.timestamp(),
+            last_update_time=storage_session.update_timestamp_utc(),
         )
         sessions.append(session)
       return ListSessionsResponse(sessions=sessions)
@@ -529,7 +535,7 @@ class DatabaseSessionService(BaseSessionService):
           StorageSession, (session.app_name, session.user_id, session.id)
       )
 
-      if storage_session.update_time.timestamp() > session.last_update_time:
+      if storage_session.update_timestamp_utc() > session.last_update_time:
         raise ValueError(
             "The last_update_time provided in the session object"
             f" {datetime.fromtimestamp(session.last_update_time):'%Y-%m-%d %H:%M:%S'} is"
@@ -577,7 +583,7 @@ class DatabaseSessionService(BaseSessionService):
       session_factory.refresh(storage_session)
 
       # Update timestamp with commit time
-      session.last_update_time = storage_session.update_time.timestamp()
+      session.last_update_time = storage_session.update_timestamp_utc()
 
     # Also update the in-memory session
     await super().append_event(session=session, event=event)
