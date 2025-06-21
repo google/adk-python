@@ -45,8 +45,15 @@ def _to_a2a_context_id(app_name: str, user_id: str, session_id: str) -> str:
 
   Returns:
     The A2A context id.
+
+  Raises:
+    ValueError: If any of the input parameters are empty or None.
   """
-  return [ADK_CONTEXT_ID_PREFIX, app_name, user_id, session_id].join("$")
+  if not all([app_name, user_id, session_id]):
+    raise ValueError(
+        "All parameters (app_name, user_id, session_id) must be non-empty"
+    )
+  return "$".join([ADK_CONTEXT_ID_PREFIX, app_name, user_id, session_id])
 
 
 def _from_a2a_context_id(context_id: str) -> tuple[str, str, str]:
@@ -64,8 +71,16 @@ def _from_a2a_context_id(context_id: str) -> tuple[str, str, str]:
   if not context_id:
     return None, None, None
 
-  prefix, app_name, user_id, session_id = context_id.split("$")
-  if prefix == "ADK" and app_name and user_id and session_id:
-    return app_name, user_id, session_id
+  try:
+    parts = context_id.split("$")
+    if len(parts) != 4:
+      return None, None, None
+
+    prefix, app_name, user_id, session_id = parts
+    if prefix == ADK_CONTEXT_ID_PREFIX and app_name and user_id and session_id:
+      return app_name, user_id, session_id
+  except ValueError:
+    # Handle any split errors gracefully
+    pass
 
   return None, None, None
