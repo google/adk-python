@@ -18,6 +18,8 @@ from typing import AsyncGenerator
 from typing import Generator
 from typing import Union
 
+import google.genai.errors
+
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
@@ -182,6 +184,7 @@ class InMemoryRunner:
       session = self.runner.session_service.create_session_sync(
           app_name='test_app', user_id='test_user'
       )
+
       self.session_id = session.id
       return session
     return self.runner.session_service.get_session_sync(
@@ -278,6 +281,7 @@ class MockModel(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> Generator[LlmResponse, None, None]:
     # Increasement of the index has to happen before the yield.
+    self.validate(llm_request)
     self.response_index += 1
     self.requests.append(llm_request)
     # yield LlmResponse(content=self.responses[self.response_index])
@@ -288,9 +292,37 @@ class MockModel(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     # Increasement of the index has to happen before the yield.
+    self.validate(llm_request)
     self.response_index += 1
     self.requests.append(llm_request)
     yield self.responses[self.response_index]
+
+  def validate(self, llm_request: LlmRequest):
+      function_calls = [
+          part
+          for content in llm_request.contents
+          for part in content.parts
+          if hasattr(part, 'function_call') and part.function_call
+      ]
+      function_responses = [
+          part
+          for content in llm_request.contents
+          for part in content.parts
+          if hasattr(part, 'function_response') and part.function_response
+      ]
+
+      if len(function_calls) != len(function_responses):
+          raise google.genai.errors.ClientError(
+              code=400,
+              response_json={
+                  'error': {
+                      'code': 400,
+                      'message': 'Please ensure that the number of function response parts is equal to the number of function call parts of the function call turn.', 'status': 'INVALID_ARGUMENT',
+                      "debug_function_calls": function_calls,  # Not part of normal error
+                      "debug_function_responses": function_responses,
+                  }
+              }
+          )
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:

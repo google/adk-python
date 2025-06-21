@@ -11,13 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Optional
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.sequential_agent import SequentialAgent
-from google.adk.tools import exit_loop
+from google.adk.tools import BaseTool, FunctionTool, exit_loop
 from google.genai.types import Part
 
+from google.adk.tools.base_toolset import BaseToolset
 from ... import testing_utils
 
 
@@ -310,4 +313,62 @@ def test_auto_to_loop():
   # root_agent should still be the current agent because sub_agent_1 is loop.
   assert testing_utils.simplify_events(runner.run('test2')) == [
       ('root_agent', 'response5'),
+  ]
+
+
+class FakeError(Exception):
+  pass
+
+
+class BrokenToolset(BaseToolset):
+
+  async def get_tools(
+      self,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> list[BaseTool]:
+    raise FakeError()
+
+  async def close(self):
+    pass
+
+
+def test_transfer_error_handling():
+  response = [
+      transfer_call_part('sub_agent_1'),
+      'response1',
+      'response2',
+  ]
+  mockModel = testing_utils.MockModel.create(responses=response)
+  # root (auto) - sub_agent_1 (auto)
+
+  sub_agent_1 = Agent(
+      name='sub_agent_1',
+      model=mockModel,
+      tools=[
+          BrokenToolset(),
+      ],
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=mockModel,
+      sub_agents=[sub_agent_1],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+
+  # Asserts the transfer.
+  assert testing_utils.simplify_events(runner.run('test1')) == [
+      ('root_agent', transfer_call_part('sub_agent_1')),
+      (
+          'root_agent',
+          Part.from_function_response(
+              name='transfer_to_agent',
+              response={'result': 'Error transferring to sub_agent_1'},
+          ),
+      ),
+  ]
+
+  # root_agent should still be the current agent as the transfer failed.
+  assert testing_utils.simplify_events(runner.run('test2')) == [
+      ('root_agent', 'response1'),
   ]

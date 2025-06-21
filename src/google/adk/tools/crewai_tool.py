@@ -19,6 +19,7 @@ from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from .function_tool import FunctionTool
+from ..approval.approval_policy import FunctionToolPolicy, register_policy_for_tool
 
 try:
   from crewai.tools import BaseTool as CrewaiBaseTool
@@ -45,7 +46,25 @@ class CrewaiTool(FunctionTool):
   tool: CrewaiBaseTool
   """The wrapped CrewAI tool."""
 
-  def __init__(self, tool: CrewaiBaseTool, *, name: str, description: str):
+  def __init__(
+      self,
+      tool: CrewaiBaseTool,
+      *,
+      name: str,
+      description: str,
+      policies: list[FunctionToolPolicy] = None,
+  ):
+    """Initializes a CrewaiTool, wrapping a CrewAI BaseTool, and registers policies.
+
+    Args:
+        tool: The CrewAI `BaseTool` instance to wrap.
+        name: The name for this tool. If empty, it attempts to use `tool.name`
+              (replacing spaces with underscores and lowercasing).
+        description: The description for this tool. If empty, it attempts to use
+                     `tool.description`.
+        policies: An optional list of `FunctionToolPolicy` objects to register for this tool.
+                  Each policy defines actions and resource mappings for approval.
+    """
     super().__init__(tool.run)
     self.tool = tool
     if name:
@@ -58,6 +77,8 @@ class CrewaiTool(FunctionTool):
       self.description = description
     elif tool.description:
       self.description = tool.description
+    for policy in policies or []:
+      register_policy_for_tool(self, policy)
 
   @override
   def _get_declaration(self) -> types.FunctionDeclaration:

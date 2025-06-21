@@ -22,6 +22,7 @@ from . import basic
 from . import contents
 from . import identity
 from . import instructions
+from ...approval import approval_request_processor
 from ...auth import auth_preprocessor
 from .base_llm_flow import BaseLlmFlow
 
@@ -29,16 +30,29 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 class SingleFlow(BaseLlmFlow):
-  """SingleFlow is the LLM flows that handles tools calls.
+  """SingleFlow handles tool calls and basic LLM interactions for an agent.
 
-  A single flow only consider an agent itself and tools.
-  No sub-agents are allowed for single flow.
+  It processes requests by running them through a series of preprocessors:
+  - Basic content and history management.
+  - Approval request processing: Manages the approval lifecycle for tool calls,
+    handling incoming approval grants and resuming suspended calls before they
+    are sent to the LLM or for execution if already approved.
+  - Authentication preprocessing: Handles auth challenges if tools require them.
+  - Instruction processing: Incorporates system instructions.
+  - Identity processing: Adds agent identity information.
+  - Content finalization: Prepares the final content for the LLM.
+  - Natural Language Planning preprocessing.
+  - Code execution related preprocessing.
+
+  After the LLM call, response processors for NL Planning and code execution are run.
+  This flow does not involve sub-agents.
   """
 
   def __init__(self):
     super().__init__()
     self.request_processors += [
         basic.request_processor,
+        approval_request_processor.request_processor,
         auth_preprocessor.request_processor,
         instructions.request_processor,
         identity.request_processor,

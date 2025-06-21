@@ -21,6 +21,8 @@ from google.genai import types
 from pydantic import model_validator
 from typing_extensions import override
 
+from ..approval.approval_grant import ApprovalAction
+from ..approval.approval_policy import FunctionToolPolicy, TOOL_NAMESPACE, register_policy_for_tool
 from . import _automatic_function_calling_util
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
@@ -142,3 +144,54 @@ class AgentTool(BaseTool):
     else:
       tool_result = merged_text
     return tool_result
+
+
+DEFAULT_APPROVED_AGENT_TOOL_POLICIES = [
+    FunctionToolPolicy(
+        actions=[ApprovalAction(f'{TOOL_NAMESPACE}:agent:use')],
+        resource_mappers=lambda args: ['*'],
+    )
+]
+"""Default approval policies for an `AgentTool` if it were to be approved by default.
+This is not used by `AgentTool` itself but provided as a possible default for `ApprovedAgentTool`.
+It grants a blanket permission for an agent to use any other agent tool.
+More specific policies should be used in practice.
+"""
+
+
+class ApprovedAgentTool(AgentTool):
+  """An `AgentTool` that integrates with the approval system by registering policies.
+
+  This tool allows an agent to call another agent. It automatically registers
+  approval policies upon initialization, typically requiring an 'agent:use' action
+  on a resource representing the target agent.
+  """
+
+  def __init__(
+      self,
+      agent: BaseAgent,
+      skip_summarization: bool = False,
+      policies: list[FunctionToolPolicy] = None,
+  ):
+    """Initializes the ApprovedAgentTool and registers its approval policies.
+
+    Args:
+        agent: The `BaseAgent` instance that this tool will invoke.
+        skip_summarization: If True, the full response from the sub-agent is returned.
+                            Otherwise, the response may be summarized.
+        policies: An optional list of `FunctionToolPolicy` objects to register for this
+                  agent tool. If None, a default policy is created that requires the
+                  action 'tool:agent:use' on the resource 'tool:agents:<tool_name>'.
+    """
+    super().__init__(agent=agent, skip_summarization=skip_summarization)
+    if policies is None:
+      policies = [
+          FunctionToolPolicy(
+              actions=[ApprovalAction(f'{TOOL_NAMESPACE}:agent:use')],
+              resource_mappers=lambda args: [
+                  f'{TOOL_NAMESPACE}:agents:{self.name}'
+              ],
+          )
+      ]
+    for policy in policies:
+      register_policy_for_tool(self, policy)

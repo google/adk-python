@@ -29,10 +29,13 @@ from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...agents.invocation_context import InvocationContext
+from ...approval.approval_handler import ApprovalHandler
+from ...approval.approval_request_processor import REQUEST_APPROVAL_FUNCTION_CALL_NAME
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ...telemetry import trace_merged_tool_calls
+from ...sessions import State
 from ...telemetry import trace_tool_call
 from ...telemetry import tracer
 from ...tools.base_tool import BaseTool
@@ -123,6 +126,55 @@ def generate_auth_event(
   )
 
 
+def generate_approval_event(
+    invocation_context: InvocationContext,
+    function_response_event: Event,
+) -> Optional[Event]:
+  """Generates an event to forward approval requests to the client.
+
+  If the `function_response_event` (typically resulting from tool execution attempts
+  or `ApprovalHandler` checks) contains `ApprovalRequest` objects in its
+  `actions.requested_approvals` field, this function constructs a new `Event`.
+  This new event will contain function call parts, each named
+  `REQUEST_APPROVAL_FUNCTION_CALL_NAME`, with the `ApprovalRequest` details as arguments.
+  This event is intended to be sent to the client to solicit user approval.
+
+  Args:
+      invocation_context: The current invocation context, used for authoring the new event.
+      function_response_event: The event (usually from `handle_function_calls_async` or
+                               as a result of `ApprovalHandler.get_approval_request`)
+                               that might contain `requested_approvals` in its `actions`.
+
+  Returns:
+      A new `Event` formatted to request approvals if `requested_approvals` is present
+      and non-empty in the input event's actions; otherwise, `None`.
+  """
+  if not function_response_event.actions.requested_approvals:
+    return None
+
+  parts = []
+  long_running_tool_ids = set()
+  for approval_request in function_response_event.actions.requested_approvals:
+
+    request_approval_function_call = types.FunctionCall(
+        name=REQUEST_APPROVAL_FUNCTION_CALL_NAME,
+        args=approval_request.model_dump(exclude_none=True),
+    )
+    request_approval_function_call.id = generate_client_function_call_id()
+    long_running_tool_ids.add(request_approval_function_call.id)
+    parts.append(types.Part(function_call=request_approval_function_call))
+
+  return Event(
+      invocation_id=invocation_context.invocation_id,
+      author=invocation_context.agent.name,
+      branch=invocation_context.branch,
+      content=types.Content(
+          parts=parts, role=function_response_event.content.role
+      ),
+      long_running_tool_ids=long_running_tool_ids,
+  )
+
+
 async def handle_function_calls_async(
     invocation_context: InvocationContext,
     function_call_event: Event,
@@ -148,11 +200,11 @@ async def handle_function_calls_async(
         function_call,
         tools_dict,
     )
-
     with tracer.start_as_current_span(f'execute_tool {tool.name}'):
       # do not use "args" as the variable name, because it is a reserved keyword
       # in python debugger.
       function_args = function_call.args or {}
+
       function_response: Optional[dict] = None
 
       for callback in agent.canonical_before_tool_callbacks:
@@ -163,6 +215,17 @@ async def handle_function_calls_async(
           function_response = await function_response
         if function_response:
           break
+
+      # Check if an approval is required *before* attempting to call the tool.
+      # This allows the system to suspend a tool call if its policies are not met by existing grants.
+      if not function_response:
+        function_response = ApprovalHandler.get_approval_request(
+            function_call,
+            invocation_context.session.state,
+            tool_context,
+            user_id=invocation_context.user_id,
+            session_id=invocation_context.session.id,
+        )
 
       if not function_response:
         function_response = await __call_tool_async(
@@ -501,12 +564,55 @@ def merge_parallel_function_response_events(
 
   merged_actions = EventActions()
   merged_requested_auth_configs = {}
+  merged_requested_approvals = []
+  # Merge approval-related state delta fields
+  merged_state_delta_approvals_grants = None
+  merged_state_delta_approvals_suspended_function_calls = None
   for event in function_response_events:
     merged_requested_auth_configs.update(event.actions.requested_auth_configs)
+    merged_requested_approvals.extend(event.actions.requested_approvals)
+    # Consolidate 'approvals__grants' from all event state_deltas
+    if 'approvals__grants' in event.actions.state_delta:
+      if merged_state_delta_approvals_grants is None:
+        merged_state_delta_approvals_grants = []
+      merged_state_delta_approvals_grants.extend(
+          event.actions.state_delta['approvals__grants']
+      )
+    # Consolidate and correctly order 'approvals__suspended_function_calls'
+    if 'approvals__suspended_function_calls' in event.actions.state_delta:
+      if merged_state_delta_approvals_suspended_function_calls is None:
+        merged_state_delta_approvals_suspended_function_calls = []
+      merged_state_delta_approvals_suspended_function_calls.extend(
+          event.actions.state_delta['approvals__suspended_function_calls']
+      )
     merged_actions = merged_actions.model_copy(
         update=event.actions.model_dump()
     )
   merged_actions.requested_auth_configs = merged_requested_auth_configs
+  merged_actions.requested_approvals = merged_requested_approvals
+
+  if merged_state_delta_approvals_grants is not None:
+    # Ensure uniqueness if grants were somehow duplicated across events (though unlikely for new grants)
+    # For simplicity here, we assume they are additive and already unique if coming from ApprovalHandler.
+    merged_actions.state_delta['approvals__grants'] = (
+        merged_state_delta_approvals_grants
+    )
+  if merged_state_delta_approvals_suspended_function_calls is not None:
+    # Ensure suspended function calls are unique by ID and ordered by sequence
+    # The sort ensures that if multiple updates for the same call ID exist (e.g., suspended then resumed
+    # within the batch, though unlikely), the latest sequence one is kept by the dict comprehension.
+    merged_state_delta_approvals_suspended_function_calls = list(
+        {
+            fcs['function_call']['id']: fcs
+            for fcs in sorted(
+                merged_state_delta_approvals_suspended_function_calls,
+                key=lambda fcs: fcs['sequence'],
+            )
+        }.values()
+    )
+    merged_actions.state_delta['approvals__suspended_function_calls'] = (
+        merged_state_delta_approvals_suspended_function_calls
+    )
   # Create the new merged event
   merged_event = Event(
       invocation_id=Event.new_id(),
