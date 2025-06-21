@@ -51,6 +51,10 @@ RUN pip install google-adk=={adk_version}
 COPY "agents/{app_name}/" "/app/agents/{app_name}/"
 {install_agent_deps}
 
+USER root
+{install_agent_deps_script}
+USER myuser
+
 # Copy agent - End
 
 EXPOSE {port}
@@ -181,6 +185,12 @@ def to_cloud_run(
         if os.path.exists(requirements_txt_path)
         else ''
     )
+    requirements_sh_path = os.path.join(agent_src_path, 'requirements.sh')
+    install_agent_deps_script = (
+        f'RUN sh /app/agents/{app_name}/requirements.sh'
+        if os.path.exists(requirements_sh_path)
+        else ''
+    )
     click.echo('Copying agent source code complete.')
 
     # create Dockerfile
@@ -196,6 +206,7 @@ def to_cloud_run(
         port=port,
         command='web' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
+        install_agent_deps_script=install_agent_deps_script,
         service_option=_get_service_option_by_adk_version(
             adk_version,
             session_service_uri,

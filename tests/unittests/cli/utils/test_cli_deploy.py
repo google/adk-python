@@ -53,16 +53,24 @@ def _mute_click(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def agent_dir(tmp_path: Path) -> Callable[[bool], Path]:
+def agent_dir(
+    tmp_path: Path,
+) -> Callable[[bool, bool], Path]:
   """Return a factory that creates a dummy agent directory tree."""
 
-  def _factory(include_requirements: bool) -> Path:
+  def _factory(
+      include_requirements: bool, include_requirements_sh: bool = False
+  ) -> Path:
     base = tmp_path / "agent"
     base.mkdir()
     (base / "agent.py").write_text("# dummy agent")
     (base / "__init__.py").touch()
     if include_requirements:
       (base / "requirements.txt").write_text("pytest\n")
+    if include_requirements_sh:
+      (base / "requirements.sh").write_text(
+          'echo "Hello from requirements.sh"\n'
+      )
     return base
 
   return _factory
@@ -124,17 +132,19 @@ def test_get_service_option_by_adk_version() -> None:
 
 # to_cloud_run
 @pytest.mark.parametrize("include_requirements", [True, False])
+@pytest.mark.parametrize("include_requirements_sh", [True, False])
 def test_to_cloud_run_happy_path(
     monkeypatch: pytest.MonkeyPatch,
-    agent_dir: Callable[[bool], Path],
+    agent_dir: Callable[[bool, bool], Path],
     include_requirements: bool,
+    include_requirements_sh: bool,
 ) -> None:
   """
   End-to-end execution test for `to_cloud_run` covering both presence and
   absence of *requirements.txt*.
   """
   tmp_dir = Path(tempfile.mkdtemp())
-  src_dir = agent_dir(include_requirements)
+  src_dir = agent_dir(include_requirements, include_requirements_sh)
 
   copy_recorder = _Recorder()
   run_recorder = _Recorder()
@@ -180,13 +190,61 @@ def test_to_cloud_run_happy_path(
   shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_to_cloud_run_with_requirements_sh(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """Test that requirements.sh is executed when present."""
+  tmp_dir = Path(tempfile.mkdtemp())
+  # Create agent directory with requirements.sh
+  src_dir = agent_dir(include_requirements=False, include_requirements_sh=True)
+
+  run_recorder = _Recorder()
+
+  # Cache the ORIGINAL copytree before patching
+  original_copytree = cli_deploy.shutil.copytree
+
+  def _recording_copytree(*args: Any, **kwargs: Any):
+    return original_copytree(*args, **kwargs)
+
+  monkeypatch.setattr(cli_deploy.shutil, "copytree", _recording_copytree)
+  # Skip actual cleanup so that we can inspect generated files later.
+  monkeypatch.setattr(cli_deploy.shutil, "rmtree", lambda *_a, **_k: None)
+  monkeypatch.setattr(subprocess, "run", run_recorder)
+
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      project="proj",
+      region="asia-northeast1",
+      service_name="svc",
+      app_name="app",
+      temp_folder=str(tmp_dir),
+      port=8080,
+      trace_to_cloud=False, # Keep it simple for this test
+      with_ui=False, # Keep it simple for this test
+      verbosity="info",
+      adk_version="0.0.5", # adk_version that includes requirements.sh logic
+      session_service_uri=None,
+      artifact_service_uri=None,
+      memory_service_uri=None,
+  )
+
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  assert "RUN sh /app/agents/app/requirements.sh" in dockerfile_content, (
+      "Dockerfile should contain command to run requirements.sh"
+  )
+
+  # Manual cleanup
+  shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_to_cloud_run_cleans_temp_dir(
     monkeypatch: pytest.MonkeyPatch,
-    agent_dir: Callable[[bool], Path],
+    agent_dir: Callable[[bool, bool], Path],
 ) -> None:
   """`to_cloud_run` should always delete the temporary folder on exit."""
   tmp_dir = Path(tempfile.mkdtemp())
-  src_dir = agent_dir(False)
+  src_dir = agent_dir(False, False)
 
   deleted: Dict[str, Path] = {}
 
