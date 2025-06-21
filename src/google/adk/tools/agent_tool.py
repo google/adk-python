@@ -130,6 +130,8 @@ class AgentTool(BaseTool):
       # Forward state delta to parent session.
       if event.actions.state_delta:
         tool_context.state.update(event.actions.state_delta)
+      for auth_config in event.actions.requested_auth_configs.values():
+        tool_context.request_credential(auth_config)
       last_event = event
 
     if not last_event or not last_event.content or not last_event.content.parts:
