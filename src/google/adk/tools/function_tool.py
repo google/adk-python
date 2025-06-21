@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import inspect
+import logging
+import traceback
 from typing import Any
 from typing import Callable
 from typing import Optional
@@ -23,6 +25,8 @@ from typing_extensions import override
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
 from .tool_context import ToolContext
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class FunctionTool(BaseTool):
@@ -58,6 +62,7 @@ class FunctionTool(BaseTool):
     super().__init__(name=name, description=doc)
     self.func = func
     self._ignore_params = ['tool_context', 'input_stream']
+    self.capture_tool_errors = False
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -101,15 +106,26 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
 
     # Functions are callable objects, but not all callable objects are functions
     # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine funciton
-    if (
-        inspect.iscoroutinefunction(self.func)
-        or hasattr(self.func, '__call__')
-        and inspect.iscoroutinefunction(self.func.__call__)
-    ):
-      return await self.func(**args_to_call)
-    else:
-      return self.func(**args_to_call)
+    # Callable's __call__ function is a coroutine function
+    try:
+      if (
+          inspect.iscoroutinefunction(self.func)
+          or hasattr(self.func, '__call__')
+          and inspect.iscoroutinefunction(self.func.__call__)
+      ):
+        return await self.func(**args_to_call)
+      else:
+        return self.func(**args_to_call)
+    except Exception as e:
+      if not self.capture_tool_errors:
+        raise e
+      logger.error(
+          f"Exception in tool `{self.name}`: {e}\n{traceback.format_exc()}"
+      )
+      error_str = (
+          f"Invoking `{self.name}()` failed with the following error: {e}"
+      )
+      return {'error': error_str}
 
   # TODO(hangfei): fix call live for function stream.
   async def _call_live(

@@ -459,6 +459,13 @@ def __build_response_event(
   if not isinstance(function_result, dict):
     function_result = {'result': function_result}
 
+  # If the function_result contains an error, ensure it is surfaced clearly
+  if 'error' in function_result:
+    function_result = {
+      'success': False,
+      'error': function_result['error']
+    }
+
   part_function_response = types.Part.from_function_response(
       name=tool.name, response=function_result
   )
