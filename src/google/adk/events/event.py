@@ -34,9 +34,10 @@ class Event(LlmResponse):
   taken by the agents like function calls, etc.
 
   Attributes:
-    invocation_id: The invocation ID of the event.
-    author: "user" or the name of the agent, indicating who appended the event
-      to the session.
+    invocation_id: Required. The invocation ID of the event. Should be non-empty
+      before appending to a session.
+    author: Required. "user" or the name of the agent, indicating who appended
+      the event to the session.
     actions: The actions taken by the agent.
     long_running_tool_ids: The ids of the long running function calls.
     branch: The branch of the event.
@@ -55,9 +56,8 @@ class Event(LlmResponse):
   )
   """The pydantic model config."""
 
-  # TODO: revert to be required after spark migration
   invocation_id: str = ''
-  """The invocation ID of the event."""
+  """The invocation ID of the event. Should be non-empty before appending to a session."""
   author: str
   """'user' or the name of the agent, indicating who appended the event to the
   session."""
