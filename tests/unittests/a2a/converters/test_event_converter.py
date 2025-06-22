@@ -20,7 +20,7 @@ import pytest
 
 # Skip all tests in this module if Python version is less than 3.10
 pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A tool requires Python 3.10+"
+    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
 )
 
 # Import dependencies with version checking
@@ -34,7 +34,7 @@ try:
   from google.adk.a2a.converters.event_converter import _convert_artifact_to_a2a_events
   from google.adk.a2a.converters.event_converter import _create_artifact_id
   from google.adk.a2a.converters.event_converter import _create_error_status_event
-  from google.adk.a2a.converters.event_converter import _create_running_status_event
+  from google.adk.a2a.converters.event_converter import _create_status_update_event
   from google.adk.a2a.converters.event_converter import _get_adk_metadata_key
   from google.adk.a2a.converters.event_converter import _get_context_metadata
   from google.adk.a2a.converters.event_converter import _process_long_running_tool
@@ -63,7 +63,7 @@ except ImportError as e:
     _convert_artifact_to_a2a_events = lambda *args: None
     _create_artifact_id = lambda *args: None
     _create_error_status_event = lambda *args: None
-    _create_running_status_event = lambda *args: None
+    _create_status_update_event = lambda *args: None
     _get_adk_metadata_key = lambda *args: None
     _get_context_metadata = lambda *args: None
     _process_long_running_tool = lambda *args: None
@@ -302,6 +302,8 @@ class TestEventConverter:
     mock_a2a_part = Mock()
     mock_data_part = Mock(spec=DataPart)
     mock_data_part.metadata = {"adk_type": "function_call", "id": "tool-123"}
+    mock_data_part.data = Mock()
+    mock_data_part.data.get = Mock(return_value="tool-123")
     mock_a2a_part.root = mock_data_part
 
     self.mock_event.long_running_tool_ids = {"tool-123"}
@@ -315,7 +317,11 @@ class TestEventConverter:
             "google.adk.a2a.converters.event_converter.A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL",
             "function_call",
         ),
+        patch(
+            "google.adk.a2a.converters.event_converter._get_adk_metadata_key"
+        ) as mock_get_key,
     ):
+      mock_get_key.side_effect = lambda key: f"adk_{key}"
 
       _process_long_running_tool(mock_a2a_part, self.mock_event)
 
@@ -327,6 +333,8 @@ class TestEventConverter:
     mock_a2a_part = Mock()
     mock_data_part = Mock(spec=DataPart)
     mock_data_part.metadata = {"adk_type": "function_call", "id": "tool-456"}
+    mock_data_part.data = Mock()
+    mock_data_part.data.get = Mock(return_value="tool-456")
     mock_a2a_part.root = mock_data_part
 
     self.mock_event.long_running_tool_ids = {"tool-123"}  # Different ID
@@ -340,7 +348,11 @@ class TestEventConverter:
             "google.adk.a2a.converters.event_converter.A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL",
             "function_call",
         ),
+        patch(
+            "google.adk.a2a.converters.event_converter._get_adk_metadata_key"
+        ) as mock_get_key,
     ):
+      mock_get_key.side_effect = lambda key: f"adk_{key}"
 
       _process_long_running_tool(mock_a2a_part, self.mock_event)
 
@@ -413,7 +425,7 @@ class TestEventConverter:
     assert "Invocation context cannot be None" in str(exc_info.value)
 
   @patch("google.adk.a2a.converters.event_converter.uuid.uuid4")
-  @patch("google.adk.a2a.converters.event_converter.datetime.datetime")
+  @patch("google.adk.a2a.converters.event_converter.datetime")
   def test_create_error_status_event(self, mock_datetime, mock_uuid):
     """Test creation of error status event."""
     mock_uuid.return_value = "test-uuid"
@@ -433,7 +445,7 @@ class TestEventConverter:
     assert result.status.message.parts[0].root.text == "Test error message"
 
   @patch("google.adk.a2a.converters.event_converter.uuid.uuid4")
-  @patch("google.adk.a2a.converters.event_converter.datetime.datetime")
+  @patch("google.adk.a2a.converters.event_converter.datetime")
   def test_create_error_status_event_no_message(self, mock_datetime, mock_uuid):
     """Test creation of error status event without error message."""
     mock_uuid.return_value = "test-uuid"
@@ -447,7 +459,7 @@ class TestEventConverter:
 
     assert result.status.message.parts[0].root.text == DEFAULT_ERROR_MESSAGE
 
-  @patch("google.adk.a2a.converters.event_converter.datetime.datetime")
+  @patch("google.adk.a2a.converters.event_converter.datetime")
   def test_create_running_status_event(self, mock_datetime):
     """Test creation of running status event."""
     mock_datetime.now.return_value.isoformat.return_value = (
@@ -455,8 +467,9 @@ class TestEventConverter:
     )
 
     mock_message = Mock(spec=Message)
+    mock_message.parts = []
 
-    result = _create_running_status_event(
+    result = _create_status_update_event(
         mock_message, self.mock_invocation_context, self.mock_event
     )
 
@@ -473,7 +486,7 @@ class TestEventConverter:
   )
   @patch("google.adk.a2a.converters.event_converter._create_error_status_event")
   @patch(
-      "google.adk.a2a.converters.event_converter._create_running_status_event"
+      "google.adk.a2a.converters.event_converter._create_status_update_event"
   )
   def test_convert_event_to_a2a_events_full_scenario(
       self,
@@ -560,7 +573,7 @@ class TestEventConverter:
     mock_convert_message.return_value = mock_message
 
     with patch(
-        "google.adk.a2a.converters.event_converter._create_running_status_event"
+        "google.adk.a2a.converters.event_converter._create_status_update_event"
     ) as mock_create_running:
       mock_running_event = Mock()
       mock_create_running.return_value = mock_running_event
