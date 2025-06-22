@@ -21,7 +21,7 @@ import pytest
 
 # Skip all tests in this module if Python version is less than 3.10
 pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A tool requires Python 3.10+"
+    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
 )
 
 # Import dependencies with version checking
@@ -92,11 +92,14 @@ class TestConvertA2aPartToGenaiPart:
     """Test conversion of A2A FilePart with bytes to GenAI Part."""
     # Arrange
     test_bytes = b"test file content"
-    # Note: A2A FileWithBytes converts bytes to string automatically
+    # A2A FileWithBytes expects base64-encoded string
+    import base64
+
+    base64_encoded = base64.b64encode(test_bytes).decode("utf-8")
     a2a_part = a2a_types.Part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithBytes(
-                bytes=test_bytes, mimeType="text/plain"
+                bytes=base64_encoded, mimeType="text/plain"
             )
         )
     )
@@ -108,7 +111,7 @@ class TestConvertA2aPartToGenaiPart:
     assert result is not None
     assert isinstance(result, genai_types.Part)
     assert result.inline_data is not None
-    # Source code now properly converts A2A string back to bytes for GenAI Blob
+    # The converter decodes base64 back to original bytes
     assert result.inline_data.data == test_bytes
     assert result.inline_data.mime_type == "text/plain"
 
@@ -298,8 +301,11 @@ class TestConvertGenaiPartToA2aPart:
     assert isinstance(result, a2a_types.Part)
     assert isinstance(result.root, a2a_types.FilePart)
     assert isinstance(result.root.file, a2a_types.FileWithBytes)
-    # A2A FileWithBytes stores bytes as strings
-    assert result.root.file.bytes == test_bytes.decode("utf-8")
+    # A2A FileWithBytes now stores base64-encoded bytes to ensure round-trip compatibility
+    import base64
+
+    expected_base64 = base64.b64encode(test_bytes).decode("utf-8")
+    assert result.root.file.bytes == expected_base64
     assert result.root.file.mimeType == "text/plain"
 
   def test_convert_function_call_part(self):
@@ -405,6 +411,30 @@ class TestRoundTripConversions:
     assert isinstance(result_a2a_part.file, a2a_types.FileWithUri)
     assert result_a2a_part.file.uri == original_uri
     assert result_a2a_part.file.mimeType == original_mime_type
+
+  def test_file_bytes_round_trip(self):
+    """Test round-trip conversion for file parts with bytes."""
+    # Arrange
+    original_bytes = b"test file content for round trip"
+    original_mime_type = "application/octet-stream"
+
+    # Start with GenAI part (the more common starting point)
+    genai_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            data=original_bytes, mime_type=original_mime_type
+        )
+    )
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert isinstance(result_genai_part, genai_types.Part)
+    assert result_genai_part.inline_data is not None
+    assert result_genai_part.inline_data.data == original_bytes
+    assert result_genai_part.inline_data.mime_type == original_mime_type
 
 
 class TestEdgeCases:

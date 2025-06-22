@@ -18,6 +18,7 @@ module containing utilities for conversion betwen A2A Part and Google GenAI Part
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import sys
@@ -45,6 +46,8 @@ logger = logging.getLogger('google_adk.' + __name__)
 A2A_DATA_PART_METADATA_TYPE_KEY = 'type'
 A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = 'function_call'
 A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = 'function_response'
+A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = 'code_execution_result'
+A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
 
 
 @working_in_progress
@@ -67,7 +70,8 @@ def convert_a2a_part_to_genai_part(
     elif isinstance(part.file, a2a_types.FileWithBytes):
       return genai_types.Part(
           inline_data=genai_types.Blob(
-              data=part.file.bytes.encode('utf-8'), mime_type=part.file.mimeType
+              data=base64.b64decode(part.file.bytes),
+              mime_type=part.file.mimeType,
           )
       )
     else:
@@ -118,8 +122,12 @@ def convert_genai_part_to_a2a_part(
     part: genai_types.Part,
 ) -> Optional[a2a_types.Part]:
   """Convert a Google GenAI Part to an A2A Part."""
+
   if part.text:
-    return a2a_types.TextPart(text=part.text)
+    a2a_part = a2a_types.TextPart(text=part.text)
+    if part.thought is not None:
+      a2a_part.metadata = {_get_adk_metadata_key('thought'): part.thought}
+    return a2a_part
 
   if part.file_data:
     return a2a_types.FilePart(
@@ -130,14 +138,22 @@ def convert_genai_part_to_a2a_part(
     )
 
   if part.inline_data:
-    return a2a_types.Part(
+    a2a_part = a2a_types.Part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithBytes(
-                bytes=part.inline_data.data,
+                bytes=base64.b64encode(part.inline_data.data).decode('utf-8'),
                 mimeType=part.inline_data.mime_type,
             )
         )
     )
+    if part.video_metadata:
+      a2a_part.metadata = {
+          _get_adk_metadata_key(
+              'video_metadata'
+          ): part.video_metadata.model_dump(by_alias=True, exclude_none=True)
+      }
+
+    return a2a_part
 
   # Conver the funcall and function reponse to A2A DataPart.
   # This is mainly for converting human in the loop and auth request and
@@ -167,6 +183,34 @@ def convert_genai_part_to_a2a_part(
             metadata={
                 A2A_DATA_PART_METADATA_TYPE_KEY: (
                     A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
+                )
+            },
+        )
+    )
+
+  if part.code_execution_result:
+    return a2a_types.Part(
+        root=a2a_types.DataPart(
+            data=part.code_execution_result.model_dump(
+                by_alias=True, exclude_none=True
+            ),
+            metadata={
+                A2A_DATA_PART_METADATA_TYPE_KEY: (
+                    A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
+                )
+            },
+        )
+    )
+
+  if part.executable_code:
+    return a2a_types.Part(
+        root=a2a_types.DataPart(
+            data=part.executable_code.model_dump(
+                by_alias=True, exclude_none=True
+            ),
+            metadata={
+                A2A_DATA_PART_METADATA_TYPE_KEY: (
+                    A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
                 )
             },
         )
