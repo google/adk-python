@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-import datetime
+from datetime import datetime
+from datetime import timezone
 import logging
 from typing import Any
 from typing import Dict
@@ -35,6 +36,7 @@ from a2a.types import TextPart
 
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
+from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...utils.feature_decorator import working_in_progress
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
@@ -224,7 +226,7 @@ def _process_long_running_tool(a2a_part, event: Event) -> None:
           _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
       )
       == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-      and a2a_part.root.metadata.get("id") in event.long_running_tool_ids
+      and a2a_part.root.data.get("id") in event.long_running_tool_ids
   ):
     a2a_part.root.metadata[_get_adk_metadata_key("is_long_running")] = True
 
@@ -287,24 +289,34 @@ def _create_error_status_event(
   """
   error_message = getattr(event, "error_message", None) or DEFAULT_ERROR_MESSAGE
 
+  # Get context metadata and add error code
+  event_metadata = _get_context_metadata(event, invocation_context)
+  if event.error_code:
+    event_metadata[_get_adk_metadata_key("error_code")] = str(event.error_code)
+
   return TaskStatusUpdateEvent(
       taskId=str(uuid.uuid4()),
       contextId=invocation_context.session.id,
       final=False,
-      metadata=_get_context_metadata(event, invocation_context),
+      metadata=event_metadata,
       status=TaskStatus(
           state=TaskState.failed,
           message=Message(
               messageId=str(uuid.uuid4()),
               role=Role.agent,
               parts=[TextPart(text=error_message)],
+              metadata={
+                  _get_adk_metadata_key("error_code"): str(event.error_code)
+              }
+              if event.error_code
+              else {},
           ),
-          timestamp=datetime.datetime.now().isoformat(),
+          timestamp=datetime.now(timezone.utc).isoformat(),
       ),
   )
 
 
-def _create_running_status_event(
+def _create_status_update_event(
     message: Message, invocation_context: InvocationContext, event: Event
 ) -> TaskStatusUpdateEvent:
   """Creates a TaskStatusUpdateEvent for running scenarios.
@@ -317,15 +329,39 @@ def _create_running_status_event(
   Returns:
     A TaskStatusUpdateEvent with RUNNING state.
   """
+  status = TaskStatus(
+      state=TaskState.working,
+      message=message,
+      timestamp=datetime.now(timezone.utc).isoformat(),
+  )
+
+  if any(
+      part.root.metadata.get(
+          _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+      )
+      == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+      and part.root.metadata.get(_get_adk_metadata_key("is_long_running"))
+      is True
+      and part.root.data.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME
+      for part in message.parts
+  ):
+    status.state = TaskState.auth_required
+  elif any(
+      part.root.metadata.get(
+          _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+      )
+      == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+      and part.root.metadata.get(_get_adk_metadata_key("is_long_running"))
+      is True
+      for part in message.parts
+  ):
+    status.state = TaskState.input_required
+
   return TaskStatusUpdateEvent(
       taskId=str(uuid.uuid4()),
       contextId=invocation_context.session.id,
       final=False,
-      status=TaskStatus(
-          state=TaskState.working,
-          message=message,
-          timestamp=datetime.datetime.now().isoformat(),
-      ),
+      status=status,
       metadata=_get_context_metadata(event, invocation_context),
   )
 
@@ -370,7 +406,7 @@ def convert_event_to_a2a_events(
     # Handle regular message content
     message = convert_event_to_a2a_status_message(event, invocation_context)
     if message:
-      running_event = _create_running_status_event(
+      running_event = _create_status_update_event(
           message, invocation_context, event
       )
       a2a_events.append(running_event)
