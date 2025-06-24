@@ -1,6 +1,6 @@
 import logging
 import uuid
-from typing import Any
+from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
@@ -13,37 +13,42 @@ from kubernetes.watch import Watch
 logger = logging.getLogger(__name__)
 
 class GkeCodeExecutor(BaseCodeExecutor):
-    """
-    A secure, robust, and efficient code executor that runs Python code in a
-    sandboxed gVisor Pod on GKE.
+    """Executes Python code in a secure gVisor-sandboxed Pod on GKE.
 
-    Features includes:
-    - Secure code execution via ConfigMaps and a strict security context.
-    - Kubernetes-native job and pod garbage collection via TTL.
+    This executor securely runs code by dynamically creating a Kubernetes Job for
+    each execution request. The user's code is mounted via a ConfigMap, and the
+    Pod is hardened with a strict security context and resource limits.
+
+    Key Features:
+    - Sandboxed execution using the gVisor runtime.
+    - Ephemeral, per-execution environments using Kubernetes Jobs.
+    - Secure-by-default Pod configuration (non-root, no privileges).
+    - Automatic garbage collection of completed Jobs and Pods via TTL.
     - Efficient, event-driven waiting using the Kubernetes watch API.
-    - Explicit resource limits to prevent abuse.
     """
     namespace: str = "default"
     image: str = "python:3.11-slim"
-    timeout_seconds: int = 3000
+    timeout_seconds: int = 300
     cpu_limit: str = "500m"
     mem_limit: str = "512Mi"
-    use_gvisor_sandbox: bool = True
 
-    _batch_v1: Any = None
-    _core_v1: Any = None
+    _batch_v1: client.BatchV1Api
+    _core_v1: client.CoreV1Api
 
     def __init__(self, **data):
-        """
-        Initializes the Pydantic model and the Kubernetes clients.
+        """Initializes the executor and the Kubernetes API clients.
+
+        This constructor supports overriding default class attributes (like
+        'namespace', 'image', etc.) by passing them as keyword arguments. It
+        automatically configures the Kubernetes client to work either within a
+        cluster (in-cluster config) or locally using a kubeconfig file.
         """
         super().__init__(**data)
-
         try:
             config.load_incluster_config()
             logger.info("Using in-cluster Kubernetes configuration.")
         except config.ConfigException:
-            logger.info("In-cluster config not found. Falling back to local kubeconfig.")
+            logger.info("In-cluster config not found. Falling back to kubeconfig.")
             config.load_kube_config()
 
         self._batch_v1 = client.BatchV1Api()
@@ -54,33 +59,40 @@ class GkeCodeExecutor(BaseCodeExecutor):
         invocation_context: InvocationContext,
         code_execution_input: CodeExecutionInput,
     ) -> CodeExecutionResult:
-        """
-        Orchestrates the secure execution of a code snippet on GKE.
-        """
+        """Orchestrates the secure execution of a code snippet on GKE."""
         job_name = f"adk-exec-{uuid.uuid4().hex[:10]}"
         configmap_name = f"code-src-{job_name}"
 
         try:
-            # 1. Create a ConfigMap to hold the code securely.
             self._create_code_configmap(configmap_name, code_execution_input.code)
-            # 2. Create the Job manifest with all security features.
             job_manifest = self._create_job_manifest(job_name, configmap_name)
-            # 3. Create and run the Job on the cluster.
+
             self._batch_v1.create_namespaced_job(
                 body=job_manifest, namespace=self.namespace
             )
             logger.info(f"Submitted Job '{job_name}' to namespace '{self.namespace}'.")
-            # 4. Efficiently watch for the Job's completion.
-            return self._watch_job_completion(job_name)
+            return self._watch_for_job_completion(job_name)
 
-        except Exception as e:
+        except ApiException as e:
             logger.error(
-                f"An unexpected error occurred during execution of job '{job_name}': {e}",
+                "A Kubernetes API error occurred during job"
+                f" '{job_name}': {e.reason}",
                 exc_info=True,
             )
-            return CodeExecutionResult(stderr=f"Executor failed: {e}")
+            return CodeExecutionResult(stderr=f"Kubernetes API error: {e.reason}")
+        except TimeoutError as e:
+            logger.error(e, exc_info=True)
+            logs = self._get_pod_logs(job_name)
+            stderr = f"Executor timed out: {e}\n\nPod Logs:\n{logs}"
+            return CodeExecutionResult(stderr=stderr)
+        except Exception as e:
+            logger.error(
+                f"An unexpected error occurred during job '{job_name}': {e}",
+                exc_info=True,
+            )
+            return CodeExecutionResult(stderr=f"An unexpected executor error occurred: {e}")
         finally:
-            # 5. Always clean up the ConfigMap. The Job is cleaned up by Kubernetes.
+            # The Job is cleaned up by the TTL controller, and we ensure the ConfigMap is always deleted.
             self._cleanup_configmap(configmap_name)
 
     def _create_job_manifest(self, job_name: str, configmap_name: str) -> client.V1Job:
@@ -93,7 +105,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
             volume_mounts=[
                 client.V1VolumeMount(name="code-volume", mount_path="/app")
             ],
-            # BEST PRACTICE: Enforce a strict security context.
+            # Enforce a strict security context.
             security_context=client.V1SecurityContext(
                 run_as_non_root=True,
                 run_as_user=1001,
@@ -101,52 +113,38 @@ class GkeCodeExecutor(BaseCodeExecutor):
                 read_only_root_filesystem=True,
                 capabilities=client.V1Capabilities(drop=["ALL"]),
             ),
-            # BEST PRACTICE: Set resource limits to prevent abuse.
+            # Set resource limits to prevent abuse.
             resources=client.V1ResourceRequirements(
                 requests={"cpu": "100m", "memory": "128Mi"},
                 limits={"cpu": self.cpu_limit, "memory": self.mem_limit},
             ),
         )
         
-        # Pod Spec Customization for A/B Testing
-        pod_spec_args = {
-            "restart_policy": "Never",
-            "containers": [container],
-            "volumes": [
+        # Use tolerations to request a gVisor node.
+        pod_spec = client.V1PodSpec(
+            restart_policy="Never",
+            containers=[container],
+            volumes=[
                 client.V1Volume(
                     name="code-volume",
                     config_map=client.V1ConfigMapVolumeSource(name=configmap_name),
                 )
             ],
-        }
-        
-        if self.use_gvisor_sandbox:
-            pod_spec_args["runtime_class_name"] = "gvisor"
-            pod_spec_args["node_selector"] = {
-                "cloud.google.com/gke-nodepool": "gvisor-nodepool"
-            }
-            pod_spec_args["tolerations"] = [
+            runtime_class_name="gvisor",  # Request the gVisor runtime.
+            tolerations=[
                 client.V1Toleration(
                     key="sandbox.gke.io/runtime",
                     operator="Equal",
                     value="gvisor",
                     effect="NoSchedule",
                 )
-            ]
-        else:
-            pod_spec_args["node_selector"] = {
-                "cloud.google.com/gke-nodepool": "standard-nodepool"
-            }
+            ],
+        )
 
-        # Define the pod spec, mounting the code and targeting gVisor.
-        pod_spec = client.V1PodSpec(**pod_spec_args)
-
-        # Define the Job specification.
         job_spec = client.V1JobSpec(
             template=client.V1PodTemplateSpec(spec=pod_spec),
             backoff_limit=0,  # Do not retry the Job on failure.
-            # BEST PRACTICE: Let the Kubernetes TTL controller handle cleanup.
-            # This is more robust than client-side cleanup.
+            # Kubernetes TTL controller will handle Job/Pod cleanup.
             ttl_seconds_after_finished=600,  # Garbage collect after 10 minutes.
         )
         
@@ -162,10 +160,11 @@ class GkeCodeExecutor(BaseCodeExecutor):
         """Uses the watch API to efficiently wait for job completion."""
         watch = Watch()
         try:
+            field_selector = f"metadata.name={job_name}"
             for event in watch.stream(
                 self._batch_v1.list_namespaced_job,
                 namespace=self.namespace,
-                field_selector=f"metadata.name={job_name}",
+                field_selector=field_selector,
                 timeout_seconds=self.timeout_seconds,
             ):
                 job = event["object"]
@@ -179,13 +178,13 @@ class GkeCodeExecutor(BaseCodeExecutor):
                     logger.error(f"Job '{job_name}' failed.")
                     logs = self._get_pod_logs(job_name)
                     return CodeExecutionResult(stderr=f"Job failed. Logs:\n{logs}")
+        finally:
+            watch.stop()
 
             # If the loop finishes without returning, the watch timed out.
             raise TimeoutError(
                 f"Job '{job_name}' did not complete within {self.timeout_seconds}s."
             )
-        finally:
-            watch.stop()
 
     def _get_pod_logs(self, job_name: str) -> str:
         """Retrieves logs from the pod created by the specified job."""
@@ -194,14 +193,14 @@ class GkeCodeExecutor(BaseCodeExecutor):
                 namespace=self.namespace, label_selector=f"job-name={job_name}", limit=1
             )
             if not pods.items:
+                logger.warning(f"Could not find Pod for Job '{job_name}' to retrieve logs.")
                 return "Error: Could not find pod for job."
             pod_name = pods.items[0].metadata.name
-            
             return self._core_v1.read_namespaced_pod_log(
                 name=pod_name, namespace=self.namespace
             )
         except ApiException as e:
-            logger.error(f"Could not retrieve logs for job '{job_name}': {e}")
+            logger.error(f"API error retrieving logs for job '{job_name}': {e.reason}")
             return f"Error retrieving logs: {e.reason}"
 
     def _create_code_configmap(self, name: str, code: str) -> None:
@@ -209,9 +208,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
         body = client.V1ConfigMap(
             metadata=client.V1ObjectMeta(name=name), data={"code.py": code}
         )
-        self._core_v1.create_namespaced_config_map(
-            namespace=self.namespace, body=body
-        )
+        self._core_v1.create_namespaced_config_map(namespace=self.namespace, body=body)
 
     def _cleanup_configmap(self, name: str) -> None:
         """Deletes a ConfigMap."""
