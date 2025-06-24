@@ -489,7 +489,8 @@ def adk_services_options():
         type=str,
         help=(
             """Optional. The URI of the memory service.
-            - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service."""
+            - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
+            - Use 'agentengine://<agent_engine_resource_id>' to connect to Vertex AI Memory Bank Service. e.g. agentengine://12345"""
         ),
         default=None,
     )

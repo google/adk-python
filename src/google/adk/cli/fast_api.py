@@ -71,6 +71,7 @@ from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManag
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
 from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
 from ..runners import Runner
 from ..sessions.database_session_service import DatabaseSessionService
@@ -281,6 +282,16 @@ def get_fast_api_app(
       envs.load_dotenv_for_agent("", agents_dir)
       memory_service = VertexAiRagMemoryService(
           rag_corpus=f'projects/{os.environ["GOOGLE_CLOUD_PROJECT"]}/locations/{os.environ["GOOGLE_CLOUD_LOCATION"]}/ragCorpora/{rag_corpus}'
+      )
+    elif memory_service_uri.startswith("agentengine://"):
+      agent_engine_id = memory_service_uri.split("://")[1]
+      if not agent_engine_id:
+        raise click.ClickException("Agent engine id can not be empty.")
+      envs.load_dotenv_for_agent("", agents_dir)
+      memory_service = VertexAiMemoryBankService(
+          project=os.environ["GOOGLE_CLOUD_PROJECT"],
+          location=os.environ["GOOGLE_CLOUD_LOCATION"],
+          agent_engine_id=agent_engine_id,
       )
     else:
       raise click.ClickException(
