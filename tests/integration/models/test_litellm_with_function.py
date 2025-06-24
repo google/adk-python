@@ -17,10 +17,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
-import litellm
 import pytest
-
-litellm.add_function_to_prompt = True
 
 _TEST_MODEL_NAME = "vertex_ai/meta/llama-3.1-405b-instruct-maas"
 

@@ -29,6 +29,7 @@ from typing import Tuple
 from typing import Union
 
 from google.genai import types
+import litellm
 from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
@@ -52,6 +53,9 @@ from typing_extensions import override
 from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
+
+# This will add functions to prompts if functions are provided.
+litellm.add_function_to_prompt = True
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -661,6 +665,10 @@ class LiteLlm(BaseLlm):
     logger.debug(_build_request_log(llm_request))
 
     messages, tools, response_format = _get_completion_inputs(llm_request)
+
+    if "functions" in self._additional_args:
+      # LiteLLM does not support both tools and functions together.
+      tools = None
 
     completion_args = {
         "model": self.model,
