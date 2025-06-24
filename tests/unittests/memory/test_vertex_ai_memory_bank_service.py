@@ -48,6 +48,13 @@ MOCK_SESSION = Session(
     ],
 )
 
+MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
+    app_name=MOCK_APP_NAME,
+    user_id=MOCK_USER_ID,
+    id='444',
+    last_update_time=22333,
+)
+
 
 RETRIEVE_MEMORIES_REGEX = r'^reasoningEngines/([^/]+)/memories:retrieve$'
 GENERATE_MEMORIES_REGEX = r'^reasoningEngines/([^/]+)/memories:generate$'
@@ -134,6 +141,15 @@ async def test_add_session_to_memory(mock_get_api_client):
           'scope': {'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
       },
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_add_empty_session_to_memory(mock_get_api_client):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_session_to_memory(MOCK_SESSION_WITH_EMPTY_EVENTS)
+
+  mock_get_api_client.async_request.assert_not_called()
 
 
 @pytest.mark.asyncio

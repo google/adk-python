@@ -78,12 +78,15 @@ class VertexAiMemoryBankService(BaseMemoryService):
         },
     }
 
-    api_response = await api_client.async_request(
-        http_method='POST',
-        path=f'reasoningEngines/{self._agent_engine_id}/memories:generate',
-        request_dict=request_dict,
-    )
-    logger.info(f'Generate memory response: {api_response}')
+    if events:
+      api_response = await api_client.async_request(
+          http_method='POST',
+          path=f'reasoningEngines/{self._agent_engine_id}/memories:generate',
+          request_dict=request_dict,
+      )
+      logger.info(f'Generate memory response: {api_response}')
+    else:
+      logger.info('No events to add to memory.')
 
   @override
   async def search_memory(self, *, app_name: str, user_id: str, query: str):
