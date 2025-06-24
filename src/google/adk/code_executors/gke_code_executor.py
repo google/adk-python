@@ -1,6 +1,5 @@
 import logging
 import uuid
-from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
