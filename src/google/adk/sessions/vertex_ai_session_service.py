@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any
 from typing import Dict
@@ -23,6 +24,7 @@ from typing import Optional
 import urllib.parse
 
 from dateutil import parser
+from google.genai.errors import ClientError
 from typing_extensions import override
 
 from google import genai
@@ -95,25 +97,46 @@ class VertexAiSessionService(BaseSessionService):
     operation_id = api_response['name'].split('/')[-1]
 
     max_retry_attempt = 5
-    lro_response = None
-    while max_retry_attempt >= 0:
-      lro_response = await api_client.async_request(
-          http_method='GET',
-          path=f'operations/{operation_id}',
-          request_dict={},
-      )
-      lro_response = _convert_api_response(lro_response)
 
-      if lro_response.get('done', None):
-        break
+    if _is_vertex_express_mode(self._project, self._location):
+      # Express mode doesn't support LRO, so we need to poll
+      # the session resource.
+      # TODO: remove this once LRO polling is supported in Express mode.
+      for i in range(max_retry_attempt):
+        try:
+          await api_client.async_request(
+              http_method='GET',
+              path=(
+                  f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
+              ),
+              request_dict={},
+          )
+          break
+        except ClientError as e:
+          logger.info('Polling for session %s: %s', session_id, e)
+          # Add slight exponential backoff to avoid excessive polling.
+          await asyncio.sleep(1 + 0.5 * i)
+      else:
+        raise TimeoutError('Session creation failed.')
+    else:
+      lro_response = None
+      for _ in range(max_retry_attempt):
+        lro_response = await api_client.async_request(
+            http_method='GET',
+            path=f'operations/{operation_id}',
+            request_dict={},
+        )
+        lro_response = _convert_api_response(lro_response)
 
-      await asyncio.sleep(1)
-      max_retry_attempt -= 1
+        if lro_response.get('done', None):
+          break
 
-    if lro_response is None or not lro_response.get('done', None):
-      raise TimeoutError(
-          f'Timeout waiting for operation {operation_id} to complete.'
-      )
+        await asyncio.sleep(1)
+
+      if lro_response is None or not lro_response.get('done', None):
+        raise TimeoutError(
+            f'Timeout waiting for operation {operation_id} to complete.'
+        )
 
     # Get session resource
     get_session_api_response = await api_client.async_request(
@@ -310,6 +333,18 @@ class VertexAiSessionService(BaseSessionService):
         vertexai=True, project=self._project, location=self._location
     )
     return client._api_client
+
+
+def _is_vertex_express_mode(
+    project: Optional[str], location: Optional[str]
+) -> bool:
+  """Check if Vertex AI and API key are both enabled replacing project and location, meaning the user is using the Vertex Express Mode."""
+  return (
+      os.environ.get('GOOGLE_GENAI_USE_VERTEXAI', '0').lower() in ['true', '1']
+      and os.environ.get('GOOGLE_API_KEY', None) is not None
+      and project is None
+      and location is None
+  )
 
 
 def _convert_api_response(api_response):
