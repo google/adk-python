@@ -27,10 +27,12 @@ from vertexai.preview.evaluation import MetricPromptTemplateExamples
 
 from .eval_case import IntermediateData
 from .eval_case import Invocation
+from .eval_metrics import EvalMetric
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+from .final_response_match_v1 import RougeEvaluator
 
 
 class ResponseEvaluator(Evaluator):
@@ -40,7 +42,7 @@ class ResponseEvaluator(Evaluator):
     if "response_evaluation_score" == metric_name:
       self._metric_name = MetricPromptTemplateExamples.Pointwise.COHERENCE
     elif "response_match_score" == metric_name:
-      self._metric_name = "rouge_1"
+      self._metric_name = "response_match_score"
     else:
       raise ValueError(f"`{metric_name}` is not supported.")
 
@@ -52,6 +54,15 @@ class ResponseEvaluator(Evaluator):
       actual_invocations: list[Invocation],
       expected_invocations: list[Invocation],
   ) -> EvaluationResult:
+    # If the metric is response_match_score, just use the RougeEvaluator.
+    if self._metric_name == "response_match_score":
+      rouge_evaluator = RougeEvaluator(
+          EvalMetric(metric_name=self._metric_name, threshold=self._threshold)
+      )
+      return rouge_evaluator.evaluate_invocations(
+          actual_invocations, expected_invocations
+      )
+
     total_score = 0.0
     num_invocations = 0
     per_invocation_results = []

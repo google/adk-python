@@ -31,12 +31,12 @@ class AuthConfig(BaseModelWithConfig):
 
   auth_scheme: AuthScheme
   """The auth scheme used to collect credentials"""
-  raw_auth_credential: AuthCredential = None
+  raw_auth_credential: Optional[AuthCredential] = None
   """The raw auth credential used to collect credentials. The raw auth
   credentials are used in some auth scheme that needs to exchange auth
   credentials. e.g. OAuth2 and OIDC. For other auth scheme, it could be None.
   """
-  exchanged_auth_credential: AuthCredential = None
+  exchanged_auth_credential: Optional[AuthCredential] = None
   """The exchanged auth credential used to collect credentials. adk and client
   will work together to fill it. For those auth scheme that doesn't need to
   exchange auth credentials, e.g. API key, service account etc. It's filled by

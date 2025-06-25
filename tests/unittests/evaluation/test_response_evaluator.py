@@ -16,7 +16,10 @@
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.response_evaluator import ResponseEvaluator
+from google.genai import types as genai_types
 import pandas as pd
 import pytest
 from vertexai.preview.evaluation import MetricPromptTemplateExamples
@@ -63,7 +66,7 @@ SAMPLE_TURN_4_MINIMAL = {
     "google.adk.evaluation.response_evaluator.ResponseEvaluator._perform_eval"
 )
 class TestResponseEvaluator:
-  """A class to help organize "patch" that are applicabple to all tests."""
+  """A class to help organize "patch" that are applicable to all tests."""
 
   def test_evaluate_none_dataset_raises_value_error(self, mock_perform_eval):
     """Test evaluate function raises ValueError for an empty list."""
@@ -76,6 +79,40 @@ class TestResponseEvaluator:
     with pytest.raises(ValueError, match="The evaluation dataset is empty."):
       ResponseEvaluator.evaluate([], ["response_evaluation_score"])
     mock_perform_eval.assert_not_called()  # Ensure _perform_eval was not called
+
+  def test_evaluate_invocations_rouge_metric(self, mock_perform_eval):
+    """Test evaluate_invocations function for Rouge metric."""
+    actual_invocations = [
+        Invocation(
+            user_content=genai_types.Content(
+                parts=[genai_types.Part(text="This is a test query.")]
+            ),
+            final_response=genai_types.Content(
+                parts=[
+                    genai_types.Part(text="This is a test candidate response.")
+                ]
+            ),
+        )
+    ]
+    expected_invocations = [
+        Invocation(
+            user_content=genai_types.Content(
+                parts=[genai_types.Part(text="This is a test query.")]
+            ),
+            final_response=genai_types.Content(
+                parts=[genai_types.Part(text="This is a test reference.")]
+            ),
+        )
+    ]
+    evaluator = ResponseEvaluator(
+        threshold=0.8, metric_name="response_match_score"
+    )
+    evaluation_result = evaluator.evaluate_invocations(
+        actual_invocations, expected_invocations
+    )
+    assert evaluation_result.overall_score == pytest.approx(8 / 11)
+    # ROUGE-1 F1 is approx. 0.73 < 0.8 threshold, so eval status is FAILED.
+    assert evaluation_result.overall_eval_status == EvalStatus.FAILED
 
   def test_evaluate_determines_metrics_correctly_for_perform_eval(
       self, mock_perform_eval

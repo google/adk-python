@@ -65,10 +65,13 @@ from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
 from ..evaluation.eval_result import EvalSetResult
+from ..evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
+from ..evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
 from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
 from ..runners import Runner
 from ..sessions.database_session_service import DatabaseSessionService
@@ -198,6 +201,7 @@ def get_fast_api_app(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    eval_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
     trace_to_cloud: bool = False,
@@ -256,8 +260,18 @@ def get_fast_api_app(
 
   runner_dict = {}
 
-  eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
-  eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
+  # Set up eval managers.
+  eval_sets_manager = None
+  eval_set_results_manager = None
+  if eval_storage_uri:
+    gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
+        eval_storage_uri
+    )
+    eval_sets_manager = gcs_eval_managers.eval_sets_manager
+    eval_set_results_manager = gcs_eval_managers.eval_set_results_manager
+  else:
+    eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
+    eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
   # Build the Memory service
   if memory_service_uri:
@@ -268,6 +282,16 @@ def get_fast_api_app(
       envs.load_dotenv_for_agent("", agents_dir)
       memory_service = VertexAiRagMemoryService(
           rag_corpus=f'projects/{os.environ["GOOGLE_CLOUD_PROJECT"]}/locations/{os.environ["GOOGLE_CLOUD_LOCATION"]}/ragCorpora/{rag_corpus}'
+      )
+    elif memory_service_uri.startswith("agentengine://"):
+      agent_engine_id = memory_service_uri.split("://")[1]
+      if not agent_engine_id:
+        raise click.ClickException("Agent engine id can not be empty.")
+      envs.load_dotenv_for_agent("", agents_dir)
+      memory_service = VertexAiMemoryBankService(
+          project=os.environ["GOOGLE_CLOUD_PROJECT"],
+          location=os.environ["GOOGLE_CLOUD_LOCATION"],
+          agent_engine_id=agent_engine_id,
       )
     else:
       raise click.ClickException(

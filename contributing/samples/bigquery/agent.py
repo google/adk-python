@@ -60,7 +60,7 @@ bigquery_toolset = BigQueryToolset(
 # debug CLI
 root_agent = llm_agent.Agent(
     model="gemini-2.0-flash",
-    name="hello_agent",
+    name="bigquery_agent",
     description=(
         "Agent to answer questions about BigQuery data and models and execute"
         " SQL queries."

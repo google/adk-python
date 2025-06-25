@@ -31,5 +31,8 @@ If applicable, add screenshots to help explain your problem.
  - Python version(python -V):
  - ADK version(pip show google-adk):
 
+ **Model Information:**
+ For example, which model is being used.
+
 **Additional context**
 Add any other context about the problem here.

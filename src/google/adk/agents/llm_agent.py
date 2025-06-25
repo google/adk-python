@@ -161,10 +161,12 @@ class LlmAgent(BaseAgent):
   # LLM-based agent transfer configs - End
 
   include_contents: Literal['default', 'none'] = 'default'
-  """Whether to include contents in the model request.
+  """Controls content inclusion in model requests.
 
-  When set to 'none', the model request will not include any contents, such as
-  user messages, tool results, etc.
+  Options:
+      default: Model receives relevant conversation history
+      none: Model receives no prior history, operates solely on current
+            instruction and input
   """
 
   # Controlled input/output configurations - Start
