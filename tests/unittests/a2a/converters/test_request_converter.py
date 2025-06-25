@@ -244,7 +244,7 @@ class TestConvertA2aRequestToAdkRunArgs:
 
     request = Mock(spec=RequestContext)
     request.message = mock_message
-    request.context_id = "ADK$app$user$session"
+    request.context_id = "ADK/app/user/session"
 
     mock_from_context_id.return_value = (
         "app_name",
@@ -271,7 +271,7 @@ class TestConvertA2aRequestToAdkRunArgs:
     assert isinstance(result["run_config"], RunConfig)
 
     # Verify calls
-    mock_from_context_id.assert_called_once_with("ADK$app$user$session")
+    mock_from_context_id.assert_called_once_with("ADK/app/user/session")
     mock_get_user_id.assert_called_once_with(request, "user_from_context")
     assert mock_convert_part.call_count == 2
     mock_convert_part.assert_any_call(mock_part1)
@@ -302,7 +302,7 @@ class TestConvertA2aRequestToAdkRunArgs:
 
     request = Mock(spec=RequestContext)
     request.message = mock_message
-    request.context_id = "ADK$app$user$session"
+    request.context_id = "ADK/app/user/session"
 
     mock_from_context_id.return_value = (
         "app_name",
@@ -431,7 +431,7 @@ class TestIntegration:
     request = Mock(spec=RequestContext)
     request.call_context = mock_call_context
     request.message = mock_message
-    request.context_id = "ADK$myapp$context_user$mysession"
+    request.context_id = "ADK/myapp/context_user/mysession"
     request.current_task = None
     request.task_id = "task123"
 
