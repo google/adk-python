@@ -40,7 +40,7 @@ bigquery_toolset = BigQueryToolset(
 
 root_agent = Agent(
     model="gemini-2.0-flash",
-    name="bigquery_agent",
+    name="google_api_bigquery_agent",
     instruction="""
       You are a helpful Google BigQuery agent that help to manage users' data on Google BigQuery.
       Use the provided tools to conduct various operations on users' data in Google BigQuery.
