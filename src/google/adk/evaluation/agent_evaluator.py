@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -23,16 +25,16 @@ from typing import Optional
 from typing import Union
 import uuid
 
+from google.genai import types as genai_types
 from pydantic import ValidationError
 
+from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+from .eval_case import IntermediateData
 from .eval_set import EvalSet
-from .evaluation_generator import EvaluationGenerator
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
-from .response_evaluator import ResponseEvaluator
-from .trajectory_evaluator import TrajectoryEvaluator
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -96,6 +98,7 @@ class AgentEvaluator:
       criteria: dict[str, float],
       num_runs=NUM_RUNS,
       agent_name=None,
+      print_detailed_results: bool = True,
   ):
     """Evaluates an agent using the given EvalSet.
 
@@ -109,13 +112,21 @@ class AgentEvaluator:
       num_runs: Number of times all entries in the eval dataset should be
         assessed.
       agent_name: The name of the agent.
+      print_detailed_results: Whether to print detailed results for each metric
+        evaluation.
     """
+    try:
+      from .evaluation_generator import EvaluationGenerator
+    except ModuleNotFoundError as e:
+      raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
     eval_case_responses_list = await EvaluationGenerator.generate_responses(
         eval_set=eval_set,
         agent_module_path=agent_module,
         repeat_num=num_runs,
         agent_name=agent_name,
     )
+
+    failures = []
 
     for eval_case_responses in eval_case_responses_list:
       actual_invocations = [
@@ -139,10 +150,25 @@ class AgentEvaluator:
             )
         )
 
-        assert evaluation_result.overall_eval_status == EvalStatus.PASSED, (
-            f"{metric_name} for {agent_module} Failed. Expected {threshold},"
-            f" but got {evaluation_result.overall_score}."
-        )
+        if print_detailed_results:
+          AgentEvaluator._print_details(
+              evaluation_result=evaluation_result,
+              metric_name=metric_name,
+              threshold=threshold,
+          )
+
+        # Gather all the failures.
+        if evaluation_result.overall_eval_status != EvalStatus.PASSED:
+          failures.append(
+              f"{metric_name} for {agent_module} Failed. Expected {threshold},"
+              f" but got {evaluation_result.overall_score}."
+          )
+
+    assert not failures, (
+        "Following are all the test failures. If you looking to get more"
+        " details on the failures, then please re-run this test with"
+        " `print_details` set to `True`.\n{}".format("\n".join(failures))
+    )
 
   @staticmethod
   async def evaluate(
@@ -158,9 +184,10 @@ class AgentEvaluator:
       agent_module: The path to python module that contains the definition of
         the agent. There is convention in place here, where the code is going to
         look for 'root_agent' in the loaded module.
-      eval_dataset_file_path_or_dir: The eval data set. This can be either a string representing
-        full path to the file containing eval dataset, or a directory that is
-        recursively explored for all files that have a `.test.json` suffix.
+      eval_dataset_file_path_or_dir: The eval data set. This can be either a
+        string representing full path to the file containing eval dataset, or a
+        directory that is recursively explored for all files that have a
+        `.test.json` suffix.
       num_runs: Number of times all entries in the eval dataset should be
         assessed.
       agent_name: The name of the agent.
@@ -358,6 +385,11 @@ class AgentEvaluator:
 
   @staticmethod
   def _get_metric_evaluator(metric_name: str, threshold: float) -> Evaluator:
+    try:
+      from .response_evaluator import ResponseEvaluator
+      from .trajectory_evaluator import TrajectoryEvaluator
+    except ModuleNotFoundError as e:
+      raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
     if metric_name == TOOL_TRAJECTORY_SCORE_KEY:
       return TrajectoryEvaluator(threshold=threshold)
     elif (
@@ -367,3 +399,60 @@ class AgentEvaluator:
       return ResponseEvaluator(threshold=threshold, metric_name=metric_name)
 
     raise ValueError(f"Unsupported eval metric: {metric_name}")
+
+  @staticmethod
+  def _print_details(
+      evaluation_result: EvaluationResult, metric_name: str, threshold: float
+  ):
+    try:
+      from pandas import pandas as pd
+      from tabulate import tabulate
+    except ModuleNotFoundError as e:
+      raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
+    print(
+        f"Summary: `{evaluation_result.overall_eval_status}` for Metric:"
+        f" `{metric_name}`. Expected threshold: `{threshold}`, actual value:"
+        f" `{evaluation_result.overall_score}`."
+    )
+
+    data = []
+    for per_invocation_result in evaluation_result.per_invocation_results:
+      data.append({
+          "eval_status": per_invocation_result.eval_status,
+          "score": per_invocation_result.score,
+          "threshold": threshold,
+          "prompt": AgentEvaluator._convert_content_to_text(
+              per_invocation_result.expected_invocation.user_content
+          ),
+          "expected_response": AgentEvaluator._convert_content_to_text(
+              per_invocation_result.expected_invocation.final_response
+          ),
+          "actual_response": AgentEvaluator._convert_content_to_text(
+              per_invocation_result.actual_invocation.final_response
+          ),
+          "expected_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
+              per_invocation_result.expected_invocation.intermediate_data
+          ),
+          "actual_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
+              per_invocation_result.actual_invocation.intermediate_data
+          ),
+      })
+
+    print(tabulate(pd.DataFrame(data), headers="keys", tablefmt="grid"))
+    print("\n\n")  # Few empty lines for visual clarity
+
+  @staticmethod
+  def _convert_content_to_text(content: Optional[genai_types.Content]) -> str:
+    if content and content.parts:
+      return "\n".join([p.text for p in content.parts if p.text])
+
+    return ""
+
+  @staticmethod
+  def _convert_tool_calls_to_text(
+      intermediate_data: Optional[IntermediateData],
+  ) -> str:
+    if intermediate_data and intermediate_data.tool_uses:
+      return "\n".join([str(t) for t in intermediate_data.tool_uses])
+
+    return ""

@@ -26,6 +26,7 @@ import uuid
 
 from ..agents import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
@@ -38,10 +39,6 @@ from ..sessions.base_session_service import BaseSessionService
 logger = logging.getLogger("google_adk." + __name__)
 
 
-MISSING_EVAL_DEPENDENCIES_MESSAGE = (
-    "Eval module is not installed, please install via `pip install"
-    " google-adk[eval]`."
-)
 TOOL_TRAJECTORY_SCORE_KEY = "tool_trajectory_avg_score"
 RESPONSE_MATCH_SCORE_KEY = "response_match_score"
 # This evaluation is not very stable.
@@ -150,7 +147,7 @@ async def run_evals(
     artifact_service: The artifact service to use during inferencing.
   """
   try:
-    from ..evaluation.agent_evaluator import EvaluationGenerator
+    from ..evaluation.evaluation_generator import EvaluationGenerator
   except ModuleNotFoundError as e:
     raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
 
@@ -252,7 +249,8 @@ async def run_evals(
           result = "❌ Failed"
 
         print(f"Result: {result}\n")
-
+      except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
       except Exception:
         # Catching the general exception, so that we don't block other eval
         # cases.
