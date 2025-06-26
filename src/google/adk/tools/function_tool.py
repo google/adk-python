@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import inspect
 from typing import Any
 from typing import Callable
@@ -79,8 +81,12 @@ class FunctionTool(BaseTool):
   ) -> Any:
     args_to_call = args.copy()
     signature = inspect.signature(self.func)
-    if 'tool_context' in signature.parameters:
+    valid_params = {param for param in signature.parameters}
+    if 'tool_context' in valid_params:
       args_to_call['tool_context'] = tool_context
+
+    # Filter args_to_call to only include valid parameters for the function
+    args_to_call = {k: v for k, v in args_to_call.items() if k in valid_params}
 
     # Before invoking the function, we check for if the list of args passed in
     # has all the mandatory arguments or not.
