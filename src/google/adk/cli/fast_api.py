@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import json
 import logging
 import os
 from pathlib import Path
@@ -32,7 +33,6 @@ from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -53,7 +53,6 @@ from typing_extensions import override
 from ..agents import RunConfig
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
-from ..agents.llm_agent import Agent
 from ..agents.run_config import StreamingMode
 from ..artifacts.gcs_artifact_service import GcsArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -65,8 +64,6 @@ from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
 from ..evaluation.eval_result import EvalSetResult
-from ..evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
-from ..evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
@@ -965,6 +962,86 @@ def get_fast_api_app(
     runner_dict[app_name] = runner
     return runner
 
+  if a2a:
+    try:
+      from a2a.server.apps import A2AStarletteApplication
+      from a2a.server.request_handlers import DefaultRequestHandler
+      from a2a.server.tasks import InMemoryTaskStore
+      from a2a.types import AgentCard
+
+      from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
+
+    except ImportError as e:
+      import sys
+
+      if sys.version_info < (3, 10):
+        raise ImportError(
+            "A2A requires Python 3.10 or above. Please upgrade your Python"
+            " version."
+        ) from e
+      else:
+        raise e
+    # locate all a2a agent apps in the agents directory
+    base_path = Path.cwd() / agents_dir
+    # the root agents directory should be an existing folder
+    if base_path.exists() and base_path.is_dir():
+      a2a_task_store = InMemoryTaskStore()
+
+      def create_a2a_runner_loader(captured_app_name: str):
+        """Factory function to create A2A runner with proper closure."""
+
+        async def _get_a2a_runner_async() -> Runner:
+          return await _get_runner_async(captured_app_name)
+
+        return _get_a2a_runner_async
+
+      for p in base_path.iterdir():
+        # only folders with an agent.json file representing agent card are valid
+        # a2a agents
+        if (
+            p.is_file()
+            or p.name.startswith((".", "__pycache__"))
+            or not (p / "agent.json").is_file()
+        ):
+          continue
+
+        app_name = p.name
+        logger.info("Setting up A2A agent: %s", app_name)
+
+        try:
+          a2a_rpc_path = f"http://{host}:{port}/a2a/{app_name}"
+
+          agent_executor = A2aAgentExecutor(
+              runner=create_a2a_runner_loader(app_name),
+          )
+
+          request_handler = DefaultRequestHandler(
+              agent_executor=agent_executor, task_store=a2a_task_store
+          )
+
+          with (p / "agent.json").open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            agent_card = AgentCard(**data)
+            agent_card.url = a2a_rpc_path
+
+          a2a_app = A2AStarletteApplication(
+              agent_card=agent_card,
+              http_handler=request_handler,
+          )
+
+          routes = a2a_app.routes(
+              rpc_url=f"/a2a/{app_name}",
+              agent_card_url=f"/a2a/{app_name}/.well-known/agent.json",
+          )
+
+          for new_route in routes:
+            app.router.routes.append(new_route)
+
+          logger.info("Successfully configured A2A agent: %s", app_name)
+
+        except Exception as e:
+          logger.error("Failed to setup A2A agent %s: %s", app_name, e)
+          # Continue with other agents even if one fails
   if web:
     import mimetypes
 
