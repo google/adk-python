@@ -54,7 +54,7 @@ class GoogleSearchTool(BaseTool):
       llm_request.config.tools.append(
           types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())
       )
-    elif llm_request.model and 'gemini-2' in llm_request.model:
+    elif llm_request.model and 'gemini-' in llm_request.model:
       llm_request.config.tools.append(
           types.Tool(google_search=types.GoogleSearch())
       )
