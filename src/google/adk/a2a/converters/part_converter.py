@@ -21,7 +21,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import sys
 from typing import Optional
 
 from .utils import _get_adk_metadata_key
@@ -29,10 +28,11 @@ from .utils import _get_adk_metadata_key
 try:
   from a2a import types as a2a_types
 except ImportError as e:
+  import sys
+
   if sys.version_info < (3, 10):
     raise ImportError(
-        'A2A Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
+        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
     ) from e
   else:
     raise e
