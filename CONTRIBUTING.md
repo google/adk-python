@@ -147,11 +147,11 @@ For any changes that impact user-facing documentation (guides, API reference, tu
     pytest ./tests/unittests
     ```
 
-    NOTE: for accurately repro test failure, only include `test` and `eval` as
-    extra dependencies.
+    NOTE: for accurate repro of test failure, only include `test`, `eval` and 
+    `a2a` as extra dependencies.
 
     ```shell
-    uv sync --extra test --extra eval
+    uv sync --extra test --extra eval --extra a2a
     pytest ./tests/unittests
     ```
 
