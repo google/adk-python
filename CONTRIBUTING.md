@@ -49,6 +49,7 @@ This project follows
 
 ## Requirement for PRs
 
+- Each PR should only have one commit. Please squash it if there are multiple PRs.
 - All PRs, other than small documentation or typo fixes, should have a Issue assoicated. If not, please create one.
 - Small, focused PRs. Keep changes minimal—one concern per PR.
 - For bug fixes or features, please provide logs or screenshot after the fix is applied to help reviewers better understand the fix.
