@@ -178,6 +178,9 @@ class VertexAiSessionService(BaseSessionService):
     )
     get_session_api_response = _convert_api_response(get_session_api_response)
 
+    if get_session_api_response['userId'] != user_id:
+      raise ValueError(f'Session not found: {session_id}')
+
     session_id = get_session_api_response['name'].split('/')[-1]
     update_timestamp = isoparse(
         get_session_api_response['updateTime']
