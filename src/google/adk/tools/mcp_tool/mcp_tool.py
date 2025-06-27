@@ -15,12 +15,11 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 from typing import Optional
 
+from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
-from google.oauth2.credentials import Credentials
 from typing_extensions import override
 
 from .._gemini_schema_util import _to_gemini_schema
@@ -58,6 +57,9 @@ class MCPTool(BaseAuthenticatedTool):
 
   Internally, the tool initializes from a MCP Tool, and uses the MCP Session to
   call the tool.
+
+  Note: For API key authentication, only header-based API keys are supported.
+  Query and cookie-based API keys will result in authentication errors.
   """
 
   def __init__(
@@ -134,7 +136,19 @@ class MCPTool(BaseAuthenticatedTool):
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential
   ) -> Optional[dict[str, str]]:
-    headers = None
+    """Extracts authentication headers from credentials.
+
+    Args:
+        tool_context: The tool context of the current invocation.
+        credential: The authentication credential to process.
+
+    Returns:
+        Dictionary of headers to add to the request, or None if no auth.
+
+    Raises:
+        ValueError: If API key authentication is configured for non-header location.
+    """
+    headers: Optional[dict[str, str]] = None
     if credential:
       if credential.oauth2:
         headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
@@ -167,10 +181,33 @@ class MCPTool(BaseAuthenticatedTool):
               )
           }
       elif credential.api_key:
-        # For API keys, we'll add them as headers since MCP typically uses header-based auth
-        # The specific header name would depend on the API, using a common default
-        # TODO Allow user to specify the header name for API keys.
-        headers = {"X-API-Key": credential.api_key}
+        if (
+            not self._credentials_manager
+            or not self._credentials_manager._auth_config
+        ):
+          error_msg = (
+              "Cannot find corresponding auth scheme for API key credential"
+              f" {credential}"
+          )
+          logger.error(error_msg)
+          raise ValueError(error_msg)
+        elif (
+            self._credentials_manager._auth_config.auth_scheme.in_
+            != APIKeyIn.header
+        ):
+          error_msg = (
+              "MCPTool only supports header-based API key authentication."
+              " Configured location:"
+              f" {self._credentials_manager._auth_config.auth_scheme.in_}"
+          )
+          logger.error(error_msg)
+          raise ValueError(error_msg)
+        else:
+          headers = {
+              self._credentials_manager._auth_config.auth_scheme.name: (
+                  credential.api_key
+              )
+          }
       elif credential.service_account:
         # Service accounts should be exchanged for access tokens before reaching this point
         logger.warning(
