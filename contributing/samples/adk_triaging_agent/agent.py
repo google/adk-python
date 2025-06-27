@@ -12,25 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
+from typing import Any
 
+from adk_triaging_agent.settings import BOT_LABEL
+from adk_triaging_agent.settings import GITHUB_BASE_URL
+from adk_triaging_agent.settings import IS_INTERACTIVE
+from adk_triaging_agent.settings import OWNER
+from adk_triaging_agent.settings import REPO
+from adk_triaging_agent.utils import error_response
+from adk_triaging_agent.utils import get_request
+from adk_triaging_agent.utils import post_request
 from google.adk import Agent
 import requests
-
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-if not GITHUB_TOKEN:
-  raise ValueError("GITHUB_TOKEN environment variable not set")
-
-OWNER = os.getenv("OWNER", "google")
-REPO = os.getenv("REPO", "adk-python")
-BOT_LABEL = os.getenv("BOT_LABEL", "bot_triaged")
-
-BASE_URL = "https://api.github.com"
-
-headers = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json",
-}
 
 ALLOWED_LABELS = [
     "documentation",
@@ -45,24 +38,25 @@ ALLOWED_LABELS = [
     "web",
 ]
 
+APPROVAL_INSTRUCTION = (
+    "Do not ask for user approval for labeling! If you can't find appropriate"
+    " labels for the issue, do not label it."
+)
+if IS_INTERACTIVE:
+  APPROVAL_INSTRUCTION = "Only label them when the user approves the labeling!"
 
-def is_interactive():
-  return os.environ.get("INTERACTIVE", "1").lower() in ["true", "1"]
 
-
-def list_issues(issue_count: int):
-  """
-  Generator to list all issues for the repository by handling pagination.
+def list_unlabeled_issues(issue_count: int) -> dict[str, Any]:
+  """List most recent `issue_count` numer of unlabeled issues in the repo.
 
   Args:
     issue_count: number of issues to return
 
+  Returns:
+    The status of this request, with a list of issues when successful.
   """
+  url = f"{GITHUB_BASE_URL}/search/issues"
   query = f"repo:{OWNER}/{REPO} is:open is:issue no:label"
-
-  unlabelled_issues = []
-  url = f"{BASE_URL}/search/issues"
-
   params = {
       "q": query,
       "sort": "created",
@@ -70,57 +64,57 @@ def list_issues(issue_count: int):
       "per_page": issue_count,
       "page": 1,
   }
-  response = requests.get(url, headers=headers, params=params, timeout=60)
-  response.raise_for_status()
-  json_response = response.json()
-  issues = json_response.get("items", None)
-  if not issues:
-    return []
+
+  try:
+    response = get_request(url, params)
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Error: {e}")
+  issues = response.get("items", None)
+
+  unlabeled_issues = []
   for issue in issues:
-    if not issue.get("labels", None) or len(issue["labels"]) == 0:
-      unlabelled_issues.append(issue)
-  return unlabelled_issues
+    if not issue.get("labels", None):
+      unlabeled_issues.append(issue)
+  return {"status": "success", "issues": unlabeled_issues}
 
 
-def add_label_to_issue(issue_number: str, label: str):
-  """
-  Add the specified label to the given issue number.
+def add_label_to_issue(issue_number: int, label: str) -> dict[str, Any]:
+  """Add the specified label to the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue, in string foramt.
+    issue_number: issue number of the Github issue.
     label: label to assign
+
+  Returns:
+    The the status of this request, with the applied label when successful.
   """
   print(f"Attempting to add label '{label}' to issue #{issue_number}")
   if label not in ALLOWED_LABELS:
-    error_message = (
+    return error_response(
         f"Error: Label '{label}' is not an allowed label. Will not apply."
     )
-    print(error_message)
-    return {"status": "error", "message": error_message, "applied_label": None}
 
-  url = f"{BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/labels"
+  url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/labels"
   payload = [label, BOT_LABEL]
-  response = requests.post(url, headers=headers, json=payload, timeout=60)
-  response.raise_for_status()
-  return response.json()
 
+  try:
+    response = post_request(url, payload)
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Error: {e}")
+  return {
+      "status": "success",
+      "message": response,
+      "applied_label": label,
+  }
 
-approval_instruction = (
-    "Only label them when the user approves the labeling!"
-    if is_interactive()
-    else (
-        "Do not ask for user approval for labeling! If you can't find a"
-        " appropriate labels for the issue, do not label it."
-    )
-)
 
 root_agent = Agent(
-    model="gemini-2.5-pro-preview-05-06",
+    model="gemini-2.5-pro",
     name="adk_triaging_assistant",
     description="Triage ADK issues.",
     instruction=f"""
-      You are a Github adk-python repo triaging bot. You will help get issues, and recommend a label.
-      IMPORTANT: {approval_instruction}
+      You are a triaging bot for the Github {REPO} repo with the owner {OWNER}. You will help get issues, and recommend a label.
+      IMPORTANT: {APPROVAL_INSTRUCTION}
       Here are the rules for labeling:
       - If the user is asking about documentation-related questions, label it with "documentation".
       - If it's about session, memory services, label it with "services"
@@ -138,8 +132,5 @@ root_agent = Agent(
       - the issue summary in a few sentence
       - your label recommendation and justification
     """,
-    tools=[
-        list_issues,
-        add_label_to_issue,
-    ],
+    tools=[list_unlabeled_issues, add_label_to_issue],
 )
