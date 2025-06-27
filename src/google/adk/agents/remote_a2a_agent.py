@@ -60,7 +60,7 @@ from ..events.event import Event
 from ..flows.llm_flows.contents import _convert_foreign_event
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.functions import find_matching_function_call
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 
 # Constants
@@ -71,21 +71,21 @@ DEFAULT_TIMEOUT = 600.0
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@working_in_progress
+@experimental
 class AgentCardResolutionError(Exception):
   """Raised when agent card resolution fails."""
 
   pass
 
 
-@working_in_progress
+@experimental
 class A2AClientError(Exception):
   """Raised when A2A client operations fail."""
 
   pass
 
 
-@working_in_progress
+@experimental
 class RemoteA2aAgent(BaseAgent):
   """Agent that communicates with a remote A2A agent via A2A client.
 
