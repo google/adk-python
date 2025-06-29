@@ -17,6 +17,9 @@ from typing import AsyncGenerator
 from typing import Callable
 
 from google.adk.agents import Agent
+from google.adk.events.event import Event
+from google.adk.flows.llm_flows.functions import find_matching_function_call
+from google.adk.sessions.session import Session
 from google.adk.tools import ToolContext
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
@@ -256,3 +259,136 @@ def test_function_call_id():
           assert part.function_response.id is None
   assert events[0].content.parts[0].function_call.id.startswith('adk-')
   assert events[1].content.parts[0].function_response.id.startswith('adk-')
+
+
+def test_find_function_call_event_no_function_response_in_last_event():
+  """Test when last event has no function response."""
+  events = [
+      Event(
+          invocation_id='inv1',
+          author='user',
+          content=types.Content(role='user', parts=[types.Part(text='Hello')]),
+      )
+  ]
+
+  result = find_matching_function_call(events)
+  assert result is None
+
+
+def test_find_function_call_event_empty_session_events():
+  """Test when session has no events."""
+  events = []
+
+  result = find_matching_function_call(events)
+  assert result is None
+
+
+def test_find_function_call_event_function_response_but_no_matching_call():
+  """Test when last event has function response but no matching call found."""
+  # Create a function response
+  function_response = types.FunctionResponse(
+      id='func_123', name='test_func', response={}
+  )
+
+  events = [
+      Event(
+          invocation_id='inv1',
+          author='agent1',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='Some other response')],
+          ),
+      ),
+      Event(
+          invocation_id='inv2',
+          author='user',
+          content=types.Content(
+              role='user',
+              parts=[types.Part(function_response=function_response)],
+          ),
+      ),
+  ]
+
+  result = find_matching_function_call(events)
+  assert result is None
+
+
+def test_find_function_call_event_function_response_with_matching_call():
+  """Test when last event has function response with matching function call."""
+  # Create a function call
+  function_call = types.FunctionCall(id='func_123', name='test_func', args={})
+
+  # Create a function response with matching ID
+  function_response = types.FunctionResponse(
+      id='func_123', name='test_func', response={}
+  )
+
+  call_event = Event(
+      invocation_id='inv1',
+      author='agent1',
+      content=types.Content(
+          role='model', parts=[types.Part(function_call=function_call)]
+      ),
+  )
+
+  response_event = Event(
+      invocation_id='inv2',
+      author='user',
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response)]
+      ),
+  )
+
+  events = [call_event, response_event]
+
+  result = find_matching_function_call(events)
+  assert result == call_event
+
+
+def test_find_function_call_event_multiple_function_responses():
+  """Test when last event has multiple function responses."""
+  # Create function calls
+  function_call1 = types.FunctionCall(id='func_123', name='test_func1', args={})
+  function_call2 = types.FunctionCall(id='func_456', name='test_func2', args={})
+
+  # Create function responses
+  function_response1 = types.FunctionResponse(
+      id='func_123', name='test_func1', response={}
+  )
+  function_response2 = types.FunctionResponse(
+      id='func_456', name='test_func2', response={}
+  )
+
+  call_event1 = Event(
+      invocation_id='inv1',
+      author='agent1',
+      content=types.Content(
+          role='model', parts=[types.Part(function_call=function_call1)]
+      ),
+  )
+
+  call_event2 = Event(
+      invocation_id='inv2',
+      author='agent2',
+      content=types.Content(
+          role='model', parts=[types.Part(function_call=function_call2)]
+      ),
+  )
+
+  response_event = Event(
+      invocation_id='inv3',
+      author='user',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(function_response=function_response1),
+              types.Part(function_response=function_response2),
+          ],
+      ),
+  )
+
+  events = [call_event1, call_event2, response_event]
+
+  # Should return the first matching function call event found
+  result = find_matching_function_call(events)
+  assert result == call_event1  # First match (func_123)

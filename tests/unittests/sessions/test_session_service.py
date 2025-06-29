@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
+from datetime import timezone
 import enum
 
 from google.adk.events import Event
@@ -66,10 +68,17 @@ async def test_create_get_session(service_type):
   assert session.id
   assert session.state == state
   assert (
-      await session_service.get_session(
-          app_name=app_name, user_id=user_id, session_id=session.id
-      )
-      == session
+      session.last_update_time
+      <= datetime.now().astimezone(timezone.utc).timestamp()
+  )
+
+  got_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert got_session == session
+  assert (
+      got_session.last_update_time
+      <= datetime.now().astimezone(timezone.utc).timestamp()
   )
 
   session_id = session.id

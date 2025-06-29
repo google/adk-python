@@ -40,4 +40,5 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_COUNT_TO_PROCESS: '3' # Process 3 issues at a time on schedule
-        run: python contributing/samples/adk_triaging_agent/main.py
+          PYTHONPATH: contributing/samples
+        run: python -m adk_triaging_agent.main

@@ -416,9 +416,26 @@ class MockLLMClient(LiteLLMClient):
     self.completion_mock = completion_mock
 
   async def acompletion(self, model, messages, tools, **kwargs):
-    return await self.acompletion_mock(
-        model=model, messages=messages, tools=tools, **kwargs
-    )
+    if kwargs.get("stream", False):
+      kwargs_copy = dict(kwargs)
+      kwargs_copy.pop("stream", None)
+
+      async def stream_generator():
+        stream_data = self.completion_mock(
+            model=model,
+            messages=messages,
+            tools=tools,
+            stream=True,
+            **kwargs_copy,
+        )
+        for item in stream_data:
+          yield item
+
+      return stream_generator()
+    else:
+      return await self.acompletion_mock(
+          model=model, messages=messages, tools=tools, **kwargs
+      )
 
   def completion(self, model, messages, tools, stream, **kwargs):
     return self.completion_mock(
@@ -1430,3 +1447,35 @@ async def test_generate_content_async_non_compliant_multiple_function_calls(
   assert final_response.content.parts[1].function_call.name == "function_2"
   assert final_response.content.parts[1].function_call.id == "1"
   assert final_response.content.parts[1].function_call.args == {"arg": "value2"}
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_generation_params():
+  # Test that generation_params are extracted and mapped correctly
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          temperature=0.33,
+          max_output_tokens=123,
+          top_p=0.88,
+          top_k=7,
+          stop_sequences=["foo", "bar"],
+          presence_penalty=0.1,
+          frequency_penalty=0.2,
+      ),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params["temperature"] == 0.33
+  assert generation_params["max_completion_tokens"] == 123
+  assert generation_params["top_p"] == 0.88
+  assert generation_params["top_k"] == 7
+  assert generation_params["stop"] == ["foo", "bar"]
+  assert generation_params["presence_penalty"] == 0.1
+  assert generation_params["frequency_penalty"] == 0.2
+  # Should not include max_output_tokens
+  assert "max_output_tokens" not in generation_params
+  assert "stop_sequences" not in generation_params

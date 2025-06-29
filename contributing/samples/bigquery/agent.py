@@ -26,7 +26,11 @@ import google.auth
 CREDENTIALS_TYPE = AuthCredentialTypes.OAUTH2
 
 
-# Define BigQuery tool config
+# Define BigQuery tool config with write mode set to allowed. Note that this is
+# only to demonstrate the full capability of the BigQuery tools. In production
+# you may want to change to BLOCKED (default write mode, effectively makes the
+# tool read-only) or PROTECTED (only allows writes in the anonymous dataset of a
+# BigQuery session) write mode.
 tool_config = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
@@ -60,7 +64,7 @@ bigquery_toolset = BigQueryToolset(
 # debug CLI
 root_agent = llm_agent.Agent(
     model="gemini-2.0-flash",
-    name="hello_agent",
+    name="bigquery_agent",
     description=(
         "Agent to answer questions about BigQuery data and models and execute"
         " SQL queries."

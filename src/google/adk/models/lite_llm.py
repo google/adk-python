@@ -23,12 +23,14 @@ from typing import cast
 from typing import Dict
 from typing import Generator
 from typing import Iterable
+from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Tuple
 from typing import Union
 
 from google.genai import types
+import litellm
 from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
@@ -52,6 +54,9 @@ from typing_extensions import override
 from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
+
+# This will add functions to prompts if functions are provided.
+litellm.add_function_to_prompt = True
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -481,16 +486,22 @@ def _message_to_generate_content_response(
 
 def _get_completion_inputs(
     llm_request: LlmRequest,
-) -> tuple[Iterable[Message], Iterable[dict]]:
-  """Converts an LlmRequest to litellm inputs.
+) -> Tuple[
+    List[Message],
+    Optional[List[Dict]],
+    Optional[types.SchemaUnion],
+    Optional[Dict],
+]:
+  """Converts an LlmRequest to litellm inputs and extracts generation params.
 
   Args:
     llm_request: The LlmRequest to convert.
 
   Returns:
-    The litellm inputs (message list, tool dictionary and response format).
+    The litellm inputs (message list, tool dictionary, response format and generation params).
   """
-  messages = []
+  # 1. Construct messages
+  messages: List[Message] = []
   for content in llm_request.contents or []:
     message_param_or_list = _content_to_message_param(content)
     if isinstance(message_param_or_list, list):
@@ -507,7 +518,8 @@ def _get_completion_inputs(
         ),
     )
 
-  tools = None
+  # 2. Convert tool declarations
+  tools: Optional[List[Dict]] = None
   if (
       llm_request.config
       and llm_request.config.tools
@@ -518,12 +530,39 @@ def _get_completion_inputs(
         for tool in llm_request.config.tools[0].function_declarations
     ]
 
-  response_format = None
-
-  if llm_request.config.response_schema:
+  # 3. Handle response format
+  response_format: Optional[types.SchemaUnion] = None
+  if llm_request.config and llm_request.config.response_schema:
     response_format = llm_request.config.response_schema
 
-  return messages, tools, response_format
+  # 4. Extract generation parameters
+  generation_params: Optional[Dict] = None
+  if llm_request.config:
+    config_dict = llm_request.config.model_dump(exclude_none=True)
+    # Generate LiteLlm parameters here,
+    # Following https://docs.litellm.ai/docs/completion/input.
+    generation_params = {}
+    param_mapping = {
+        "max_output_tokens": "max_completion_tokens",
+        "stop_sequences": "stop",
+    }
+    for key in (
+        "temperature",
+        "max_output_tokens",
+        "top_p",
+        "top_k",
+        "stop_sequences",
+        "presence_penalty",
+        "frequency_penalty",
+    ):
+      if key in config_dict:
+        mapped_key = param_mapping.get(key, key)
+        generation_params[mapped_key] = config_dict[key]
+
+      if not generation_params:
+        generation_params = None
+
+  return messages, tools, response_format, generation_params
 
 
 def _build_function_declaration_log(
@@ -660,7 +699,13 @@ class LiteLlm(BaseLlm):
     self._maybe_append_user_content(llm_request)
     logger.debug(_build_request_log(llm_request))
 
-    messages, tools, response_format = _get_completion_inputs(llm_request)
+    messages, tools, response_format, generation_params = (
+        _get_completion_inputs(llm_request)
+    )
+
+    if "functions" in self._additional_args:
+      # LiteLLM does not support both tools and functions together.
+      tools = None
 
     completion_args = {
         "model": self.model,
@@ -669,6 +714,9 @@ class LiteLlm(BaseLlm):
         "response_format": response_format,
     }
     completion_args.update(self._additional_args)
+
+    if generation_params:
+      completion_args.update(generation_params)
 
     if stream:
       text = ""
@@ -679,7 +727,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
       fallback_index = 0
-      for part in self.llm_client.completion(**completion_args):
+      async for part in await self.llm_client.acompletion(**completion_args):
         for chunk, finish_reason in _model_response_to_chunk(part):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index

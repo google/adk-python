@@ -294,6 +294,21 @@ async def test_get_empty_session(agent_engine_id):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+@pytest.mark.parametrize('agent_engine_id', [None, '123'])
+async def test_get_another_user_session(agent_engine_id):
+  if agent_engine_id:
+    session_service = mock_vertex_ai_session_service(agent_engine_id)
+  else:
+    session_service = mock_vertex_ai_session_service()
+  with pytest.raises(ValueError) as excinfo:
+    await session_service.get_session(
+        app_name='123', user_id='user2', session_id='1'
+    )
+  assert str(excinfo.value) == 'Session not found: 1'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_and_delete_session():
   session_service = mock_vertex_ai_session_service()
 
