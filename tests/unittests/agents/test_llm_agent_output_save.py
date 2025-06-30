@@ -208,3 +208,33 @@ class TestLlmAgentOutputSave:
         "agent1",
         "agent2",
     )
+
+  @pytest.mark.parametrize("empty_content", ["", "  ", "\n"])
+  def test_maybe_save_output_to_state_handles_empty_final_chunk_with_schema(
+      self, empty_content
+  ):
+    """Tests that the agent correctly handles an empty final streaming chunk
+
+    when an output_schema is specified, preventing a crash.
+    """
+    # ARRANGE: Create an agent that expects a JSON output matching a schema.
+    agent = LlmAgent(
+        name="test_agent", output_key="result", output_schema=MockOutputSchema
+    )
+
+    # ARRANGE: Create a final event with empty or whitespace-only content.
+    # This simulates the final, empty chunk from a model's streaming response.
+    event = create_test_event(
+        author="test_agent", content_text=empty_content, is_final=True
+    )
+
+    # ACT: Call the method. The test's primary goal is to ensure this
+    # does NOT raise a pydantic.ValidationError, which it would have before the fix.
+    try:
+      agent._LlmAgent__maybe_save_output_to_state(event)
+    except Exception as e:
+      pytest.fail(f"The method unexpectedly raised an exception: {e}")
+
+    # ASSERT: Because the method should return early, the state_delta
+    # should remain empty.
+    assert len(event.actions.state_delta) == 0

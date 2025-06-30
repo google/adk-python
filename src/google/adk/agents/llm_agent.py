@@ -451,6 +451,11 @@ class LlmAgent(BaseAgent):
           [part.text if part.text else '' for part in event.content.parts]
       )
       if self.output_schema:
+        # If the result from the final chunk is just whitespace or empty,
+        # it means this is an empty final chunk of a stream.
+        # Do not attempt to parse it as JSON.
+        if not result.strip():
+          return
         result = self.output_schema.model_validate_json(result).model_dump(
             exclude_none=True
         )
