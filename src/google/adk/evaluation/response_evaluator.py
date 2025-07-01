@@ -38,7 +38,24 @@ from .final_response_match_v1 import RougeEvaluator
 class ResponseEvaluator(Evaluator):
   """Runs response evaluation for agents."""
 
-  def __init__(self, threshold: float, metric_name: str):
+  def __init__(
+      self,
+      threshold: Optional[float] = None,
+      metric_name: Optional[str] = None,
+      eval_metric: Optional[EvalMetric] = None,
+  ):
+    if (threshold is not None and eval_metric) or (
+        metric_name is not None and eval_metric
+    ):
+      raise ValueError(
+          "Either eval_metric should be specified or both threshold and"
+          " metric_name should be specified."
+      )
+
+    if eval_metric:
+      threshold = eval_metric.threshold
+      metric_name = eval_metric.metric_name
+
     if "response_evaluation_score" == metric_name:
       self._metric_name = MetricPromptTemplateExamples.Pointwise.COHERENCE
     elif "response_match_score" == metric_name:
