@@ -459,7 +459,9 @@ class DatabaseSessionService(BaseSessionService):
 
       storage_events = (
           session_factory.query(StorageEvent)
+          .filter(StorageEvent.app_name == app_name)
           .filter(StorageEvent.session_id == storage_session.id)
+          .filter(StorageEvent.user_id == user_id)
           .filter(timestamp_filter)
           .order_by(StorageEvent.timestamp.desc())
           .limit(
