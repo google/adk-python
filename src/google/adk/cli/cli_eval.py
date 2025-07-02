@@ -41,6 +41,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 TOOL_TRAJECTORY_SCORE_KEY = "tool_trajectory_avg_score"
 RESPONSE_MATCH_SCORE_KEY = "response_match_score"
+SAFETY_V1_KEY = "safety_v1"
 # This evaluation is not very stable.
 # This is always optional unless explicitly specified.
 RESPONSE_EVALUATION_SCORE_KEY = "response_evaluation_score"
@@ -260,6 +261,7 @@ async def run_evals(
 def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
   try:
     from ..evaluation.response_evaluator import ResponseEvaluator
+    from ..evaluation.safety_evaluator import SafetyEvaluatorV1
     from ..evaluation.trajectory_evaluator import TrajectoryEvaluator
   except ModuleNotFoundError as e:
     raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
@@ -272,5 +274,7 @@ def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
     return ResponseEvaluator(
         threshold=eval_metric.threshold, metric_name=eval_metric.metric_name
     )
+  elif eval_metric.metric_name == SAFETY_V1_KEY:
+    return SafetyEvaluatorV1(eval_metric)
 
   raise ValueError(f"Unsupported eval metric: {eval_metric}")

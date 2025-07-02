@@ -30,6 +30,7 @@ from pydantic import ValidationError
 
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .eval_case import IntermediateData
+from .eval_metrics import EvalMetric
 from .eval_set import EvalSet
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -46,11 +47,13 @@ TOOL_TRAJECTORY_SCORE_KEY = "tool_trajectory_avg_score"
 # This is always optional unless explicitly specified.
 RESPONSE_EVALUATION_SCORE_KEY = "response_evaluation_score"
 RESPONSE_MATCH_SCORE_KEY = "response_match_score"
+SAFETY_V1_KEY = "safety_v1"
 
 ALLOWED_CRITERIA = [
     TOOL_TRAJECTORY_SCORE_KEY,
     RESPONSE_EVALUATION_SCORE_KEY,
     RESPONSE_MATCH_SCORE_KEY,
+    SAFETY_V1_KEY,
 ]
 
 
@@ -387,6 +390,7 @@ class AgentEvaluator:
   def _get_metric_evaluator(metric_name: str, threshold: float) -> Evaluator:
     try:
       from .response_evaluator import ResponseEvaluator
+      from .safety_evaluator import SafetyEvaluatorV1
       from .trajectory_evaluator import TrajectoryEvaluator
     except ModuleNotFoundError as e:
       raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
@@ -397,6 +401,10 @@ class AgentEvaluator:
         or metric_name == RESPONSE_EVALUATION_SCORE_KEY
     ):
       return ResponseEvaluator(threshold=threshold, metric_name=metric_name)
+    elif metric_name == SAFETY_V1_KEY:
+      return SafetyEvaluatorV1(
+          eval_metric=EvalMetric(threshold=threshold, metric_name=metric_name)
+      )
 
     raise ValueError(f"Unsupported eval metric: {metric_name}")
 
