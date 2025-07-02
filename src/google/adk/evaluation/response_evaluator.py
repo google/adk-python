@@ -14,18 +14,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+import os
 from typing import Optional
 
 from google.genai import types as genai_types
 import pandas as pd
-from tabulate import tabulate
-from typing_extensions import deprecated
 from typing_extensions import override
-from vertexai.preview.evaluation import EvalTask
-from vertexai.preview.evaluation import MetricPromptTemplateExamples
+from vertexai import Client as VertexAiClient
+from vertexai import types as vertexai_types
 
-from .eval_case import IntermediateData
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .evaluator import EvalStatus
@@ -57,7 +54,7 @@ class ResponseEvaluator(Evaluator):
       metric_name = eval_metric.metric_name
 
     if "response_evaluation_score" == metric_name:
-      self._metric_name = MetricPromptTemplateExamples.Pointwise.COHERENCE
+      self._metric_name = vertexai_types.PrebuiltMetric.COHERENCE
     elif "response_match_score" == metric_name:
       self._metric_name = "response_match_score"
     else:
@@ -87,17 +84,11 @@ class ResponseEvaluator(Evaluator):
       prompt = self._get_text(expected.user_content)
       reference = self._get_text(expected.final_response)
       response = self._get_text(actual.final_response)
-      actual_tool_use = self._get_tool_use_trajectory(actual.intermediate_data)
-      reference_trajectory = self._get_tool_use_trajectory(
-          expected.intermediate_data
-      )
 
       eval_case = {
           "prompt": prompt,
           "reference": reference,
           "response": response,
-          "actual_tool_user": actual_tool_use,
-          "reference_trajectory": reference_trajectory,
       }
 
       eval_case_result = ResponseEvaluator._perform_eval(
@@ -112,11 +103,15 @@ class ResponseEvaluator(Evaluator):
               eval_status=self._get_eval_status(score),
           )
       )
-      total_score += score
-      num_invocations += 1
+
+      if score:
+        total_score += score
+        num_invocations += 1
 
     if per_invocation_results:
-      overall_score = total_score / num_invocations
+      overall_score = (
+          total_score / num_invocations if num_invocations > 0 else None
+      )
       return EvaluationResult(
           overall_score=overall_score,
           overall_eval_status=self._get_eval_status(overall_score),
@@ -131,138 +126,19 @@ class ResponseEvaluator(Evaluator):
 
     return ""
 
-  def _get_tool_use_trajectory(
-      self, intermediate_data: Optional[IntermediateData]
-  ) -> list[dict[str, Any]]:
-    tool_use_trajectory = []
-    if not intermediate_data:
-      return tool_use_trajectory
+  def _get_score(self, eval_result) -> Optional[float]:
+    if eval_result and eval_result.summary_metrics:
+      return eval_result.summary_metrics[0].mean_score
 
-    for function_call in intermediate_data.tool_uses:
-      tool_use_trajectory.append({
-          "tool_name": function_call.name,
-          "tool_input": function_call.args or {},
-      })
+    return None
 
-    return tool_use_trajectory
+  def _get_eval_status(self, score: Optional[float]):
+    if score:
+      return (
+          EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED
+      )
 
-  def _get_score(self, eval_result) -> float:
-    return eval_result.summary_metrics[f"{self._metric_name}/mean"].item()
-
-  def _get_eval_status(self, score: float):
-    return EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED
-
-  @staticmethod
-  @deprecated(
-      "This method has been deprecated and will be removed soon. Please use"
-      " evaluate_invocations instead."
-  )
-  def evaluate(
-      raw_eval_dataset: list[list[dict[str, Any]]],
-      evaluation_criteria: list[str],
-      *,
-      print_detailed_results: bool = False,
-  ):
-    r"""Returns the value of requested evaluation metrics.
-
-    Args:
-      raw_eval_dataset: The dataset that will be evaluated.
-      evaluation_criteria: The evaluation criteria to be used. This method
-        support two criteria, `response_evaluation_score` and
-        `response_match_score`.
-      print_detailed_results: Prints detailed results on the console. This is
-        usually helpful during debugging.
-
-    A note on evaluation_criteria:
-      `response_match_score`: This metric compares the agents final natural
-        language response with the expected final response, stored in the
-        "reference" field in test/eval files. We use Rouge metric to compare the
-        two responses.
-
-        Value Range: [0, 1]. A score closer to 0 means poor similarity between
-          response and reference. A score closer to 1 means strong similarity
-          between response and reference.
-
-      `response_evaluation_score`: Uses LLM to evalaute coherence of the
-        response, including tool use. This is pointwise metric.
-
-        Value range: [0, 5], where 0 means that the agent's response is not
-        coherent, while 5 means it is . High values are good.
-    A note on raw_eval_dataset:
-      The dataset should be a list session, where each session is represented
-      as a list of interaction that need evaluation. Each evaluation is
-      represented as a dictionary that is expected to have values for the
-      following keys:
-
-        1) query
-        2) response
-        3) acutal_tool_use
-        4) expected_tool_use
-        5) reference
-
-      Here is a sample eval_dataset value with one entry:
-      [
-        [
-          {
-            "query": "roll a die for me",
-            "response": "I rolled a 16 sided die and got 13.\n",
-            "expected_tool_use": [
-              {
-                "tool_name": "roll_die",
-                "tool_input": {
-                  "sides": 16
-                }
-              }
-            ],
-            "acutal_tool_use": [
-              {
-                "tool_name": "roll_die",
-                "tool_input": {
-                  "sides": 16
-                }
-              }
-            ],
-            "reference": "I rolled a 16 sided die and got 13.\n"
-          }
-        ]
-      ]
-    """
-    if not raw_eval_dataset:
-      raise ValueError("The evaluation dataset is empty.")
-
-    metrics = ResponseEvaluator._get_metrics(
-        raw_eval_dataset, evaluation_criteria
-    )
-    flattened_queries = [
-        item for sublist in raw_eval_dataset for item in sublist
-    ]
-    eval_dataset = pd.DataFrame(flattened_queries).rename(
-        columns={"query": "prompt", "expected_tool_use": "reference_trajectory"}
-    )
-
-    eval_result = ResponseEvaluator._perform_eval(
-        dataset=eval_dataset, metrics=metrics
-    )
-
-    if print_detailed_results:
-      ResponseEvaluator._print_results(eval_result)
-    return eval_result.summary_metrics
-
-  @staticmethod
-  def _get_metrics(raw_eval_dataset, criteria):
-    metrics = []
-    if (
-        "response_evaluation_score" in criteria
-        and "query" in raw_eval_dataset[0][0]
-        and "expected_tool_use" in raw_eval_dataset[0][0]
-    ):
-      metrics.append(MetricPromptTemplateExamples.Pointwise.COHERENCE)
-    if (
-        "response_match_score" in criteria
-        and "reference" in raw_eval_dataset[0][0]
-    ):
-      metrics.append("rouge_1")
-    return metrics
+    return EvalStatus.NOT_EVALUATED
 
   @staticmethod
   def _perform_eval(dataset, metrics):
@@ -270,11 +146,11 @@ class ResponseEvaluator(Evaluator):
 
     Primarily helps with unit testing.
     """
-    eval_task = EvalTask(dataset=dataset, metrics=metrics)
+    project_id = str(os.environ.get("GOOGLE_CLOUD_PROJECT"))
+    location = os.environ.get("GOOGLE_CLOUD_REGION")
+    client = VertexAiClient(project=project_id, location=location)
 
-    return eval_task.evaluate()
-
-  @staticmethod
-  def _print_results(eval_result):
-    print("Evaluation Summary Metrics:", eval_result.summary_metrics)
-    print(tabulate(eval_result.metrics_table, headers="keys", tablefmt="grid"))
+    return client.evals.evaluate(
+        dataset=vertexai_types.EvaluationDataset(eval_dataset_df=dataset),
+        metrics=metrics,
+    )
