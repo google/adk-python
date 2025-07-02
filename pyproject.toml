@@ -47,6 +47,7 @@ dependencies = [
   "requests>=2.32.4",
   "sqlalchemy>=2.0",                                # SQL database ORM
   "starlette>=0.46.2",                              # For FastAPI CLI
+  "tenacity>=8.0.0",                                # For Retry management
   "typing-extensions>=4.5, <5",
   "tzlocal>=5.3",                                   # Time zone utilities
   "uvicorn>=0.34.0",                                # ASGI server for FastAPI
