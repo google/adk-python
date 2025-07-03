@@ -831,15 +831,6 @@ def cli_api_server(
         " version in the dev environment)"
     ),
 )
-@click.option(
-    "--eval_storage_uri",
-    type=str,
-    help=(
-        "Optional. The evals storage URI to store agent evals,"
-        " supported URIs: gs://<bucket name>."
-    ),
-    default=None,
-)
 @adk_services_options()
 @deprecated_adk_services_options()
 @click.argument(
