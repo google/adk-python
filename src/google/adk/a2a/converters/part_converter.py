@@ -21,7 +21,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import sys
 from typing import Optional
 
 from .utils import _get_adk_metadata_key
@@ -29,17 +28,18 @@ from .utils import _get_adk_metadata_key
 try:
   from a2a import types as a2a_types
 except ImportError as e:
+  import sys
+
   if sys.version_info < (3, 10):
     raise ImportError(
-        'A2A Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
+        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
     ) from e
   else:
     raise e
 
 from google.genai import types as genai_types
 
-from ...utils.feature_decorator import working_in_progress
+from ...utils.feature_decorator import experimental
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -51,7 +51,7 @@ A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = 'code_execution_result'
 A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
 
 
-@working_in_progress
+@experimental
 def convert_a2a_part_to_genai_part(
     a2a_part: a2a_types.Part,
 ) -> Optional[genai_types.Part]:
@@ -140,7 +140,7 @@ def convert_a2a_part_to_genai_part(
   return None
 
 
-@working_in_progress
+@experimental
 def convert_genai_part_to_a2a_part(
     part: genai_types.Part,
 ) -> Optional[a2a_types.Part]:

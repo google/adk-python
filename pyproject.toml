@@ -47,6 +47,7 @@ dependencies = [
   "requests>=2.32.4",
   "sqlalchemy>=2.0",                                # SQL database ORM
   "starlette>=0.46.2",                              # For FastAPI CLI
+  "tenacity>=8.0.0",                                # For Retry management
   "typing-extensions>=4.5, <5",
   "tzlocal>=5.3",                                   # Time zone utilities
   "uvicorn>=0.34.0",                                # ASGI server for FastAPI
@@ -84,7 +85,7 @@ a2a = [
 
 eval = [
   # go/keep-sorted start
-  "google-cloud-aiplatform[evaluation]>=1.87.0",
+  "google-cloud-aiplatform[evaluation]>=1.100.0",
   "pandas>=2.2.3",
   "tabulate>=0.9.0",
   "rouge-score>=0.1.2",
@@ -95,7 +96,8 @@ test = [
   # go/keep-sorted start
   "anthropic>=0.43.0",               # For anthropic model tests
   "langchain-community>=0.3.17",
-  "langgraph>=0.2.60",               # For LangGraphAgent
+  # langgraph 0.5 removed langgraph.graph.graph which we depend on
+  "langgraph>=0.2.60, <= 0.4.10",    # For LangGraphAgent
   "litellm>=1.71.2",                 # For LiteLLM tests
   "llama-index-readers-file>=0.4.0", # For retrieval tests
   "pytest-asyncio>=0.25.0",

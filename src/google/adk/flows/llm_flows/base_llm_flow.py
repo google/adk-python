@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from abc import ABC
 import asyncio
+import datetime
 import inspect
 import logging
 from typing import AsyncGenerator
@@ -320,6 +321,7 @@ class BaseLlmFlow(ABC):
       ):
         # Update the mutable event id to avoid conflict
         model_response_event.id = Event.new_id()
+        model_response_event.timestamp = datetime.datetime.now().timestamp()
         yield event
 
   async def _preprocess_async(

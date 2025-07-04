@@ -40,7 +40,7 @@ from google.genai import types as genai_types
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...utils.feature_decorator import working_in_progress
+from ...utils.feature_decorator import experimental
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
@@ -242,7 +242,6 @@ def _process_long_running_tool(a2a_part: A2APart, event: Event) -> None:
     ] = True
 
 
-@working_in_progress
 def convert_a2a_task_to_event(
     a2a_task: Task,
     author: Optional[str] = None,
@@ -298,7 +297,7 @@ def convert_a2a_task_to_event(
     raise
 
 
-@working_in_progress
+@experimental
 def convert_a2a_message_to_event(
     a2a_message: Message,
     author: Optional[str] = None,
@@ -394,7 +393,7 @@ def convert_a2a_message_to_event(
     raise RuntimeError(f"Failed to convert message: {e}") from e
 
 
-@working_in_progress
+@experimental
 def convert_event_to_a2a_message(
     event: Event, invocation_context: InvocationContext, role: Role = Role.agent
 ) -> Optional[Message]:
@@ -545,7 +544,7 @@ def _create_status_update_event(
   )
 
 
-@working_in_progress
+@experimental
 def convert_event_to_a2a_events(
     event: Event,
     invocation_context: InvocationContext,

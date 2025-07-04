@@ -431,16 +431,31 @@ class LlmAgent(BaseAgent):
 
   def __maybe_save_output_to_state(self, event: Event):
     """Saves the model output to state if needed."""
+    # skip if the event was authored by some other agent (e.g. current agent
+    # transferred to another agent)
+    if event.author != self.name:
+      logger.debug(
+          'Skipping output save for agent %s: event authored by %s',
+          self.name,
+          event.author,
+      )
+      return
     if (
         self.output_key
         and event.is_final_response()
         and event.content
         and event.content.parts
     ):
+
       result = ''.join(
           [part.text if part.text else '' for part in event.content.parts]
       )
       if self.output_schema:
+        # If the result from the final chunk is just whitespace or empty,
+        # it means this is an empty final chunk of a stream.
+        # Do not attempt to parse it as JSON.
+        if not result.strip():
+          return
         result = self.output_schema.model_validate_json(result).model_dump(
             exclude_none=True
         )

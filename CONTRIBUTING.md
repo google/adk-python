@@ -49,6 +49,7 @@ This project follows
 
 ## Requirement for PRs
 
+- Each PR should only have one commit. Please squash it if there are multiple PRs.
 - All PRs, other than small documentation or typo fixes, should have a Issue assoicated. If not, please create one.
 - Small, focused PRs. Keep changes minimal—one concern per PR.
 - For bug fixes or features, please provide logs or screenshot after the fix is applied to help reviewers better understand the fix.
@@ -147,11 +148,11 @@ For any changes that impact user-facing documentation (guides, API reference, tu
     pytest ./tests/unittests
     ```
 
-    NOTE: for accurately repro test failure, only include `test` and `eval` as
-    extra dependencies.
+    NOTE: for accurate repro of test failure, only include `test`, `eval` and 
+    `a2a` as extra dependencies.
 
     ```shell
-    uv sync --extra test --extra eval
+    uv sync --extra test --extra eval --extra a2a
     pytest ./tests/unittests
     ```
 

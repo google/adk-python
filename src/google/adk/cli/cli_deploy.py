@@ -55,7 +55,7 @@ COPY "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {allow_origins_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {allow_origins_option} {a2a_option}"/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE = """
@@ -128,6 +128,7 @@ def to_cloud_run(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    a2a: bool = False,
 ):
   """Deploys an agent to Google Cloud Run.
 
@@ -189,6 +190,7 @@ def to_cloud_run(
     allow_origins_option = (
         f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
     )
+    a2a_option = '--a2a' if a2a else ''
     dockerfile_content = _DOCKERFILE_TEMPLATE.format(
         gcp_project_id=project,
         gcp_region=region,
@@ -206,6 +208,7 @@ def to_cloud_run(
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,
+        a2a_option=a2a_option,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
