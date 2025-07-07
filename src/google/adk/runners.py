@@ -307,27 +307,44 @@ class Runner:
     root_agent = self.agent
     invocation_context.agent = self._find_agent_to_run(session, root_agent)
 
+    # Pre-processing for live streaming tools
+    # Inspect the tool's parameters to find if it uses LiveRequestQueue
     invocation_context.active_streaming_tools = {}
     # TODO(hangfei): switch to use canonical_tools.
     # for shell agents, there is no tools associated with it so we should skip.
     if hasattr(invocation_context.agent, 'tools'):
-      for tool in invocation_context.agent.tools:
-        # replicate a LiveRequestQueue for streaming tools that relis on
-        # LiveRequestQueue
-        from typing import get_type_hints
+      import inspect
 
-        type_hints = get_type_hints(tool)
-        for arg_type in type_hints.values():
-          if arg_type is LiveRequestQueue:
+      for tool in invocation_context.agent.tools:
+        # We use `inspect.signature()` to examine the tool's underlying function (`tool.func`).
+        # This approach is deliberately chosen over `typing.get_type_hints()` for robustness.
+        #
+        # The Problem with `get_type_hints()`:
+        # `get_type_hints()` attempts to resolve forward-referenced (string-based) type
+        # annotations. This resolution can easily fail with a `NameError` (e.g., "Union not found")
+        # if the type isn't available in the scope where `get_type_hints()` is called.
+        # This is a common and brittle issue in framework code that inspects functions
+        # defined in separate user modules.
+        #
+        # Why `inspect.signature()` is Better Here:
+        # `inspect.signature()` does NOT resolve the annotations; it retrieves the raw
+        # annotation object as it was defined on the function. This allows us to
+        # perform a direct and reliable identity check (`param.annotation is LiveRequestQueue`)
+        # without risking a `NameError`.
+        callable_to_inspect = tool.func if hasattr(tool, 'func') else tool
+        # Ensure the target is actually callable before inspecting to avoid errors.
+        if not callable(callable_to_inspect):
+          continue
+        for param in inspect.signature(callable_to_inspect).parameters.values():
+          if param.annotation is LiveRequestQueue:
             if not invocation_context.active_streaming_tools:
               invocation_context.active_streaming_tools = {}
-            active_streaming_tools = ActiveStreamingTool(
+            active_streaming_tool = ActiveStreamingTool(
                 stream=LiveRequestQueue()
             )
             invocation_context.active_streaming_tools[tool.__name__] = (
-                active_streaming_tools
+                active_streaming_tool
             )
-
     async for event in invocation_context.agent.run_live(invocation_context):
       await self.session_service.append_event(session=session, event=event)
       yield event
