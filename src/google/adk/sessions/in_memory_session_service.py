@@ -33,7 +33,11 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 class InMemorySessionService(BaseSessionService):
-  """An in-memory implementation of the session service."""
+  """An in-memory implementation of the session service.
+
+  It is not suitable for multi-threaded production environments. Use it for
+  testing and development only.
+  """
 
   def __init__(self):
     # A map from app name to a map from user ID to a map from session ID to

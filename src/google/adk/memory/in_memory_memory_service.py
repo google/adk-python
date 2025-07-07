@@ -11,8 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
 from __future__ import annotations
 
 import re
@@ -43,6 +41,9 @@ class InMemoryMemoryService(BaseMemoryService):
   """An in-memory memory service for prototyping purpose only.
 
   Uses keyword matching instead of semantic search.
+
+  It is not suitable for multi-threaded production environments. Use it for
+  testing and development only.
   """
 
   def __init__(self):
