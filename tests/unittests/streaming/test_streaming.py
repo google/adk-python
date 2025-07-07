@@ -14,6 +14,7 @@
 
 from google.adk.agents import Agent
 from google.adk.agents import LiveRequestQueue
+from google.adk.agents.run_config import RunConfig
 from google.adk.models import LlmResponse
 from google.genai import types
 import pytest
@@ -42,6 +43,397 @@ def test_streaming():
       blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
   )
   res_events = runner.run_live(live_request_queue)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_with_output_audio_transcription():
+  """Test streaming with output audio transcription configuration."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with output audio transcription
+  run_config = RunConfig(
+      output_audio_transcription=types.AudioTranscriptionConfig()
+  )
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_with_input_audio_transcription():
+  """Test streaming with input audio transcription configuration."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with input audio transcription
+  run_config = RunConfig(
+      input_audio_transcription=types.AudioTranscriptionConfig()
+  )
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_with_realtime_input_config():
+  """Test streaming with realtime input configuration."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with realtime input config
+  run_config = RunConfig(
+      realtime_input_config=types.RealtimeInputConfig(
+          automatic_activity_detection=types.AutomaticActivityDetection(
+              disabled=True
+          )
+      )
+  )
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_with_realtime_input_config_vad_enabled():
+  """Test streaming with realtime input configuration with VAD enabled."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with realtime input config with VAD enabled
+  run_config = RunConfig(
+      realtime_input_config=types.RealtimeInputConfig(
+          automatic_activity_detection=types.AutomaticActivityDetection(
+              disabled=False
+          )
+      )
+  )
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_with_enable_affective_dialog_true():
+  """Test streaming with affective dialog enabled."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with affective dialog enabled
+  run_config = RunConfig(enable_affective_dialog=True)
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_with_enable_affective_dialog_false():
+  """Test streaming with affective dialog disabled."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with affective dialog disabled
+  run_config = RunConfig(enable_affective_dialog=False)
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_with_proactivity_config():
+  """Test streaming with proactivity configuration."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with proactivity config
+  run_config = RunConfig(proactivity=types.ProactivityConfig())
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_with_combined_audio_transcription_configs():
+  """Test streaming with both input and output audio transcription configurations."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with both input and output audio transcription
+  run_config = RunConfig(
+      input_audio_transcription=types.AudioTranscriptionConfig(),
+      output_audio_transcription=types.AudioTranscriptionConfig(),
+  )
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_with_all_configs_combined():
+  """Test streaming with all the new configurations combined."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with all configurations
+  run_config = RunConfig(
+      output_audio_transcription=types.AudioTranscriptionConfig(),
+      input_audio_transcription=types.AudioTranscriptionConfig(),
+      realtime_input_config=types.RealtimeInputConfig(
+          automatic_activity_detection=types.AutomaticActivityDetection(
+              disabled=True
+          )
+      ),
+      enable_affective_dialog=True,
+      proactivity=types.ProactivityConfig(),
+  )
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+
+
+def test_streaming_config_validation():
+  """Test that run_config values are properly set and accessible."""
+  # Test that RunConfig properly validates and stores the configurations
+  run_config = RunConfig(
+      output_audio_transcription=types.AudioTranscriptionConfig(),
+      input_audio_transcription=types.AudioTranscriptionConfig(),
+      realtime_input_config=types.RealtimeInputConfig(
+          automatic_activity_detection=types.AutomaticActivityDetection(
+              disabled=False
+          )
+      ),
+      enable_affective_dialog=True,
+      proactivity=types.ProactivityConfig(),
+  )
+
+  # Verify configurations are properly set
+  assert run_config.output_audio_transcription is not None
+  assert run_config.input_audio_transcription is not None
+  assert run_config.realtime_input_config is not None
+  assert (
+      run_config.realtime_input_config.automatic_activity_detection.disabled
+      == False
+  )
+  assert run_config.enable_affective_dialog == True
+  assert run_config.proactivity is not None
+
+
+def test_streaming_with_multiple_audio_configs():
+  """Test streaming with multiple audio transcription configurations."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with multiple audio transcription configs
+  run_config = RunConfig(
+      input_audio_transcription=types.AudioTranscriptionConfig(),
+      output_audio_transcription=types.AudioTranscriptionConfig(),
+      enable_affective_dialog=True,
+  )
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+
+  res_events = runner.run_live(live_request_queue, run_config)
 
   assert res_events is not None, 'Expected a list of events, got None.'
   assert (

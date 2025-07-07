@@ -381,6 +381,7 @@ def _convert_event_to_json(event: Event) -> Dict[str, Any]:
       'turn_complete': event.turn_complete,
       'interrupted': event.interrupted,
       'branch': event.branch,
+      'custom_metadata': event.custom_metadata,
       'long_running_tool_ids': (
           list(event.long_running_tool_ids)
           if event.long_running_tool_ids
@@ -460,6 +461,9 @@ def _from_api_event(api_event: Dict[str, Any]) -> Event:
     event.turn_complete = api_event['eventMetadata'].get('turnComplete', None)
     event.interrupted = api_event['eventMetadata'].get('interrupted', None)
     event.branch = api_event['eventMetadata'].get('branch', None)
+    event.custom_metadata = api_event['eventMetadata'].get(
+        'customMetadata', None
+    )
     event.grounding_metadata = _session_util.decode_grounding_metadata(
         api_event['eventMetadata'].get('groundingMetadata', None)
     )
