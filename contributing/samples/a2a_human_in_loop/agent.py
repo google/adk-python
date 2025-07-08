@@ -33,7 +33,7 @@ approval_agent = RemoteA2aAgent(
 
 
 root_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.0-flash',
     name='reimbursement_agent',
     instruction="""
       You are an agent whose job is to handle the reimbursement process for
