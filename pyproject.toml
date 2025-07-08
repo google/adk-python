@@ -51,6 +51,7 @@ dependencies = [
   "typing-extensions>=4.5, <5",
   "tzlocal>=5.3",                                   # Time zone utilities
   "uvicorn>=0.34.0",                                # ASGI server for FastAPI
+  "watchdog>=6.0.0",                                # For file change detection and hot reload
   "websockets>=15.0.1",                             # For BaseLlmFlow
   # go/keep-sorted end
 ]

@@ -164,3 +164,15 @@ class AgentLoader:
     agent = self._perform_load(agent_name)
     self._agent_cache[agent_name] = agent
     return agent
+
+  def remove_agent_from_cache(self, agent_name: str):
+    # Clear module cache for the agent and its submodules
+    keys_to_delete = [
+        module_name
+        for module_name in sys.modules
+        if module_name == agent_name or module_name.startswith(f"{agent_name}.")
+    ]
+    for key in keys_to_delete:
+      logger.debug("Deleting module %s", key)
+      del sys.modules[key]
+    self._agent_cache.pop(agent_name, None)
