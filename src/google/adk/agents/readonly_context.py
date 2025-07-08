@@ -23,6 +23,7 @@ if TYPE_CHECKING:
   from google.genai import types
 
   from .invocation_context import InvocationContext
+  from ..auth.credential_service.base_credential_service import BaseCredentialService
 
 
 class ReadonlyContext:
@@ -52,3 +53,8 @@ class ReadonlyContext:
   def state(self) -> MappingProxyType[str, Any]:
     """The state of the current session. READONLY field."""
     return MappingProxyType(self._invocation_context.session.state)
+
+  @property
+  def credential_service(self) -> Optional[BaseCredentialService]:
+    """The credential service for the current invocation."""
+    return self._invocation_context.credential_service
