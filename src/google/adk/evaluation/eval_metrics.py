@@ -18,9 +18,11 @@ from enum import Enum
 from typing import Optional
 from typing import Union
 
+from google.genai import types as genai_types
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 from typing_extensions import TypeAlias
 
 from .eval_case import Invocation
@@ -38,6 +40,24 @@ class PrebuiltMetrics(Enum):
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 
 
+class JudgeModelOptions(BaseModel):
+  """Options for an eval metric's judge model."""
+
+  judge_model: str = Field(
+      default="gemini-2.5-flash",
+      description="""The judge model to use for evaluation. It can be a model name.""",
+  )
+
+  judge_model_config: Optional[genai_types.GenerateContentConfig] = Field(
+      default=None, description="""The configuration for the judge model."""
+  )
+
+  num_samples: Optional[int] = Field(
+      default=None,
+      description="""The number of times to sample the model for each invocation evaluation.""",
+  )
+
+
 class EvalMetric(BaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 
@@ -51,6 +71,11 @@ class EvalMetric(BaseModel):
 
   threshold: float
   """A threshold value. Each metric decides how to interpret this threshold."""
+
+  judge_model_options: Optional[JudgeModelOptions] = Field(
+      default=None,
+      description="""Options for the judge model.""",
+  )
 
 
 class EvalMetricResult(EvalMetric):
