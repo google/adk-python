@@ -20,8 +20,10 @@ from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
 from typing import final
+from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
+from typing import TypeVar
 from typing import Union
 
 from google.genai import types
@@ -55,6 +57,8 @@ AfterAgentCallback: TypeAlias = Union[
     _SingleAgentCallback,
     list[_SingleAgentCallback],
 ]
+
+SelfAgent = TypeVar('SelfAgent', bound='BaseAgent')
 
 
 class BaseAgent(BaseModel):
@@ -120,6 +124,56 @@ class BaseAgent(BaseModel):
       When the content is present, the provided content will be used as agent
       response and appended to event history as agent response.
   """
+
+  def clone(
+      self: SelfAgent, update: Mapping[str, Any] | None = None
+  ) -> SelfAgent:
+    """Creates a copy of this agent instance.
+
+    Args:
+      update: Optional mapping of new values for the fields of the cloned agent.
+        The keys of the mapping are the names of the fields to be updated, and
+        the values are the new values for those fields.
+        For example: {"name": "cloned_agent"}
+
+    Returns:
+      A new agent instance with identical configuration as the original
+      agent except for the fields specified in the update.
+    """
+    if update is not None and 'parent_agent' in update:
+      raise ValueError(
+          'Cannot update `parent_agent` field in clone. Parent agent is set'
+          ' only when the parent agent is instantiated with the sub-agents.'
+      )
+
+    # Only allow updating fields that are defined in the agent class.
+    allowed_fields = set(self.__class__.model_fields)
+    if update is not None:
+      invalid_fields = set(update) - allowed_fields
+      if invalid_fields:
+        raise ValueError(
+            f'Cannot update non-existent fields in {self.__class__.__name__}:'
+            f' {invalid_fields}'
+        )
+
+    cloned_agent = self.model_copy(update=update)
+
+    if update is None or 'sub_agents' not in update:
+      # If `sub_agents` is not provided in the update, need to recursively clone
+      # the sub-agents to avoid sharing the sub-agents with the original agent.
+      cloned_agent.sub_agents = []
+      for sub_agent in self.sub_agents:
+        cloned_sub_agent = sub_agent.clone()
+        cloned_sub_agent.parent_agent = cloned_agent
+        cloned_agent.sub_agents.append(cloned_sub_agent)
+    else:
+      for sub_agent in cloned_agent.sub_agents:
+        sub_agent.parent_agent = cloned_agent
+
+    # Remove the parent agent from the cloned agent to avoid sharing the parent
+    # agent with the cloned agent.
+    cloned_agent.parent_agent = None
+    return cloned_agent
 
   @final
   async def run_async(
