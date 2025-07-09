@@ -38,6 +38,7 @@ from litellm import ChatCompletionDeveloperMessage
 from litellm import ChatCompletionImageUrlObject
 from litellm import ChatCompletionMessageToolCall
 from litellm import ChatCompletionTextObject
+from litellm import ChatCompletionFileObject
 from litellm import ChatCompletionToolMessage
 from litellm import ChatCompletionUserMessage
 from litellm import ChatCompletionVideoUrlObject
@@ -261,6 +262,16 @@ def _get_content(
                 type="video_url",
                 video_url=data_uri,
             )
+        )
+      elif part.inline_data.mime_type == "application/pdf":
+        content_objects.append(
+          ChatCompletionFileObject(
+            type="file",
+            file={
+              "file_data": data_uri,
+              "format": "pdf"
+            }
+          )
         )
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
