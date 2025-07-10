@@ -37,6 +37,30 @@
         "instruction": {
           "title": "Instruction",
           "type": "string"
+        },
+        "disallow_transfer_to_parent": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disallow Transfer To Parent"
+        },
+        "disallow_transfer_to_peers": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disallow Transfer To Peers"
         }
       },
       "required": [

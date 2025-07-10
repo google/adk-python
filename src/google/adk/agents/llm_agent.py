@@ -532,6 +532,10 @@ class LlmAgent(BaseAgent):
       agent.model = config.model
     if config.instruction:
       agent.instruction = config.instruction
+    if config.disallow_transfer_to_parent:
+      agent.disallow_transfer_to_parent = config.disallow_transfer_to_parent
+    if config.disallow_transfer_to_peers:
+      agent.disallow_transfer_to_peers = config.disallow_transfer_to_peers
     return agent
 
 
@@ -551,3 +555,9 @@ class LlmAgentConfig(BaseAgentConfig):
 
   instruction: str
   """Required. LlmAgent.instruction."""
+
+  disallow_transfer_to_parent: Optional[bool] = None
+  """Optional. LlmAgent.disallow_transfer_to_parent."""
+
+  disallow_transfer_to_peers: Optional[bool] = None
+  """Optional. LlmAgent.disallow_transfer_to_peers."""
