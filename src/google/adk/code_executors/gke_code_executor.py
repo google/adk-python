@@ -24,6 +24,13 @@ class GkeCodeExecutor(BaseCodeExecutor):
     - Secure-by-default Pod configuration (non-root, no privileges).
     - Automatic garbage collection of completed Jobs and Pods via TTL.
     - Efficient, event-driven waiting using the Kubernetes watch API.
+
+    RBAC Permissions:
+    This executor interacts with the Kubernetes API and requires a ServiceAccount 
+    with specific RBAC permissions to function. The agent's pod needs permissions
+    to create/watch Jobs, create/delete ConfigMaps, and list Pods to read logs.
+    For a complete, working example of the required Role and RoleBinding, see the
+    file at: contributing/samples/gke_agent_sandbox/deployment_rbac.yaml
     """
     namespace: str = "default"
     image: str = "python:3.11-slim"
