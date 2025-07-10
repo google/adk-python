@@ -35,6 +35,8 @@ class GkeCodeExecutor(BaseCodeExecutor):
     namespace: str = "default"
     image: str = "python:3.11-slim"
     timeout_seconds: int = 300
+    cpu_request: str = "200m"
+    mem_request: str = "256Mi"
     cpu_limit: str = "500m"
     mem_limit: str = "512Mi"
 
@@ -121,7 +123,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
             ),
             # Set resource limits to prevent abuse.
             resources=client.V1ResourceRequirements(
-                requests={"cpu": "100m", "memory": "128Mi"},
+                requests={"cpu": self.cpu_request, "memory": self.mem_request},
                 limits={"cpu": self.cpu_limit, "memory": self.mem_limit},
             ),
         )
