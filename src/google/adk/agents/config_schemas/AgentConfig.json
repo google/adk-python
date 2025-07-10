@@ -107,6 +107,58 @@
       ],
       "title": "LoopAgentConfig",
       "type": "object"
+    },
+    "ParallelAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for the YAML schema of a ParallelAgent.",
+      "properties": {
+        "agent_class": {
+          "const": "ParallelAgent",
+          "default": "ParallelAgent",
+          "title": "Agent Class",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ParallelAgentConfig",
+      "type": "object"
+    },
+    "SequentialAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for the YAML schema of a SequentialAgent.",
+      "properties": {
+        "agent_class": {
+          "const": "SequentialAgent",
+          "default": "SequentialAgent",
+          "title": "Agent Class",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SequentialAgentConfig",
+      "type": "object"
     }
   },
   "anyOf": [
@@ -115,6 +167,12 @@
     },
     {
       "$ref": "#/$defs/LoopAgentConfig"
+    },
+    {
+      "$ref": "#/$defs/ParallelAgentConfig"
+    },
+    {
+      "$ref": "#/$defs/SequentialAgentConfig"
     }
   ],
   "description": "The config for the YAML schema to create an agent.",

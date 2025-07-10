@@ -21,11 +21,15 @@ from pydantic import RootModel
 from ..utils.feature_decorator import working_in_progress
 from .llm_agent import LlmAgentConfig
 from .loop_agent import LoopAgentConfig
+from .parallel_agent import ParallelAgentConfig
+from .sequential_agent import SequentialAgentConfig
 
 # A discriminated union of all possible agent configurations.
 ConfigsUnion = Union[
     LlmAgentConfig,
     LoopAgentConfig,
+    ParallelAgentConfig,
+    SequentialAgentConfig,
 ]
 
 
