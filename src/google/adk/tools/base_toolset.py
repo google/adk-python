@@ -64,7 +64,7 @@ class BaseToolset(ABC):
     """Return all tools in the toolset based on the provided context.
 
     Args:
-      readony_context (ReadonlyContext, optional): Context used to filter tools
+      readonly_context (ReadonlyContext, optional): Context used to filter tools
         available to the agent. If None, all tools in the toolset are returned.
 
     Returns:
