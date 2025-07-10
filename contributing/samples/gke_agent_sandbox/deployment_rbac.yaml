@@ -18,7 +18,7 @@ rules:
 - apiGroups: ["batch"]
   resources: ["jobs"]
   # create: Needed for _batch_v1.create_namespaced_job().
-  # watch: Needed for watch.stream(self._batch_v1.list_namespaced_job, ...) to efficiently wait for completion
+  # watch: Needed for watch.stream(self._batch_v1.list_namespaced_job, ...) to wait for completion
   # list/get: Required for the watch to initialize and to get job details.
   verbs: ["create", "get", "watch", "list", "delete"]
 - apiGroups: [""]
