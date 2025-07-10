@@ -1,0 +1,98 @@
+{
+  "$defs": {
+    "LlmAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for the YAML schema of a LlmAgent.",
+      "properties": {
+        "agent_class": {
+          "default": "LlmAgent",
+          "enum": [
+            "LlmAgent",
+            ""
+          ],
+          "title": "Agent Class",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "instruction": {
+          "title": "Instruction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "instruction"
+      ],
+      "title": "LlmAgentConfig",
+      "type": "object"
+    },
+    "LoopAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for the YAML schema of a LoopAgent.",
+      "properties": {
+        "agent_class": {
+          "const": "LoopAgent",
+          "default": "LoopAgent",
+          "title": "Agent Class",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "max_iterations": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Iterations"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "LoopAgentConfig",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/LlmAgentConfig"
+    },
+    {
+      "$ref": "#/$defs/LoopAgentConfig"
+    }
+  ],
+  "description": "The config for the YAML schema to create an agent.",
+  "title": "AgentConfig"
+}

@@ -19,9 +19,12 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import Dict
 from typing import final
+from typing import Literal
 from typing import Mapping
 from typing import Optional
+from typing import Type
 from typing import TYPE_CHECKING
 from typing import TypeVar
 from typing import Union
@@ -36,6 +39,7 @@ from typing_extensions import override
 from typing_extensions import TypeAlias
 
 from ..events.event import Event
+from ..utils.feature_decorator import working_in_progress
 from .callback_context import CallbackContext
 
 if TYPE_CHECKING:
@@ -439,3 +443,49 @@ class BaseAgent(BaseModel):
         )
       sub_agent.parent_agent = self
     return self
+
+  @classmethod
+  @working_in_progress('BaseAgent.from_config is not ready for use.')
+  def from_config(
+      cls: Type[SelfAgent],
+      config: BaseAgentConfig,
+  ) -> SelfAgent:
+    """Creates an agent from a config.
+
+    This method converts fields in a config to the corresponding
+    fields in an agent.
+
+    Child classes should re-implement this method to support loading from their
+    custom config types.
+
+    Args:
+      config: The config to create the agent from.
+
+    Returns:
+      The created agent.
+    """
+    kwargs: Dict[str, Any] = {
+        'name': config.name,
+        'description': config.description,
+    }
+    return cls(**kwargs)
+
+
+@working_in_progress('BaseAgentConfig is not ready for use.')
+class BaseAgentConfig(BaseModel):
+  """The config for the YAML schema of a BaseAgent.
+
+  Do not use this class directly. It's the base class for all agent configs.
+  """
+
+  model_config = ConfigDict(extra='forbid')
+
+  agent_class: Literal['BaseAgent'] = 'BaseAgent'
+  """Required. The class of the agent. The value is used to differentiate
+  among different agent classes."""
+
+  name: str
+  """Required. The name of the agent."""
+
+  description: str = ''
+  """Optional. The description of the agent."""
