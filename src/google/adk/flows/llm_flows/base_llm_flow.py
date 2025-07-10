@@ -283,14 +283,10 @@ class BaseLlmFlow(ABC):
       async for event in self._run_one_step_async(invocation_context):
         last_event = event
         yield event
-      if not last_event or last_event.is_final_response():
+      if not last_event or last_event.is_final_response() or last_event.partial:
+        if last_event and last_event.partial:
+          logger.warning('The last event is partial, which is not expected.')
         break
-      if last_event.partial:
-        # TODO: handle this in BaseLlm level.
-        raise ValueError(
-            f"Last event shouldn't be partial. LLM max output limit may be"
-            f' reached.'
-        )
 
   async def _run_one_step_async(
       self,
