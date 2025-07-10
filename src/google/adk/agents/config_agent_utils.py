@@ -26,6 +26,10 @@ from .llm_agent import LlmAgent
 from .llm_agent import LlmAgentConfig
 from .loop_agent import LoopAgent
 from .loop_agent import LoopAgentConfig
+from .parallel_agent import ParallelAgent
+from .parallel_agent import ParallelAgentConfig
+from .sequential_agent import SequentialAgent
+from .sequential_agent import SequentialAgentConfig
 
 
 @working_in_progress("from_config is not ready for use.")
@@ -50,6 +54,10 @@ def from_config(config_path: str) -> BaseAgent:
     return LlmAgent.from_config(config.root)
   elif isinstance(config.root, LoopAgentConfig):
     return LoopAgent.from_config(config.root)
+  elif isinstance(config.root, ParallelAgentConfig):
+    return ParallelAgent.from_config(config.root)
+  elif isinstance(config.root, SequentialAgentConfig):
+    return SequentialAgent.from_config(config.root)
   else:
     raise ValueError("Unsupported config type")
 
