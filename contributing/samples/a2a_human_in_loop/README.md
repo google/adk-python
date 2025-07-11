@@ -122,7 +122,7 @@ You can extend this sample by:
 - Ensure the local ADK web server is running on port 8000
 - Ensure the remote A2A server is running on port 8001
 - Check that no firewall is blocking localhost connections
-- Verify the agent.json URL matches the running A2A server
+- Verify the agent card URL passed to RemoteA2AAgent constructor matches the running A2A server
 
 **Agent Not Responding:**
 - Check the logs for both the local ADK web server on port 8000 and remote A2A server on port 8001

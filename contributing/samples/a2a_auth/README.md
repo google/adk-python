@@ -163,7 +163,8 @@ You can extend this sample by:
 - Ensure the local ADK web server is running on port 8000
 - Ensure the remote A2A server is running on port 8001
 - Check that no firewall is blocking localhost connections
-- Verify the agent.json URL matches the running A2A server
+- Verify the agent card URL passed to RemoteA2AAgent constructor matches the running A2A server
+
 
 **OAuth Issues:**
 - Verify OAuth client ID and secret are correctly set in .env file
