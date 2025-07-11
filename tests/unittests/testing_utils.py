@@ -30,6 +30,8 @@ from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.runners import InMemoryRunner as AfInMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -57,7 +59,10 @@ class ModelContent(types.Content):
 
 
 async def create_invocation_context(
-    agent: Agent, user_content: str = '', run_config: RunConfig = None
+    agent: Agent,
+    user_content: str = '',
+    run_config: RunConfig = None,
+    plugins: list[BasePlugin] = [],
 ):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
@@ -67,6 +72,7 @@ async def create_invocation_context(
       artifact_service=artifact_service,
       session_service=session_service,
       memory_service=memory_service,
+      plugin_manager=PluginManager(plugins=plugins),
       invocation_id=invocation_id,
       agent=agent,
       session=await session_service.create_session(
@@ -165,6 +171,7 @@ class InMemoryRunner:
       self,
       root_agent: Union[Agent, LlmAgent],
       response_modalities: list[str] = None,
+      plugins: list[BasePlugin] = [],
   ):
     self.root_agent = root_agent
     self.runner = Runner(
@@ -173,6 +180,7 @@ class InMemoryRunner:
         artifact_service=InMemoryArtifactService(),
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
+        plugins=plugins,
     )
     self.session_id = None
 

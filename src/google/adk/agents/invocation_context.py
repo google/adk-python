@@ -24,6 +24,7 @@ from pydantic import ConfigDict
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..memory.base_memory_service import BaseMemoryService
+from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from .active_streaming_tool import ActiveStreamingTool
@@ -152,6 +153,9 @@ class InvocationContext(BaseModel):
 
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""
+
+  plugin_manager: PluginManager = PluginManager()
+  """The manager for keeping track of plugins in this invocation."""
 
   _invocation_cost_manager: _InvocationCostManager = _InvocationCostManager()
   """A container to keep track of different kinds of costs incurred as a part
