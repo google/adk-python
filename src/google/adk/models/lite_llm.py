@@ -35,6 +35,7 @@ from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
 from litellm import ChatCompletionDeveloperMessage
+from litellm import ChatCompletionFileObject
 from litellm import ChatCompletionImageUrlObject
 from litellm import ChatCompletionMessageToolCall
 from litellm import ChatCompletionTextObject
@@ -260,6 +261,12 @@ def _get_content(
             ChatCompletionVideoUrlObject(
                 type="video_url",
                 video_url=data_uri,
+            )
+        )
+      elif part.inline_data.mime_type == "application/pdf":
+        content_objects.append(
+            ChatCompletionFileObject(
+                type="file", file={"file_data": data_uri, "format": "pdf"}
             )
         )
       else:
