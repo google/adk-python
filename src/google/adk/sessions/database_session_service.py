@@ -137,7 +137,7 @@ class StorageSession(Base):
       DateTime(), default=func.now(), onupdate=func.now()
   )
 
-  storage_events: Mapped[list["StorageEvent"]] = relationship(
+  storage_events: Mapped[list[StorageEvent]] = relationship(
       "StorageEvent",
       back_populates="storage_session",
   )
@@ -373,11 +373,11 @@ class DatabaseSessionService(BaseSessionService):
     # 4. Build the session object with generated id
     # 5. Return the session
 
-    with self.database_session_factory() as session_factory:
+    with self.database_session_factory() as sql_session:
 
       # Fetch app and user states from storage
-      storage_app_state = session_factory.get(StorageAppState, (app_name))
-      storage_user_state = session_factory.get(
+      storage_app_state = sql_session.get(StorageAppState, (app_name))
+      storage_user_state = sql_session.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -387,12 +387,12 @@ class DatabaseSessionService(BaseSessionService):
       # Create state tables if not exist
       if not storage_app_state:
         storage_app_state = StorageAppState(app_name=app_name, state={})
-        session_factory.add(storage_app_state)
+        sql_session.add(storage_app_state)
       if not storage_user_state:
         storage_user_state = StorageUserState(
             app_name=app_name, user_id=user_id, state={}
         )
-        session_factory.add(storage_user_state)
+        sql_session.add(storage_user_state)
 
       # Extract state deltas
       app_state_delta, user_state_delta, session_state = _extract_state_delta(
@@ -416,10 +416,10 @@ class DatabaseSessionService(BaseSessionService):
           id=session_id,
           state=session_state,
       )
-      session_factory.add(storage_session)
-      session_factory.commit()
+      sql_session.add(storage_session)
+      sql_session.commit()
 
-      session_factory.refresh(storage_session)
+      sql_session.refresh(storage_session)
 
       # Merge states for response
       merged_state = _merge_state(app_state, user_state, session_state)
@@ -444,8 +444,8 @@ class DatabaseSessionService(BaseSessionService):
     # 1. Get the storage session entry from session table
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
-    with self.database_session_factory() as session_factory:
-      storage_session = session_factory.get(
+    with self.database_session_factory() as sql_session:
+      storage_session = sql_session.get(
           StorageSession, (app_name, user_id, session_id)
       )
       if storage_session is None:
@@ -458,7 +458,7 @@ class DatabaseSessionService(BaseSessionService):
         timestamp_filter = True
 
       storage_events = (
-          session_factory.query(StorageEvent)
+          sql_session.query(StorageEvent)
           .filter(StorageEvent.app_name == app_name)
           .filter(StorageEvent.session_id == storage_session.id)
           .filter(StorageEvent.user_id == user_id)
@@ -473,8 +473,8 @@ class DatabaseSessionService(BaseSessionService):
       )
 
       # Fetch states from storage
-      storage_app_state = session_factory.get(StorageAppState, (app_name))
-      storage_user_state = session_factory.get(
+      storage_app_state = sql_session.get(StorageAppState, (app_name))
+      storage_user_state = sql_session.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -500,9 +500,9 @@ class DatabaseSessionService(BaseSessionService):
   async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
-    with self.database_session_factory() as session_factory:
+    with self.database_session_factory() as sql_session:
       results = (
-          session_factory.query(StorageSession)
+          sql_session.query(StorageSession)
           .filter(StorageSession.app_name == app_name)
           .filter(StorageSession.user_id == user_id)
           .all()
@@ -523,14 +523,14 @@ class DatabaseSessionService(BaseSessionService):
   async def delete_session(
       self, app_name: str, user_id: str, session_id: str
   ) -> None:
-    with self.database_session_factory() as session_factory:
+    with self.database_session_factory() as sql_session:
       stmt = delete(StorageSession).where(
           StorageSession.app_name == app_name,
           StorageSession.user_id == user_id,
           StorageSession.id == session_id,
       )
-      session_factory.execute(stmt)
-      session_factory.commit()
+      sql_session.execute(stmt)
+      sql_session.commit()
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
@@ -542,8 +542,8 @@ class DatabaseSessionService(BaseSessionService):
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config
     # 3. Store event to table
-    with self.database_session_factory() as session_factory:
-      storage_session = session_factory.get(
+    with self.database_session_factory() as sql_session:
+      storage_session = sql_session.get(
           StorageSession, (session.app_name, session.user_id, session.id)
       )
 
@@ -557,10 +557,8 @@ class DatabaseSessionService(BaseSessionService):
         )
 
       # Fetch states from storage
-      storage_app_state = session_factory.get(
-          StorageAppState, (session.app_name)
-      )
-      storage_user_state = session_factory.get(
+      storage_app_state = sql_session.get(StorageAppState, (session.app_name))
+      storage_user_state = sql_session.get(
           StorageUserState, (session.app_name, session.user_id)
       )
 
@@ -589,10 +587,10 @@ class DatabaseSessionService(BaseSessionService):
         session_state.update(session_state_delta)
         storage_session.state = session_state
 
-      session_factory.add(StorageEvent.from_event(session, event))
+      sql_session.add(StorageEvent.from_event(session, event))
 
-      session_factory.commit()
-      session_factory.refresh(storage_session)
+      sql_session.commit()
+      sql_session.refresh(storage_session)
 
       # Update timestamp with commit time
       session.last_update_time = storage_session.update_timestamp_tz

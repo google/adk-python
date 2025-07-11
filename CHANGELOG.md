@@ -1,5 +1,74 @@
 # Changelog
 
+## [1.6.1](https://github.com/google/adk-python/compare/v1.5.0...v1.6.1) (2025-07-09)
+
+### Features
+
+* Add A2A support as experimental features [f0183a9](https://github.com/google/adk-python/commit/f0183a9b98b0bcf8aab4f948f467cef204ddc9d6)
+  * Install google-adk with a2a extra: pip install google-adk[a2a]
+  * Users can serve agents as A2A agent with `--a2a` option for `adk web` and
+    `adk api_server`
+  * Users can run a remote A2A agent with `RemoteA2AAgent` class
+  * Three A2A agent samples are added:
+    * contributing/samples/a2a_basic
+    * contributing/samples/a2a_auth
+    * contributing/samples/a2a_human_in_loop
+
+* Support agent hot reload.[e545e5a](https://github.com/google/adk-python/commit/e545e5a570c1331d2ed8fda31c7244b5e0f71584)
+  Users can add `--reload_agents` flag to `adk web` and `adk api_server` command
+  to reload agents automatically when new changes are detected.
+
+* Eval features
+  * Implement auto rater-based evaluator for responses [75699fb](https://github.com/google/adk-python/commit/75699fbeca06f99c6f2415938da73bb423ec9b9b)
+  * Add Safety evaluator metric [0bd05df](https://github.com/google/adk-python/commit/0bd05df471a440159a44b5864be4740b0f1565f9)
+  * Add BaseEvalService declaration and surrounding data models [b0d88bf](https://github.com/google/adk-python/commit/b0d88bf17242e738bcd409b3d106deed8ce4d407)
+
+* Minor features
+  * Add `custom_metadata` to VertexAiSessionService when adding events [a021222](https://github.com/google/adk-python/commit/a02122207734cabb26f7c23e84d2336c4b8b0375)
+  * Support protected write in BigQuery `execute_sql` tool [dc43d51](https://github.com/google/adk-python/commit/dc43d518c90b44932b3fdedd33fca9e6c87704e2)
+  * Added clone() method to BaseAgent to allow users to create copies of an agent [d263afd] (https://github.com/google/adk-python/commit/d263afd91ba4a3444e5321c0e1801c499dec4c68)
+
+### Bug Fixes
+
+* Support project-based gemini model path to use enterprise_web_search_tool [e33161b](https://github.com/google/adk-python/commit/e33161b4f8650e8bcb36c650c4e2d1fe79ae2526)
+* Use inspect.signature() instead of typing.get_type_hints for examining function signatures[4ca77bc](https://github.com/google/adk-python/commit/4ca77bc056daa575621a80d3c8d5014b78209233)
+* Replace Event ID generation with UUID4 to prevent SQLite integrity constraint failures [e437c7a](https://github.com/google/adk-python/commit/e437c7aac650ac6a53fcfa71bd740e3e5ec0f230)
+* Remove duplicate options from `adk deploy` [3fa2ea7](https://github.com/google/adk-python/commit/3fa2ea7cb923c9f8606d98b45a23bd58a7027436)
+* Fix scenario where a user can access another users events given the same session id [362fb3f](https://github.com/google/adk-python/commit/362fb3f2b7ac4ad15852d00ce4f3935249d097f6)
+* Handle unexpected 'parameters' argument in FunctionTool.run_async [0959b06](https://github.com/google/adk-python/commit/0959b06dbdf3037fe4121f12b6d25edca8fb9afc)
+* Make sure each partial event has different timestamp [17d6042](https://github.com/google/adk-python/commit/17d604299505c448fcb55268f0cbaeb6c4fa314a)
+* Avoid pydantic.ValidationError when the model stream returns empty final chunk [9b75e24](https://github.com/google/adk-python/commit/9b75e24d8c01878c153fec26ccfea4490417d23b)
+* Fix google_search_tool.py to support updated Gemini LIVE model naming [77b869f](https://github.com/google/adk-python/commit/77b869f5e35a66682cba35563824fd23a9028d7c)
+* Adding detailed information on each metric evaluation [04de3e1](https://github.com/google/adk-python/commit/04de3e197d7a57935488eb7bfa647c7ab62cd9d9)
+* Converts litellm generate config err [3901fad](https://github.com/google/adk-python/commit/3901fade71486a1e9677fe74a120c3f08efe9d9e)
+* Save output in state via output_key only when the event is authored by current agent [20279d9](https://github.com/google/adk-python/commit/20279d9a50ac051359d791dea77865c17c0bbf9e)
+* Treat SQLite database update time as UTC for session's last update time [3f621ae](https://github.com/google/adk-python/commit/3f621ae6f2a5fac7f992d3d833a5311b4d4e7091)
+* Raise ValueError when sessionId and userId are incorrect combination(#1653) [4e765ae](https://github.com/google/adk-python/commit/4e765ae2f3821318e581c26a52e11d392aaf72a4)
+* Support API-Key for MCP Tool authentication [045aea9](https://github.com/google/adk-python/commit/045aea9b15ad0190a960f064d6e1e1fc7f964c69)
+* Lock LangGraph version to <= 0.4.10 [9029b8a](https://github.com/google/adk-python/commit/9029b8a66e9d5e0d29d9a6df0e5590cc7c0e9038)
+* Update the retry logic of create session polling [3d2f13c](https://github.com/google/adk-python/commit/3d2f13cecd3fef5adfa1c98bf23d7b68ff355f4d)
+
+### Chores
+
+* Extract mcp client creation logic to a separate method [45d60a1](https://github.com/google/adk-python/commit/45d60a1906bfe7c43df376a829377e2112ea3d17)
+* Add tests for live streaming configs [bf39c00](https://github.com/google/adk-python/commit/bf39c006102ef3f01e762e7bb744596a4589f171)
+* Update ResponseEvaluator to use newer version of Eval SDK [62c4a85](https://github.com/google/adk-python/commit/62c4a8591780a9a3fdb03a0de11092d84118a1b9)
+* Add util to build our llms.txt and llms-full.txt files [a903c54](https://github.com/google/adk-python/commit/a903c54bacfcb150dc315bec9c67bf7ce9551c07)
+* Create an example for multi agent live streaming [a58cc3d](https://github.com/google/adk-python/commit/a58cc3d882e59358553e8ea16d166b1ab6d3aa71)
+* Refactor the ADK Triaging Agent to make the code easier to read [b6c7b5b](https://github.com/google/adk-python/commit/b6c7b5b64fcd2e83ed43f7b96ea43791733955d8)
+
+
+### Documentation
+
+* Update the a2a exmaple link in README.md [d0fdfb8](https://github.com/google/adk-python/commit/d0fdfb8c8e2e32801999c81de8d8ed0be3f88e76)
+* Adds AGENTS.md to provide relevant project context for the Gemini CLI [37108be](https://github.com/google/adk-python/commit/37108be8557e011f321de76683835448213f8515)
+* Update CONTRIBUTING.md [ffa9b36](https://github.com/google/adk-python/commit/ffa9b361db615ae365ba62c09a8f4226fb761551)
+* Add adk project overview and architecture [28d0ea8](https://github.com/google/adk-python/commit/28d0ea876f2f8de952f1eccbc788e98e39f50cf5)
+* Add docstring to clarify that inmemory service are not suitable for production [dc414cb](https://github.com/google/adk-python/commit/dc414cb5078326b8c582b3b9072cbda748766286)
+* Update agents.md to include versioning strategy [6a39c85](https://github.com/google/adk-python/commit/6a39c854e032bda3bc15f0e4fe159b41cf2f474b)
+* Add tenacity into project.toml [df141db](https://github.com/google/adk-python/commit/df141db60c1137a6bcddd6d46aad3dc506868543)
+* Updating CONTRIBUTING.md with missing extra [e153d07](https://github.com/google/adk-python/commit/e153d075939fb628a7dc42b12e1b3461842db541)
+
 ## [1.5.0](https://github.com/google/adk-python/compare/v1.4.2...v1.5.0) (2025-06-25)
 
 

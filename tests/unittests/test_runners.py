@@ -15,13 +15,20 @@
 from typing import Optional
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.genai import types
+import pytest
+
+TEST_APP_ID = "test_app"
+TEST_USER_ID = "test_user"
+TEST_SESSION_ID = "test_session"
 
 
 class MockAgent(BaseAgent):
@@ -68,6 +75,51 @@ class MockLlmAgent(LlmAgent):
         author=self.name,
         content=types.Content(
             role="model", parts=[types.Part(text="Test LLM response")]
+        ),
+    )
+
+
+class MockPlugin(BasePlugin):
+  """Mock plugin for unit testing."""
+
+  ON_USER_CALLBACK_MSG = (
+      "Modified user message ON_USER_CALLBACK_MSG from MockPlugin"
+  )
+  ON_EVENT_CALLBACK_MSG = "Modified event ON_EVENT_CALLBACK_MSG from MockPlugin"
+
+  def __init__(self):
+    super().__init__(name="mock_plugin")
+    self.enable_user_message_callback = False
+    self.enable_event_callback = False
+
+  async def on_user_message_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      user_message: types.Content,
+  ) -> Optional[types.Content]:
+    if not self.enable_user_message_callback:
+      return None
+    return types.Content(
+        role="model",
+        parts=[types.Part(text=self.ON_USER_CALLBACK_MSG)],
+    )
+
+  async def on_event_callback(
+      self, *, invocation_context: InvocationContext, event: Event
+  ) -> Optional[Event]:
+    if not self.enable_event_callback:
+      return None
+    return Event(
+        invocation_id="",
+        author="",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    text=self.ON_EVENT_CALLBACK_MSG,
+                )
+            ],
+            role=event.content.role,
         ),
     )
 
@@ -308,3 +360,73 @@ class TestRunnerFindAgentToRun:
     # MockAgent inherits from BaseAgent, not LlmAgent, so it should return False
     result = self.runner._is_transferable_across_agent_tree(non_llm_agent)
     assert result is False
+
+
+class TestRunnerWithPlugins:
+  """Tests for Runner with plugins."""
+
+  def setup_method(self):
+    self.plugin = MockPlugin()
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+    self.runner = Runner(
+        app_name="test_app",
+        agent=MockLlmAgent("test_agent"),
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        plugins=[self.plugin],
+    )
+
+  async def run_test(self, original_user_input="Hello") -> list[Event]:
+    """Prepares the test by creating a session and running the runner."""
+    await self.session_service.create_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+    events = []
+    async for event in self.runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text=original_user_input)]
+        ),
+    ):
+      events.append(event)
+    return events
+
+  @pytest.mark.asyncio
+  async def test_runner_is_initialized_with_plugins(self):
+    """Test that the runner is initialized with plugins."""
+    await self.run_test()
+
+    assert self.runner.plugin_manager is not None
+
+  @pytest.mark.asyncio
+  async def test_runner_modifies_user_message_before_execution(self):
+    """Test that the runner modifies the user message before execution."""
+    original_user_input = "original_input"
+    self.plugin.enable_user_message_callback = True
+
+    await self.run_test(original_user_input=original_user_input)
+    session = await self.session_service.get_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+    generated_event = session.events[0]
+    modified_user_message = generated_event.content.parts[0].text
+
+    assert modified_user_message == MockPlugin.ON_USER_CALLBACK_MSG
+
+  @pytest.mark.asyncio
+  async def test_runner_modifies_event_after_execution(self):
+    """Test that the runner modifies the event after execution."""
+    self.plugin.enable_event_callback = True
+
+    events = await self.run_test()
+    generated_event = events[0]
+    modified_event_message = generated_event.content.parts[0].text
+
+    assert modified_event_message == MockPlugin.ON_EVENT_CALLBACK_MSG
+
+
+if __name__ == "__main__":
+  pytest.main([__file__])
