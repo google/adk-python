@@ -30,9 +30,9 @@ if TYPE_CHECKING:
 try:
   from authlib.integrations.requests_client import OAuth2Session
 
-  AUTHLIB_AVIALABLE = True
+  AUTHLIB_AVAILABLE = True
 except ImportError:
-  AUTHLIB_AVIALABLE = False
+  AUTHLIB_AVAILABLE = False
 
 
 class AuthHandler:
@@ -146,7 +146,7 @@ class AuthHandler:
         ValueError: If the authorization endpoint is not configured in the auth
             scheme.
     """
-    if not AUTHLIB_AVIALABLE:
+    if not AUTHLIB_AVAILABLE:
       return (
           self.auth_config.raw_auth_credential.model_copy(deep=True)
           if self.auth_config.raw_auth_credential

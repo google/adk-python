@@ -49,6 +49,8 @@ from pydantic import Field
 from pydantic import ValidationError
 from starlette.types import Lifespan
 from typing_extensions import override
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 from ..agents import RunConfig
 from ..agents.live_request_queue import LiveRequest
@@ -87,6 +89,21 @@ from .utils.agent_loader import AgentLoader
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+_app_name = ""
+_runners_to_clean = set()
+
+
+class AgentChangeEventHandler(FileSystemEventHandler):
+
+  def __init__(self, agent_loader: AgentLoader):
+    self.agent_loader = agent_loader
+
+  def on_modified(self, event):
+    if not (event.src_path.endswith(".py") or event.src_path.endswith(".yaml")):
+      return
+    logger.info("Change detected in agents directory: %s", event.src_path)
+    self.agent_loader.remove_agent_from_cache(_app_name)
+    _runners_to_clean.add(_app_name)
 
 
 class ApiServerSpanExporter(export.SpanExporter):
@@ -205,6 +222,7 @@ def get_fast_api_app(
     host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
+    reload_agents: bool = False,
     lifespan: Optional[Lifespan[FastAPI]] = None,
 ) -> FastAPI:
   # InMemory tracing dict.
@@ -235,7 +253,6 @@ def get_fast_api_app(
 
   @asynccontextmanager
   async def internal_lifespan(app: FastAPI):
-
     try:
       if lifespan:
         async with lifespan(app) as lifespan_context:
@@ -243,6 +260,9 @@ def get_fast_api_app(
       else:
         yield
     finally:
+      if reload_agents:
+        observer.stop()
+        observer.join()
       # Create tasks for all runner closures to run concurrently
       await cleanup.close_runners(list(runner_dict.values()))
 
@@ -336,6 +356,13 @@ def get_fast_api_app(
   # initialize Agent Loader
   agent_loader = AgentLoader(agents_dir)
 
+  # Set up a file system watcher to detect changes in the agents directory.
+  observer = Observer()
+  if reload_agents:
+    event_handler = AgentChangeEventHandler(agent_loader)
+    observer.schedule(event_handler, agents_dir, recursive=True)
+    observer.start()
+
   @app.get("/list-apps")
   def list_apps() -> list[str]:
     base_path = Path.cwd() / agents_dir
@@ -390,6 +417,9 @@ def get_fast_api_app(
     )
     if not session:
       raise HTTPException(status_code=404, detail="Session not found")
+
+    global _app_name
+    _app_name = app_name
     return session
 
   @app.get(
@@ -947,6 +977,11 @@ def get_fast_api_app(
 
   async def _get_runner_async(app_name: str) -> Runner:
     """Returns the runner for the given app."""
+    if app_name in _runners_to_clean:
+      _runners_to_clean.remove(app_name)
+      runner = runner_dict.pop(app_name, None)
+      await cleanup.close_runners(list([runner]))
+
     envs.load_dotenv_for_agent(os.path.basename(app_name), agents_dir)
     if app_name in runner_dict:
       return runner_dict[app_name]

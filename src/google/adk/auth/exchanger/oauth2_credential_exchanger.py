@@ -33,9 +33,9 @@ from .base_credential_exchanger import CredentialExchangError
 try:
   from authlib.integrations.requests_client import OAuth2Session
 
-  AUTHLIB_AVIALABLE = True
+  AUTHLIB_AVAILABLE = True
 except ImportError:
-  AUTHLIB_AVIALABLE = False
+  AUTHLIB_AVAILABLE = False
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -68,7 +68,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
           "auth_scheme is required for OAuth2 credential exchange"
       )
 
-    if not AUTHLIB_AVIALABLE:
+    if not AUTHLIB_AVAILABLE:
       # If authlib is not available, we cannot exchange the credential.
       # We return the original credential without exchange.
       # The client using this tool can decide to exchange the credential
