@@ -56,7 +56,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
             config.load_incluster_config()
             logger.info("Using in-cluster Kubernetes configuration.")
         except config.ConfigException:
-            logger.info("In-cluster config not found. Falling back to kubeconfig.")
+            logger.info("In-cluster config not found. Falling back to local kubeconfig.")
             config.load_kube_config()
 
         self._batch_v1 = client.BatchV1Api()
@@ -79,7 +79,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
                 body=job_manifest, namespace=self.namespace
             )
             logger.info(f"Submitted Job '{job_name}' to namespace '{self.namespace}'.")
-            return self._watch_for_job_completion(job_name)
+            return self._watch_job_completion(job_name)
 
         except ApiException as e:
             logger.error(
@@ -171,11 +171,10 @@ class GkeCodeExecutor(BaseCodeExecutor):
         """Uses the watch API to efficiently wait for job completion."""
         watch = Watch()
         try:
-            field_selector = f"metadata.name={job_name}"
             for event in watch.stream(
                 self._batch_v1.list_namespaced_job,
                 namespace=self.namespace,
-                field_selector=field_selector,
+                field_selector=f"metadata.name={job_name}",
                 timeout_seconds=self.timeout_seconds,
             ):
                 job = event["object"]
@@ -189,30 +188,33 @@ class GkeCodeExecutor(BaseCodeExecutor):
                     logger.error(f"Job '{job_name}' failed.")
                     logs = self._get_pod_logs(job_name)
                     return CodeExecutionResult(stderr=f"Job failed. Logs:\n{logs}")
-        finally:
-            watch.stop()
 
             # If the loop finishes without returning, the watch timed out.
             raise TimeoutError(
                 f"Job '{job_name}' did not complete within {self.timeout_seconds}s."
             )
+        finally:
+            watch.stop()
 
     def _get_pod_logs(self, job_name: str) -> str:
-        """Retrieves logs from the pod created by the specified job."""
+        """Retrieves logs from the pod created by the specified job.
+
+        Raises:
+            RuntimeError: If the pod cannot be found or logs cannot be fetched.
+        """
         try:
             pods = self._core_v1.list_namespaced_pod(
                 namespace=self.namespace, label_selector=f"job-name={job_name}", limit=1
             )
             if not pods.items:
-                logger.warning(f"Could not find Pod for Job '{job_name}' to retrieve logs.")
-                return "Error: Could not find pod for job."
+                raise RuntimeError(f"Could not find Pod for Job '{job_name}' to retrieve logs.")
+
             pod_name = pods.items[0].metadata.name
             return self._core_v1.read_namespaced_pod_log(
                 name=pod_name, namespace=self.namespace
             )
         except ApiException as e:
-            logger.error(f"API error retrieving logs for job '{job_name}': {e.reason}")
-            return f"Error retrieving logs: {e.reason}"
+            raise RuntimeError(f"API error retrieving logs for job '{job_name}': {e.reason}") from e
 
     def _create_code_configmap(self, name: str, code: str) -> None:
         """Creates a ConfigMap to hold the Python code."""
