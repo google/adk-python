@@ -208,9 +208,9 @@ class TestOAuth2CredentialExchanger:
 
     exchanger = OAuth2CredentialExchanger()
 
-    # Mock AUTHLIB_AVIALABLE to False
+    # Mock AUTHLIB_AVAILABLE to False
     with patch(
-        "google.adk.auth.exchanger.oauth2_credential_exchanger.AUTHLIB_AVIALABLE",
+        "google.adk.auth.exchanger.oauth2_credential_exchanger.AUTHLIB_AVAILABLE",
         False,
     ):
       result = await exchanger.exchange(credential, scheme)
