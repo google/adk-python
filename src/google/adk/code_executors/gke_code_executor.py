@@ -73,7 +73,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
 
         try:
             self._create_code_configmap(configmap_name, code_execution_input.code)
-            job_manifest = self._create_job_manifest(job_name, configmap_name)
+            job_manifest = self._create_job_manifest(job_name, configmap_name, invocation_context)
 
             self._batch_v1.create_namespaced_job(
                 body=job_manifest, namespace=self.namespace
@@ -103,7 +103,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
             # The Job is cleaned up by the TTL controller, and we ensure the ConfigMap is always deleted.
             self._cleanup_configmap(configmap_name)
 
-    def _create_job_manifest(self, job_name: str, configmap_name: str) -> client.V1Job:
+    def _create_job_manifest(self, job_name: str, configmap_name: str, invocation_context: InvocationContext) -> client.V1Job:
         """Creates the complete V1Job object with security best practices."""
         # Define the container that will run the code.
         container = client.V1Container(
@@ -157,10 +157,13 @@ class GkeCodeExecutor(BaseCodeExecutor):
         )
         
         # Assemble and return the final Job object.
+        annotations = {
+            "adk.agent.google.com/invocation-id": invocation_context.invocation_id
+        }
         return client.V1Job(
             api_version="batch/v1",
             kind="Job",
-            metadata=client.V1ObjectMeta(name=job_name),
+            metadata=client.V1ObjectMeta(name=job_name, annotations=annotations),
             spec=job_spec,
         )
 
