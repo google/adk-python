@@ -526,8 +526,9 @@ class LlmAgent(BaseAgent):
   def from_config(
       cls: Type[LlmAgent],
       config: LlmAgentConfig,
+      config_abs_path: str,
   ) -> LlmAgent:
-    agent = super().from_config(config)
+    agent = super().from_config(config, config_abs_path)
     if config.model:
       agent.model = config.model
     if config.instruction:

@@ -73,8 +73,9 @@ class LoopAgent(BaseAgent):
   def from_config(
       cls: Type[LoopAgent],
       config: LoopAgentConfig,
+      config_abs_path: str,
   ) -> LoopAgent:
-    agent = super().from_config(config)
+    agent = super().from_config(config, config_abs_path)
     if config.max_iterations:
       agent.max_iterations = config.max_iterations
     return agent

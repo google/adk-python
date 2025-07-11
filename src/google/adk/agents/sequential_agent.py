@@ -85,8 +85,9 @@ class SequentialAgent(BaseAgent):
   def from_config(
       cls: Type[SequentialAgent],
       config: SequentialAgentConfig,
+      config_abs_path: str,
   ) -> SequentialAgent:
-    return super().from_config(config)
+    return super().from_config(config, config_abs_path)
 
 
 @working_in_progress('SequentialAgentConfig is not ready for use.')

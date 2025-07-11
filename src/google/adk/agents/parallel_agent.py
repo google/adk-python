@@ -122,8 +122,9 @@ class ParallelAgent(BaseAgent):
   def from_config(
       cls: Type[ParallelAgent],
       config: ParallelAgentConfig,
+      config_abs_path: str,
   ) -> ParallelAgent:
-    return super().from_config(config)
+    return super().from_config(config, config_abs_path)
 
 
 @working_in_progress('ParallelAgentConfig is not ready for use.')

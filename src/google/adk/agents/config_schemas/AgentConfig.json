@@ -22,6 +22,21 @@
           "title": "Description",
           "type": "string"
         },
+        "sub_agents": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SubAgentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Agents"
+        },
         "model": {
           "anyOf": [
             {
@@ -89,6 +104,21 @@
           "title": "Description",
           "type": "string"
         },
+        "sub_agents": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SubAgentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Agents"
+        },
         "max_iterations": {
           "anyOf": [
             {
@@ -126,6 +156,21 @@
           "default": "",
           "title": "Description",
           "type": "string"
+        },
+        "sub_agents": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SubAgentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Agents"
         }
       },
       "required": [
@@ -152,12 +197,59 @@
           "default": "",
           "title": "Description",
           "type": "string"
+        },
+        "sub_agents": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SubAgentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Agents"
         }
       },
       "required": [
         "name"
       ],
       "title": "SequentialAgentConfig",
+      "type": "object"
+    },
+    "SubAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for a sub-agent.",
+      "properties": {
+        "config": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config"
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Code"
+        }
+      },
+      "title": "SubAgentConfig",
       "type": "object"
     }
   },

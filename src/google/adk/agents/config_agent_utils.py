@@ -14,14 +14,16 @@
 
 from __future__ import annotations
 
+import importlib
 import os
-from pathlib import Path
+from typing import Any
 
 import yaml
 
 from ..utils.feature_decorator import working_in_progress
 from .agent_config import AgentConfig
 from .base_agent import BaseAgent
+from .base_agent import SubAgentConfig
 from .llm_agent import LlmAgent
 from .llm_agent import LlmAgentConfig
 from .loop_agent import LoopAgent
@@ -51,13 +53,13 @@ def from_config(config_path: str) -> BaseAgent:
   config = _load_config_from_path(abs_path)
 
   if isinstance(config.root, LlmAgentConfig):
-    return LlmAgent.from_config(config.root)
+    return LlmAgent.from_config(config.root, abs_path)
   elif isinstance(config.root, LoopAgentConfig):
-    return LoopAgent.from_config(config.root)
+    return LoopAgent.from_config(config.root, abs_path)
   elif isinstance(config.root, ParallelAgentConfig):
-    return ParallelAgent.from_config(config.root)
+    return ParallelAgent.from_config(config.root, abs_path)
   elif isinstance(config.root, SequentialAgentConfig):
-    return SequentialAgent.from_config(config.root)
+    return SequentialAgent.from_config(config.root, abs_path)
   else:
     raise ValueError("Unsupported config type")
 
@@ -77,12 +79,62 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
     FileNotFoundError: If config file doesn't exist.
     ValidationError: If config file's content is invalid YAML.
   """
-  config_path = Path(config_path)
-
-  if not config_path.exists():
+  if not os.path.exists(config_path):
     raise FileNotFoundError(f"Config file not found: {config_path}")
 
   with open(config_path, "r", encoding="utf-8") as f:
     config_data = yaml.safe_load(f)
 
   return AgentConfig.model_validate(config_data)
+
+
+@working_in_progress("build_sub_agent is not ready for use.")
+def build_sub_agent(
+    sub_config: SubAgentConfig, parent_agent_folder_path: str
+) -> BaseAgent:
+  """Build a sub-agent from configuration.
+
+  Args:
+    sub_config: The sub-agent configuration (SubAgentConfig).
+    parent_agent_folder_path: The folder path to the parent agent's YAML config.
+
+  Returns:
+    The created sub-agent instance.
+  """
+  if sub_config.config:
+    if os.path.isabs(sub_config.config):
+      return from_config(sub_config.config)
+    else:
+      return from_config(
+          os.path.join(parent_agent_folder_path, sub_config.config)
+      )
+  elif sub_config.code:
+    return _resolve_sub_agent_code_reference(sub_config.code)
+  else:
+    raise ValueError("SubAgentConfig must have either 'code' or 'config'")
+
+
+@working_in_progress("_resolve_sub_agent_code_reference is not ready for use.")
+def _resolve_sub_agent_code_reference(code: str) -> Any:
+  """Resolve a code reference to an actual agent object.
+
+  Args:
+    code: The code reference to the sub-agent.
+
+  Returns:
+    The resolved agent object.
+
+  Raises:
+    ValueError: If the code reference cannot be resolved.
+  """
+  if "." not in code:
+    raise ValueError(f"Invalid code reference: {code}")
+
+  module_path, obj_name = code.rsplit(".", 1)
+  module = importlib.import_module(module_path)
+  obj = getattr(module, obj_name)
+
+  if callable(obj):
+    raise ValueError(f"Invalid code reference to a callable: {code}")
+
+  return obj
