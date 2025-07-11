@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -23,7 +25,9 @@ from .. import BaseTool
 from ...auth import AuthCredential
 from ...auth import AuthCredentialTypes
 from ...auth import OAuth2Auth
+from ...auth.auth_credential import ServiceAccount
 from ..openapi_tool import RestApiTool
+from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from ..tool_context import ToolContext
 
 
@@ -34,6 +38,7 @@ class GoogleApiTool(BaseTool):
       rest_api_tool: RestApiTool,
       client_id: Optional[str] = None,
       client_secret: Optional[str] = None,
+      service_account: Optional[ServiceAccount] = None,
   ):
     super().__init__(
         name=rest_api_tool.name,
@@ -41,7 +46,10 @@ class GoogleApiTool(BaseTool):
         is_long_running=rest_api_tool.is_long_running,
     )
     self._rest_api_tool = rest_api_tool
-    self.configure_auth(client_id, client_secret)
+    if service_account is not None:
+      self.configure_sa_auth(service_account)
+    else:
+      self.configure_auth(client_id, client_secret)
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -63,3 +71,10 @@ class GoogleApiTool(BaseTool):
             client_secret=client_secret,
         ),
     )
+
+  def configure_sa_auth(self, service_account: ServiceAccount):
+    auth_scheme, auth_credential = service_account_scheme_credential(
+        service_account
+    )
+    self._rest_api_tool.auth_scheme = auth_scheme
+    self._rest_api_tool.auth_credential = auth_credential
