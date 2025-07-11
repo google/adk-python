@@ -137,7 +137,7 @@ class EvaluationGenerator:
   async def _generate_inferences_from_root_agent(
       invocations: list[Invocation],
       root_agent: Agent,
-      reset_func: Any,
+      reset_func: Optional[Any] = None,
       initial_session: Optional[SessionInput] = None,
       session_id: Optional[str] = None,
       session_service: Optional[BaseSessionService] = None,
