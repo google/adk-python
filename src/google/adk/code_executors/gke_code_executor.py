@@ -246,4 +246,3 @@ class GkeCodeExecutor(BaseCodeExecutor):
                 f"Failed to set ownerReference on ConfigMap '{configmap_name}'. "
                 f"Manual cleanup is required. Reason: {e.reason}"
             )
-
