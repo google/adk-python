@@ -25,18 +25,18 @@ from adk_triaging_agent.utils import post_request
 from google.adk import Agent
 import requests
 
-ALLOWED_LABELS = [
-    "documentation",
-    "services",
-    "question",
-    "tools",
-    "eval",
-    "live",
-    "models",
-    "tracing",
-    "core",
-    "web",
-]
+LABEL_TO_OWNER = {
+    "documentation": "polong",
+    "services": "DeanChensj",
+    "question": "",
+    "tools": "seanzhou1023",
+    "eval": "ankursharmas",
+    "live": "hangfei",
+    "models": "selcukgun",
+    "tracing": "Jacksunwei",
+    "core": "Jacksunwei",
+    "web": "wyf7107",
+}
 
 APPROVAL_INSTRUCTION = (
     "Do not ask for user approval for labeling! If you can't find appropriate"
@@ -78,33 +78,61 @@ def list_unlabeled_issues(issue_count: int) -> dict[str, Any]:
   return {"status": "success", "issues": unlabeled_issues}
 
 
-def add_label_to_issue(issue_number: int, label: str) -> dict[str, Any]:
-  """Add the specified label to the given issue number.
+def add_label_and_owner_to_issue(
+    issue_number: int, label: str
+) -> dict[str, Any]:
+  """Add the specified label and owner to the given issue number.
 
   Args:
     issue_number: issue number of the Github issue.
     label: label to assign
 
   Returns:
-    The the status of this request, with the applied label when successful.
+    The the status of this request, with the applied label and assigned owner
+    when successful.
   """
   print(f"Attempting to add label '{label}' to issue #{issue_number}")
-  if label not in ALLOWED_LABELS:
+  if label not in LABEL_TO_OWNER:
     return error_response(
         f"Error: Label '{label}' is not an allowed label. Will not apply."
     )
 
-  url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/labels"
-  payload = [label, BOT_LABEL]
+  label_url = (
+      f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/labels"
+  )
+  label_payload = [label, BOT_LABEL]
 
   try:
-    response = post_request(url, payload)
+    response = post_request(label_url, label_payload)
   except requests.exceptions.RequestException as e:
     return error_response(f"Error: {e}")
+
+  owner = LABEL_TO_OWNER.get(label, None)
+  if not owner:
+    return {
+        "status": "warning",
+        "message": (
+            f"{response}\n\nLabel '{label}' does not have an owner. Will not"
+            " assign."
+        ),
+        "applied_label": label,
+    }
+
+  assignee_url = (
+      f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/assignees"
+  )
+  assignee_payload = {"assignees": [owner]}
+
+  try:
+    response = post_request(assignee_url, assignee_payload)
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Error: {e}")
+
   return {
       "status": "success",
       "message": response,
       "applied_label": label,
+      "assigned_owner": owner,
   }
 
 
@@ -128,9 +156,12 @@ root_agent = Agent(
       - If it's agent orchestration, agent definition, label it with "core".
       - If you can't find a appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
 
+      Call the `add_label_and_owner_to_issue` tool to label the issue, which will also assign the issue to the owner of the label.
+
       Present the followings in an easy to read format highlighting issue number and your label.
       - the issue summary in a few sentence
       - your label recommendation and justification
+      - the owner of the label if you assign the issue to an owner
     """,
-    tools=[list_unlabeled_issues, add_label_to_issue],
+    tools=[list_unlabeled_issues, add_label_and_owner_to_issue],
 )

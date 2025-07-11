@@ -153,37 +153,67 @@ async def handle_function_calls_async(
       # do not use "args" as the variable name, because it is a reserved keyword
       # in python debugger.
       function_args = function_call.args or {}
-      function_response: Optional[dict] = None
 
-      for callback in agent.canonical_before_tool_callbacks:
-        function_response = callback(
-            tool=tool, args=function_args, tool_context=tool_context
-        )
-        if inspect.isawaitable(function_response):
-          function_response = await function_response
-        if function_response:
-          break
+      # Step 1: Check if plugin before_tool_callback overrides the function
+      # response.
+      function_response = (
+          await invocation_context.plugin_manager.run_before_tool_callback(
+              tool=tool, tool_args=function_args, tool_context=tool_context
+          )
+      )
 
-      if not function_response:
+      # Step 2: If no overrides are provided from the plugins, further run the
+      # canonical callback.
+      if function_response is None:
+        for callback in agent.canonical_before_tool_callbacks:
+          function_response = callback(
+              tool=tool, args=function_args, tool_context=tool_context
+          )
+          if inspect.isawaitable(function_response):
+            function_response = await function_response
+          if function_response:
+            break
+
+      # Step 3: Otherwise, proceed calling the tool normally.
+      if function_response is None:
         function_response = await __call_tool_async(
             tool, args=function_args, tool_context=tool_context
         )
 
-      for callback in agent.canonical_after_tool_callbacks:
-        altered_function_response = callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=function_response,
-        )
-        if inspect.isawaitable(altered_function_response):
-          altered_function_response = await altered_function_response
-        if altered_function_response is not None:
-          function_response = altered_function_response
-          break
+      # Step 4: Check if plugin after_tool_callback overrides the function
+      # response.
+      altered_function_response = (
+          await invocation_context.plugin_manager.run_after_tool_callback(
+              tool=tool,
+              tool_args=function_args,
+              tool_context=tool_context,
+              result=function_response,
+          )
+      )
+
+      # Step 5: If no overrides are provided from the plugins, further run the
+      # canonical after_tool_callbacks.
+      if altered_function_response is None:
+        for callback in agent.canonical_after_tool_callbacks:
+          altered_function_response = callback(
+              tool=tool,
+              args=function_args,
+              tool_context=tool_context,
+              tool_response=function_response,
+          )
+          if inspect.isawaitable(altered_function_response):
+            altered_function_response = await altered_function_response
+          if altered_function_response:
+            break
+
+      # Step 6: If alternative response exists from after_tool_callback, use it
+      # instead of the original function response.
+      if altered_function_response is not None:
+        function_response = altered_function_response
 
       if tool.is_long_running:
-        # Allow long running function to return None to not provide function response.
+        # Allow long running function to return None to not provide function
+        # response.
         if not function_response:
           continue
 
@@ -264,6 +294,7 @@ async def handle_function_calls_live(
       #   )
       #   if new_response:
       #     function_response = new_response
+      altered_function_response = None
       if agent.after_tool_callback:
         altered_function_response = agent.after_tool_callback(
             tool=tool,
@@ -273,8 +304,8 @@ async def handle_function_calls_live(
         )
         if inspect.isawaitable(altered_function_response):
           altered_function_response = await altered_function_response
-        if altered_function_response is not None:
-          function_response = altered_function_response
+      if altered_function_response is not None:
+        function_response = altered_function_response
 
       if tool.is_long_running:
         # Allow async function to return None to not provide function response.

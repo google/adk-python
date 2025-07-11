@@ -150,12 +150,10 @@ class Gemini(BaseLlm):
           thought_text = ''
           text = ''
         yield llm_response
-      if (
-          (text or thought_text)
-          and response
-          and response.candidates
-          and response.candidates[0].finish_reason == types.FinishReason.STOP
-      ):
+
+      # generate an aggregated content at the end regardless the
+      # response.candidates[0].finish_reason
+      if (text or thought_text) and response and response.candidates:
         parts = []
         if thought_text:
           parts.append(types.Part(text=thought_text, thought=True))
@@ -163,6 +161,8 @@ class Gemini(BaseLlm):
           parts.append(types.Part.from_text(text=text))
         yield LlmResponse(
             content=types.ModelContent(parts=parts),
+            error_code=response.candidates[0].finish_reason,
+            error_message=response.candidates[0].finish_message,
             usage_metadata=usage_metadata,
         )
 

@@ -456,7 +456,7 @@ class TestExchangeAuthToken:
       self, auth_config_with_auth_code, monkeypatch
   ):
     """Test when token exchange is not supported."""
-    monkeypatch.setattr("google.adk.auth.auth_handler.AUTHLIB_AVIALABLE", False)
+    monkeypatch.setattr("google.adk.auth.auth_handler.AUTHLIB_AVAILABLE", False)
 
     handler = AuthHandler(auth_config_with_auth_code)
     result = await handler.exchange_auth_token()
