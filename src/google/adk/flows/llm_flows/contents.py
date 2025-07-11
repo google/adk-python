@@ -157,12 +157,21 @@ def _rearrange_events_for_latest_function_response(
       for function_call in function_calls:
         if function_call.id in function_responses_ids:
           function_call_event_idx = idx
-          break
-        if function_call_event_idx != -1:
-          # in case the last response event only have part of the responses
-          # for the function calls in the function call event
-          for function_call in function_calls:
-            function_responses_ids.add(function_call.id)
+          function_call_ids = {
+              function_call.id for function_call in function_calls
+          }
+          # last response event should only contain the responses for the
+          # function calls in the same function call event
+          if not function_responses_ids.issubset(function_call_ids):
+            raise ValueError(
+                'Last response event should only contain the responses for the'
+                ' function calls in the same function call event. Function'
+                f' call ids found : {function_call_ids}, function response'
+                f' ids provided: {function_responses_ids}'
+            )
+          # collect all function responses from the function call event to
+          # the last response event
+          function_responses_ids = function_call_ids
           break
 
   if function_call_event_idx == -1:
@@ -363,10 +372,7 @@ def _merge_function_response_events(
         list is in increasing order of timestamp; 2. the first event is the
         initial function_response event; 3. all later events should contain at
         least one function_response part that related to the function_call
-        event. (Note, 3. may not be true when aync function return some
-        intermediate response, there could also be some intermediate model
-        response event without any function_response and such event will be
-        ignored.)
+        event.
       Caveat: This implementation doesn't support when a parallel function_call
         event contains async function_call of the same name.
 

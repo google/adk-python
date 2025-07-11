@@ -359,3 +359,179 @@ def test_rearrange_events_for_latest_function_response():
   # Should remove intermediate events and merge responses
   assert len(rearranged) == 2
   assert rearranged[0] == call_event
+  assert rearranged[1] == response_event
+
+
+def test_rearrange_events_for_latest_function_response_multiple_calls():
+  """Test _rearrange_events_for_latest_function_response with multiple function calls."""
+  # Create function call event with multiple calls
+  function_call1 = types.FunctionCall(
+      id="func_123", name="test_function", args={"param": "value1"}
+  )
+  function_call2 = types.FunctionCall(
+      id="func_456", name="test_function2", args={"param": "value2"}
+  )
+
+  call_event = Event(
+      invocation_id="test_inv1",
+      author="agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(function_call=function_call1),
+              types.Part(function_call=function_call2),
+          ],
+      ),
+  )
+
+  # Create intermediate event
+  intermediate_event = Event(
+      invocation_id="test_inv2",
+      author="agent",
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="Processing...")]
+      ),
+  )
+
+  # Create function response event with only one response
+  function_response = types.FunctionResponse(
+      id="func_123", name="test_function", response={"result": "success"}
+  )
+
+  response_event = Event(
+      invocation_id="test_inv3",
+      author="user",
+      content=types.Content(
+          role="user", parts=[types.Part(function_response=function_response)]
+      ),
+  )
+
+  # Test with matching function call and response
+  events = [call_event, intermediate_event, response_event]
+  rearranged = _rearrange_events_for_latest_function_response(events)
+
+  # Should remove intermediate events and merge responses
+  assert len(rearranged) == 2
+  assert rearranged[0] == call_event
+  assert rearranged[1] == response_event
+
+
+def test_rearrange_events_for_latest_function_response_validation_error():
+  """Test _rearrange_events_for_latest_function_response with validation error."""
+  # Create function call event with one function call
+  function_call = types.FunctionCall(
+      id="func_123", name="test_function", args={"param": "value"}
+  )
+
+  call_event = Event(
+      invocation_id="test_inv1",
+      author="agent",
+      content=types.Content(
+          role="model", parts=[types.Part(function_call=function_call)]
+      ),
+  )
+
+  # Create intermediate event
+  intermediate_event = Event(
+      invocation_id="test_inv2",
+      author="agent",
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="Processing...")]
+      ),
+  )
+
+  # Create function response event with the matching function call AND an extra one
+  function_response1 = types.FunctionResponse(
+      id="func_123", name="test_function", response={"result": "success"}
+  )
+  function_response2 = types.FunctionResponse(
+      id="func_456", name="other_function", response={"result": "other"}
+  )
+
+  response_event = Event(
+      invocation_id="test_inv3",
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(function_response=function_response1),
+              types.Part(function_response=function_response2),
+          ],
+      ),
+  )
+
+  # Test with mismatched function call and response
+  events = [call_event, intermediate_event, response_event]
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          "Last response event should only contain the responses for the"
+          " function calls in the same function call event"
+      ),
+  ):
+    _rearrange_events_for_latest_function_response(events)
+
+
+def test_rearrange_events_for_latest_function_response_mixed_responses():
+  """Test _rearrange_events_for_latest_function_response with mixed function responses."""
+  # Create function call event with two calls
+  function_call1 = types.FunctionCall(
+      id="func_123", name="test_function", args={"param": "value1"}
+  )
+  function_call2 = types.FunctionCall(
+      id="func_456", name="test_function2", args={"param": "value2"}
+  )
+
+  call_event = Event(
+      invocation_id="test_inv1",
+      author="agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(function_call=function_call1),
+              types.Part(function_call=function_call2),
+          ],
+      ),
+  )
+
+  # Create intermediate event
+  intermediate_event = Event(
+      invocation_id="test_inv2",
+      author="agent",
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="Processing...")]
+      ),
+  )
+
+  # Create function response event with one matching and one non-matching response
+  function_response1 = types.FunctionResponse(
+      id="func_123", name="test_function", response={"result": "success"}
+  )
+  function_response2 = types.FunctionResponse(
+      id="func_789", name="test_function3", response={"result": "other"}
+  )
+
+  response_event = Event(
+      invocation_id="test_inv3",
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(function_response=function_response1),
+              types.Part(function_response=function_response2),
+          ],
+      ),
+  )
+
+  # Test with mixed function responses
+  events = [call_event, intermediate_event, response_event]
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          "Last response event should only contain the responses for the"
+          " function calls in the same function call event"
+      ),
+  ):
+    _rearrange_events_for_latest_function_response(events)
