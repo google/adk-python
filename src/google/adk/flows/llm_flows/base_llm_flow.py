@@ -565,21 +565,32 @@ class BaseLlmFlow(ABC):
     if not isinstance(agent, LlmAgent):
       return
 
-    if not agent.canonical_before_model_callbacks:
-      return
-
     callback_context = CallbackContext(
         invocation_context, event_actions=model_response_event.actions
     )
 
+    # First run callbacks from the plugins.
+    callback_response = (
+        await invocation_context.plugin_manager.run_before_model_callback(
+            callback_context=callback_context,
+            llm_request=llm_request,
+        )
+    )
+    if callback_response:
+      return callback_response
+
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    if not agent.canonical_before_model_callbacks:
+      return
     for callback in agent.canonical_before_model_callbacks:
-      before_model_callback_content = callback(
+      callback_response = callback(
           callback_context=callback_context, llm_request=llm_request
       )
-      if inspect.isawaitable(before_model_callback_content):
-        before_model_callback_content = await before_model_callback_content
-      if before_model_callback_content:
-        return before_model_callback_content
+      if inspect.isawaitable(callback_response):
+        callback_response = await callback_response
+      if callback_response:
+        return callback_response
 
   async def _handle_after_model_callback(
       self,
@@ -593,21 +604,32 @@ class BaseLlmFlow(ABC):
     if not isinstance(agent, LlmAgent):
       return
 
-    if not agent.canonical_after_model_callbacks:
-      return
-
     callback_context = CallbackContext(
         invocation_context, event_actions=model_response_event.actions
     )
 
+    # First run callbacks from the plugins.
+    callback_response = (
+        await invocation_context.plugin_manager.run_after_model_callback(
+            callback_context=CallbackContext(invocation_context),
+            llm_response=llm_response,
+        )
+    )
+    if callback_response:
+      return callback_response
+
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    if not agent.canonical_after_model_callbacks:
+      return
     for callback in agent.canonical_after_model_callbacks:
-      after_model_callback_content = callback(
+      callback_response = callback(
           callback_context=callback_context, llm_response=llm_response
       )
-      if inspect.isawaitable(after_model_callback_content):
-        after_model_callback_content = await after_model_callback_content
-      if after_model_callback_content:
-        return after_model_callback_content
+      if inspect.isawaitable(callback_response):
+        callback_response = await callback_response
+      if callback_response:
+        return callback_response
 
   def _finalize_model_response_event(
       self,
