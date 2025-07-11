@@ -74,10 +74,11 @@ class GkeCodeExecutor(BaseCodeExecutor):
         try:
             self._create_code_configmap(configmap_name, code_execution_input.code)
             job_manifest = self._create_job_manifest(job_name, configmap_name, invocation_context)
-
-            self._batch_v1.create_namespaced_job(
+            created_job = self._batch_v1.create_namespaced_job(
                 body=job_manifest, namespace=self.namespace
             )
+            self._add_owner_reference(created_job, configmap_name)
+
             logger.info(f"Submitted Job '{job_name}' to namespace '{self.namespace}'.")
             return self._watch_job_completion(job_name)
 
@@ -99,9 +100,6 @@ class GkeCodeExecutor(BaseCodeExecutor):
                 exc_info=True,
             )
             return CodeExecutionResult(stderr=f"An unexpected executor error occurred: {e}")
-        finally:
-            # The Job is cleaned up by the TTL controller, and we ensure the ConfigMap is always deleted.
-            self._cleanup_configmap(configmap_name)
 
     def _create_job_manifest(self, job_name: str, configmap_name: str, invocation_context: InvocationContext) -> client.V1Job:
         """Creates the complete V1Job object with security best practices."""
@@ -223,11 +221,29 @@ class GkeCodeExecutor(BaseCodeExecutor):
         )
         self._core_v1.create_namespaced_config_map(namespace=self.namespace, body=body)
 
-    def _cleanup_configmap(self, name: str) -> None:
-        """Deletes a ConfigMap."""
+    def _add_owner_reference(self, owner_job: client.V1Job, configmap_name: str) -> None:
+        """Patches the ConfigMap to be owned by the Job for auto-cleanup."""
+        owner_reference = client.V1OwnerReference(
+            api_version=owner_job.api_version,
+            kind=owner_job.kind,
+            name=owner_job.metadata.name,
+            uid=owner_job.metadata.uid,
+            controller=True,
+        )
+        patch_body = {
+            "metadata": {"ownerReferences": [owner_reference.to_dict()]}
+        }
+
         try:
-            self._core_v1.delete_namespaced_config_map(name=name, namespace=self.namespace)
-            logger.info(f"Cleaned up ConfigMap '{name}'.")
+            self._core_v1.patch_namespaced_config_map(
+                name=configmap_name,
+                namespace=self.namespace,
+                body=patch_body,
+            )
+            logger.info(f"Set Job '{owner_job.metadata.name}' as owner of ConfigMap '{configmap_name}'.")
         except ApiException as e:
-            if e.status != 404:
-                logger.warning(f"Could not delete ConfigMap '{name}': {e.reason}")
+            logger.warning(
+                f"Failed to set ownerReference on ConfigMap '{configmap_name}'. "
+                f"Manual cleanup is required. Reason: {e.reason}"
+            )
+
