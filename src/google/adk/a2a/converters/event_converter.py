@@ -24,13 +24,11 @@ from typing import Optional
 import uuid
 
 from a2a.server.events import Event as A2AEvent
-from a2a.types import Artifact
 from a2a.types import DataPart
 from a2a.types import Message
 from a2a.types import Part as A2APart
 from a2a.types import Role
 from a2a.types import Task
-from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
@@ -145,81 +143,6 @@ def _create_artifact_id(
   return ARTIFACT_ID_SEPARATOR.join(components)
 
 
-def _convert_artifact_to_a2a_events(
-    event: Event,
-    invocation_context: InvocationContext,
-    filename: str,
-    version: int,
-    task_id: Optional[str] = None,
-    context_id: Optional[str] = None,
-) -> TaskArtifactUpdateEvent:
-  """Converts a new artifact version to an A2A TaskArtifactUpdateEvent.
-
-  Args:
-    event: The ADK event containing the artifact information.
-    invocation_context: The invocation context.
-    filename: The name of the artifact file.
-    version: The version number of the artifact.
-    task_id: Optional task ID to use for generated events. If not provided, new UUIDs will be generated.
-
-  Returns:
-    A TaskArtifactUpdateEvent representing the artifact update.
-
-  Raises:
-    ValueError: If required parameters are invalid.
-    RuntimeError: If artifact loading fails.
-  """
-  if not filename:
-    raise ValueError("Filename cannot be empty")
-  if version < 0:
-    raise ValueError("Version must be non-negative")
-
-  try:
-    artifact_part = invocation_context.artifact_service.load_artifact(
-        app_name=invocation_context.app_name,
-        user_id=invocation_context.user_id,
-        session_id=invocation_context.session.id,
-        filename=filename,
-        version=version,
-    )
-
-    converted_part = convert_genai_part_to_a2a_part(part=artifact_part)
-    if not converted_part:
-      raise RuntimeError(f"Failed to convert artifact part for {filename}")
-
-    artifact_id = _create_artifact_id(
-        invocation_context.app_name,
-        invocation_context.user_id,
-        invocation_context.session.id,
-        filename,
-        version,
-    )
-
-    return TaskArtifactUpdateEvent(
-        taskId=task_id,
-        append=False,
-        contextId=context_id,
-        lastChunk=True,
-        artifact=Artifact(
-            artifactId=artifact_id,
-            name=filename,
-            metadata={
-                "filename": filename,
-                "version": version,
-            },
-            parts=[converted_part],
-        ),
-    )
-  except Exception as e:
-    logger.error(
-        "Failed to convert artifact for %s, version %s: %s",
-        filename,
-        version,
-        e,
-    )
-    raise RuntimeError(f"Artifact conversion failed: {e}") from e
-
-
 def _process_long_running_tool(a2a_part: A2APart, event: Event) -> None:
   """Processes long-running tool metadata for an A2A part.
 
@@ -268,7 +191,11 @@ def convert_a2a_task_to_event(
   try:
     # Extract message from task status or history
     message = None
-    if a2a_task.status and a2a_task.status.message:
+    if a2a_task.artifacts:
+      message = Message(
+          messageId="", role=Role.agent, parts=a2a_task.artifacts[-1].parts
+      )
+    elif a2a_task.status and a2a_task.status.message:
       message = a2a_task.status.message
     elif a2a_task.history:
       message = a2a_task.history[-1]
@@ -573,13 +500,6 @@ def convert_event_to_a2a_events(
   a2a_events = []
 
   try:
-    # Handle artifact deltas
-    if event.actions.artifact_delta:
-      for filename, version in event.actions.artifact_delta.items():
-        artifact_event = _convert_artifact_to_a2a_events(
-            event, invocation_context, filename, version, task_id, context_id
-        )
-        a2a_events.append(artifact_event)
 
     # Handle error scenarios
     if event.error_code:

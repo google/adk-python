@@ -153,9 +153,10 @@ class TestA2aAgentExecutor:
             0
         ]
         assert final_event.final == True
-        # The TaskResultAggregator is created with default state (working), so final state should be completed
+        # The TaskResultAggregator is created with default state (working), and since no messages
+        # are processed, it will publish a status event with the current state
         assert hasattr(final_event.status, "message")
-        assert final_event.status.state == TaskState.completed
+        assert final_event.status.state == TaskState.working
 
   @pytest.mark.asyncio
   async def test_execute_no_message_error(self):
@@ -224,9 +225,10 @@ class TestA2aAgentExecutor:
             0
         ]
         assert final_event.final == True
-        # The TaskResultAggregator is created with default state (working), so final state should be completed
+        # The TaskResultAggregator is created with default state (working), and since no messages
+        # are processed, it will publish a status event with the current state
         assert hasattr(final_event.status, "message")
-        assert final_event.status.state == TaskState.completed
+        assert final_event.status.state == TaskState.working
 
   @pytest.mark.asyncio
   async def test_prepare_session_new_session(self):
@@ -456,9 +458,10 @@ class TestA2aAgentExecutor:
             0
         ]
         assert final_event.final == True
-        # The TaskResultAggregator is created with default state (working), so final state should be completed
+        # The TaskResultAggregator is created with default state (working), and since no messages
+        # are processed, it will publish a status event with the current state
         assert hasattr(final_event.status, "message")
-        assert final_event.status.state == TaskState.completed
+        assert final_event.status.state == TaskState.working
 
   @pytest.mark.asyncio
   async def test_execute_with_async_callable_runner(self):
@@ -522,9 +525,10 @@ class TestA2aAgentExecutor:
             0
         ]
         assert final_event.final == True
-        # The TaskResultAggregator is created with default state (working), so final state should be completed
+        # The TaskResultAggregator is created with default state (working), and since no messages
+        # are processed, it will publish a status event with the current state
         assert hasattr(final_event.status, "message")
-        assert final_event.status.state == TaskState.completed
+        assert final_event.status.state == TaskState.working
 
   @pytest.mark.asyncio
   async def test_handle_request_integration(self):
@@ -608,8 +612,8 @@ class TestA2aAgentExecutor:
           assert (
               final_event.status.message == mock_aggregator.task_status_message
           )
-          # When aggregator state is working, final event should be completed
-          assert final_event.status.state == TaskState.completed
+          # When aggregator state is working but no message, final event should be working
+          assert final_event.status.state == TaskState.working
 
   @pytest.mark.asyncio
   async def test_cancel_with_task_id(self):
@@ -745,6 +749,7 @@ class TestA2aAgentExecutor:
           assert len(final_events) >= 1
           final_event = final_events[-1]  # Get the last final event
           assert final_event.status.message == test_message
+          # When aggregator state is completed (not working), final event should be completed
           assert final_event.status.state == TaskState.completed
 
   @pytest.mark.asyncio
@@ -827,3 +832,198 @@ class TestA2aAgentExecutor:
           assert final_event.status.message == test_message
           # When aggregator state is failed (not working), final event should keep failed state
           assert final_event.status.state == TaskState.failed
+
+  @pytest.mark.asyncio
+  async def test_handle_request_with_working_state_publishes_artifact_and_completed(
+      self,
+  ):
+    """Test that when aggregator state is working, it publishes artifact update and completed status."""
+    # Setup context with task_id
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.context_id = "test-context-id"
+
+    # Create a test message to be returned by the aggregator
+    from a2a.types import Message
+    from a2a.types import Part
+    from a2a.types import Role
+    from a2a.types import TextPart
+
+    test_message = Mock(spec=Message)
+    test_message.messageId = "test-message-id"
+    test_message.role = Role.agent
+    test_message.parts = [Part(root=TextPart(text="test content"))]
+
+    # Setup detailed mocks
+    with patch(
+        "google.adk.a2a.executor.a2a_agent_executor.convert_a2a_request_to_adk_run_args"
+    ) as mock_convert:
+      mock_convert.return_value = {
+          "user_id": "test-user",
+          "session_id": "test-session",
+          "new_message": Mock(),
+          "run_config": Mock(),
+      }
+
+      # Mock session service
+      mock_session = Mock()
+      mock_session.id = "test-session"
+      self.mock_runner.session_service.get_session = AsyncMock(
+          return_value=mock_session
+      )
+
+      # Mock invocation context
+      mock_invocation_context = Mock()
+      self.mock_runner._new_invocation_context.return_value = (
+          mock_invocation_context
+      )
+
+      # Mock agent run with multiple events using proper async generator
+      mock_events = [Mock(spec=Event), Mock(spec=Event)]
+
+      # Configure run_async to return the async generator when awaited
+      async def mock_run_async(**kwargs):
+        async for item in self._create_async_generator(mock_events):
+          yield item
+
+      self.mock_runner.run_async = mock_run_async
+
+      with patch(
+          "google.adk.a2a.executor.a2a_agent_executor.convert_event_to_a2a_events"
+      ) as mock_convert_events:
+        mock_convert_events.return_value = [Mock()]
+
+        with patch(
+            "google.adk.a2a.executor.a2a_agent_executor.TaskResultAggregator"
+        ) as mock_aggregator_class:
+          mock_aggregator = Mock()
+          # Test with working state - should publish artifact update and completed status
+          mock_aggregator.task_state = TaskState.working
+          mock_aggregator.task_status_message = test_message
+          mock_aggregator_class.return_value = mock_aggregator
+
+          # Execute
+          await self.executor._handle_request(
+              self.mock_context, self.mock_event_queue
+          )
+
+          # Verify artifact update event was published
+          artifact_events = [
+              call[0][0]
+              for call in self.mock_event_queue.enqueue_event.call_args_list
+              if hasattr(call[0][0], "artifact")
+              and call[0][0].lastChunk == True
+          ]
+          assert len(artifact_events) == 1
+          artifact_event = artifact_events[0]
+          assert artifact_event.taskId == "test-task-id"
+          assert artifact_event.contextId == "test-context-id"
+          # Check that artifact parts correspond to message parts
+          assert len(artifact_event.artifact.parts) == len(test_message.parts)
+          assert artifact_event.artifact.parts == test_message.parts
+
+          # Verify final status event was published with completed state
+          final_events = [
+              call[0][0]
+              for call in self.mock_event_queue.enqueue_event.call_args_list
+              if hasattr(call[0][0], "final") and call[0][0].final == True
+          ]
+          assert len(final_events) >= 1
+          final_event = final_events[-1]  # Get the last final event
+          assert final_event.status.state == TaskState.completed
+          assert final_event.taskId == "test-task-id"
+          assert final_event.contextId == "test-context-id"
+
+  @pytest.mark.asyncio
+  async def test_handle_request_with_non_working_state_publishes_status_only(
+      self,
+  ):
+    """Test that when aggregator state is not working, it publishes only the status event."""
+    # Setup context with task_id
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.context_id = "test-context-id"
+
+    # Create a test message to be returned by the aggregator
+    from a2a.types import Message
+    from a2a.types import Part
+    from a2a.types import Role
+    from a2a.types import TextPart
+
+    test_message = Mock(spec=Message)
+    test_message.messageId = "test-message-id"
+    test_message.role = Role.agent
+    test_message.parts = [Part(root=TextPart(text="test content"))]
+
+    # Setup detailed mocks
+    with patch(
+        "google.adk.a2a.executor.a2a_agent_executor.convert_a2a_request_to_adk_run_args"
+    ) as mock_convert:
+      mock_convert.return_value = {
+          "user_id": "test-user",
+          "session_id": "test-session",
+          "new_message": Mock(),
+          "run_config": Mock(),
+      }
+
+      # Mock session service
+      mock_session = Mock()
+      mock_session.id = "test-session"
+      self.mock_runner.session_service.get_session = AsyncMock(
+          return_value=mock_session
+      )
+
+      # Mock invocation context
+      mock_invocation_context = Mock()
+      self.mock_runner._new_invocation_context.return_value = (
+          mock_invocation_context
+      )
+
+      # Mock agent run with multiple events using proper async generator
+      mock_events = [Mock(spec=Event), Mock(spec=Event)]
+
+      # Configure run_async to return the async generator when awaited
+      async def mock_run_async(**kwargs):
+        async for item in self._create_async_generator(mock_events):
+          yield item
+
+      self.mock_runner.run_async = mock_run_async
+
+      with patch(
+          "google.adk.a2a.executor.a2a_agent_executor.convert_event_to_a2a_events"
+      ) as mock_convert_events:
+        mock_convert_events.return_value = [Mock()]
+
+        with patch(
+            "google.adk.a2a.executor.a2a_agent_executor.TaskResultAggregator"
+        ) as mock_aggregator_class:
+          mock_aggregator = Mock()
+          # Test with auth_required state - should publish only status event
+          mock_aggregator.task_state = TaskState.auth_required
+          mock_aggregator.task_status_message = test_message
+          mock_aggregator_class.return_value = mock_aggregator
+
+          # Execute
+          await self.executor._handle_request(
+              self.mock_context, self.mock_event_queue
+          )
+
+          # Verify no artifact update event was published
+          artifact_events = [
+              call[0][0]
+              for call in self.mock_event_queue.enqueue_event.call_args_list
+              if hasattr(call[0][0], "artifact")
+              and call[0][0].lastChunk == True
+          ]
+          assert len(artifact_events) == 0
+
+          # Verify final status event was published with the actual state and message
+          final_events = [
+              call[0][0]
+              for call in self.mock_event_queue.enqueue_event.call_args_list
+              if hasattr(call[0][0], "final") and call[0][0].final == True
+          ]
+          assert len(final_events) >= 1
+          final_event = final_events[-1]  # Get the last final event
+          assert final_event.status.state == TaskState.auth_required
+          assert final_event.status.message == test_message
+          assert final_event.taskId == "test-task-id"
+          assert final_event.contextId == "test-context-id"

@@ -28,8 +28,10 @@ try:
   from a2a.server.agent_execution import AgentExecutor
   from a2a.server.agent_execution.context import RequestContext
   from a2a.server.events.event_queue import EventQueue
+  from a2a.types import Artifact
   from a2a.types import Message
   from a2a.types import Role
+  from a2a.types import TaskArtifactUpdateEvent
   from a2a.types import TaskState
   from a2a.types import TaskStatus
   from a2a.types import TaskStatusUpdateEvent
@@ -218,22 +220,49 @@ class A2aAgentExecutor(AgentExecutor):
         await event_queue.enqueue_event(a2a_event)
 
     # publish the task result event - this is final
-    await event_queue.enqueue_event(
-        TaskStatusUpdateEvent(
-            taskId=context.task_id,
-            status=TaskStatus(
-                state=(
-                    task_result_aggregator.task_state
-                    if task_result_aggregator.task_state != TaskState.working
-                    else TaskState.completed
-                ),
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                message=task_result_aggregator.task_status_message,
-            ),
-            contextId=context.context_id,
-            final=True,
-        )
-    )
+    if (
+        task_result_aggregator.task_state == TaskState.working
+        and task_result_aggregator.task_status_message is not None
+        and task_result_aggregator.task_status_message.parts
+    ):
+      # if task is still working properly, publish the artifact update event as
+      # the final result according to a2a protocol.
+      await event_queue.enqueue_event(
+          TaskArtifactUpdateEvent(
+              taskId=context.task_id,
+              lastChunk=True,
+              contextId=context.context_id,
+              artifact=Artifact(
+                  artifactId=str(uuid.uuid4()),
+                  parts=task_result_aggregator.task_status_message.parts,
+              ),
+          )
+      )
+      # public the final status update event
+      await event_queue.enqueue_event(
+          TaskStatusUpdateEvent(
+              taskId=context.task_id,
+              status=TaskStatus(
+                  state=TaskState.completed,
+                  timestamp=datetime.now(timezone.utc).isoformat(),
+              ),
+              contextId=context.context_id,
+              final=True,
+          )
+      )
+    else:
+      await event_queue.enqueue_event(
+          TaskStatusUpdateEvent(
+              taskId=context.task_id,
+              status=TaskStatus(
+                  state=task_result_aggregator.task_state,
+                  timestamp=datetime.now(timezone.utc).isoformat(),
+                  message=task_result_aggregator.task_status_message,
+              ),
+              contextId=context.context_id,
+              final=True,
+          )
+      )
 
   async def _prepare_session(
       self, context: RequestContext, run_args: dict[str, Any], runner: Runner
