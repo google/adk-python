@@ -537,6 +537,10 @@ class LlmAgent(BaseAgent):
       agent.disallow_transfer_to_parent = config.disallow_transfer_to_parent
     if config.disallow_transfer_to_peers:
       agent.disallow_transfer_to_peers = config.disallow_transfer_to_peers
+    if config.include_contents != 'default':
+      agent.include_contents = config.include_contents
+    if config.output_key:
+      agent.output_key = config.output_key
     return agent
 
 
@@ -562,3 +566,9 @@ class LlmAgentConfig(BaseAgentConfig):
 
   disallow_transfer_to_peers: Optional[bool] = None
   """Optional. LlmAgent.disallow_transfer_to_peers."""
+
+  output_key: Optional[str] = None
+  """Optional. LlmAgent.output_key."""
+
+  include_contents: Literal['default', 'none'] = 'default'
+  """Optional. LlmAgent.include_contents."""

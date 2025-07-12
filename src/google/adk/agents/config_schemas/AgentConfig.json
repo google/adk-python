@@ -76,6 +76,27 @@
           ],
           "default": null,
           "title": "Disallow Transfer To Peers"
+        },
+        "output_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Key"
+        },
+        "include_contents": {
+          "default": "default",
+          "enum": [
+            "default",
+            "none"
+          ],
+          "title": "Include Contents",
+          "type": "string"
         }
       },
       "required": [
