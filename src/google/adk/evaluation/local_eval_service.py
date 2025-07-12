@@ -159,12 +159,22 @@ class LocalEvalService(BaseEvalService):
         run_evaluation(inference_result)
         for inference_result in evaluate_request.inference_results
     ]
+
     for evaluation_task in asyncio.as_completed(evaluation_tasks):
-      yield await evaluation_task
+      inference_result, eval_case_result = await evaluation_task
+
+      if self._eval_set_results_manager:
+        self._eval_set_results_manager.save_eval_set_result(
+            app_name=inference_result.app_name,
+            eval_set_id=inference_result.eval_set_id,
+            eval_case_results=[eval_case_result],
+        )
+
+      yield eval_case_result
 
   async def _evaluate_single_inference_result(
       self, inference_result: InferenceResult, evaluate_config: EvaluateConfig
-  ) -> EvalCaseResult:
+  ) -> tuple[InferenceResult, EvalCaseResult]:
     """Returns EvalCaseResult for the given inference result.
 
     A single inference result can have multiple invocations. For each
@@ -267,7 +277,7 @@ class LocalEvalService(BaseEvalService):
         else 'test_user_id'
     )
 
-    return EvalCaseResult(
+    eval_case_result = EvalCaseResult(
         eval_set_file=inference_result.eval_set_id,
         eval_set_id=inference_result.eval_set_id,
         eval_id=inference_result.eval_case_id,
@@ -275,8 +285,15 @@ class LocalEvalService(BaseEvalService):
         overall_eval_metric_results=overall_eval_metric_results,
         eval_metric_result_per_invocation=eval_metric_result_per_invocation,
         session_id=inference_result.session_id,
+        session_details=await self._session_service.get_session(
+            app_name=inference_result.app_name,
+            user_id=user_id,
+            session_id=inference_result.session_id,
+        ),
         user_id=user_id,
     )
+
+    return (inference_result, eval_case_result)
 
   async def _evaluate_metric(
       self,

@@ -27,6 +27,7 @@ from google.adk.evaluation.eval_metrics import EvalMetricResult
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_set import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
+from google.adk.evaluation.eval_set_results_manager import EvalSetResultsManager
 from google.adk.evaluation.eval_sets_manager import EvalSetsManager
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
@@ -51,13 +52,21 @@ def dummy_agent():
 
 
 @pytest.fixture
-def eval_service(dummy_agent, mock_eval_sets_manager):
+def mock_eval_set_results_manager():
+  return mock.create_autospec(EvalSetResultsManager)
+
+
+@pytest.fixture
+def eval_service(
+    dummy_agent, mock_eval_sets_manager, mock_eval_set_results_manager
+):
   DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
       metric_name="fake_metric", evaluator=FakeEvaluator
   )
   return LocalEvalService(
       root_agent=dummy_agent,
       eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
   )
 
 
@@ -90,7 +99,9 @@ class FakeEvaluator(Evaluator):
 
 @pytest.mark.asyncio
 async def test_perform_inference_success(
-    eval_service, dummy_agent, mock_eval_sets_manager
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
 ):
   eval_set = EvalSet(
       eval_set_id="test_eval_set",
@@ -127,7 +138,9 @@ async def test_perform_inference_success(
 
 @pytest.mark.asyncio
 async def test_perform_inference_with_case_ids(
-    eval_service, dummy_agent, mock_eval_sets_manager
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
 ):
   eval_set = EvalSet(
       eval_set_id="test_eval_set",
@@ -172,7 +185,8 @@ async def test_perform_inference_with_case_ids(
 
 @pytest.mark.asyncio
 async def test_perform_inference_eval_set_not_found(
-    eval_service, mock_eval_sets_manager
+    eval_service,
+    mock_eval_sets_manager,
 ):
   mock_eval_sets_manager.get_eval_set.return_value = None
 
@@ -188,7 +202,9 @@ async def test_perform_inference_eval_set_not_found(
 
 
 @pytest.mark.asyncio
-async def test_evaluate_success(eval_service, mock_eval_sets_manager):
+async def test_evaluate_success(
+    eval_service, mock_eval_sets_manager, mock_eval_set_results_manager
+):
   inference_results = [
       InferenceResult(
           app_name="test_app",
@@ -224,11 +240,13 @@ async def test_evaluate_success(eval_service, mock_eval_sets_manager):
   assert isinstance(results[0], EvalCaseResult)
   assert isinstance(results[1], EvalCaseResult)
   assert mock_eval_sets_manager.get_eval_case.call_count == 2
+  assert mock_eval_set_results_manager.save_eval_set_result.call_count == 2
 
 
 @pytest.mark.asyncio
 async def test_evaluate_eval_case_not_found(
-    eval_service, mock_eval_sets_manager
+    eval_service,
+    mock_eval_sets_manager,
 ):
   inference_results = [
       InferenceResult(
@@ -256,7 +274,7 @@ async def test_evaluate_eval_case_not_found(
 
 @pytest.mark.asyncio
 async def test_evaluate_single_inference_result(
-    eval_service, mock_eval_sets_manager
+    eval_service, mock_eval_sets_manager, mock_eval_set_results_manager
 ):
   invocation = Invocation(
       user_content=genai_types.Content(
@@ -289,7 +307,7 @@ async def test_evaluate_single_inference_result(
   mock_eval_case.session_input = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
-  result = await eval_service._evaluate_single_inference_result(
+  _, result = await eval_service._evaluate_single_inference_result(
       inference_result=inference_result, evaluate_config=evaluate_config
   )
 
