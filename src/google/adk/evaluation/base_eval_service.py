@@ -42,6 +42,17 @@ class EvaluateConfig(BaseModel):
       description="""The list of metrics to be used in Eval.""",
   )
 
+  parallelism: int = Field(
+      default=4,
+      description="""Number of parallel evaluations to run during an Eval. Few
+factors to consider while changing this value:
+
+1) Your available quota with the model, especially for those metrics that use
+a model as a judge. Models tend to enforce per-minute or per-second SLAs. Using
+a larger value could result in the eval quickly consuming the quota.
+""",
+  )
+
 
 class InferenceConfig(BaseModel):
   """Contains configurations need to run inferences."""

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import AsyncGenerator
 from typing import Callable
@@ -31,15 +32,22 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils.feature_decorator import working_in_progress
 from .base_eval_service import BaseEvalService
+from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
 from .base_eval_service import InferenceRequest
 from .base_eval_service import InferenceResult
 from .base_eval_service import InferenceStatus
+from .eval_case import Invocation
+from .eval_metrics import EvalMetric
+from .eval_metrics import EvalMetricResult
+from .eval_metrics import EvalMetricResultPerInvocation
 from .eval_result import EvalCaseResult
 from .eval_set import EvalCase
 from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
 from .evaluation_generator import EvaluationGenerator
+from .evaluator import EvalStatus
+from .evaluator import EvaluationResult
 from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from .metric_evaluator_registry import MetricEvaluatorRegistry
 
@@ -136,7 +144,188 @@ class LocalEvalService(BaseEvalService):
       evaluate_request: The request to perform metric evaluations on the
         inferences.
     """
-    raise NotImplementedError()
+    semaphore = asyncio.Semaphore(
+        value=evaluate_request.evaluate_config.parallelism
+    )
+
+    async def run_evaluation(inference_result):
+      async with semaphore:
+        return await self._evaluate_single_inference_result(
+            inference_result=inference_result,
+            evaluate_config=evaluate_request.evaluate_config,
+        )
+
+    evaluation_tasks = [
+        run_evaluation(inference_result)
+        for inference_result in evaluate_request.inference_results
+    ]
+    for evaluation_task in asyncio.as_completed(evaluation_tasks):
+      yield await evaluation_task
+
+  async def _evaluate_single_inference_result(
+      self, inference_result: InferenceResult, evaluate_config: EvaluateConfig
+  ) -> EvalCaseResult:
+    """Returns EvalCaseResult for the given inference result.
+
+    A single inference result can have multiple invocations. For each
+    invocaiton, this method evaluates the metrics present in evaluate config.
+
+    The EvalCaseResult contains scores for each metric per invocation and the
+    overall score.
+    """
+    eval_case = self._eval_sets_manager.get_eval_case(
+        app_name=inference_result.app_name,
+        eval_set_id=inference_result.eval_set_id,
+        eval_case_id=inference_result.eval_case_id,
+    )
+
+    if eval_case is None:
+      raise NotFoundError(
+          f'Eval case with id {inference_result.eval_case_id} not found for'
+          f' app {inference_result.app_name} and eval set'
+          f' {inference_result.eval_set_id}.'
+      )
+
+    # Metric results for each invocation
+    eval_metric_result_per_invocation = []
+
+    # We also keep track of the overall score for a metric, derived from all
+    # invocation. For example, if we were keeping track the metric that compares
+    # how well is the final resposne as compared to a golden answer, then each
+    # invocation will have the value of this metric. We will also have an
+    # overall score using aggregation strategy across all invocations. This
+    # would be the score for the eval case.
+    overall_eval_metric_results = []
+
+    if len(inference_result.inferences) != len(eval_case.conversation):
+      raise ValueError(
+          'Inferences should match conversations in eval case. Found'
+          f'{len(inference_result.inferences)} inferences '
+          f'{len(eval_case.conversation)} conversations in eval cases.'
+      )
+
+    # Pre-creating the EvalMetricResults entries for each invocation.
+    for actual, expected in zip(
+        inference_result.inferences, eval_case.conversation
+    ):
+      eval_metric_result_per_invocation.append(
+          EvalMetricResultPerInvocation(
+              actual_invocation=actual,
+              expected_invocation=expected,
+              # We will fill this as we evaluate each metric per invocation.
+              eval_metric_results=[],
+          )
+      )
+
+    for eval_metric in evaluate_config.eval_metrics:
+      # Perform evaluation of the metric.
+      evaluation_result = await self._evaluate_metric(
+          eval_metric=eval_metric,
+          actual_invocations=inference_result.inferences,
+          expected_invocations=eval_case.conversation,
+      )
+
+      # Track overall scrore across all invocations.
+      overall_eval_metric_results.append(
+          EvalMetricResult(
+              metric_name=eval_metric.metric_name,
+              threshold=eval_metric.threshold,
+              score=evaluation_result.overall_score,
+              eval_status=evaluation_result.overall_eval_status,
+          )
+      )
+
+      if len(evaluation_result.per_invocation_results) != len(
+          eval_metric_result_per_invocation
+      ):
+        raise ValueError(
+            'Eval metric should return results for each invocation. Found '
+            f'{len(evaluation_result.per_invocation_results)} results for '
+            f'{len(eval_metric_result_per_invocation)} invocations.'
+        )
+
+      # Track score across individual invocations.
+      for invocation_result, invocation in zip(
+          evaluation_result.per_invocation_results,
+          eval_metric_result_per_invocation,
+      ):
+        invocation.eval_metric_results.append(
+            EvalMetricResult(
+                metric_name=eval_metric.metric_name,
+                threshold=eval_metric.threshold,
+                score=invocation_result.score,
+                eval_status=invocation_result.eval_status,
+            )
+        )
+
+    final_eval_status = self._generate_final_eval_status(
+        overall_eval_metric_results
+    )
+    user_id = (
+        eval_case.session_input.user_id
+        if eval_case.session_input and eval_case.session_input.user_id
+        else 'test_user_id'
+    )
+
+    return EvalCaseResult(
+        eval_set_file=inference_result.eval_set_id,
+        eval_set_id=inference_result.eval_set_id,
+        eval_id=inference_result.eval_case_id,
+        final_eval_status=final_eval_status,
+        overall_eval_metric_results=overall_eval_metric_results,
+        eval_metric_result_per_invocation=eval_metric_result_per_invocation,
+        session_id=inference_result.session_id,
+        user_id=user_id,
+    )
+
+  async def _evaluate_metric(
+      self,
+      eval_metric: EvalMetric,
+      actual_invocations: list[Invocation],
+      expected_invocations: list[Invocation],
+  ) -> EvaluationResult:
+    """Returns EvaluationResult obtained from evaluating a metric using an Evaluator."""
+
+    # Get the metric evaluator from the registry.
+    metric_evaluator = self._metric_evaluator_registry.get_evaluator(
+        eval_metric=eval_metric
+    )
+
+    if inspect.iscoroutinefunction(metric_evaluator.evaluate_invocations):
+      # Some evaluators could be async, for example those that use llm as a
+      # judge, so we need to make sure that we wait on them.
+      return await metric_evaluator.evaluate_invocations(
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+      )
+    else:
+      # Metrics that perform computation synchronously, mostly these don't
+      # perform any i/o. An example of this would calculation of rouge_1 score.
+      return metric_evaluator.evaluate_invocations(
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+      )
+
+  def _generate_final_eval_status(
+      self, overall_eval_metric_results: list[EvalMetricResult]
+  ) -> EvalStatus:
+    final_eval_status = EvalStatus.NOT_EVALUATED
+    # Go over the all the eval statuses and mark the final eval status as
+    # passed if all of them pass, otherwise mark the final eval status to
+    # failed.
+    for overall_eval_metric_result in overall_eval_metric_results:
+      overall_eval_status = overall_eval_metric_result.eval_status
+      if overall_eval_status == EvalStatus.PASSED:
+        final_eval_status = EvalStatus.PASSED
+      elif overall_eval_status == EvalStatus.NOT_EVALUATED:
+        continue
+      elif overall_eval_status == EvalStatus.FAILED:
+        final_eval_status = EvalStatus.FAILED
+        break
+      else:
+        raise ValueError(f'Unknown eval status: {overall_eval_status}.')
+
+    return final_eval_status
 
   async def _perform_inference_sigle_eval_item(
       self,
