@@ -39,9 +39,6 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
-@working_in_progress(
-    "Plugin is under development now. Check again around     Jul. 2025"
-)
 class BasePlugin(ABC):
   """Base class for creating plugins.
 
