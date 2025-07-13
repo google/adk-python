@@ -511,6 +511,16 @@ def __build_response_event(
   return function_response_event
 
 
+def deep_merge_dicts(d1: dict, d2: dict) -> dict:
+  """Recursively merges d2 into d1."""
+  for key, value in d2.items():
+    if key in d1 and isinstance(d1[key], dict) and isinstance(value, dict):
+      d1[key] = deep_merge_dicts(d1[key], value)
+    else:
+      d1[key] = value
+  return d1
+
+
 def merge_parallel_function_response_events(
     function_response_events: list['Event'],
 ) -> 'Event':
@@ -529,15 +539,17 @@ def merge_parallel_function_response_events(
   base_event = function_response_events[0]
 
   # Merge actions from all events
-
-  merged_actions = EventActions()
-  merged_requested_auth_configs = {}
+  merged_actions_data = {}
   for event in function_response_events:
-    merged_requested_auth_configs.update(event.actions.requested_auth_configs)
-    merged_actions = merged_actions.model_copy(
-        update=event.actions.model_dump()
-    )
-  merged_actions.requested_auth_configs = merged_requested_auth_configs
+    if event.actions:
+      # Use `by_alias=True` because it converts the model to a dictionary while respecting field aliases, ensuring that the enum fields are correctly handled without creating a duplicate.
+      merged_actions_data = deep_merge_dicts(
+          merged_actions_data,
+          event.actions.model_dump(exclude_none=True, by_alias=True),
+      )
+
+  merged_actions = EventActions.model_validate(merged_actions_data)
+
   # Create the new merged event
   merged_event = Event(
       invocation_id=Event.new_id(),
