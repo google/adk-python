@@ -80,7 +80,7 @@ dev = [
 
 a2a = [
   # go/keep-sorted start
-  "a2a-sdk>=0.2.7;python_version>='3.10'"
+  "a2a-sdk>=0.2.11;python_version>='3.10'"
   # go/keep-sorted end
 ]
 

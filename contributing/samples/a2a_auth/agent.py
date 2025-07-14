@@ -14,6 +14,7 @@
 
 
 from google.adk.agents import Agent
+from google.adk.agents.remote_a2a_agent import AGENT_CARD_WELL_KNOWN_PATH
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.tools.langchain_tool import LangchainTool
 from langchain_community.tools import YouTubeSearchTool
@@ -41,7 +42,7 @@ bigquery_agent = RemoteA2aAgent(
     name="bigquery_agent",
     description="Help customer to manage notion workspace.",
     agent_card=(
-        "http://localhost:8001/a2a/bigquery_agent/.well-known/agent.json"
+        f"http://localhost:8001/a2a/bigquery_agent{AGENT_CARD_WELL_KNOWN_PATH}"
     ),
 )
 

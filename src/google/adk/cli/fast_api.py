@@ -1003,6 +1003,7 @@ def get_fast_api_app(
       from a2a.server.request_handlers import DefaultRequestHandler
       from a2a.server.tasks import InMemoryTaskStore
       from a2a.types import AgentCard
+      from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 
       from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
 
@@ -1066,7 +1067,7 @@ def get_fast_api_app(
 
           routes = a2a_app.routes(
               rpc_url=f"/a2a/{app_name}",
-              agent_card_url=f"/a2a/{app_name}/.well-known/agent.json",
+              agent_card_url=f"/a2a/{app_name}{AGENT_CARD_WELL_KNOWN_PATH}",
           )
 
           for new_route in routes:

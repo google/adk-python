@@ -14,6 +14,7 @@
 
 
 from google.adk import Agent
+from google.adk.agents.remote_a2a_agent import AGENT_CARD_WELL_KNOWN_PATH
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.genai import types
 
@@ -28,7 +29,9 @@ def reimburse(purpose: str, amount: float) -> str:
 approval_agent = RemoteA2aAgent(
     name='approval_agent',
     description='Help approve the reimburse if the amount is greater than 100.',
-    agent_card='http://localhost:8001/a2a/human_in_loop/.well-known/agent.json',
+    agent_card=(
+        f'http://localhost:8001/a2a/human_in_loop{AGENT_CARD_WELL_KNOWN_PATH}'
+    ),
 )
 
 
