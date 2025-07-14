@@ -51,6 +51,7 @@ from starlette.types import Lifespan
 from typing_extensions import override
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+import yaml
 
 from ..agents import RunConfig
 from ..agents.live_request_queue import LiveRequest
@@ -77,6 +78,7 @@ from ..sessions.database_session_service import DatabaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
+from ..utils.feature_decorator import working_in_progress
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .cli_eval import EvalStatus
 from .utils import cleanup
@@ -207,6 +209,14 @@ class RunEvalResult(common.BaseModel):
 
 class GetEventGraphResult(common.BaseModel):
   dot_src: str
+
+
+class AgentBuildRequest(common.BaseModel):
+  agent_name: str
+  agent_type: str
+  model: str
+  description: str
+  instruction: str
 
 
 def get_fast_api_app(
@@ -802,6 +812,29 @@ def get_fast_api_app(
         session_id=session_id,
         filename=artifact_name,
     )
+
+  @working_in_progress("builder_save is not ready for use.")
+  @app.post("/builder/save", response_model_exclude_none=True)
+  async def builder_build(req: AgentBuildRequest):
+    base_path = Path.cwd() / agents_dir
+    agent = {
+        "agent_class": req.agent_type,
+        "name": req.agent_name,
+        "model": req.model,
+        "description": req.description,
+        "instruction": f"""{req.instruction}""",
+    }
+    try:
+      agent_dir = os.path.join(base_path, req.agent_name)
+      os.makedirs(agent_dir, exist_ok=True)
+      file_path = os.path.join(agent_dir, "root_agent.yaml")
+      with open(file_path, "w") as file:
+        yaml.dump(agent, file, default_flow_style=False)
+      agent_loader.load_agent(agent_name=req.agent_name)
+      return True
+    except Exception as e:
+      logger.exception("Error in builder_build: %s", e)
+      return False
 
   @app.post("/run", response_model_exclude_none=True)
   async def agent_run(req: AgentRunRequest) -> list[Event]:
