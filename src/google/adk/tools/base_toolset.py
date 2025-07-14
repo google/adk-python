@@ -76,10 +76,11 @@ class BaseToolset(ABC):
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
-    NOTE: This method is invoked, for example, at the end of an agent server's
-    lifecycle or when the toolset is no longer needed. Implementations
-    should ensure that any open connections, files, or other managed
-    resources are properly released to prevent leaks.
+    NOTE:
+      This method is invoked, for example, at the end of an agent server's
+      lifecycle or when the toolset is no longer needed. Implementations
+      should ensure that any open connections, files, or other managed
+      resources are properly released to prevent leaks.
     """
 
   def _is_tool_selected(

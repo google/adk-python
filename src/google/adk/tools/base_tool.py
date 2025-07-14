@@ -49,11 +49,11 @@ class BaseTool(ABC):
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool in the form of a FunctionDeclaration.
 
-    NOTE
-    - Required if subclass uses the default implementation of
-      `process_llm_request` to add function declaration to LLM request.
-    - Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for
-      Gemini.
+    NOTE:
+      - Required if subclass uses the default implementation of
+        `process_llm_request` to add function declaration to LLM request.
+      - Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for
+        Gemini.
 
     Returns:
       The FunctionDeclaration of this tool, or None if it doesn't need to be
@@ -66,10 +66,10 @@ class BaseTool(ABC):
   ) -> Any:
     """Runs the tool with the given arguments and context.
 
-    NOTE
-    - Required if this tool needs to run at the client side.
-    - Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for
-      Gemini.
+    NOTE:
+      - Required if this tool needs to run at the client side.
+      - Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for
+        Gemini.
 
     Args:
       args: The LLM-filled arguments.

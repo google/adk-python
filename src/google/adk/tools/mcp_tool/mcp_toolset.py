@@ -61,28 +61,27 @@ class MCPToolset(BaseToolset):
   that can be used by an agent. It properly implements the BaseToolset
   interface for easy integration with the agent framework.
 
-  Usage:
-  ```python
-  toolset = MCPToolset(
-      connection_params=StdioServerParameters(
-          command='npx',
-          args=["-y", "@modelcontextprotocol/server-filesystem"],
-      ),
-      tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
-  )
+  Usage::
 
-  # Use in an agent
-  agent = LlmAgent(
-      model='gemini-2.0-flash',
-      name='enterprise_assistant',
-      instruction='Help user accessing their file systems',
-      tools=[toolset],
-  )
+    toolset = MCPToolset(
+        connection_params=StdioServerParameters(
+            command='npx',
+            args=["-y", "@modelcontextprotocol/server-filesystem"],
+        ),
+        tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
+    )
 
-  # Cleanup is handled automatically by the agent framework
-  # But you can also manually close if needed:
-  # await toolset.close()
-  ```
+    # Use in an agent
+    agent = LlmAgent(
+        model='gemini-2.0-flash',
+        name='enterprise_assistant',
+        instruction='Help user accessing their file systems',
+        tools=[toolset],
+    )
+
+    # Cleanup is handled automatically by the agent framework
+    # But you can also manually close if needed:
+    # await toolset.close()
   """
 
   def __init__(
@@ -103,12 +102,12 @@ class MCPToolset(BaseToolset):
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
-        `StdioConnectionParams` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseConnectionParams` for a local/remote SSE server; or
-        `StreamableHTTPConnectionParams` for local/remote Streamable http
-        server. Note, `StdioServerParameters` is also supported for using local
-        mcp server (e.g. using `npx` or `python3` ), but it does not support
-        timeout, and we recommend to use `StdioConnectionParams` instead when
+        ``StdioConnectionParams`` for using local mcp server (e.g. using ``npx`` or
+        ``python3``); or ``SseConnectionParams`` for a local/remote SSE server; or
+        ``StreamableHTTPConnectionParams`` for local/remote Streamable http
+        server. Note, ``StdioServerParameters`` is also supported for using local
+        mcp server (e.g. using ``npx`` or ``python3`` ), but it does not support
+        timeout, and we recommend to use ``StdioConnectionParams`` instead when
         timeout is needed.
       tool_filter: Optional filter to select specific tools. Can be either: - A
         list of tool names to include - A ToolPredicate function for custom

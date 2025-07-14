@@ -122,8 +122,9 @@ class Runner:
   ) -> Generator[Event, None, None]:
     """Runs the agent.
 
-    NOTE: This sync interface is only for local testing and convenience purpose.
-    Consider using `run_async` for production usage.
+    NOTE:
+      This sync interface is only for local testing and convenience purpose.
+      Consider using `run_async` for production usage.
 
     Args:
       user_id: The user ID of the session.
@@ -350,7 +351,7 @@ class Runner:
         This feature is **experimental** and its API or behavior may change
         in future releases.
 
-    .. note::
+    .. NOTE::
         Either `session` or both `user_id` and `session_id` must be provided.
     """
     if session is None and (user_id is None or session_id is None):
@@ -433,9 +434,10 @@ class Runner:
     """Finds the agent to run to continue the session.
 
     A qualified agent must be either of:
+
     - The agent that returned a function call and the last user message is a
       function response to this function call.
-    - The root agent;
+    - The root agent.
     - An LlmAgent who replied last and is capable to transfer to any other agent
       in the agent hierarchy.
 

@@ -149,7 +149,7 @@ class InvocationContext(BaseModel):
   """The running streaming tools of this invocation."""
 
   transcription_cache: Optional[list[TranscriptionEntry]] = None
-  """Caches necessary, data audio or contents, that are needed by transcription."""
+  """Caches necessary data, audio or contents, that are needed by transcription."""
 
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""

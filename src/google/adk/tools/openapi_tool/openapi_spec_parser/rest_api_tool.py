@@ -70,13 +70,12 @@ class RestApiTool(BaseTool):
   * Generates request params and body
   * Attaches auth credentials to API call.
 
-  Example:
-  ```
+  Example::
+
     # Each API operation in the spec will be turned into its own tool
     # Name of the tool is the operationId of that operation, in snake case
     operations = OperationGenerator().parse(openapi_spec_dict)
     tool = [RestApiTool.from_parsed_operation(o) for o in operations]
-  ```
   """
 
   def __init__(
@@ -92,13 +91,12 @@ class RestApiTool(BaseTool):
     """Initializes the RestApiTool with the given parameters.
 
     To generate RestApiTool from OpenAPI Specs, use OperationGenerator.
-    Example:
-    ```
+    Example::
+
       # Each API operation in the spec will be turned into its own tool
       # Name of the tool is the operationId of that operation, in snake case
       operations = OperationGenerator().parse(openapi_spec_dict)
       tool = [RestApiTool.from_parsed_operation(o) for o in operations]
-    ```
 
     Hint: Use google.adk.tools.openapi_tool.auth.auth_helpers to construct
     auth_scheme and auth_credential.

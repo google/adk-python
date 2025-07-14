@@ -41,14 +41,13 @@ class LangchainTool(FunctionTool):
       name: Optional override for the tool's name
       description: Optional override for the tool's description
 
-  Examples:
-      ```python
+  Examples::
+
       from langchain.tools import DuckDuckGoSearchTool
       from google.genai.tools import LangchainTool
 
       search_tool = DuckDuckGoSearchTool()
       wrapped_tool = LangchainTool(search_tool)
-      ```
   """
 
   _langchain_tool: Union[BaseTool, object]

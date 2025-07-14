@@ -45,13 +45,12 @@ class IntegrationConnectorTool(BaseTool):
   * Generates request params and body
   * Attaches auth credentials to API call.
 
-  Example:
-  ```
+  Example::
+
     # Each API operation in the spec will be turned into its own tool
     # Name of the tool is the operationId of that operation, in snake case
     operations = OperationGenerator().parse(openapi_spec_dict)
     tool = [RestApiTool.from_parsed_operation(o) for o in operations]
-  ```
   """
 
   EXCLUDE_FIELDS = [

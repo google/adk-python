@@ -168,9 +168,9 @@ class LlmAgent(BaseAgent):
   """Controls content inclusion in model requests.
 
   Options:
-      default: Model receives relevant conversation history
-      none: Model receives no prior history, operates solely on current
-            instruction and input
+    default: Model receives relevant conversation history
+    none: Model receives no prior history, operates solely on current
+    instruction and input
   """
 
   # Controlled input/output configurations - Start
@@ -179,8 +179,9 @@ class LlmAgent(BaseAgent):
   output_schema: Optional[type[BaseModel]] = None
   """The output schema when agent replies.
 
-  NOTE: when this is set, agent can ONLY reply and CANNOT use any tools, such as
-  function tools, RAGs, agent transfer, etc.
+  NOTE:
+    When this is set, agent can ONLY reply and CANNOT use any tools, such as
+    function tools, RAGs, agent transfer, etc.
   """
   output_key: Optional[str] = None
   """The key in session state to store the output of the agent.
@@ -195,9 +196,9 @@ class LlmAgent(BaseAgent):
   planner: Optional[BasePlanner] = None
   """Instructs the agent to make a plan and execute it step by step.
 
-  NOTE: to use model's built-in thinking features, set the `thinking_config`
-  field in `google.adk.planners.built_in_planner`.
-
+  NOTE:
+    To use model's built-in thinking features, set the `thinking_config`
+    field in `google.adk.planners.built_in_planner`.
   """
 
   code_executor: Optional[BaseCodeExecutor] = None
@@ -206,7 +207,8 @@ class LlmAgent(BaseAgent):
 
   Check out available code executions in `google.adk.code_executor` package.
 
-  NOTE: to use model's built-in code executor, use the `BuiltInCodeExecutor`.
+  NOTE:
+    To use model's built-in code executor, use the `BuiltInCodeExecutor`.
   """
   # Advance features - End
 
