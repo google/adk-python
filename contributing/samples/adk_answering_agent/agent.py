@@ -14,6 +14,7 @@
 
 from typing import Any
 
+from adk_answering_agent.settings import BOT_RESPONSE_LABEL
 from adk_answering_agent.settings import IS_INTERACTIVE
 from adk_answering_agent.settings import OWNER
 from adk_answering_agent.settings import REPO
@@ -57,7 +58,14 @@ def get_discussion_and_comments(discussion_number: int) -> dict[str, Any]:
               author {
                 login
               }
-              # For each comment, fetch the latest 100 comments.
+              # For each discussion, fetch the latest 20 labels.
+              labels(last: 20) {
+                nodes {
+                  id
+                  name
+                }
+              }
+              # For each discussion, fetch the latest 100 comments.
               comments(last: 100) {
                 nodes {
                   id
@@ -66,7 +74,7 @@ def get_discussion_and_comments(discussion_number: int) -> dict[str, Any]:
                   author {
                     login
                   }
-                  # For each comment, fetch the latest 50 replies
+                  # For each discussion, fetch the latest 50 replies
                   replies(last: 50) {
                     nodes {
                       id
@@ -142,6 +150,76 @@ def add_comment_to_discussion(
     return error_response(str(e))
 
 
+def get_label_id(label_name: str) -> str | None:
+  """Helper function to find the GraphQL node ID for a given label name."""
+  print(f"Finding ID for label '{label_name}'...")
+  query = """
+    query($owner: String!, $repo: String!, $labelName: String!) {
+      repository(owner: $owner, name: $repo) {
+        label(name: $labelName) {
+          id
+        }
+      }
+    }
+    """
+  variables = {"owner": OWNER, "repo": REPO, "labelName": label_name}
+
+  try:
+    response = run_graphql_query(query, variables)
+    if "errors" in response:
+      print(
+          f"[Warning] Error from GitHub API response for label '{label_name}':"
+          f" {response['errors']}"
+      )
+      return None
+    label_info = response["data"].get("repository", {}).get("label")
+    if label_info:
+      return label_info.get("id")
+    print(f"[Warning] Label information for '{label_name}' not found.")
+    return None
+  except requests.exceptions.RequestException as e:
+    print(f"[Warning] Error from GitHub API: {e}")
+    return None
+
+
+def add_label_to_discussion(
+    discussion_id: str, label_name: str
+) -> dict[str, Any]:
+  """Adds a label to a specific discussion.
+
+  Args:
+      discussion_id: The GraphQL node ID of the discussion.
+      label_name: The name of the label to add (e.g., "bug").
+
+  Returns:
+      The status of the request and the label details.
+  """
+  print(
+      f"Attempting to add label '{label_name}' to discussion {discussion_id}..."
+  )
+  # First, get the GraphQL ID of the label by its name
+  label_id = get_label_id(label_name)
+  if not label_id:
+    return error_response(f"Label '{label_name}' not found.")
+
+  # Then, perform the mutation to add the label to the discussion
+  mutation = """
+    mutation AddLabel($discussionId: ID!, $labelId: ID!) {
+      addLabelsToLabelable(input: {labelableId: $discussionId, labelIds: [$labelId]}) {
+        clientMutationId
+      }
+    }
+    """
+  variables = {"discussionId": discussion_id, "labelId": label_id}
+  try:
+    response = run_graphql_query(mutation, variables)
+    if "errors" in response:
+      return error_response(str(response["errors"]))
+    return {"status": "success", "label_id": label_id, "label_name": label_name}
+  except requests.exceptions.RequestException as e:
+    return error_response(str(e))
+
+
 root_agent = Agent(
     model="gemini-2.5-pro",
     name="adk_answering_agent",
@@ -160,6 +238,10 @@ root_agent = Agent(
       * The latest comment is not from you or other agents (marked as "Response from XXX Agent").
       * The latest comment is asking a question or requesting information.
     4. Use the `VertexAiSearchTool` to find relevant information before answering.
+    5. If you can find relevant information, use the `add_comment_to_discussion` tool to add a comment to the discussion.
+    6. If you post a commment and the discussion does not have a label named {BOT_RESPONSE_LABEL},
+       add the label {BOT_RESPONSE_LABEL} to the discussion using the `add_label_to_discussion` tool.
+
 
     IMPORTANT:
       * {APPROVAL_INSTRUCTION}
@@ -188,5 +270,6 @@ root_agent = Agent(
         VertexAiSearchTool(data_store_id=VERTEXAI_DATASTORE_ID),
         get_discussion_and_comments,
         add_comment_to_discussion,
+        add_label_to_discussion,
     ],
 )
