@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""An artifact service implementation using Google Cloud Storage (GCS)."""
+"""An artifact service implementation using Google Cloud Storage (GCS).
+
+The blob name format used depends on whether the filename has a user namespace:
+  - For files with user namespace (starting with "user:"):
+    {app_name}/{user_id}/user/{filename}/{version}
+  - For regular session-scoped files:
+    {app_name}/{user_id}/{session_id}/{filename}/{version}
+"""
 from __future__ import annotations
 
 import logging
@@ -187,6 +194,21 @@ class GcsArtifactService(BaseArtifactService):
   async def list_versions(
       self, *, app_name: str, user_id: str, session_id: str, filename: str
   ) -> list[int]:
+    """Lists all available versions of an artifact.
+
+    This method retrieves all versions of a specific artifact by querying GCS blobs
+    that match the constructed blob name prefix.
+
+    Args:
+        app_name: The name of the application.
+        user_id: The ID of the user who owns the artifact.
+        session_id: The ID of the session (ignored for user-namespaced files).
+        filename: The name of the artifact file.
+
+    Returns:
+        A list of version numbers (integers) available for the specified artifact.
+        Returns an empty list if no versions are found.
+    """
     prefix = self._get_blob_name(app_name, user_id, session_id, filename, "")
     blobs = self.storage_client.list_blobs(self.bucket, prefix=prefix)
     versions = []
