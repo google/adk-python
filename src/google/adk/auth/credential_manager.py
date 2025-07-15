@@ -168,9 +168,7 @@ class CredentialManager:
     if credential_service:
       # Note: This should be made async in a future refactor
       # For now, assuming synchronous operation
-      return await credential_service.load_credential(
-          self._auth_config, callback_context
-      )
+      return await callback_context.load_credential(self._auth_config)
     return None
 
   async def _load_from_auth_response(
@@ -255,10 +253,9 @@ class CredentialManager:
       self, callback_context: CallbackContext, credential: AuthCredential
   ) -> None:
     """Save credential to credential service if available."""
+    # Update the exchanged credential in config
+    self._auth_config.exchanged_auth_credential = credential
+
     credential_service = callback_context._invocation_context.credential_service
     if credential_service:
-      # Update the exchanged credential in config
-      self._auth_config.exchanged_auth_credential = credential
-      await credential_service.save_credential(
-          self._auth_config, callback_context
-      )
+      await callback_context.save_credential(self._auth_config)

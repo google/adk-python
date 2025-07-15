@@ -167,7 +167,6 @@ class TestCredentialManager:
 
     # Mock credential service
     credential_service = Mock()
-    credential_service.load_credential = AsyncMock(return_value=mock_credential)
 
     # Mock invocation context
     invocation_context = Mock()
@@ -175,13 +174,12 @@ class TestCredentialManager:
 
     callback_context = Mock()
     callback_context._invocation_context = invocation_context
+    callback_context.load_credential = AsyncMock(return_value=mock_credential)
 
     manager = CredentialManager(auth_config)
     result = await manager._load_from_credential_service(callback_context)
 
-    credential_service.load_credential.assert_called_once_with(
-        auth_config, callback_context
-    )
+    callback_context.load_credential.assert_called_once_with(auth_config)
     assert result == mock_credential
 
   @pytest.mark.asyncio
@@ -216,13 +214,12 @@ class TestCredentialManager:
 
     callback_context = Mock()
     callback_context._invocation_context = invocation_context
+    callback_context.save_credential = AsyncMock()
 
     manager = CredentialManager(auth_config)
     await manager._save_credential(callback_context, mock_credential)
 
-    credential_service.save_credential.assert_called_once_with(
-        auth_config, callback_context
-    )
+    callback_context.save_credential.assert_called_once_with(auth_config)
     assert auth_config.exchanged_auth_credential == mock_credential
 
   @pytest.mark.asyncio
@@ -242,9 +239,9 @@ class TestCredentialManager:
     manager = CredentialManager(auth_config)
     await manager._save_credential(callback_context, mock_credential)
 
-    # Should not raise an error, and credential should not be set in auth_config
-    # when there's no credential service (according to implementation)
-    assert auth_config.exchanged_auth_credential is None
+    # Should not raise an error, and credential should be set in auth_config
+    # even when there's no credential service (config is updated regardless)
+    assert auth_config.exchanged_auth_credential == mock_credential
 
   @pytest.mark.asyncio
   async def test_refresh_credential_oauth2(self):
