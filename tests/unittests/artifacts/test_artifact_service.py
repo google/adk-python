@@ -253,7 +253,7 @@ async def test_list_versions(service_type):
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
-  filename = "filename"
+  filename = "with/slash/filename"
   versions = [
       types.Part.from_bytes(
           data=i.to_bytes(2, byteorder="big"), mime_type="text/plain"

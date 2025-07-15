@@ -213,6 +213,6 @@ class GcsArtifactService(BaseArtifactService):
     blobs = self.storage_client.list_blobs(self.bucket, prefix=prefix)
     versions = []
     for blob in blobs:
-      _, _, _, _, version = blob.name.split("/")
+      *_, version = blob.name.split("/")
       versions.append(int(version))
     return versions
