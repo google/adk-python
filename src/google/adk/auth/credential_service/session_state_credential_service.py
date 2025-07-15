@@ -18,7 +18,7 @@ from typing import Optional
 
 from typing_extensions import override
 
-from ...tools.tool_context import ToolContext
+from ...agents.callback_context import CallbackContext
 from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
 from ..auth_tool import AuthConfig
@@ -36,10 +36,10 @@ class SessionStateCredentialService(BaseCredentialService):
   async def load_credential(
       self,
       auth_config: AuthConfig,
-      tool_context: ToolContext,
+      callback_context: CallbackContext,
   ) -> Optional[AuthCredential]:
     """
-    Loads the credential by auth config and current tool context from the
+    Loads the credential by auth config and current callback context from the
     backend credential store.
 
     Args:
@@ -47,20 +47,20 @@ class SessionStateCredentialService(BaseCredentialService):
         credential information. auth_config.get_credential_key will be used to
         build the key to load the credential.
 
-        tool_context: The context of the current invocation when the tool is
+        callback_context: The context of the current invocation when the tool is
         trying to load the credential.
 
     Returns:
         Optional[AuthCredential]: the credential saved in the store.
 
     """
-    return tool_context.state.get(auth_config.credential_key)
+    return callback_context.state.get(auth_config.credential_key)
 
   @override
   async def save_credential(
       self,
       auth_config: AuthConfig,
-      tool_context: ToolContext,
+      callback_context: CallbackContext,
   ) -> None:
     """
     Saves the exchanged_auth_credential in auth config to the backend credential
@@ -71,13 +71,13 @@ class SessionStateCredentialService(BaseCredentialService):
         credential information. auth_config.get_credential_key will be used to
         build the key to save the credential.
 
-        tool_context: The context of the current invocation when the tool is
+        callback_context: The context of the current invocation when the tool is
         trying to save the credential.
 
     Returns:
         None
     """
 
-    tool_context.state[auth_config.credential_key] = (
+    callback_context.state[auth_config.credential_key] = (
         auth_config.exchanged_auth_credential
     )

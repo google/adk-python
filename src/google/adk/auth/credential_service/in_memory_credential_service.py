@@ -18,7 +18,7 @@ from typing import Optional
 
 from typing_extensions import override
 
-from ...tools.tool_context import ToolContext
+from ...agents.callback_context import CallbackContext
 from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
 from ..auth_tool import AuthConfig
@@ -37,25 +37,27 @@ class InMemoryCredentialService(BaseCredentialService):
   async def load_credential(
       self,
       auth_config: AuthConfig,
-      tool_context: ToolContext,
+      callback_context: CallbackContext,
   ) -> Optional[AuthCredential]:
-    credential_bucket = self._get_bucket_for_current_context(tool_context)
+    credential_bucket = self._get_bucket_for_current_context(callback_context)
     return credential_bucket.get(auth_config.credential_key)
 
   @override
   async def save_credential(
       self,
       auth_config: AuthConfig,
-      tool_context: ToolContext,
+      callback_context: CallbackContext,
   ) -> None:
-    credential_bucket = self._get_bucket_for_current_context(tool_context)
+    credential_bucket = self._get_bucket_for_current_context(callback_context)
     credential_bucket[auth_config.credential_key] = (
         auth_config.exchanged_auth_credential
     )
 
-  def _get_bucket_for_current_context(self, tool_context: ToolContext) -> str:
-    app_name = tool_context._invocation_context.app_name
-    user_id = tool_context._invocation_context.user_id
+  def _get_bucket_for_current_context(
+      self, callback_context: CallbackContext
+  ) -> str:
+    app_name = callback_context._invocation_context.app_name
+    user_id = callback_context._invocation_context.user_id
 
     if app_name not in self._credentials:
       self._credentials[app_name] = {}
