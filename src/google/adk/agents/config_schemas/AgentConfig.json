@@ -1,5 +1,61 @@
 {
   "$defs": {
+    "ArgumentConfig": {
+      "additionalProperties": false,
+      "description": "An argument passed to a function or a class's constructor.",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "value": {
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "ArgumentConfig",
+      "type": "object"
+    },
+    "CodeConfig": {
+      "additionalProperties": false,
+      "description": "Code reference config for a variable, a function, or a class.\n\nThis config is used for configuring callbacks and tools.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ArgumentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CodeConfig",
+      "type": "object"
+    },
     "LlmAgentConfig": {
       "additionalProperties": false,
       "description": "The config for the YAML schema of a LlmAgent.",
@@ -97,6 +153,21 @@
           ],
           "title": "Include Contents",
           "type": "string"
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tools"
         }
       },
       "required": [
