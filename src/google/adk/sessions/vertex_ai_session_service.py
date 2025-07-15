@@ -216,29 +216,36 @@ class VertexAiSessionService(BaseSessionService):
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events',
         request_dict={},
     )
-    list_events_api_response = _convert_api_response(list_events_api_response)
+    converted_api_response = _convert_api_response(list_events_api_response)
 
-    # Handles empty response case
-    if not list_events_api_response or list_events_api_response.get(
+    # Handles empty response case where there are no events to fetch
+    if not converted_api_response or converted_api_response.get(
         'httpHeaders', None
     ):
       return session
 
     session.events += [
         _from_api_event(event)
-        for event in list_events_api_response['sessionEvents']
+        for event in converted_api_response['sessionEvents']
     ]
 
-    while list_events_api_response.get('nextPageToken', None):
-      page_token = list_events_api_response.get('nextPageToken', None)
+    while converted_api_response.get('nextPageToken', None):
+      page_token = converted_api_response.get('nextPageToken', None)
       list_events_api_response = await api_client.async_request(
           http_method='GET',
           path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events?pageToken={page_token}',
           request_dict={},
       )
+      converted_api_response = _convert_api_response(list_events_api_response)
+
+      # Handles empty response case where there are no more events to fetch
+      if not converted_api_response or converted_api_response.get(
+          'httpHeaders', None
+      ):
+        break
       session.events += [
           _from_api_event(event)
-          for event in list_events_api_response['sessionEvents']
+          for event in converted_api_response['sessionEvents']
       ]
 
     session.events = [

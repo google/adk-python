@@ -201,7 +201,13 @@ class MockApiClient:
         if match:
           session_id = match.group(2)
           if match.group(3):
-            return {'sessionEvents': MOCK_EVENT_JSON_3}
+            page_token = match.group(3)
+            if page_token == 'my_token':
+              response = {'sessionEvents': MOCK_EVENT_JSON_3}
+              response['nextPageToken'] = 'my_token2'
+              return response
+            else:
+              return {}
           events_tuple = self.event_dict.get(session_id, ([], None))
           response = {'sessionEvents': events_tuple[0]}
           if events_tuple[1]:
