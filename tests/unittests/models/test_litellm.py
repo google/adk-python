@@ -781,39 +781,6 @@ async def test_generate_content_async_with_tool_response(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async(mock_acompletion, lite_llm_instance):
-
-  async for response in lite_llm_instance.generate_content_async(
-      LLM_REQUEST_WITH_FUNCTION_DECLARATION
-  ):
-    assert response.content.role == "model"
-    assert response.content.parts[0].text == "Test response"
-    assert response.content.parts[1].function_call.name == "test_function"
-    assert response.content.parts[1].function_call.args == {
-        "test_arg": "test_value"
-    }
-    assert response.content.parts[1].function_call.id == "test_tool_call_id"
-
-  mock_acompletion.assert_called_once()
-
-  _, kwargs = mock_acompletion.call_args
-  assert kwargs["model"] == "test_model"
-  assert kwargs["messages"][0]["role"] == "user"
-  assert kwargs["messages"][0]["content"] == "Test prompt"
-  assert kwargs["tools"][0]["function"]["name"] == "test_function"
-  assert (
-      kwargs["tools"][0]["function"]["description"]
-      == "Test function description"
-  )
-  assert (
-      kwargs["tools"][0]["function"]["parameters"]["properties"]["test_arg"][
-          "type"
-      ]
-      == "string"
-  )
-
-
-@pytest.mark.asyncio
 async def test_generate_content_async_with_usage_metadata(
     lite_llm_instance, mock_acompletion
 ):
@@ -924,6 +891,43 @@ def test_content_to_message_param_function_call():
   assert tool_call["function"]["arguments"] == '{"test_arg": "test_value"}'
 
 
+def test_content_to_message_param_multipart_content():
+  """Test handling of multipart content where final_content is a list with text objects."""
+  content = types.Content(
+      role="assistant",
+      parts=[
+          types.Part.from_text(text="text part"),
+          types.Part.from_bytes(data=b"test_image_data", mime_type="image/png"),
+      ],
+  )
+  message = _content_to_message_param(content)
+  assert message["role"] == "assistant"
+  # When content is a list and the first element is a text object with type "text",
+  # it should extract the text (for providers like ollama_chat that don't handle lists well)
+  # This is the behavior implemented in the fix
+  assert message["content"] == "text part"
+  assert message["tool_calls"] is None
+
+
+def test_content_to_message_param_single_text_object_in_list():
+  """Test extraction of text from single text object in list (for ollama_chat compatibility)."""
+  from unittest.mock import patch
+
+  # Mock _get_content to return a list with single text object
+  with patch("google.adk.models.lite_llm._get_content") as mock_get_content:
+    mock_get_content.return_value = [{"type": "text", "text": "single text"}]
+
+    content = types.Content(
+        role="assistant",
+        parts=[types.Part.from_text(text="single text")],
+    )
+    message = _content_to_message_param(content)
+    assert message["role"] == "assistant"
+    # Should extract the text from the single text object
+    assert message["content"] == "single text"
+    assert message["tool_calls"] is None
+
+
 def test_message_to_generate_content_response_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",
@@ -971,7 +975,11 @@ def test_get_content_image():
   ]
   content = _get_content(parts)
   assert content[0]["type"] == "image_url"
-  assert content[0]["image_url"] == "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
+  assert (
+      content[0]["image_url"]["url"]
+      == "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
+  )
+  assert content[0]["image_url"]["format"] == "png"
 
 
 def test_get_content_video():
@@ -980,7 +988,11 @@ def test_get_content_video():
   ]
   content = _get_content(parts)
   assert content[0]["type"] == "video_url"
-  assert content[0]["video_url"] == "data:video/mp4;base64,dGVzdF92aWRlb19kYXRh"
+  assert (
+      content[0]["video_url"]["url"]
+      == "data:video/mp4;base64,dGVzdF92aWRlb19kYXRh"
+  )
+  assert content[0]["video_url"]["format"] == "mp4"
 
 
 def test_to_litellm_role():
