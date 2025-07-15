@@ -177,6 +177,7 @@ class AgentRunRequest(common.BaseModel):
   session_id: str
   new_message: types.Content
   streaming: bool = False
+  state_delta: Optional[dict[str, Any]] = None
 
 
 class AddSessionToEvalSetRequest(common.BaseModel):
@@ -877,6 +878,7 @@ def get_fast_api_app(
             user_id=req.user_id,
             session_id=req.session_id,
             new_message=req.new_message,
+            state_delta=req.state_delta,
             run_config=RunConfig(streaming_mode=stream_mode),
         ):
           # Format as SSE data

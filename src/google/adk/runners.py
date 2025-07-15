@@ -17,11 +17,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import time
+from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
 from typing import Generator
 from typing import List
 from typing import Optional
+import uuid
 import warnings
 
 from google.genai import types
@@ -38,6 +41,7 @@ from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
+from .events.event import EventActions
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
@@ -174,6 +178,7 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: types.Content,
+      state_delta: Optional[dict[str, Any]] = None,
       run_config: RunConfig = RunConfig(),
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
@@ -216,6 +221,7 @@ class Runner:
             new_message,
             invocation_context,
             run_config.save_input_blobs_as_artifacts,
+            state_delta,
         )
 
       invocation_context.agent = self._find_agent_to_run(session, root_agent)
@@ -284,6 +290,7 @@ class Runner:
       new_message: types.Content,
       invocation_context: InvocationContext,
       save_input_blobs_as_artifacts: bool = False,
+      state_delta: Optional[dict[str, Any]] = None,
   ):
     """Appends a new message to the session.
 
@@ -315,11 +322,19 @@ class Runner:
             text=f'Uploaded file: {file_name}. It is saved into artifacts'
         )
     # Appends only. We do not yield the event because it's not from the model.
-    event = Event(
-        invocation_id=invocation_context.invocation_id,
-        author='user',
-        content=new_message,
-    )
+    if state_delta:
+      event = Event(
+          invocation_id=invocation_context.invocation_id,
+          author='user',
+          actions=EventActions(state_delta=state_delta),
+          content=new_message,
+      )
+    else:
+      event = Event(
+          invocation_id=invocation_context.invocation_id,
+          author='user',
+          content=new_message,
+      )
     await self.session_service.append_event(session=session, event=event)
 
   async def run_live(
