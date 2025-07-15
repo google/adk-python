@@ -105,3 +105,13 @@ class CallbackContext(ReadonlyContext):
     )
     self._event_actions.artifact_delta[filename] = version
     return version
+
+  async def list_artifacts(self) -> list[str]:
+    """Lists the filenames of the artifacts attached to the current session."""
+    if self._invocation_context.artifact_service is None:
+      raise ValueError("Artifact service is not initialized.")
+    return await self._invocation_context.artifact_service.list_artifact_keys(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        session_id=self._invocation_context.session.id,
+    )
