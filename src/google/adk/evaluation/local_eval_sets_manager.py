@@ -27,6 +27,7 @@ from google.genai import types as genai_types
 from pydantic import ValidationError
 from typing_extensions import override
 
+from ..errors.not_found_error import NotFoundError
 from ._eval_sets_manager_utils import add_eval_case_to_eval_set
 from ._eval_sets_manager_utils import delete_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_case_from_eval_set
@@ -226,16 +227,30 @@ class LocalEvalSetsManager(EvalSetsManager):
 
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
-    """Returns a list of EvalSets that belong to the given app_name."""
+    """Returns a list of EvalSets that belong to the given app_name.
+
+    Args:
+      app_name: The app name to list the eval sets for.
+
+    Returns:
+      A list of EvalSet ids.
+
+    Raises:
+      NotFoundError: If the eval directory for the app is not found.
+    """
     eval_set_file_path = os.path.join(self._agents_dir, app_name)
     eval_sets = []
-    for file in os.listdir(eval_set_file_path):
-      if file.endswith(_EVAL_SET_FILE_EXTENSION):
-        eval_sets.append(
-            os.path.basename(file).removesuffix(_EVAL_SET_FILE_EXTENSION)
-        )
-
-    return sorted(eval_sets)
+    try:
+      for file in os.listdir(eval_set_file_path):
+        if file.endswith(_EVAL_SET_FILE_EXTENSION):
+          eval_sets.append(
+              os.path.basename(file).removesuffix(_EVAL_SET_FILE_EXTENSION)
+          )
+      return sorted(eval_sets)
+    except FileNotFoundError as e:
+      raise NotFoundError(
+          f"Eval directory for app `{app_name}` not found."
+      ) from e
 
   @override
   def get_eval_case(

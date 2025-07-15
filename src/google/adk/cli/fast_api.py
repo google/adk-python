@@ -523,7 +523,11 @@ def get_fast_api_app(
   )
   def list_eval_sets(app_name: str) -> list[str]:
     """Lists all eval sets for the given app."""
-    return eval_sets_manager.list_eval_sets(app_name)
+    try:
+      return eval_sets_manager.list_eval_sets(app_name)
+    except NotFoundError as e:
+      logger.warning(e)
+      return []
 
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
