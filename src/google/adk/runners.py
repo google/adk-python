@@ -446,7 +446,8 @@ class Runner:
         root_agent: The root agent of the runner.
 
     Returns:
-      The agent of the last message in the session or the root agent.
+      The agent to run. (the active agent that should reply to the latest user
+      message)
     """
     # If the last event is a function response, should send this response to
     # the agent that returned the corressponding function call regardless the
@@ -475,8 +476,8 @@ class Runner:
   def _is_transferable_across_agent_tree(self, agent_to_run: BaseAgent) -> bool:
     """Whether the agent to run can transfer to any other agent in the agent tree.
 
-    This typically means all agent_to_run's parent through root agent can
-    transfer to their parent_agent.
+    This typically means all agent_to_run's ancestor can transfer to their
+    parent_agent all the way to the root_agent.
 
     Args:
         agent_to_run: The agent to check for transferability.
@@ -487,7 +488,7 @@ class Runner:
     agent = agent_to_run
     while agent:
       if not isinstance(agent, LlmAgent):
-        # Only LLM-based Agent can provider agent transfer capability.
+        # Only LLM-based Agent can provide agent transfer capability.
         return False
       if agent.disallow_transfer_to_parent:
         return False
