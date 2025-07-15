@@ -21,7 +21,6 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
-from typing import Dict
 from typing import List
 from typing import Literal
 from typing import Optional
@@ -563,6 +562,8 @@ class LlmAgent(BaseAgent):
       config: LlmAgentConfig,
       config_abs_path: str,
   ) -> LlmAgent:
+    from .config_agent_utils import resolve_callbacks
+
     agent = super().from_config(config, config_abs_path)
     if config.model:
       agent.model = config.model
@@ -578,6 +579,20 @@ class LlmAgent(BaseAgent):
       agent.output_key = config.output_key
     if config.tools:
       agent.tools = cls._resolve_tools(config.tools)
+    if config.before_model_callbacks:
+      agent.before_model_callback = resolve_callbacks(
+          config.before_model_callbacks
+      )
+    if config.after_model_callbacks:
+      agent.after_model_callback = resolve_callbacks(
+          config.after_model_callbacks
+      )
+    if config.before_tool_callbacks:
+      agent.before_tool_callback = resolve_callbacks(
+          config.before_tool_callbacks
+      )
+    if config.after_tool_callbacks:
+      agent.after_tool_callback = resolve_callbacks(config.after_tool_callbacks)
     return agent
 
 
@@ -664,3 +679,23 @@ class LlmAgentConfig(BaseAgentConfig):
       - name: tools.my_mcp_toolset
     ```
   """
+
+  before_model_callbacks: Optional[List[CodeConfig]] = None
+  """Optional. LlmAgent.before_model_callbacks.
+
+  Example:
+
+    ```
+    before_model_callbacks:
+      - name: my_library.callbacks.before_model_callback
+    ```
+  """
+
+  after_model_callbacks: Optional[List[CodeConfig]] = None
+  """Optional. LlmAgent.after_model_callbacks."""
+
+  before_tool_callbacks: Optional[List[CodeConfig]] = None
+  """Optional. LlmAgent.before_tool_callbacks."""
+
+  after_tool_callbacks: Optional[List[CodeConfig]] = None
+  """Optional. LlmAgent.after_tool_callbacks."""

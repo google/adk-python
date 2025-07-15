@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import importlib
 import os
-from pathlib import Path
 from typing import Any
+from typing import List
 
 import yaml
 
@@ -169,3 +169,16 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
     return obj(*positional_args, **kwargs)
   else:
     return obj
+
+
+@working_in_progress("resolve_callbacks is not ready for use.")
+def resolve_callbacks(callbacks_config: List[CodeConfig]) -> Any:
+  """Resolve callbacks from configuration.
+
+  Args:
+    callbacks_config: List of callback configurations (CodeConfig objects).
+
+  Returns:
+    List of resolved callback objects.
+  """
+  return [resolve_code_reference(config) for config in callbacks_config]

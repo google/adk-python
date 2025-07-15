@@ -93,6 +93,36 @@
           "default": null,
           "title": "Sub Agents"
         },
+        "before_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Agent Callbacks"
+        },
+        "after_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Agent Callbacks"
+        },
         "model": {
           "anyOf": [
             {
@@ -168,6 +198,66 @@
           ],
           "default": null,
           "title": "Tools"
+        },
+        "before_model_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Model Callbacks"
+        },
+        "after_model_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Model Callbacks"
+        },
+        "before_tool_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Tool Callbacks"
+        },
+        "after_tool_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Tool Callbacks"
         }
       },
       "required": [
@@ -210,6 +300,36 @@
           ],
           "default": null,
           "title": "Sub Agents"
+        },
+        "before_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Agent Callbacks"
+        },
+        "after_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Agent Callbacks"
         },
         "max_iterations": {
           "anyOf": [
@@ -263,6 +383,36 @@
           ],
           "default": null,
           "title": "Sub Agents"
+        },
+        "before_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Agent Callbacks"
+        },
+        "after_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Agent Callbacks"
         }
       },
       "required": [
@@ -304,6 +454,36 @@
           ],
           "default": null,
           "title": "Sub Agents"
+        },
+        "before_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Agent Callbacks"
+        },
+        "after_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Agent Callbacks"
         }
       },
       "required": [
