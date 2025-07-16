@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.7.0 (2025-07-16)
+
+### Features
+
+* Add ability to send state change with message [3f9f773](https://github.com/google/adk-python/commit/3f9f773d9b5fcca343e32f76f6d5677b7cf4c327)
+* [Eval] Support for persisting eval run results [bab3be2](https://github.com/google/adk-python/commit/bab3be2cf31dc9afd00bcce70103bdaa5460f1a3)
+* Introduce [Plugin]: Plugin is simply a class that packages these individual callback functions together for a broader purpose[162228d](https://github.com/google/adk-python/commit/162228d208dca39550a75221030edf9876bf8e3a)
+
+### Bug Fixes
+
+* Create correct object for image and video content in litellm [bf7745f](https://github.com/google/adk-python/commit/bf7745f42811de3c9c80ec0998001ae50960dafc)
+*  Support project-based gemini model path for BuiltInCodeExecutor and all built-in tools [a5d6f1e](https://github.com/google/adk-python/commit/a5d6f1e52ee36d84f94693086f74e4ca2d0bed65)
+*  Add instruction in long running tool description to avoid being invoked again by model [62a6119](https://github.com/google/adk-python/commit/62a611956f8907e0580955adb23dfb6d7799bf4f)
+*  [A2A] Import A2A well known path from A2A sdk [a6716a5](https://github.com/google/adk-python/commit/a6716a55140f63834ae4e3507b38786da9fdbee2)
+*  Fix the long running function response event merge logic [134ec0d](https://github.com/google/adk-python/commit/134ec0d71e8de4cf9bcbe370c7e739e7ada123f3)
+*  [A2A] Return final task result in task artifact instead of status message [a8fcc1b](https://github.com/google/adk-python/commit/a8fcc1b8ab0d47eccf6612a6eb8be021bff5ed3a)
+* Make InMemoryMemoryService thread-safe [10197db](https://github.com/google/adk-python/commit/10197db0d752defc5976d1f276c7b5405a94c75b)
+
+### Improvements
+
+* Improve partial event handling and streaming aggregation [584c8c6](https://github.com/google/adk-python/commit/584c8c6d91308e62285c94629f020f2746e88f6f)
+
+### Documentation
+
+* Update agent transfer related doc string and comments [b1fa383](https://github.com/google/adk-python/commit/b1fa383e739d923399b3a23ca10435c0fba3460b)
+* Update doc string for GcsArtifactService [498ce90](https://github.com/google/adk-python/commit/498ce906dd9b323b6277bc8118e1bcc68c38c1b5)
+
 ## [1.6.1](https://github.com/google/adk-python/compare/v1.5.0...v1.6.1) (2025-07-09)
 
 ### Features
