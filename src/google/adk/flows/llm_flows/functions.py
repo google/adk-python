@@ -267,36 +267,27 @@ async def handle_function_calls_live(
       # in python debugger.
       function_args = function_call.args or {}
       function_response = None
-      # # Calls the tool if before_tool_callback does not exist or returns None.
-      # if agent.before_tool_callback:
-      #   function_response = agent.before_tool_callback(
-      #       tool, function_args, tool_context
-      #   )
-      if agent.before_tool_callback:
-        function_response = agent.before_tool_callback(
+
+      # Handle before_tool_callbacks - iterate through the canonical callback
+      # list
+      for callback in agent.canonical_before_tool_callbacks:
+        function_response = callback(
             tool=tool, args=function_args, tool_context=tool_context
         )
         if inspect.isawaitable(function_response):
           function_response = await function_response
+        if function_response:
+          break
 
-      if not function_response:
+      if function_response is None:
         function_response = await _process_function_live_helper(
             tool, tool_context, function_call, function_args, invocation_context
         )
 
       # Calls after_tool_callback if it exists.
-      # if agent.after_tool_callback:
-      #   new_response = agent.after_tool_callback(
-      #       tool,
-      #       function_args,
-      #       tool_context,
-      #       function_response,
-      #   )
-      #   if new_response:
-      #     function_response = new_response
       altered_function_response = None
-      if agent.after_tool_callback:
-        altered_function_response = agent.after_tool_callback(
+      for callback in agent.canonical_after_tool_callbacks:
+        altered_function_response = callback(
             tool=tool,
             args=function_args,
             tool_context=tool_context,
@@ -304,6 +295,9 @@ async def handle_function_calls_live(
         )
         if inspect.isawaitable(altered_function_response):
           altered_function_response = await altered_function_response
+        if altered_function_response:
+          break
+
       if altered_function_response is not None:
         function_response = altered_function_response
 
