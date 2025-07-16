@@ -31,7 +31,7 @@ if not VERTEXAI_DATASTORE_ID:
 
 OWNER = os.getenv("OWNER", "google")
 REPO = os.getenv("REPO", "adk-python")
-BOT_RESPONSE_LABEL = os.getenv("BOT_RESPONSE_LABEL", "bot_responded")
+BOT_RESPONSE_LABEL = os.getenv("BOT_RESPONSE_LABEL", "bot responded")
 DISCUSSION_NUMBER = os.getenv("DISCUSSION_NUMBER")
 
 IS_INTERACTIVE = os.getenv("INTERACTIVE", "1").lower() in ["true", "1"]

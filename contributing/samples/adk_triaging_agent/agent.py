@@ -26,6 +26,7 @@ from google.adk import Agent
 import requests
 
 LABEL_TO_OWNER = {
+    "agent engine": "yeesian",
     "documentation": "polong",
     "services": "DeanChensj",
     "question": "",
@@ -154,6 +155,7 @@ root_agent = Agent(
       - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
       - If it's agent orchestration, agent definition, label it with "core".
+      - If it's about agent engine, label it with "agent engine".
       - If you can't find a appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
 
       Call the `add_label_and_owner_to_issue` tool to label the issue, which will also assign the issue to the owner of the label.
