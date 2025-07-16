@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import AsyncGenerator
+from typing import Union
 
 from google.genai import live
 from google.genai import types
@@ -24,6 +25,8 @@ from .base_llm_connection import BaseLlmConnection
 from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+RealtimeInput = Union[types.Blob, types.ActivityStart, types.ActivityEnd]
 
 
 class GeminiLlmConnection(BaseLlmConnection):
@@ -93,16 +96,24 @@ class GeminiLlmConnection(BaseLlmConnection):
           )
       )
 
-  async def send_realtime(self, blob: types.Blob):
+  async def send_realtime(self, input: RealtimeInput):
     """Sends a chunk of audio or a frame of video to the model in realtime.
 
     Args:
-      blob: The blob to send to the model.
+      input: The input to send to the model.
     """
-
-    input_blob = blob.model_dump()
-    logger.debug('Sending LLM Blob: %s', input_blob)
-    await self._gemini_session.send(input=input_blob)
+    if isinstance(input, types.Blob):
+      input_blob = input.model_dump()
+      logger.debug('Sending LLM Blob: %s', input_blob)
+      await self._gemini_session.send(input=input_blob)
+    elif isinstance(input, types.ActivityStart):
+      logger.debug('Sending LLM activity start signal')
+      await self._gemini_session.send_realtime_input(activity_start=input)
+    elif isinstance(input, types.ActivityEnd):
+      logger.debug('Sending LLM activity end signal')
+      await self._gemini_session.send_realtime_input(activity_end=input)
+    else:
+      raise ValueError('Unsupported input type: %s' % type(input))
 
   def __build_full_text_response(self, text: str):
     """Builds a full text response.
