@@ -138,9 +138,7 @@ class MockClient:
 
 def mock_gcs_artifact_service():
   with mock.patch("google.cloud.storage.Client", return_value=MockClient()):
-    service = GcsArtifactService(bucket_name="test_bucket")
-    service.bucket = service.storage_client.bucket("test_bucket")
-    return service
+    return GcsArtifactService(bucket_name="test_bucket")
 
 
 def get_artifact_service(
