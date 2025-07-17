@@ -105,6 +105,7 @@ test = [
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
   "pytest>=8.3.4",
+  "python-multipart>=0.0.9",
   # go/keep-sorted end
 ]
 
