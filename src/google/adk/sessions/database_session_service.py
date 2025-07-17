@@ -160,6 +160,26 @@ class StorageSession(Base):
       return self.update_time.replace(tzinfo=timezone.utc).timestamp()
     return self.update_time.timestamp()
 
+  def to_session(
+      self,
+      state: dict[str, Any] | None = None,
+      events: list[Event] | None = None,
+  ) -> Session:
+    """Converts the storage session to a session object."""
+    if state is None:
+      state = {}
+    if events is None:
+      events = []
+
+    return Session(
+        app_name=self.app_name,
+        user_id=self.user_id,
+        id=self.id,
+        state=state,
+        events=events,
+        last_update_time=self.update_timestamp_tz,
+    )
+
 
 class StorageEvent(Base):
   """Represents an event stored in the database."""
@@ -423,14 +443,8 @@ class DatabaseSessionService(BaseSessionService):
 
       # Merge states for response
       merged_state = _merge_state(app_state, user_state, session_state)
-      session = Session(
-          app_name=str(storage_session.app_name),
-          user_id=str(storage_session.user_id),
-          id=str(storage_session.id),
-          state=merged_state,
-          last_update_time=storage_session.update_timestamp_tz,
-      )
-      return session
+      session = storage_session.to_session(state=merged_state)
+    return session
 
   @override
   async def get_session(
@@ -486,14 +500,8 @@ class DatabaseSessionService(BaseSessionService):
       merged_state = _merge_state(app_state, user_state, session_state)
 
       # Convert storage session to session
-      session = Session(
-          app_name=app_name,
-          user_id=user_id,
-          id=session_id,
-          state=merged_state,
-          last_update_time=storage_session.update_timestamp_tz,
-      )
-      session.events = [e.to_event() for e in reversed(storage_events)]
+      events = [e.to_event() for e in reversed(storage_events)]
+      session = storage_session.to_session(state=merged_state, events=events)
     return session
 
   @override
@@ -509,14 +517,7 @@ class DatabaseSessionService(BaseSessionService):
       )
       sessions = []
       for storage_session in results:
-        session = Session(
-            app_name=app_name,
-            user_id=user_id,
-            id=storage_session.id,
-            state={},
-            last_update_time=storage_session.update_timestamp_tz,
-        )
-        sessions.append(session)
+        sessions.append(storage_session.to_session())
       return ListSessionsResponse(sessions=sessions)
 
   @override
