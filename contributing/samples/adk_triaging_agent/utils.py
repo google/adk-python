@@ -39,6 +39,12 @@ def post_request(url: str, payload: Any) -> dict[str, Any]:
   return response.json()
 
 
+def patch_request(url: str, payload: Any) -> dict[str, Any]:
+  response = requests.patch(url, headers=headers, json=payload, timeout=60)
+  response.raise_for_status()
+  return response.json()
+
+
 def error_response(error_message: str) -> dict[str, Any]:
   return {"status": "error", "message": error_message}
 
