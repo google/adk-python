@@ -61,6 +61,7 @@ class AgentTool(BaseTool):
   @override
   def _get_declaration(self) -> types.FunctionDeclaration:
     from ..agents.llm_agent import LlmAgent
+    from ..utils.variant_utils import GoogleLLMVariant
 
     if isinstance(self.agent, LlmAgent) and self.agent.input_schema:
       result = _automatic_function_calling_util.build_function_declaration(
@@ -80,6 +81,17 @@ class AgentTool(BaseTool):
           description=self.agent.description,
           name=self.name,
       )
+
+    # Set response schema for non-GEMINI_API variants
+    if self._api_variant != GoogleLLMVariant.GEMINI_API:
+      # Determine response type based on agent's output schema
+      if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
+        # Agent has structured output schema - response is an object
+        result.response = types.Schema(type=types.Type.OBJECT)
+      else:
+        # Agent returns text - response is a string
+        result.response = types.Schema(type=types.Type.STRING)
+
     result.name = self.name
     return result
 
