@@ -21,7 +21,7 @@ from typing import Optional
 from typing_extensions import override
 
 from ..models.llm_response import LlmResponse
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .evaluator import EvalStatus
@@ -125,7 +125,7 @@ def _parse_critique(response: str) -> Label:
   return label
 
 
-@working_in_progress
+@experimental
 class FinalResponseMatchV2Evaluator(LlmAsJudge):
   """V2 final response match evaluator which uses an LLM to judge responses.
 
