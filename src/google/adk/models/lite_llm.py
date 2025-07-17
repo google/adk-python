@@ -314,6 +314,12 @@ def _schema_to_dict(schema: types.Schema) -> dict:
   """
   Recursively converts a types.Schema to a pure-python dict
   with all enum values written as lower-case strings.
+
+  Args:
+    schema: The schema to convert.
+
+  Returns:
+    The dictionary representation of the schema.
   """
   # Dump without json encoding so we still get Enum members
   schema_dict = schema.model_dump(exclude_none=True)
