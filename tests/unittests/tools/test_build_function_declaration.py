@@ -17,6 +17,8 @@ from typing import List
 
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.tools.agent_tool import ToolContext
+from google.adk.utils.variant_utils import GoogleLLMVariant
+from google.genai import types
 # TODO: crewai requires python 3.10 as minimum
 # from crewai_tools import FileReadTool
 from pydantic import BaseModel
@@ -262,3 +264,118 @@ def test_basemodel_list():
 #   assert function_decl.name == 'directory_read_tool'
 #   assert function_decl.parameters.type == 'OBJECT'
 #   assert function_decl.parameters.properties['file_path'].type == 'STRING'
+
+
+def test_function_no_return_annotation_gemini_api():
+  """Test function with no return annotation using GEMINI_API variant."""
+
+  def function_no_return(param: str):
+    """A function with no return annotation."""
+    return None
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=function_no_return, variant=GoogleLLMVariant.GEMINI_API
+  )
+
+  assert function_decl.name == 'function_no_return'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['param'].type == 'STRING'
+  # GEMINI_API should not have response schema
+  assert function_decl.response is None
+
+
+def test_function_no_return_annotation_vertex_ai():
+  """Test function with no return annotation using VERTEX_AI variant."""
+
+  def function_no_return(param: str):
+    """A function with no return annotation."""
+    return None
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=function_no_return, variant=GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert function_decl.name == 'function_no_return'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['param'].type == 'STRING'
+  # VERTEX_AI should have response schema for None return
+  assert function_decl.response is not None
+  assert function_decl.response.type == types.Type.NULL
+
+
+def test_function_explicit_none_return_vertex_ai():
+  """Test function with explicit None return annotation using VERTEX_AI variant."""
+
+  def function_none_return(param: str) -> None:
+    """A function that explicitly returns None."""
+    pass
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=function_none_return, variant=GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert function_decl.name == 'function_none_return'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['param'].type == 'STRING'
+  # VERTEX_AI should have response schema for explicit None return
+  assert function_decl.response is not None
+  assert function_decl.response.type == types.Type.NULL
+
+
+def test_function_explicit_none_return_gemini_api():
+  """Test function with explicit None return annotation using GEMINI_API variant."""
+
+  def function_none_return(param: str) -> None:
+    """A function that explicitly returns None."""
+    pass
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=function_none_return, variant=GoogleLLMVariant.GEMINI_API
+  )
+
+  assert function_decl.name == 'function_none_return'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['param'].type == 'STRING'
+  # GEMINI_API should not have response schema
+  assert function_decl.response is None
+
+
+def test_function_regular_return_type_vertex_ai():
+  """Test function with regular return type using VERTEX_AI variant."""
+
+  def function_string_return(param: str) -> str:
+    """A function that returns a string."""
+    return param
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=function_string_return, variant=GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert function_decl.name == 'function_string_return'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['param'].type == 'STRING'
+  # VERTEX_AI should have response schema for string return
+  assert function_decl.response is not None
+  assert function_decl.response.type == types.Type.STRING
+
+
+def test_transfer_to_agent_like_function():
+  """Test a function similar to transfer_to_agent that caused the original issue."""
+
+  def transfer_to_agent(agent_name: str, tool_context: ToolContext):
+    """Transfer the question to another agent."""
+    tool_context.actions.transfer_to_agent = agent_name
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=transfer_to_agent,
+      ignore_params=['tool_context'],
+      variant=GoogleLLMVariant.VERTEX_AI,
+  )
+
+  assert function_decl.name == 'transfer_to_agent'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['agent_name'].type == 'STRING'
+  assert 'tool_context' not in function_decl.parameters.properties
+  # This should now have a response schema for VERTEX_AI variant
+  assert function_decl.response is not None
+  assert function_decl.response.type == types.Type.NULL
