@@ -461,7 +461,10 @@ def adk_services_options():
         "--session_service_uri",
         help=(
             """Optional. The URI of the session service.
-          - Use 'agentengine://<agent_engine_resource_id>' to connect to Agent Engine sessions.
+          - Use 'agentengine://<agent_engine>' to connect to Agent Engine
+            sessions. <agent_engine> can either be the full qualified resource
+            name 'projects/abc/locations/us-central1/reasoningEngines/123' or
+            the resource id '123'.
           - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
           - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported database URIs."""
         ),
@@ -487,11 +490,12 @@ def adk_services_options():
     @click.option(
         "--memory_service_uri",
         type=str,
-        help=(
-            """Optional. The URI of the memory service.
+        help=("""Optional. The URI of the memory service.
             - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
-            - Use 'agentengine://<agent_engine_resource_id>' to connect to Vertex AI Memory Bank Service. e.g. agentengine://12345"""
-        ),
+            - Use 'agentengine://<agent_engine>' to connect to Agent Engine
+              sessions. <agent_engine> can either be the full qualified resource
+              name 'projects/abc/locations/us-central1/reasoningEngines/123' or
+              the resource id '123'."""),
         default=None,
     )
     @functools.wraps(func)
