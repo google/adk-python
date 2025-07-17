@@ -691,10 +691,10 @@ function_declaration_test_cases = [
                                         "inner_key": types.Schema(
                                             type=types.Type.STRING,
                                         )
-                                    }
+                                    },
                                 )
-                            }
-                        )
+                            },
+                        ),
                     ),
                 },
             ),
