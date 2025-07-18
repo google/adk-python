@@ -23,15 +23,12 @@ from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from ..memory.in_memory_memory_service import InMemoryMemoryService
-from ..runners import Runner
-from ..sessions.in_memory_session_service import InMemorySessionService
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
-  from ..agents.llm_agent import LlmAgent
 
 
 class AgentTool(BaseTool):
@@ -103,6 +100,8 @@ class AgentTool(BaseTool):
       tool_context: ToolContext,
   ) -> Any:
     from ..agents.llm_agent import LlmAgent
+    from ..runners import Runner
+    from ..sessions.in_memory_session_service import InMemorySessionService
 
     if self.skip_summarization:
       tool_context.actions.skip_summarization = True

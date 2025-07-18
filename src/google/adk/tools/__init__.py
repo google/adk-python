@@ -14,6 +14,7 @@
 
 
 from ..auth.auth_tool import AuthToolArguments
+from .agent_tool import AgentTool
 from .apihub_tool.apihub_toolset import APIHubToolset
 from .base_tool import BaseTool
 from .example_tool import ExampleTool
@@ -31,6 +32,7 @@ from .url_context_tool import url_context
 from .vertex_ai_search_tool import VertexAiSearchTool
 
 __all__ = [
+    'AgentTool',
     'APIHubToolset',
     'AuthToolArguments',
     'BaseTool',
