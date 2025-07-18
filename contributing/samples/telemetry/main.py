@@ -27,8 +27,8 @@ from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import TracerProvider
 
-
 load_dotenv(override=True)
+
 
 async def main():
   app_name = 'my_app'

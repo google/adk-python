@@ -14,10 +14,16 @@
 
 """Provides data for the agent."""
 
+from __future__ import annotations
+
+import logging
+
 from llama_index.core import SimpleDirectoryReader
 from llama_index.core import VectorStoreIndex
 
 from .llama_index_retrieval import LlamaIndexRetrieval
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class FilesRetrieval(LlamaIndexRetrieval):
@@ -26,7 +32,7 @@ class FilesRetrieval(LlamaIndexRetrieval):
 
     self.input_dir = input_dir
 
-    print(f'Loading data from {input_dir}')
+    logger.info("Loading data from %s", input_dir)
     retriever = VectorStoreIndex.from_documents(
         SimpleDirectoryReader(input_dir).load_data()
     ).as_retriever()

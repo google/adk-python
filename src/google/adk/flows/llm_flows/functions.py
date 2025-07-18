@@ -153,37 +153,67 @@ async def handle_function_calls_async(
       # do not use "args" as the variable name, because it is a reserved keyword
       # in python debugger.
       function_args = function_call.args or {}
-      function_response: Optional[dict] = None
 
-      for callback in agent.canonical_before_tool_callbacks:
-        function_response = callback(
-            tool=tool, args=function_args, tool_context=tool_context
-        )
-        if inspect.isawaitable(function_response):
-          function_response = await function_response
-        if function_response:
-          break
+      # Step 1: Check if plugin before_tool_callback overrides the function
+      # response.
+      function_response = (
+          await invocation_context.plugin_manager.run_before_tool_callback(
+              tool=tool, tool_args=function_args, tool_context=tool_context
+          )
+      )
 
-      if not function_response:
+      # Step 2: If no overrides are provided from the plugins, further run the
+      # canonical callback.
+      if function_response is None:
+        for callback in agent.canonical_before_tool_callbacks:
+          function_response = callback(
+              tool=tool, args=function_args, tool_context=tool_context
+          )
+          if inspect.isawaitable(function_response):
+            function_response = await function_response
+          if function_response:
+            break
+
+      # Step 3: Otherwise, proceed calling the tool normally.
+      if function_response is None:
         function_response = await __call_tool_async(
             tool, args=function_args, tool_context=tool_context
         )
 
-      for callback in agent.canonical_after_tool_callbacks:
-        altered_function_response = callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=function_response,
-        )
-        if inspect.isawaitable(altered_function_response):
-          altered_function_response = await altered_function_response
-        if altered_function_response is not None:
-          function_response = altered_function_response
-          break
+      # Step 4: Check if plugin after_tool_callback overrides the function
+      # response.
+      altered_function_response = (
+          await invocation_context.plugin_manager.run_after_tool_callback(
+              tool=tool,
+              tool_args=function_args,
+              tool_context=tool_context,
+              result=function_response,
+          )
+      )
+
+      # Step 5: If no overrides are provided from the plugins, further run the
+      # canonical after_tool_callbacks.
+      if altered_function_response is None:
+        for callback in agent.canonical_after_tool_callbacks:
+          altered_function_response = callback(
+              tool=tool,
+              args=function_args,
+              tool_context=tool_context,
+              tool_response=function_response,
+          )
+          if inspect.isawaitable(altered_function_response):
+            altered_function_response = await altered_function_response
+          if altered_function_response:
+            break
+
+      # Step 6: If alternative response exists from after_tool_callback, use it
+      # instead of the original function response.
+      if altered_function_response is not None:
+        function_response = altered_function_response
 
       if tool.is_long_running:
-        # Allow long running function to return None to not provide function response.
+        # Allow long running function to return None to not provide function
+        # response.
         if not function_response:
           continue
 
@@ -237,35 +267,27 @@ async def handle_function_calls_live(
       # in python debugger.
       function_args = function_call.args or {}
       function_response = None
-      # # Calls the tool if before_tool_callback does not exist or returns None.
-      # if agent.before_tool_callback:
-      #   function_response = agent.before_tool_callback(
-      #       tool, function_args, tool_context
-      #   )
-      if agent.before_tool_callback:
-        function_response = agent.before_tool_callback(
+
+      # Handle before_tool_callbacks - iterate through the canonical callback
+      # list
+      for callback in agent.canonical_before_tool_callbacks:
+        function_response = callback(
             tool=tool, args=function_args, tool_context=tool_context
         )
         if inspect.isawaitable(function_response):
           function_response = await function_response
+        if function_response:
+          break
 
-      if not function_response:
+      if function_response is None:
         function_response = await _process_function_live_helper(
             tool, tool_context, function_call, function_args, invocation_context
         )
 
       # Calls after_tool_callback if it exists.
-      # if agent.after_tool_callback:
-      #   new_response = agent.after_tool_callback(
-      #       tool,
-      #       function_args,
-      #       tool_context,
-      #       function_response,
-      #   )
-      #   if new_response:
-      #     function_response = new_response
-      if agent.after_tool_callback:
-        altered_function_response = agent.after_tool_callback(
+      altered_function_response = None
+      for callback in agent.canonical_after_tool_callbacks:
+        altered_function_response = callback(
             tool=tool,
             args=function_args,
             tool_context=tool_context,
@@ -273,8 +295,11 @@ async def handle_function_calls_live(
         )
         if inspect.isawaitable(altered_function_response):
           altered_function_response = await altered_function_response
-        if altered_function_response is not None:
-          function_response = altered_function_response
+        if altered_function_response:
+          break
+
+      if altered_function_response is not None:
+        function_response = altered_function_response
 
       if tool.is_long_running:
         # Allow async function to return None to not provide function response.
@@ -288,8 +313,7 @@ async def handle_function_calls_live(
       trace_tool_call(
           tool=tool,
           args=function_args,
-          response_event_id=function_response_event.id,
-          function_response=function_response,
+          function_response_event=function_response_event,
       )
       function_response_events.append(function_response_event)
 
@@ -481,6 +505,16 @@ def __build_response_event(
   return function_response_event
 
 
+def deep_merge_dicts(d1: dict, d2: dict) -> dict:
+  """Recursively merges d2 into d1."""
+  for key, value in d2.items():
+    if key in d1 and isinstance(d1[key], dict) and isinstance(value, dict):
+      d1[key] = deep_merge_dicts(d1[key], value)
+    else:
+      d1[key] = value
+  return d1
+
+
 def merge_parallel_function_response_events(
     function_response_events: list['Event'],
 ) -> 'Event':
@@ -499,15 +533,17 @@ def merge_parallel_function_response_events(
   base_event = function_response_events[0]
 
   # Merge actions from all events
-
-  merged_actions = EventActions()
-  merged_requested_auth_configs = {}
+  merged_actions_data = {}
   for event in function_response_events:
-    merged_requested_auth_configs.update(event.actions.requested_auth_configs)
-    merged_actions = merged_actions.model_copy(
-        update=event.actions.model_dump()
-    )
-  merged_actions.requested_auth_configs = merged_requested_auth_configs
+    if event.actions:
+      # Use `by_alias=True` because it converts the model to a dictionary while respecting field aliases, ensuring that the enum fields are correctly handled without creating a duplicate.
+      merged_actions_data = deep_merge_dicts(
+          merged_actions_data,
+          event.actions.model_dump(exclude_none=True, by_alias=True),
+      )
+
+  merged_actions = EventActions.model_validate(merged_actions_data)
+
   # Create the new merged event
   merged_event = Event(
       invocation_id=Event.new_id(),
@@ -520,3 +556,35 @@ def merge_parallel_function_response_events(
   # Use the base_event as the timestamp
   merged_event.timestamp = base_event.timestamp
   return merged_event
+
+
+def find_matching_function_call(
+    events: list[Event],
+) -> Optional[Event]:
+  """Finds the function call event that matches the function response id of the last event."""
+  if not events:
+    return None
+
+  last_event = events[-1]
+  if (
+      last_event.content
+      and last_event.content.parts
+      and any(part.function_response for part in last_event.content.parts)
+  ):
+
+    function_call_id = next(
+        part.function_response.id
+        for part in last_event.content.parts
+        if part.function_response
+    )
+    for i in range(len(events) - 2, -1, -1):
+      event = events[i]
+      # looking for the system long running request euc function call
+      function_calls = event.get_function_calls()
+      if not function_calls:
+        continue
+
+      for function_call in function_calls:
+        if function_call.id == function_call_id:
+          return event
+  return None

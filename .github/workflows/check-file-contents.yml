@@ -1,0 +1,113 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "Check file contents"
+
+on:
+  pull_request:
+    paths:
+      - '**.py'
+
+jobs:
+  check-file-contents:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for logger pattern in all changed Python files
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Changed Python files to check:"
+            echo "$CHANGED_FILES"
+            echo ""
+
+            # Check for 'logger = logging.getLogger(__name__)' in changed .py files.
+            # The grep command will exit with a non-zero status code if the pattern is not found.
+            # We invert the exit code with ! so the step succeeds if the pattern is NOT found.
+            set +e
+            FILES_WITH_FORBIDDEN_LOGGER=$(grep -lE 'logger = logging\.getLogger\(__name__\)' $CHANGED_FILES)
+            GREP_EXIT_CODE=$?
+            set -e
+
+            # grep exits with 0 if matches are found, 1 if no matches are found.
+            # A non-zero exit code other than 1 indicates an error.
+            if [ $GREP_EXIT_CODE -eq 0 ]; then
+              echo "❌ Found forbidden use of 'logger = logging.getLogger(__name__)'. Please use 'logger = logging.getLogger('google_adk.' + __name__)' instead."
+              echo "The following files contain the forbidden pattern:"
+              echo "$FILES_WITH_FORBIDDEN_LOGGER"
+              exit 1
+            elif [ $GREP_EXIT_CODE -eq 1 ]; then
+              echo "✅ No instances of 'logger = logging.getLogger(__name__)' found in changed Python files."
+            fi
+          else
+            echo "✅ No relevant Python files found."
+          fi
+
+      - name: Check for import pattern in certain changed Python files
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' | grep -v -E '__init__.py$|version.py$|tests/.*|contributing/samples/' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Changed Python files to check:"
+            echo "$CHANGED_FILES"
+            echo ""
+
+            # Use grep -L to find files that DO NOT contain the pattern.
+            # This command will output a list of non-compliant files.
+            FILES_MISSING_IMPORT=$(grep -L 'from __future__ import annotations' $CHANGED_FILES || true)
+
+            # Check if the list of non-compliant files is empty
+            if [ -z "$FILES_MISSING_IMPORT" ]; then
+              echo "✅ All modified Python files include 'from __future__ import annotations'."
+              exit 0
+            else
+              echo "❌ The following files are missing 'from __future__ import annotations':"
+              echo "$FILES_MISSING_IMPORT"
+              echo "This import is required to allow forward references in type annotations without quotes."
+              exit 1
+            fi
+          else
+            echo "✅ No relevant Python files found."
+          fi
+
+      - name: Check for import from cli package in certain changed Python files
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.py$' | grep -v -E 'cli/.*|tests/.*|contributing/samples/' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Changed Python files to check:"
+            echo "$CHANGED_FILES"
+            echo ""
+
+            set +e
+            FILES_WITH_FORBIDDEN_IMPORT=$(grep -lE '^from.*cli.*import.*$' $CHANGED_FILES)
+            GREP_EXIT_CODE=$?
+            set -e
+
+            if [[ $GREP_EXIT_CODE -eq 0 ]]; then
+              echo "❌ Do not import from the cli package outside of the cli package. If you need to reuse the code elsewhere, please move the code outside of the cli package."
+              echo "The following files contain the forbidden pattern:"
+              echo "$FILES_WITH_FORBIDDEN_IMPORT"
+              exit 1
+            else
+              echo "✅ No instances of importing from the cli package found in relevant changed Python files."
+            fi
+          else
+            echo "✅ No relevant Python files found."
+          fi

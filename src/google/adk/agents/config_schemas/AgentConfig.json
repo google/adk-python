@@ -1,0 +1,544 @@
+{
+  "$defs": {
+    "ArgumentConfig": {
+      "additionalProperties": false,
+      "description": "An argument passed to a function or a class's constructor.",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "value": {
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "ArgumentConfig",
+      "type": "object"
+    },
+    "CodeConfig": {
+      "additionalProperties": false,
+      "description": "Code reference config for a variable, a function, or a class.\n\nThis config is used for configuring callbacks and tools.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ArgumentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CodeConfig",
+      "type": "object"
+    },
+    "LlmAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for the YAML schema of a LlmAgent.",
+      "properties": {
+        "agent_class": {
+          "default": "LlmAgent",
+          "enum": [
+            "LlmAgent",
+            ""
+          ],
+          "title": "Agent Class",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "sub_agents": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SubAgentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Agents"
+        },
+        "before_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Agent Callbacks"
+        },
+        "after_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Agent Callbacks"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "instruction": {
+          "title": "Instruction",
+          "type": "string"
+        },
+        "disallow_transfer_to_parent": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disallow Transfer To Parent"
+        },
+        "disallow_transfer_to_peers": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disallow Transfer To Peers"
+        },
+        "output_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Key"
+        },
+        "include_contents": {
+          "default": "default",
+          "enum": [
+            "default",
+            "none"
+          ],
+          "title": "Include Contents",
+          "type": "string"
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tools"
+        },
+        "before_model_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Model Callbacks"
+        },
+        "after_model_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Model Callbacks"
+        },
+        "before_tool_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Tool Callbacks"
+        },
+        "after_tool_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Tool Callbacks"
+        }
+      },
+      "required": [
+        "name",
+        "instruction"
+      ],
+      "title": "LlmAgentConfig",
+      "type": "object"
+    },
+    "LoopAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for the YAML schema of a LoopAgent.",
+      "properties": {
+        "agent_class": {
+          "const": "LoopAgent",
+          "default": "LoopAgent",
+          "title": "Agent Class",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "sub_agents": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SubAgentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Agents"
+        },
+        "before_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Agent Callbacks"
+        },
+        "after_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Agent Callbacks"
+        },
+        "max_iterations": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Iterations"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "LoopAgentConfig",
+      "type": "object"
+    },
+    "ParallelAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for the YAML schema of a ParallelAgent.",
+      "properties": {
+        "agent_class": {
+          "const": "ParallelAgent",
+          "default": "ParallelAgent",
+          "title": "Agent Class",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "sub_agents": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SubAgentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Agents"
+        },
+        "before_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Agent Callbacks"
+        },
+        "after_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Agent Callbacks"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ParallelAgentConfig",
+      "type": "object"
+    },
+    "SequentialAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for the YAML schema of a SequentialAgent.",
+      "properties": {
+        "agent_class": {
+          "const": "SequentialAgent",
+          "default": "SequentialAgent",
+          "title": "Agent Class",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "sub_agents": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SubAgentConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Agents"
+        },
+        "before_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Agent Callbacks"
+        },
+        "after_agent_callbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodeConfig"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Agent Callbacks"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SequentialAgentConfig",
+      "type": "object"
+    },
+    "SubAgentConfig": {
+      "additionalProperties": false,
+      "description": "The config for a sub-agent.",
+      "properties": {
+        "config": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config"
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Code"
+        }
+      },
+      "title": "SubAgentConfig",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/LlmAgentConfig"
+    },
+    {
+      "$ref": "#/$defs/LoopAgentConfig"
+    },
+    {
+      "$ref": "#/$defs/ParallelAgentConfig"
+    },
+    {
+      "$ref": "#/$defs/SequentialAgentConfig"
+    }
+  ],
+  "description": "The config for the YAML schema to create an agent.",
+  "title": "AgentConfig"
+}

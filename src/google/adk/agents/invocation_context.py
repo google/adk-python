@@ -22,7 +22,9 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..memory.base_memory_service import BaseMemoryService
+from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from .active_streaming_tool import ActiveStreamingTool
@@ -39,9 +41,9 @@ class LlmCallsLimitExceededError(Exception):
 class _InvocationCostManager(BaseModel):
   """A container to keep track of the cost of invocation.
 
-  While we don't expected the metrics captured here to be a direct
-  representatative of monetary cost incurred in executing the current
-  invocation, but they, in someways have an indirect affect.
+  While we don't expect the metrics captured here to be a direct
+  representative of monetary cost incurred in executing the current
+  invocation, they in some ways have an indirect effect.
   """
 
   _number_of_llm_calls: int = 0
@@ -115,6 +117,7 @@ class InvocationContext(BaseModel):
   artifact_service: Optional[BaseArtifactService] = None
   session_service: BaseSessionService
   memory_service: Optional[BaseMemoryService] = None
+  credential_service: Optional[BaseCredentialService] = None
 
   invocation_id: str
   """The id of this invocation context. Readonly."""
@@ -146,10 +149,13 @@ class InvocationContext(BaseModel):
   """The running streaming tools of this invocation."""
 
   transcription_cache: Optional[list[TranscriptionEntry]] = None
-  """Caches necessary, data audio or contents, that are needed by transcription."""
+  """Caches necessary data, audio or contents, that are needed by transcription."""
 
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""
+
+  plugin_manager: PluginManager = PluginManager()
+  """The manager for keeping track of plugins in this invocation."""
 
   _invocation_cost_manager: _InvocationCostManager = _InvocationCostManager()
   """A container to keep track of different kinds of costs incurred as a part

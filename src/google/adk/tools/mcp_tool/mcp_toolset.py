@@ -22,13 +22,16 @@ from typing import TextIO
 from typing import Union
 
 from ...agents.readonly_context import ReadonlyContext
+from ...auth.auth_credential import AuthCredential
+from ...auth.auth_schemes import AuthScheme
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
-from .mcp_session_manager import SseServerParams
-from .mcp_session_manager import StreamableHTTPServerParams
+from .mcp_session_manager import SseConnectionParams
+from .mcp_session_manager import StdioConnectionParams
+from .mcp_session_manager import StreamableHTTPConnectionParams
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
@@ -58,50 +61,60 @@ class MCPToolset(BaseToolset):
   that can be used by an agent. It properly implements the BaseToolset
   interface for easy integration with the agent framework.
 
-  Usage:
-  ```python
-  toolset = MCPToolset(
-      connection_params=StdioServerParameters(
-          command='npx',
-          args=["-y", "@modelcontextprotocol/server-filesystem"],
-      ),
-      tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
-  )
+  Usage::
 
-  # Use in an agent
-  agent = LlmAgent(
-      model='gemini-2.0-flash',
-      name='enterprise_assistant',
-      instruction='Help user accessing their file systems',
-      tools=[toolset],
-  )
+    toolset = MCPToolset(
+        connection_params=StdioServerParameters(
+            command='npx',
+            args=["-y", "@modelcontextprotocol/server-filesystem"],
+        ),
+        tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
+    )
 
-  # Cleanup is handled automatically by the agent framework
-  # But you can also manually close if needed:
-  # await toolset.close()
-  ```
+    # Use in an agent
+    agent = LlmAgent(
+        model='gemini-2.0-flash',
+        name='enterprise_assistant',
+        instruction='Help user accessing their file systems',
+        tools=[toolset],
+    )
+
+    # Cleanup is handled automatically by the agent framework
+    # But you can also manually close if needed:
+    # await toolset.close()
   """
 
   def __init__(
       self,
       *,
-      connection_params: (
-          StdioServerParameters | SseServerParams | StreamableHTTPServerParams
-      ),
+      connection_params: Union[
+          StdioServerParameters,
+          StdioConnectionParams,
+          SseConnectionParams,
+          StreamableHTTPConnectionParams,
+      ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       errlog: TextIO = sys.stderr,
+      auth_scheme: Optional[AuthScheme] = None,
+      auth_credential: Optional[AuthCredential] = None,
   ):
     """Initializes the MCPToolset.
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
-        `StdioServerParameters` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseServerParams` for a local/remote SSE server; or
-        `StreamableHTTPServerParams` for local/remote Streamable http server.
-      tool_filter: Optional filter to select specific tools. Can be either:
-            - A list of tool names to include
-            - A ToolPredicate function for custom filtering logic
-        errlog: TextIO stream for error logging.
+        ``StdioConnectionParams`` for using local mcp server (e.g. using ``npx`` or
+        ``python3``); or ``SseConnectionParams`` for a local/remote SSE server; or
+        ``StreamableHTTPConnectionParams`` for local/remote Streamable http
+        server. Note, ``StdioServerParameters`` is also supported for using local
+        mcp server (e.g. using ``npx`` or ``python3`` ), but it does not support
+        timeout, and we recommend to use ``StdioConnectionParams`` instead when
+        timeout is needed.
+      tool_filter: Optional filter to select specific tools. Can be either: - A
+        list of tool names to include - A ToolPredicate function for custom
+        filtering logic
+      errlog: TextIO stream for error logging.
+      auth_scheme: The auth scheme of the tool for tool calling
+      auth_credential: The auth credential of the tool for tool calling
     """
     super().__init__(tool_filter=tool_filter)
 
@@ -116,10 +129,10 @@ class MCPToolset(BaseToolset):
         connection_params=self._connection_params,
         errlog=self._errlog,
     )
+    self._auth_scheme = auth_scheme
+    self._auth_credential = auth_credential
 
-    self._session = None
-
-  @retry_on_closed_resource("_reinitialize_session")
+  @retry_on_closed_resource
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
@@ -134,11 +147,10 @@ class MCPToolset(BaseToolset):
         List[BaseTool]: A list of tools available under the specified context.
     """
     # Get session from session manager
-    if not self._session:
-      self._session = await self._mcp_session_manager.create_session()
+    session = await self._mcp_session_manager.create_session()
 
     # Fetch available tools from the MCP server
-    tools_response: ListToolsResult = await self._session.list_tools()
+    tools_response: ListToolsResult = await session.list_tools()
 
     # Apply filtering based on context and tool_filter
     tools = []
@@ -146,19 +158,13 @@ class MCPToolset(BaseToolset):
       mcp_tool = MCPTool(
           mcp_tool=tool,
           mcp_session_manager=self._mcp_session_manager,
+          auth_scheme=self._auth_scheme,
+          auth_credential=self._auth_credential,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
     return tools
-
-  async def _reinitialize_session(self):
-    """Reinitializes the session when connection is lost."""
-    # Close the old session and clear cache
-    await self._mcp_session_manager.close()
-    self._session = await self._mcp_session_manager.create_session()
-
-    # Tools will be reloaded on next get_tools call
 
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
@@ -172,7 +178,3 @@ class MCPToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
-    finally:
-      # Clear cached tools
-      self._tools_cache = None
-      self._tools_loaded = False

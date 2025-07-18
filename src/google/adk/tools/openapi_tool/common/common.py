@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import keyword
-import re
 from typing import Any
 from typing import Dict
 from typing import List
@@ -26,47 +27,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_serializer
 
-
-def to_snake_case(text: str) -> str:
-  """Converts a string into snake_case.
-
-  Handles lowerCamelCase, UpperCamelCase, or space-separated case, acronyms
-  (e.g., "REST API") and consecutive uppercase letters correctly.  Also handles
-  mixed cases with and without spaces.
-
-  Examples:
-  ```
-  to_snake_case('camelCase') -> 'camel_case'
-  to_snake_case('UpperCamelCase') -> 'upper_camel_case'
-  to_snake_case('space separated') -> 'space_separated'
-  ```
-
-  Args:
-      text: The input string.
-
-  Returns:
-      The snake_case version of the string.
-  """
-
-  # Handle spaces and non-alphanumeric characters (replace with underscores)
-  text = re.sub(r'[^a-zA-Z0-9]+', '_', text)
-
-  # Insert underscores before uppercase letters (handling both CamelCases)
-  text = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', text)  # lowerCamelCase
-  text = re.sub(
-      r'([A-Z]+)([A-Z][a-z])', r'\1_\2', text
-  )  # UpperCamelCase and acronyms
-
-  # Convert to lowercase
-  text = text.lower()
-
-  # Remove consecutive underscores (clean up extra underscores)
-  text = re.sub(r'_+', '_', text)
-
-  # Remove leading and trailing underscores
-  text = text.strip('_')
-
-  return text
+from ..._gemini_schema_util import _to_snake_case
 
 
 def rename_python_keywords(s: str, prefix: str = 'param_') -> str:
@@ -106,7 +67,7 @@ class ApiParameter(BaseModel):
     self.py_name = (
         self.py_name
         if self.py_name
-        else rename_python_keywords(to_snake_case(self.original_name))
+        else rename_python_keywords(_to_snake_case(self.original_name))
     )
     if isinstance(self.param_schema, str):
       self.param_schema = Schema.model_validate_json(self.param_schema)

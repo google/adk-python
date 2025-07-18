@@ -129,6 +129,7 @@ async def test_run_input_file_outputs(
 
   artifact_service = cli.InMemoryArtifactService()
   session_service = cli.InMemorySessionService()
+  credential_service = cli.InMemoryCredentialService()
   dummy_root = types.SimpleNamespace(name="root")
 
   session = await cli.run_input_file(
@@ -137,6 +138,7 @@ async def test_run_input_file_outputs(
       root_agent=dummy_root,
       artifact_service=artifact_service,
       session_service=session_service,
+      credential_service=credential_service,
       input_path=str(input_path),
   )
 
@@ -199,9 +201,10 @@ async def test_run_interactively_whitespace_and_exit(
 ) -> None:
   """run_interactively should skip blank input, echo once, then exit."""
   # make a session that belongs to dummy agent
-  svc = cli.InMemorySessionService()
-  sess = await svc.create_session(app_name="dummy", user_id="u")
+  session_service = cli.InMemorySessionService()
+  sess = await session_service.create_session(app_name="dummy", user_id="u")
   artifact_service = cli.InMemoryArtifactService()
+  credential_service = cli.InMemoryCredentialService()
   root_agent = types.SimpleNamespace(name="root")
 
   # fake user input: blank -> 'hello' -> 'exit'
@@ -212,7 +215,9 @@ async def test_run_interactively_whitespace_and_exit(
   echoed: list[str] = []
   monkeypatch.setattr(click, "echo", lambda msg: echoed.append(msg))
 
-  await cli.run_interactively(root_agent, artifact_service, sess, svc)
+  await cli.run_interactively(
+      root_agent, artifact_service, sess, session_service, credential_service
+  )
 
   # verify: assistant echoed once with 'echo:hello'
   assert any("echo:hello" in m for m in echoed)

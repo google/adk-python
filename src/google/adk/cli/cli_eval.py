@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -26,10 +27,12 @@ import uuid
 
 from ..agents import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
+from ..evaluation.eval_metrics import JudgeModelOptions
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.evaluator import EvalStatus
 from ..evaluation.evaluator import Evaluator
@@ -38,12 +41,10 @@ from ..sessions.base_session_service import BaseSessionService
 logger = logging.getLogger("google_adk." + __name__)
 
 
-MISSING_EVAL_DEPENDENCIES_MESSAGE = (
-    "Eval module is not installed, please install via `pip install"
-    " google-adk[eval]`."
-)
 TOOL_TRAJECTORY_SCORE_KEY = "tool_trajectory_avg_score"
 RESPONSE_MATCH_SCORE_KEY = "response_match_score"
+SAFETY_V1_KEY = "safety_v1"
+FINAL_RESPONSE_MATCH_V2 = "final_response_match_v2"
 # This evaluation is not very stable.
 # This is always optional unless explicitly specified.
 RESPONSE_EVALUATION_SCORE_KEY = "response_evaluation_score"
@@ -150,7 +151,7 @@ async def run_evals(
     artifact_service: The artifact service to use during inferencing.
   """
   try:
-    from ..evaluation.agent_evaluator import EvaluationGenerator
+    from ..evaluation.evaluation_generator import EvaluationGenerator
   except ModuleNotFoundError as e:
     raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
 
@@ -193,10 +194,16 @@ async def run_evals(
         for eval_metric in eval_metrics:
           metric_evaluator = _get_evaluator(eval_metric)
 
-          evaluation_result = metric_evaluator.evaluate_invocations(
-              actual_invocations=inference_result,
-              expected_invocations=eval_case.conversation,
-          )
+          if inspect.iscoroutinefunction(metric_evaluator.evaluate_invocations):
+            evaluation_result = await metric_evaluator.evaluate_invocations(
+                actual_invocations=inference_result,
+                expected_invocations=eval_case.conversation,
+            )
+          else:
+            evaluation_result = metric_evaluator.evaluate_invocations(
+                actual_invocations=inference_result,
+                expected_invocations=eval_case.conversation,
+            )
 
           overall_eval_metric_results.append(
               EvalMetricResult(
@@ -252,7 +259,8 @@ async def run_evals(
           result = "❌ Failed"
 
         print(f"Result: {result}\n")
-
+      except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
       except Exception:
         # Catching the general exception, so that we don't block other eval
         # cases.
@@ -261,7 +269,9 @@ async def run_evals(
 
 def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
   try:
+    from ..evaluation.final_response_match_v2 import FinalResponseMatchV2Evaluator
     from ..evaluation.response_evaluator import ResponseEvaluator
+    from ..evaluation.safety_evaluator import SafetyEvaluatorV1
     from ..evaluation.trajectory_evaluator import TrajectoryEvaluator
   except ModuleNotFoundError as e:
     raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
@@ -274,5 +284,10 @@ def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
     return ResponseEvaluator(
         threshold=eval_metric.threshold, metric_name=eval_metric.metric_name
     )
+  elif eval_metric.metric_name == SAFETY_V1_KEY:
+    return SafetyEvaluatorV1(eval_metric)
+  elif eval_metric.metric_name == FINAL_RESPONSE_MATCH_V2:
+    eval_metric.judge_model_options = JudgeModelOptions()
+    return FinalResponseMatchV2Evaluator(eval_metric)
 
   raise ValueError(f"Unsupported eval metric: {eval_metric}")

@@ -19,9 +19,15 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import Dict
 from typing import final
+from typing import List
+from typing import Literal
+from typing import Mapping
 from typing import Optional
+from typing import Type
 from typing import TYPE_CHECKING
+from typing import TypeVar
 from typing import Union
 
 from google.genai import types
@@ -30,11 +36,14 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
+from pydantic import model_validator
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
 from ..events.event import Event
+from ..utils.feature_decorator import working_in_progress
 from .callback_context import CallbackContext
+from .common_configs import CodeConfig
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
@@ -55,6 +64,8 @@ AfterAgentCallback: TypeAlias = Union[
     _SingleAgentCallback,
     list[_SingleAgentCallback],
 ]
+
+SelfAgent = TypeVar('SelfAgent', bound='BaseAgent')
 
 
 class BaseAgent(BaseModel):
@@ -121,6 +132,56 @@ class BaseAgent(BaseModel):
       response and appended to event history as agent response.
   """
 
+  def clone(
+      self: SelfAgent, update: Mapping[str, Any] | None = None
+  ) -> SelfAgent:
+    """Creates a copy of this agent instance.
+
+    Args:
+      update: Optional mapping of new values for the fields of the cloned agent.
+        The keys of the mapping are the names of the fields to be updated, and
+        the values are the new values for those fields.
+        For example: {"name": "cloned_agent"}
+
+    Returns:
+      A new agent instance with identical configuration as the original
+      agent except for the fields specified in the update.
+    """
+    if update is not None and 'parent_agent' in update:
+      raise ValueError(
+          'Cannot update `parent_agent` field in clone. Parent agent is set'
+          ' only when the parent agent is instantiated with the sub-agents.'
+      )
+
+    # Only allow updating fields that are defined in the agent class.
+    allowed_fields = set(self.__class__.model_fields)
+    if update is not None:
+      invalid_fields = set(update) - allowed_fields
+      if invalid_fields:
+        raise ValueError(
+            f'Cannot update non-existent fields in {self.__class__.__name__}:'
+            f' {invalid_fields}'
+        )
+
+    cloned_agent = self.model_copy(update=update)
+
+    if update is None or 'sub_agents' not in update:
+      # If `sub_agents` is not provided in the update, need to recursively clone
+      # the sub-agents to avoid sharing the sub-agents with the original agent.
+      cloned_agent.sub_agents = []
+      for sub_agent in self.sub_agents:
+        cloned_sub_agent = sub_agent.clone()
+        cloned_sub_agent.parent_agent = cloned_agent
+        cloned_agent.sub_agents.append(cloned_sub_agent)
+    else:
+      for sub_agent in cloned_agent.sub_agents:
+        sub_agent.parent_agent = cloned_agent
+
+    # Remove the parent agent from the cloned agent to avoid sharing the parent
+    # agent with the cloned agent.
+    cloned_agent.parent_agent = None
+    return cloned_agent
+
   @final
   async def run_async(
       self,
@@ -169,9 +230,16 @@ class BaseAgent(BaseModel):
     """
     with tracer.start_as_current_span(f'agent_run [{self.name}]'):
       ctx = self._create_invocation_context(parent_context)
-      # TODO(hangfei): support before/after_agent_callback
+
+      if event := await self.__handle_before_agent_callback(ctx):
+        yield event
+      if ctx.end_invocation:
+        return
 
       async for event in self._run_live_impl(ctx):
+        yield event
+
+      if event := await self.__handle_after_agent_callback(ctx):
         yield event
 
   async def _run_async_impl(
@@ -246,8 +314,6 @@ class BaseAgent(BaseModel):
   ) -> InvocationContext:
     """Creates a new invocation context for this agent."""
     invocation_context = parent_context.model_copy(update={'agent': self})
-    if parent_context.branch:
-      invocation_context.branch = f'{parent_context.branch}.{self.name}'
     return invocation_context
 
   @property
@@ -279,73 +345,99 @@ class BaseAgent(BaseModel):
   ) -> Optional[Event]:
     """Runs the before_agent_callback if it exists.
 
+    Args:
+      ctx: InvocationContext, the invocation context for this agent.
+
     Returns:
       Optional[Event]: an event if callback provides content or changed state.
     """
-    ret_event = None
-
-    if not self.canonical_before_agent_callbacks:
-      return ret_event
-
     callback_context = CallbackContext(ctx)
 
-    for callback in self.canonical_before_agent_callbacks:
-      before_agent_callback_content = callback(
-          callback_context=callback_context
-      )
-      if inspect.isawaitable(before_agent_callback_content):
-        before_agent_callback_content = await before_agent_callback_content
-      if before_agent_callback_content:
-        ret_event = Event(
-            invocation_id=ctx.invocation_id,
-            author=self.name,
-            branch=ctx.branch,
-            content=before_agent_callback_content,
-            actions=callback_context._event_actions,
+    # Run callbacks from the plugins.
+    before_agent_callback_content = (
+        await ctx.plugin_manager.run_before_agent_callback(
+            agent=self, callback_context=callback_context
         )
-        ctx.end_invocation = True
-        return ret_event
+    )
+
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    if (
+        not before_agent_callback_content
+        and self.canonical_before_agent_callbacks
+    ):
+      for callback in self.canonical_before_agent_callbacks:
+        before_agent_callback_content = callback(
+            callback_context=callback_context
+        )
+        if inspect.isawaitable(before_agent_callback_content):
+          before_agent_callback_content = await before_agent_callback_content
+        if before_agent_callback_content:
+          break
+
+    # Process the override content if exists, and further process the state
+    # change if exists.
+    if before_agent_callback_content:
+      ret_event = Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          branch=ctx.branch,
+          content=before_agent_callback_content,
+          actions=callback_context._event_actions,
+      )
+      ctx.end_invocation = True
+      return ret_event
 
     if callback_context.state.has_delta():
-      ret_event = Event(
+      return Event(
           invocation_id=ctx.invocation_id,
           author=self.name,
           branch=ctx.branch,
           actions=callback_context._event_actions,
       )
 
-    return ret_event
+    return None
 
   async def __handle_after_agent_callback(
       self, invocation_context: InvocationContext
   ) -> Optional[Event]:
     """Runs the after_agent_callback if it exists.
 
+    Args:
+      invocation_context: InvocationContext, the invocation context for this
+        agent.
+
     Returns:
       Optional[Event]: an event if callback provides content or changed state.
     """
-    ret_event = None
-
-    if not self.canonical_after_agent_callbacks:
-      return ret_event
 
     callback_context = CallbackContext(invocation_context)
 
-    for callback in self.canonical_after_agent_callbacks:
-      after_agent_callback_content = callback(callback_context=callback_context)
-      if inspect.isawaitable(after_agent_callback_content):
-        after_agent_callback_content = await after_agent_callback_content
-      if after_agent_callback_content:
-        ret_event = Event(
-            invocation_id=invocation_context.invocation_id,
-            author=self.name,
-            branch=invocation_context.branch,
-            content=after_agent_callback_content,
-            actions=callback_context._event_actions,
+    # Run callbacks from the plugins.
+    after_agent_callback_content = (
+        await invocation_context.plugin_manager.run_after_agent_callback(
+            agent=self, callback_context=callback_context
         )
-        return ret_event
+    )
 
-    if callback_context.state.has_delta():
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    if (
+        not after_agent_callback_content
+        and self.canonical_after_agent_callbacks
+    ):
+      for callback in self.canonical_after_agent_callbacks:
+        after_agent_callback_content = callback(
+            callback_context=callback_context
+        )
+        if inspect.isawaitable(after_agent_callback_content):
+          after_agent_callback_content = await after_agent_callback_content
+        if after_agent_callback_content:
+          break
+
+    # Process the override content if exists, and further process the state
+    # change if exists.
+    if after_agent_callback_content:
       ret_event = Event(
           invocation_id=invocation_context.invocation_id,
           author=self.name,
@@ -353,8 +445,17 @@ class BaseAgent(BaseModel):
           content=after_agent_callback_content,
           actions=callback_context._event_actions,
       )
+      return ret_event
 
-    return ret_event
+    if callback_context.state.has_delta():
+      return Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          branch=invocation_context.branch,
+          content=after_agent_callback_content,
+          actions=callback_context._event_actions,
+      )
+    return None
 
   @override
   def model_post_init(self, __context: Any) -> None:
@@ -387,3 +488,147 @@ class BaseAgent(BaseModel):
         )
       sub_agent.parent_agent = self
     return self
+
+  @classmethod
+  @working_in_progress('BaseAgent.from_config is not ready for use.')
+  def from_config(
+      cls: Type[SelfAgent],
+      config: BaseAgentConfig,
+      config_abs_path: str,
+  ) -> SelfAgent:
+    """Creates an agent from a config.
+
+    This method converts fields in a config to the corresponding
+    fields in an agent.
+
+    Child classes should re-implement this method to support loading from their
+    custom config types.
+
+    Args:
+      config: The config to create the agent from.
+
+    Returns:
+      The created agent.
+    """
+    from .config_agent_utils import build_sub_agent
+    from .config_agent_utils import resolve_callbacks
+
+    kwargs: Dict[str, Any] = {
+        'name': config.name,
+        'description': config.description,
+    }
+    if config.sub_agents:
+      sub_agents = []
+      for sub_agent_config in config.sub_agents:
+        sub_agent = build_sub_agent(
+            sub_agent_config, config_abs_path.rsplit('/', 1)[0]
+        )
+        sub_agents.append(sub_agent)
+      kwargs['sub_agents'] = sub_agents
+
+    if config.before_agent_callbacks:
+      kwargs['before_agent_callback'] = resolve_callbacks(
+          config.before_agent_callbacks
+      )
+    if config.after_agent_callbacks:
+      kwargs['after_agent_callback'] = resolve_callbacks(
+          config.after_agent_callbacks
+      )
+    return cls(**kwargs)
+
+
+class SubAgentConfig(BaseModel):
+  """The config for a sub-agent."""
+
+  model_config = ConfigDict(extra='forbid')
+
+  config: Optional[str] = None
+  """The YAML config file path of the sub-agent.
+
+  Only one of `config` or `code` can be set.
+
+  Example:
+
+    ```
+    sub_agents:
+      - config: search_agent.yaml
+      - config: my_library/my_custom_agent.yaml
+    ```
+  """
+
+  code: Optional[str] = None
+  """The agent instance defined in the code.
+
+  Only one of `config` or `code` can be set.
+
+  Example:
+
+    For the following agent defined in Python code:
+
+    ```
+    # my_library/custom_agents.py
+    from google.adk.agents import LlmAgent
+
+    my_custom_agent = LlmAgent(
+        name="my_custom_agent",
+        instruction="You are a helpful custom agent.",
+        model="gemini-2.0-flash",
+    )
+    ```
+
+    The yaml config should be:
+
+    ```
+    sub_agents:
+      - code: my_library.custom_agents.my_custom_agent
+    ```
+  """
+
+  @model_validator(mode='after')
+  def validate_exactly_one_field(self):
+    code_provided = self.code is not None
+    config_provided = self.config is not None
+
+    if code_provided and config_provided:
+      raise ValueError('Only one of code or config should be provided')
+    if not code_provided and not config_provided:
+      raise ValueError('Exactly one of code or config must be provided')
+
+    return self
+
+
+@working_in_progress('BaseAgentConfig is not ready for use.')
+class BaseAgentConfig(BaseModel):
+  """The config for the YAML schema of a BaseAgent.
+
+  Do not use this class directly. It's the base class for all agent configs.
+  """
+
+  model_config = ConfigDict(extra='forbid')
+
+  agent_class: Literal['BaseAgent'] = 'BaseAgent'
+  """Required. The class of the agent. The value is used to differentiate
+  among different agent classes."""
+
+  name: str
+  """Required. The name of the agent."""
+
+  description: str = ''
+  """Optional. The description of the agent."""
+
+  sub_agents: Optional[List[SubAgentConfig]] = None
+  """Optional. The sub-agents of the agent."""
+
+  before_agent_callbacks: Optional[List[CodeConfig]] = None
+  """Optional. The before_agent_callbacks of the agent.
+
+  Example:
+
+    ```
+    before_agent_callbacks:
+      - name: my_library.security_callbacks.before_agent_callback
+    ```
+  """
+
+  after_agent_callbacks: Optional[List[CodeConfig]] = None
+  """Optional. The after_agent_callbacks of the agent."""

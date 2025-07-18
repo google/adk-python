@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 import logging
 from typing import Literal
 from typing import Optional
 
-from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
 from ....auth.auth_credential import AuthCredential
@@ -25,6 +25,7 @@ from ....auth.auth_credential import AuthCredentialTypes
 from ....auth.auth_schemes import AuthScheme
 from ....auth.auth_schemes import AuthSchemeType
 from ....auth.auth_tool import AuthConfig
+from ....auth.refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
 from ...tool_context import ToolContext
 from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuthCredentialExchanger
 from ..auth.credential_exchangers.base_credential_exchanger import AuthCredentialMissingError
@@ -95,10 +96,9 @@ class ToolContextCredentialStore:
       auth_credential: Optional[AuthCredential],
   ):
     if self.tool_context:
-      serializable_credential = jsonable_encoder(
-          auth_credential, exclude_none=True
+      self.tool_context.state[key] = auth_credential.model_dump(
+          exclude_none=True
       )
-      self.tool_context.state[key] = serializable_credential
 
   def remove_credential(self, key: str):
     del self.tool_context.state[key]
@@ -146,20 +146,22 @@ class ToolAuthHandler:
         credential_store,
     )
 
-  def _handle_existing_credential(
+  async def _get_existing_credential(
       self,
-  ) -> Optional[AuthPreparationResult]:
+  ) -> Optional[AuthCredential]:
     """Checks for and returns an existing, exchanged credential."""
     if self.credential_store:
       existing_credential = self.credential_store.get_credential(
           self.auth_scheme, self.auth_credential
       )
       if existing_credential:
-        return AuthPreparationResult(
-            state="done",
-            auth_scheme=self.auth_scheme,
-            auth_credential=existing_credential,
-        )
+        if existing_credential.oauth2:
+          refresher = OAuth2CredentialRefresher()
+          if await refresher.is_refresh_needed(existing_credential):
+            existing_credential = await refresher.refresh(
+                existing_credential, self.auth_scheme
+            )
+        return existing_credential
     return None
 
   def _exchange_credential(
@@ -185,7 +187,7 @@ class ToolAuthHandler:
       )
       self.credential_store.store_credential(key, auth_credential)
 
-  def _reqeust_credential(self) -> None:
+  def _request_credential(self) -> None:
     """Handles the case where an OpenID Connect or OAuth2 authentication request is needed."""
     if self.auth_scheme.type_ in (
         AuthSchemeType.openIdConnect,
@@ -223,12 +225,17 @@ class ToolAuthHandler:
         )
     )
 
-  def _request_credential(self, auth_config: AuthConfig):
-    if not self.tool_context:
-      return
-    self.tool_context.request_credential(auth_config)
+  def _external_exchange_required(self, credential) -> bool:
+    return (
+        credential.auth_type
+        in (
+            AuthCredentialTypes.OAUTH2,
+            AuthCredentialTypes.OPEN_ID_CONNECT,
+        )
+        and not credential.oauth2.access_token
+    )
 
-  def prepare_auth_credentials(
+  async def prepare_auth_credentials(
       self,
   ) -> AuthPreparationResult:
     """Prepares authentication credentials, handling exchange and user interaction."""
@@ -238,31 +245,41 @@ class ToolAuthHandler:
       return AuthPreparationResult(state="done")
 
     # Check for existing credential.
-    existing_result = self._handle_existing_credential()
-    if existing_result:
-      return existing_result
+    existing_credential = await self._get_existing_credential()
 
+    credential = existing_credential or self.auth_credential
     # fetch credential from adk framework
     # Some auth scheme like OAuth2 AuthCode & OpenIDConnect may require
     # multi-step exchange:
     # client_id , client_secret -> auth_uri -> auth_code -> access_token
-    # -> bearer token
     # adk framework supports exchange access_token already
-    fetched_credential = self._get_auth_response() or self.auth_credential
+    # for other credential, adk can also get back the credential directly
+    if not credential or self._external_exchange_required(credential):
+      credential = self._get_auth_response()
+      # store fetched credential
+      if credential:
+        self._store_credential(credential)
+      else:
+        self._request_credential()
+        return AuthPreparationResult(
+            state="pending",
+            auth_scheme=self.auth_scheme,
+            auth_credential=self.auth_credential,
+        )
 
-    exchanged_credential = self._exchange_credential(fetched_credential)
+    # here exchangers are doing two different thing:
+    # for service account the exchanger is doing actualy token exchange
+    # while for oauth2 it's actually doing the credentail conversion
+    # from OAuth2 credential to HTTP credentails for setting credential in
+    # http header
+    # TODO cleanup the logic:
+    # 1. service account token exchanger should happen before we store them in
+    #    the token store
+    # 2. blow line should only do credential conversion
 
-    if exchanged_credential:
-      self._store_credential(exchanged_credential)
-      return AuthPreparationResult(
-          state="done",
-          auth_scheme=self.auth_scheme,
-          auth_credential=exchanged_credential,
-      )
-    else:
-      self._reqeust_credential()
-      return AuthPreparationResult(
-          state="pending",
-          auth_scheme=self.auth_scheme,
-          auth_credential=self.auth_credential,
-      )
+    exchanged_credential = self._exchange_credential(credential)
+    return AuthPreparationResult(
+        state="done",
+        auth_scheme=self.auth_scheme,
+        auth_credential=exchanged_credential,
+    )

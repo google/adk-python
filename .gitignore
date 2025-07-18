@@ -82,6 +82,7 @@ log/
 .env.development.local
 .env.test.local
 .env.production.local
+uv.lock
 
 # Google Cloud specific
 .gcloudignore
@@ -96,4 +97,4 @@ site/
 Thumbs.db
 *.bak
 *.tmp
-*.temp 
+*.temp

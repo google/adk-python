@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
@@ -64,7 +65,7 @@ class BaseToolset(ABC):
     """Return all tools in the toolset based on the provided context.
 
     Args:
-      readony_context (ReadonlyContext, optional): Context used to filter tools
+      readonly_context (ReadonlyContext, optional): Context used to filter tools
         available to the agent. If None, all tools in the toolset are returned.
 
     Returns:
@@ -75,10 +76,11 @@ class BaseToolset(ABC):
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
-    NOTE: This method is invoked, for example, at the end of an agent server's
-    lifecycle or when the toolset is no longer needed. Implementations
-    should ensure that any open connections, files, or other managed
-    resources are properly released to prevent leaks.
+    NOTE:
+      This method is invoked, for example, at the end of an agent server's
+      lifecycle or when the toolset is no longer needed. Implementations
+      should ensure that any open connections, files, or other managed
+      resources are properly released to prevent leaks.
     """
 
   def _is_tool_selected(

@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.genai import Client
-from google.genai import types
-
 from google.adk import Agent
 from google.adk.tools import load_artifacts
 from google.adk.tools import ToolContext
+from google.genai import Client
+from google.genai import types
 
 # Only Vertex AI supports image generation for now.
 client = Client()

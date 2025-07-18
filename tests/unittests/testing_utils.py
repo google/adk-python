@@ -30,6 +30,8 @@ from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.runners import InMemoryRunner as AfInMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -56,7 +58,12 @@ class ModelContent(types.Content):
     super().__init__(role='model', parts=parts)
 
 
-async def create_invocation_context(agent: Agent, user_content: str = ''):
+async def create_invocation_context(
+    agent: Agent,
+    user_content: str = '',
+    run_config: RunConfig = None,
+    plugins: list[BasePlugin] = [],
+):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
   session_service = InMemorySessionService()
@@ -65,6 +72,7 @@ async def create_invocation_context(agent: Agent, user_content: str = ''):
       artifact_service=artifact_service,
       session_service=session_service,
       memory_service=memory_service,
+      plugin_manager=PluginManager(plugins=plugins),
       invocation_id=invocation_id,
       agent=agent,
       session=await session_service.create_session(
@@ -73,7 +81,7 @@ async def create_invocation_context(agent: Agent, user_content: str = ''):
       user_content=types.Content(
           role='user', parts=[types.Part.from_text(text=user_content)]
       ),
-      run_config=RunConfig(),
+      run_config=run_config or RunConfig(),
   )
   if user_content:
     append_user_content(
@@ -163,6 +171,7 @@ class InMemoryRunner:
       self,
       root_agent: Union[Agent, LlmAgent],
       response_modalities: list[str] = None,
+      plugins: list[BasePlugin] = [],
   ):
     self.root_agent = root_agent
     self.runner = Runner(
@@ -171,6 +180,7 @@ class InMemoryRunner:
         artifact_service=InMemoryArtifactService(),
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
+        plugins=plugins,
     )
     self.session_id = None
 
@@ -205,13 +215,16 @@ class InMemoryRunner:
       events.append(event)
     return events
 
-  def run_live(self, live_request_queue: LiveRequestQueue) -> list[Event]:
+  def run_live(
+      self, live_request_queue: LiveRequestQueue, run_config: RunConfig = None
+  ) -> list[Event]:
     collected_responses = []
 
     async def consume_responses(session: Session):
       run_res = self.runner.run_live(
           session=session,
           live_request_queue=live_request_queue,
+          run_config=run_config or RunConfig(),
       )
 
       async for response in run_res:

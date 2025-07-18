@@ -12,16 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
-from typing import cast
+from __future__ import annotations
 
-from deprecated import deprecated
+from typing import Any
+from typing import Optional
+
 from google.genai import types as genai_types
 import pandas as pd
 from tabulate import tabulate
+from typing_extensions import deprecated
 from typing_extensions import override
 
 from .eval_case import Invocation
+from .eval_metrics import EvalMetric
 from .evaluation_constants import EvalConstants
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -32,7 +35,20 @@ from .evaluator import PerInvocationResult
 class TrajectoryEvaluator(Evaluator):
   """Evaluates tool use trajectories for accuracy."""
 
-  def __init__(self, threshold: float):
+  def __init__(
+      self,
+      threshold: Optional[float] = None,
+      eval_metric: Optional[EvalMetric] = None,
+  ):
+    if threshold is not None and eval_metric:
+      raise ValueError(
+          "Either eval_metric should be specified or threshold should be"
+          " specified."
+      )
+
+    if eval_metric:
+      threshold = eval_metric.threshold
+
     self._threshold = threshold
 
   @override
@@ -100,10 +116,8 @@ class TrajectoryEvaluator(Evaluator):
 
   @staticmethod
   @deprecated(
-      reason=(
-          "This method has been deprecated and will be removed soon. Please use"
-          " evaluate_invocations instead."
-      )
+      "This method has been deprecated and will be removed soon. Please use"
+      " evaluate_invocations instead."
   )
   def evaluate(
       eval_dataset: list[list[dict[str, Any]]],
@@ -218,7 +232,10 @@ class TrajectoryEvaluator(Evaluator):
     return new_row, failure
 
   @staticmethod
-  @deprecated()
+  @deprecated(
+      "are_tools_equal is deprecated and will be removed soon. Please use"
+      " TrajectoryEvaluator._are_tool_calls_equal instead."
+  )
   def are_tools_equal(list_a_original, list_b_original):
     # Remove other entries that we don't want to evaluate
     list_a = [

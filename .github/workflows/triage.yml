@@ -1,0 +1,44 @@
+name: ADK Issue Triaging Agent
+
+on:
+  issues:
+    types: [opened, reopened]
+  schedule:
+    - cron: '0 */6 * * *' # every 6h
+
+jobs:
+  agent-triage-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-adk
+
+      - name: Run Triaging Script
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: 0
+          OWNER: 'google'
+          REPO: 'adk-python'
+          INTERACTIVE: 0
+          EVENT_NAME: ${{ github.event_name }} # 'issues', 'schedule', etc.
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_COUNT_TO_PROCESS: '3' # Process 3 issues at a time on schedule
+          PYTHONPATH: contributing/samples
+        run: python -m adk_triaging_agent.main

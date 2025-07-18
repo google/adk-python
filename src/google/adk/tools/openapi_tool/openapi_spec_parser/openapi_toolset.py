@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import json
 import logging
 from typing import Any
@@ -39,8 +41,8 @@ logger = logging.getLogger("google_adk." + __name__)
 class OpenAPIToolset(BaseToolset):
   """Class for parsing OpenAPI spec into a list of RestApiTool.
 
-  Usage:
-  ```
+  Usage::
+
     # Initialize OpenAPI toolset from a spec string.
     openapi_toolset = OpenAPIToolset(spec_str=openapi_spec_str,
       spec_str_type="json")
@@ -55,7 +57,6 @@ class OpenAPIToolset(BaseToolset):
     agent = Agent(
       tools=[openapi_toolset.get_tool('tool_name')]
     )
-  ```
   """
 
   def __init__(
@@ -70,8 +71,8 @@ class OpenAPIToolset(BaseToolset):
   ):
     """Initializes the OpenAPIToolset.
 
-    Usage:
-    ```
+    Usage::
+
       # Initialize OpenAPI toolset from a spec string.
       openapi_toolset = OpenAPIToolset(spec_str=openapi_spec_str,
         spec_str_type="json")
@@ -86,7 +87,6 @@ class OpenAPIToolset(BaseToolset):
       agent = Agent(
         tools=[openapi_toolset.get_tool('tool_name')]
       )
-    ```
 
     Args:
       spec_dict: The OpenAPI spec dictionary. If provided, it will be used
@@ -96,10 +96,10 @@ class OpenAPIToolset(BaseToolset):
       spec_str_type: The type of the OpenAPI spec string. Can be "json" or
         "yaml".
       auth_scheme: The auth scheme to use for all tools. Use AuthScheme or use
-        helpers in `google.adk.tools.openapi_tool.auth.auth_helpers`
+        helpers in ``google.adk.tools.openapi_tool.auth.auth_helpers``
       auth_credential: The auth credential to use for all tools. Use
         AuthCredential or use helpers in
-        `google.adk.tools.openapi_tool.auth.auth_helpers`
+        ``google.adk.tools.openapi_tool.auth.auth_helpers``
       tool_filter: The filter used to filter the tools in the toolset. It can be
         either a tool predicate or a list of tool names of the tools to expose.
     """

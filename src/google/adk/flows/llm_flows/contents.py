@@ -43,8 +43,16 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     if not isinstance(agent, LlmAgent):
       return
 
-    if agent.include_contents != 'none':
+    if agent.include_contents == 'default':
+      # Include full conversation history
       llm_request.contents = _get_contents(
+          invocation_context.branch,
+          invocation_context.session.events,
+          agent.name,
+      )
+    else:
+      # Include current turn context only (no conversation history)
+      llm_request.contents = _get_current_turn_contents(
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
@@ -149,12 +157,21 @@ def _rearrange_events_for_latest_function_response(
       for function_call in function_calls:
         if function_call.id in function_responses_ids:
           function_call_event_idx = idx
-          break
-        if function_call_event_idx != -1:
-          # in case the last response event only have part of the responses
-          # for the function calls in the function call event
-          for function_call in function_calls:
-            function_responses_ids.add(function_call.id)
+          function_call_ids = {
+              function_call.id for function_call in function_calls
+          }
+          # last response event should only contain the responses for the
+          # function calls in the same function call event
+          if not function_responses_ids.issubset(function_call_ids):
+            raise ValueError(
+                'Last response event should only contain the responses for the'
+                ' function calls in the same function call event. Function'
+                f' call ids found : {function_call_ids}, function response'
+                f' ids provided: {function_responses_ids}'
+            )
+          # collect all function responses from the function call event to
+          # the last response event
+          function_responses_ids = function_call_ids
           break
 
   if function_call_event_idx == -1:
@@ -170,10 +187,10 @@ def _rearrange_events_for_latest_function_response(
   for idx in range(function_call_event_idx + 1, len(events) - 1):
     event = events[idx]
     function_responses = event.get_function_responses()
-    if (
-        function_responses
-        and function_responses[0].id in function_responses_ids
-    ):
+    if function_responses and any([
+        function_response.id in function_responses_ids
+        for function_response in function_responses
+    ]):
       function_response_events.append(event)
   function_response_events.append(events[-1])
 
@@ -190,13 +207,15 @@ def _get_contents(
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
+  Applies filtering, rearrangement, and content processing to events.
+
   Args:
     current_branch: The current branch of the agent.
-    events: A list of events.
+    events: Events to process.
     agent_name: The name of the agent.
 
   Returns:
-    A list of contents.
+    A list of processed contents.
   """
   filtered_events = []
   # Parse the events, leaving the contents and the function calls and
@@ -211,12 +230,13 @@ def _get_contents(
       # Skip events without content, or generated neither by user nor by model
       # or has empty text.
       # E.g. events purely for mutating session states.
+
       continue
     if not _is_event_belongs_to_branch(current_branch, event):
       # Skip events not belong to current branch.
       continue
     if _is_auth_event(event):
-      # skip auth event
+      # Skip auth events.
       continue
     filtered_events.append(
         _convert_foreign_event(event)
@@ -224,18 +244,52 @@ def _get_contents(
         else event
     )
 
+  # Rearrange events for proper function call/response pairing
   result_events = _rearrange_events_for_latest_function_response(
       filtered_events
   )
   result_events = _rearrange_events_for_async_function_responses_in_history(
       result_events
   )
+
+  # Convert events to contents
   contents = []
   for event in result_events:
     content = copy.deepcopy(event.content)
     remove_client_function_call_id(content)
     contents.append(content)
   return contents
+
+
+def _get_current_turn_contents(
+    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+) -> list[types.Content]:
+  """Get contents for the current turn only (no conversation history).
+
+  When include_contents='none', we want to include:
+  - The current user input
+  - Tool calls and responses from the current turn
+  But exclude conversation history from previous turns.
+
+  In multi-agent scenarios, the "current turn" for an agent starts from an
+  actual user or from another agent.
+
+  Args:
+    current_branch: The current branch of the agent.
+    events: A list of all session events.
+    agent_name: The name of the agent.
+
+  Returns:
+    A list of contents for the current turn only, preserving context needed
+    for proper tool execution while excluding conversation history.
+  """
+  # Find the latest event that starts the current turn and process from there
+  for i in range(len(events) - 1, -1, -1):
+    event = events[i]
+    if event.author == 'user' or _is_other_agent_reply(agent_name, event):
+      return _get_contents(current_branch, events[i:], agent_name)
+
+  return []
 
 
 def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
@@ -318,10 +372,7 @@ def _merge_function_response_events(
         list is in increasing order of timestamp; 2. the first event is the
         initial function_response event; 3. all later events should contain at
         least one function_response part that related to the function_call
-        event. (Note, 3. may not be true when aync function return some
-        intermediate response, there could also be some intermediate model
-        response event without any function_response and such event will be
-        ignored.)
+        event.
       Caveat: This implementation doesn't support when a parallel function_call
         event contains async function_call of the same name.
 

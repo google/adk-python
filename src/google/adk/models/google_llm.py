@@ -18,16 +18,20 @@ from __future__ import annotations
 import contextlib
 from functools import cached_property
 import logging
+import os
 import sys
 from typing import AsyncGenerator
 from typing import cast
 from typing import TYPE_CHECKING
+from typing import Union
 
 from google.genai import Client
 from google.genai import types
+from google.genai.types import FinishReason
 from typing_extensions import override
 
 from .. import version
+from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
 from .gemini_llm_connection import GeminiLlmConnection
@@ -40,6 +44,8 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
+_AGENT_ENGINE_TELEMETRY_TAG = 'remote_reasoning_engine'
+_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_AGENT_ENGINE_ID'
 
 
 class Gemini(BaseLlm):
@@ -80,7 +86,7 @@ class Gemini(BaseLlm):
     Yields:
       LlmResponse: The model response.
     """
-
+    self._preprocess_request(llm_request)
     self._maybe_append_user_content(llm_request)
     logger.info(
         'Sending out request, model: %s, backend: %s, stream: %s',
@@ -89,6 +95,13 @@ class Gemini(BaseLlm):
         stream,
     )
     logger.info(_build_request_log(llm_request))
+
+    # add tracking headers to custom headers given it will override the headers
+    # set in the api client constructor
+    if llm_request.config and llm_request.config.http_options:
+      if not llm_request.config.http_options.headers:
+        llm_request.config.http_options.headers = {}
+      llm_request.config.http_options.headers.update(self._tracking_headers)
 
     if stream:
       responses = await self.api_client.aio.models.generate_content_stream(
@@ -138,12 +151,10 @@ class Gemini(BaseLlm):
           thought_text = ''
           text = ''
         yield llm_response
-      if (
-          (text or thought_text)
-          and response
-          and response.candidates
-          and response.candidates[0].finish_reason == types.FinishReason.STOP
-      ):
+
+      # generate an aggregated content at the end regardless the
+      # response.candidates[0].finish_reason
+      if (text or thought_text) and response and response.candidates:
         parts = []
         if thought_text:
           parts.append(types.Part(text=thought_text, thought=True))
@@ -151,6 +162,12 @@ class Gemini(BaseLlm):
           parts.append(types.Part.from_text(text=text))
         yield LlmResponse(
             content=types.ModelContent(parts=parts),
+            error_code=None
+            if response.candidates[0].finish_reason == FinishReason.STOP
+            else response.candidates[0].finish_reason,
+            error_message=None
+            if response.candidates[0].finish_reason == FinishReason.STOP
+            else response.candidates[0].finish_message,
             usage_metadata=usage_metadata,
         )
 
@@ -175,12 +192,18 @@ class Gemini(BaseLlm):
     )
 
   @cached_property
-  def _api_backend(self) -> str:
-    return 'vertex' if self.api_client.vertexai else 'ml_dev'
+  def _api_backend(self) -> GoogleLLMVariant:
+    return (
+        GoogleLLMVariant.VERTEX_AI
+        if self.api_client.vertexai
+        else GoogleLLMVariant.GEMINI_API
+    )
 
   @cached_property
   def _tracking_headers(self) -> dict[str, str]:
     framework_label = f'google-adk/{version.__version__}'
+    if os.environ.get(_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME):
+      framework_label = f'{framework_label}+{_AGENT_ENGINE_TELEMETRY_TAG}'
     language_label = 'gl-python/' + sys.version.split()[0]
     version_header_value = f'{framework_label} {language_label}'
     tracking_headers = {
@@ -190,24 +213,21 @@ class Gemini(BaseLlm):
     return tracking_headers
 
   @cached_property
-  def _live_api_client(self) -> Client:
-    if self._api_backend == 'vertex':
+  def _live_api_version(self) -> str:
+    if self._api_backend == GoogleLLMVariant.VERTEX_AI:
       # use beta version for vertex api
-      api_version = 'v1beta1'
-      # use default api version for vertex
-      return Client(
-          http_options=types.HttpOptions(
-              headers=self._tracking_headers, api_version=api_version
-          )
-      )
+      return 'v1beta1'
     else:
-      # use v1alpha for ml_dev
-      api_version = 'v1alpha'
-      return Client(
-          http_options=types.HttpOptions(
-              headers=self._tracking_headers, api_version=api_version
-          )
-      )
+      # use v1alpha for using API KEY from Google AI Studio
+      return 'v1alpha'
+
+  @cached_property
+  def _live_api_client(self) -> Client:
+    return Client(
+        http_options=types.HttpOptions(
+            headers=self._tracking_headers, api_version=self._live_api_version
+        )
+    )
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
@@ -219,6 +239,21 @@ class Gemini(BaseLlm):
     Yields:
       BaseLlmConnection, the connection to the Gemini model.
     """
+    # add tracking headers to custom headers and set api_version given
+    # the customized http options will override the one set in the api client
+    # constructor
+    if (
+        llm_request.live_connect_config
+        and llm_request.live_connect_config.http_options
+    ):
+      if not llm_request.live_connect_config.http_options.headers:
+        llm_request.live_connect_config.http_options.headers = {}
+      llm_request.live_connect_config.http_options.headers.update(
+          self._tracking_headers
+      )
+      llm_request.live_connect_config.http_options.api_version = (
+          self._live_api_version
+      )
 
     llm_request.live_connect_config.system_instruction = types.Content(
         role='system',
@@ -232,6 +267,21 @@ class Gemini(BaseLlm):
     ) as live_session:
       yield GeminiLlmConnection(live_session)
 
+  def _preprocess_request(self, llm_request: LlmRequest) -> None:
+
+    if self._api_backend == GoogleLLMVariant.GEMINI_API:
+      # Using API key from Google AI Studio to call model doesn't support labels.
+      if llm_request.config:
+        llm_request.config.labels = None
+
+      if llm_request.contents:
+        for content in llm_request.contents:
+          if not content.parts:
+            continue
+          for part in content.parts:
+            _remove_display_name_if_present(part.inline_data)
+            _remove_display_name_if_present(part.file_data)
+
 
 def _build_function_declaration_log(
     func_decl: types.FunctionDeclaration,
@@ -242,10 +292,10 @@ def _build_function_declaration_log(
         k: v.model_dump(exclude_none=True)
         for k, v in func_decl.parameters.properties.items()
     })
-  return_str = 'None'
+  return_str = ''
   if func_decl.response:
-    return_str = str(func_decl.response.model_dump(exclude_none=True))
-  return f'{func_decl.name}: {param_str} -> {return_str}'
+    return_str = '-> ' + str(func_decl.response.model_dump(exclude_none=True))
+  return f'{func_decl.name}: {param_str} {return_str}'
 
 
 def _build_request_log(req: LlmRequest) -> str:
@@ -308,3 +358,15 @@ Raw response:
 {resp.model_dump_json(exclude_none=True)}
 -----------------------------------------------------------
 """
+
+
+def _remove_display_name_if_present(
+    data_obj: Union[types.Blob, types.FileData, None],
+):
+  """Sets display_name to None for the Gemini API (non-Vertex) backend.
+
+  This backend does not support the display_name parameter for file uploads,
+  so it must be removed to prevent request failures.
+  """
+  if data_obj and data_obj.display_name:
+    data_obj.display_name = None

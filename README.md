@@ -3,6 +3,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/google/adk-python)
 
 <html>
     <h2 align="center">
@@ -44,7 +45,7 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 For remote agent-to-agent communication, ADK integrates with the
 [A2A protocol](https://github.com/google-a2a/A2A/).
-See this [example](https://github.com/google-a2a/a2a-samples/tree/main/samples/python/agents/google_adk)
+See this [example](https://github.com/a2aproject/a2a-samples/tree/main/samples/python/agents)
 for how they can work together.
 
 ## 🚀 Installation
@@ -134,7 +135,7 @@ adk eval \
 ## 🤝 Contributing
 
 We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our
-- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/#questions).
+- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/).
 - Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
 
 ## 📄 License

@@ -65,9 +65,10 @@ async def check_prime(nums: list[int]) -> str:
       else f"{', '.join(str(num) for num in primes)} are prime numbers."
   )
 
+
 root_agent = Agent(
     model='gemini-2.0-flash',
-    name='data_processing_agent',
+    name='hello_world_agent',
     description=(
         'hello world agent that can roll a dice of 8 sides and check prime'
         ' numbers.'

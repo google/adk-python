@@ -18,22 +18,32 @@ from __future__ import annotations
 
 import asyncio
 from typing import AsyncGenerator
+from typing import Literal
+from typing import Type
 
 from typing_extensions import override
 
+from ..agents.base_agent import BaseAgentConfig
+from ..agents.base_agent import working_in_progress
 from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from .base_agent import BaseAgent
 
 
-def _set_branch_for_current_agent(
-    current_agent: BaseAgent, invocation_context: InvocationContext
-):
+def _create_branch_ctx_for_sub_agent(
+    agent: BaseAgent,
+    sub_agent: BaseAgent,
+    invocation_context: InvocationContext,
+) -> InvocationContext:
+  """Create isolated branch for every sub-agent."""
+  invocation_context = invocation_context.model_copy()
+  branch_suffix = f'{agent.name}.{sub_agent.name}'
   invocation_context.branch = (
-      f"{invocation_context.branch}.{current_agent.name}"
+      f'{invocation_context.branch}.{branch_suffix}'
       if invocation_context.branch
-      else current_agent.name
+      else branch_suffix
   )
+  return invocation_context
 
 
 async def _merge_agent_run(
@@ -90,8 +100,12 @@ class ParallelAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    _set_branch_for_current_agent(self, ctx)
-    agent_runs = [agent.run_async(ctx) for agent in self.sub_agents]
+    agent_runs = [
+        sub_agent.run_async(
+            _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
+        )
+        for sub_agent in self.sub_agents
+    ]
     async for event in _merge_agent_run(agent_runs):
       yield event
 
@@ -99,5 +113,22 @@ class ParallelAgent(BaseAgent):
   async def _run_live_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    raise NotImplementedError("This is not supported yet for ParallelAgent.")
+    raise NotImplementedError('This is not supported yet for ParallelAgent.')
     yield  # AsyncGenerator requires having at least one yield statement
+
+  @classmethod
+  @override
+  @working_in_progress('ParallelAgent.from_config is not ready for use.')
+  def from_config(
+      cls: Type[ParallelAgent],
+      config: ParallelAgentConfig,
+      config_abs_path: str,
+  ) -> ParallelAgent:
+    return super().from_config(config, config_abs_path)
+
+
+@working_in_progress('ParallelAgentConfig is not ready for use.')
+class ParallelAgentConfig(BaseAgentConfig):
+  """The config for the YAML schema of a ParallelAgent."""
+
+  agent_class: Literal['ParallelAgent'] = 'ParallelAgent'

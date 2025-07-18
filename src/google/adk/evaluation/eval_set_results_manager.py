@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from typing import Optional
 
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
@@ -38,7 +39,11 @@ class EvalSetResultsManager(ABC):
   def get_eval_set_result(
       self, app_name: str, eval_set_result_id: str
   ) -> EvalSetResult:
-    """Returns an EvalSetResult identified by app_name and eval_set_result_id."""
+    """Returns the EvalSetResult from app_name and eval_set_result_id.
+
+    Raises:
+      NotFoundError: If the EvalSetResult is not found.
+    """
     raise NotImplementedError()
 
   @abstractmethod

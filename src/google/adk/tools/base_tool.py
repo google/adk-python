@@ -15,14 +15,14 @@
 from __future__ import annotations
 
 from abc import ABC
-import os
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from deprecated import deprecated
 from google.genai import types
 
+from ..utils.variant_utils import get_google_llm_variant
+from ..utils.variant_utils import GoogleLLMVariant
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
@@ -49,11 +49,11 @@ class BaseTool(ABC):
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool in the form of a FunctionDeclaration.
 
-    NOTE
-    - Required if subclass uses the default implementation of
-      `process_llm_request` to add function declaration to LLM request.
-    - Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for
-      Gemini.
+    NOTE:
+      - Required if subclass uses the default implementation of
+        `process_llm_request` to add function declaration to LLM request.
+      - Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for
+        Gemini.
 
     Returns:
       The FunctionDeclaration of this tool, or None if it doesn't need to be
@@ -66,10 +66,10 @@ class BaseTool(ABC):
   ) -> Any:
     """Runs the tool with the given arguments and context.
 
-    NOTE
-    - Required if this tool needs to run at the client side.
-    - Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for
-      Gemini.
+    NOTE:
+      - Required if this tool needs to run at the client side.
+      - Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for
+        Gemini.
 
     Args:
       args: The LLM-filled arguments.
@@ -119,12 +119,8 @@ class BaseTool(ABC):
       )
 
   @property
-  def _api_variant(self) -> str:
-    use_vertexai = os.environ.get('GOOGLE_GENAI_USE_VERTEXAI', '0').lower() in [
-        'true',
-        '1',
-    ]
-    return 'VERTEX_AI' if use_vertexai else 'GOOGLE_AI'
+  def _api_variant(self) -> GoogleLLMVariant:
+    return get_google_llm_variant()
 
 
 def _find_tool_with_function_declarations(
