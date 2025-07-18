@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
+from typing import Dict
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.genai import Client
+from google.genai import types
 from typing_extensions import override
-
-from google import genai
 
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
@@ -84,7 +86,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
           path=f'reasoningEngines/{self._agent_engine_id}/memories:generate',
           request_dict=request_dict,
       )
-      logger.info(f'Generate memory response: {api_response}')
+      logger.info('Generate memory response: %s', api_response)
     else:
       logger.info('No events to add to memory.')
 
@@ -106,7 +108,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
         },
     )
     api_response = _convert_api_response(api_response)
-    logger.info(f'Search memory response: {api_response}')
+    logger.info('Search memory response: %s', api_response)
 
     if not api_response or not api_response.get('retrievedMemories', None):
       return SearchMemoryResponse()
@@ -117,10 +119,8 @@ class VertexAiMemoryBankService(BaseMemoryService):
       memory_events.append(
           MemoryEntry(
               author='user',
-              content=genai.types.Content(
-                  parts=[
-                      genai.types.Part(text=memory.get('memory').get('fact'))
-                  ],
+              content=types.Content(
+                  parts=[types.Part(text=memory.get('memory').get('fact'))],
                   role='user',
               ),
               timestamp=memory.get('updateTime'),
@@ -137,13 +137,13 @@ class VertexAiMemoryBankService(BaseMemoryService):
     Returns:
       An API client for the given project and location.
     """
-    client = genai.Client(
+    client = Client(
         vertexai=True, project=self._project, location=self._location
     )
     return client._api_client
 
 
-def _convert_api_response(api_response):
+def _convert_api_response(api_response) -> Dict[str, Any]:
   """Converts the API response to a JSON object based on the type."""
   if hasattr(api_response, 'body'):
     return json.loads(api_response.body)

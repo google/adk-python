@@ -21,7 +21,9 @@ from .eval_metrics import EvalMetric
 from .eval_metrics import MetricName
 from .eval_metrics import PrebuiltMetrics
 from .evaluator import Evaluator
+from .final_response_match_v2 import FinalResponseMatchV2Evaluator
 from .response_evaluator import ResponseEvaluator
+from .safety_evaluator import SafetyEvaluatorV1
 from .trajectory_evaluator import TrajectoryEvaluator
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -71,16 +73,24 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
   metric_evaluator_registry = MetricEvaluatorRegistry()
 
   metric_evaluator_registry.register_evaluator(
-      metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE,
-      evaluator=type(TrajectoryEvaluator),
+      metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+      evaluator=TrajectoryEvaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_name=PrebuiltMetrics.RESPONSE_EVALUATION_SCORE,
-      evaluator=type(ResponseEvaluator),
+      metric_name=PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value,
+      evaluator=ResponseEvaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_name=PrebuiltMetrics.RESPONSE_MATCH_SCORE,
-      evaluator=type(ResponseEvaluator),
+      metric_name=PrebuiltMetrics.RESPONSE_MATCH_SCORE.value,
+      evaluator=ResponseEvaluator,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_name=PrebuiltMetrics.SAFETY_V1.value,
+      evaluator=SafetyEvaluatorV1,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_name=PrebuiltMetrics.FINAL_RESPONSE_MATCH_V2.value,
+      evaluator=FinalResponseMatchV2Evaluator,
   )
 
   return metric_evaluator_registry
