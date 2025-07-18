@@ -673,6 +673,59 @@ function_declaration_test_cases = [
             },
         },
     ),
+    (
+        "nested_properties",
+        types.FunctionDeclaration(
+            name="test_function_nested_properties",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "array_arg": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "nested_key": types.Schema(
+                                    type=types.Type.OBJECT,
+                                    properties={
+                                        "inner_key": types.Schema(
+                                            type=types.Type.STRING,
+                                        )
+                                    },
+                                )
+                            },
+                        ),
+                    ),
+                },
+            ),
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "test_function_nested_properties",
+                "description": "",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "array_arg": {
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "nested_key": {
+                                        "type": "object",
+                                        "properties": {
+                                            "inner_key": {"type": "string"},
+                                        },
+                                    },
+                                },
+                            },
+                            "type": "array",
+                        },
+                    },
+                },
+            },
+        },
+    ),
 ]
 
 

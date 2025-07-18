@@ -311,7 +311,9 @@ TYPE_LABELS = {
 
 
 def _schema_to_dict(schema: types.Schema) -> dict:
-  """Recursively converts a types.Schema to a dictionary.
+  """
+  Recursively converts a types.Schema to a pure-python dict
+  with all enum values written as lower-case strings.
 
   Args:
     schema: The schema to convert.
@@ -319,29 +321,40 @@ def _schema_to_dict(schema: types.Schema) -> dict:
   Returns:
     The dictionary representation of the schema.
   """
-
+  # Dump without json encoding so we still get Enum members
   schema_dict = schema.model_dump(exclude_none=True)
+
+  # ---- normalise this level ------------------------------------------------
   if "type" in schema_dict:
-    schema_dict["type"] = schema_dict["type"].lower()
+    # schema_dict["type"] can be an Enum or a str
+    t = schema_dict["type"]
+    schema_dict["type"] = (t.value if isinstance(t, types.Type) else t).lower()
+
+  # ---- recurse into `items` -----------------------------------------------
   if "items" in schema_dict:
-    if isinstance(schema_dict["items"], dict):
-      schema_dict["items"] = _schema_to_dict(
-          types.Schema.model_validate(schema_dict["items"])
-      )
-    elif isinstance(schema_dict["items"]["type"], types.Type):
-      schema_dict["items"]["type"] = TYPE_LABELS[
-          schema_dict["items"]["type"].value
-      ]
+    schema_dict["items"] = _schema_to_dict(
+        schema.items
+        if isinstance(schema.items, types.Schema)
+        else types.Schema.model_validate(schema_dict["items"])
+    )
+
+  # ---- recurse into `properties` ------------------------------------------
   if "properties" in schema_dict:
-    properties = {}
+    new_props = {}
     for key, value in schema_dict["properties"].items():
-      if isinstance(value, types.Schema):
-        properties[key] = _schema_to_dict(value)
+      # value is a dict → rebuild a Schema object and recurse
+      if isinstance(value, dict):
+        new_props[key] = _schema_to_dict(types.Schema.model_validate(value))
+      # value is already a Schema instance
+      elif isinstance(value, types.Schema):
+        new_props[key] = _schema_to_dict(value)
+      # plain dict without nested schemas
       else:
-        properties[key] = value
-        if "type" in properties[key]:
-          properties[key]["type"] = properties[key]["type"].lower()
-    schema_dict["properties"] = properties
+        new_props[key] = value
+        if "type" in new_props[key]:
+          new_props[key]["type"] = new_props[key]["type"].lower()
+    schema_dict["properties"] = new_props
+
   return schema_dict
 
 
