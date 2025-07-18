@@ -59,15 +59,26 @@ class LangchainTool(FunctionTool):
       name: Optional[str] = None,
       description: Optional[str] = None,
   ):
-    # Check if the tool has a 'run' method
     if not hasattr(tool, 'run') and not hasattr(tool, '_run'):
-      raise ValueError("Langchain tool must have a 'run' or '_run' method")
+      raise ValueError(
+          "Tool must be a Langchain tool, have a 'run' or '_run' method."
+      )
 
     # Determine which function to use
     if isinstance(tool, StructuredTool):
       func = tool.func
-    else:
+      # For async tools, func might be None but coroutine exists
+      if func is None and hasattr(tool, 'coroutine') and tool.coroutine:
+        func = tool.coroutine
+    elif hasattr(tool, '_run') or hasattr(tool, 'run'):
       func = tool._run if hasattr(tool, '_run') else tool.run
+    else:
+      raise ValueError(
+          "This is not supported. Tool must be a Langchain tool, have a 'run'"
+          " or '_run' method. The tool is: ",
+          type(tool),
+      )
+
     super().__init__(func)
     # run_manager is a special parameter for langchain tool
     self._ignore_params.append('run_manager')

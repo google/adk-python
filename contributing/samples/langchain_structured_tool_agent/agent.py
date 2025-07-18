@@ -17,12 +17,18 @@ This agent aims to test the Langchain tool with Langchain's StructuredTool
 """
 from google.adk.agents import Agent
 from google.adk.tools.langchain_tool import LangchainTool
+from langchain.tools import tool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import BaseModel
 
 
-def add(x, y) -> int:
+async def add(x, y) -> int:
   return x + y
+
+
+@tool
+def minus(x, y) -> int:
+  return x - y
 
 
 class AddSchema(BaseModel):
@@ -30,7 +36,12 @@ class AddSchema(BaseModel):
   y: int
 
 
-test_langchain_tool = StructuredTool.from_function(
+class MinusSchema(BaseModel):
+  x: int
+  y: int
+
+
+test_langchain_add_tool = StructuredTool.from_function(
     add,
     name="add",
     description="Adds two numbers",
@@ -45,5 +56,8 @@ root_agent = Agent(
         "You are a helpful assistant for user questions, you have access to a"
         " tool that adds two numbers."
     ),
-    tools=[LangchainTool(tool=test_langchain_tool)],
+    tools=[
+        LangchainTool(tool=test_langchain_add_tool),
+        LangchainTool(tool=minus),
+    ],
 )
