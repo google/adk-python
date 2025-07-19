@@ -43,7 +43,6 @@ from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
 import graphviz
 from opentelemetry import trace
-from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
@@ -73,9 +72,7 @@ from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
-from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
 from ..runners import Runner
-from ..sessions.database_session_service import DatabaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
@@ -241,6 +238,8 @@ def get_fast_api_app(
   memory_exporter = InMemoryExporter(session_trace_dict)
   provider.add_span_processor(export.SimpleSpanProcessor(memory_exporter))
   if trace_to_cloud:
+    from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
+
     envs.load_dotenv_for_agent("", agents_dir)
     if project_id := os.environ.get("GOOGLE_CLOUD_PROJECT", None):
       processor = export.BatchSpanProcessor(
@@ -325,6 +324,8 @@ def get_fast_api_app(
   # Build the Memory service
   if memory_service_uri:
     if memory_service_uri.startswith("rag://"):
+      from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
+
       rag_corpus = memory_service_uri.split("://")[1]
       if not rag_corpus:
         raise click.ClickException("Rag corpus can not be empty.")
@@ -362,6 +363,8 @@ def get_fast_api_app(
           agent_engine_id=agent_engine_id,
       )
     else:
+      from ..sessions.database_session_service import DatabaseSessionService
+
       session_service = DatabaseSessionService(db_url=session_service_uri)
   else:
     session_service = InMemorySessionService()
@@ -1157,7 +1160,9 @@ def get_fast_api_app(
 
     app.mount(
         "/dev-ui/",
-        StaticFiles(directory=ANGULAR_DIST_PATH, html=True),
+        StaticFiles(
+            directory=ANGULAR_DIST_PATH, html=True, follow_symlink=True
+        ),
         name="static",
     )
   return app
