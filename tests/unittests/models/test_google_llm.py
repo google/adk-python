@@ -75,11 +75,12 @@ def mock_os_environ():
 
 def test_supported_models():
   models = Gemini.supported_models()
-  assert len(models) == 3
+  assert len(models) == 4
   assert models[0] == r"gemini-.*"
-  assert models[1] == r"projects\/.+\/locations\/.+\/endpoints\/.+"
+  assert models[1] == r"model-optimizer-.*"
+  assert models[2] == r"projects\/.+\/locations\/.+\/endpoints\/.+"
   assert (
-      models[2]
+      models[3]
       == r"projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+"
   )
 

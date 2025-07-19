@@ -68,6 +68,8 @@ class Gemini(BaseLlm):
 
     return [
         r'gemini-.*',
+        # model optimizer pattern
+        r'model-optimizer-.*',
         # fine-tuned vertex endpoint pattern
         r'projects\/.+\/locations\/.+\/endpoints\/.+',
         # vertex gemini long name
