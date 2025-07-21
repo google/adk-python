@@ -42,6 +42,7 @@ from ...models.llm_response import LlmResponse
 from ...telemetry import trace_call_llm
 from ...telemetry import trace_send_data
 from ...telemetry import tracer
+from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
 
 if TYPE_CHECKING:
@@ -341,13 +342,25 @@ class BaseLlmFlow(ABC):
         yield event
 
     # Run processors for tools.
-    for tool in await agent.canonical_tools(
-        ReadonlyContext(invocation_context)
-    ):
+    for tool_union in agent.tools:
       tool_context = ToolContext(invocation_context)
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
+
+      # If it's a toolset, process it first
+      if isinstance(tool_union, BaseToolset):
+        await tool_union.process_llm_request(
+            tool_context=tool_context, llm_request=llm_request
+        )
+
+      from ...agents.llm_agent import _convert_tool_union_to_tools
+
+      # Then process all tools from this tool union
+      tools = await _convert_tool_union_to_tools(
+          tool_union, ReadonlyContext(invocation_context)
       )
+      for tool in tools:
+        await tool.process_llm_request(
+            tool_context=tool_context, llm_request=llm_request
+        )
 
   async def _postprocess_async(
       self,

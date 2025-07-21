@@ -20,10 +20,15 @@ from typing import List
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
+from typing import TYPE_CHECKING
 from typing import Union
 
 from ..agents.readonly_context import ReadonlyContext
 from .base_tool import BaseTool
+
+if TYPE_CHECKING:
+  from ..models.llm_request import LlmRequest
+  from .tool_context import ToolContext
 
 
 @runtime_checkable
@@ -96,3 +101,20 @@ class BaseToolset(ABC):
       return tool.name in self.tool_filter
 
     return False
+
+  async def process_llm_request(
+      self, *, tool_context: ToolContext, llm_request: LlmRequest
+  ) -> None:
+    """Processes the outgoing LLM request for this toolset. This method will be
+    called before each tool processes the llm request.
+
+    Use cases:
+    - Instead of let each tool process the llm request, we can let the toolset
+      process the llm request. e.g. ComputerUseToolset can add computer use
+      tool to the llm request.
+
+    Args:
+      tool_context: The context of the tool.
+      llm_request: The outgoing LLM request, mutable this method.
+    """
+    pass
