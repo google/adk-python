@@ -30,7 +30,7 @@ from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..errors.not_found_error import NotFoundError
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -60,7 +60,7 @@ def _get_session_id() -> str:
   return f'{EVAL_SESSION_ID_PREFIX}{str(uuid.uuid4())}'
 
 
-@working_in_progress("Incomplete feature, don't use yet")
+@experimental
 class LocalEvalService(BaseEvalService):
   """An implementation of BaseEvalService, that runs the evals locally."""
 

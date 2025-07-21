@@ -23,16 +23,44 @@ from types import SimpleNamespace
 from typing import Any
 from typing import Dict
 from typing import List
-from typing import Optional
 from typing import Tuple
+from unittest import mock
 
 import click
 from click.testing import CliRunner
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.cli import cli_tools_click
-from google.adk.evaluation import local_eval_set_results_manager
-from google.adk.sessions import Session
+from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_set import EvalSet
+from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
+from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from pydantic import BaseModel
 import pytest
+
+
+class DummyAgent(BaseAgent):
+
+  def __init__(self, name):
+    super().__init__(name=name)
+    self.sub_agents = []
+
+
+root_agent = DummyAgent(name="dummy_agent")
+
+
+@pytest.fixture
+def mock_load_eval_set_from_file():
+  with mock.patch(
+      "google.adk.evaluation.local_eval_sets_manager.load_eval_set_from_file"
+  ) as mock_func:
+    yield mock_func
+
+
+@pytest.fixture
+def mock_get_root_agent():
+  with mock.patch("google.adk.cli.cli_eval.get_root_agent") as mock_func:
+    mock_func.return_value = root_agent
+    yield mock_func
 
 
 # Helpers
@@ -237,137 +265,73 @@ def test_cli_api_server_invokes_uvicorn(
   assert _patch_uvicorn.calls, "uvicorn.Server.run must be called"
 
 
-def test_cli_eval_success_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-  """Test the success path of `adk eval` by fully executing it with a stub module, up to summary generation."""
-  import asyncio
-  import sys
-  import types
+def test_cli_eval_with_eval_set_file_path(
+    mock_load_eval_set_from_file,
+    mock_get_root_agent,
+    tmp_path,
+):
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
 
-  # stub cli_eval module
-  stub = types.ModuleType("google.adk.cli.cli_eval")
-  eval_sets_manager_stub = types.ModuleType(
-      "google.adk.evaluation.local_eval_sets_manager"
+  eval_set_file = tmp_path / "my_evals.json"
+  eval_set_file.write_text("{}")
+
+  mock_load_eval_set_from_file.return_value = EvalSet(
+      eval_set_id="my_evals",
+      eval_cases=[EvalCase(eval_id="case1", conversation=[])],
   )
 
-  class _EvalMetric:
-
-    def __init__(self, metric_name: str, threshold: float) -> None:
-      ...
-
-  class _EvalCaseResult(BaseModel):
-    eval_set_id: str
-    eval_id: str
-    final_eval_status: Any
-    user_id: str
-    session_id: str
-    session_details: Optional[Session] = None
-    eval_metric_results: list = {}
-    overall_eval_metric_results: list = {}
-    eval_metric_result_per_invocation: list = {}
-
-  class EvalCase(BaseModel):
-    eval_id: str
-
-  class EvalSet(BaseModel):
-    eval_set_id: str
-    eval_cases: list[EvalCase]
-
-  def mock_save_eval_set_result(cls, *args, **kwargs):
-    return None
-
-  monkeypatch.setattr(
-      local_eval_set_results_manager.LocalEvalSetResultsManager,
-      "save_eval_set_result",
-      mock_save_eval_set_result,
-  )
-
-  # minimal enum-like namespace
-  _EvalStatus = types.SimpleNamespace(PASSED="PASSED", FAILED="FAILED")
-
-  # helper funcs
-  stub.EvalMetric = _EvalMetric
-  stub.EvalCaseResult = _EvalCaseResult
-  stub.EvalStatus = _EvalStatus
-  stub.MISSING_EVAL_DEPENDENCIES_MESSAGE = "stub msg"
-
-  stub.get_evaluation_criteria_or_default = lambda _p: {"foo": 1.0}
-  stub.get_root_agent = lambda _p: object()
-  stub.try_get_reset_func = lambda _p: None
-  stub.parse_and_get_evals_to_run = lambda _paths: {"set1.json": ["e1", "e2"]}
-  eval_sets_manager_stub.load_eval_set_from_file = lambda x, y: EvalSet(
-      eval_set_id="test_eval_set_id",
-      eval_cases=[EvalCase(eval_id="e1"), EvalCase(eval_id="e2")],
-  )
-
-  # Create an async generator function for run_evals
-  async def mock_run_evals(*_a, **_k):
-    yield _EvalCaseResult(
-        eval_set_id="set1.json",
-        eval_id="e1",
-        final_eval_status=_EvalStatus.PASSED,
-        user_id="user",
-        session_id="session1",
-        overall_eval_metric_results=[{
-            "metricName": "some_metric",
-            "threshold": 0.0,
-            "score": 1.0,
-            "evalStatus": _EvalStatus.PASSED,
-        }],
-    )
-    yield _EvalCaseResult(
-        eval_set_id="set1.json",
-        eval_id="e2",
-        final_eval_status=_EvalStatus.FAILED,
-        user_id="user",
-        session_id="session2",
-        overall_eval_metric_results=[{
-            "metricName": "some_metric",
-            "threshold": 0.0,
-            "score": 0.0,
-            "evalStatus": _EvalStatus.FAILED,
-        }],
-    )
-
-  stub.run_evals = mock_run_evals
-
-  # Replace asyncio.run with a function that properly handles coroutines
-  def mock_asyncio_run(coro):
-    # Create a new event loop
-    loop = asyncio.new_event_loop()
-    try:
-      return loop.run_until_complete(coro)
-    finally:
-      loop.close()
-
-  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock_asyncio_run)
-
-  # inject stub
-  monkeypatch.setitem(sys.modules, "google.adk.cli.cli_eval", stub)
-  monkeypatch.setitem(
-      sys.modules,
-      "google.adk.evaluation.local_eval_sets_manager",
-      eval_sets_manager_stub,
-  )
-
-  # create dummy agent directory
-  agent_dir = tmp_path / "agent5"
-  agent_dir.mkdir()
-  (agent_dir / "__init__.py").touch()
-
-  # inject monkeypatch
-  monkeypatch.setattr(
-      cli_tools_click.envs, "load_dotenv_for_agent", lambda *a, **k: None
-  )
-
-  runner = CliRunner()
-  result = runner.invoke(
-      cli_tools_click.main,
-      ["eval", str(agent_dir), str(tmp_path / "dummy_eval.json")],
+  result = CliRunner().invoke(
+      cli_tools_click.cli_eval,
+      [str(agent_path), str(eval_set_file)],
   )
 
   assert result.exit_code == 0
-  assert "Eval Run Summary" in result.output
-  assert "Tests passed: 1" in result.output
-  assert "Tests failed: 1" in result.output
+  # Assert that we wrote eval set results
+  eval_set_results_manager = LocalEvalSetResultsManager(
+      agents_dir=str(tmp_path)
+  )
+  eval_set_results = eval_set_results_manager.list_eval_set_results(
+      app_name="my_agent"
+  )
+  assert len(eval_set_results) == 1
+
+
+def test_cli_eval_with_eval_set_id(
+    mock_get_root_agent,
+    tmp_path,
+):
+  app_name = "test_app"
+  eval_set_id = "test_eval_set_id"
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=str(tmp_path))
+  eval_sets_manager.create_eval_set(app_name=app_name, eval_set_id=eval_set_id)
+  eval_sets_manager.add_eval_case(
+      app_name=app_name,
+      eval_set_id=eval_set_id,
+      eval_case=EvalCase(eval_id="case1", conversation=[]),
+  )
+  eval_sets_manager.add_eval_case(
+      app_name=app_name,
+      eval_set_id=eval_set_id,
+      eval_case=EvalCase(eval_id="case2", conversation=[]),
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.cli_eval,
+      [str(agent_path), "test_eval_set_id:case1,case2"],
+  )
+
+  assert result.exit_code == 0
+  # Assert that we wrote eval set results
+  eval_set_results_manager = LocalEvalSetResultsManager(
+      agents_dir=str(tmp_path)
+  )
+  eval_set_results = eval_set_results_manager.list_eval_set_results(
+      app_name=app_name
+  )
+  assert len(eval_set_results) == 2

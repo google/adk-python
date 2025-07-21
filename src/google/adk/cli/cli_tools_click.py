@@ -272,7 +272,7 @@ def cli_run(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
-@click.argument("eval_set_file_path", nargs=-1)
+@click.argument("eval_set_file_path_or_id", nargs=-1)
 @click.option("--config_file_path", help="Optional. The path to config file.")
 @click.option(
     "--print_detailed_results",
@@ -292,7 +292,7 @@ def cli_run(
 )
 def cli_eval(
     agent_module_file_path: str,
-    eval_set_file_path: list[str],
+    eval_set_file_path_or_id: list[str],
     config_file_path: str,
     print_detailed_results: bool,
     eval_storage_uri: Optional[str] = None,
@@ -302,19 +302,50 @@ def cli_eval(
   AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
   module by the name "agent". "agent" module contains a root_agent.
 
-  EVAL_SET_FILE_PATH: You can specify one or more eval set file paths.
+  EVAL_SET_FILE_PATH_OR_ID: You can specify one or more eval set file paths or
+  eval set id.
 
+  Mixing of eval set file paths with eval set ids is not allowed.
+
+  *Eval Set File Path*
   For each file, all evals will be run by default.
 
   If you want to run only specific evals from a eval set, first create a comma
   separated list of eval names and then add that as a suffix to the eval set
   file name, demarcated by a `:`.
 
-  For example,
+  For example, we have `sample_eval_set_file.json` file that has following the
+  eval cases:
+  sample_eval_set_file.json:
+    |....... eval_1
+    |....... eval_2
+    |....... eval_3
+    |....... eval_4
+    |....... eval_5
 
   sample_eval_set_file.json:eval_1,eval_2,eval_3
 
   This will only run eval_1, eval_2 and eval_3 from sample_eval_set_file.json.
+
+  *Eval Set Id*
+  For each eval set, all evals will be run by default.
+
+  If you want to run only specific evals from a eval set, first create a comma
+  separated list of eval names and then add that as a suffix to the eval set
+  file name, demarcated by a `:`.
+
+  For example, we have `sample_eval_set_id` that has following the eval cases:
+  sample_eval_set_id:
+    |....... eval_1
+    |....... eval_2
+    |....... eval_3
+    |....... eval_4
+    |....... eval_5
+
+  If we did:
+      sample_eval_set_id:eval_1,eval_2,eval_3
+
+  This will only run eval_1, eval_2 and eval_3 from sample_eval_set_id.
 
   CONFIG_FILE_PATH: The path to config file.
 
@@ -323,19 +354,23 @@ def cli_eval(
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
 
   try:
+    from ..evaluation.base_eval_service import InferenceConfig
+    from ..evaluation.base_eval_service import InferenceRequest
+    from ..evaluation.eval_metrics import EvalMetric
+    from ..evaluation.eval_result import EvalCaseResult
+    from ..evaluation.evaluator import EvalStatus
+    from ..evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
+    from ..evaluation.local_eval_service import LocalEvalService
     from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
-    from ..sessions.in_memory_session_service import InMemorySessionService
-    from .cli_eval import EvalCaseResult
-    from .cli_eval import EvalMetric
-    from .cli_eval import EvalStatus
+    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+    from .cli_eval import _collect_eval_results
+    from .cli_eval import _collect_inferences
     from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
-    from .cli_eval import run_evals
-    from .cli_eval import try_get_reset_func
-  except ModuleNotFoundError:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
+  except ModuleNotFoundError as mnf:
+    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
   evaluation_criteria = get_evaluation_criteria_or_default(config_file_path)
   eval_metrics = []
@@ -347,80 +382,103 @@ def cli_eval(
   print(f"Using evaluation criteria: {evaluation_criteria}")
 
   root_agent = get_root_agent(agent_module_file_path)
-  reset_func = try_get_reset_func(agent_module_file_path)
-
-  gcs_eval_sets_manager = None
+  app_name = os.path.basename(agent_module_file_path)
+  agents_dir = os.path.dirname(agent_module_file_path)
+  eval_sets_manager = None
   eval_set_results_manager = None
+
   if eval_storage_uri:
     gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
         eval_storage_uri
     )
-    gcs_eval_sets_manager = gcs_eval_managers.eval_sets_manager
+    eval_sets_manager = gcs_eval_managers.eval_sets_manager
     eval_set_results_manager = gcs_eval_managers.eval_set_results_manager
   else:
-    eval_set_results_manager = LocalEvalSetResultsManager(
-        agents_dir=os.path.dirname(agent_module_file_path)
-    )
-  eval_set_file_path_to_evals = parse_and_get_evals_to_run(eval_set_file_path)
-  eval_set_id_to_eval_cases = {}
+    eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
-  # Read the eval_set files and get the cases.
-  for eval_set_file_path, eval_case_ids in eval_set_file_path_to_evals.items():
-    if gcs_eval_sets_manager:
-      eval_set = gcs_eval_sets_manager._load_eval_set_from_blob(
-          eval_set_file_path
-      )
-      if not eval_set:
-        raise click.ClickException(
-            f"Eval set {eval_set_file_path} not found in GCS."
+  inference_requests = []
+  eval_set_file_or_id_to_evals = parse_and_get_evals_to_run(
+      eval_set_file_path_or_id
+  )
+
+  # Check if the first entry is a file that exists, if it does then we assume
+  # rest of the entries are also files. We enforce this assumption in the if
+  # block.
+  if eval_set_file_or_id_to_evals and os.path.exists(
+      list(eval_set_file_or_id_to_evals.keys())[0]
+  ):
+    eval_sets_manager = InMemoryEvalSetsManager()
+
+    # Read the eval_set files and get the cases.
+    for (
+        eval_set_file_path,
+        eval_case_ids,
+    ) in eval_set_file_or_id_to_evals.items():
+      try:
+        eval_set = load_eval_set_from_file(
+            eval_set_file_path, eval_set_file_path
         )
-    else:
-      eval_set = load_eval_set_from_file(eval_set_file_path, eval_set_file_path)
-    eval_cases = eval_set.eval_cases
+      except FileNotFoundError as fne:
+        raise click.ClickException(
+            f"`{eval_set_file_path}` should be a valid eval set file."
+        ) from fne
 
-    if eval_case_ids:
-      # There are eval_ids that we should select.
-      eval_cases = [
-          e for e in eval_set.eval_cases if e.eval_id in eval_case_ids
-      ]
-
-    eval_set_id_to_eval_cases[eval_set.eval_set_id] = eval_cases
-
-  async def _collect_eval_results() -> list[EvalCaseResult]:
-    session_service = InMemorySessionService()
-    eval_case_results = []
-    async for eval_case_result in run_evals(
-        eval_set_id_to_eval_cases,
-        root_agent,
-        reset_func,
-        eval_metrics,
-        session_service=session_service,
-    ):
-      eval_case_result.session_details = await session_service.get_session(
-          app_name=os.path.basename(agent_module_file_path),
-          user_id=eval_case_result.user_id,
-          session_id=eval_case_result.session_id,
+      eval_sets_manager.create_eval_set(
+          app_name=app_name, eval_set_id=eval_set.eval_set_id
       )
-      eval_case_results.append(eval_case_result)
-    return eval_case_results
+      for eval_case in eval_set.eval_cases:
+        eval_sets_manager.add_eval_case(
+            app_name=app_name,
+            eval_set_id=eval_set.eval_set_id,
+            eval_case=eval_case,
+        )
+      inference_requests.append(
+          InferenceRequest(
+              app_name=app_name,
+              eval_set_id=eval_set.eval_set_id,
+              eval_case_ids=eval_case_ids,
+              inference_config=InferenceConfig(),
+          )
+      )
+  else:
+    # We assume that what we have are eval set ids instead.
+    eval_sets_manager = (
+        eval_sets_manager
+        if eval_storage_uri
+        else LocalEvalSetsManager(agents_dir=agents_dir)
+    )
+
+    for eval_set_id_key, eval_case_ids in eval_set_file_or_id_to_evals.items():
+      inference_requests.append(
+          InferenceRequest(
+              app_name=app_name,
+              eval_set_id=eval_set_id_key,
+              eval_case_ids=eval_case_ids,
+              inference_config=InferenceConfig(),
+          )
+      )
 
   try:
-    eval_results = asyncio.run(_collect_eval_results())
-  except ModuleNotFoundError:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE)
-
-  # Write eval set results.
-  eval_set_id_to_eval_results = collections.defaultdict(list)
-  for eval_case_result in eval_results:
-    eval_set_id = eval_case_result.eval_set_id
-    eval_set_id_to_eval_results[eval_set_id].append(eval_case_result)
-
-  for eval_set_id, eval_case_results in eval_set_id_to_eval_results.items():
-    eval_set_results_manager.save_eval_set_result(
-        app_name=os.path.basename(agent_module_file_path),
-        eval_set_id=eval_set_id,
-        eval_case_results=eval_case_results,
+    eval_service = LocalEvalService(
+        root_agent=root_agent,
+        eval_sets_manager=eval_sets_manager,
+        eval_set_results_manager=eval_set_results_manager,
     )
+
+    inference_results = asyncio.run(
+        _collect_inferences(
+            inference_requests=inference_requests, eval_service=eval_service
+        )
+    )
+    eval_results = asyncio.run(
+        _collect_eval_results(
+            inference_results=inference_results,
+            eval_service=eval_service,
+            eval_metrics=eval_metrics,
+        )
+    )
+  except ModuleNotFoundError as mnf:
+    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
   print("*********************************************************************")
   eval_run_summary = {}
@@ -1023,7 +1081,8 @@ def cli_deploy_agent_engine(
   Example:
 
     adk deploy agent_engine --project=[project] --region=[region]
-      --staging_bucket=[staging_bucket] --display_name=[app_name] path/to/my_agent
+      --staging_bucket=[staging_bucket] --display_name=[app_name]
+      path/to/my_agent
   """
   try:
     cli_deploy.to_agent_engine(

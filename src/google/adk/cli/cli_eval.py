@@ -25,8 +25,16 @@ from typing import AsyncGenerator
 from typing import Optional
 import uuid
 
+from typing_extensions import deprecated
+
 from ..agents import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..evaluation.base_eval_service import BaseEvalService
+from ..evaluation.base_eval_service import EvaluateConfig
+from ..evaluation.base_eval_service import EvaluateRequest
+from ..evaluation.base_eval_service import InferenceConfig
+from ..evaluation.base_eval_service import InferenceRequest
+from ..evaluation.base_eval_service import InferenceResult
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_metrics import EvalMetric
@@ -110,26 +118,80 @@ def try_get_reset_func(agent_module_file_path: str) -> Any:
 
 
 def parse_and_get_evals_to_run(
-    eval_set_file_path: tuple[str],
+    evals_to_run_info: list[str],
 ) -> dict[str, list[str]]:
-  """Returns a dictionary of eval sets to evals that should be run."""
+  """Returns a dictionary of eval set info to evals that should be run.
+
+  Args:
+    evals_to_run_info: While the structure is quite simple, a list of string,
+      each string actually is formatted with the following convention:
+      <eval_set_file_path | eval_set_id>:[comma separated eval case ids]
+  """
   eval_set_to_evals = {}
-  for input_eval_set in eval_set_file_path:
+  for input_eval_set in evals_to_run_info:
     evals = []
     if ":" not in input_eval_set:
-      eval_set_file = input_eval_set
+      # We don't have any eval cases specified. This would be the case where the
+      # the user wants to run all eval cases in the eval set.
+      eval_set = input_eval_set
     else:
-      eval_set_file = input_eval_set.split(":")[0]
+      # There are eval cases that we need to parse. The user wants to run
+      # specific eval cases from the eval set.
+      eval_set = input_eval_set.split(":")[0]
       evals = input_eval_set.split(":")[1].split(",")
+      evals = [s for s in evals if s.strip()]
 
-    if eval_set_file not in eval_set_to_evals:
-      eval_set_to_evals[eval_set_file] = []
+    if eval_set not in eval_set_to_evals:
+      eval_set_to_evals[eval_set] = []
 
-    eval_set_to_evals[eval_set_file].extend(evals)
+    eval_set_to_evals[eval_set].extend(evals)
 
   return eval_set_to_evals
 
 
+async def _collect_inferences(
+    inference_requests: list[InferenceRequest],
+    eval_service: BaseEvalService,
+) -> list[InferenceResult]:
+  """Simple utility methods to collect inferences from an eval service.
+
+  The method is intentionally kept private to prevent general usage.
+  """
+  inference_results = []
+  for inference_request in inference_requests:
+    async for inference_result in eval_service.perform_inference(
+        inference_request=inference_request
+    ):
+      inference_results.append(inference_result)
+  return inference_results
+
+
+async def _collect_eval_results(
+    inference_results: list[InferenceResult],
+    eval_service: BaseEvalService,
+    eval_metrics: list[EvalMetric],
+) -> list[EvalCaseResult]:
+  """Simple utility methods to collect eval results from an eval service.
+
+  The method is intentionally kept private to prevent general usage.
+  """
+  eval_results = []
+  evaluate_request = EvaluateRequest(
+      inference_results=inference_results,
+      evaluate_config=EvaluateConfig(eval_metrics=eval_metrics),
+  )
+  async for eval_result in eval_service.evaluate(
+      evaluate_request=evaluate_request
+  ):
+    eval_results.append(eval_result)
+
+  return eval_results
+
+
+@deprecated(
+    "This method is deprecated and will be removed in fututre release. Please"
+    " use LocalEvalService to define your custom evals."
+)
 async def run_evals(
     eval_cases_by_eval_set_id: dict[str, list[EvalCase]],
     root_agent: Agent,

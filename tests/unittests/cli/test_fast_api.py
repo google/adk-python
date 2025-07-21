@@ -32,6 +32,7 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.evaluation.eval_set import EvalSet
+from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from google.adk.events import Event
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
@@ -330,49 +331,7 @@ def mock_memory_service():
 @pytest.fixture
 def mock_eval_sets_manager():
   """Create a mock eval sets manager."""
-
-  # Storage for eval sets.
-  eval_sets = {}
-
-  class MockEvalSetsManager:
-    """Mock eval sets manager."""
-
-    def create_eval_set(self, app_name, eval_set_id):
-      """Create an eval set."""
-      if app_name not in eval_sets:
-        eval_sets[app_name] = {}
-
-      if eval_set_id in eval_sets[app_name]:
-        raise ValueError(f"Eval set {eval_set_id} already exists.")
-
-      eval_sets[app_name][eval_set_id] = EvalSet(
-          eval_set_id=eval_set_id, eval_cases=[]
-      )
-      return eval_set_id
-
-    def get_eval_set(self, app_name, eval_set_id):
-      """Get an eval set."""
-      if app_name not in eval_sets:
-        raise ValueError(f"App {app_name} not found.")
-      if eval_set_id not in eval_sets[app_name]:
-        raise ValueError(f"Eval set {eval_set_id} not found in app {app_name}.")
-      return eval_sets[app_name][eval_set_id]
-
-    def list_eval_sets(self, app_name):
-      """List eval sets."""
-      if app_name not in eval_sets:
-        raise ValueError(f"App {app_name} not found.")
-      return list(eval_sets[app_name].keys())
-
-    def add_eval_case(self, app_name, eval_set_id, eval_case):
-      """Add an eval case to an eval set."""
-      if app_name not in eval_sets:
-        raise ValueError(f"App {app_name} not found.")
-      if eval_set_id not in eval_sets[app_name]:
-        raise ValueError(f"Eval set {eval_set_id} not found in app {app_name}.")
-      eval_sets[app_name][eval_set_id].eval_cases.append(eval_case)
-
-  return MockEvalSetsManager()
+  return InMemoryEvalSetsManager()
 
 
 @pytest.fixture

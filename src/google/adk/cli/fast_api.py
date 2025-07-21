@@ -61,6 +61,9 @@ from ..artifacts.gcs_artifact_service import GcsArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..errors.not_found_error import NotFoundError
+from ..evaluation.base_eval_service import InferenceConfig
+from ..evaluation.base_eval_service import InferenceRequest
+from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
 from ..evaluation.eval_metrics import EvalMetric
@@ -196,6 +199,7 @@ class RunEvalResult(common.BaseModel):
   final_eval_status: EvalStatus
   eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]] = Field(
       deprecated=True,
+      default=[],
       description=(
           "This field is deprecated, use overall_eval_metric_results instead."
       ),
@@ -664,7 +668,9 @@ def get_fast_api_app(
       app_name: str, eval_set_id: str, req: RunEvalRequest
   ) -> list[RunEvalResult]:
     """Runs an eval given the details in the eval request."""
-    from .cli_eval import run_evals
+    from ..evaluation.local_eval_service import LocalEvalService
+    from .cli_eval import _collect_eval_results
+    from .cli_eval import _collect_inferences
 
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
@@ -675,52 +681,52 @@ def get_fast_api_app(
           status_code=400, detail=f"Eval set `{eval_set_id}` not found."
       )
 
-    if req.eval_ids:
-      eval_cases = [e for e in eval_set.eval_cases if e.eval_id in req.eval_ids]
-      eval_set_to_evals = {eval_set_id: eval_cases}
-    else:
-      logger.info("Eval ids to run list is empty. We will run all eval cases.")
-      eval_set_to_evals = {eval_set_id: eval_set.eval_cases}
-
     root_agent = agent_loader.load_agent(app_name)
-    run_eval_results = []
+
     eval_case_results = []
     try:
-      async for eval_case_result in run_evals(
-          eval_set_to_evals,
-          root_agent,
-          getattr(root_agent, "reset_data", None),
-          req.eval_metrics,
+      eval_service = LocalEvalService(
+          root_agent=root_agent,
+          eval_sets_manager=eval_sets_manager,
+          eval_set_results_manager=eval_set_results_manager,
           session_service=session_service,
           artifact_service=artifact_service,
-      ):
-        run_eval_results.append(
-            RunEvalResult(
-                app_name=app_name,
-                eval_set_file=eval_case_result.eval_set_file,
-                eval_set_id=eval_set_id,
-                eval_id=eval_case_result.eval_id,
-                final_eval_status=eval_case_result.final_eval_status,
-                eval_metric_results=eval_case_result.eval_metric_results,
-                overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
-                eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
-                user_id=eval_case_result.user_id,
-                session_id=eval_case_result.session_id,
-            )
-        )
-        eval_case_result.session_details = await session_service.get_session(
-            app_name=app_name,
-            user_id=eval_case_result.user_id,
-            session_id=eval_case_result.session_id,
-        )
-        eval_case_results.append(eval_case_result)
+      )
+      inference_request = InferenceRequest(
+          app_name=app_name,
+          eval_set_id=eval_set.eval_set_id,
+          eval_case_ids=req.eval_ids,
+          inference_config=InferenceConfig(),
+      )
+      inference_results = await _collect_inferences(
+          inference_requests=[inference_request], eval_service=eval_service
+      )
+
+      eval_case_results = await _collect_eval_results(
+          inference_results=inference_results,
+          eval_service=eval_service,
+          eval_metrics=req.eval_metrics,
+      )
     except ModuleNotFoundError as e:
       logger.exception("%s", e)
-      raise HTTPException(status_code=400, detail=str(e)) from e
+      raise HTTPException(
+          status_code=400, detail=MISSING_EVAL_DEPENDENCIES_MESSAGE
+      ) from e
 
-    eval_set_results_manager.save_eval_set_result(
-        app_name, eval_set_id, eval_case_results
-    )
+    run_eval_results = []
+    for eval_case_result in eval_case_results:
+      run_eval_results.append(
+          RunEvalResult(
+              eval_set_file=eval_case_result.eval_set_file,
+              eval_set_id=eval_set_id,
+              eval_id=eval_case_result.eval_id,
+              final_eval_status=eval_case_result.final_eval_status,
+              overall_eval_metric_results=eval_case_result.overall_eval_metric_results,
+              eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
+              user_id=eval_case_result.user_id,
+              session_id=eval_case_result.session_id,
+          )
+      )
 
     return run_eval_results
 
