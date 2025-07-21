@@ -68,6 +68,13 @@ class _TestingAgentWithEscalateAction(BaseAgent):
         ),
         actions=EventActions(escalate=True),
     )
+    yield Event(
+        author=self.name,
+        invocation_id=ctx.invocation_id,
+        content=types.Content(
+            parts=[types.Part(text=f'I have done my job after escalation!!')]
+        ),
+    )
 
 
 async def _create_parent_invocation_context(
@@ -115,9 +122,12 @@ async def test_run_async_with_escalate_action(request: pytest.FixtureRequest):
   escalating_agent = _TestingAgentWithEscalateAction(
       name=f'{request.function.__name__}_test_escalating_agent'
   )
+  ignored_agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_ignored_agent'
+  )
   loop_agent = LoopAgent(
       name=f'{request.function.__name__}_test_loop_agent',
-      sub_agents=[non_escalating_agent, escalating_agent],
+      sub_agents=[non_escalating_agent, escalating_agent, ignored_agent],
   )
   parent_ctx = await _create_parent_invocation_context(
       request.function.__name__, loop_agent
@@ -125,7 +135,7 @@ async def test_run_async_with_escalate_action(request: pytest.FixtureRequest):
   events = [e async for e in loop_agent.run_async(parent_ctx)]
 
   # Only two events are generated because the sub escalating_agent escalates.
-  assert len(events) == 2
+  assert len(events) == 3
   assert events[0].author == non_escalating_agent.name
   assert events[1].author == escalating_agent.name
   assert events[0].content.parts[0].text == (
@@ -133,4 +143,7 @@ async def test_run_async_with_escalate_action(request: pytest.FixtureRequest):
   )
   assert events[1].content.parts[0].text == (
       f'Hello, async {escalating_agent.name}!'
+  )
+  assert (
+      events[2].content.parts[0].text == 'I have done my job after escalation!!'
   )

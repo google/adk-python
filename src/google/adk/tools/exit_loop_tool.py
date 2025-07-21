@@ -21,3 +21,4 @@ def exit_loop(tool_context: ToolContext):
   Call this function only when you are instructed to do so.
   """
   tool_context.actions.escalate = True
+  tool_context.actions.skip_summarization = True

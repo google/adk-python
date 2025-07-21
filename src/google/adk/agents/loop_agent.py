@@ -53,10 +53,15 @@ class LoopAgent(BaseAgent):
     times_looped = 0
     while not self.max_iterations or times_looped < self.max_iterations:
       for sub_agent in self.sub_agents:
+        should_exit = False
         async for event in sub_agent.run_async(ctx):
           yield event
           if event.actions.escalate:
-            return
+            should_exit = True
+
+        if should_exit:
+          return
+
       times_looped += 1
     return
 

@@ -303,11 +303,9 @@ def test_auto_to_loop():
               name='exit_loop', response={'result': None}
           ),
       ),
-      # root_agent summarizes.
-      ('root_agent', 'response4'),
   ]
 
   # root_agent should still be the current agent because sub_agent_1 is loop.
   assert testing_utils.simplify_events(runner.run('test2')) == [
-      ('root_agent', 'response5'),
+      ('root_agent', 'response4'),
   ]
