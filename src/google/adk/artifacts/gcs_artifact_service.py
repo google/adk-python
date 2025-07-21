@@ -22,6 +22,7 @@ The blob name format used depends on whether the filename has a user namespace:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -40,6 +41,7 @@ class GcsArtifactService(BaseArtifactService):
   def __init__(self, bucket_name: str, **kwargs):
     """Initializes the GcsArtifactService.
 
+
     Args:
         bucket_name: The name of the bucket to use.
         **kwargs: Keyword arguments to pass to the Google Cloud Storage client.
@@ -47,6 +49,79 @@ class GcsArtifactService(BaseArtifactService):
     self.bucket_name = bucket_name
     self.storage_client = storage.Client(**kwargs)
     self.bucket = self.storage_client.bucket(self.bucket_name)
+
+  @override
+  async def save_artifact(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      filename: str,
+      artifact: types.Part,
+  ) -> int:
+    return await asyncio.to_thread(
+        self._save_artifact,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+        artifact,
+    )
+
+  @override
+  async def load_artifact(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      filename: str,
+      version: Optional[int] = None,
+  ) -> Optional[types.Part]:
+    return await asyncio.to_thread(
+        self._load_artifact,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+        version,
+    )
+
+  @override
+  async def list_artifact_keys(
+      self, *, app_name: str, user_id: str, session_id: str
+  ) -> list[str]:
+    return await asyncio.to_thread(
+        self._list_artifact_keys,
+        app_name,
+        user_id,
+        session_id,
+    )
+
+  @override
+  async def delete_artifact(
+      self, *, app_name: str, user_id: str, session_id: str, filename: str
+  ) -> None:
+    return await asyncio.to_thread(
+        self._delete_artifact,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+    )
+
+  @override
+  async def list_versions(
+      self, *, app_name: str, user_id: str, session_id: str, filename: str
+  ) -> list[int]:
+    return await asyncio.to_thread(
+        self._list_versions,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+    )
 
   def _file_has_user_namespace(self, filename: str) -> bool:
     """Checks if the filename has a user namespace.
@@ -84,17 +159,15 @@ class GcsArtifactService(BaseArtifactService):
       return f"{app_name}/{user_id}/user/{filename}/{version}"
     return f"{app_name}/{user_id}/{session_id}/{filename}/{version}"
 
-  @override
-  async def save_artifact(
+  def _save_artifact(
       self,
-      *,
       app_name: str,
       user_id: str,
       session_id: str,
       filename: str,
       artifact: types.Part,
   ) -> int:
-    versions = await self.list_versions(
+    versions = self._list_versions(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -114,10 +187,8 @@ class GcsArtifactService(BaseArtifactService):
 
     return version
 
-  @override
-  async def load_artifact(
+  def _load_artifact(
       self,
-      *,
       app_name: str,
       user_id: str,
       session_id: str,
@@ -125,7 +196,7 @@ class GcsArtifactService(BaseArtifactService):
       version: Optional[int] = None,
   ) -> Optional[types.Part]:
     if version is None:
-      versions = await self.list_versions(
+      versions = self._list_versions(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
@@ -148,9 +219,8 @@ class GcsArtifactService(BaseArtifactService):
     )
     return artifact
 
-  @override
-  async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: str
+  def _list_artifact_keys(
+      self, app_name: str, user_id: str, session_id: str
   ) -> list[str]:
     filenames = set()
 
@@ -172,11 +242,10 @@ class GcsArtifactService(BaseArtifactService):
 
     return sorted(list(filenames))
 
-  @override
-  async def delete_artifact(
-      self, *, app_name: str, user_id: str, session_id: str, filename: str
+  def _delete_artifact(
+      self, app_name: str, user_id: str, session_id: str, filename: str
   ) -> None:
-    versions = await self.list_versions(
+    versions = self._list_versions(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -190,9 +259,8 @@ class GcsArtifactService(BaseArtifactService):
       blob.delete()
     return
 
-  @override
-  async def list_versions(
-      self, *, app_name: str, user_id: str, session_id: str, filename: str
+  def _list_versions(
+      self, app_name: str, user_id: str, session_id: str, filename: str
   ) -> list[int]:
     """Lists all available versions of an artifact.
 
