@@ -32,6 +32,7 @@ from typing import Union
 
 from google.genai import types
 from opentelemetry import trace
+from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -604,7 +605,11 @@ class BaseAgentConfig(BaseModel):
   Do not use this class directly. It's the base class for all agent configs.
   """
 
-  model_config = ConfigDict(extra='forbid')
+  model_config = ConfigDict(
+      extra='forbid',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
 
   agent_class: Literal['BaseAgent'] = 'BaseAgent'
   """Required. The class of the agent. The value is used to differentiate
