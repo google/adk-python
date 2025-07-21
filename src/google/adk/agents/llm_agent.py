@@ -563,6 +563,7 @@ class LlmAgent(BaseAgent):
       config_abs_path: str,
   ) -> LlmAgent:
     from .config_agent_utils import resolve_callbacks
+    from .config_agent_utils import resolve_code_reference
 
     agent = super().from_config(config, config_abs_path)
     if config.model:
@@ -575,6 +576,10 @@ class LlmAgent(BaseAgent):
       agent.disallow_transfer_to_peers = config.disallow_transfer_to_peers
     if config.include_contents != 'default':
       agent.include_contents = config.include_contents
+    if config.input_schema:
+      agent.input_schema = resolve_code_reference(config.input_schema)
+    if config.output_schema:
+      agent.output_schema = resolve_code_reference(config.output_schema)
     if config.output_key:
       agent.output_key = config.output_key
     if config.tools:
@@ -618,6 +623,12 @@ class LlmAgentConfig(BaseAgentConfig):
 
   disallow_transfer_to_peers: Optional[bool] = None
   """Optional. LlmAgent.disallow_transfer_to_peers."""
+
+  input_schema: Optional[CodeConfig] = None
+  """Optional. LlmAgent.input_schema."""
+
+  output_schema: Optional[CodeConfig] = None
+  """Optional. LlmAgent.output_schema."""
 
   output_key: Optional[str] = None
   """Optional. LlmAgent.output_key."""

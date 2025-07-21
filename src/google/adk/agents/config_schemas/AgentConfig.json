@@ -163,6 +163,28 @@
           "default": null,
           "title": "Disallow Transfer To Peers"
         },
+        "input_schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "output_schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "output_key": {
           "anyOf": [
             {
