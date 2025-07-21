@@ -30,8 +30,7 @@ try:
 except ImportError as e:
   if sys.version_info < (3, 10):
     raise ImportError(
-        "A2A Tool requires Python 3.10 or above. Please upgrade your Python"
-        " version."
+        "A2A requires Python 3.10 or above. Please upgrade your Python version."
     ) from e
   else:
     raise e
