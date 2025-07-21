@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Optional
 
@@ -112,7 +113,12 @@ class _VertexAiEvalFacade(Evaluator):
     return ""
 
   def _get_score(self, eval_result) -> Optional[float]:
-    if eval_result and eval_result.summary_metrics:
+    if (
+        eval_result
+        and eval_result.summary_metrics
+        and isinstance(eval_result.summary_metrics[0].mean_score, float)
+        and not math.isnan(eval_result.summary_metrics[0].mean_score)
+    ):
       return eval_result.summary_metrics[0].mean_score
 
     return None
