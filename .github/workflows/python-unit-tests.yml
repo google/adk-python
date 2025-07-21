@@ -38,8 +38,6 @@ jobs:
 
     - name: Install the latest version of uv
       uses: astral-sh/setup-uv@v6
-      with:
-        version: "latest"
 
     - name: Install dependencies
       run: |
