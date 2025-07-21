@@ -856,7 +856,7 @@ def get_fast_api_app(
         os.makedirs(agent_dir, exist_ok=True)
         file_path = os.path.join(agent_dir, filename)
 
-        with open(file_path, "w") as buffer:
+        with open(file_path, "wb") as buffer:
           shutil.copyfileobj(file.file, buffer)
 
       except Exception as e:
