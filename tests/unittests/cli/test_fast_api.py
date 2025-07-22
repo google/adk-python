@@ -189,6 +189,9 @@ def mock_agent_loader():
     def load_agent(self, app_name):
       return root_agent
 
+    def list_agents(self):
+      return ["test_app"]
+
   return MockAgentLoader(".")
 
 

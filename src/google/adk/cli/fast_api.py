@@ -27,7 +27,6 @@ import typing
 from typing import Any
 from typing import List
 from typing import Literal
-from typing import Mapping
 from typing import Optional
 
 import click
@@ -407,20 +406,7 @@ def get_fast_api_app(
 
   @app.get("/list-apps")
   def list_apps() -> list[str]:
-    base_path = Path.cwd() / agents_dir
-    if not base_path.exists():
-      raise HTTPException(status_code=404, detail="Path not found")
-    if not base_path.is_dir():
-      raise HTTPException(status_code=400, detail="Not a directory")
-    agent_names = [
-        x
-        for x in os.listdir(base_path)
-        if os.path.isdir(os.path.join(base_path, x))
-        and not x.startswith(".")
-        and x != "__pycache__"
-    ]
-    agent_names.sort()
-    return agent_names
+    return agent_loader.list_agents()
 
   @app.get("/debug/trace/{event_id}")
   def get_trace_dict(event_id: str) -> Any:
@@ -524,13 +510,6 @@ def get_fast_api_app(
         await session_service.append_event(session=session, event=event)
 
     return session
-
-  def _get_eval_set_file_path(app_name, agents_dir, eval_set_id) -> str:
-    return os.path.join(
-        agents_dir,
-        app_name,
-        eval_set_id + _EVAL_SET_FILE_EXTENSION,
-    )
 
   @app.post(
       "/apps/{app_name}/eval_sets/{eval_set_id}",

@@ -27,7 +27,7 @@ import uuid
 
 from typing_extensions import deprecated
 
-from ..agents import Agent
+from ..agents.llm_agent import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
