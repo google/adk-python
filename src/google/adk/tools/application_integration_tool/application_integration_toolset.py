@@ -87,7 +87,7 @@ class ApplicationIntegrationToolset(BaseToolset):
       triggers: Optional[List[str]] = None,
       connection: Optional[str] = None,
       entity_operations: Optional[str] = None,
-      actions: Optional[str] = None,
+      actions: Optional[list[str]] = None,
       # Optional parameter for the toolset. This is prepended to the generated
       # tool/python function name.
       tool_name_prefix: Optional[str] = "",
