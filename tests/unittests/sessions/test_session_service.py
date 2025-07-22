@@ -201,7 +201,7 @@ async def test_session_state(service_type):
   assert session_11.state.get('user:key1') == 'value1'
   assert not session_11.state.get('temp:key')
 
-  # Make sure a malicious user can obtain a session and events not belonging to them
+  # Make sure a malicious user cannot obtain a session and events not belonging to them
   session_mismatch = await session_service.get_session(
       app_name=app_name, user_id=user_id_malicious, session_id=session_id_11
   )
