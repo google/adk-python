@@ -27,6 +27,7 @@ import typing
 from typing import Any
 from typing import List
 from typing import Literal
+from typing import Mapping
 from typing import Optional
 
 import click
@@ -218,6 +219,7 @@ def get_fast_api_app(
     *,
     agents_dir: str,
     session_service_uri: Optional[str] = None,
+    session_db_kwargs: Optional[Mapping[str, Any]] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     eval_storage_uri: Optional[str] = None,
@@ -369,7 +371,12 @@ def get_fast_api_app(
     else:
       from ..sessions.database_session_service import DatabaseSessionService
 
-      session_service = DatabaseSessionService(db_url=session_service_uri)
+      # Database session additional settings
+      if session_db_kwargs is None:
+        session_db_kwargs = {}
+      session_service = DatabaseSessionService(
+          db_url=session_service_uri, **session_db_kwargs
+      )
   else:
     session_service = InMemorySessionService()
 
