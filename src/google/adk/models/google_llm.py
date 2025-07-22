@@ -88,7 +88,7 @@ class Gemini(BaseLlm):
     Yields:
       LlmResponse: The model response.
     """
-    self._preprocess_request(llm_request)
+    await self._preprocess_request(llm_request)
     self._maybe_append_user_content(llm_request)
     logger.info(
         'Sending out request, model: %s, backend: %s, stream: %s',
@@ -269,7 +269,22 @@ class Gemini(BaseLlm):
     ) as live_session:
       yield GeminiLlmConnection(live_session)
 
-  def _preprocess_request(self, llm_request: LlmRequest) -> None:
+  async def _adapt_computer_use_tool(self, llm_request: LlmRequest) -> None:
+    """Adapt the google computer use predefined functions to the adk computer use toolset."""
+
+    from ..tools.computer_use.computer_use_toolset import ComputerUseToolset
+
+    async def convert_wait_to_wait_5_seconds(wait_func):
+      async def wait_5_seconds():
+        return await wait_func(5)
+
+      return wait_5_seconds
+
+    await ComputerUseToolset.adapt_computer_use_tool(
+        'wait', convert_wait_to_wait_5_seconds, llm_request
+    )
+
+  async def _preprocess_request(self, llm_request: LlmRequest) -> None:
 
     if self._api_backend == GoogleLLMVariant.GEMINI_API:
       # Using API key from Google AI Studio to call model doesn't support labels.
@@ -283,6 +298,18 @@ class Gemini(BaseLlm):
           for part in content.parts:
             _remove_display_name_if_present(part.inline_data)
             _remove_display_name_if_present(part.file_data)
+
+    # Initialize config if needed
+    if llm_request.config and llm_request.config.tools:
+      # Check if computer use is configured
+      for tool in llm_request.config.tools:
+        if (
+            isinstance(tool, (types.Tool, types.ToolDict))
+            and hasattr(tool, 'computer_use')
+            and tool.computer_use
+        ):
+          llm_request.config.system_instruction = None
+          await self._adapt_computer_use_tool(llm_request)
 
 
 def _build_function_declaration_log(
