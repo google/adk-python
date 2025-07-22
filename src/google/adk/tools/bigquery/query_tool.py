@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import functools
+import json
 import types
 from typing import Callable
 
@@ -159,7 +162,18 @@ def execute_sql(
         project=project_id,
         max_results=MAX_DOWNLOADED_QUERY_RESULT_ROWS,
     )
-    rows = [{key: val for key, val in row.items()} for row in row_iterator]
+    rows = []
+    for row in row_iterator:
+      row_values = {}
+      for key, val in row.items():
+        try:
+          # if the json serialization of the value succeeds, use it as is
+          json.dumps(val)
+        except:
+          val = str(val)
+        row_values[key] = val
+      rows.append(row_values)
+
     result = {"status": "SUCCESS", "rows": rows}
     if (
         MAX_DOWNLOADED_QUERY_RESULT_ROWS is not None
