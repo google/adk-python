@@ -174,7 +174,8 @@ def content_block_to_part(
 def message_to_generate_content_response(
     message: anthropic_types.Message,
 ) -> LlmResponse:
-  logger.info(
+  logger.info("Received response from Claude.")
+  logger.debug(
       "Claude response: %s",
       message.model_dump_json(indent=2, exclude_none=True),
   )

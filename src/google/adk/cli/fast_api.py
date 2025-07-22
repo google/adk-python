@@ -894,7 +894,8 @@ def get_fast_api_app(
             new_message=req.new_message,
         )
     ]
-    logger.info("Generated %s events in agent run: %s", len(events), events)
+    logger.info("Generated %s events in agent run", len(events))
+    logger.debug("Events generated: %s", events)
     return events
 
   @app.post("/run_sse")
@@ -920,7 +921,7 @@ def get_fast_api_app(
         ):
           # Format as SSE data
           sse_event = event.model_dump_json(exclude_none=True, by_alias=True)
-          logger.info("Generated event in agent run streaming: %s", sse_event)
+          logger.debug("Generated event in agent run streaming: %s", sse_event)
           yield f"data: {sse_event}\n\n"
       except Exception as e:
         logger.exception("Error in event_generator: %s", e)

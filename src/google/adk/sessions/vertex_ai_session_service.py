@@ -109,7 +109,8 @@ class VertexAiSessionService(BaseSessionService):
         request_dict=session_json_dict,
     )
     api_response = _convert_api_response(api_response)
-    logger.info(f'Create Session response {api_response}')
+    logger.info('Create session response received.')
+    logger.debug('Create session response: %s', api_response)
 
     session_id = api_response['name'].split('/')[-3]
     operation_id = api_response['name'].split('/')[-1]

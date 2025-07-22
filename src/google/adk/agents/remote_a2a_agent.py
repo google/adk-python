@@ -481,11 +481,11 @@ class RemoteA2aAgent(BaseAgent):
           ),
       )
 
-    logger.info(build_a2a_request_log(a2a_request))
+    logger.debug(build_a2a_request_log(a2a_request))
 
     try:
       a2a_response = await self._a2a_client.send_message(request=a2a_request)
-      logger.info(build_a2a_response_log(a2a_response))
+      logger.debug(build_a2a_response_log(a2a_response))
 
       event = await self._handle_a2a_response(a2a_response, ctx)
 

@@ -96,7 +96,7 @@ class Gemini(BaseLlm):
         self._api_backend,
         stream,
     )
-    logger.info(_build_request_log(llm_request))
+    logger.debug(_build_request_log(llm_request))
 
     # add tracking headers to custom headers given it will override the headers
     # set in the api client constructor
@@ -121,7 +121,7 @@ class Gemini(BaseLlm):
       # previous partial content. The only difference is bidi rely on
       # complete_turn flag to detect end while sse depends on finish_reason.
       async for response in responses:
-        logger.info(_build_response_log(response))
+        logger.debug(_build_response_log(response))
         llm_response = LlmResponse.create(response)
         usage_metadata = llm_response.usage_metadata
         if (
@@ -179,7 +179,8 @@ class Gemini(BaseLlm):
           contents=llm_request.contents,
           config=llm_request.config,
       )
-      logger.info(_build_response_log(response))
+      logger.info('Response received from the model.')
+      logger.debug(_build_response_log(response))
       yield LlmResponse.create(response)
 
   @cached_property

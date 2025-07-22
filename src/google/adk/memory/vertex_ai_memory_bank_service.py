@@ -86,7 +86,8 @@ class VertexAiMemoryBankService(BaseMemoryService):
           path=f'reasoningEngines/{self._agent_engine_id}/memories:generate',
           request_dict=request_dict,
       )
-      logger.info('Generate memory response: %s', api_response)
+      logger.info('Generate memory response received.')
+      logger.debug('Generate memory response: %s', api_response)
     else:
       logger.info('No events to add to memory.')
 
@@ -108,7 +109,8 @@ class VertexAiMemoryBankService(BaseMemoryService):
         },
     )
     api_response = _convert_api_response(api_response)
-    logger.info('Search memory response: %s', api_response)
+    logger.info('Search memory response received.')
+    logger.debug('Search memory response: %s', api_response)
 
     if not api_response or not api_response.get('retrievedMemories', None):
       return SearchMemoryResponse()
