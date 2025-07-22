@@ -675,23 +675,24 @@ def get_fast_api_app(
       app_name: str, eval_set_id: str, req: RunEvalRequest
   ) -> list[RunEvalResult]:
     """Runs an eval given the details in the eval request."""
-    from ..evaluation.local_eval_service import LocalEvalService
-    from .cli_eval import _collect_eval_results
-    from .cli_eval import _collect_inferences
-
     # Create a mapping from eval set file to all the evals that needed to be
     # run.
-    eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
-
-    if not eval_set:
-      raise HTTPException(
-          status_code=400, detail=f"Eval set `{eval_set_id}` not found."
-      )
-
-    root_agent = agent_loader.load_agent(app_name)
-
-    eval_case_results = []
     try:
+      from ..evaluation.local_eval_service import LocalEvalService
+      from .cli_eval import _collect_eval_results
+      from .cli_eval import _collect_inferences
+
+      eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
+
+      if not eval_set:
+        raise HTTPException(
+            status_code=400, detail=f"Eval set `{eval_set_id}` not found."
+        )
+
+      root_agent = agent_loader.load_agent(app_name)
+
+      eval_case_results = []
+
       eval_service = LocalEvalService(
           root_agent=root_agent,
           eval_sets_manager=eval_sets_manager,
