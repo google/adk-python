@@ -532,8 +532,8 @@ class TestEventConverter:
         )
 
         assert isinstance(result, TaskStatusUpdateEvent)
-        assert result.taskId == task_id
-        assert result.contextId == context_id
+        assert result.task_id == task_id
+        assert result.context_id == context_id
         assert result.status.state == TaskState.auth_required
 
   def test_create_status_update_event_with_input_required_state(self):
@@ -596,8 +596,8 @@ class TestEventConverter:
         )
 
         assert isinstance(result, TaskStatusUpdateEvent)
-        assert result.taskId == task_id
-        assert result.contextId == context_id
+        assert result.task_id == task_id
+        assert result.context_id == context_id
         assert result.status.state == TaskState.input_required
 
 

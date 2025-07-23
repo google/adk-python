@@ -24,8 +24,11 @@ import pytest
 try:
   from a2a.types import DataPart as A2ADataPart
   from a2a.types import Message as A2AMessage
+  from a2a.types import MessageSendConfiguration
+  from a2a.types import MessageSendParams
   from a2a.types import Part as A2APart
   from a2a.types import Role
+  from a2a.types import SendMessageRequest
   from a2a.types import Task as A2ATask
   from a2a.types import TaskState
   from a2a.types import TaskStatus
@@ -137,32 +140,31 @@ class TestBuildA2ARequestLog:
     from google.adk.a2a.logs.log_utils import build_a2a_request_log
 
     # Create mock request with all components
-    req = Mock()
-    req.id = "req-123"
-    req.method = "sendMessage"
-    req.jsonrpc = "2.0"
-
-    # Mock message
-    req.params.message.messageId = "msg-456"
-    req.params.message.role = "user"
-    req.params.message.taskId = "task-789"
-    req.params.message.contextId = "ctx-101"
-
-    # Mock message parts - use simple mocks since the function will call build_message_part_log
-    part1 = Mock()
-    part2 = Mock()
-    req.params.message.parts = [part1, part2]
-
-    # Mock configuration
-    req.params.configuration.acceptedOutputModes = ["text", "image"]
-    req.params.configuration.blocking = True
-    req.params.configuration.historyLength = 10
-    req.params.configuration.pushNotificationConfig = Mock()  # Non-None
-
-    # Mock metadata
-    req.params.metadata = {"key1": "value1"}
-    # Mock message metadata to avoid JSON serialization issues
-    req.params.message.metadata = {"msg_key": "msg_value"}
+    req = SendMessageRequest(
+        id="req-123",
+        method="message/send",
+        jsonrpc="2.0",
+        params=MessageSendParams(
+            message=A2AMessage(
+                message_id="msg-456",
+                role="user",
+                task_id="task-789",
+                context_id="ctx-101",
+                parts=[
+                    A2APart(root=A2ATextPart(text="Part 1")),
+                    A2APart(root=A2ATextPart(text="Part 2")),
+                ],
+                metadata={"msg_key": "msg_value"},
+            ),
+            configuration=MessageSendConfiguration(
+                accepted_output_modes=["text", "image"],
+                blocking=True,
+                history_length=10,
+                push_notification_config=None,
+            ),
+            metadata={"key1": "value1"},
+        ),
+    )
 
     with patch(
         "google.adk.a2a.logs.log_utils.build_message_part_log"
@@ -173,7 +175,7 @@ class TestBuildA2ARequestLog:
 
     # Verify all components are present
     assert "req-123" in result
-    assert "sendMessage" in result
+    assert "message/send" in result
     assert "2.0" in result
     assert "msg-456" in result
     assert "user" in result
@@ -191,13 +193,13 @@ class TestBuildA2ARequestLog:
 
     req = Mock()
     req.id = "req-123"
-    req.method = "sendMessage"
+    req.method = "message/send"
     req.jsonrpc = "2.0"
 
-    req.params.message.messageId = "msg-456"
+    req.params.message.message_id = "msg-456"
     req.params.message.role = "user"
-    req.params.message.taskId = "task-789"
-    req.params.message.contextId = "ctx-101"
+    req.params.message.task_id = "task-789"
+    req.params.message.context_id = "ctx-101"
     req.params.message.parts = None  # No parts
     req.params.message.metadata = None  # No message metadata
 
@@ -220,10 +222,10 @@ class TestBuildA2ARequestLog:
     req.method = "sendMessage"
     req.jsonrpc = "2.0"
 
-    req.params.message.messageId = "msg-456"
+    req.params.message.message_id = "msg-456"
     req.params.message.role = "user"
-    req.params.message.taskId = "task-789"
-    req.params.message.contextId = "ctx-101"
+    req.params.message.task_id = "task-789"
+    req.params.message.context_id = "ctx-101"
     req.params.message.parts = []  # Empty parts list
     req.params.message.metadata = None  # No message metadata
 
@@ -283,7 +285,7 @@ class TestBuildA2AResponseLog:
     from google.adk.a2a.logs.log_utils import build_a2a_response_log
 
     task_status = TaskStatus(state=TaskState.working)
-    task = A2ATask(id="task-123", contextId="ctx-456", status=task_status)
+    task = A2ATask(id="task-123", context_id="ctx-456", status=task_status)
 
     resp = Mock()
     resp.root.result = task
@@ -314,7 +316,7 @@ class TestBuildA2AResponseLog:
 
     # Create status message using module-level imported types
     status_message = A2AMessage(
-        messageId="status-msg-123",
+        message_id="status-msg-123",
         role=Role.agent,
         parts=[
             A2APart(root=A2ATextPart(text="Status part 1")),
@@ -325,7 +327,7 @@ class TestBuildA2AResponseLog:
     task_status = TaskStatus(state=TaskState.working, message=status_message)
     task = A2ATask(
         id="task-123",
-        contextId="ctx-456",
+        context_id="ctx-456",
         status=task_status,
         history=[],
         artifacts=None,
@@ -358,10 +360,10 @@ class TestBuildA2AResponseLog:
 
     # Use module-level imported types consistently
     message = A2AMessage(
-        messageId="msg-123",
+        message_id="msg-123",
         role=Role.agent,
-        taskId="task-456",
-        contextId="ctx-789",
+        task_id="task-456",
+        context_id="ctx-789",
         parts=[A2APart(root=A2ATextPart(text="Message part 1"))],
     )
 
@@ -395,10 +397,10 @@ class TestBuildA2AResponseLog:
     # Use mock for this case since we want to test empty parts handling
     message = Mock()
     message.__class__.__name__ = "Message"
-    message.messageId = "msg-empty"
+    message.message_id = "msg-empty"
     message.role = "agent"
-    message.taskId = "task-empty"
-    message.contextId = "ctx-empty"
+    message.task_id = "task-empty"
+    message.context_id = "ctx-empty"
     message.parts = None  # No parts
     message.model_dump_json.return_value = '{"message": "empty"}'
 
@@ -488,10 +490,10 @@ class TestBuildA2AResponseLog:
     req.method = "sendMessage"
     req.jsonrpc = "2.0"
 
-    req.params.message.messageId = "msg-with-metadata"
+    req.params.message.message_id = "msg-with-metadata"
     req.params.message.role = "user"
-    req.params.message.taskId = "task-metadata"
-    req.params.message.contextId = "ctx-metadata"
+    req.params.message.task_id = "task-metadata"
+    req.params.message.context_id = "ctx-metadata"
     req.params.message.parts = []
     req.params.message.metadata = {"msg_type": "test", "priority": "high"}
 

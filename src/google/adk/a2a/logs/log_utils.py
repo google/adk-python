@@ -172,10 +172,10 @@ Method: {req.method}
 JSON-RPC: {req.jsonrpc}
 -----------------------------------------------------------
 Message:
-  ID: {req.params.message.messageId}
+  ID: {req.params.message.message_id}
   Role: {req.params.message.role}
-  Task ID: {req.params.message.taskId}
-  Context ID: {req.params.message.contextId}{message_metadata_section}
+  Task ID: {req.params.message.task_id}
+  Context ID: {req.params.message.context_id}{message_metadata_section}
 -----------------------------------------------------------
 Message Parts:
 {_NEW_LINE.join(message_parts_logs) if message_parts_logs else "No parts"}
@@ -221,7 +221,7 @@ JSON-RPC: {resp.root.jsonrpc}
   if _is_a2a_task(result):
     result_details.extend([
         f"Task ID: {result.id}",
-        f"Context ID: {result.contextId}",
+        f"Context ID: {result.context_id}",
         f"Status State: {result.status.state}",
         f"Status Timestamp: {result.status.timestamp}",
         f"History Length: {len(result.history) if result.history else 0}",
@@ -238,10 +238,10 @@ JSON-RPC: {resp.root.jsonrpc}
 
   elif _is_a2a_message(result):
     result_details.extend([
-        f"Message ID: {result.messageId}",
+        f"Message ID: {result.message_id}",
         f"Role: {result.role}",
-        f"Task ID: {result.taskId}",
-        f"Context ID: {result.contextId}",
+        f"Task ID: {result.task_id}",
+        f"Context ID: {result.context_id}",
     ])
 
     # Add message parts
@@ -288,10 +288,10 @@ JSON-RPC: {resp.root.jsonrpc}
 Metadata:
 {json.dumps(result.status.message.metadata, indent=2)}"""
 
-    status_message_section = f"""ID: {result.status.message.messageId}
+    status_message_section = f"""ID: {result.status.message.message_id}
 Role: {result.status.message.role}
-Task ID: {result.status.message.taskId}
-Context ID: {result.status.message.contextId}
+Task ID: {result.status.message.task_id}
+Context ID: {result.status.message.context_id}
 Message Parts:
 {_NEW_LINE.join(status_parts_logs) if status_parts_logs else "No parts"}{status_metadata_section}"""
 
@@ -317,10 +317,10 @@ Message Parts:
 
       history_logs.append(
           f"""Message {i + 1}:
-  ID: {message.messageId}
+  ID: {message.message_id}
   Role: {message.role}
-  Task ID: {message.taskId}
-  Context ID: {message.contextId}
+  Task ID: {message.task_id}
+  Context ID: {message.context_id}
   Message Parts:
 {_NEW_LINE.join(message_parts_logs) if message_parts_logs else "  No parts"}{message_metadata_section}"""
       )

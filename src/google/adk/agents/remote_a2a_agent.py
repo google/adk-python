@@ -301,14 +301,14 @@ class RemoteA2aAgent(BaseAgent):
         ctx.session.events[-1], ctx, Role.user
     )
     if function_call_event.custom_metadata:
-      a2a_message.taskId = (
+      a2a_message.task_id = (
           function_call_event.custom_metadata.get(
               A2A_METADATA_PREFIX + "task_id"
           )
           if function_call_event.custom_metadata
           else None
       )
-      a2a_message.contextId = (
+      a2a_message.context_id = (
           function_call_event.custom_metadata.get(
               A2A_METADATA_PREFIX + "context_id"
           )
@@ -392,14 +392,14 @@ class RemoteA2aAgent(BaseAgent):
                 a2a_response.root.result, self.name, ctx
             )
             event.custom_metadata = event.custom_metadata or {}
-            if a2a_response.root.result.taskId:
+            if a2a_response.root.result.task_id:
               event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = (
-                  a2a_response.root.result.taskId
+                  a2a_response.root.result.task_id
               )
 
-          if a2a_response.root.result.contextId:
+          if a2a_response.root.result.context_id:
             event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
-                a2a_response.root.result.contextId
+                a2a_response.root.result.context_id
             )
 
         else:
@@ -473,10 +473,10 @@ class RemoteA2aAgent(BaseAgent):
           id=str(uuid.uuid4()),
           params=A2AMessageSendParams(
               message=A2AMessage(
-                  messageId=str(uuid.uuid4()),
+                  message_id=str(uuid.uuid4()),
                   parts=message_parts,
                   role="user",
-                  contextId=context_id,
+                  context_id=context_id,
               )
           ),
       )

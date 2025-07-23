@@ -73,8 +73,8 @@ def create_test_agent_card(
       description=description,
       version="1.0",
       capabilities=AgentCapabilities(),
-      defaultInputModes=["text/plain"],
-      defaultOutputModes=["application/json"],
+      default_input_modes=["text/plain"],
+      default_output_modes=["application/json"],
       skills=[
           AgentSkill(
               id="test-skill",
@@ -316,8 +316,8 @@ class TestRemoteA2aAgentResolution:
         description="test",
         version="1.0",
         capabilities=AgentCapabilities(),
-        defaultInputModes=["text/plain"],
-        defaultOutputModes=["application/json"],
+        default_input_modes=["text/plain"],
+        default_output_modes=["application/json"],
         skills=[
             AgentSkill(
                 id="test-skill",
@@ -347,8 +347,8 @@ class TestRemoteA2aAgentResolution:
         description="test",
         version="1.0",
         capabilities=AgentCapabilities(),
-        defaultInputModes=["text/plain"],
-        defaultOutputModes=["application/json"],
+        default_input_modes=["text/plain"],
+        default_output_modes=["application/json"],
         skills=[
             AgentSkill(
                 id="test-skill",
@@ -483,7 +483,7 @@ class TestRemoteA2aAgentMessageHandling:
       ) as mock_convert:
         # Create a proper mock A2A message
         mock_a2a_message = Mock(spec=A2AMessage)
-        mock_a2a_message.taskId = None  # Will be set by the method
+        mock_a2a_message.task_id = None  # Will be set by the method
         mock_convert.return_value = mock_a2a_message
 
         result = self.agent._create_a2a_request_for_user_function_response(
@@ -492,7 +492,7 @@ class TestRemoteA2aAgentMessageHandling:
 
         assert result is not None
         assert result.params.message == mock_a2a_message
-        assert mock_a2a_message.taskId == "task-123"
+        assert mock_a2a_message.task_id == "task-123"
 
   def test_construct_message_parts_from_session_success(self):
     """Test successful message parts construction from session."""
@@ -542,8 +542,8 @@ class TestRemoteA2aAgentMessageHandling:
   async def test_handle_a2a_response_success_with_message(self):
     """Test successful A2A response handling with message."""
     mock_a2a_message = Mock(spec=A2AMessage)
-    mock_a2a_message.taskId = "task-123"
-    mock_a2a_message.contextId = "context-123"
+    mock_a2a_message.task_id = "task-123"
+    mock_a2a_message.context_id = "context-123"
 
     mock_success_response = Mock(spec=SendMessageSuccessResponse)
     mock_success_response.result = mock_a2a_message
@@ -581,7 +581,7 @@ class TestRemoteA2aAgentMessageHandling:
     """Test successful A2A response handling with task."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
-    mock_a2a_task.contextId = "context-123"
+    mock_a2a_task.context_id = "context-123"
 
     mock_success_response = Mock(spec=SendMessageSuccessResponse)
     mock_success_response.result = mock_a2a_task
@@ -950,8 +950,8 @@ class TestRemoteA2aAgentIntegration:
           mock_response = Mock()
           mock_success_response = Mock(spec=SendMessageSuccessResponse)
           mock_a2a_message = Mock(spec=A2AMessage)
-          mock_a2a_message.taskId = "task-123"
-          mock_a2a_message.contextId = "context-123"
+          mock_a2a_message.task_id = "task-123"
+          mock_a2a_message.context_id = "context-123"
           mock_success_response.result = mock_a2a_message
           mock_response.root = mock_success_response
           mock_a2a_client.send_message.return_value = mock_response
