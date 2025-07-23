@@ -108,20 +108,32 @@ def test_supported_models():
 def test_client_version_header():
   model = Gemini(model="gemini-1.5-flash")
   client = model.api_client
-  adk_header = (
-      f"google-adk/{adk_version.__version__} gl-python/{sys.version.split()[0]}"
-  )
-  genai_header = (
-      f"google-genai-sdk/{genai_version.__version__} gl-python/{sys.version.split()[0]} "
-  )
-  expected_header = genai_header + adk_header
 
-  assert (
-      expected_header
-      in client._api_client._http_options.headers["x-goog-api-client"]
+  # Check that ADK version and Python version are present in headers
+  adk_version_string = f"google-adk/{adk_version.__version__}"
+  python_version_string = f"gl-python/{sys.version.split()[0]}"
+
+  x_goog_api_client_header = client._api_client._http_options.headers[
+      "x-goog-api-client"
+  ]
+  user_agent_header = client._api_client._http_options.headers["user-agent"]
+
+  # Verify ADK version is present
+  assert adk_version_string in x_goog_api_client_header
+  assert adk_version_string in user_agent_header
+
+  # Verify Python version is present
+  assert python_version_string in x_goog_api_client_header
+  assert python_version_string in user_agent_header
+
+  # Verify some Google SDK version is present (could be genai-sdk or vertex-genai-modules)
+  assert any(
+      sdk in x_goog_api_client_header
+      for sdk in ["google-genai-sdk/", "vertex-genai-modules/"]
   )
-  assert (
-      expected_header in client._api_client._http_options.headers["user-agent"]
+  assert any(
+      sdk in user_agent_header
+      for sdk in ["google-genai-sdk/", "vertex-genai-modules/"]
   )
 
 
@@ -129,23 +141,34 @@ def test_client_version_header_with_agent_engine(mock_os_environ):
   os.environ[_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME] = "my_test_project"
   model = Gemini(model="gemini-1.5-flash")
   client = model.api_client
-  adk_header_base = f"google-adk/{adk_version.__version__}"
-  adk_header_with_telemetry = (
-      f"{adk_header_base}+{_AGENT_ENGINE_TELEMETRY_TAG}"
-      f" gl-python/{sys.version.split()[0]}"
-  )
-  genai_header = (
-      f"google-genai-sdk/{genai_version.__version__} "
-      f"gl-python/{sys.version.split()[0]} "
-  )
-  expected_header = genai_header + adk_header_with_telemetry
 
-  assert (
-      expected_header
-      in client._api_client._http_options.headers["x-goog-api-client"]
+  # Check that ADK version with telemetry tag and Python version are present in headers
+  adk_version_with_telemetry = (
+      f"google-adk/{adk_version.__version__}+{_AGENT_ENGINE_TELEMETRY_TAG}"
   )
-  assert (
-      expected_header in client._api_client._http_options.headers["user-agent"]
+  python_version_string = f"gl-python/{sys.version.split()[0]}"
+
+  x_goog_api_client_header = client._api_client._http_options.headers[
+      "x-goog-api-client"
+  ]
+  user_agent_header = client._api_client._http_options.headers["user-agent"]
+
+  # Verify ADK version with telemetry tag is present
+  assert adk_version_with_telemetry in x_goog_api_client_header
+  assert adk_version_with_telemetry in user_agent_header
+
+  # Verify Python version is present
+  assert python_version_string in x_goog_api_client_header
+  assert python_version_string in user_agent_header
+
+  # Verify some Google SDK version is present (could be genai-sdk or vertex-genai-modules)
+  assert any(
+      sdk in x_goog_api_client_header
+      for sdk in ["google-genai-sdk/", "vertex-genai-modules/"]
+  )
+  assert any(
+      sdk in user_agent_header
+      for sdk in ["google-genai-sdk/", "vertex-genai-modules/"]
   )
 
 
