@@ -176,9 +176,21 @@ async def handle_function_calls_async(
 
       # Step 3: Otherwise, proceed calling the tool normally.
       if function_response is None:
-        function_response = await __call_tool_async(
-            tool, args=function_args, tool_context=tool_context
-        )
+        try:
+          function_response = await __call_tool_async(
+              tool, args=function_args, tool_context=tool_context
+          )
+        except Exception as tool_error:
+          error_response = await invocation_context.plugin_manager.run_on_tool_error_callback(
+              tool=tool,
+              tool_args=function_args,
+              tool_context=tool_context,
+              error=tool_error,
+          )
+          if error_response is not None:
+            function_response = error_response
+          else:
+            raise tool_error
 
       # Step 4: Check if plugin after_tool_callback overrides the function
       # response.

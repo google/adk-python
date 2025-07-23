@@ -534,7 +534,13 @@ class BaseLlmFlow(ABC):
     with tracer.start_as_current_span('call_llm'):
       if invocation_context.run_config.support_cfc:
         invocation_context.live_request_queue = LiveRequestQueue()
-        async for llm_response in self.run_live(invocation_context):
+        responses_generator = self.run_live(invocation_context)
+        async for llm_response in self._run_and_handle_error(
+            responses_generator,
+            invocation_context,
+            llm_request,
+            model_response_event,
+        ):
           # Runs after_model_callback if it exists.
           if altered_llm_response := await self._handle_after_model_callback(
               invocation_context, llm_response, model_response_event
@@ -553,10 +559,16 @@ class BaseLlmFlow(ABC):
         # the counter beyond the max set value, then the execution is stopped
         # right here, and exception is thrown.
         invocation_context.increment_llm_call_count()
-        async for llm_response in llm.generate_content_async(
+        responses_generator = llm.generate_content_async(
             llm_request,
             stream=invocation_context.run_config.streaming_mode
             == StreamingMode.SSE,
+        )
+        async for llm_response in self._run_and_handle_error(
+            responses_generator,
+            invocation_context,
+            llm_request,
+            model_response_event,
         ):
           trace_call_llm(
               invocation_context,
@@ -672,6 +684,43 @@ class BaseLlmFlow(ABC):
         )
 
     return model_response_event
+
+  async def _run_and_handle_error(
+      self,
+      response_generator: AsyncGenerator[LlmResponse, None],
+      invocation_context: InvocationContext,
+      llm_request: LlmRequest,
+      model_response_event: Event,
+  ) -> AsyncGenerator[LlmResponse, None]:
+    """Runs the response generator and processes the error with plugins.
+
+    Args:
+      response_generator: The response generator to run.
+      invocation_context: The invocation context.
+      llm_request: The LLM request.
+      model_response_event: The model response event.
+
+    Yields:
+      A generator of LlmResponse.
+    """
+    try:
+      async for response in response_generator:
+        yield response
+    except Exception as model_error:
+      callback_context = CallbackContext(
+          invocation_context, event_actions=model_response_event.actions
+      )
+      error_response = (
+          await invocation_context.plugin_manager.run_on_model_error_callback(
+              callback_context=callback_context,
+              llm_request=llm_request,
+              error=model_error,
+          )
+      )
+      if error_response is not None:
+        yield error_response
+      else:
+        raise model_error
 
   def __get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
     from ...agents.llm_agent import LlmAgent

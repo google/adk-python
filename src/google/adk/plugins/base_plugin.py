@@ -265,6 +265,31 @@ class BasePlugin(ABC):
     """
     pass
 
+  async def on_model_error_callback(
+      self,
+      *,
+      callback_context: CallbackContext,
+      llm_request: LlmRequest,
+      error: Exception,
+  ) -> Optional[LlmResponse]:
+    """Callback executed when a model call encounters an error.
+
+    This callback provides an opportunity to handle model errors gracefully,
+    potentially providing alternative responses or recovery mechanisms.
+
+    Args:
+      callback_context: The context for the current agent call.
+      llm_request: The request that was sent to the model when the error
+        occurred.
+      error: The exception that was raised during model execution.
+
+    Returns:
+      An optional LlmResponse. If an LlmResponse is returned, it will be used
+      instead of propagating the error. Returning `None` allows the original
+      error to be raised.
+    """
+    pass
+
   async def before_tool_callback(
       self,
       *,
@@ -313,5 +338,31 @@ class BasePlugin(ABC):
       the original result from the tool. This allows for post-processing or
       altering tool outputs. Returning `None` uses the original, unmodified
       result.
+    """
+    pass
+
+  async def on_tool_error_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> Optional[dict]:
+    """Callback executed when a tool call encounters an error.
+
+    This callback provides an opportunity to handle tool errors gracefully,
+    potentially providing alternative responses or recovery mechanisms.
+
+    Args:
+      tool: The tool instance that encountered an error.
+      tool_args: The arguments that were passed to the tool.
+      tool_context: The context specific to the tool execution.
+      error: The exception that was raised during tool execution.
+
+    Returns:
+      An optional dictionary. If a dictionary is returned, it will be used as
+      the tool response instead of propagating the error. Returning `None`
+      allows the original error to be raised.
     """
     pass
