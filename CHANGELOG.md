@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.8.0](https://github.com/google/adk-python/compare/v1.7.0...v1.8.0) (2025-07-23)
+
+### Features
+
+* [Core]Add agent card builder ([18f5bea](https://github.com/google/adk-python/commit/18f5bea411b3b76474ff31bfb2f62742825b45e5))
+* [Core]Add an to_a2a util to convert adk agent to A2A ASGI application ([a77d689](https://github.com/google/adk-python/commit/a77d68964a1c6b7659d6117d57fa59e43399e0c2))
+* [Core]Add camel case converter for agents ([0e173d7](https://github.com/google/adk-python/commit/0e173d736334f8c6c171b3144ac6ee5b7125c846))
+* [Evals]Use LocalEvalService to run all evals in cli and web ([d1f182e](https://github.com/google/adk-python/commit/d1f182e8e68c4a5a4141592f3f6d2ceeada78887))
+* [Evals]Enable FinalResponseMatchV2 metric as an experiment ([36e45cd](https://github.com/google/adk-python/commit/36e45cdab3bbfb653eee3f9ed875b59bcd525ea1))
+* [Models]Add support for `model-optimizer-*` family of models in vertex ([ffe2bdb](https://github.com/google/adk-python/commit/ffe2bdbe4c2ea86cc7924eb36e8e3bb5528c0016))
+* [Services]Added a sample for History Management ([67284fc](https://github.com/google/adk-python/commit/67284fc46667b8c2946762bc9234a8453d48a43c))
+* [Services]Support passing fully qualified agent engine resource name when constructing session service and memory service ([2e77804](https://github.com/google/adk-python/commit/2e778049d0a675e458f4e
+35fe4104ca1298dbfcf))
+* [Tools]Add ComputerUseToolset ([083dcb4](https://github.com/google/adk-python/commit/083dcb44650eb0e6b70219ede731f2fa78ea7d28))
+* [Tools]Allow toolset to process llm_request before tools returned by it ([3643b4a](https://github.com/google/adk-python/commit/3643b4ae196fd9e38e52d5dc9d1cd43ea0733d36))
+* [Tools]Support input/output schema by fully-qualified code reference ([dfee06a](https://github.com/google/adk-python/commit/dfee06ac067ea909251d6fb016f8331065d430e9))
+* [Tools]Enhance LangchainTool to accept more forms of functions ([0ec69d0](https://github.com/google/adk-python/commit/0ec69d05a4016adb72abf9c94f2e9ff4bdd1848c))
+
+### Bug Fixes
+
+* **Attention**: Logging level for some API requests and responses was moved from `INFO` to `DEBUG` ([ff31f57](https://github.com/google/adk-python/commit/ff31f57dc95149f8f309f83f2ec983ef40f1122c))
+  * Please set `--log_level=DEBUG`, if you are interested in having those API request and responses in logs.
+* Add buffer to the write file option ([f2caf2e](https://github.com/google/adk-python/commit/f2caf2eecaf0336495fb42a2166b1b79e57d82d8))
+* Allow current sub-agent to finish execution before exiting the loop agent due to a sub-agent's escalation. ([2aab1cf](https://github.com/google/adk-python/commit/2aab1cf98e1d0e8454764b549fac21475a633409))
+* Check that `mean_score` is a valid float value ([65cb6d6](https://github.com/google/adk-python/commit/65cb6d6bf3278e6c3529938a7b932e3ef6d6c2ae))
+* Handle non-json-serializable values in the `execute_sql` tool ([13ff009](https://github.com/google/adk-python/commit/13ff009d34836a80f107cb43a632df15f7c215e4))
+* Raise `NotFoundError` in `list_eval_sets` function when app_name doesn't exist ([b17d8b6](https://github.com/google/adk-python/commit/b17d8b6e362a5b2a1b6a2dd0cff5e27a71c27925))
+* Fixed serialization of tools with nested schema ([53df35e](https://github.com/google/adk-python/commit/53df35ee58599e9816bd4b9c42ff48457505e599))
+* Set response schema for function tools that returns `None` ([33ac838](https://github.com/google/adk-python/commit/33ac8380adfff46ed8a7d518ae6f27345027c074))
+* Support path level parameters for open_api_spec_parser ([6f01660](https://github.com/google/adk-python/commit/6f016609e889bb0947877f478de0c5729cfcd0c3))
+* Use correct type for actions parameter in ApplicationIntegrationToolset ([ce7253f](https://github.com/google/adk-python/commit/ce7253f63ff8e78bccc7805bd84831f08990b881))
+* Use the same word extractor for query and event contents in InMemoryMemoryService ([1c4c887](https://github.com/google/adk-python/commit/1c4c887bec9326aad2593f016540160d95d03f33))
+
+### Documentation
+
+* Fix missing toolbox-core dependency and improve installation guide ([2486349](https://github.com/google/adk-python/commit/24863492689f36e3c7370be40486555801858bac))
+
+
 ## 1.7.0 (2025-07-16)
 
 ### Features
