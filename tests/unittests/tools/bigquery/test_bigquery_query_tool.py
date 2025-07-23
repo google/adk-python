@@ -23,7 +23,7 @@ from unittest import mock
 
 import dateutil
 import dateutil.relativedelta
-from google.adk.tools import BaseTool
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.bigquery import BigQueryCredentialsConfig
 from google.adk.tools.bigquery import BigQueryToolset
 from google.adk.tools.bigquery.config import BigQueryToolConfig

@@ -17,12 +17,12 @@ from typing import Optional
 
 from google.adk import Agent
 from google.adk import Runner
-from google.adk.artifacts import BaseArtifactService
-from google.adk.artifacts import InMemoryArtifactService
-from google.adk.events import Event
-from google.adk.sessions import BaseSessionService
-from google.adk.sessions import InMemorySessionService
-from google.adk.sessions import Session
+from google.adk.artifacts.base_artifact_service import BaseArtifactService
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.events.event import Event
+from google.adk.sessions.base_session_service import BaseSessionService
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.genai import types
 
 

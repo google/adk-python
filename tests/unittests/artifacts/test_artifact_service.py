@@ -19,8 +19,8 @@ from typing import Optional
 from typing import Union
 from unittest import mock
 
-from google.adk.artifacts import GcsArtifactService
-from google.adk.artifacts import InMemoryArtifactService
+from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.genai import types
 import pytest
 

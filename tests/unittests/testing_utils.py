@@ -23,7 +23,7 @@ from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
-from google.adk.artifacts import InMemoryArtifactService
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.base_llm import BaseLlm

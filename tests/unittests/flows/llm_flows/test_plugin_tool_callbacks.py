@@ -16,7 +16,7 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import handle_function_calls_async
 from google.adk.plugins.base_plugin import BasePlugin

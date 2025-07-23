@@ -16,12 +16,12 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import find_matching_function_call
 from google.adk.sessions.session import Session
-from google.adk.tools import ToolContext
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
 

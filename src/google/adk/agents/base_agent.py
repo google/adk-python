@@ -568,7 +568,7 @@ class SubAgentConfig(BaseModel):
 
     ```
     # my_library/custom_agents.py
-    from google.adk.agents import LlmAgent
+    from google.adk.agents.llm_agent import LlmAgent
 
     my_custom_agent = LlmAgent(
         name="my_custom_agent",

@@ -16,7 +16,7 @@
 
 import os
 
-from google.adk.evaluation import AgentEvaluator
+from google.adk.evaluation.agent_evaluator import AgentEvaluator
 import pytest
 
 

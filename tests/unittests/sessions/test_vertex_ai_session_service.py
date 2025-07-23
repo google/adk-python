@@ -21,10 +21,10 @@ from typing import Tuple
 from unittest import mock
 
 from dateutil.parser import isoparse
-from google.adk.events import Event
-from google.adk.events import EventActions
-from google.adk.sessions import Session
-from google.adk.sessions import VertexAiSessionService
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.sessions.session import Session
+from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai import types
 import pytest
 

@@ -19,7 +19,7 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 
-from google.adk import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 

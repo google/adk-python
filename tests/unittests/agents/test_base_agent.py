@@ -25,7 +25,7 @@ from unittest import mock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
+from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.in_memory_session_service import InMemorySessionService

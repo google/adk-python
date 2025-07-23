@@ -14,9 +14,9 @@
 
 import random
 
-from google.adk import Agent
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.models import LlmRequest
+from google.adk.agents.llm_agent import Agent
+from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.tool_context import ToolContext
 
 

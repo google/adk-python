@@ -14,10 +14,10 @@
 
 from typing import Optional
 
-from google.adk.agents import Agent
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.models import LlmRequest
-from google.adk.models import LlmResponse
+from google.adk.agents.llm_agent import Agent
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.genai import types
 import pytest

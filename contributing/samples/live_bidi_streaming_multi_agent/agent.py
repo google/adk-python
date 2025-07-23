@@ -14,7 +14,7 @@
 
 import random
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.examples.example import Example
 from google.adk.tools.example_tool import ExampleTool
 from google.genai import types

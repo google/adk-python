@@ -16,7 +16,7 @@ from typing import Dict
 from typing import List
 
 from google.adk.tools import _automatic_function_calling_util
-from google.adk.tools.agent_tool import ToolContext
+from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 # TODO: crewai requires python 3.10 as minimum

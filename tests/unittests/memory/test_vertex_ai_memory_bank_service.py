@@ -16,9 +16,9 @@ import re
 from typing import Any
 from unittest import mock
 
-from google.adk.events import Event
+from google.adk.events.event import Event
 from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
-from google.adk.sessions import Session
+from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 

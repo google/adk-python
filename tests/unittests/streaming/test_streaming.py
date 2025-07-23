@@ -15,9 +15,9 @@
 import asyncio
 from typing import AsyncGenerator
 
-from google.adk.agents import Agent
-from google.adk.agents import LiveRequestQueue
-from google.adk.models import LlmResponse
+from google.adk.agents.live_request_queue import LiveRequestQueue
+from google.adk.agents.llm_agent import Agent
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import pytest
 

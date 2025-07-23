@@ -33,7 +33,7 @@ from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
-from google.adk.events import Event
+from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.genai import types

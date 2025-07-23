@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.agents import Agent
-from google.adk.agents import SequentialAgent
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.llm_agent import Agent
+from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types

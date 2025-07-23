@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import os
 import subprocess
 from typing import Optional
@@ -24,7 +26,7 @@ from . import agent
 """
 
 _AGENT_PY_TEMPLATE = """\
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 
 root_agent = Agent(
     model='{model_name}',

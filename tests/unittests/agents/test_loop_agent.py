@@ -19,8 +19,8 @@ from typing import AsyncGenerator
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.loop_agent import LoopAgent
-from google.adk.events import Event
-from google.adk.events import EventActions
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 import pytest

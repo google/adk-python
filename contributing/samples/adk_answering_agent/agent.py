@@ -21,8 +21,8 @@ from adk_answering_agent.settings import REPO
 from adk_answering_agent.settings import VERTEXAI_DATASTORE_ID
 from adk_answering_agent.utils import error_response
 from adk_answering_agent.utils import run_graphql_query
-from google.adk.agents import Agent
-from google.adk.tools import VertexAiSearchTool
+from google.adk.agents.llm_agent import Agent
+from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 import requests
 
 if IS_INTERACTIVE:

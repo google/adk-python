@@ -21,11 +21,11 @@ from typing import Optional
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
-from .. import BaseTool
-from ...auth import AuthCredential
-from ...auth import AuthCredentialTypes
-from ...auth import OAuth2Auth
+from ...auth.auth_credential import AuthCredential
+from ...auth.auth_credential import AuthCredentialTypes
+from ...auth.auth_credential import OAuth2Auth
 from ...auth.auth_credential import ServiceAccount
+from ..base_tool import BaseTool
 from ..openapi_tool import RestApiTool
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from ..tool_context import ToolContext
