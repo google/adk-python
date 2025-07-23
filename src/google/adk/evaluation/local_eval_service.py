@@ -114,8 +114,6 @@ class LocalEvalService(BaseEvalService):
           if eval_case.eval_id in inference_request.eval_case_ids
       ]
 
-    root_agent = self._root_agent.clone()
-
     semaphore = asyncio.Semaphore(
         value=inference_request.inference_config.parallelism
     )
@@ -126,7 +124,7 @@ class LocalEvalService(BaseEvalService):
             app_name=inference_request.app_name,
             eval_set_id=inference_request.eval_set_id,
             eval_case=eval_case,
-            root_agent=root_agent,
+            root_agent=self._root_agent,
         )
 
     inference_results = [run_inference(eval_case) for eval_case in eval_cases]
