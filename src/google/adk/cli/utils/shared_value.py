@@ -11,15 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
-import re
-from typing import Any
-from typing import Optional
+from typing import Generic
+from typing import TypeVar
 
-from ...agents.base_agent import BaseAgent
-from ...agents.llm_agent import LlmAgent
-from .state import create_empty_state
+import pydantic
 
-__all__ = [
-    'create_empty_state',
-]
+T = TypeVar("T")
+
+
+class SharedValue(pydantic.BaseModel, Generic[T]):
+  """Simple wrapper around a value to allow modifying it from callbacks."""
+
+  model_config = pydantic.ConfigDict(
+      arbitrary_types_allowed=True,
+  )
+  value: T
