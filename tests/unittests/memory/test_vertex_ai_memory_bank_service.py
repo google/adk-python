@@ -45,6 +45,20 @@ MOCK_SESSION = Session(
             author='user',
             timestamp=12345,
         ),
+        # Function call event, should be ignored
+        Event(
+            id='666',
+            invocation_id='456',
+            author='agent',
+            timestamp=23456,
+            content=types.Content(
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(name='test_function')
+                    )
+                ]
+            ),
+        ),
     ],
 )
 
