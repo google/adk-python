@@ -202,7 +202,7 @@ def trace_call_llm(
     )
     span.set_attribute(
         'gen_ai.usage.output_tokens',
-        llm_response.usage_metadata.total_token_count,
+        llm_response.usage_metadata.candidates_token_count,
     )
 
 
