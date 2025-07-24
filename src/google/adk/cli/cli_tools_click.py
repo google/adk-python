@@ -25,6 +25,7 @@ import tempfile
 from typing import Optional
 
 import click
+from click.core import ParameterSource
 from fastapi import FastAPI
 import uvicorn
 
@@ -616,6 +617,14 @@ def fast_api_common_options():
         multiple=True,
     )
     @click.option(
+        "-v",
+        "--verbose",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help="Enable verbose (DEBUG) logging. Shortcut for --log_level DEBUG.",
+    )
+    @click.option(
         "--log_level",
         type=LOG_LEVELS,
         default="INFO",
@@ -651,7 +660,16 @@ def fast_api_common_options():
         help="Optional. Whether to enable live reload for agents changes.",
     )
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    @click.pass_context
+    def wrapper(ctx, *args, **kwargs):
+      # If verbose flag is set and log level is not set, set log level to DEBUG.
+      log_level_source = ctx.get_parameter_source("log_level")
+      if (
+          kwargs.pop("verbose", False)
+          and log_level_source == ParameterSource.DEFAULT
+      ):
+        kwargs["log_level"] = "DEBUG"
+
       return func(*args, **kwargs)
 
     return wrapper
