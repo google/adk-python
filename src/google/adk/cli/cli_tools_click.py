@@ -1055,6 +1055,16 @@ def cli_deploy_cloud_run(
         " any.)"
     ),
 )
+@click.option(
+    "--absolutize_imports",
+    type=bool,
+    default=True,
+    help=(
+        "Optional. Whether to absolutize imports. If True, all relative imports"
+        " will be converted to absolute import statements (default: True)."
+        " NOTE: This flag is temporary and will be removed in the future."
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1073,10 +1083,9 @@ def cli_deploy_agent_engine(
     temp_folder: str,
     env_file: str,
     requirements_file: str,
+    absolutize_imports: bool,
 ):
   """Deploys an agent to Agent Engine.
-
-  AGENT: The path to the agent source code folder.
 
   Example:
 
@@ -1097,6 +1106,7 @@ def cli_deploy_agent_engine(
         temp_folder=temp_folder,
         env_file=env_file,
         requirements_file=requirements_file,
+        absolutize_imports=absolutize_imports,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

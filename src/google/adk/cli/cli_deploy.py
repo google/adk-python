@@ -59,7 +59,7 @@ CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_o
 """
 
 _AGENT_ENGINE_APP_TEMPLATE = """
-from agent import root_agent
+from {app_name}.agent import root_agent
 from vertexai.preview.reasoning_engines import AdkApp
 
 adk_app = AdkApp(
@@ -254,6 +254,7 @@ def to_agent_engine(
     adk_app: str,
     staging_bucket: str,
     trace_to_cloud: bool,
+    absolutize_imports: bool = True,
     project: Optional[str] = None,
     region: Optional[str] = None,
     display_name: Optional[str] = None,
@@ -293,6 +294,8 @@ def to_agent_engine(
     region (str): Google Cloud region.
     staging_bucket (str): The GCS bucket for staging the deployment artifacts.
     trace_to_cloud (bool): Whether to enable Cloud Trace.
+    absolutize_imports (bool): Whether to absolutize imports. If True, all relative
+      imports will be converted to absolute import statements. Default is True.
     requirements_file (str): The filepath to the `requirements.txt` file to use.
       If not specified, the `requirements.txt` file in the `agent_folder` will
       be used.
@@ -301,14 +304,16 @@ def to_agent_engine(
       values of `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` will be
       overridden by `project` and `region` if they are specified.
   """
-  # remove temp_folder if it exists
-  if os.path.exists(temp_folder):
+  app_name = os.path.basename(agent_folder)
+  agent_src_path = os.path.join(temp_folder, app_name)
+  # remove agent_src_path if it exists
+  if os.path.exists(agent_src_path):
     click.echo('Removing existing files')
-    shutil.rmtree(temp_folder)
+    shutil.rmtree(agent_src_path)
 
   try:
     click.echo('Copying agent source code...')
-    shutil.copytree(agent_folder, temp_folder)
+    shutil.copytree(agent_folder, agent_src_path)
     click.echo('Copying agent source code complete.')
 
     click.echo('Initializing Vertex AI...')
@@ -317,13 +322,13 @@ def to_agent_engine(
     import vertexai
     from vertexai import agent_engines
 
-    sys.path.append(temp_folder)
+    sys.path.append(temp_folder)  # To register the adk_app operations
     project = _resolve_project(project)
 
     click.echo('Resolving files and dependencies...')
     if not requirements_file:
       # Attempt to read requirements from requirements.txt in the dir (if any).
-      requirements_txt_path = os.path.join(temp_folder, 'requirements.txt')
+      requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
       if not os.path.exists(requirements_txt_path):
         click.echo(f'Creating {requirements_txt_path}...')
         with open(requirements_txt_path, 'w', encoding='utf-8') as f:
@@ -333,7 +338,7 @@ def to_agent_engine(
     env_vars = None
     if not env_file:
       # Attempt to read the env variables from .env in the dir (if any).
-      env_file = os.path.join(temp_folder, '.env')
+      env_file = os.path.join(agent_src_path, '.env')
     if os.path.exists(env_file):
       from dotenv import dotenv_values
 
@@ -371,21 +376,35 @@ def to_agent_engine(
     )
     click.echo('Vertex AI initialized.')
 
-    adk_app_file = f'{adk_app}.py'
-    with open(
-        os.path.join(temp_folder, adk_app_file), 'w', encoding='utf-8'
-    ) as f:
+    adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
+    with open(adk_app_file, 'w', encoding='utf-8') as f:
       f.write(
           _AGENT_ENGINE_APP_TEMPLATE.format(
-              trace_to_cloud_option=trace_to_cloud
+              app_name=app_name,
+              trace_to_cloud_option=trace_to_cloud,
           )
       )
-    click.echo(f'Created {os.path.join(temp_folder, adk_app_file)}')
+    click.echo(f'Created {adk_app_file}')
     click.echo('Files and dependencies resolved')
+    if absolutize_imports:
+      for root, _, files in os.walk(agent_src_path):
+        for file in files:
+          if file.endswith('.py'):
+            absolutize_imports_path = os.path.join(root, file)
+            try:
+              click.echo(
+                  f'Running `absolufy-imports {absolutize_imports_path}`'
+              )
+              subprocess.run(
+                  ['absolufy-imports', absolutize_imports_path],
+                  cwd=temp_folder,
+              )
+            except Exception as e:
+              click.echo(f'The following exception was raised: {e}')
 
     click.echo('Deploying to agent engine...')
     agent_engine = agent_engines.ModuleAgent(
-        module_name=adk_app,
+        module_name='agent_engine_app',
         agent_name='adk_app',
         register_operations={
             '': [
