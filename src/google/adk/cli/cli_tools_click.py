@@ -1010,6 +1010,17 @@ def cli_deploy_cloud_run(
     help="Required. GCS bucket for staging the deployment artifacts.",
 )
 @click.option(
+    "--agent_engine_name",
+    type=str,
+    default=None,
+    help=(
+        "Optional. Name of the Agent Engine instance to update if it exists"
+        " (default: None, which means a new instance will be created)."
+        " Format:"
+        " `projects/{project}/locations/{location}/reasoningEngines/{resource_id}`."
+    ),
+)
+@click.option(
     "--trace_to_cloud",
     type=bool,
     is_flag=True,
@@ -1094,6 +1105,7 @@ def cli_deploy_agent_engine(
     project: str,
     region: str,
     staging_bucket: str,
+    agent_engine_name: Optional[str],
     trace_to_cloud: bool,
     display_name: str,
     description: str,
@@ -1117,6 +1129,7 @@ def cli_deploy_agent_engine(
         project=project,
         region=region,
         staging_bucket=staging_bucket,
+        agent_engine_name=agent_engine_name,
         trace_to_cloud=trace_to_cloud,
         display_name=display_name,
         description=description,

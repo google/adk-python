@@ -253,6 +253,7 @@ def to_agent_engine(
     temp_folder: str,
     adk_app: str,
     staging_bucket: str,
+    agent_engine_name: str,
     trace_to_cloud: bool,
     absolutize_imports: bool = True,
     project: Optional[str] = None,
@@ -293,6 +294,8 @@ def to_agent_engine(
     project (str): Google Cloud project id.
     region (str): Google Cloud region.
     staging_bucket (str): The GCS bucket for staging the deployment artifacts.
+    agent_engine_name (str): The name of the Agent Engine instance to update if
+      it exists. Format: `projects/{project}/locations/{location}/reasoningEngines/{resource_id}`.
     trace_to_cloud (bool): Whether to enable Cloud Trace.
     absolutize_imports (bool): Whether to absolutize imports. If True, all relative
       imports will be converted to absolute import statements. Default is True.
@@ -424,8 +427,7 @@ def to_agent_engine(
         },
         sys_paths=[temp_folder[1:]],
     )
-
-    agent_engines.create(
+    agent_config = dict(
         agent_engine=agent_engine,
         requirements=requirements_file,
         display_name=display_name,
@@ -433,6 +435,11 @@ def to_agent_engine(
         env_vars=env_vars,
         extra_packages=[temp_folder],
     )
+
+    if not agent_engine_name:
+      agent_engines.create(**agent_config)
+    else:
+      agent_engines.update(resource_name=agent_engine_name, **agent_config)
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(temp_folder)
