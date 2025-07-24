@@ -74,6 +74,9 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     llm_request.live_connect_config.proactivity = (
         invocation_context.run_config.proactivity
     )
+    llm_request.live_connect_config.session_resumption = (
+        invocation_context.run_config.session_resumption
+    )
 
     # TODO: handle tool append here, instead of in BaseTool.process_llm_request.
 

@@ -309,6 +309,7 @@ class MockModel(BaseLlm):
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
     """Creates a live connection to the LLM."""
+    self.requests.append(llm_request)
     yield MockLlmConnection(self.responses)
 
 
