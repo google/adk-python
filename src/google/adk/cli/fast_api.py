@@ -26,6 +26,8 @@ from typing import Optional
 import click
 from fastapi import FastAPI
 from fastapi import UploadFile
+from fastapi.responses import FileResponse
+from fastapi.responses import PlainTextResponse
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import TracerProvider
 from starlette.types import Lifespan
@@ -268,6 +270,27 @@ def get_fast_api_app(
         return False
 
     return True
+
+  @working_in_progress("builder_get is not ready for use.")
+  @app.get(
+      "/builder/app/{app_name}",
+      response_model_exclude_none=True,
+      response_class=PlainTextResponse,
+  )
+  async def get_agent_builder(app_name: str):
+    base_path = Path.cwd() / agents_dir
+    agent_dir = base_path / app_name
+    file_name = "root_agent.yaml"
+    file_path = agent_dir / file_name
+    if not file_path.is_file():
+      return ""
+    else:
+      return FileResponse(
+          path=file_path,
+          media_type="application/x-yaml",
+          filename="${app_name}.yaml",
+          headers={"Cache-Control": "no-store"},
+      )
 
   if a2a:
     try:
