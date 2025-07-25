@@ -37,6 +37,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
     timeout_seconds: int = 300
     cpu_request: str = "200m"
     mem_request: str = "256Mi"
+    # The maximum CPU the container can use, in "millicores". 1000m is 1 full CPU core.
     cpu_limit: str = "500m"
     mem_limit: str = "512Mi"
 
@@ -72,6 +73,10 @@ class GkeCodeExecutor(BaseCodeExecutor):
         configmap_name = f"code-src-{job_name}"
 
         try:
+            # The execution process:
+            # 1. Create a ConfigMap to mount LLM-generated code into the Pod.
+            # 2. Create a Job that runs the code from the ConfigMap.
+            # 3. Set the Job as the ConfigMap's owner for automatic cleanup.
             self._create_code_configmap(configmap_name, code_execution_input.code)
             job_manifest = self._create_job_manifest(job_name, configmap_name, invocation_context)
             created_job = self._batch_v1.create_namespaced_job(
