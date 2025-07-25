@@ -17,18 +17,16 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
-from typing import Literal
 from typing import Type
 
-from pydantic import ConfigDict
 from typing_extensions import override
 
-from ..agents.base_agent import working_in_progress
-from ..agents.base_agent_config import BaseAgentConfig
-from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
+from ..utils.feature_decorator import working_in_progress
 from .base_agent import BaseAgent
+from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
+from .sequential_agent_config import SequentialAgentConfig
 
 
 class SequentialAgent(BaseAgent):
@@ -89,14 +87,3 @@ class SequentialAgent(BaseAgent):
       config_abs_path: str,
   ) -> SequentialAgent:
     return super().from_config(config, config_abs_path)
-
-
-@working_in_progress('SequentialAgentConfig is not ready for use.')
-class SequentialAgentConfig(BaseAgentConfig):
-  """The config for the YAML schema of a SequentialAgent."""
-
-  model_config = ConfigDict(
-      extra='forbid',
-  )
-
-  agent_class: Literal['SequentialAgent'] = 'SequentialAgent'

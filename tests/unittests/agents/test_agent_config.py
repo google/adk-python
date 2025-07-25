@@ -1,11 +1,11 @@
 from typing import Literal
 
 from google.adk.agents.agent_config import AgentConfig
-from google.adk.agents.agent_config import LlmAgentConfig
-from google.adk.agents.agent_config import LoopAgentConfig
-from google.adk.agents.agent_config import ParallelAgentConfig
-from google.adk.agents.agent_config import SequentialAgentConfig
 from google.adk.agents.base_agent_config import BaseAgentConfig
+from google.adk.agents.llm_agent_config import LlmAgentConfig
+from google.adk.agents.loop_agent_config import LoopAgentConfig
+from google.adk.agents.parallel_agent_config import ParallelAgentConfig
+from google.adk.agents.sequential_agent_config import SequentialAgentConfig
 import yaml
 
 

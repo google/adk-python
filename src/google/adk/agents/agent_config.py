@@ -22,8 +22,8 @@ from pydantic import RootModel
 
 from ..utils.feature_decorator import working_in_progress
 from .base_agent import BaseAgentConfig
-from .llm_agent import LlmAgentConfig
-from .loop_agent import LoopAgentConfig
+from .llm_agent_config import LlmAgentConfig
+from .loop_agent_config import LoopAgentConfig
 from .parallel_agent import ParallelAgentConfig
 from .sequential_agent import SequentialAgentConfig
 
