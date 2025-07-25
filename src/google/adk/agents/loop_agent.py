@@ -16,20 +16,19 @@
 
 from __future__ import annotations
 
-from typing import Any
 from typing import AsyncGenerator
-from typing import Dict
 from typing import Literal
 from typing import Optional
 from typing import Type
 
+from pydantic import ConfigDict
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from ..utils.feature_decorator import working_in_progress
 from .base_agent import BaseAgent
-from .base_agent import BaseAgentConfig
+from .base_agent_config import BaseAgentConfig
 
 
 class LoopAgent(BaseAgent):
@@ -89,6 +88,10 @@ class LoopAgent(BaseAgent):
 @working_in_progress('LoopAgentConfig is not ready for use.')
 class LoopAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a LoopAgent."""
+
+  model_config = ConfigDict(
+      extra='forbid',
+  )
 
   agent_class: Literal['LoopAgent'] = 'LoopAgent'
 

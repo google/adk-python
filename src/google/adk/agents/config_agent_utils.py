@@ -24,7 +24,7 @@ import yaml
 from ..utils.feature_decorator import working_in_progress
 from .agent_config import AgentConfig
 from .base_agent import BaseAgent
-from .base_agent import SubAgentConfig
+from .base_agent_config import SubAgentConfig
 from .common_configs import CodeConfig
 from .llm_agent import LlmAgent
 from .llm_agent import LlmAgentConfig

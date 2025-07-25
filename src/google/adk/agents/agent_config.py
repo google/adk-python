@@ -14,11 +14,14 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Union
 
+from pydantic import Discriminator
 from pydantic import RootModel
 
 from ..utils.feature_decorator import working_in_progress
+from .base_agent import BaseAgentConfig
 from .llm_agent import LlmAgentConfig
 from .loop_agent import LoopAgentConfig
 from .parallel_agent import ParallelAgentConfig
@@ -30,7 +33,24 @@ ConfigsUnion = Union[
     LoopAgentConfig,
     ParallelAgentConfig,
     SequentialAgentConfig,
+    BaseAgentConfig,
 ]
+
+
+def agent_config_discriminator(v: Any):
+  if isinstance(v, dict):
+    agent_class = v.get("agent_class", "LlmAgent")
+    if agent_class in [
+        "LlmAgent",
+        "LoopAgent",
+        "ParallelAgent",
+        "SequentialAgent",
+    ]:
+      return agent_class
+    else:
+      return "BaseAgent"
+
+  raise ValueError(f"Invalid agent config: {v}")
 
 
 # Use a RootModel to represent the agent directly at the top level.
@@ -43,4 +63,4 @@ class AgentConfig(RootModel[ConfigsUnion]):
     # Pydantic v2 requires this for discriminated unions on RootModel
     # This tells the model to look at the 'agent_class' field of the input
     # data to decide which model from the `ConfigsUnion` to use.
-    discriminator = "agent_class"
+    discriminator = Discriminator(agent_config_discriminator)

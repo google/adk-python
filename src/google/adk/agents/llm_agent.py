@@ -29,6 +29,7 @@ from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
@@ -53,7 +54,7 @@ from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
 from ..utils.feature_decorator import working_in_progress
 from .base_agent import BaseAgent
-from .base_agent import BaseAgentConfig
+from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
 from .common_configs import CodeConfig
 from .invocation_context import InvocationContext
@@ -606,6 +607,10 @@ Agent: TypeAlias = LlmAgent
 
 class LlmAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a LlmAgent."""
+
+  model_config = ConfigDict(
+      extra='forbid',
+  )
 
   agent_class: Literal['LlmAgent', ''] = 'LlmAgent'
   """The value is used to uniquely identify the LlmAgent class. If it is

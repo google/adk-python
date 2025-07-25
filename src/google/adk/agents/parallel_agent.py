@@ -21,10 +21,11 @@ from typing import AsyncGenerator
 from typing import Literal
 from typing import Type
 
+from pydantic import ConfigDict
 from typing_extensions import override
 
-from ..agents.base_agent import BaseAgentConfig
 from ..agents.base_agent import working_in_progress
+from ..agents.base_agent_config import BaseAgentConfig
 from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from .base_agent import BaseAgent
@@ -130,5 +131,9 @@ class ParallelAgent(BaseAgent):
 @working_in_progress('ParallelAgentConfig is not ready for use.')
 class ParallelAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a ParallelAgent."""
+
+  model_config = ConfigDict(
+      extra='forbid',
+  )
 
   agent_class: Literal['ParallelAgent'] = 'ParallelAgent'
