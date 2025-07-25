@@ -145,6 +145,10 @@ extensions = [
   "toolbox-core>=0.1.0",                       # For tools.toolbox_toolset.ToolboxToolset
 ]
 
+# For GKE-specific features, primarily the GkeCodeExecutor.
+gke = [
+    "kubernetes>=29.0.0",
+]
 
 [tool.pyink]
 # Format py files following Google style-guide
