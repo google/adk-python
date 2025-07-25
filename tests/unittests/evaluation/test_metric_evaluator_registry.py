@@ -16,9 +16,14 @@ from __future__ import annotations
 
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation.eval_metrics import EvalMetric
+from google.adk.evaluation.eval_metrics import Interval
+from google.adk.evaluation.eval_metrics import MetricInfo
+from google.adk.evaluation.eval_metrics import MetricValueInfo
 from google.adk.evaluation.evaluator import Evaluator
 from google.adk.evaluation.metric_evaluator_registry import MetricEvaluatorRegistry
 import pytest
+
+_DUMMY_METRIC_NAME = "dummy_metric_name"
 
 
 class TestMetricEvaluatorRegistry:
@@ -36,6 +41,16 @@ class TestMetricEvaluatorRegistry:
     def evaluate_invocations(self, actual_invocations, expected_invocations):
       return "dummy_result"
 
+    @staticmethod
+    def get_metric_info() -> MetricInfo:
+      return MetricInfo(
+          metric_name=_DUMMY_METRIC_NAME,
+          description="Dummy metric description",
+          metric_value_info=MetricValueInfo(
+              interval=Interval(min_value=0.0, max_value=1.0)
+          ),
+      )
+
   class AnotherDummyEvaluator(Evaluator):
 
     def __init__(self, eval_metric: EvalMetric):
@@ -44,45 +59,58 @@ class TestMetricEvaluatorRegistry:
     def evaluate_invocations(self, actual_invocations, expected_invocations):
       return "another_dummy_result"
 
+    @staticmethod
+    def get_metric_info() -> MetricInfo:
+      return MetricInfo(
+          metric_name=_DUMMY_METRIC_NAME,
+          description="Another dummy metric description",
+          metric_value_info=MetricValueInfo(
+              interval=Interval(min_value=0.0, max_value=1.0)
+          ),
+      )
+
   def test_register_evaluator(self, registry):
-    dummy_metric_name = "dummy_metric_name"
+    metric_info = TestMetricEvaluatorRegistry.DummyEvaluator.get_metric_info()
     registry.register_evaluator(
-        dummy_metric_name,
+        metric_info,
         TestMetricEvaluatorRegistry.DummyEvaluator,
     )
-    assert dummy_metric_name in registry._registry
-    assert (
-        registry._registry[dummy_metric_name]
-        == TestMetricEvaluatorRegistry.DummyEvaluator
+    assert _DUMMY_METRIC_NAME in registry._registry
+    assert registry._registry[_DUMMY_METRIC_NAME] == (
+        TestMetricEvaluatorRegistry.DummyEvaluator,
+        metric_info,
     )
 
   def test_register_evaluator_updates_existing(self, registry):
-    dummy_metric_name = "dummy_metric_name"
+    metric_info = TestMetricEvaluatorRegistry.DummyEvaluator.get_metric_info()
     registry.register_evaluator(
-        dummy_metric_name,
+        metric_info,
         TestMetricEvaluatorRegistry.DummyEvaluator,
     )
 
-    assert (
-        registry._registry[dummy_metric_name]
-        == TestMetricEvaluatorRegistry.DummyEvaluator
+    assert registry._registry[_DUMMY_METRIC_NAME] == (
+        TestMetricEvaluatorRegistry.DummyEvaluator,
+        metric_info,
     )
 
-    registry.register_evaluator(
-        dummy_metric_name, TestMetricEvaluatorRegistry.AnotherDummyEvaluator
+    metric_info = (
+        TestMetricEvaluatorRegistry.AnotherDummyEvaluator.get_metric_info()
     )
-    assert (
-        registry._registry[dummy_metric_name]
-        == TestMetricEvaluatorRegistry.AnotherDummyEvaluator
+    registry.register_evaluator(
+        metric_info, TestMetricEvaluatorRegistry.AnotherDummyEvaluator
+    )
+    assert registry._registry[_DUMMY_METRIC_NAME] == (
+        TestMetricEvaluatorRegistry.AnotherDummyEvaluator,
+        metric_info,
     )
 
   def test_get_evaluator(self, registry):
-    dummy_metric_name = "dummy_metric_name"
+    metric_info = TestMetricEvaluatorRegistry.DummyEvaluator.get_metric_info()
     registry.register_evaluator(
-        dummy_metric_name,
+        metric_info,
         TestMetricEvaluatorRegistry.DummyEvaluator,
     )
-    eval_metric = EvalMetric(metric_name=dummy_metric_name, threshold=0.5)
+    eval_metric = EvalMetric(metric_name=_DUMMY_METRIC_NAME, threshold=0.5)
     evaluator = registry.get_evaluator(eval_metric)
     assert isinstance(evaluator, TestMetricEvaluatorRegistry.DummyEvaluator)
 

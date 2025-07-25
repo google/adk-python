@@ -21,6 +21,10 @@ from vertexai import types as vertexai_types
 
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
+from .eval_metrics import Interval
+from .eval_metrics import MetricInfo
+from .eval_metrics import MetricValueInfo
+from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .final_response_match_v1 import RougeEvaluator
@@ -38,7 +42,7 @@ class ResponseEvaluator(Evaluator):
 
   2) response_match_score:
   This metric evaluates if agent's final response matches a golden/expected
-  final response.
+  final response using Rouge_1 metric.
 
   Value range for this metric is [0,1], with values closer to 1 more desirable.
   """
@@ -61,14 +65,34 @@ class ResponseEvaluator(Evaluator):
       threshold = eval_metric.threshold
       metric_name = eval_metric.metric_name
 
-    if "response_evaluation_score" == metric_name:
+    if PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value == metric_name:
       self._metric_name = vertexai_types.PrebuiltMetric.COHERENCE
-    elif "response_match_score" == metric_name:
-      self._metric_name = "response_match_score"
+    elif PrebuiltMetrics.RESPONSE_MATCH_SCORE.value == metric_name:
+      self._metric_name = metric_name
     else:
       raise ValueError(f"`{metric_name}` is not supported.")
 
     self._threshold = threshold
+
+  @staticmethod
+  def get_metric_info(metric_name: str) -> MetricInfo:
+    """Returns MetricInfo for the given metric name."""
+    if PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value == metric_name:
+      return MetricInfo(
+          metric_name=PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value,
+          description=(
+              "This metric evaluates how coherent agent's resposne was. Value"
+              " range of this metric is [1,5], with values closer to 5 more"
+              " desirable."
+          ),
+          metric_value_info=MetricValueInfo(
+              interval=Interval(min_value=1.0, max_value=5.0)
+          ),
+      )
+    elif PrebuiltMetrics.RESPONSE_MATCH_SCORE.value == metric_name:
+      return RougeEvaluator.get_metric_info()
+    else:
+      raise ValueError(f"`{metric_name}` is not supported.")
 
   @override
   def evaluate_invocations(
@@ -77,7 +101,7 @@ class ResponseEvaluator(Evaluator):
       expected_invocations: list[Invocation],
   ) -> EvaluationResult:
     # If the metric is response_match_score, just use the RougeEvaluator.
-    if self._metric_name == "response_match_score":
+    if self._metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value:
       rouge_evaluator = RougeEvaluator(
           EvalMetric(metric_name=self._metric_name, threshold=self._threshold)
       )

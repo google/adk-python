@@ -64,6 +64,7 @@ from ..evaluation.eval_case import SessionInput
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
+from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set_results_manager import EvalSetResultsManager
 from ..evaluation.eval_sets_manager import EvalSetsManager
@@ -696,6 +697,24 @@ class AdkWebServer:
     def list_eval_results(app_name: str) -> list[str]:
       """Lists all eval results for the given app."""
       return self.eval_set_results_manager.list_eval_set_results(app_name)
+
+    @app.get(
+        "/apps/{app_name}/eval_metrics",
+        response_model_exclude_none=True,
+    )
+    def list_eval_metrics(app_name: str) -> list[MetricInfo]:
+      """Lists all eval metrics for the given app."""
+      try:
+        from ..evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
+
+        # Right now we ignore the app_name as eval metrics are not tied to the
+        # app_name, but they could be moving forward.
+        return DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+      except ModuleNotFoundError as e:
+        logger.exception("%s\n%s", MISSING_EVAL_DEPENDENCIES_MESSAGE, e)
+        raise HTTPException(
+            status_code=400, detail=MISSING_EVAL_DEPENDENCIES_MESSAGE
+        ) from e
 
     @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
     async def delete_session(app_name: str, user_id: str, session_id: str):

@@ -25,6 +25,10 @@ from typing_extensions import override
 
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
+from .eval_metrics import Interval
+from .eval_metrics import MetricInfo
+from .eval_metrics import MetricValueInfo
+from .eval_metrics import PrebuiltMetrics
 from .evaluation_constants import EvalConstants
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -50,6 +54,22 @@ class TrajectoryEvaluator(Evaluator):
       threshold = eval_metric.threshold
 
     self._threshold = threshold
+
+  @staticmethod
+  def get_metric_info() -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+        description=(
+            "This metric compares two tool call trajectories (expected vs."
+            " actual) for the same user interaction. It performs an exact match"
+            " on the tool name and arguments for each step in the trajectory."
+            " A score of 1.0 indicates a perfect match, while 0.0 indicates a"
+            " mismatch. Higher values are better."
+        ),
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )
 
   @override
   def evaluate_invocations(

@@ -17,6 +17,7 @@ from __future__ import annotations
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
+from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.final_response_match_v2 import _parse_critique
@@ -476,3 +477,13 @@ def test_aggregate_invocation_results():
   # Only 4 / 8 invocations are evaluated, and 2 / 4 are valid.
   assert aggregated_result.overall_score == 0.5
   assert aggregated_result.overall_eval_status == EvalStatus.PASSED
+
+
+def test_get_metric_info():
+  """Test get_metric_info function for Final Response Match V2 metric."""
+  metric_info = FinalResponseMatchV2Evaluator.get_metric_info()
+  assert (
+      metric_info.metric_name == PrebuiltMetrics.FINAL_RESPONSE_MATCH_V2.value
+  )
+  assert metric_info.metric_value_info.interval.min_value == 0.0
+  assert metric_info.metric_value_info.interval.max_value == 1.0

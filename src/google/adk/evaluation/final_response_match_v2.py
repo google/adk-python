@@ -24,6 +24,10 @@ from ..models.llm_response import LlmResponse
 from ..utils.feature_decorator import experimental
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
+from .eval_metrics import Interval
+from .eval_metrics import MetricInfo
+from .eval_metrics import MetricValueInfo
+from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
@@ -146,6 +150,20 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
     if self._eval_metric.judge_model_options.num_samples is None:
       self._eval_metric.judge_model_options.num_samples = _DEFAULT_NUM_SAMPLES
 
+  @staticmethod
+  def get_metric_info() -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.FINAL_RESPONSE_MATCH_V2.value,
+        description=(
+            "This metric evaluates if the agent's final response matches a"
+            " golden/expected final response using LLM as a judge. Value range"
+            " for this metric is [0,1], with values closer to 1 more desirable."
+        ),
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )
+
   @override
   def format_auto_rater_prompt(
       self, actual_invocation: Invocation, expected_invocation: Invocation
@@ -185,8 +203,7 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
     tie, consider the result to be invalid.
 
     Args:
-      per_invocation_samples: Samples of per-invocation results to
-        aggregate.
+      per_invocation_samples: Samples of per-invocation results to aggregate.
 
     Returns:
       If there is a majority of valid results, return the first valid result.

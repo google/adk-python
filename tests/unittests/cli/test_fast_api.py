@@ -845,6 +845,23 @@ def test_run_eval(test_app, create_test_eval_set):
   assert data == [f"{info['app_name']}_test_eval_set_id_eval_result"]
 
 
+def test_list_eval_metrics(test_app):
+  """Test listing eval metrics."""
+  url = "/apps/test_app/eval_metrics"
+  response = test_app.get(url)
+
+  # Verify the response
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, list)
+  # Add more assertions based on the expected metrics
+  assert len(data) > 0
+  for metric in data:
+    assert "metricName" in metric
+    assert "description" in metric
+    assert "metricValueInfo" in metric
+
+
 def test_debug_trace(test_app):
   """Test the debug trace endpoint."""
   # This test will likely return 404 since we haven't set up trace data,
