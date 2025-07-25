@@ -454,7 +454,6 @@ def test_to_agent_engine_happy_path(
       temp_folder=str(temp_folder),
       adk_app="my_adk_app",
       staging_bucket="gs://my-staging-bucket",
-      agent_engine_name="",
       trace_to_cloud=True,
       project="my-gcp-project",
       region="us-central1",
