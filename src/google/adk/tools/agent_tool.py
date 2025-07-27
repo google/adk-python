@@ -18,13 +18,16 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from pydantic import BaseModel
 from pydantic import model_validator
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
+from ..agents.common_configs import AgentRefConfig
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
+from .base_tool import ToolArgsConfig
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
@@ -154,3 +157,29 @@ class AgentTool(BaseTool):
     else:
       tool_result = merged_text
     return tool_result
+
+  @classmethod
+  @override
+  def from_config(
+      cls, config: ToolArgsConfig, config_abs_path: str
+  ) -> AgentTool:
+    from ..agents import config_agent_utils
+
+    agent_tool_config = AgentToolConfig.model_validate(config.model_dump())
+
+    agent = config_agent_utils.resolve_agent_reference(
+        agent_tool_config.agent, config_abs_path
+    )
+    return cls(
+        agent=agent, skip_summarization=agent_tool_config.skip_summarization
+    )
+
+
+class AgentToolConfig(BaseModel):
+  """The config for the AgentTool."""
+
+  agent: AgentRefConfig
+  """The reference to the agent instance."""
+
+  skip_summarization: bool = False
+  """Whether to skip summarization of the agent output."""

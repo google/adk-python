@@ -17,9 +17,13 @@ from __future__ import annotations
 from abc import ABC
 from typing import Any
 from typing import Optional
+from typing import Type
 from typing import TYPE_CHECKING
+from typing import TypeVar
 
 from google.genai import types
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
@@ -27,6 +31,8 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
+
+SelfTool = TypeVar("SelfTool", bound="BaseTool")
 
 
 class BaseTool(ABC):
@@ -78,7 +84,7 @@ class BaseTool(ABC):
     Returns:
       The result of running the tool.
     """
-    raise NotImplementedError(f'{type(self)} is not implemented')
+    raise NotImplementedError(f"{type(self)} is not implemented")
 
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
@@ -122,6 +128,25 @@ class BaseTool(ABC):
   def _api_variant(self) -> GoogleLLMVariant:
     return get_google_llm_variant()
 
+  @classmethod
+  def from_config(
+      cls: Type[SelfTool], config: ToolArgsConfig, config_abs_path: str
+  ) -> SelfTool:
+    """Creates a tool instance from a config.
+
+    Subclasses should override and implement this method to do custom
+    initialization from a config.
+
+    Args:
+      config: The config for the tool.
+      config_abs_path: The absolute path to the config file that contains the
+        tool config.
+
+    Returns:
+      The tool instance.
+    """
+    raise NotImplementedError(f"from_config for {cls} not implemented.")
+
 
 def _find_tool_with_function_declarations(
     llm_request: LlmRequest,
@@ -138,3 +163,99 @@ def _find_tool_with_function_declarations(
       ),
       None,
   )
+
+
+class ToolArgsConfig(BaseModel):
+  """The configuration for tool arguments.
+
+  This config allows arbitrary key-value pairs as tool arguments.
+  """
+
+  model_config = ConfigDict(extra="allow")
+
+
+class ToolConfig(BaseModel):
+  """The configuration for a tool.
+
+  The config supports these types of tools:
+  1. ADK built-in tools
+  2. User-defined tool instances
+  3. User-defined tool classes
+  4. User-defined functions that generate tool instances
+  5. User-defined function tools
+
+  For examples:
+
+    1. For ADK built-in tool instances or classes in `google.adk.tools` package,
+    they can be referenced directly with the `name` and optionally with
+    `config`.
+
+    ```
+    tools:
+      - name: google_search
+      - name: AgentTool
+        config:
+          agent: ./another_agent.yaml
+          skip_summarization: true
+    ```
+
+    2. For user-defined tool instances, the `name` is the fully qualified path
+    to the tool instance.
+
+    ```
+    tools:
+      - name: my_package.my_module.my_tool
+    ```
+
+    3. For user-defined tool classes (custom tools), the `name` is the fully
+    qualified path to the tool class and `config` is the arguments for the tool.
+
+    ```
+    tools:
+      - name: my_package.my_module.my_tool_class
+        config:
+          my_tool_arg1: value1
+          my_tool_arg2: value2
+    ```
+
+    4. For user-defined functions that generate tool instances, the `name` is the
+    fully qualified path to the function and `config` is passed to the function
+    as arguments.
+
+    ```
+    tools:
+      - name: my_package.my_module.my_tool_function
+        config:
+          my_function_arg1: value1
+          my_function_arg2: value2
+    ```
+
+    The function must have the following signature:
+    ```
+    def my_function(config: ToolArgsConfig) -> BaseTool:
+      ...
+    ```
+
+    5. For user-defined function tools, the `name` is the fully qualified path
+    to the function.
+
+    ```
+    tools:
+      - name: my_package.my_module.my_function_tool
+    ```
+  """
+
+  model_config = ConfigDict(extra="forbid")
+
+  name: str
+  """The name of the tool.
+
+  For ADK built-in tools, the name is the name of the tool, e.g. `google_search`
+  or `AgentTool`.
+
+  For user-defined tools, the name is the fully qualified path to the tool, e.g.
+  `my_package.my_module.my_tool`.
+  """
+
+  args: Optional[ToolArgsConfig] = None
+  """The args for the tool."""

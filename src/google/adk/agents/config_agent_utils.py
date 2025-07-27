@@ -24,7 +24,7 @@ import yaml
 from ..utils.feature_decorator import working_in_progress
 from .agent_config import AgentConfig
 from .base_agent import BaseAgent
-from .base_agent_config import SubAgentConfig
+from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 from .llm_agent import LlmAgent
 from .llm_agent_config import LlmAgentConfig
@@ -90,44 +90,48 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   return AgentConfig.model_validate(config_data)
 
 
-@working_in_progress("build_sub_agent is not ready for use.")
-def build_sub_agent(
-    sub_config: SubAgentConfig, parent_agent_folder_path: str
+@working_in_progress("resolve_agent_reference is not ready for use.")
+def resolve_agent_reference(
+    ref_config: AgentRefConfig, referencing_agent_config_abs_path: str
 ) -> BaseAgent:
-  """Build a sub-agent from configuration.
+  """Build an agent from a reference.
 
   Args:
-    sub_config: The sub-agent configuration (SubAgentConfig).
-    parent_agent_folder_path: The folder path to the parent agent's YAML config.
+    ref_config: The agent reference configuration (AgentRefConfig).
+    referencing_agent_config_abs_path: The absolute path to the agent config
+    that contains the reference.
 
   Returns:
-    The created sub-agent instance.
+    The created agent instance.
   """
-  if sub_config.config:
-    if os.path.isabs(sub_config.config):
-      return from_config(sub_config.config)
+  if ref_config.config_path:
+    if os.path.isabs(ref_config.config_path):
+      return from_config(ref_config.config_path)
     else:
       return from_config(
-          os.path.join(parent_agent_folder_path, sub_config.config)
+          os.path.join(
+              referencing_agent_config_abs_path.rsplit("/", 1)[0],
+              ref_config.config_path,
+          )
       )
-  elif sub_config.code:
-    return _resolve_sub_agent_code_reference(sub_config.code)
+  elif ref_config.code:
+    return _resolve_agent_code_reference(ref_config.code)
   else:
-    raise ValueError("SubAgentConfig must have either 'code' or 'config'")
+    raise ValueError("AgentRefConfig must have either 'code' or 'config_path'")
 
 
-@working_in_progress("_resolve_sub_agent_code_reference is not ready for use.")
-def _resolve_sub_agent_code_reference(code: str) -> Any:
-  """Resolve a code reference to an actual agent object.
+@working_in_progress("_resolve_agent_code_reference is not ready for use.")
+def _resolve_agent_code_reference(code: str) -> Any:
+  """Resolve a code reference to an actual agent instance.
 
   Args:
-    code: The code reference to the sub-agent.
+    code: The fully-qualified path to an agent instance.
 
   Returns:
-    The resolved agent object.
+    The resolved agent instance.
 
   Raises:
-    ValueError: If the code reference cannot be resolved.
+    ValueError: If the agent reference cannot be resolved.
   """
   if "." not in code:
     raise ValueError(f"Invalid code reference: {code}")
@@ -137,7 +141,10 @@ def _resolve_sub_agent_code_reference(code: str) -> Any:
   obj = getattr(module, obj_name)
 
   if callable(obj):
-    raise ValueError(f"Invalid code reference to a callable: {code}")
+    raise ValueError(f"Invalid agent reference to a callable: {code}")
+
+  if not isinstance(obj, BaseAgent):
+    raise ValueError(f"Invalid agent reference to a non-agent instance: {code}")
 
   return obj
 

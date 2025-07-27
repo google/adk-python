@@ -43,6 +43,7 @@ from typing_extensions import TypeAlias
 from ..events.event import Event
 from ..utils.feature_decorator import working_in_progress
 from .callback_context import CallbackContext
+from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
 if TYPE_CHECKING:
@@ -50,66 +51,6 @@ if TYPE_CHECKING:
 
 
 TBaseAgentConfig = TypeVar('TBaseAgentConfig', bound='BaseAgentConfig')
-
-
-class SubAgentConfig(BaseModel):
-  """The config for a sub-agent."""
-
-  model_config = ConfigDict(extra='forbid')
-
-  config: Optional[str] = None
-  """The YAML config file path of the sub-agent.
-
-  Only one of `config` or `code` can be set.
-
-  Example:
-
-    ```
-    sub_agents:
-      - config: search_agent.yaml
-      - config: my_library/my_custom_agent.yaml
-    ```
-  """
-
-  code: Optional[str] = None
-  """The agent instance defined in the code.
-
-  Only one of `config` or `code` can be set.
-
-  Example:
-
-    For the following agent defined in Python code:
-
-    ```
-    # my_library/custom_agents.py
-    from google.adk.agents.llm_agent import LlmAgent
-
-    my_custom_agent = LlmAgent(
-        name="my_custom_agent",
-        instruction="You are a helpful custom agent.",
-        model="gemini-2.0-flash",
-    )
-    ```
-
-    The yaml config should be:
-
-    ```
-    sub_agents:
-      - code: my_library.custom_agents.my_custom_agent
-    ```
-  """
-
-  @model_validator(mode='after')
-  def validate_exactly_one_field(self):
-    code_provided = self.code is not None
-    config_provided = self.config is not None
-
-    if code_provided and config_provided:
-      raise ValueError('Only one of code or config should be provided')
-    if not code_provided and not config_provided:
-      raise ValueError('Exactly one of code or config must be provided')
-
-    return self
 
 
 @working_in_progress('BaseAgentConfig is not ready for use.')
@@ -133,7 +74,7 @@ class BaseAgentConfig(BaseModel):
   description: str = ''
   """Optional. The description of the agent."""
 
-  sub_agents: Optional[List[SubAgentConfig]] = None
+  sub_agents: Optional[List[AgentRefConfig]] = None
   """Optional. The sub-agents of the agent."""
 
   before_agent_callbacks: Optional[List[CodeConfig]] = None

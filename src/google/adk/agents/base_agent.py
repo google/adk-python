@@ -41,6 +41,7 @@ from ..events.event import Event
 from ..utils.feature_decorator import working_in_progress
 from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
+from .common_configs import AgentRefConfig
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
@@ -503,11 +504,13 @@ class BaseAgent(BaseModel):
 
     Args:
       config: The config to create the agent from.
+      config_abs_path: The absolute path to the config file that contains the
+        agent config.
 
     Returns:
       The created agent.
     """
-    from .config_agent_utils import build_sub_agent
+    from .config_agent_utils import resolve_agent_reference
     from .config_agent_utils import resolve_callbacks
 
     kwargs: Dict[str, Any] = {
@@ -517,9 +520,7 @@ class BaseAgent(BaseModel):
     if config.sub_agents:
       sub_agents = []
       for sub_agent_config in config.sub_agents:
-        sub_agent = build_sub_agent(
-            sub_agent_config, config_abs_path.rsplit('/', 1)[0]
-        )
+        sub_agent = resolve_agent_reference(sub_agent_config, config_abs_path)
         sub_agents.append(sub_agent)
       kwargs['sub_agents'] = sub_agents
 

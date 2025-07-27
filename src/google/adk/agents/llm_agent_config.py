@@ -21,6 +21,7 @@ from typing import Optional
 
 from pydantic import ConfigDict
 
+from ..tools.base_tool import ToolConfig
 from .base_agent_config import BaseAgentConfig
 from .common_configs import CodeConfig
 
@@ -63,7 +64,7 @@ class LlmAgentConfig(BaseAgentConfig):
   include_contents: Literal['default', 'none'] = 'default'
   """Optional. LlmAgent.include_contents."""
 
-  tools: Optional[list[CodeConfig]] = None
+  tools: Optional[list[ToolConfig]] = None
   """Optional. LlmAgent.tools.
 
   Examples:

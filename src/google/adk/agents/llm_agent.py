@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
+import os
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
@@ -46,7 +47,9 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..planners.base_planner import BasePlanner
+from ..tools.agent_tool import AgentTool
 from ..tools.base_tool import BaseTool
+from ..tools.base_tool import ToolConfig
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
@@ -525,31 +528,59 @@ class LlmAgent(BaseAgent):
 
   @classmethod
   @working_in_progress('LlmAgent._resolve_tools is not ready for use.')
-  def _resolve_tools(cls, tools_config: list[CodeConfig]) -> list[Any]:
+  def _resolve_tools(
+      cls, tool_configs: list[ToolConfig], config_abs_path: str
+  ) -> list[Any]:
     """Resolve tools from configuration.
 
     Args:
-      tools_config: List of tool configurations (CodeConfig objects).
+      tool_configs: List of tool configurations (ToolConfig objects).
+      config_abs_path: The absolute path to the agent config file.
 
     Returns:
       List of resolved tool objects.
     """
 
     resolved_tools = []
-    for tool_config in tools_config:
+    for tool_config in tool_configs:
       if '.' not in tool_config.name:
+        # ADK built-in tools
         module = importlib.import_module('google.adk.tools')
         obj = getattr(module, tool_config.name)
-        if isinstance(obj, ToolUnion):
-          resolved_tools.append(obj)
-        else:
-          raise ValueError(
-              f'Invalid tool name: {tool_config.name} is not a built-in tool.'
-          )
       else:
-        from .config_agent_utils import resolve_code_reference
+        # User-defined tools
+        module_path, obj_name = tool_config.name.rsplit('.', 1)
+        module = importlib.import_module(module_path)
+        obj = getattr(module, obj_name)
 
-        resolved_tools.append(resolve_code_reference(tool_config))
+      if isinstance(obj, BaseTool) or isinstance(obj, BaseToolset):
+        logger.debug(
+            'Tool %s is an instance of BaseTool/BaseToolset.', tool_config.name
+        )
+        resolved_tools.append(obj)
+      elif inspect.isclass(obj) and (
+          issubclass(obj, BaseTool) or issubclass(obj, BaseToolset)
+      ):
+        logger.debug(
+            'Tool %s is a sub-class of BaseTool/BaseToolset.', tool_config.name
+        )
+        resolved_tools.append(
+            obj.from_config(tool_config.args, config_abs_path)
+        )
+      elif callable(obj):
+        if tool_config.args:
+          logger.debug(
+              'Tool %s is a user-defined tool-generating function.',
+              tool_config.name,
+          )
+          resolved_tools.append(obj(tool_config.args))
+        else:
+          logger.debug(
+              'Tool %s is a user-defined function tool.', tool_config.name
+          )
+          resolved_tools.append(obj)
+      else:
+        raise ValueError(f'Invalid tool YAML config: {tool_config}.')
 
     return resolved_tools
 
@@ -582,7 +613,7 @@ class LlmAgent(BaseAgent):
     if config.output_key:
       agent.output_key = config.output_key
     if config.tools:
-      agent.tools = cls._resolve_tools(config.tools)
+      agent.tools = cls._resolve_tools(config.tools, config_abs_path)
     if config.before_model_callbacks:
       agent.before_model_callback = resolve_callbacks(
           config.before_model_callbacks

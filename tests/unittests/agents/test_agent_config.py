@@ -50,9 +50,9 @@ agent_class: LoopAgent
 name: CodePipelineAgent
 description: Executes a sequence of code writing, reviewing, and refactoring.
 sub_agents:
-  - config: sub_agents/code_writer_agent.yaml
-  - config: sub_agents/code_reviewer_agent.yaml
-  - config: sub_agents/code_refactorer_agent.yaml
+  - config_path: sub_agents/code_writer_agent.yaml
+  - config_path: sub_agents/code_reviewer_agent.yaml
+  - config_path: sub_agents/code_refactorer_agent.yaml
 """
   config_data = yaml.safe_load(yaml_content)
 
@@ -68,9 +68,9 @@ agent_class: ParallelAgent
 name: CodePipelineAgent
 description: Executes a sequence of code writing, reviewing, and refactoring.
 sub_agents:
-  - config: sub_agents/code_writer_agent.yaml
-  - config: sub_agents/code_reviewer_agent.yaml
-  - config: sub_agents/code_refactorer_agent.yaml
+  - config_path: sub_agents/code_writer_agent.yaml
+  - config_path: sub_agents/code_reviewer_agent.yaml
+  - config_path: sub_agents/code_refactorer_agent.yaml
 """
   config_data = yaml.safe_load(yaml_content)
 
@@ -86,9 +86,9 @@ agent_class: SequentialAgent
 name: CodePipelineAgent
 description: Executes a sequence of code writing, reviewing, and refactoring.
 sub_agents:
-  - config: sub_agents/code_writer_agent.yaml
-  - config: sub_agents/code_reviewer_agent.yaml
-  - config: sub_agents/code_refactorer_agent.yaml
+  - config_path: sub_agents/code_writer_agent.yaml
+  - config_path: sub_agents/code_reviewer_agent.yaml
+  - config_path: sub_agents/code_refactorer_agent.yaml
 """
   config_data = yaml.safe_load(yaml_content)
 
