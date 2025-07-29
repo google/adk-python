@@ -116,9 +116,12 @@ class Gemini(BaseLlm):
     )
     logger.debug(_build_request_log(llm_request))
 
-    # add tracking headers to custom headers given it will override the headers
-    # set in the api client constructor
-    if llm_request.config and llm_request.config.http_options:
+    # Always add tracking headers to custom headers given it will override
+    # the headers set in the api client constructor to avoid tracking headers
+    # being dropped if user provides custom headers or overrides the api client.
+    if llm_request.config:
+      if not llm_request.config.http_options:
+        llm_request.config.http_options = types.HttpOptions()
       if not llm_request.config.http_options.headers:
         llm_request.config.http_options.headers = {}
       llm_request.config.http_options.headers.update(self._tracking_headers)
