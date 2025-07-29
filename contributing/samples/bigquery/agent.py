@@ -62,7 +62,7 @@ bigquery_toolset = BigQueryToolset(
 
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI
-root_agent = llm_agent.Agent(
+root_agent = LlmAgent(
     model="gemini-2.0-flash",
     name="bigquery_agent",
     description=(
