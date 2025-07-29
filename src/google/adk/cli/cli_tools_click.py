@@ -33,8 +33,6 @@ from . import cli_create
 from . import cli_deploy
 from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
-from ..evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
-from ..evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..sessions.in_memory_session_service import InMemorySessionService
 from .cli import run_cli
@@ -147,6 +145,18 @@ def deploy():
     type=str,
     help="Optional. The Google Cloud Region for using VertexAI as backend.",
 )
+@click.option(
+    "--type",
+    type=click.Choice([t.value for t in cli_create.Type]),
+    help=(
+        "EXPERIMENTAL Optional. Type of agent to create: 'config' or 'code'."
+        " 'config' is not ready for use so it defaults to 'code'. It may change"
+        " later once 'config' is ready for use."
+    ),
+    default=cli_create.Type.CODE.value,
+    show_default=True,
+    hidden=True,  # Won't show in --help output. Not ready for use.
+)
 @click.argument("app_name", type=str, required=True)
 def cli_create_cmd(
     app_name: str,
@@ -154,6 +164,7 @@ def cli_create_cmd(
     api_key: Optional[str],
     project: Optional[str],
     region: Optional[str],
+    type: Optional[cli_create.Type],
 ):
   """Creates a new app in the current folder with prepopulated agent template.
 
@@ -169,6 +180,7 @@ def cli_create_cmd(
       google_api_key=api_key,
       google_cloud_project=project,
       google_cloud_region=region,
+      type=type,
   )
 
 
