@@ -210,3 +210,7 @@ All submissions, including submissions by project members, require review. We
 use GitHub pull requests for this purpose. Consult
 [GitHub Help](https://help.github.com/articles/about-pull-requests/) for more
 information on using pull requests.
+
+# Vibe Coding
+
+If you want to contribute by leveraging viber coding, the AGENTS.md (https://github.com/google/adk-python/tree/main/AGENTS.md) could be used as context to your LLM.
