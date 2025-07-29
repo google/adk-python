@@ -22,8 +22,8 @@ from google.genai import types
 from pydantic import BaseModel
 
 from ..agents.llm_agent import LlmAgent
-from ..artifacts import BaseArtifactService
-from ..artifacts import InMemoryArtifactService
+from ..artifacts.base_artifact_service import BaseArtifactService
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
