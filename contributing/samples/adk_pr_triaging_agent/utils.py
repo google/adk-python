@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 from typing import Any
 
 from adk_pr_triaging_agent.settings import GITHUB_GRAPHQL_URL
 from adk_pr_triaging_agent.settings import GITHUB_TOKEN
+from google.adk.agents.run_config import RunConfig
+from google.adk.runners import Runner
+from google.genai import types
 import requests
 
 headers = {
@@ -75,3 +79,42 @@ def read_file(file_path: str) -> str:
   except FileNotFoundError:
     print(f"Error: File not found: {file_path}.")
     return ""
+
+
+def parse_number_string(number_str: str | None, default_value: int = 0) -> int:
+  """Parse a number from the given string."""
+  if not number_str:
+    return default_value
+
+  try:
+    return int(number_str)
+  except ValueError:
+    print(
+        f"Warning: Invalid number string: {number_str}. Defaulting to"
+        f" {default_value}.",
+        file=sys.stderr,
+    )
+    return default_value
+
+
+async def call_agent_async(
+    runner: Runner, user_id: str, session_id: str, prompt: str
+) -> str:
+  """Call the agent asynchronously with the user's prompt."""
+  content = types.Content(
+      role="user", parts=[types.Part.from_text(text=prompt)]
+  )
+
+  final_response_text = ""
+  async for event in runner.run_async(
+      user_id=user_id,
+      session_id=session_id,
+      new_message=content,
+      run_config=RunConfig(save_input_blobs_as_artifacts=False),
+  ):
+    if event.content and event.content.parts:
+      if text := "".join(part.text or "" for part in event.content.parts):
+        if event.author != "user":
+          final_response_text += text
+
+  return final_response_text
