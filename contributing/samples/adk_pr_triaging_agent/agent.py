@@ -34,7 +34,7 @@ LABEL_TO_OWNER = {
     "tools": "seanzhou1023",
     "eval": "ankursharmas",
     "live": "hangfei",
-    "models": "selcukgun",
+    "models": "genquan9",
     "tracing": "Jacksunwei",
     "core": "Jacksunwei",
     "web": "wyf7107",
