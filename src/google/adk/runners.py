@@ -258,16 +258,17 @@ class Runner:
     early_exit_result = await plugin_manager.run_before_run_callback(
         invocation_context=invocation_context
     )
-    if isinstance(early_exit_result, Event):
+    if isinstance(early_exit_result, types.Content):
+      early_exit_event = Event(
+          invocation_id=invocation_context.invocation_id,
+          author='model',
+          content=early_exit_result,
+      )
       await self.session_service.append_event(
           session=session,
-          event=Event(
-              invocation_id=invocation_context.invocation_id,
-              author='model',
-              content=early_exit_result,
-          ),
+          event=early_exit_event,
       )
-      yield early_exit_result
+      yield early_exit_event
     else:
       # Step 2: Otherwise continue with normal execution
       async for event in execute_fn(invocation_context):
