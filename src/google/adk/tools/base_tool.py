@@ -259,3 +259,10 @@ class ToolConfig(BaseModel):
 
   args: Optional[ToolArgsConfig] = None
   """The args for the tool."""
+
+
+class BaseToolConfig(BaseModel):
+  """The base configurations for all the tools."""
+
+  model_config = ConfigDict(extra="forbid")
+  """Forbid extra fields."""
