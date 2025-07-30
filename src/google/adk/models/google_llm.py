@@ -122,9 +122,9 @@ class Gemini(BaseLlm):
     if llm_request.config:
       if not llm_request.config.http_options:
         llm_request.config.http_options = types.HttpOptions()
-      if not llm_request.config.http_options.headers:
-        llm_request.config.http_options.headers = {}
-      llm_request.config.http_options.headers.update(self._tracking_headers)
+      llm_request.config.http_options.headers = self._merge_tracking_headers(
+          llm_request.config.http_options.headers
+      )
 
     if stream:
       responses = await self.api_client.aio.models.generate_content_stream(
@@ -335,6 +335,23 @@ class Gemini(BaseLlm):
         ):
           llm_request.config.system_instruction = None
           await self._adapt_computer_use_tool(llm_request)
+
+  def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
+    """Merge tracking headers to the given headers."""
+    headers = headers or {}
+    for key, tracking_header_value in self._tracking_headers.items():
+      custom_value = headers.get(key, None)
+      if not custom_value:
+        headers[key] = tracking_header_value
+        continue
+
+      # Merge tracking headers with existing headers and avoid duplicates.
+      value_parts = tracking_header_value.split(' ')
+      for custom_value_part in custom_value.split(' '):
+        if custom_value_part not in value_parts:
+          value_parts.append(custom_value_part)
+      headers[key] = ' '.join(value_parts)
+    return headers
 
 
 def _build_function_declaration_log(
