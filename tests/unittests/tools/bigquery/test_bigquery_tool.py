@@ -19,6 +19,7 @@ from unittest.mock import patch
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsManager
 from google.adk.tools.bigquery.bigquery_tool import BigQueryTool
+from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.tool_context import ToolContext
 # Mock the Google OAuth and API dependencies
 from google.oauth2.credentials import Credentials
@@ -267,3 +268,35 @@ class TestBigQueryTool:
     assert "required_param" in mandatory_args
     assert "credentials" not in mandatory_args
     assert "optional_param" not in mandatory_args
+
+  @pytest.mark.parametrize(
+      "input_config, expected_config",
+      [
+          pytest.param(
+              BigQueryToolConfig(
+                  write_mode="blocked", max_query_result_rows=50
+              ),
+              BigQueryToolConfig(
+                  write_mode="blocked", max_query_result_rows=50
+              ),
+              id="with_provided_config",
+          ),
+          pytest.param(
+              None,
+              BigQueryToolConfig(),
+              id="with_none_config_creates_default",
+          ),
+      ],
+  )
+  def test_tool_config_initialization(self, input_config, expected_config):
+    """Tests that self._tool_config is correctly initialized by comparing its
+
+    final state to an expected configuration object.
+    """
+    # 1. Initialize the tool with the parameterized config
+    tool = BigQueryTool(func=None, bigquery_tool_config=input_config)
+
+    # 2. Assert that the tool's config has the same attribute values
+    #    as the expected config. Comparing the __dict__ is a robust
+    #    way to check for value equality.
+    assert tool._tool_config.__dict__ == expected_config.__dict__  # pylint: disable=protected-access

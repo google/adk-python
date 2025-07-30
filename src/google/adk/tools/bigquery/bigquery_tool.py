@@ -65,7 +65,9 @@ class BigQueryTool(FunctionTool):
         if credentials_config
         else None
     )
-    self._tool_config = bigquery_tool_config
+    self._tool_config = (
+        bigquery_tool_config if bigquery_tool_config else BigQueryToolConfig()
+    )
 
   @override
   async def run_async(
