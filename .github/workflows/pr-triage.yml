@@ -1,7 +1,7 @@
 name: ADK Pull Request Triaging Agent
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, edited]
 
 jobs:
@@ -33,6 +33,6 @@ jobs:
           OWNER: 'google'
           REPO: 'adk-python'
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
-          INTERACTIVE: ${{ secrets.PR_TRIAGE_INTERACTIVE }}
+          INTERACTIVE: ${{ vars.PR_TRIAGE_INTERACTIVE }}
           PYTHONPATH: contributing/samples
         run: python -m adk_pr_triaging_agent.main
