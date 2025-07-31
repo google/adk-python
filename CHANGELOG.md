@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.9.0](https://github.com/google/adk-python/compare/v1.8.0...v1.9.0) (2025-07-31)
+
+
+### Features
+
+* [CLI] Add `-v`, `--verbose` flag to enable DEBUG logging as a shortcut for `--log_level DEBUG` ([3be0882](https://github.com/google/adk-python/commit/3be0882c63bf9b185c34bcd17e03769b39f0e1c5))
+* [CLI] Add a CLI option to update an agent engine instance ([206a132](https://github.com/google/adk-python/commit/206a13271e5f1bb0bb8114b3bb82f6ec3f030cd7))
+* [CLI] Modularize fast_api.py to allow simpler construction of API Server ([bfc203a](https://github.com/google/adk-python/commit/bfc203a92fdfbc4abaf776e76dca50e7ca59127b), [dfc25c1](https://github.com/google/adk-python/commit/dfc25c17a98aaad81e1e2f140db83d17cd78f393), [e176f03](https://github.com/google/adk-python/commit/e176f03e8fe13049187abd0f14e63afca9ccff01))
+* [CLI] Refactor AgentLoader into base class and add InMemory impl alongside existing filesystem impl ([bda3df2](https://github.com/google/adk-python/commit/bda3df24802d0456711a5cd05544aea54a13398d))
+* [CLI] Respect the .ae_ignore file when deploying to agent engine ([f29ab5d](https://github.com/google/adk-python/commit/f29ab5db0563a343d6b8b437a12557c89b7fc98b))
+* [Core] Add new callbacks to handle tool and model errors ([00afaaf](https://github.com/google/adk-python/commit/00afaaf2fc18fba85709754fb1037bb47f647243))
+* [Core] Add sample plugin for logging ([20537e8](https://github.com/google/adk-python/commit/20537e8bfa31220d07662dad731b4432799e1802))
+* [Core] Expose Gemini RetryOptions to client ([1639298](https://github.com/google/adk-python/commit/16392984c51b02999200bd4f1d6781d5ec9054de))
+* [Evals] Added an Fast API new endpoint to serve eval metric info ([c69dcf8](https://github.com/google/adk-python/commit/c69dcf87795c4fa2ad280b804c9b0bd3fa9bf06f))
+* [Evals] Refactored AgentEvaluator and updated it to use LocalEvalService ([1355bd6](https://github.com/google/adk-python/commit/1355bd643ba8f7fd63bcd6a7284cc48e325d138e))
+
+
+### Bug Fixes
+
+* Add absolutize_imports option when deploying to agent engine ([fbe6a7b](https://github.com/google/adk-python/commit/fbe6a7b8d3a431a1d1400702fa534c3180741eb3))
+* Add space to allow adk deploy cloud_run --a2a ([70c4616](https://github.com/google/adk-python/commit/70c461686ec2c60fcbaa384a3f1ea2528646abba))
+* Copy the original function call args before passing it to callback or tools to avoid being modified ([3432b22](https://github.com/google/adk-python/commit/3432b221727b52af2682d5bf3534d533a50325ef))
+* Eval module not found exception string ([7206e0a](https://github.com/google/adk-python/commit/7206e0a0eb546a66d47fb411f3fa813301c56f42))
+* Fix incorrect token count mapping in telemetry ([c8f8b4a](https://github.com/google/adk-python/commit/c8f8b4a20a886a17ce29abd1cfac2858858f907d))
+* Import cli's artifact dependencies directly ([282d67f](https://github.com/google/adk-python/commit/282d67f253935af56fae32428124a385f812c67d))
+* Keep existing header values while merging tracking headers for `llm_request.config.http_options` in `Gemini.generate_content_async` ([6191412](https://github.com/google/adk-python/commit/6191412b07c3b5b5a58cf7714e475f63e89be847))
+* Merge tracking headers even when `llm_request.config.http_options` is not set in `Gemini.generate_content_async` ([ec8dd57](https://github.com/google/adk-python/commit/ec8dd5721aa151cfc033cc3aad4733df002ae9cb))
+* Restore bigquery sample agent to runnable form ([16e8419](https://github.com/google/adk-python/commit/16e8419e32b54298f782ba56827e5139effd8780))
+* Return session state in list_session API endpoint ([314d6a4](https://github.com/google/adk-python/commit/314d6a4f95c6d37c7da3afbc7253570564623322))
+* Runner was expecting Event object instead of Content object when using early exist feature ([bf72426](https://github.com/google/adk-python/commit/bf72426af2bfd5c2e21c410005842e48b773deb3))
+* Unable to acquire impersonated credentials ([9db5d9a](https://github.com/google/adk-python/commit/9db5d9a3e87d363c1bac0f3d8e45e42bd5380d3e))
+* Update `agent_card_builder` to follow grammar rules ([9c0721b](https://github.com/google/adk-python/commit/9c0721beaa526a4437671e6cc70915073be835e3)), closes [#2223](https://github.com/google/adk-python/issues/2223)
+* Use correct type for actions parameter in ApplicationIntegrationToolset ([ce7253f](https://github.com/google/adk-python/commit/ce7253f63ff8e78bccc7805bd84831f08990b881))
+
+
+### Documentation
+
+* Update documents about the information of vibe coding ([0c85587](https://github.com/google/adk-python/commit/0c855877c57775ad5dad930594f9f071164676da))
+
+
 ## [1.8.0](https://github.com/google/adk-python/compare/v1.7.0...v1.8.0) (2025-07-23)
 
 ### Features
