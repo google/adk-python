@@ -515,9 +515,22 @@ class DatabaseSessionService(BaseSessionService):
           .filter(StorageSession.user_id == user_id)
           .all()
       )
+
+      # Fetch states from storage
+      storage_app_state = sql_session.get(StorageAppState, (app_name))
+      storage_user_state = sql_session.get(
+          StorageUserState, (app_name, user_id)
+      )
+
+      app_state = storage_app_state.state if storage_app_state else {}
+      user_state = storage_user_state.state if storage_user_state else {}
+
       sessions = []
       for storage_session in results:
-        sessions.append(storage_session.to_session())
+        session_state = storage_session.state
+        merged_state = _merge_state(app_state, user_state, session_state)
+
+        sessions.append(storage_session.to_session(state=merged_state))
       return ListSessionsResponse(sessions=sessions)
 
   @override

@@ -224,7 +224,7 @@ class InMemorySessionService(BaseSessionService):
     for session in self.sessions[app_name][user_id].values():
       copied_session = copy.deepcopy(session)
       copied_session.events = []
-      copied_session.state = {}
+      copied_session = self._merge_state(app_name, user_id, copied_session)
       sessions_without_events.append(copied_session)
     return ListSessionsResponse(sessions=sessions_without_events)
 
