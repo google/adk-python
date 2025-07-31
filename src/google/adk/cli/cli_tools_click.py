@@ -1154,11 +1154,6 @@ def cli_deploy_agent_engine(
         " only)"
     ),
 )
-@click.option(  # This is the crucial missing piece
-    "--verbosity",
-    type=LOG_LEVELS,
-    help="Deprecated. Use --log_level instead.",
-)
 @click.option(
     "--log_level",
     type=LOG_LEVELS,
@@ -1178,12 +1173,6 @@ def cli_deploy_agent_engine(
         " (default: a timestamped folder in the system temp directory)."
     ),
 )
-@click.argument(
-    "agent",
-    type=click.Path(
-        exists=True, dir_okay=True, file_okay=False, resolve_path=True
-    ),
-)
 @click.option(
     "--adk_version",
     type=str,
@@ -1195,7 +1184,12 @@ def cli_deploy_agent_engine(
     ),
 )
 @adk_services_options()
-@deprecated_adk_services_options()
+@click.argument(
+    "agent",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
 def cli_deploy_gke(
     agent: str,
     project: Optional[str],
@@ -1207,14 +1201,11 @@ def cli_deploy_gke(
     port: int,
     trace_to_cloud: bool,
     with_ui: bool,
-    verbosity: str,
     adk_version: str,
     log_level: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
-    session_db_url: Optional[str] = None,  # Deprecated
-    artifact_storage_uri: Optional[str] = None,  # Deprecated
 ):
   """Deploys an agent to GKE.
 
@@ -1224,8 +1215,6 @@ def cli_deploy_gke(
 
     adk deploy gke --project=[project] --region=[region] --cluster_name=[cluster_name] path/to/my_agent
   """
-  session_service_uri = session_service_uri or session_db_url
-  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   try:
     cli_deploy.to_gke(
         agent_folder=agent,
@@ -1238,7 +1227,6 @@ def cli_deploy_gke(
         port=port,
         trace_to_cloud=trace_to_cloud,
         with_ui=with_ui,
-        verbosity=verbosity,
         log_level=log_level,
         adk_version=adk_version,
         session_service_uri=session_service_uri,

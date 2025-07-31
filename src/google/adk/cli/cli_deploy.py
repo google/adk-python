@@ -466,7 +466,6 @@ def to_gke(
     trace_to_cloud: bool,
     with_ui: bool,
     log_level: str,
-    verbosity: str,
     adk_version: str,
     allow_origins: Optional[list[str]] = None,
     session_service_uri: Optional[str] = None,
@@ -487,7 +486,7 @@ def to_gke(
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
     with_ui: Whether to deploy with UI.
-    verbosity: The verbosity level of the CLI.
+    log_level: The logging level.
     adk_version: The ADK version to use in GKE.
     allow_origins: The list of allowed origins for the ADK api server.
     session_service_uri: The URI of the session service.
@@ -581,7 +580,7 @@ def to_gke(
             '--tag',
             image_name,
             '--verbosity',
-            log_level.lower() if log_level else verbosity,
+            log_level.lower(),
             temp_folder,
         ],
         check=True,
