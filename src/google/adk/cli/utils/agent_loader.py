@@ -178,7 +178,9 @@ class AgentLoader(BaseAgentLoader):
     if root_agent := self._load_from_submodule(agent_name):
       return root_agent
 
-    if root_agent := self._load_from_yaml_config(agent_name):
+    if os.getenv("ADK_ALLOW_WIP_FEATURES") and (
+        root_agent := self._load_from_yaml_config(agent_name)
+    ):
       return root_agent
 
     # If no root_agent was found by any pattern
