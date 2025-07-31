@@ -23,16 +23,44 @@ from types import SimpleNamespace
 from typing import Any
 from typing import Dict
 from typing import List
-from typing import Optional
 from typing import Tuple
+from unittest import mock
 
 import click
 from click.testing import CliRunner
-import google.adk.evaluation.local_eval_sets_manager as managerModule
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.cli import cli_tools_click
+from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_set import EvalSet
+from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
+from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from pydantic import BaseModel
 import pytest
 
-from src.google.adk.cli import cli_tools_click
+
+class DummyAgent(BaseAgent):
+
+  def __init__(self, name):
+    super().__init__(name=name)
+    self.sub_agents = []
+
+
+root_agent = DummyAgent(name="dummy_agent")
+
+
+@pytest.fixture
+def mock_load_eval_set_from_file():
+  with mock.patch(
+      "google.adk.evaluation.local_eval_sets_manager.load_eval_set_from_file"
+  ) as mock_func:
+    yield mock_func
+
+
+@pytest.fixture
+def mock_get_root_agent():
+  with mock.patch("google.adk.cli.cli_eval.get_root_agent") as mock_func:
+    mock_func.return_value = root_agent
+    yield mock_func
 
 
 # Helpers
@@ -376,3 +404,75 @@ def test_cli_web_passes_deprecated_uris(
   called_kwargs = mock_get_app.calls[0][1]
   assert called_kwargs.get("session_service_uri") == "sqlite:///deprecated.db"
   assert called_kwargs.get("artifact_service_uri") == "gs://deprecated"
+
+
+def test_cli_eval_with_eval_set_file_path(
+    mock_load_eval_set_from_file,
+    mock_get_root_agent,
+    tmp_path,
+):
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_set_file = tmp_path / "my_evals.json"
+  eval_set_file.write_text("{}")
+
+  mock_load_eval_set_from_file.return_value = EvalSet(
+      eval_set_id="my_evals",
+      eval_cases=[EvalCase(eval_id="case1", conversation=[])],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.cli_eval,
+      [str(agent_path), str(eval_set_file)],
+  )
+
+  assert result.exit_code == 0
+  # Assert that we wrote eval set results
+  eval_set_results_manager = LocalEvalSetResultsManager(
+      agents_dir=str(tmp_path)
+  )
+  eval_set_results = eval_set_results_manager.list_eval_set_results(
+      app_name="my_agent"
+  )
+  assert len(eval_set_results) == 1
+
+
+def test_cli_eval_with_eval_set_id(
+    mock_get_root_agent,
+    tmp_path,
+):
+  app_name = "test_app"
+  eval_set_id = "test_eval_set_id"
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=str(tmp_path))
+  eval_sets_manager.create_eval_set(app_name=app_name, eval_set_id=eval_set_id)
+  eval_sets_manager.add_eval_case(
+      app_name=app_name,
+      eval_set_id=eval_set_id,
+      eval_case=EvalCase(eval_id="case1", conversation=[]),
+  )
+  eval_sets_manager.add_eval_case(
+      app_name=app_name,
+      eval_set_id=eval_set_id,
+      eval_case=EvalCase(eval_id="case2", conversation=[]),
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.cli_eval,
+      [str(agent_path), "test_eval_set_id:case1,case2"],
+  )
+
+  assert result.exit_code == 0
+  # Assert that we wrote eval set results
+  eval_set_results_manager = LocalEvalSetResultsManager(
+      agents_dir=str(tmp_path)
+  )
+  eval_set_results = eval_set_results_manager.list_eval_set_results(
+      app_name=app_name
+  )
+  assert len(eval_set_results) == 2
