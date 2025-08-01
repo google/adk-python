@@ -13,6 +13,9 @@ from typing import Dict, Any, List
 from dotenv import load_dotenv
 load_dotenv()
 
+# Import chat utilities
+from chat_utils import StatelessChatManager, render_floating_chat_button
+
 # Configuration
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 DEFAULT_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "your-project-id")
@@ -41,7 +44,10 @@ def main():
     )
     
     st.title("🔒 GCP Security Analysis Agent")
-    st.markdown("Analyze your GCP project's security posture and IAM policies.")
+    st.markdown("Analyze your GCP project's security posture and IAM policies with AI-powered insights.")
+    
+    # Add floating chat button
+    render_floating_chat_button(project_id or DEFAULT_PROJECT)
     
     # Project selector (no session state)
     project_id = st.selectbox(
@@ -69,9 +75,14 @@ def main():
     with tab1:
         st.header("🏠 Security Dashboard")
         
-        if st.button("🔄 Analyze Security Posture", type="primary"):
-            with st.spinner("Analyzing security posture..."):
-                data = make_api_call("/api/v1/gcp/project/{project_id}/security-posture", project_id)
+        # Add chat integration to dashboard
+        chat_manager = StatelessChatManager("dashboard")
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            if st.button("🔄 Analyze Security Posture", type="primary"):
+                with st.spinner("Analyzing security posture..."):
+                    data = make_api_call("/api/v1/gcp/project/{project_id}/security-posture", project_id)
                 
                 if data.get("success"):
                     # Main metrics
@@ -176,11 +187,21 @@ def main():
                     else:
                         st.error("🚨 High security risks detected. Immediate action required.")
                     
+                    # Add contextual chat for dashboard data
+                    chat_manager.render_contextual_chat_section(project_id, "dashboard", data)
+                    
                 else:
                     st.error(f"Failed to get security posture: {data.get('error', 'Unknown error')}")
+        
+        with col2:
+            # Add dashboard chat widget
+            chat_manager.render_chat_widget(project_id, "dashboard")
     
     with tab2:
         st.header("👤 IAM Policy Analysis")
+        
+        # Add IAM chat manager
+        iam_chat_manager = StatelessChatManager("iam")
         
         user_email = st.text_input(
             "User Email:", 
@@ -222,6 +243,9 @@ def main():
                                         st.warning(f"🟡 **{rec.get('title')}**: {rec.get('description')}")
                                     else:
                                         st.info(f"🔵 **{rec.get('title')}**: {rec.get('description')}")
+                            
+                            # Add contextual chat for IAM analysis
+                            iam_chat_manager.render_contextual_chat_section(project_id, "iam", data)
                         else:
                             st.error(f"Failed to analyze user: {data.get('error', 'Unknown error')}")
         
@@ -244,11 +268,17 @@ def main():
                                 st.warning(f"Medium Risk Users: {', '.join(summary['medium_risk_users'])}")
                             
                             st.info(f"Total Violations: {summary.get('total_violations', 0)}")
+                            
+                            # Add contextual chat for all users analysis
+                            iam_chat_manager.render_contextual_chat_section(project_id, "iam", data)
                     else:
                         st.error(f"Failed to analyze users: {data.get('error', 'Unknown error')}")
     
     with tab3:
         st.header("📋 Active Assist Recommendations")
+        
+        # Add recommendations chat manager
+        rec_chat_manager = StatelessChatManager("recommendations")
         
         if st.button("📋 Get Recommendations"):
             with st.spinner("Fetching recommendations..."):
@@ -281,6 +311,9 @@ def main():
                             st.metric("Medium Priority", summary.get('medium_priority', 0))
                         with col3:
                             st.metric("Low Priority", summary.get('low_priority', 0))
+                    
+                    # Add contextual chat for recommendations
+                    rec_chat_manager.render_contextual_chat_section(project_id, "recommendations", data)
                 else:
                     st.error(f"Failed to get recommendations: {data.get('error', 'Unknown error')}")
     
@@ -288,88 +321,9 @@ def main():
         st.header("🤖 AI Security Agent")
         st.markdown("Ask the AI agent questions about your project's security posture.")
         
-        # Chat interface
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-        
-        # Display chat messages
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-        
-        # Chat input
-        if prompt := st.chat_input("Ask about your project's security..."):
-            # Add user message
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            
-            # Get AI response
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    # Call agent API
-                    agent_data = {
-                        "message": prompt,
-                        "project_id": project_id,
-                        "context": "security_analysis"
-                    }
-                    
-                    try:
-                        response = requests.post(
-                            f"{BACKEND_URL}/api/v1/agent/chat",
-                            json=agent_data,
-                            timeout=30
-                        )
-                        
-                        if response.status_code == 200:
-                            result = response.json()
-                            if result.get("success"):
-                                ai_response = result.get("response", "I couldn't process your request.")
-                            else:
-                                ai_response = f"Error: {result.get('error', 'Unknown error')}"
-                        else:
-                            ai_response = "Sorry, I'm having trouble connecting to the AI agent right now."
-                    
-                    except Exception as e:
-                        ai_response = f"Connection error: {str(e)}"
-                    
-                    st.markdown(ai_response)
-                    st.session_state.messages.append({"role": "assistant", "content": ai_response})
-        
-        # Quick action buttons
-        st.markdown("---")
-        st.subheader("🚀 Quick Security Questions")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("What are my main security risks?"):
-                st.session_state.messages.append({
-                    "role": "user", 
-                    "content": "What are my main security risks?"
-                })
-                st.rerun()
-            
-            if st.button("How can I improve my security score?"):
-                st.session_state.messages.append({
-                    "role": "user", 
-                    "content": "How can I improve my security score?"
-                })
-                st.rerun()
-        
-        with col2:
-            if st.button("Explain my IAM policies"):
-                st.session_state.messages.append({
-                    "role": "user", 
-                    "content": "Can you explain my current IAM policies and any issues?"
-                })
-                st.rerun()
-            
-            if st.button("What should I do about high-risk users?"):
-                st.session_state.messages.append({
-                    "role": "user", 
-                    "content": "What should I do about high-risk users in my project?"
-                })
-                st.rerun()
+        # Use stateless chat manager for main chat interface
+        main_chat_manager = StatelessChatManager("security_analysis")
+        main_chat_manager.render_chat_widget(project_id, "general")
     
     with tab5:
         st.header("🔍 Raw API Data")
