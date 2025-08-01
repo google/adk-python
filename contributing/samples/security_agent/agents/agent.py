@@ -720,7 +720,7 @@ for toolset in apihub_toolsets_to_add:
 # Create agent using Vertex AI with ADC (recommended approach)
 print("🔑 Using Vertex AI with Application Default Credentials")
 root_agent = Agent(
-    model='gemini-2.0-flash-exp',
+    model='gemini-2.5-flash',
     name='security_agent',
     description=(
         'Security evaluation agent for evaluating the security stance of '

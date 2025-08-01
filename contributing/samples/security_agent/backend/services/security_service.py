@@ -17,7 +17,7 @@ class SecurityService:
             os.environ['GOOGLE_CLOUD_PROJECT'] = project_id
             os.environ['GOOGLE_CLOUD_LOCATION'] = location
             self.agent = Agent(
-                model='gemini-2.0-flash-exp',
+                model='gemini-2.5-flash',
                 name='security_agent',
             )
             print(f"✅ Vertex AI ADK Agent initialized for project: {project_id}")

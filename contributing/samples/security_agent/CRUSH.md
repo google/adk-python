@@ -20,7 +20,7 @@
 
 ## Project-Specific Rules (from .cursorrules & CLAUDE.md)
 
-- **Vertex AI**: ALWAYS use Vertex AI (`gemini-2.0-flash-exp` model), never pass `api_key` to Agent (use ADC).
+- **Vertex AI**: ALWAYS use Vertex AI (`gemini-2.5-flash` model), never pass `api_key` to Agent (use ADC).
 - **Cloud Run**: ALWAYS target Cloud Run for deployment.
 - **Authentication**: MANDATORY to use Application Default Credentials (ADC) and service accounts. Never hardcode credentials.
 - **No Mock Data**: NEVER use mock, fallback, or placeholder data. Return real errors.

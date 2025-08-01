@@ -33,7 +33,7 @@ class AgentService:
         self.app_name = app_name
         
         # Use Vertex AI for ADK agent
-        agent_module.root_agent.model = 'gemini-2.0-flash-exp'
+        agent_module.root_agent.model = 'gemini-2.5-flash'
 
         # Always use the real ADK agent with InMemoryRunner for local deployments
         self.runner = InMemoryRunner(
