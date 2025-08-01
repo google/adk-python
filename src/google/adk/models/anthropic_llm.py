@@ -46,8 +46,6 @@ __all__ = ["Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
 
-MAX_TOKEN = 8192
-
 
 class ClaudeRequest(BaseModel):
   system_instruction: str
@@ -245,9 +243,11 @@ class Claude(BaseLlm):
 
   Attributes:
     model: The name of the Claude model.
+    max_tokens: The maximum number of tokens to generate.
   """
 
   model: str = "claude-3-5-sonnet-v2@20241022"
+  max_tokens: int = 8192
 
   @staticmethod
   @override
@@ -284,7 +284,7 @@ class Claude(BaseLlm):
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
-        max_tokens=MAX_TOKEN,
+        max_tokens=self.max_tokens,
     )
     yield message_to_generate_content_response(message)
 
