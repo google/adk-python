@@ -36,7 +36,7 @@ try:
     # Test 3: Test get_project_info function
     print("\n3. Testing get_project_info() function:")
     try:
-        result = agent_module.get_project_info("mgm-digitalconcierge", None)
+        result = agent_module.get_project_info("your-project-id", None)
         print(f"   ✅ Function executed successfully")
         print(f"   Result: {result[:100]}...")
     except Exception as e:

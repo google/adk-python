@@ -10,7 +10,7 @@ from typing import Dict, Any, List
 
 # Configuration
 BACKEND_URL = "http://localhost:8000"
-DEFAULT_PROJECT = "mgm-digitalconcierge"
+DEFAULT_PROJECT = "your-project-id"
 
 def make_api_call(endpoint: str, project_id: str = None) -> Dict[str, Any]:
     """Make API call to backend with proper error handling."""
@@ -178,7 +178,7 @@ def main():
         
         user_email = st.text_input(
             "User Email:", 
-            value="admin@stuartgano.altostrat.com",
+            value="user@example.com",
             help="Enter user email to analyze"
         )
         

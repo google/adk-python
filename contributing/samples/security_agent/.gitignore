@@ -30,15 +30,35 @@ dist/
 *.log
 logs/
 
-# Local development settings
+# Runtime files
 *.pid
+adk_web.pid
+frontend.pid
+backend.pid
+
+# Local development settings
 .env.*
 run.log
 
-# Misc
-.DS_Store
+# Duplicate/backup directories
+security_agent/
+
+# Temporary files
+*.tmp
+*.bak
 *.swp
 *.swo
-*.bak
-*.tmp
+
+# macOS
+.DS_Store
+
+# ADK specific
 .crush/
+evalset*.json
+
+# Customer sensitive data
+secrets/
+credentials/
+*.key
+*.pem
+*.crt
