@@ -26,7 +26,7 @@ import uuid
 
 try:
   from a2a.client import A2AClient
-  from a2a.client.client import A2ACardResolver
+  from a2a.client.card_resolver import A2ACardResolver
   from a2a.types import AgentCard
   from a2a.types import Message as A2AMessage
   from a2a.types import MessageSendParams as A2AMessageSendParams

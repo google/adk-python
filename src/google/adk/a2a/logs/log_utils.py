@@ -136,11 +136,11 @@ def build_a2a_request_log(req: SendMessageRequest) -> str:
   config_log = "None"
   if req.params.configuration:
     config_data = {
-        "acceptedOutputModes": req.params.configuration.acceptedOutputModes,
+        "accepted_output_modes": req.params.configuration.accepted_output_modes,
         "blocking": req.params.configuration.blocking,
-        "historyLength": req.params.configuration.historyLength,
-        "pushNotificationConfig": bool(
-            req.params.configuration.pushNotificationConfig
+        "history_length": req.params.configuration.history_length,
+        "push_notification_config": bool(
+            req.params.configuration.push_notification_config
         ),
     }
     config_log = json.dumps(config_data, indent=2)
