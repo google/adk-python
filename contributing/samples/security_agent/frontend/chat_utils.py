@@ -100,10 +100,10 @@ class StatelessChatManager:
     def send_chat_message(self, message: str, project_id: str, context: str = None) -> Dict[str, Any]:
         """Send message to AI agent without storing in session state."""
         try:
+            # Format payload to match backend ChatRequest model
             payload = {
-                "message": message,
-                "project_id": project_id,
-                "context": context or self.context
+                "query": f"[Context: {context or self.context}] [Project: {project_id}] {message}",
+                "user_id": "streamlit_user"
             }
             
             response = requests.post(
