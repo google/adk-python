@@ -1505,7 +1505,6 @@ async def test_computer_use_with_no_config():
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
-      config=None,
   )
 
   # Should not raise an exception
