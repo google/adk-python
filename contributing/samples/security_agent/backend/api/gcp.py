@@ -18,6 +18,9 @@ router = APIRouter()
 async def call_google_api_endpoint(request: GenericGCPRequest, req: Request) -> Dict[str, Any]:
     """Generic endpoint to call any Google Cloud API."""
     try:
+        logger.info(f"GCP API call: {request.service}/{request.version}/{request.resource_path}")
+        logger.info(f"Request details: method={request.method}, body={request.body}")
+        
         gcp_service = req.app.state.gcp_service
         result = gcp_service.call_google_api(
             service=request.service,
@@ -26,8 +29,13 @@ async def call_google_api_endpoint(request: GenericGCPRequest, req: Request) -> 
             method=request.method,
             body=request.body
         )
+        logger.info("GCP API call successful")
         return {"success": True, "response": result}
     except Exception as e:
+        logger.error(f"GCP API call failed: {str(e)}")
+        logger.error(f"Request was: {request.dict()}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

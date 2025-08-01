@@ -6,6 +6,25 @@ from fastapi.responses import JSONResponse
 import uvicorn
 from contextlib import asynccontextmanager
 import os
+import logging
+import traceback
+
+# Configure detailed logging  
+import os
+# Always use project root logs directory
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+log_dir = os.path.join(project_root, 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.join(log_dir, 'backend.log'), mode='a')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # OpenTelemetry imports
 from opentelemetry import trace
@@ -17,7 +36,7 @@ from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
 from api import (
     security, knowledge, agent, documentation, apihub, compliance, 
-    threat_intelligence, configuration, incidents, evaluation, msa, tracing, openapi_tools, gcp
+    threat_intelligence, configuration, incidents, evaluation, msa, tracing, openapi_tools, gcp, recommendations
 )
 from services.security_service import SecurityService
 from services.documentation_service import DocumentationService
@@ -140,12 +159,23 @@ app.add_middleware(
 # Global error handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    """Global exception handler."""
+    """Global exception handler with detailed logging."""
+    error_details = {
+        "error_type": type(exc).__name__,
+        "error_message": str(exc),
+        "traceback": traceback.format_exc(),
+        "request_url": str(request.url),
+        "request_method": request.method
+    }
+    
+    logger.error(f"Unhandled exception: {error_details}")
+    
     return JSONResponse(
         status_code=500,
         content={
             "success": False,
             "error": f"Internal server error: {str(exc)}",
+            "error_type": type(exc).__name__,
             "message": "An unexpected error occurred"
         }
     )
@@ -176,6 +206,9 @@ app.include_router(tracing.router, prefix="/api/v1/tracing", tags=["Tracing"])
 # Include OpenAPI tools API router
 app.include_router(openapi_tools.router, prefix="/api/v1/openapi-tools", tags=["OpenAPI Tools"])
 app.include_router(gcp.router, prefix="/api/v1/gcp", tags=["GCP Operations"])
+
+# Include recommendations API router
+app.include_router(recommendations.router, prefix="/api/v1/recommendations", tags=["Security Recommendations"])
 
 
 @app.get("/")

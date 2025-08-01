@@ -41,7 +41,11 @@ class GCPService:
                 "Content-Type": "application/json",
             }
 
-            base_url = f"https://{service}.googleapis.com/{version}"
+            # Handle service names that already contain .googleapis.com
+            if service.endswith('.googleapis.com'):
+                base_url = f"https://{service}/{version}"
+            else:
+                base_url = f"https://{service}.googleapis.com/{version}"
             full_url = f"{base_url}/{resource_path}"
 
             response = requests.request(method, full_url, headers=headers, json=body)

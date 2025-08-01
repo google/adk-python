@@ -6,11 +6,17 @@ import json
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
+import os
 from typing import Dict, Any, List
 
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
 # Configuration
-BACKEND_URL = "http://localhost:8000"
-DEFAULT_PROJECT = "your-project-id"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+DEFAULT_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "your-project-id")
+DEFAULT_USER_EMAIL = os.getenv("DEFAULT_USER_EMAIL", "user@example.com")
 
 def make_api_call(endpoint: str, project_id: str = None) -> Dict[str, Any]:
     """Make API call to backend with proper error handling."""
@@ -178,7 +184,7 @@ def main():
         
         user_email = st.text_input(
             "User Email:", 
-            value="user@example.com",
+            value=DEFAULT_USER_EMAIL,
             help="Enter user email to analyze"
         )
         

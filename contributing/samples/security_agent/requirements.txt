@@ -26,6 +26,7 @@ google-auth
 google-auth-oauthlib
 google-auth-httplib2
 google-cloud-storage
+python-dotenv
 pytest
 pytest-asyncio
 pytest-cov

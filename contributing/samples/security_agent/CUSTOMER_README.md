@@ -43,7 +43,25 @@ A comprehensive security analysis platform for Google Cloud Platform (GCP) proje
    cd adk-python/contributing/samples/security_agent
    ```
 
-2. **Run the setup script:**
+2. **Configure environment variables:**
+   ```bash
+   # Copy the example environment file
+   cp .env.example .env
+   
+   # Edit .env with your project details
+   nano .env
+   ```
+   
+   **Required configuration in `.env`:**
+   ```bash
+   # Your GCP Project ID
+   GOOGLE_CLOUD_PROJECT=your-actual-project-id
+   
+   # Your email for IAM analysis  
+   DEFAULT_USER_EMAIL=your-email@domain.com
+   ```
+
+3. **Run the setup script:**
    ```bash
    ./run.sh
    ```

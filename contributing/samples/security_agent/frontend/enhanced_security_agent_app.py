@@ -1728,6 +1728,80 @@ def main():
                 else:
                     st.warning("No project selected. Please select a project from the sidebar.")
         
+        # Security Recommendations Section
+        st.subheader("🎯 Security Recommendations")
+        if st.session_state.selected_project and st.session_state.selected_project != "None":
+            # Get recommendations from backend
+            recommendations_data = make_backend_request(
+                "/api/v1/recommendations/dashboard",
+                method="POST",
+                data={
+                    "project_id": st.session_state.selected_project,
+                    "user_email": st.session_state.current_user.get("email", "admin@stuartgano.altostrat.com"),
+                    "priority": "high"  # Show only high priority on dashboard
+                }
+            )
+            
+            if recommendations_data.get("success"):
+                recs_info = recommendations_data.get("data", {})
+                
+                # Summary metrics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("High Priority", recs_info.get("high_priority", 0), delta=None)
+                with col2:
+                    st.metric("Medium Priority", recs_info.get("medium_priority", 0), delta=None)
+                with col3:
+                    st.metric("Low Priority", recs_info.get("low_priority", 0), delta=None)
+                with col4:
+                    st.metric("Total Items", recs_info.get("total_recommendations", 0), delta=None)
+                
+                # Show top recommendations
+                recommendations = recs_info.get("recommendations", [])
+                if recommendations:
+                    st.markdown("### 🔥 Top Priority Recommendations")
+                    for i, rec in enumerate(recommendations[:3]):  # Show top 3
+                        with st.expander(f"⚠️ {rec.get('title', 'Unknown')}", expanded=i==0):
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.write(rec.get('description', ''))
+                                st.write(f"**Category:** {rec.get('category', 'General')}")
+                                st.write(f"**Impact:** {rec.get('impact', 'Unknown')} | **Effort:** {rec.get('effort', 'Unknown')}")
+                                
+                                # Show actions
+                                if rec.get('actions'):
+                                    st.write("**Next Steps:**")
+                                    for action in rec.get('actions', []):
+                                        st.write(f"• {action}")
+                            
+                            with col2:
+                                # Priority badge
+                                priority = rec.get('priority', 'medium')
+                                if priority == 'high':
+                                    st.error(f"🔴 {priority.upper()}")
+                                elif priority == 'medium':
+                                    st.warning(f"🟡 {priority.upper()}")
+                                else:
+                                    st.info(f"🟢 {priority.upper()}")
+                                
+                                # Compliance frameworks
+                                frameworks = rec.get('compliance_frameworks', [])
+                                if frameworks:
+                                    st.write("**Compliance:**")
+                                    for fw in frameworks:
+                                        st.write(f"• {fw}")
+                    
+                    # View all recommendations button
+                    if st.button("📋 View All Recommendations"):
+                        st.session_state.page = "🔒 Security Evaluation"
+                        st.rerun()
+                else:
+                    st.success("🎉 No high-priority recommendations found!")
+            else:
+                st.error("❌ Failed to load security recommendations")
+        else:
+            st.info("Select a project to view security recommendations")
+        
         # Quick actions
         st.subheader("🚀 Quick Actions")
         col1, col2, col3, col4, col5 = st.columns(5)
