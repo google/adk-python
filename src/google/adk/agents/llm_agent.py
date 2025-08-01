@@ -628,6 +628,8 @@ class LlmAgent(BaseAgent):
       )
     if config.after_tool_callbacks:
       agent.after_tool_callback = resolve_callbacks(config.after_tool_callbacks)
+    if config.generate_content_config:
+      agent.generate_content_config = config.generate_content_config
     return agent
 
 

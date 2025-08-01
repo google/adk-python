@@ -19,6 +19,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 
+from google.genai import types
 from pydantic import ConfigDict
 
 from ..tools.base_tool import ToolConfig
@@ -138,3 +139,6 @@ class LlmAgentConfig(BaseAgentConfig):
 
   after_tool_callbacks: Optional[List[CodeConfig]] = None
   """Optional. LlmAgent.after_tool_callbacks."""
+
+  generate_content_config: Optional[types.GenerateContentConfig] = None
+  """Optional. LlmAgent.generate_content_config."""
