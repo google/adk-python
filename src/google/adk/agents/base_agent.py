@@ -19,6 +19,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import ClassVar
 from typing import Dict
 from typing import final
 from typing import Mapping
@@ -74,6 +75,22 @@ class BaseAgent(BaseModel):
       extra='forbid',
   )
   """The pydantic model config."""
+
+  config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+  """The config type for this agent.
+
+  Sub-classes should override this to specify their own config type.
+
+  Example:
+
+  ```
+  class MyAgentConfig(BaseAgentConfig):
+    my_field: str = ''
+
+  class MyAgent(BaseAgent):
+    config_type: ClassVar[type[BaseAgentConfig]] = MyAgentConfig
+  ```
+  """
 
   name: str
   """The agent's name.

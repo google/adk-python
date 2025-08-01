@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
+from typing import ClassVar
 from typing import Optional
 from typing import Type
 
@@ -26,6 +27,7 @@ from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from ..utils.feature_decorator import working_in_progress
 from .base_agent import BaseAgent
+from .base_agent_config import BaseAgentConfig
 from .loop_agent_config import LoopAgentConfig
 
 
@@ -35,6 +37,9 @@ class LoopAgent(BaseAgent):
   When sub-agent generates an event with escalate or max_iterations are
   reached, the loop agent will stop.
   """
+
+  config_type: ClassVar[type[BaseAgentConfig]] = LoopAgentConfig
+  """The config type for this agent."""
 
   max_iterations: Optional[int] = None
   """The maximum number of iterations to run the loop agent.
