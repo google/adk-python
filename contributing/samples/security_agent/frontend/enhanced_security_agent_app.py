@@ -1392,42 +1392,6 @@ def adk_chat_ui():
     adk_chat_manager.render_chat_widget(st.session_state.selected_project, "adk_security")
 
 
-def get_adk_response(user_input: str) -> str:
-    """Get response from ADK security agent."""
-    try:
-        # Make request to backend ADK agent
-        response = make_backend_request(
-            "/api/v1/agent/chat",
-            method="POST",
-            data={"query": user_input, "user_id": "streamlit_user"}
-        )
-
-        if response.get("success"):
-            response_text = response.get("response", "I couldn't process that request.")
-
-            # Check for common authentication errors and provide helpful guidance
-            if "Missing key inputs" in response_text or "API key" in response_text or "Vertex" in response_text:
-                return """🔧 **ADK Agent Configuration Required**
-
-The agent's backend requires proper authentication with Google Cloud via Vertex AI.
-
-**To resolve this, please ensure:**
-
-1.  **Application Default Credentials (ADC) are configured:**
-    - Run `gcloud auth application-default login` in your terminal.
-2.  **The correct project is set:**
-    - Run `gcloud config set project YOUR_PROJECT_ID`.
-3.  **Vertex AI API is enabled** for the selected project.
-
-This chat interface will become fully functional once the backend agent can authenticate correctly. All other tools in this application remain available.
-"""
-
-            return response_text
-        else:
-            return f"❌ Error: {response.get('error', 'Unknown error occurred')}"
-
-    except Exception as e:
-        return f"❌ Connection error: {str(e)}"
 
 
 def dag_visualization_ui():
