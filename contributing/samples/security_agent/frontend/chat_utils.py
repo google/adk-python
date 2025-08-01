@@ -109,7 +109,7 @@ class StatelessChatManager:
             response = requests.post(
                 f"{self.backend_url}/api/v1/agent/chat",
                 json=payload,
-                timeout=30
+                timeout=60  # Increase timeout for complex analysis
             )
             
             if response.status_code == 200:

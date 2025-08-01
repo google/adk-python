@@ -1305,16 +1305,20 @@ def adk_chat_ui():
         st.markdown("**🔒 Security Analysis**")
         if st.button("Analyze Current Project Security", key="sec_analyze"):
             with st.spinner("Analyzing project security..."):
-                result = adk_chat_manager.send_chat_message(
-                    f"Perform a comprehensive security analysis of GCP project {st.session_state.selected_project}. Include IAM policies, security posture, and recommendations.", 
-                    st.session_state.selected_project, 
-                    "security_analysis"
-                )
-                if result["success"]:
-                    st.success("**Security Analysis Result:**")
-                    st.markdown(result["response"])
-                else:
-                    st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
+                try:
+                    result = adk_chat_manager.send_chat_message(
+                        f"Provide a brief security overview of GCP project {st.session_state.selected_project}. Keep response concise.", 
+                        st.session_state.selected_project, 
+                        "security_analysis"
+                    )
+                    if result["success"]:
+                        st.success("**Security Analysis Result:**")
+                        st.markdown(result["response"])
+                    else:
+                        st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    st.error(f"Connection error: {str(e)}")
+                    st.info("💡 **Troubleshooting Tips:**\n- Check if backend is running\n- Verify ADC is configured (`gcloud auth application-default login`)\n- Ensure Vertex AI API is enabled")
         
         if st.button("Check Compliance Status", key="compliance_check"):
             with st.spinner("Checking compliance..."):
