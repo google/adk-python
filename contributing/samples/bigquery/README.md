@@ -25,16 +25,6 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
 
   Runs a SQL query in BigQuery.
 
-1. `ask_data_insights`
-
-  Natural language-in, natural language-out tool that answers questions
-  about structured data in BigQuery. Provides a one-stop solution for generating
-  insights from data.
-
-  **Note**: This tool requires additional setup in your project. Please refer to
-  the official [Conversational Analytics API documentation](https://cloud.google.com/gemini/docs/conversational-analytics-api/overview)
-  for instructions.
-
 ## How to use
 
 Set up environment variables in your `.env` file for using
