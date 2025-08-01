@@ -40,6 +40,54 @@ class StatelessChatManager:
                 "How do I implement these security fixes?",
                 "What's the impact of ignoring these?"
             ],
+            "api_explorer": [
+                "Analyze this API response for security issues",
+                "What security risks are in this API?",
+                "How can I secure this API endpoint?",
+                "Explain this API response structure"
+            ],
+            "oidc": [
+                "Explain OIDC security best practices",
+                "What are common OIDC vulnerabilities?",
+                "How to secure OIDC authentication flows?",
+                "Analyze these OIDC tokens for security issues"
+            ],
+            "security_evaluation": [
+                "Explain these security findings",
+                "How critical are these vulnerabilities?",
+                "What should I prioritize for remediation?",
+                "Help me understand this security report"
+            ],
+            "msa_analysis": [
+                "Explain this MSA clause",
+                "What are the security implications?",
+                "How does this affect our organization?",
+                "Analyze this service agreement for risks"
+            ],
+            "incident_response": [
+                "How do I respond to this security incident?",
+                "What are the next steps for containment?",
+                "Help me analyze this security breach",
+                "What evidence should I collect?"
+            ],
+            "knowledge_base": [
+                "Explain this security concept",
+                "What are best practices for this API?",
+                "Help me understand this vulnerability",
+                "How do I implement this security control?"
+            ],
+            "agent_dag": [
+                "Explain this agent workflow",
+                "How do these components interact?",
+                "What security controls are in place?",
+                "Analyze this execution flow"
+            ],
+            "performance_monitor": [
+                "Analyze these performance metrics",
+                "Are there security implications here?",
+                "What do these traces tell us?",
+                "How can we optimize security monitoring?"
+            ],
             "general": [
                 "Analyze my project's security",
                 "What should I focus on first?",

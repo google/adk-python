@@ -14,6 +14,9 @@ import plotly.graph_objects as go
 from urllib.parse import urlencode, parse_qs, urlparse
 from streamlit_agraph import agraph, Node, Edge, Config
 
+# Import stateless chat utilities
+from chat_utils import StatelessChatManager, render_floating_chat_button
+
 
 # Configuration
 BACKEND_URL = "http://localhost:8000"
@@ -265,6 +268,27 @@ def oidc_flow_demo():
         st.session_state.current_user = None
         st.success("OIDC demo reset successfully")
         st.rerun()
+    
+    # Add OIDC Demo chat integration
+    st.markdown("---")
+    oidc_chat_manager = StatelessChatManager("oidc")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("🔐 OIDC Security Analysis")
+        st.info("Ask the AI about OIDC security best practices, authentication flows, or security implications.")
+        
+        # If we have OIDC tokens, analyze them
+        if st.session_state.oidc_tokens:
+            oidc_chat_manager.render_contextual_chat_section(
+                st.session_state.selected_project, 
+                "oidc", 
+                {"oidc_tokens": st.session_state.oidc_tokens}
+            )
+    
+    with col2:
+        # OIDC chat widget with specialized suggestions
+        oidc_chat_manager.render_chat_widget(st.session_state.selected_project, "oidc")
 
 
 def security_evaluation_ui():
@@ -500,6 +524,27 @@ def display_evaluation_results(results: Dict[str, Any]):
         
         df = pd.DataFrame(summary_data)
         st.table(df)
+    
+    # Add Security Evaluation chat integration
+    st.markdown("---")
+    security_chat_manager = StatelessChatManager("security_evaluation")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("🔒 Security Analysis Chat")
+        st.info("Ask the AI to help interpret security evaluation results, explain findings, or suggest remediation steps.")
+        
+        # If we have evaluation results, add contextual analysis
+        if results:
+            security_chat_manager.render_contextual_chat_section(
+                st.session_state.selected_project, 
+                "security_evaluation", 
+                results
+            )
+    
+    with col2:
+        # Security evaluation chat widget
+        security_chat_manager.render_chat_widget(st.session_state.selected_project, "security_evaluation")
 
 
 def incident_response_ui():
@@ -561,6 +606,26 @@ def incident_response_ui():
                     st.write(f"**Description:** {incident['description']}")
                     if incident.get('affected_resources'):
                         st.write(f"**Affected Resources:** {', '.join(incident['affected_resources'])}")
+    
+    # Add Incident Response chat integration
+    st.markdown("---")
+    incident_chat_manager = StatelessChatManager("incident_response")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("🚨 Incident Response Chat")
+        st.info("Ask the AI for help with incident analysis, response procedures, or security recommendations.")
+        
+        # Add contextual analysis for incident response
+        incident_chat_manager.render_contextual_chat_section(
+            st.session_state.selected_project, 
+            "incident_response", 
+            {"context": "Security incident response and management"}
+        )
+    
+    with col2:
+        # Incident Response chat widget
+        incident_chat_manager.render_chat_widget(st.session_state.selected_project, "incident_response")
 
 
 def knowledge_base_ui():
@@ -621,6 +686,26 @@ def knowledge_base_ui():
                             json.dump(kb, f, indent=2)
                         
                         st.success("✅ API updated successfully!")
+    
+    # Add Knowledge Base chat integration
+    st.markdown("---")
+    kb_chat_manager = StatelessChatManager("knowledge_base")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("📚 Knowledge Base Chat")
+        st.info("Ask the AI about security concepts, API best practices, or implementation guidance.")
+        
+        # Add contextual analysis for knowledge base
+        kb_chat_manager.render_contextual_chat_section(
+            st.session_state.selected_project, 
+            "knowledge_base", 
+            {"context": "Security knowledge base and API documentation"}
+        )
+    
+    with col2:
+        # Knowledge Base chat widget
+        kb_chat_manager.render_chat_widget(st.session_state.selected_project, "knowledge_base")
 
 
 def msa_analysis_ui():
@@ -1165,42 +1250,146 @@ def render_oidc_mermaid_diagrams():
         ```
         """
         st.markdown(mermaid_token_exchange)
+    
+    # Add MSA Analysis chat integration
+    st.markdown("---")
+    msa_chat_manager = StatelessChatManager("msa_analysis")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("📄 MSA Analysis Chat")
+        st.info("Ask the AI to help analyze MSA documents, explain terms, or assess organizational impact.")
+        
+        # Add contextual analysis based on MSA results (if available)
+        # This would be populated when actual MSA parsing is performed
+        msa_chat_manager.render_contextual_chat_section(
+            st.session_state.selected_project, 
+            "msa_analysis", 
+            {"context": "MSA analysis and organizational scanning"}
+        )
+    
+    with col2:
+        # MSA Analysis chat widget
+        msa_chat_manager.render_chat_widget(st.session_state.selected_project, "msa_analysis")
 
 
 def adk_chat_ui():
-    """ADK-powered chat interface for security agent."""
+    """ADK-powered stateless chat interface for security agent."""
     st.markdown("---")
     st.header("💬 Security Agent Chat (Powered by ADK)")
     st.write("Chat with the ADK security agent for real-time security analysis and recommendations.")
     
-    # Initialize chat history
-    if "adk_messages" not in st.session_state:
-        st.session_state.adk_messages = [
-            {"role": "assistant", "content": "Hello! I'm your GCP Security Agent powered by ADK. I can help you with:\n\n🔒 **Security Analysis** - Evaluate API security posture\n📋 **Compliance Checks** - SOC2, ISO27001, GDPR assessments\n🚨 **Threat Intelligence** - CVE analysis and risk assessment\n⚙️ **Configuration Review** - Security best practices\n📄 **MSA Analysis** - Parse service agreements\n\nWhat would you like to analyze today?"}
-        ]
+    # Welcome message
+    st.info("""
+    🤖 **Welcome to ADK Security Agent!** I can help you with:
     
-    # Display chat messages
-    for message in st.session_state.adk_messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    🔒 **Security Analysis** - Evaluate API security posture  
+    📋 **Compliance Checks** - SOC2, ISO27001, GDPR assessments  
+    🚨 **Threat Intelligence** - CVE analysis and risk assessment  
+    ⚙️ **Configuration Review** - Security best practices  
+    📄 **MSA Analysis** - Parse service agreements  
+    🏗️ **Project Analysis** - GCP project security review
     
-    # Chat input
-    if prompt := st.chat_input("Ask about GCP security..."):
-        # Add user message to chat history
-        st.session_state.adk_messages.append({"role": "user", "content": prompt})
+    Choose a category below or ask me anything about your security!
+    """)
+    
+    # Create comprehensive stateless chat interface
+    adk_chat_manager = StatelessChatManager("adk_security")
+    
+    # Add specialized security suggestions
+    st.subheader("🎯 Quick Security Actions")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**🔒 Security Analysis**")
+        if st.button("Analyze Current Project Security", key="sec_analyze"):
+            with st.spinner("Analyzing project security..."):
+                result = adk_chat_manager.send_chat_message(
+                    f"Perform a comprehensive security analysis of GCP project {st.session_state.selected_project}. Include IAM policies, security posture, and recommendations.", 
+                    st.session_state.selected_project, 
+                    "security_analysis"
+                )
+                if result["success"]:
+                    st.success("**Security Analysis Result:**")
+                    st.markdown(result["response"])
+                else:
+                    st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
         
-        # Display user message
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        if st.button("Check Compliance Status", key="compliance_check"):
+            with st.spinner("Checking compliance..."):
+                result = adk_chat_manager.send_chat_message(
+                    f"Check the compliance status of project {st.session_state.selected_project} against SOC2, ISO27001, and GDPR requirements.", 
+                    st.session_state.selected_project, 
+                    "compliance"
+                )
+                if result["success"]:
+                    st.success("**Compliance Status:**")
+                    st.markdown(result["response"])
+                else:
+                    st.error(f"Compliance check failed: {result.get('error', 'Unknown error')}")
+    
+    with col2:
+        st.markdown("**🚨 Threat Analysis**")
+        if st.button("Identify Security Threats", key="threat_analysis"):
+            with st.spinner("Analyzing threats..."):
+                result = adk_chat_manager.send_chat_message(
+                    f"Identify potential security threats and vulnerabilities in project {st.session_state.selected_project}. Focus on common attack vectors.", 
+                    st.session_state.selected_project, 
+                    "threat_intelligence"
+                )
+                if result["success"]:
+                    st.warning("**Threat Analysis:**")
+                    st.markdown(result["response"])
+                else:
+                    st.error(f"Threat analysis failed: {result.get('error', 'Unknown error')}")
         
-        # Generate assistant response using ADK
-        with st.chat_message("assistant"):
-            with st.spinner("🤖 ADK Agent thinking..."):
-                response = get_adk_response(prompt)
-                st.markdown(response)
-                
-        # Add assistant response to chat history
-        st.session_state.adk_messages.append({"role": "assistant", "content": response})
+        if st.button("Review IAM Policies", key="iam_review"):
+            with st.spinner("Reviewing IAM policies..."):
+                result = adk_chat_manager.send_chat_message(
+                    f"Review IAM policies for project {st.session_state.selected_project}. Identify overprivileged users and risky permissions.", 
+                    st.session_state.selected_project, 
+                    "iam_analysis"
+                )
+                if result["success"]:
+                    st.info("**IAM Policy Review:**")
+                    st.markdown(result["response"])
+                else:
+                    st.error(f"IAM review failed: {result.get('error', 'Unknown error')}")
+    
+    with col3:
+        st.markdown("**⚙️ Best Practices**")
+        if st.button("Security Recommendations", key="sec_recommendations"):
+            with st.spinner("Generating recommendations..."):
+                result = adk_chat_manager.send_chat_message(
+                    f"Provide security best practices and recommendations for improving the security posture of project {st.session_state.selected_project}.", 
+                    st.session_state.selected_project, 
+                    "recommendations"
+                )
+                if result["success"]:
+                    st.success("**Security Recommendations:**")
+                    st.markdown(result["response"])
+                else:
+                    st.error(f"Recommendations failed: {result.get('error', 'Unknown error')}")
+        
+        if st.button("Configuration Review", key="config_review"):
+            with st.spinner("Reviewing configuration..."):
+                result = adk_chat_manager.send_chat_message(
+                    f"Review the security configuration of project {st.session_state.selected_project}. Check for misconfigurations and security gaps.", 
+                    st.session_state.selected_project, 
+                    "configuration"
+                )
+                if result["success"]:
+                    st.info("**Configuration Review:**")
+                    st.markdown(result["response"])
+                else:
+                    st.error(f"Configuration review failed: {result.get('error', 'Unknown error')}")
+    
+    st.markdown("---")
+    
+    # Main stateless chat interface
+    st.subheader("💬 Free-form Security Chat")
+    adk_chat_manager.render_chat_widget(st.session_state.selected_project, "adk_security")
 
 
 def get_adk_response(user_input: str) -> str:
@@ -1289,6 +1478,26 @@ def dag_visualization_ui():
         
         fig = px.line(trend_data, x="Time", y="Response Time (ms)", title="Response Time Trend")
         st.plotly_chart(fig, use_container_width=True)
+    
+    # Add Agent DAG chat integration
+    st.markdown("---")
+    dag_chat_manager = StatelessChatManager("agent_dag")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("🚀 Agent DAG Chat")
+        st.info("Ask the AI about agent workflows, execution patterns, or security implications of agent interactions.")
+        
+        # Add contextual analysis for agent DAG
+        dag_chat_manager.render_contextual_chat_section(
+            st.session_state.selected_project, 
+            "agent_dag", 
+            {"context": "Agent DAG visualization and workflow analysis"}
+        )
+    
+    with col2:
+        # Agent DAG chat widget
+        dag_chat_manager.render_chat_widget(st.session_state.selected_project, "agent_dag")
 
 
 def performance_monitoring_ui():
@@ -1597,6 +1806,26 @@ def show_chat_performance():
     except Exception as e:
         st.error(f"❌ Error fetching chat performance data: {str(e)}")
         st.write("Chat performance monitoring requires backend tracing services to be configured.")
+    
+    # Add Performance Monitor chat integration
+    st.markdown("---")
+    perf_chat_manager = StatelessChatManager("performance_monitor")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("📊 Performance Analysis Chat")
+        st.info("Ask the AI to analyze performance metrics, identify bottlenecks, or suggest optimization strategies.")
+        
+        # Add contextual analysis for performance monitoring
+        perf_chat_manager.render_contextual_chat_section(
+            st.session_state.selected_project, 
+            "performance_monitor", 
+            {"context": "Performance monitoring and OpenTelemetry analysis"}
+        )
+    
+    with col2:
+        # Performance Monitor chat widget
+        perf_chat_manager.render_chat_widget(st.session_state.selected_project, "performance_monitor")
 
 
 
@@ -1650,6 +1879,27 @@ def api_explorer_ui():
             st.json(st.session_state.api_explorer_response.get("response", {}))
         else:
             st.error(st.session_state.api_explorer_response.get("error", "An unknown error occurred."))
+    
+    # Add API Explorer chat integration
+    st.markdown("---")
+    api_chat_manager = StatelessChatManager("api_explorer")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader("🔍 API Security Analysis")
+        st.info("Ask the AI to help you understand API responses, identify security issues, or suggest better API practices.")
+        
+        # If we have a response, add contextual analysis
+        if "api_explorer_response" in st.session_state and st.session_state.api_explorer_response.get("success"):
+            api_chat_manager.render_contextual_chat_section(
+                st.session_state.selected_project, 
+                "api_explorer", 
+                st.session_state.api_explorer_response
+            )
+    
+    with col2:
+        # API Explorer chat widget with specialized suggestions
+        api_chat_manager.render_chat_widget(st.session_state.selected_project, "api_explorer")
 
 
 def main():
@@ -1682,6 +1932,9 @@ def main():
     
     # Add GCP project picker
     project_picker_sidebar()
+    
+    # Add floating chat button (available on all pages)
+    render_floating_chat_button(st.session_state.selected_project)
     
     # Main content
     if page == "🏠 Dashboard":
@@ -1831,6 +2084,42 @@ def main():
                 """, unsafe_allow_html=True)
                 st.success("✅ ADK Web Interface opened in new tab")
                 st.markdown("**Direct Link:** [http://localhost:8080](http://localhost:8080)")
+        
+        # Add dashboard-specific chat integration
+        st.markdown("---")
+        dashboard_chat_manager = StatelessChatManager("dashboard")
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.subheader("📊 Security Metrics Overview")
+            
+            # Get dashboard security data if available
+            try:
+                security_data = make_backend_request(f"/api/v1/gcp/project/{st.session_state.selected_project}/security-posture", include_project=False)
+                if security_data.get("success"):
+                    score = security_data.get('security_score', 0)
+                    grade = security_data.get('security_grade', 'F')
+                    
+                    # Display quick metrics
+                    metric_col1, metric_col2, metric_col3 = st.columns(3)
+                    with metric_col1:
+                        color = "🟢" if score >= 80 else "🟡" if score >= 60 else "🔴"
+                        st.metric("Security Score", f"{color} {score}/100")
+                    with metric_col2:
+                        st.metric("Security Grade", grade)
+                    with metric_col3:
+                        st.metric("Risk Level", "High" if score < 60 else "Medium" if score < 80 else "Low")
+                    
+                    # Add contextual chat about security data
+                    dashboard_chat_manager.render_contextual_chat_section(st.session_state.selected_project, "dashboard", security_data)
+                else:
+                    st.info("Click 'Analyze Security Posture' in Security Evaluation to see metrics here")
+            except Exception as e:
+                st.info("Security metrics will appear here after running security analysis")
+        
+        with col2:
+            # Dashboard chat widget
+            dashboard_chat_manager.render_chat_widget(st.session_state.selected_project, "dashboard")
     
     elif page == "🔍 API Explorer":
         api_explorer_ui()
