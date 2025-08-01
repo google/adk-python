@@ -4,7 +4,7 @@ import asyncio
 from typing import List, Dict, Any, Optional
 
 from opentelemetry import trace
-from opentel_api.trace import Status, StatusCode
+from opentelemetry.trace import Status, StatusCode
 
 import google.auth
 import google.auth.transport.requests

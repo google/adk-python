@@ -1,10 +1,6 @@
-from fastapi import APIRouter
-
-router = APIRouter()
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from ..services.security_service import SecurityService
+from services.security_service import SecurityService
 
 router = APIRouter()
 

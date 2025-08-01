@@ -277,7 +277,7 @@ start_backend() {
         return
     fi
     
-    nohup uvicorn backend.main:app --host 0.0.0.0 --port 8000 > logs/backend.log 2>&1 &
+    (cd backend && nohup uvicorn main:app --host 0.0.0.0 --port 8000 > ../logs/backend.log 2>&1 &)
     BACKEND_PID=$!
     echo $BACKEND_PID > backend.pid
     print_success "Backend server started (PID: $BACKEND_PID)"
@@ -337,7 +337,7 @@ verify_service() {
 
     print_status "Verifying $service_name..."
     for i in $(seq 1 $retries); do
-        if curl -s --head $url 2>/dev/null | head -n 1 | grep -E "(200|OK)" > /dev/null; then
+        if curl -s $url 2>/dev/null | grep -q "healthy\|running\|OK\|Streamlit\|<title>"; then
             print_success "$service_name is running at $url"
             return 0
         fi
