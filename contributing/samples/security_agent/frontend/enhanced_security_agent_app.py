@@ -1307,31 +1307,35 @@ def adk_chat_ui():
             with st.spinner("Analyzing project security..."):
                 try:
                     result = adk_chat_manager.send_chat_message(
-                        f"Provide a brief security overview of GCP project {st.session_state.selected_project}. Keep response concise.", 
+                        "What are the top 3 security best practices for GCP projects?", 
                         st.session_state.selected_project, 
                         "security_analysis"
                     )
                     if result["success"]:
-                        st.success("**Security Analysis Result:**")
+                        st.success("**Security Best Practices:**")
                         st.markdown(result["response"])
                     else:
                         st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
                 except Exception as e:
-                    st.error(f"Connection error: {str(e)}")
-                    st.info("💡 **Troubleshooting Tips:**\n- Check if backend is running\n- Verify ADC is configured (`gcloud auth application-default login`)\n- Ensure Vertex AI API is enabled")
+                    st.error(f"Request timeout: {str(e)}")
+                    st.info("💡 **The agent is taking too long to respond. Try:**\n- Simpler questions\n- Check backend logs for authentication issues\n- Restart backend if needed")
         
         if st.button("Check Compliance Status", key="compliance_check"):
             with st.spinner("Checking compliance..."):
-                result = adk_chat_manager.send_chat_message(
-                    f"Check the compliance status of project {st.session_state.selected_project} against SOC2, ISO27001, and GDPR requirements.", 
-                    st.session_state.selected_project, 
-                    "compliance"
-                )
-                if result["success"]:
-                    st.success("**Compliance Status:**")
-                    st.markdown(result["response"])
-                else:
-                    st.error(f"Compliance check failed: {result.get('error', 'Unknown error')}")
+                try:
+                    result = adk_chat_manager.send_chat_message(
+                        "What are key compliance requirements for GCP security?", 
+                        st.session_state.selected_project, 
+                        "compliance"
+                    )
+                    if result["success"]:
+                        st.success("**Compliance Requirements:**")
+                        st.markdown(result["response"])
+                    else:
+                        st.error(f"Compliance check failed: {result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    st.error(f"Request timeout: {str(e)}")
+                    st.info("💡 **Try simpler compliance questions in the chat widget below**")
     
     with col2:
         st.markdown("**🚨 Threat Analysis**")
@@ -1390,6 +1394,23 @@ def adk_chat_ui():
                     st.error(f"Configuration review failed: {result.get('error', 'Unknown error')}")
     
     st.markdown("---")
+    
+    # Quick connectivity test
+    st.markdown("---")
+    if st.button("🔍 Test Agent Connection", key="test_connection"):
+        with st.spinner("Testing connection..."):
+            try:
+                result = adk_chat_manager.send_chat_message(
+                    "Hello, are you working?", 
+                    st.session_state.selected_project, 
+                    "test"
+                )
+                if result["success"]:
+                    st.success(f"✅ Agent is responsive: {result['response'][:100]}...")
+                else:
+                    st.error(f"❌ Agent error: {result.get('error', 'Unknown error')}")
+            except Exception as e:
+                st.error(f"❌ Connection failed: {str(e)}")
     
     # Main stateless chat interface
     st.subheader("💬 Free-form Security Chat")
