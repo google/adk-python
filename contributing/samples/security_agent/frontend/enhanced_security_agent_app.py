@@ -1307,7 +1307,7 @@ def adk_chat_ui():
             with st.spinner("Analyzing project security..."):
                 try:
                     result = adk_chat_manager.send_chat_message(
-                        "What are the top 3 security best practices for GCP projects?", 
+                        "Without using any tools or making API calls, list 3 general GCP security best practices in a simple bullet list.", 
                         st.session_state.selected_project, 
                         "security_analysis"
                     )
@@ -1324,7 +1324,7 @@ def adk_chat_ui():
             with st.spinner("Checking compliance..."):
                 try:
                     result = adk_chat_manager.send_chat_message(
-                        "What are key compliance requirements for GCP security?", 
+                        "Without using tools, briefly list 3 key GCP compliance requirements.", 
                         st.session_state.selected_project, 
                         "compliance"
                     )
@@ -1341,16 +1341,19 @@ def adk_chat_ui():
         st.markdown("**🚨 Threat Analysis**")
         if st.button("Identify Security Threats", key="threat_analysis"):
             with st.spinner("Analyzing threats..."):
-                result = adk_chat_manager.send_chat_message(
-                    f"Identify potential security threats and vulnerabilities in project {st.session_state.selected_project}. Focus on common attack vectors.", 
-                    st.session_state.selected_project, 
-                    "threat_intelligence"
-                )
-                if result["success"]:
-                    st.warning("**Threat Analysis:**")
-                    st.markdown(result["response"])
-                else:
-                    st.error(f"Threat analysis failed: {result.get('error', 'Unknown error')}")
+                try:
+                    result = adk_chat_manager.send_chat_message(
+                        "Without using tools, name 3 common GCP security threats.", 
+                        st.session_state.selected_project, 
+                        "threat_intelligence"
+                    )
+                    if result["success"]:
+                        st.warning("**Common Threats:**")
+                        st.markdown(result["response"])
+                    else:
+                        st.error(f"Threat analysis failed: {result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    st.error(f"Request timeout: {str(e)}")
         
         if st.button("Review IAM Policies", key="iam_review"):
             with st.spinner("Reviewing IAM policies..."):
@@ -1395,22 +1398,43 @@ def adk_chat_ui():
     
     st.markdown("---")
     
-    # Quick connectivity test
+    # Diagnostic section
     st.markdown("---")
-    if st.button("🔍 Test Agent Connection", key="test_connection"):
-        with st.spinner("Testing connection..."):
-            try:
-                result = adk_chat_manager.send_chat_message(
-                    "Hello, are you working?", 
-                    st.session_state.selected_project, 
-                    "test"
-                )
-                if result["success"]:
-                    st.success(f"✅ Agent is responsive: {result['response'][:100]}...")
-                else:
-                    st.error(f"❌ Agent error: {result.get('error', 'Unknown error')}")
-            except Exception as e:
-                st.error(f"❌ Connection failed: {str(e)}")
+    st.subheader("🔍 Diagnostics")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Test Basic Connection", key="test_basic"):
+            with st.spinner("Testing..."):
+                try:
+                    result = adk_chat_manager.send_chat_message(
+                        "Say hello in one sentence.", 
+                        st.session_state.selected_project, 
+                        "test"
+                    )
+                    if result["success"]:
+                        st.success(f"✅ Basic: {result['response']}")
+                    else:
+                        st.error(f"❌ Error: {result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    st.error(f"❌ Failed: {str(e)}")
+    
+    with col2:
+        if st.button("Test No-Tools Response", key="test_no_tools"):
+            with st.spinner("Testing..."):
+                try:
+                    result = adk_chat_manager.send_chat_message(
+                        "Reply with 'OK' without using any tools.", 
+                        st.session_state.selected_project, 
+                        "test"
+                    )
+                    if result["success"]:
+                        st.success(f"✅ No-tools: {result['response']}")
+                    else:
+                        st.error(f"❌ Error: {result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    st.error(f"❌ Failed: {str(e)}")
     
     # Main stateless chat interface
     st.subheader("💬 Free-form Security Chat")
