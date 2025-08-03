@@ -17,6 +17,9 @@ from streamlit_agraph import agraph, Node, Edge, Config
 # Import stateless chat utilities
 from chat_utils import StatelessChatManager, render_floating_chat_button
 
+# Global chat manager instance for all pages
+adk_chat_manager = StatelessChatManager("adk_security")
+
 
 # Configuration
 BACKEND_URL = "http://localhost:8000"
@@ -1396,8 +1399,7 @@ def adk_chat_ui():
     Choose a category below or ask me anything about your security!
     """)
     
-    # Create comprehensive stateless chat interface
-    adk_chat_manager = StatelessChatManager("adk_security")
+    # Using global adk_chat_manager
     
     # Add specialized security suggestions
     st.subheader("🎯 Quick Security Actions")
@@ -1904,6 +1906,443 @@ def show_chat_performance():
 
 
 
+def day_two_sre_ui():
+    """Day Two Operations SRE page for log analysis and monitoring."""
+    st.title("📊 Day Two Operations - SRE")
+    st.markdown("**Site Reliability Engineering** - Log Analysis, Monitoring & Troubleshooting")
+    
+    # Quick status overview
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        backend_status = make_backend_request("/health", include_project=False)
+        st.metric("Backend Health", "🟢 Healthy" if backend_status.get("status") == "healthy" else "🔴 Unhealthy")
+    with col2:
+        # Check if logs directory exists
+        import os
+        logs_exist = os.path.exists("/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/logs")
+        st.metric("Log Collection", "🟢 Active" if logs_exist else "🔴 Inactive")
+    with col3:
+        st.metric("Project", st.session_state.selected_project)
+    with col4:
+        # Check for any critical errors in recent logs
+        st.metric("Alert Status", "🟡 Monitoring")
+    
+    # Main tabs for different SRE functions
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Log Analysis", "🔍 Error Detection", "📈 Performance Metrics", "🚨 Alerting"])
+    
+    with tab1:
+        st.subheader("📋 Cloud Infrastructure Log Analysis")
+        st.info("🚀 Analyzing real project logs from Google Cloud Logging")
+        
+        # Cloud Logging configuration
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            project_id = st.text_input("GCP Project ID:", value=st.session_state.selected_project, 
+                                     help="The Google Cloud Project ID to analyze logs from")
+        with col2:
+            hours_back = st.selectbox("Time Range:", [1, 2, 6, 12, 24], index=2, 
+                                    help="Hours to look back for log analysis")
+        
+        # Cloud Logging analysis controls
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            render_action_button(
+                "📖 Recent Logs", 
+                "cloud_recent_logs",
+                chat_message=f"Analyze recent cloud logs from project {project_id} for the last {hours_back} hours. Summarize key events, patterns, and any notable issues.",
+                context="cloud_logs",
+                spinner_text="Reading cloud logs..."
+            )
+        
+        with col2:
+            render_action_button(
+                "🔍 Error Analysis", 
+                "cloud_error_analysis",
+                chat_message=f"Perform comprehensive error analysis on cloud logs from project {project_id}. Identify error patterns, critical issues, and root causes.",
+                context="cloud_logs",
+                spinner_text="Analyzing errors..."
+            )
+        
+        with col3:
+            render_action_button(
+                "⚡ Performance", 
+                "cloud_performance",
+                chat_message=f"Analyze performance metrics from cloud logs for project {project_id}. Look for slow requests, timeouts, and bottlenecks.",
+                context="cloud_logs",
+                spinner_text="Checking performance..."
+            )
+            
+        with col4:
+            render_action_button(
+                "🏥 Health Check", 
+                "cloud_health",
+                chat_message=f"Get system health overview for project {project_id} based on cloud logs. Provide health score and recommendations.",
+                context="cloud_logs",
+                spinner_text="Checking health..."
+            )
+        
+        # Custom search functionality
+        st.markdown("---")
+        st.subheader("🔍 Custom Log Search")
+        search_query = st.text_input(
+            "Search Query:", 
+            placeholder='severity="ERROR" OR textPayload:"timeout"',
+            help="Use Cloud Logging filter syntax. Examples: severity='ERROR', resource.type='gce_instance'"
+        )
+        
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            search_hours = st.number_input("Hours to search back:", min_value=1, max_value=168, value=24)
+        with col2:
+            max_results = st.number_input("Max results:", min_value=10, max_value=500, value=100)
+        
+        if st.button("🔍 Search Cloud Logs", key="search_cloud_logs"):
+            if search_query.strip():
+                with st.spinner("Searching cloud logs..."):
+                    try:
+                        response = make_backend_request(
+                            f"/api/v1/cloud-logs/search?query={search_query}&project_id={project_id}&hours={search_hours}&max_entries={max_results}",
+                            include_project=False
+                        )
+                        
+                        if response.get("success"):
+                            matches = response.get("matches_found", 0)
+                            entries = response.get("entries", [])
+                            
+                            st.success(f"Found {matches} matching log entries")
+                            
+                            if entries:
+                                with st.expander(f"Search Results ({matches} matches)", expanded=True):
+                                    for i, entry in enumerate(entries[:50]):  # Limit display
+                                        severity = entry.get("severity", "INFO")
+                                        timestamp = entry.get("timestamp", "")
+                                        resource_type = entry.get("resource_type", "unknown")
+                                        payload = entry.get("payload", "")
+                                        
+                                        # Color code by severity
+                                        if severity in ["ERROR", "CRITICAL"]:
+                                            st.error(f"**{severity}** [{timestamp}] ({resource_type})\n{payload}")
+                                        elif severity == "WARNING":
+                                            st.warning(f"**{severity}** [{timestamp}] ({resource_type})\n{payload}")
+                                        else:
+                                            st.info(f"**{severity}** [{timestamp}] ({resource_type})\n{payload}")
+                        else:
+                            st.error(f"Search failed: {response.get('error', 'Unknown error')}")
+                    except Exception as e:
+                        st.error(f"Error searching logs: {str(e)}")
+            else:
+                st.warning("Please enter a search query")
+        
+        # Real-time Cloud Logging dashboard
+        st.markdown("---")
+        st.subheader("📊 Real-time Dashboard")
+        
+        if st.button("🔄 Load Cloud Logging Dashboard", key="load_dashboard"):
+            with st.spinner("Loading cloud logging data..."):
+                try:
+                    # Load recent logs
+                    recent_response = make_backend_request(
+                        f"/api/v1/cloud-logs/recent?project_id={project_id}&hours={hours_back}&max_entries=200",
+                        include_project=False
+                    )
+                    
+                    if recent_response.get("success"):
+                        summary = recent_response.get("summary", {})
+                        entries = recent_response.get("entries", [])
+                        
+                        # Display summary metrics
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Total Entries", summary.get("total_entries", 0))
+                        with col2:
+                            st.metric("Errors", summary.get("error_count", 0), 
+                                     delta_color="inverse" if summary.get("error_count", 0) > 0 else "normal")
+                        with col3:
+                            st.metric("Warnings", summary.get("warning_count", 0))
+                        with col4:
+                            health_score = summary.get("health_score", 100)
+                            st.metric("Health Score", f"{health_score}%", 
+                                     delta_color="normal" if health_score > 80 else "inverse")
+                        
+                        # Severity distribution
+                        if summary.get("severity_distribution"):
+                            st.markdown("**Log Severity Distribution:**")
+                            severity_dist = summary["severity_distribution"]
+                            severity_cols = st.columns(len(severity_dist))
+                            for i, (severity, count) in enumerate(severity_dist.items()):
+                                with severity_cols[i]:
+                                    color = "🔴" if severity in ["ERROR", "CRITICAL"] else "🟡" if severity == "WARNING" else "🟢"
+                                    st.metric(f"{color} {severity}", count)
+                        
+                        # Error patterns
+                        if summary.get("error_patterns"):
+                            st.markdown("**Error Pattern Analysis:**")
+                            patterns = summary["error_patterns"]
+                            for pattern, count in patterns.items():
+                                if count > 0:
+                                    st.warning(f"• {pattern.replace('_', ' ').title()}: {count} occurrences")
+                        
+                        # Recent entries preview
+                        if entries:
+                            st.markdown("**Recent Log Entries:**")
+                            with st.expander(f"Show recent entries ({len(entries)} total)", expanded=False):
+                                for entry in entries[:20]:  # Show first 20
+                                    severity = entry.get("severity", "INFO")
+                                    timestamp = entry.get("timestamp", "")
+                                    resource = entry.get("resource", {})
+                                    resource_type = resource.get("type", "unknown")
+                                    payload = entry.get("payload", "")
+                                    
+                                    if severity in ["ERROR", "CRITICAL"]:
+                                        st.error(f"**{severity}** [{timestamp}] {resource_type}: {payload}")
+                                    elif severity == "WARNING":
+                                        st.warning(f"**{severity}** [{timestamp}] {resource_type}: {payload}")
+                                    else:
+                                        st.info(f"**{severity}** [{timestamp}] {resource_type}: {payload}")
+                    else:
+                        st.error(f"Failed to load dashboard: {recent_response.get('error', 'Unknown error')}")
+                        
+                except Exception as e:
+                    st.error(f"Error loading dashboard: {str(e)}")
+    
+    with tab2:
+        st.subheader("🔍 Cloud Error Detection & Analysis")
+        st.info("🚀 Analyzing errors from Google Cloud Logging infrastructure")
+        
+        # Cloud error analysis dashboard
+        if st.button("📊 Load Error Analysis Dashboard", key="error_dashboard"):
+            with st.spinner("Analyzing cloud errors..."):
+                try:
+                    response = make_backend_request(
+                        f"/api/v1/cloud-logs/errors?project_id={project_id}&hours=6",
+                        include_project=False
+                    )
+                    
+                    if response.get("success"):
+                        analysis = response.get("analysis", {})
+                        
+                        # Error summary metrics
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Total Errors", analysis.get("total_errors", 0))
+                        with col2:
+                            critical_count = len(analysis.get("critical_issues", []))
+                            st.metric("Critical Issues", critical_count,
+                                     delta_color="inverse" if critical_count > 0 else "normal")
+                        with col3:
+                            error_types = len(analysis.get("by_error_type", {}))
+                            st.metric("Error Types", error_types)
+                        with col4:
+                            affected_services = len(analysis.get("by_service", {}))
+                            st.metric("Affected Services", affected_services)
+                        
+                        # Critical issues
+                        critical_issues = analysis.get("critical_issues", [])
+                        if critical_issues:
+                            st.markdown("### 🚨 Critical Issues Requiring Immediate Attention")
+                            for issue in critical_issues[:5]:  # Show top 5
+                                timestamp = issue.get("timestamp", "Unknown time")
+                                resource = issue.get("resource", "Unknown resource")
+                                service = issue.get("service", "Unknown service")
+                                message = issue.get("message", "No message")
+                                
+                                st.error(f"**CRITICAL** [{timestamp}] {resource}/{service}: {message}")
+                        
+                        # Error distribution by resource
+                        if analysis.get("by_resource"):
+                            st.markdown("### 📊 Errors by Resource Type")
+                            resource_errors = analysis["by_resource"]
+                            resource_cols = st.columns(min(len(resource_errors), 4))
+                            for i, (resource, count) in enumerate(list(resource_errors.items())[:4]):
+                                with resource_cols[i]:
+                                    st.metric(resource, count)
+                        
+                        # Error distribution by service
+                        if analysis.get("by_service"):
+                            st.markdown("### 🛠️ Errors by Service")
+                            service_errors = analysis["by_service"]
+                            for service, count in list(service_errors.items())[:10]:
+                                st.warning(f"• **{service}**: {count} errors")
+                    
+                    else:
+                        st.error(f"Error analysis failed: {response.get('error', 'Unknown error')}")
+                        
+                except Exception as e:
+                    st.error(f"Error loading error analysis: {str(e)}")
+        
+        # Cloud-specific error analysis tools
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**🚨 Cloud Infrastructure Errors**")
+            render_action_button(
+                "Analyze Critical Errors", 
+                "cloud_critical_errors",
+                chat_message=f"Analyze critical errors in cloud infrastructure for project {project_id}. Focus on service outages, resource failures, and system-level issues that require immediate attention.",
+                context="cloud_error_analysis",
+                spinner_text="Analyzing critical cloud errors..."
+            )
+            
+            render_action_button(
+                "Performance Issues", 
+                "cloud_performance_issues",
+                chat_message=f"Analyze performance-related errors in project {project_id} cloud logs. Look for timeouts, slow responses, resource bottlenecks, and capacity issues.",
+                context="cloud_performance",
+                spinner_text="Analyzing performance issues..."
+            )
+        
+        with col2:
+            st.markdown("**🔧 Cloud Troubleshooting**")
+            render_action_button(
+                "Resource Connectivity", 
+                "cloud_connectivity",
+                chat_message=f"Analyze connectivity and networking errors in project {project_id}. Focus on load balancer issues, DNS problems, firewall blocks, and service mesh failures.",
+                context="cloud_debugging",
+                spinner_text="Debugging connectivity..."
+            )
+            
+            render_action_button(
+                "Security & Access Errors", 
+                "cloud_security_errors",
+                chat_message=f"Analyze security-related errors and access issues in project {project_id} cloud logs. Look for authentication failures, permission denied errors, and potential security incidents.",
+                context="cloud_security",
+                spinner_text="Analyzing security errors..."
+            )
+        
+        # Error pattern analysis
+        st.markdown("**📋 Error Pattern Recognition**")
+        error_patterns = st.text_area(
+            "Search for specific error patterns (one per line):",
+            placeholder="HTTP 500\nConnection timeout\nOut of memory\nDatabase connection failed",
+            height=100
+        )
+        
+        if st.button("🔍 Search Error Patterns") and error_patterns:
+            patterns = [p.strip() for p in error_patterns.split('\n') if p.strip()]
+            render_action_button(
+                "Search Patterns", 
+                "search_patterns",
+                chat_message=f"Search application logs for these specific error patterns: {', '.join(patterns)}. For each pattern found, provide context, frequency, and impact assessment.",
+                context="pattern_search",
+                spinner_text="Searching patterns..."
+            )
+    
+    with tab3:
+        st.subheader("📈 Performance Metrics & Monitoring")
+        
+        # Performance monitoring
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**⏱️ Response Time Analysis**")
+            render_action_button(
+                "API Response Times", 
+                "api_response_times",
+                chat_message="Analyze API response times from logs. Calculate average, median, 95th percentile response times. Identify slow endpoints and performance trends.",
+                context="performance",
+                spinner_text="Analyzing response times..."
+            )
+            
+            render_action_button(
+                "Request Volume Analysis", 
+                "request_volume",
+                chat_message="Analyze request volume patterns from logs. Show peak hours, request distribution by endpoint, and identify any unusual traffic spikes.",
+                context="traffic",
+                spinner_text="Analyzing request volume..."
+            )
+        
+        with col2:
+            st.markdown("**🎯 Resource Utilization**")
+            render_action_button(
+                "Memory & CPU Patterns", 
+                "resource_usage",
+                chat_message="Analyze logs for memory usage, CPU utilization patterns, and resource consumption trends. Identify memory leaks and resource bottlenecks.",
+                context="resources",
+                spinner_text="Analyzing resource usage..."
+            )
+            
+            render_action_button(
+                "Database Performance", 
+                "db_performance",
+                chat_message="Analyze database-related log entries for query performance, connection pool usage, slow queries, and database optimization opportunities.",
+                context="database",
+                spinner_text="Analyzing database performance..."
+            )
+        
+        # Custom metrics
+        st.markdown("**📊 Custom Metrics Dashboard**")
+        metrics_cols = st.columns(4)
+        
+        with metrics_cols[0]:
+            st.metric("Avg Response Time", "245ms", delta="-12ms")
+        with metrics_cols[1]:
+            st.metric("Error Rate", "2.1%", delta="0.3%", delta_color="inverse")
+        with metrics_cols[2]:
+            st.metric("Requests/Hour", "1,247", delta="156")
+        with metrics_cols[3]:
+            st.metric("Uptime", "99.8%", delta="0.1%")
+    
+    with tab4:
+        st.subheader("🚨 Alerting & Incident Management")
+        
+        # Alert configuration
+        st.markdown("**⚙️ Alert Configuration**")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            error_threshold = st.slider("Error Rate Threshold (%)", 0.0, 10.0, 5.0, 0.1)
+            response_threshold = st.slider("Response Time Threshold (ms)", 100, 5000, 1000, 50)
+        
+        with col2:
+            alert_window = st.selectbox("Alert Window", ["5 minutes", "15 minutes", "30 minutes", "1 hour"])
+            notification_method = st.multiselect("Notification Methods", ["Email", "Slack", "PagerDuty", "Webhook"])
+        
+        # Current alerts
+        st.markdown("**🔔 Active Alerts**")
+        
+        # Mock alert data - in real implementation, this would come from your monitoring system
+        alerts_data = [
+            {"severity": "HIGH", "message": "High error rate detected in authentication service", "time": "2 minutes ago", "status": "FIRING"},
+            {"severity": "MEDIUM", "message": "Response time above threshold for /api/v1/security-posture", "time": "15 minutes ago", "status": "RESOLVED"},
+            {"severity": "LOW", "message": "Memory usage trending upward", "time": "1 hour ago", "status": "ACKNOWLEDGED"}
+        ]
+        
+        for alert in alerts_data:
+            severity_color = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}[alert["severity"]]
+            status_color = {"FIRING": "🔥", "RESOLVED": "✅", "ACKNOWLEDGED": "👁️"}[alert["status"]]
+            
+            with st.expander(f"{severity_color} {alert['severity']} - {alert['message']}", expanded=alert["status"]=="FIRING"):
+                st.write(f"**Status:** {status_color} {alert['status']}")
+                st.write(f"**Time:** {alert['time']}")
+                if alert["status"] == "FIRING":
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button("🔇 Acknowledge", key=f"ack_{alert['message'][:10]}"):
+                            st.success("Alert acknowledged")
+                    with col2:
+                        if st.button("✅ Resolve", key=f"resolve_{alert['message'][:10]}"):
+                            st.success("Alert resolved")
+                    with col3:
+                        if st.button("🔍 Investigate", key=f"investigate_{alert['message'][:10]}"):
+                            st.info("Opening investigation workflow...")
+        
+        # Incident management
+        st.markdown("**📋 Incident Management**")
+        render_action_button(
+            "Create Incident Report", 
+            "create_incident",
+            chat_message="Based on recent logs and alerts, help me create a comprehensive incident report. Include timeline, impact assessment, root cause analysis, and resolution steps.",
+            context="incident",
+            spinner_text="Creating incident report..."
+        )
+    
+    # SRE Chat Interface
+    st.markdown("---")
+    st.subheader("💬 SRE Assistant Chat")
+    st.markdown("Get help with log analysis, troubleshooting, and SRE best practices.")
+    adk_chat_manager.render_chat_widget(st.session_state.selected_project, "sre_operations")
+
+
 def api_explorer_ui():
     """UI for exploring Google Cloud APIs."""
     st.markdown("---")
@@ -1994,8 +2433,8 @@ def main():
     
     page = st.sidebar.selectbox(
         "Navigation",
-        ["🏠 Dashboard", "💬 ADK Chat", "🔍 API Explorer", "🔐 OIDC Demo", "🔒 Security Evaluation", "📄 MSA Analysis", "🚨 Incident Response", "📚 Knowledge Base", "🚀 Agent DAG", "📊 Performance Monitor"],
-        index=["🏠 Dashboard", "💬 ADK Chat", "🔍 API Explorer", "🔐 OIDC Demo", "🔒 Security Evaluation", "📄 MSA Analysis", "🚨 Incident Response", "📚 Knowledge Base", "🚀 Agent DAG", "📊 Performance Monitor"].index(selected_page) if selected_page else 0
+        ["🏠 Dashboard", "💬 ADK Chat", "🔍 API Explorer", "🔐 OIDC Demo", "🔒 Security Evaluation", "📄 MSA Analysis", "🚨 Incident Response", "📚 Knowledge Base", "🚀 Agent DAG", "📊 Performance Monitor", "📊 Day Two SRE"],
+        index=["🏠 Dashboard", "💬 ADK Chat", "🔍 API Explorer", "🔐 OIDC Demo", "🔒 Security Evaluation", "📄 MSA Analysis", "🚨 Incident Response", "📚 Knowledge Base", "🚀 Agent DAG", "📊 Performance Monitor", "📊 Day Two SRE"].index(selected_page) if selected_page else 0
     )
     
     # Add GCP project picker
@@ -2212,6 +2651,9 @@ def main():
     
     elif page == "🚀 Agent DAG":
         dag_visualization_ui()
+    
+    elif page == "📊 Day Two SRE":
+        day_two_sre_ui()
 
 
 if __name__ == "__main__":
