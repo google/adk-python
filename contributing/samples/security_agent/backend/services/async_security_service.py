@@ -6,8 +6,8 @@ from typing import Dict, Any, Optional, Callable, List
 from dataclasses import dataclass
 import logging
 
-from .agent_service import AgentService
-from .task_service import TaskProgress
+from services.agent_service import AgentService
+from services.task_service import TaskProgress
 
 logger = logging.getLogger(__name__)
 

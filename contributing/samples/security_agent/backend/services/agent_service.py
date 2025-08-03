@@ -14,7 +14,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 # Import timeout configuration
-from ..config.timeout_config import timeout_manager, OperationType
+from config.timeout_config import timeout_manager, OperationType
 
 # Add the parent directory to the path to import the agent module
 sys.path.append(str(Path(__file__).parent.parent.parent))

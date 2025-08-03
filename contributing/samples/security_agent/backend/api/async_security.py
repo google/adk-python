@@ -6,8 +6,8 @@ from typing import Optional, Dict, Any, List
 from enum import Enum
 import asyncio
 
-from ..services.task_service import task_service, TaskStatus
-from ..services.async_security_service import AsyncSecurityService, SecurityScanConfig
+from services.task_service import task_service, TaskStatus
+from services.async_security_service import AsyncSecurityService, SecurityScanConfig
 
 router = APIRouter()
 

@@ -36,7 +36,7 @@ from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
 from api import (
     security, knowledge, agent, documentation, apihub, compliance, 
-    threat_intelligence, configuration, incidents, evaluation, msa, tracing, openapi_tools, gcp, recommendations, async_security
+    threat_intelligence, configuration, incidents, evaluation, msa, tracing, openapi_tools, gcp, recommendations, async_security, logs, cloud_logs
 )
 from services.security_service import SecurityService
 from services.documentation_service import DocumentationService
@@ -212,6 +212,12 @@ app.include_router(recommendations.router, prefix="/api/v1/recommendations", tag
 
 # Include async security API router
 app.include_router(async_security.router, prefix="/api/v1/async-security", tags=["Async Security Operations"])
+
+# Log Analysis endpoints
+app.include_router(logs.router, tags=["Log Analysis"])
+
+# Cloud Logging endpoints
+app.include_router(cloud_logs.router, tags=["Cloud Logging"])
 
 
 @app.get("/")
