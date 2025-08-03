@@ -100,16 +100,21 @@ class StatelessChatManager:
     def send_chat_message(self, message: str, project_id: str, context: str = None) -> Dict[str, Any]:
         """Send message to AI agent without storing in session state."""
         try:
-            # Format payload to match backend ChatRequest model
+            # Check if this looks like a complex security query that should use async processing
+            if self._should_use_async_processing(message):
+                return self._initiate_async_scan(message, project_id, context)
+            
+            # For simple queries, use quick analysis endpoint with shorter timeout
             payload = {
-                "query": f"[Context: {context or self.context}] [Project: {project_id}] {message}",
+                "query": f"[Context: {context or self.context}] {message}",
+                "project_id": project_id,
                 "user_id": "streamlit_user"
             }
             
             response = requests.post(
-                f"{self.backend_url}/api/v1/agent/chat",
+                f"{self.backend_url}/api/v1/async-security/quick-analysis",
                 json=payload,
-                timeout=30  # Reasonable timeout - if it takes longer, there's likely an issue
+                timeout=30  # 30 second timeout for quick analysis
             )
             
             if response.status_code == 200:
@@ -118,14 +123,25 @@ class StatelessChatManager:
                     return {
                         "success": True,
                         "response": result.get("response", "No response received"),
-                        "context": context or self.context
+                        "context": context or self.context,
+                        "analysis_type": "quick"
                     }
                 else:
-                    return {
-                        "success": False,
-                        "error": result.get("error", "Unknown error"),
-                        "response": "Sorry, I couldn't process your request."
-                    }
+                    # If quick analysis suggests async scan, inform user
+                    if "async scan" in result.get("error", "").lower():
+                        return {
+                            "success": True,
+                            "response": "This query requires comprehensive analysis. Starting async security scan...",
+                            "context": context or self.context,
+                            "analysis_type": "redirected_to_async",
+                            "async_scan": self._initiate_async_scan(message, project_id, context)
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "error": result.get("error", "Unknown error"),
+                            "response": "Sorry, I couldn't process your request."
+                        }
             else:
                 return {
                     "success": False,
@@ -133,11 +149,103 @@ class StatelessChatManager:
                     "response": "I'm having trouble connecting right now."
                 }
                 
+        except requests.exceptions.Timeout:
+            # If quick analysis times out, suggest async scan
+            return {
+                "success": True,
+                "response": "Your query is taking longer than expected. Let me start a comprehensive async scan instead...",
+                "context": context or self.context,
+                "analysis_type": "timeout_fallback",
+                "async_scan": self._initiate_async_scan(message, project_id, context)
+            }
         except Exception as e:
             return {
                 "success": False,
                 "error": str(e),
                 "response": f"Connection error: {str(e)}"
+            }
+    
+    def _should_use_async_processing(self, message: str) -> bool:
+        """Determine if a message should use async processing."""
+        async_keywords = [
+            "comprehensive scan", "full security scan", "complete analysis",
+            "vulnerability scan", "compliance check", "deep scan",
+            "security posture", "risk assessment", "thorough analysis"
+        ]
+        message_lower = message.lower()
+        return any(keyword in message_lower for keyword in async_keywords)
+    
+    def _initiate_async_scan(self, message: str, project_id: str, context: str = None) -> Dict[str, Any]:
+        """Initiate an async security scan."""
+        try:
+            # Determine scan type based on message content
+            scan_type = "comprehensive"
+            if "deep" in message.lower() or "thorough" in message.lower():
+                scan_type = "deep"
+            elif "quick" in message.lower():
+                scan_type = "standard"
+            
+            payload = {
+                "project_id": project_id,
+                "scan_type": scan_type,
+                "user_id": "streamlit_user",
+                "include_vulnerability_scan": True,
+                "include_compliance_check": True,
+                "include_configuration_analysis": True,
+                "include_dependency_analysis": True,
+                "timeout_seconds": 600  # 10 minutes
+            }
+            
+            response = requests.post(
+                f"{self.backend_url}/api/v1/async-security/scan",
+                json=payload,
+                timeout=10  # Short timeout for initiating scan
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return {
+                    "success": True,
+                    "task_id": result.get("task_id"),
+                    "message": result.get("message"),
+                    "estimated_duration": result.get("estimated_duration"),
+                    "status_endpoint": result.get("status_endpoint")
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Failed to start async scan: HTTP {response.status_code}"
+                }
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to initiate async scan: {str(e)}"
+            }
+    
+    def check_async_task_status(self, task_id: str) -> Dict[str, Any]:
+        """Check the status of an async task."""
+        try:
+            response = requests.get(
+                f"{self.backend_url}/api/v1/async-security/status/{task_id}",
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return {
+                    "success": True,
+                    **response.json()
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"HTTP {response.status_code}"
+                }
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
             }
     
     def render_chat_widget(self, project_id: str, page_context: str = "general") -> None:
@@ -183,10 +291,67 @@ class StatelessChatManager:
                     if result["success"]:
                         st.success("**AI Response:**")
                         st.markdown(result["response"])
+                        
+                        # Handle async operations
+                        if result.get("analysis_type") in ["redirected_to_async", "timeout_fallback"]:
+                            async_scan = result.get("async_scan")
+                            if async_scan and async_scan.get("success"):
+                                self._render_async_task_monitor(async_scan["task_id"], project_id)
+                        
                     else:
                         st.error(f"Error: {result.get('error', 'Unknown error')}")
             else:
                 st.warning("Please enter a message first.")
+    
+    def _render_async_task_monitor(self, task_id: str, project_id: str) -> None:
+        """Render async task monitoring widget."""
+        st.info(f"🔄 **Async Security Scan Started**")
+        st.write(f"Task ID: `{task_id}`")
+        
+        # Create columns for progress monitoring
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            progress_placeholder = st.empty()
+            status_placeholder = st.empty()
+        
+        with col2:
+            if st.button("Check Status", key=f"check_status_{task_id}"):
+                self._update_task_status(task_id, progress_placeholder, status_placeholder)
+        
+        # Auto-check status initially
+        self._update_task_status(task_id, progress_placeholder, status_placeholder)
+    
+    def _update_task_status(self, task_id: str, progress_placeholder, status_placeholder) -> None:
+        """Update task status display."""
+        status_result = self.check_async_task_status(task_id)
+        
+        if status_result["success"]:
+            task_status = status_result["status"]
+            progress = status_result.get("progress")
+            
+            # Update progress bar
+            if progress:
+                percentage = progress.get("percentage", 0)
+                current_step = progress.get("current_step", "Processing...")
+                progress_placeholder.progress(percentage / 100, text=f"{percentage:.1f}% - {current_step}")
+            
+            # Update status
+            if task_status == "completed":
+                status_placeholder.success("✅ **Scan Completed!**")
+                result = status_result.get("result")
+                if result:
+                    with status_placeholder.expander("📊 View Results", expanded=True):
+                        st.json(result)
+            elif task_status == "failed":
+                error = status_result.get("error", "Unknown error")
+                status_placeholder.error(f"❌ **Scan Failed:** {error}")
+            elif task_status == "running":
+                status_placeholder.info("🔄 **Scan In Progress...**")
+            else:
+                status_placeholder.info(f"⏳ **Status:** {task_status}")
+        else:
+            status_placeholder.error(f"Failed to get task status: {status_result.get('error', 'Unknown error')}")
     
     def render_contextual_chat_section(self, project_id: str, page_context: str, data: Dict[str, Any] = None) -> None:
         """Render contextual chat section with data-specific suggestions."""

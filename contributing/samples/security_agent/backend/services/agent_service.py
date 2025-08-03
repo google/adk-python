@@ -7,18 +7,23 @@ from google.adk.sessions import Session
 from google.genai import types
 import sys
 from pathlib import Path
+import logging
 
 # OpenTelemetry imports for tracing
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
+
+# Import timeout configuration
+from ..config.timeout_config import timeout_manager, OperationType
 
 # Add the parent directory to the path to import the agent module
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from agents import agent as agent_module
 
-# Get tracer
+# Get tracer and logger
 tracer = trace.get_tracer(__name__)
+logger = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -125,12 +130,13 @@ class AgentService:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return f"Error querying agent: {str(e)}"
     
-    async def chat(self, message: str, user_id: str = 'default_user') -> str:
-        """Chat with the agent using conversational interface.
+    async def chat(self, message: str, user_id: str = 'default_user', operation_type: OperationType = OperationType.STANDARD_ANALYSIS) -> str:
+        """Chat with the agent using conversational interface with timeout handling.
         
         Args:
             message: The message to send to the agent.
             user_id: User identifier for session management.
+            operation_type: Type of operation for timeout configuration.
             
         Returns:
             Agent's response as a string.
@@ -138,48 +144,83 @@ class AgentService:
         with tracer.start_as_current_span("chat") as span:
             span.set_attribute("message", message)
             span.set_attribute("user_id", user_id)
+            span.set_attribute("operation_type", operation_type.value)
             
             try:
-
-                    # Real ADK agent - use runner
-                    # Get or create session for persistent conversation
-                    with tracer.start_as_current_span("get_session"):
-                        session = await self.create_session(user_id)
-                    
-                    # Create content for the chat message
-                    with tracer.start_as_current_span("create_content"):
-                        content = types.Content(
-                            role='user',
-                            parts=[types.Part.from_text(text=message)]
-                        )
-                    
-                    # Get response from agent with conversational context
-                    response_text = ''
-                    async for event in self.runner.run_async(
-                        user_id=user_id,
-                        session_id=session.id,
-                        new_message=content
-                    ):
-                        if event.content.parts:
-                            for part in event.content.parts:
-                                if hasattr(part, 'text') and part.text:
-                                    response_text += part.text + '\n'
-                                elif hasattr(part, 'function_call') and part.function_call:
-                                    args_str = ', '.join(f'{k}={repr(v)}' for k, v in part.function_call.args.items())
-                                    response_text += f"Tool call: {part.function_call.name}({args_str})\n"
-                                elif hasattr(part, 'function_response') and part.function_response:
-                                    tool_name = part.function_response.name
-                                    tool_output = part.function_response.response
-                                    response_text += f"Tool response for {tool_name}: {str(tool_output)}\n"
-                    
-                    span.set_attribute("response_length", len(response_text))
-                    span.set_status(Status(StatusCode.OK))
-                    return response_text.strip()
+                # Get timeout for this operation type
+                timeout_seconds = timeout_manager.get_backend_timeout(operation_type)
+                span.set_attribute("timeout_seconds", timeout_seconds)
                 
+                logger.debug(f"Starting chat with timeout {timeout_seconds}s for operation {operation_type.value}")
+                
+                # Use asyncio.wait_for to implement timeout
+                return await asyncio.wait_for(
+                    self._execute_chat(message, user_id, span),
+                    timeout=timeout_seconds
+                )
+                
+            except asyncio.TimeoutError:
+                error_msg = f"Chat operation timed out after {timeout_seconds} seconds"
+                logger.warning(f"{error_msg} for user {user_id}")
+                span.record_exception(asyncio.TimeoutError(error_msg))
+                span.set_status(Status(StatusCode.ERROR, error_msg))
+                
+                # Check if this operation should suggest async processing
+                if timeout_manager.should_fallback_to_async(operation_type):
+                    return f"Operation timed out. This query appears complex and would benefit from async processing. Please use the comprehensive security scan feature for detailed analysis."
+                else:
+                    return f"Operation timed out after {timeout_seconds} seconds. Please try a simpler query or contact support."
+                    
             except Exception as e:
+                logger.error(f"Chat operation failed for user {user_id}: {e}", exc_info=True)
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return f"Error chatting with agent: {str(e)}"
+    
+    async def _execute_chat(self, message: str, user_id: str, span) -> str:
+        """Execute the actual chat operation without timeout handling.
+        
+        Args:
+            message: The message to send to the agent.
+            user_id: User identifier for session management.
+            span: OpenTelemetry span for tracing.
+            
+        Returns:
+            Agent's response as a string.
+        """
+        # Get or create session for persistent conversation
+        with tracer.start_as_current_span("get_session"):
+            session = await self.create_session(user_id)
+        
+        # Create content for the chat message
+        with tracer.start_as_current_span("create_content"):
+            content = types.Content(
+                role='user',
+                parts=[types.Part.from_text(text=message)]
+            )
+        
+        # Get response from agent with conversational context
+        response_text = ''
+        async for event in self.runner.run_async(
+            user_id=user_id,
+            session_id=session.id,
+            new_message=content
+        ):
+            if event.content.parts:
+                for part in event.content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        response_text += part.text + '\n'
+                    elif hasattr(part, 'function_call') and part.function_call:
+                        args_str = ', '.join(f'{k}={repr(v)}' for k, v in part.function_call.args.items())
+                        response_text += f"Tool call: {part.function_call.name}({args_str})\n"
+                    elif hasattr(part, 'function_response') and part.function_response:
+                        tool_name = part.function_response.name
+                        tool_output = part.function_response.response
+                        response_text += f"Tool response for {tool_name}: {str(tool_output)}\n"
+        
+        span.set_attribute("response_length", len(response_text))
+        span.set_status(Status(StatusCode.OK))
+        return response_text.strip()
     
     def get_agent_tools(self) -> list:
         """Get list of available agent tools.

@@ -168,6 +168,109 @@ def make_backend_request(endpoint: str, method: str = "GET", data: Dict = None, 
         return {"success": False, "error": str(e)}
 
 
+def render_action_button(label: str, key: str, endpoint: str = None, method: str = "GET", 
+                        data: Dict = None, include_project: bool = True, 
+                        chat_message: str = None, context: str = None,
+                        success_handler = None, spinner_text: str = None):
+    """Render a standardized action button with error handling."""
+    if st.button(label, key=key):
+        spinner_text = spinner_text or f"{label.lower()}..."
+        with st.spinner(spinner_text):
+            try:
+                if chat_message:
+                    # Use chat interface
+                    result = adk_chat_manager.send_chat_message(
+                        chat_message, 
+                        st.session_state.selected_project, 
+                        context or "general"
+                    )
+                    if result["success"]:
+                        if success_handler:
+                            success_handler(result)
+                        else:
+                            st.success("**Response:**")
+                            st.markdown(result["response"])
+                    else:
+                        st.error(f"Failed: {result.get('error', 'Unknown error')}")
+                else:
+                    # Use backend API
+                    response = make_backend_request(
+                        endpoint, method=method, data=data, include_project=include_project
+                    )
+                    if response.get("success"):
+                        if success_handler:
+                            success_handler(response)
+                        else:
+                            st.success("Request completed successfully!")
+                    else:
+                        st.error(f"Failed: {response.get('error', 'Unknown error')}")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+
+
+def handle_security_score(response):
+    """Handle security score response."""
+    score = response.get('security_score', 0)
+    grade = response.get('security_grade', 'F')
+    color = "🟢" if score >= 80 else "🟡" if score >= 60 else "🔴"
+    st.success(f"**Security Score: {color} {score}/100 (Grade: {grade})**")
+    
+    # Quick recommendations based on score
+    if score < 60:
+        st.warning("⚠️ Immediate action needed! Check IAM policies and enable security features.")
+    elif score < 80:
+        st.info("💡 Good start! Review the recommendations below for improvements.")
+    else:
+        st.success("🎉 Excellent security posture!")
+
+
+def handle_enabled_apis(response):
+    """Handle enabled APIs response."""
+    services = response.get('services', [])
+    st.success(f"**Found {len(services)} enabled APIs**")
+    if services:
+        # Show first 5 services
+        st.write("Top services:")
+        for svc in services[:5]:
+            st.write(f"• {svc}")
+        if len(services) > 5:
+            st.info(f"...and {len(services) - 5} more")
+
+
+def handle_recommendations(response):
+    """Handle recommendations response."""
+    recs = response.get('recommendations', [])
+    if recs:
+        st.warning(f"**Top {len(recs)} Recommendations:**")
+        for i, rec in enumerate(recs, 1):
+            severity = rec.get('severity', 'medium')
+            icon = "🔴" if severity == 'high' else "🟡" if severity == 'medium' else "🔵"
+            st.write(f"{icon} {i}. {rec.get('title', 'Recommendation')}")
+            if rec.get('action'):
+                st.caption(f"   → {rec['action']}")
+    else:
+        st.success("✅ No critical recommendations!")
+
+
+def handle_iam_policy(response):
+    """Handle IAM policy response."""
+    policy = response.get('policy', {})
+    bindings = policy.get('bindings', [])
+    st.info(f"**Found {len(bindings)} IAM bindings**")
+    
+    # Count members with owner/editor roles
+    risky_count = 0
+    for binding in bindings:
+        role = binding.get('role', '')
+        if 'owner' in role.lower() or 'editor' in role.lower():
+            risky_count += len(binding.get('members', []))
+    
+    if risky_count > 0:
+        st.warning(f"⚠️ {risky_count} users have Owner/Editor roles")
+    else:
+        st.success("✅ No overly permissive roles detected")
+
+
 def oidc_flow_demo():
     """Demonstrate OIDC flow without real credentials."""
     st.markdown("---")
@@ -1303,98 +1406,62 @@ def adk_chat_ui():
     
     with col1:
         st.markdown("**🔒 Security Analysis**")
-        if st.button("Analyze Current Project Security", key="sec_analyze"):
-            with st.spinner("Analyzing project security..."):
-                try:
-                    result = adk_chat_manager.send_chat_message(
-                        "Without using any tools or making API calls, list 3 general GCP security best practices in a simple bullet list.", 
-                        st.session_state.selected_project, 
-                        "security_analysis"
-                    )
-                    if result["success"]:
-                        st.success("**Security Best Practices:**")
-                        st.markdown(result["response"])
-                    else:
-                        st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
-                except Exception as e:
-                    st.error(f"Request timeout: {str(e)}")
-                    st.info("💡 **The agent is taking too long to respond. Try:**\n- Simpler questions\n- Check backend logs for authentication issues\n- Restart backend if needed")
+        render_action_button(
+            "Get Security Score", 
+            "sec_score",
+            endpoint=f"/api/v1/gcp/project/{st.session_state.selected_project}/security-posture",
+            include_project=False,
+            success_handler=handle_security_score,
+            spinner_text="Fetching security score..."
+        )
         
-        if st.button("Check Compliance Status", key="compliance_check"):
-            with st.spinner("Checking compliance..."):
-                try:
-                    result = adk_chat_manager.send_chat_message(
-                        "Without using tools, briefly list 3 key GCP compliance requirements.", 
-                        st.session_state.selected_project, 
-                        "compliance"
-                    )
-                    if result["success"]:
-                        st.success("**Compliance Requirements:**")
-                        st.markdown(result["response"])
-                    else:
-                        st.error(f"Compliance check failed: {result.get('error', 'Unknown error')}")
-                except Exception as e:
-                    st.error(f"Request timeout: {str(e)}")
-                    st.info("💡 **Try simpler compliance questions in the chat widget below**")
+        render_action_button(
+            "List Enabled APIs", 
+            "list_apis",
+            endpoint=f"/api/v1/gcp/project/{st.session_state.selected_project}/services",
+            include_project=False,
+            success_handler=handle_enabled_apis,
+            spinner_text="Fetching enabled APIs..."
+        )
     
     with col2:
         st.markdown("**🚨 Threat Analysis**")
-        if st.button("Identify Security Threats", key="threat_analysis"):
-            with st.spinner("Analyzing threats..."):
-                try:
-                    result = adk_chat_manager.send_chat_message(
-                        "Without using tools, name 3 common GCP security threats.", 
-                        st.session_state.selected_project, 
-                        "threat_intelligence"
-                    )
-                    if result["success"]:
-                        st.warning("**Common Threats:**")
-                        st.markdown(result["response"])
-                    else:
-                        st.error(f"Threat analysis failed: {result.get('error', 'Unknown error')}")
-                except Exception as e:
-                    st.error(f"Request timeout: {str(e)}")
+        render_action_button(
+            "Get Recommendations", 
+            "get_recommendations",
+            endpoint="/api/v1/recommendations/dashboard",
+            method="POST",
+            data={"project_id": st.session_state.selected_project, "limit": 3},
+            success_handler=handle_recommendations,
+            spinner_text="Fetching recommendations..."
+        )
         
-        if st.button("Review IAM Policies", key="iam_review"):
-            with st.spinner("Reviewing IAM policies..."):
-                result = adk_chat_manager.send_chat_message(
-                    f"Review IAM policies for project {st.session_state.selected_project}. Identify overprivileged users and risky permissions.", 
-                    st.session_state.selected_project, 
-                    "iam_analysis"
-                )
-                if result["success"]:
-                    st.info("**IAM Policy Review:**")
-                    st.markdown(result["response"])
-                else:
-                    st.error(f"IAM review failed: {result.get('error', 'Unknown error')}")
+        render_action_button(
+            "Check IAM Policy", 
+            "iam_check",
+            endpoint=f"/api/v1/gcp/project/{st.session_state.selected_project}/iam/policy",
+            include_project=False,
+            success_handler=handle_iam_policy,
+            spinner_text="Checking IAM..."
+        )
     
     with col3:
         st.markdown("**⚙️ Best Practices**")
-        if st.button("Security Recommendations", key="sec_recommendations"):
-            with st.spinner("Generating recommendations..."):
-                result = adk_chat_manager.send_chat_message(
-                    f"Provide security best practices and recommendations for improving the security posture of project {st.session_state.selected_project}.", 
-                    st.session_state.selected_project, 
-                    "recommendations"
-                )
-                if result["success"]:
-                    st.success("**Security Recommendations:**")
-                    st.markdown(result["response"])
-                else:
-                    st.error(f"Recommendations failed: {result.get('error', 'Unknown error')}")
+        render_action_button(
+            "Security Recommendations", 
+            "sec_recommendations",
+            chat_message=f"Provide security best practices and recommendations for improving the security posture of project {st.session_state.selected_project}.",
+            context="recommendations",
+            spinner_text="Generating recommendations..."
+        )
         
-        if st.button("Configuration Review", key="config_review"):
-            with st.spinner("Reviewing configuration..."):
-                result = adk_chat_manager.send_chat_message(
-                    f"Review the security configuration of project {st.session_state.selected_project}. Check for misconfigurations and security gaps.", 
-                    st.session_state.selected_project, 
-                    "configuration"
-                )
-                if result["success"]:
-                    st.info("**Configuration Review:**")
-                    st.markdown(result["response"])
-                else:
-                    st.error(f"Configuration review failed: {result.get('error', 'Unknown error')}")
+        render_action_button(
+            "Configuration Review", 
+            "config_review",
+            chat_message=f"Review the security configuration of project {st.session_state.selected_project}. Check for misconfigurations and security gaps.",
+            context="configuration",
+            spinner_text="Reviewing configuration..."
+        )
     
     st.markdown("---")
     
@@ -1405,36 +1472,24 @@ def adk_chat_ui():
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("Test Basic Connection", key="test_basic"):
-            with st.spinner("Testing..."):
-                try:
-                    result = adk_chat_manager.send_chat_message(
-                        "Say hello in one sentence.", 
-                        st.session_state.selected_project, 
-                        "test"
-                    )
-                    if result["success"]:
-                        st.success(f"✅ Basic: {result['response']}")
-                    else:
-                        st.error(f"❌ Error: {result.get('error', 'Unknown error')}")
-                except Exception as e:
-                    st.error(f"❌ Failed: {str(e)}")
+        render_action_button(
+            "Test Basic Connection", 
+            "test_basic",
+            chat_message="Say hello in one sentence.",
+            context="test",
+            success_handler=lambda result: st.success(f"✅ Basic: {result['response']}"),
+            spinner_text="Testing..."
+        )
     
     with col2:
-        if st.button("Test No-Tools Response", key="test_no_tools"):
-            with st.spinner("Testing..."):
-                try:
-                    result = adk_chat_manager.send_chat_message(
-                        "Reply with 'OK' without using any tools.", 
-                        st.session_state.selected_project, 
-                        "test"
-                    )
-                    if result["success"]:
-                        st.success(f"✅ No-tools: {result['response']}")
-                    else:
-                        st.error(f"❌ Error: {result.get('error', 'Unknown error')}")
-                except Exception as e:
-                    st.error(f"❌ Failed: {str(e)}")
+        render_action_button(
+            "Test No-Tools Response", 
+            "test_no_tools",
+            chat_message="Reply with 'OK' without using any tools.",
+            context="test",
+            success_handler=lambda result: st.success(f"✅ No-tools: {result['response']}"),
+            spinner_text="Testing..."
+        )
     
     # Main stateless chat interface
     st.subheader("💬 Free-form Security Chat")
