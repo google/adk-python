@@ -225,7 +225,7 @@ def validate_exclusive(ctx, param, value):
     help=(
         "The json file that contains the initial state of the session and user"
         " queries. A new session will be created using this state. And user"
-        " queries are run againt the newly created session. Users cannot"
+        " queries are run against the newly created session. Users cannot"
         " continue to interact with the agent."
     ),
     callback=validate_exclusive,
