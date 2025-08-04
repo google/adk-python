@@ -11,22 +11,71 @@ from typing import Dict, Any, List, Optional
 from google.cloud import logging as cloud_logging
 from google.cloud.logging_v2 import entries
 from google.auth import default
+from google.oauth2 import service_account
 import json
+import os
 
 logger = logging.getLogger(__name__)
 
 class CloudLoggingService:
     """Service for analyzing GCP Cloud Logging data."""
     
-    def __init__(self):
-        """Initialize the Cloud Logging client."""
+    def __init__(self, credentials=None, project_id=None):
+        """Initialize the Cloud Logging client with optional credentials."""
         try:
-            # Use Application Default Credentials
-            self.client = cloud_logging.Client()
-            logger.info("Cloud Logging client initialized successfully")
+            if credentials and project_id:
+                # Use provided service account credentials
+                self.client = cloud_logging.Client(
+                    credentials=credentials,
+                    project=project_id
+                )
+                logger.info(f"Cloud Logging client initialized with service account for project: {project_id}")
+            else:
+                # Try to get service account credentials
+                credentials, project_id = self._get_credentials()
+                if credentials and project_id:
+                    self.client = cloud_logging.Client(
+                        credentials=credentials,
+                        project=project_id
+                    )
+                    logger.info(f"Cloud Logging client initialized with service account from env for project: {project_id}")
+                else:
+                    # Fall back to default credentials
+                    self.client = cloud_logging.Client()
+                    logger.info("Cloud Logging client initialized with default credentials")
         except Exception as e:
             logger.error(f"Failed to initialize Cloud Logging client: {e}")
             self.client = None
+    
+    def _get_credentials(self):
+        """Get service account credentials."""
+        try:
+            # Check for service account key file (prefer clearer variable name)
+            service_account_path = os.getenv('GOOGLE_SERVICE_ACCOUNT_KEY_FILE') or os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+            project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+            
+            if service_account_path and os.path.exists(service_account_path):
+                credentials = service_account.Credentials.from_service_account_file(
+                    service_account_path,
+                    scopes=['https://www.googleapis.com/auth/cloud-platform']
+                )
+                return credentials, project_id
+            else:
+                # Try service account JSON from environment variable
+                service_account_json = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
+                if service_account_json:
+                    service_account_info = json.loads(service_account_json)
+                    credentials = service_account.Credentials.from_service_account_info(
+                        service_account_info,
+                        scopes=['https://www.googleapis.com/auth/cloud-platform']
+                    )
+                    project_id = service_account_info.get('project_id') or project_id
+                    return credentials, project_id
+                    
+        except Exception as e:
+            logger.error(f"Failed to get service account credentials: {e}")
+            
+        return None, None
     
     def get_recent_logs(self, project_id: str, hours: int = 1, max_entries: int = 100) -> Dict[str, Any]:
         """

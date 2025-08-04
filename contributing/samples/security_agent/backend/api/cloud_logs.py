@@ -5,7 +5,7 @@ Provides REST API endpoints to access GCP Cloud Logging data for project
 infrastructure analysis.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from typing import Dict, Any, Optional
 from services.cloud_logging_service import CloudLoggingService
 import logging
@@ -14,11 +14,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/cloud-logs", tags=["cloud-logs"])
 
-# Initialize Cloud Logging service
-cloud_logging_service = CloudLoggingService()
-
 @router.get("/recent")
 async def get_recent_logs(
+    req: Request,
     project_id: str = "your-project-id",
     hours: int = 1,
     max_entries: int = 100
@@ -35,6 +33,16 @@ async def get_recent_logs(
         Recent log entries with summary and analysis
     """
     try:
+        # Initialize Cloud Logging service with credentials from app state
+        credentials = getattr(req.app.state, 'gcp_credentials', None)
+        project_id_from_state = getattr(req.app.state, 'gcp_project_id', None)
+        
+        # Use project_id from state if not provided or is default
+        if project_id == "your-project-id" and project_id_from_state:
+            project_id = project_id_from_state
+            
+        cloud_logging_service = CloudLoggingService(credentials, project_id)
+        
         result = cloud_logging_service.get_recent_logs(
             project_id=project_id,
             hours=hours,

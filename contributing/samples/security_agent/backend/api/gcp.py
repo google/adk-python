@@ -41,40 +41,22 @@ async def call_google_api_endpoint(request: GenericGCPRequest, req: Request) -> 
 
 
 @router.get("/projects")
-async def get_available_projects() -> Dict[str, Any]:
-    """Get list of available GCP projects using a direct REST API call via curl."""
+async def get_available_projects(req: Request) -> Dict[str, Any]:
+    """Get list of available GCP projects using service account credentials."""
     try:
-        import subprocess
-        import json
-
-        # Get access token from gcloud ADC
-        token_process = subprocess.run(
-            ["gcloud", "auth", "application-default", "print-access-token"],
-            capture_output=True, text=True, check=True
-        )
-        access_token = token_process.stdout.strip()
-
-        # Get default project from gcloud config
-        default_project_process = subprocess.run(
-            ["gcloud", "config", "get-value", "project"],
-            capture_output=True, text=True
-        )
-        default_project = default_project_process.stdout.strip() if default_project_process.returncode == 0 else None
-
-        # Use curl to make the API call
-        curl_command = [
-            "curl", "-X", "GET",
-            "https://cloudresourcemanager.googleapis.com/v3/projects",
-            "--header", f"Authorization: Bearer {access_token}",
-            "--header", "Content-Type: application/json"
-        ]
+        # Get GCP service with credentials from app state
+        gcp_service = req.app.state.gcp_service
+        default_project = req.app.state.gcp_project_id
         
-        response_process = subprocess.run(
-            curl_command,
-            capture_output=True, text=True, check=True
+        # Call Cloud Resource Manager API to list projects
+        result = gcp_service.call_google_api(
+            service="cloudresourcemanager",
+            version="v3",
+            resource_path="projects",
+            method="GET"
         )
         
-        data = json.loads(response_process.stdout)
+        data = result if isinstance(result, dict) else {"projects": []}
         projects_data = data.get("projects", [])
         
         projects = []
@@ -158,7 +140,7 @@ async def get_project_info(project_id: str) -> Dict[str, Any]:
 
 @router.get("/project/{project_id}/services")
 async def get_project_services(project_id: str) -> Dict[str, Any]:
-    """Get enabled services for a project."""
+    """Get enabled services for a project with enhanced categorization and security insights."""
     try:
         from google.cloud import service_usage_v1
         
@@ -171,21 +153,118 @@ async def get_project_services(project_id: str) -> Dict[str, Any]:
             filter="state:ENABLED"
         )
         
+        # API categorization and security implications
+        api_categories = {
+            "compute": {
+                "apis": ["compute.googleapis.com", "container.googleapis.com", "run.googleapis.com", "appengine.googleapis.com"],
+                "category": "Compute & Containers",
+                "risk_level": "medium",
+                "description": "Virtual machines, containers, and application hosting services"
+            },
+            "storage": {
+                "apis": ["storage-component.googleapis.com", "storage.googleapis.com", "bigquery.googleapis.com", "sql.googleapis.com", "firestore.googleapis.com"],
+                "category": "Storage & Databases", 
+                "risk_level": "high",
+                "description": "Data storage, databases, and file systems - high data exposure risk"
+            },
+            "security": {
+                "apis": ["iam.googleapis.com", "iamcredentials.googleapis.com", "secretmanager.googleapis.com", "cloudkms.googleapis.com", "securitycenter.googleapis.com"],
+                "category": "Security & Identity",
+                "risk_level": "critical",
+                "description": "Identity, access management, and security services - critical for access control"
+            },
+            "networking": {
+                "apis": ["dns.googleapis.com", "servicenetworking.googleapis.com", "cloudresourcemanager.googleapis.com"],
+                "category": "Networking & Resource Management",
+                "risk_level": "medium", 
+                "description": "Network configuration and resource management"
+            },
+            "ai_ml": {
+                "apis": ["aiplatform.googleapis.com", "ml.googleapis.com", "translate.googleapis.com", "vision.googleapis.com", "language.googleapis.com"],
+                "category": "AI & Machine Learning",
+                "risk_level": "medium",
+                "description": "Artificial intelligence and machine learning services"
+            },
+            "monitoring": {
+                "apis": ["monitoring.googleapis.com", "logging.googleapis.com", "cloudtrace.googleapis.com", "clouderrorreporting.googleapis.com"],
+                "category": "Monitoring & Observability",
+                "risk_level": "low",
+                "description": "System monitoring, logging, and observability tools"
+            },
+            "developer": {
+                "apis": ["cloudbuild.googleapis.com", "sourcerepo.googleapis.com", "artifactregistry.googleapis.com"],
+                "category": "Developer Tools",
+                "risk_level": "medium",
+                "description": "Development, build, and deployment tools"
+            }
+        }
+        
         services = []
+        categorized_services = {}
         page_result = client.list_services(request=request)
         
         for service in page_result:
-            services.append({
+            service_name = service.name.split("/")[-1] if "/" in service.name else service.name
+            display_name = service.config.title if service.config else service_name
+            
+            # Find category and risk level
+            category_info = None
+            for cat_key, cat_data in api_categories.items():
+                if service_name in cat_data["apis"]:
+                    category_info = cat_data
+                    break
+            
+            if not category_info:
+                category_info = {
+                    "category": "Other Services",
+                    "risk_level": "low",
+                    "description": "Miscellaneous Google Cloud services"
+                }
+            
+            service_info = {
                 "name": service.name,
-                "display_name": service.config.title if service.config else service.name,
-                "state": service.state.name
-            })
+                "service_name": service_name,
+                "display_name": display_name,
+                "state": service.state.name,
+                "category": category_info["category"],
+                "risk_level": category_info["risk_level"], 
+                "description": category_info["description"]
+            }
+            
+            services.append(service_info)
+            
+            # Group by category
+            if category_info["category"] not in categorized_services:
+                categorized_services[category_info["category"]] = {
+                    "services": [],
+                    "count": 0,
+                    "risk_level": category_info["risk_level"],
+                    "description": category_info["description"]
+                }
+            categorized_services[category_info["category"]]["services"].append(service_info)
+            categorized_services[category_info["category"]]["count"] += 1
+        
+        # Security summary
+        risk_summary = {
+            "critical": len([s for s in services if s["risk_level"] == "critical"]),
+            "high": len([s for s in services if s["risk_level"] == "high"]),
+            "medium": len([s for s in services if s["risk_level"] == "medium"]),
+            "low": len([s for s in services if s["risk_level"] == "low"])
+        }
         
         return {
             "success": True,
             "project_id": project_id,
             "services": services,
-            "total_services": len(services)
+            "categorized_services": categorized_services,
+            "total_services": len(services),
+            "risk_summary": risk_summary,
+            "security_recommendations": [
+                "Review critical and high-risk APIs regularly" if risk_summary["critical"] + risk_summary["high"] > 0 else None,
+                "Consider disabling unused APIs to reduce attack surface",
+                "Monitor API usage and access patterns",
+                "Ensure proper IAM policies are configured for enabled APIs"
+            ]
         }
         
     except Exception as e:
@@ -195,7 +274,9 @@ async def get_project_services(project_id: str) -> Dict[str, Any]:
             "error": str(e),
             "project_id": project_id,
             "services": [],
-            "total_services": 0
+            "categorized_services": {},
+            "total_services": 0,
+            "risk_summary": {"critical": 0, "high": 0, "medium": 0, "low": 0}
         }
 
 
@@ -244,38 +325,39 @@ async def get_project_iam_policy(project_id: str) -> Dict[str, Any]:
 
 
 @router.get("/project/{project_id}/security-recommendations")
-async def get_security_recommendations(project_id: str) -> Dict[str, Any]:
+async def get_security_recommendations(project_id: str, req: Request) -> Dict[str, Any]:
     """Get Google Cloud Security Command Center (Active Assist) recommendations."""
     try:
-        import subprocess
-        import json
+        # Get GCP service with credentials from app state
+        gcp_service = req.app.state.gcp_service
         
-        # Get security recommendations using gcloud CLI
-        result = subprocess.run([
-            "gcloud", "recommender", "recommendations", "list",
-            f"--project={project_id}",
-            "--recommender=google.iam.policy.Recommender",
-            "--location=global",
-            "--format=json"
-        ], capture_output=True, text=True)
-        
-        recommendations = []
-        if result.returncode == 0 and result.stdout.strip():
-            try:
-                raw_recommendations = json.loads(result.stdout)
-                for rec in raw_recommendations:
-                    recommendations.append({
-                        "name": rec.get("name", ""),
-                        "description": rec.get("description", ""),
-                        "recommender_subtype": rec.get("recommenderSubtype", ""),
-                        "priority": rec.get("priority", "PRIORITY_UNSPECIFIED"),
-                        "state": rec.get("stateInfo", {}).get("state", "UNKNOWN"),
-                        "target_resources": rec.get("content", {}).get("overview", {}),
-                        "impact": rec.get("primaryImpact", {}),
-                        "last_refresh_time": rec.get("lastRefreshTime", "")
-                    })
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse recommendations JSON")
+        # Call Recommender API to get IAM policy recommendations
+        try:
+            result = gcp_service.call_google_api(
+                service="recommender",
+                version="v1",
+                resource_path=f"projects/{project_id}/locations/global/recommenders/google.iam.policy.Recommender/recommendations",
+                method="GET"
+            )
+            
+            recommendations = []
+            raw_recommendations = result.get("recommendations", [])
+            
+            for rec in raw_recommendations:
+                recommendations.append({
+                    "name": rec.get("name", ""),
+                    "description": rec.get("description", ""),
+                    "recommender_subtype": rec.get("recommenderSubtype", ""),
+                    "priority": rec.get("priority", "PRIORITY_UNSPECIFIED"),
+                    "state": rec.get("stateInfo", {}).get("state", "UNKNOWN"),
+                    "target_resources": rec.get("content", {}).get("overview", {}),
+                    "impact": rec.get("primaryImpact", {}),
+                    "last_refresh_time": rec.get("lastRefreshTime", "")
+                })
+                
+        except Exception as api_error:
+            logger.warning(f"Failed to get recommendations via API: {api_error}")
+            recommendations = []
         
         return {
             "success": True,
@@ -301,32 +383,28 @@ async def get_security_recommendations(project_id: str) -> Dict[str, Any]:
 
 
 @router.get("/project/{project_id}/security-posture")
-async def get_security_posture_summary(project_id: str) -> Dict[str, Any]:
+async def get_security_posture_summary(project_id: str, req: Request) -> Dict[str, Any]:
     """Get comprehensive security posture summary combining IAM analysis and recommendations."""
     try:
         # Get IAM analysis for all users
         analyzer = IAMPolicyAnalyzer()
         iam_analysis = analyzer.analyze_all_users(project_id)
         
-        # Get security recommendations count
-        import subprocess
-        import json
-        
-        result = subprocess.run([
-            "gcloud", "recommender", "recommendations", "list",
-            f"--project={project_id}",
-            "--recommender=google.iam.policy.Recommender",
-            "--location=global",
-            "--format=json"
-        ], capture_output=True, text=True)
-        
+        # Get security recommendations count using GCP service
+        gcp_service = req.app.state.gcp_service
         recommendations_count = 0
-        if result.returncode == 0 and result.stdout.strip():
-            try:
-                raw_recommendations = json.loads(result.stdout)
-                recommendations_count = len(raw_recommendations)
-            except json.JSONDecodeError:
-                pass
+        
+        try:
+            result = gcp_service.call_google_api(
+                service="recommender",
+                version="v1",
+                resource_path=f"projects/{project_id}/locations/global/recommenders/google.iam.policy.Recommender/recommendations",
+                method="GET"
+            )
+            recommendations_count = len(result.get("recommendations", []))
+        except Exception as api_error:
+            logger.warning(f"Failed to get recommendations count: {api_error}")
+            recommendations_count = 0
         
         # Calculate overall security score
         total_users = iam_analysis.get("total_users", 0)

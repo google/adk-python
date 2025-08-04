@@ -17,6 +17,9 @@ from streamlit_agraph import agraph, Node, Edge, Config
 # Import stateless chat utilities
 from chat_utils import StatelessChatManager, render_floating_chat_button
 
+# Import startup status checker
+from startup_status import render_startup_screen_if_needed, StartupStatusChecker
+
 # Global chat manager instance for all pages
 adk_chat_manager = StatelessChatManager("adk_security")
 
@@ -2348,6 +2351,136 @@ def api_explorer_ui():
     st.markdown("---")
     st.header("🔍 API Explorer")
     st.write("Directly call any Google Cloud API using the generic API tool.")
+    
+    # Enhanced API Services Display
+    if st.session_state.selected_project and st.session_state.selected_project != "Select a project":
+        st.markdown("---")
+        st.subheader("🔧 Enabled APIs in Current Project")
+        
+        # Fetch enabled services
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            if st.button("🔄 Refresh APIs", help="Refresh the list of enabled APIs"):
+                with st.spinner("Fetching enabled APIs..."):
+                    response = make_backend_request(f"/api/v1/gcp/project/{st.session_state.selected_project}/services")
+                    st.session_state.enabled_apis_data = response
+                    st.success("APIs refreshed!")
+        
+        # Load APIs if not already loaded
+        if "enabled_apis_data" not in st.session_state:
+            with st.spinner("Loading enabled APIs..."):
+                response = make_backend_request(f"/api/v1/gcp/project/{st.session_state.selected_project}/services")
+                st.session_state.enabled_apis_data = response
+        
+        if "enabled_apis_data" in st.session_state and st.session_state.enabled_apis_data.get("success"):
+            data = st.session_state.enabled_apis_data
+            
+            # Risk Summary Cards
+            risk_summary = data.get("risk_summary", {})
+            col1, col2, col3, col4, col5 = st.columns(5)
+            
+            with col1:
+                st.metric("Total APIs", data.get("total_services", 0))
+            with col2:
+                st.metric("🔴 Critical", risk_summary.get("critical", 0))
+            with col3:
+                st.metric("🟠 High Risk", risk_summary.get("high", 0))
+            with col4:
+                st.metric("🟡 Medium Risk", risk_summary.get("medium", 0))
+            with col5:
+                st.metric("🟢 Low Risk", risk_summary.get("low", 0))
+            
+            # Display options
+            view_mode = st.radio("View Mode", ["📊 Categorized View", "📋 Table View", "⚠️ Risk Analysis"], horizontal=True)
+            
+            if view_mode == "📊 Categorized View":
+                categorized_services = data.get("categorized_services", {})
+                
+                for category_name, category_data in categorized_services.items():
+                    with st.expander(f"{category_name} ({category_data['count']} APIs)", expanded=False):
+                        st.markdown(f"**Description:** {category_data['description']}")
+                        
+                        # Risk level indicator
+                        risk_level = category_data['risk_level']
+                        risk_color = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(risk_level, "⚪")
+                        st.markdown(f"**Risk Level:** {risk_color} {risk_level.title()}")
+                        
+                        # Services in this category
+                        for service in category_data['services']:
+                            st.markdown(f"• **{service['display_name']}** (`{service['service_name']}`)")
+            
+            elif view_mode == "📋 Table View":
+                # Create DataFrame for table display
+                services_data = []
+                for service in data.get("services", []):
+                    services_data.append({
+                        "API Name": service['display_name'],
+                        "Service": service['service_name'],
+                        "Category": service['category'],
+                        "Risk Level": service['risk_level'],
+                        "State": service['state']
+                    })
+                
+                if services_data:
+                    df = pd.DataFrame(services_data)
+                    
+                    # Color code by risk level
+                    def highlight_risk(val):
+                        if val == 'critical':
+                            return 'background-color: #ffebee'
+                        elif val == 'high':
+                            return 'background-color: #fff3e0'
+                        elif val == 'medium':
+                            return 'background-color: #fffde7'
+                        else:
+                            return 'background-color: #e8f5e8'
+                    
+                    styled_df = df.style.applymap(highlight_risk, subset=['Risk Level'])
+                    st.dataframe(styled_df, use_container_width=True)
+            
+            elif view_mode == "⚠️ Risk Analysis":
+                st.markdown("### Security Recommendations")
+                recommendations = data.get("security_recommendations", [])
+                for i, rec in enumerate(recommendations, 1):
+                    if rec:  # Filter out None values
+                        st.markdown(f"{i}. {rec}")
+                
+                # Risk distribution chart
+                if risk_summary and sum(risk_summary.values()) > 0:
+                    st.markdown("### Risk Distribution")
+                    
+                    # Create pie chart
+                    risk_labels = []
+                    risk_values = []
+                    risk_colors = []
+                    
+                    for level, count in risk_summary.items():
+                        if count > 0:
+                            risk_labels.append(f"{level.title()} ({count})")
+                            risk_values.append(count)
+                            risk_colors.append({
+                                "critical": "#f44336",
+                                "high": "#ff9800", 
+                                "medium": "#ffeb3b",
+                                "low": "#4caf50"
+                            }.get(level, "#9e9e9e"))
+                    
+                    fig = go.Figure(data=[go.Pie(
+                        labels=risk_labels,
+                        values=risk_values,
+                        marker_colors=risk_colors,
+                        hole=0.4
+                    )])
+                    fig.update_layout(title="API Risk Level Distribution", height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+        
+        elif "enabled_apis_data" in st.session_state:
+            st.error(f"Failed to load APIs: {st.session_state.enabled_apis_data.get('error', 'Unknown error')}")
+    else:
+        st.info("👆 Please select a project from the sidebar to view enabled APIs.")
+    
+    st.markdown("---")
+    st.subheader("🚀 Manual API Calls")
 
     with st.form("api_explorer_form"):
         st.subheader("Request Details")
@@ -2411,6 +2544,10 @@ def api_explorer_ui():
 
 def main():
     """Main application."""
+    # Check if backend is ready first
+    if not render_startup_screen_if_needed(BACKEND_URL):
+        return  # Show startup screen and exit
+    
     st.set_page_config(
         page_title="Enhanced GCP Security Agent",
         page_icon="🔒",
@@ -2654,6 +2791,10 @@ def main():
     
     elif page == "📊 Day Two SRE":
         day_two_sre_ui()
+    
+    # Add connection status to sidebar
+    startup_checker = StartupStatusChecker(BACKEND_URL)
+    startup_checker.render_connection_status_sidebar()
 
 
 if __name__ == "__main__":

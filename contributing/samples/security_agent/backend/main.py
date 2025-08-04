@@ -26,6 +26,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Google Cloud authentication
+from google.auth import default
+from google.oauth2 import service_account
+import json
+
 # OpenTelemetry imports
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -54,14 +59,78 @@ from services.gcp_service import GCPService
 from utils.openapi_converter import create_adk_compatible_openapi
 
 
-def setup_tracing():
-    """Set up OpenTelemetry tracing with Cloud Trace."""
+def setup_service_account_credentials():
+    """Set up Google Cloud service account credentials."""
+    try:
+        # Check for service account key file (prefer clearer variable name)
+        service_account_path = os.getenv('GOOGLE_SERVICE_ACCOUNT_KEY_FILE') or os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+        
+        if service_account_path and os.path.exists(service_account_path):
+            # Load service account credentials
+            credentials = service_account.Credentials.from_service_account_file(
+                service_account_path,
+                scopes=[
+                    'https://www.googleapis.com/auth/cloud-platform',
+                    'https://www.googleapis.com/auth/trace.append',
+                    'https://www.googleapis.com/auth/monitoring.write',
+                    'https://www.googleapis.com/auth/logging.write'
+                ]
+            )
+            logger.info(f"✅ Service account credentials loaded from: {service_account_path}")
+            logger.info(f"✅ Project ID: {project_id}")
+            return credentials, project_id
+        else:
+            # Try service account JSON from environment variable
+            service_account_json = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
+            if service_account_json:
+                service_account_info = json.loads(service_account_json)
+                credentials = service_account.Credentials.from_service_account_info(
+                    service_account_info,
+                    scopes=[
+                        'https://www.googleapis.com/auth/cloud-platform',
+                        'https://www.googleapis.com/auth/trace.append',
+                        'https://www.googleapis.com/auth/monitoring.write',
+                        'https://www.googleapis.com/auth/logging.write'
+                    ]
+                )
+                project_id = service_account_info.get('project_id') or project_id
+                logger.info("✅ Service account credentials loaded from environment JSON")
+                logger.info(f"✅ Project ID: {project_id}")
+                return credentials, project_id
+            else:
+                # Fall back to default credentials
+                logger.warning("⚠️ No service account file found, falling back to default credentials")
+                credentials, project_id = default()
+                return credentials, project_id
+                
+    except Exception as e:
+        logger.error(f"❌ Failed to set up service account credentials: {e}")
+        logger.info("Falling back to default credentials")
+        try:
+            credentials, project_id = default()
+            return credentials, project_id
+        except Exception as fallback_error:
+            logger.error(f"❌ Failed to get any credentials: {fallback_error}")
+            return None, None
+
+
+def setup_tracing(credentials=None, project_id=None):
+    """Set up OpenTelemetry tracing with Cloud Trace using service account."""
     try:
         # Set up tracer provider
         trace.set_tracer_provider(TracerProvider())
         
-        # Set up Cloud Trace exporter
-        cloud_trace_exporter = CloudTraceSpanExporter()
+        # Set up Cloud Trace exporter with explicit credentials
+        if credentials and project_id:
+            cloud_trace_exporter = CloudTraceSpanExporter(
+                project_id=project_id,
+                credentials=credentials
+            )
+            logger.info(f"✅ Cloud Trace exporter configured with service account for project: {project_id}")
+        else:
+            cloud_trace_exporter = CloudTraceSpanExporter()
+            logger.info("✅ Cloud Trace exporter configured with default credentials")
         
         # Add span processor
         trace.get_tracer_provider().add_span_processor(
@@ -71,10 +140,10 @@ def setup_tracing():
         # Instrument requests
         RequestsInstrumentor().instrument()
         
-        print("✅ OpenTelemetry tracing configured with Cloud Trace")
+        logger.info("✅ OpenTelemetry tracing configured with Cloud Trace")
         return True
     except Exception as e:
-        print(f"⚠️ Failed to configure tracing: {e}")
+        logger.error(f"⚠️ Failed to configure tracing: {e}")
         return False
 
 @asynccontextmanager
@@ -83,8 +152,13 @@ async def lifespan(app: FastAPI):
     # Startup
     print("Starting Enhanced Security Agent Backend...")
     
-    # Set up tracing
-    tracing_enabled = setup_tracing()
+    # Set up service account credentials
+    credentials, project_id = setup_service_account_credentials()
+    app.state.gcp_credentials = credentials
+    app.state.gcp_project_id = project_id
+    
+    # Set up tracing with service account
+    tracing_enabled = setup_tracing(credentials, project_id)
     app.state.tracing_enabled = tracing_enabled
     
     # Initialize core services
@@ -112,7 +186,9 @@ async def lifespan(app: FastAPI):
     
     # Initialize tracing service
     app.state.tracing_service = TracingService()
-    app.state.gcp_service = GCPService()
+    
+    # Initialize GCP service with credentials
+    app.state.gcp_service = GCPService(credentials, project_id)
 
     yield
     
