@@ -48,7 +48,9 @@ class LlmRequest(BaseModel):
   config: types.GenerateContentConfig = Field(
       default_factory=types.GenerateContentConfig
   )
-  live_connect_config: types.LiveConnectConfig = types.LiveConnectConfig()
+  live_connect_config: types.LiveConnectConfig = Field(
+      default_factory=types.LiveConnectConfig
+  )
   """Additional config for the generate content request.
 
   tools in generate_content_config should not be set.
