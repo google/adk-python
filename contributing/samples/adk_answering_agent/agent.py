@@ -247,6 +247,7 @@ root_agent = Agent(
       * {APPROVAL_INSTRUCTION}
       * Your response should be based on the information you found in the document store. Do not invent
         information that is not in the document store. Do not invent citations which are not in the document store.
+      * **Be Objective**: your answer should be based on the facts you found in the document store, do not be misled by user's assumptions or user's understanding of ADK.
       * If you can't find the answer or information in the document store, **do not** respond.
       * Include a bolded note (e.g. "Response from ADK Answering Agent") in your comment
         to indicate this comment was added by an ADK Answering Agent.
