@@ -392,7 +392,7 @@ def validate_exclusive(ctx, param, value):
     ),
     help=(
         "The json file that contains a previously saved session (by"
-        "--save_session option). The previous session will be re-displayed. And"
+        " --save_session option). The previous session will be re-displayed. And"
         " user can continue to interact with the agent."
     ),
     callback=validate_exclusive,
