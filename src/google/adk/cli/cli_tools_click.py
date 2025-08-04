@@ -921,6 +921,12 @@ def cli_api_server(
     ),
 )
 @click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level",
+)
+@click.option(
     "--verbosity",
     type=LOG_LEVELS,
     help="Deprecated. Use --log_level instead.",
@@ -954,7 +960,7 @@ def cli_deploy_cloud_run(
     trace_to_cloud: bool,
     with_ui: bool,
     adk_version: str,
-    verbosity: str = "WARNING",
+    verbosity: Optional[str],
     reload: bool = True,
     allow_origins: Optional[list[str]] = None,
     log_level: Optional[str] = None,
@@ -975,7 +981,14 @@ def cli_deploy_cloud_run(
 
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
   """
-  log_level = log_level or verbosity
+  if verbosity:
+    click.secho(
+        "WARNING: The --verbosity option is deprecated. Use --log_level"
+        " instead.",
+        fg="yellow",
+        err=True,
+    )
+
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
   try:
