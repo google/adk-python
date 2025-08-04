@@ -1,0 +1,50 @@
+# Ignore Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Ignore virtual environments
+venv/
+ENV/
+env/
+.env
+.venv
+
+# Ignore IDE files
+.idea/
+.vscode/
+
+# Ignore testing and build artifacts
+.coverage
+.pytest_cache/
+.streamlit/
+build/
+dist/
+*.egg-info/
+
+# Ignore logs and temporary files
+*.log
+logs/
+*.pid
+.env.*
+run.log
+*.swp
+*.swo
+*.bak
+*.tmp
+.crush/
+
+# Ignore macOS specific files
+.DS_Store
+
+# Ignore Git-related directories
+.git/
+
+# Ignore editor backups
+*~
+# Ignore any other local development specific files not part of the build
+adk_web.pid
+backend.pid
+frontend.pid
