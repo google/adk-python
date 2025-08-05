@@ -843,30 +843,31 @@ async def test_parallel_state_modifications_thread_safety():
 
 
 @pytest.mark.asyncio
-async def test_parallel_mixed_sync_async_functions():
-  """Test parallel execution with mix of sync and async functions."""
-  execution_log = []
+async def test_sync_function_blocks_async_functions():
+  """Test that sync functions block async functions from running concurrently."""
+  execution_order = []
 
-  def sync_function(value: int) -> dict:
-    execution_log.append(f'sync_start_{value}')
-    # Simulate some work
-    import time
+  def blocking_sync_function() -> dict:
+    execution_order.append('sync_A')
+    # Simulate CPU-intensive work that blocks the event loop
+    result = 0
+    for i in range(1000000):  # This blocks the event loop
+      result += i
+    execution_order.append('sync_B')
+    return {'result': 'sync_done'}
 
-    time.sleep(0.05)  # 50ms
-    execution_log.append(f'sync_end_{value}')
-    return {'result': f'sync_{value}'}
+  async def yielding_async_function() -> dict:
+    execution_order.append('async_C')
+    await asyncio.sleep(
+        0.001
+    )  # This should yield, but can't if event loop is blocked
+    execution_order.append('async_D')
+    return {'result': 'async_done'}
 
-  async def async_function(value: int) -> dict:
-    execution_log.append(f'async_start_{value}')
-    await asyncio.sleep(0.05)  # 50ms
-    execution_log.append(f'async_end_{value}')
-    return {'result': f'async_{value}'}
-
-  # Create function calls
+  # Create function calls - these should run "in parallel"
   function_calls = [
-      types.Part.from_function_call(name='sync_function', args={'value': 1}),
-      types.Part.from_function_call(name='async_function', args={'value': 2}),
-      types.Part.from_function_call(name='sync_function', args={'value': 3}),
+      types.Part.from_function_call(name='blocking_sync_function', args={}),
+      types.Part.from_function_call(name='yielding_async_function', args={}),
   ]
 
   responses: list[types.Content] = [function_calls, 'response1']
@@ -875,24 +876,150 @@ async def test_parallel_mixed_sync_async_functions():
   agent = Agent(
       name='test_agent',
       model=mock_model,
-      tools=[sync_function, async_function],
+      tools=[blocking_sync_function, yielding_async_function],
   )
   runner = testing_utils.TestInMemoryRunner(agent)
-
-  import time
-
-  start_time = time.time()
   events = await runner.run_async_with_new_session('test')
-  total_time = time.time() - start_time
 
-  # Should complete in less than 120ms (parallel) rather than 150ms (sequential)
-  # Allow for overhead from task creation and synchronization
-  assert total_time < 0.12, f'Execution took {total_time}s, expected < 0.12s'
+  # With blocking sync function, execution should be sequential: A, B, C, D
+  # The sync function blocks, preventing the async function from yielding properly
+  assert execution_order == ['sync_A', 'sync_B', 'async_C', 'async_D']
 
-  # Verify all functions were called
-  assert 'sync_start_1' in execution_log
-  assert 'sync_end_1' in execution_log
-  assert 'async_start_2' in execution_log
-  assert 'async_end_2' in execution_log
-  assert 'sync_start_3' in execution_log
-  assert 'sync_end_3' in execution_log
+
+@pytest.mark.asyncio
+async def test_async_function_without_yield_blocks_others():
+  """Test that async functions without yield statements block other functions."""
+  execution_order = []
+
+  async def non_yielding_async_function() -> dict:
+    execution_order.append('non_yield_A')
+    # CPU-intensive work without any await statements - blocks like sync function
+    result = 0
+    for i in range(1000000):  # No await here, so this blocks the event loop
+      result += i
+    execution_order.append('non_yield_B')
+    return {'result': 'non_yielding_done'}
+
+  async def yielding_async_function() -> dict:
+    execution_order.append('yield_C')
+    await asyncio.sleep(
+        0.001
+    )  # This should yield, but can't if event loop is blocked
+    execution_order.append('yield_D')
+    return {'result': 'yielding_done'}
+
+  # Create function calls
+  function_calls = [
+      types.Part.from_function_call(
+          name='non_yielding_async_function', args={}
+      ),
+      types.Part.from_function_call(name='yielding_async_function', args={}),
+  ]
+
+  responses: list[types.Content] = [function_calls, 'response1']
+  mock_model = testing_utils.MockModel.create(responses=responses)
+
+  agent = Agent(
+      name='test_agent',
+      model=mock_model,
+      tools=[non_yielding_async_function, yielding_async_function],
+  )
+  runner = testing_utils.TestInMemoryRunner(agent)
+  events = await runner.run_async_with_new_session('test')
+
+  # Non-yielding async function blocks, so execution is sequential: A, B, C, D
+  assert execution_order == ['non_yield_A', 'non_yield_B', 'yield_C', 'yield_D']
+
+
+@pytest.mark.asyncio
+async def test_yielding_async_functions_run_concurrently():
+  """Test that async functions with proper yields run concurrently."""
+  execution_order = []
+
+  async def yielding_async_function_1() -> dict:
+    execution_order.append('func1_A')
+    await asyncio.sleep(0.001)  # Yield control
+    execution_order.append('func1_B')
+    return {'result': 'func1_done'}
+
+  async def yielding_async_function_2() -> dict:
+    execution_order.append('func2_C')
+    await asyncio.sleep(0.001)  # Yield control
+    execution_order.append('func2_D')
+    return {'result': 'func2_done'}
+
+  # Create function calls
+  function_calls = [
+      types.Part.from_function_call(name='yielding_async_function_1', args={}),
+      types.Part.from_function_call(name='yielding_async_function_2', args={}),
+  ]
+
+  responses: list[types.Content] = [function_calls, 'response1']
+  mock_model = testing_utils.MockModel.create(responses=responses)
+
+  agent = Agent(
+      name='test_agent',
+      model=mock_model,
+      tools=[yielding_async_function_1, yielding_async_function_2],
+  )
+  runner = testing_utils.TestInMemoryRunner(agent)
+  events = await runner.run_async_with_new_session('test')
+
+  # With proper yielding, execution should interleave: A, C, B, D
+  # Both functions start, yield, then complete
+  assert execution_order == ['func1_A', 'func2_C', 'func1_B', 'func2_D']
+
+
+@pytest.mark.asyncio
+async def test_mixed_function_types_execution_order():
+  """Test execution order with all three types of functions."""
+  execution_order = []
+
+  def sync_function() -> dict:
+    execution_order.append('sync_A')
+    # Small amount of blocking work
+    result = sum(range(100000))
+    execution_order.append('sync_B')
+    return {'result': 'sync_done'}
+
+  async def non_yielding_async() -> dict:
+    execution_order.append('non_yield_C')
+    # CPU work without yield
+    result = sum(range(100000))
+    execution_order.append('non_yield_D')
+    return {'result': 'non_yield_done'}
+
+  async def yielding_async() -> dict:
+    execution_order.append('yield_E')
+    await asyncio.sleep(0.001)  # Proper yield
+    execution_order.append('yield_F')
+    return {'result': 'yield_done'}
+
+  # Create function calls
+  function_calls = [
+      types.Part.from_function_call(name='sync_function', args={}),
+      types.Part.from_function_call(name='non_yielding_async', args={}),
+      types.Part.from_function_call(name='yielding_async', args={}),
+  ]
+
+  responses: list[types.Content] = [function_calls, 'response1']
+  mock_model = testing_utils.MockModel.create(responses=responses)
+
+  agent = Agent(
+      name='test_agent',
+      model=mock_model,
+      tools=[sync_function, non_yielding_async, yielding_async],
+  )
+  runner = testing_utils.TestInMemoryRunner(agent)
+  events = await runner.run_async_with_new_session('test')
+
+  # All blocking functions run sequentially, then the yielding one
+  # Expected order: sync_A, sync_B, non_yield_C, non_yield_D, yield_E, yield_F
+  assert execution_order == [
+      'sync_A',
+      'sync_B',
+      'non_yield_C',
+      'non_yield_D',
+      'yield_E',
+      'yield_F',
+  ]

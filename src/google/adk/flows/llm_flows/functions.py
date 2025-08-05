@@ -320,8 +320,8 @@ async def handle_function_calls_live(
   if not function_calls:
     return None
 
-  # Create thread-safe lock for active_streaming_tools modifications
-  streaming_lock = threading.Lock()
+  # Create async lock for active_streaming_tools modifications
+  streaming_lock = asyncio.Lock()
 
   # Create tasks for parallel execution
   tasks = [
@@ -368,7 +368,7 @@ async def _execute_single_function_call_live(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
-    streaming_lock: threading.Lock,
+    streaming_lock: asyncio.Lock,
 ) -> Optional[Event]:
   """Execute a single function call for live mode with thread safety."""
   tool, tool_context = _get_tool_and_context(
@@ -448,7 +448,7 @@ async def _process_function_live_helper(
     function_call,
     function_args,
     invocation_context,
-    streaming_lock: threading.Lock,
+    streaming_lock: asyncio.Lock,
 ):
   function_response = None
   # Check if this is a stop_streaming function call
@@ -458,7 +458,7 @@ async def _process_function_live_helper(
   ):
     function_name = function_args['function_name']
     # Thread-safe access to active_streaming_tools
-    with streaming_lock:
+    async with streaming_lock:
       active_tasks = invocation_context.active_streaming_tools
       if (
           active_tasks
@@ -491,7 +491,7 @@ async def _process_function_live_helper(
           }
       if not function_response:
         # Clean up the reference under lock
-        with streaming_lock:
+        async with streaming_lock:
           if (
               invocation_context.active_streaming_tools
               and function_name in invocation_context.active_streaming_tools
@@ -533,7 +533,7 @@ async def _process_function_live_helper(
     )
 
     # Register streaming tool using original logic
-    with streaming_lock:
+    async with streaming_lock:
       if invocation_context.active_streaming_tools is None:
         invocation_context.active_streaming_tools = {}
 
