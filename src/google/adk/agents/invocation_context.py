@@ -153,6 +153,9 @@ class InvocationContext(BaseModel):
   transcription_cache: Optional[list[TranscriptionEntry]] = None
   """Caches necessary data, audio or contents, that are needed by transcription."""
 
+  live_session_resumption_handle: Optional[str] = None
+  """The handle for live session resumption."""
+
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""
 

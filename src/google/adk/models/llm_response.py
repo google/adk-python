@@ -89,6 +89,11 @@ class LlmResponse(BaseModel):
   usage_metadata: Optional[types.GenerateContentResponseUsageMetadata] = None
   """The usage metadata of the LlmResponse"""
 
+  live_session_resumption_update: Optional[
+      types.LiveServerSessionResumptionUpdate
+  ] = None
+  """The session resumption update of the LlmResponse"""
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,

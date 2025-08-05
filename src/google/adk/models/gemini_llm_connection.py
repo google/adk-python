@@ -219,6 +219,13 @@ class GeminiLlmConnection(BaseLlmConnection):
             for function_call in message.tool_call.function_calls
         ]
         yield LlmResponse(content=types.Content(role='model', parts=parts))
+      if message.session_resumption_update:
+        logger.info('Redeived session reassumption message: %s', message)
+        yield (
+            LlmResponse(
+                live_session_resumption_update=message.session_resumption_update
+            )
+        )
 
   async def close(self):
     """Closes the llm server connection."""
