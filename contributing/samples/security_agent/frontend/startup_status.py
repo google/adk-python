@@ -35,7 +35,7 @@ class StartupStatusChecker:
                     "status_code": response.status_code,
                     "response_time": response.elapsed.total_seconds()
                 }
-        except requests.exceptions.ConnectRefused:
+        except requests.exceptions.ConnectionError:
             return {"status": "connection_refused", "error": "Backend not running"}
         except requests.exceptions.Timeout:
             return {"status": "timeout", "error": "Backend response timeout"}

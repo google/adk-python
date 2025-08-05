@@ -117,6 +117,21 @@ class GCPService:
 
             return response.json()
 
+        except requests.exceptions.HTTPError as e:
+            # Parse error response for better debugging
+            error_details = ""
+            try:
+                if e.response.content:
+                    error_json = e.response.json()
+                    error_details = f" - {error_json.get('error', {}).get('message', str(error_json))}"
+            except:
+                error_details = f" - HTTP {e.response.status_code}"
+            
+            # Provide specific guidance for common Resource Manager API issues
+            if service == "cloudresourcemanager" and "parent" in str(e).lower():
+                error_details += " (Hint: Resource Manager v3 API requires parent parameter; consider using v1 API instead)"
+            
+            raise Exception(f"HTTP Error calling Google API '{service}/{version}/{resource_path}'{error_details}: {e}")
         except Exception as e:
             # Re-raise with a more informative message
             raise Exception(f"Error calling Google API '{service}/{version}/{resource_path}': {e}")

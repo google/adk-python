@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from typing import List, Dict, Any
 import logging
 import requests
+import subprocess
 from google.auth import default, transport
 
 from models.api_models import GenericGCPRequest
@@ -48,10 +49,11 @@ async def get_available_projects(req: Request) -> Dict[str, Any]:
         gcp_service = req.app.state.gcp_service
         default_project = req.app.state.gcp_project_id
         
-        # Call Cloud Resource Manager API to list projects
+        # Call Cloud Resource Manager API to list projects using v1 API
+        # v1 API is more straightforward for listing accessible projects
         result = gcp_service.call_google_api(
             service="cloudresourcemanager",
-            version="v3",
+            version="v1",
             resource_path="projects",
             method="GET"
         )
@@ -61,10 +63,11 @@ async def get_available_projects(req: Request) -> Dict[str, Any]:
         
         projects = []
         for project in projects_data:
-            if project.get("state") == "ACTIVE":
+            # v1 API uses 'lifecycleState' instead of 'state'
+            if project.get("lifecycleState") == "ACTIVE":
                 projects.append({
                     "project_id": project.get("projectId"),
-                    "display_name": project.get("displayName"),
+                    "display_name": project.get("displayName") or project.get("name", project.get("projectId")),
                     "project_number": project.get("projectNumber"),
                 })
 
