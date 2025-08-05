@@ -1,3 +1,5 @@
+name: ADK Answering Agent for Discussions
+
 on:
   discussion:
     types: [created]
