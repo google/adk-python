@@ -676,6 +676,15 @@ def fast_api_common_options():
         show_default=True,
         help="Optional. Whether to enable live reload for agents changes.",
     )
+    @click.option(
+        "--eval_storage_uri",
+        type=str,
+        help=(
+            "Optional. The evals storage URI to store agent evals,"
+            " supported URIs: gs://<bucket name>."
+        ),
+        default=None,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -947,6 +956,19 @@ def cli_api_server(
         " version in the dev environment)"
     ),
 )
+@click.option(
+    "--a2a",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to enable A2A endpoint.",
+)
+@click.option(
+    "--allow_origins",
+    help="Optional. Any additional origins to allow for CORS.",
+    multiple=True,
+)
+# TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
 @adk_services_options()
 @deprecated_adk_services_options()
 def cli_deploy_cloud_run(
@@ -960,18 +982,15 @@ def cli_deploy_cloud_run(
     trace_to_cloud: bool,
     with_ui: bool,
     adk_version: str,
+    log_level: str,
     verbosity: Optional[str],
-    reload: bool = True,
     allow_origins: Optional[list[str]] = None,
-    log_level: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
-    eval_storage_uri: Optional[str] = None,
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
-    reload_agents: bool = False,
 ):
   """Deploys an agent to Cloud Run.
 
