@@ -75,9 +75,9 @@ class Gemini(BaseLlm):
   ```
   """
 
-  @staticmethod
+  @classmethod
   @override
-  def supported_models() -> list[str]:
+  def supported_models(cls) -> list[str]:
     """Provides the list of supported models.
 
     Returns:

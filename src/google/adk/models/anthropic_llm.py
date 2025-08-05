@@ -249,9 +249,9 @@ class Claude(BaseLlm):
   model: str = "claude-3-5-sonnet-v2@20241022"
   max_tokens: int = 8192
 
-  @staticmethod
+  @classmethod
   @override
-  def supported_models() -> list[str]:
+  def supported_models(cls) -> list[str]:
     return [r"claude-3-.*", r"claude-.*-4.*"]
 
   @override
