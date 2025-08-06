@@ -71,6 +71,7 @@ class Runner:
       plugin_manager: The plugin manager for the runner.
       session_service: The session service for the runner.
       memory_service: The memory service for the runner.
+      credential_service: The credential service for the runner.
   """
 
   app_name: str
@@ -104,9 +105,11 @@ class Runner:
     Args:
         app_name: The application name of the runner.
         agent: The root agent to run.
+        plugins: A list of plugins for the runner.
         artifact_service: The artifact service for the runner.
         session_service: The session service for the runner.
         memory_service: The memory service for the runner.
+        credential_service: The credential service for the runner.
     """
     self.app_name = app_name
     self.agent = agent
