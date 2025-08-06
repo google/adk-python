@@ -69,7 +69,7 @@ def _resolve_agent_class(agent_class: str) -> type[BaseAgent]:
   if "." not in agent_class_name:
     agent_class_name = f"google.adk.agents.{agent_class_name}"
 
-  agent_class = _resolve_fully_qualified_name(agent_class_name)
+  agent_class = resolve_fully_qualified_name(agent_class_name)
   if inspect.isclass(agent_class) and issubclass(agent_class, BaseAgent):
     return agent_class
 
@@ -103,8 +103,8 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   return AgentConfig.model_validate(config_data)
 
 
-@working_in_progress("_resolve_fully_qualified_name is not ready for use.")
-def _resolve_fully_qualified_name(name: str) -> Any:
+@working_in_progress("resolve_fully_qualified_name is not ready for use.")
+def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
     module = importlib.import_module(module_path)
