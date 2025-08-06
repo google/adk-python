@@ -38,8 +38,6 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
-from ..examples.base_example_provider import BaseExampleProvider
-from ..examples.example import Example
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
 from ..flows.llm_flows.single_flow import SingleFlow
@@ -110,7 +108,6 @@ InstructionProvider: TypeAlias = Callable[
 ]
 
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
-ExamplesUnion = Union[list[Example], BaseExampleProvider]
 
 
 async def _convert_tool_union_to_tools(
