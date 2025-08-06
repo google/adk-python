@@ -504,8 +504,8 @@ class BaseAgent(BaseModel):
       sub_agent.parent_agent = self
     return self
 
+  @final
   @classmethod
-  @working_in_progress('BaseAgent.from_config is not ready for use.')
   def from_config(
       cls: Type[SelfAgent],
       config: BaseAgentConfig,
@@ -513,11 +513,8 @@ class BaseAgent(BaseModel):
   ) -> SelfAgent:
     """Creates an agent from a config.
 
-    This method converts fields in a config to the corresponding
-    fields in an agent.
-
-    Child classes should re-implement this method to support loading from their
-    custom config types.
+    If sub-classes uses a custom agent config, override `_from_config_kwargs`
+    method to return an updated kwargs for agent construstor.
 
     Args:
       config: The config to create the agent from.
@@ -527,6 +524,40 @@ class BaseAgent(BaseModel):
     Returns:
       The created agent.
     """
+    kwargs = cls.__create_kwargs(config, config_abs_path)
+    kwargs = cls._parse_config(config, config_abs_path, kwargs)
+    return cls(**kwargs)
+
+  @classmethod
+  def _parse_config(
+      cls: Type[SelfAgent],
+      config: BaseAgentConfig,
+      config_abs_path: str,
+      kwargs: Dict[str, Any],
+  ) -> Dict[str, Any]:
+    """Parses the config and returns updated kwargs to construct the agent.
+
+    Sub-classes should override this method to use a custome agent config class.
+
+    Args:
+      config: The config to parse.
+      config_abs_path: The absolute path to the config file that contains the
+        agent config.
+      kwargs: The keyword arguments used for agent constructor.
+
+    Returns:
+      The updated keyword arguments used for agent constructor.
+    """
+    return kwargs
+
+  @classmethod
+  def __create_kwargs(
+      cls,
+      config: BaseAgentConfig,
+      config_abs_path: str,
+  ) -> Dict[str, Any]:
+    """Creates kwargs for the fields of BaseAgent."""
+
     from .config_agent_utils import resolve_agent_reference
     from .config_agent_utils import resolve_callbacks
 
@@ -549,4 +580,4 @@ class BaseAgent(BaseModel):
       kwargs['after_agent_callback'] = resolve_callbacks(
           config.after_agent_callbacks
       )
-    return cls(**kwargs)
+    return kwargs

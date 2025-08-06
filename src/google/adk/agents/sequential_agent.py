@@ -81,13 +81,3 @@ class SequentialAgent(BaseAgent):
     for sub_agent in self.sub_agents:
       async for event in sub_agent.run_live(ctx):
         yield event
-
-  @classmethod
-  @override
-  @working_in_progress('SequentialAgent.from_config is not ready for use.')
-  def from_config(
-      cls: Type[SequentialAgent],
-      config: SequentialAgentConfig,
-      config_abs_path: str,
-  ) -> SequentialAgent:
-    return super().from_config(config, config_abs_path)

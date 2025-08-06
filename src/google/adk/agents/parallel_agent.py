@@ -17,8 +17,10 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from typing import AsyncGenerator
 from typing import ClassVar
+from typing import Dict
 from typing import Type
 
 from typing_extensions import override
@@ -119,13 +121,3 @@ class ParallelAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     raise NotImplementedError('This is not supported yet for ParallelAgent.')
     yield  # AsyncGenerator requires having at least one yield statement
-
-  @classmethod
-  @override
-  @working_in_progress('ParallelAgent.from_config is not ready for use.')
-  def from_config(
-      cls: Type[ParallelAgent],
-      config: ParallelAgentConfig,
-      config_abs_path: str,
-  ) -> ParallelAgent:
-    return super().from_config(config, config_abs_path)
