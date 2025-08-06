@@ -18,9 +18,9 @@ from google.genai import types
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
-from .base_tool import BaseToolConfig
-from .base_tool import ToolArgsConfig
 from .function_tool import FunctionTool
+from .tool_configs import BaseToolConfig
+from .tool_configs import ToolArgsConfig
 
 try:
   from crewai.tools import BaseTool as CrewaiBaseTool

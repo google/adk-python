@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from google.adk.tools import VertexAiSearchTool
-from google.adk.tools.base_tool import ToolConfig
+from google.adk.tools.tool_configs import ToolConfig
 from google.genai import types
 import yaml
 

@@ -24,8 +24,8 @@ from ..examples import example_util
 from ..examples.base_example_provider import BaseExampleProvider
 from ..examples.example import Example
 from .base_tool import BaseTool
-from .base_tool import BaseToolConfig
-from .base_tool import ToolArgsConfig
+from .tool_configs import BaseToolConfig
+from .tool_configs import ToolArgsConfig
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:

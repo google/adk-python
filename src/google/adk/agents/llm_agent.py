@@ -47,9 +47,9 @@ from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..planners.base_planner import BasePlanner
 from ..tools.base_tool import BaseTool
-from ..tools.base_tool import ToolConfig
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
+from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
 from ..utils.feature_decorator import working_in_progress
 from .base_agent import BaseAgent
