@@ -20,17 +20,13 @@ __all__ = [
     'BaseRetrievalTool',
     'FilesRetrieval',
     'LlamaIndexRetrieval',
+    'VertexAiRagRetrieval',
 ]
 
-try:
-  from .vertex_ai_rag_retrieval import VertexAiRagRetrieval
 
-  __all__.append('VertexAiRagRetrieval')
-except ImportError:
-  import logging
+def __getattr__(name: str):
+  if name == 'VertexAiRagRetrieval':
+    from .vertex_ai_rag_retrieval import VertexAiRagRetrieval
 
-  logger = logging.getLogger('google_adk.' + __name__)
-  logger.debug(
-      'The Vertex sdk is not installed. If you want to use the Vertex RAG with'
-      ' agents, please install it. If not, you can ignore this warning.'
-  )
+    return VertexAiRagRetrieval
+  raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
