@@ -18,6 +18,8 @@ from google.genai import types
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
+from .base_tool import BaseToolConfig
+from .base_tool import ToolArgsConfig
 from .function_tool import FunctionTool
 
 try:
@@ -70,3 +72,29 @@ class CrewaiTool(FunctionTool):
         self.tool.args_schema.model_json_schema(),
     )
     return function_declaration
+
+  @override
+  @classmethod
+  def from_config(
+      cls: type[CrewaiTool], config: ToolArgsConfig, config_abs_path: str
+  ) -> CrewaiTool:
+    from ..agents import config_agent_utils
+
+    crewai_tool_config = CrewaiToolConfig.model_validate(config.model_dump())
+    tool = config_agent_utils.resolve_fully_qualified_name(
+        crewai_tool_config.tool
+    )
+    name = crewai_tool_config.name
+    description = crewai_tool_config.description
+    return cls(tool, name=name, description=description)
+
+
+class CrewaiToolConfig(BaseToolConfig):
+  tool: str
+  """The fully qualified path of the CrewAI tool instance."""
+
+  name: str = ""
+  """The name of the tool."""
+
+  description: str = ""
+  """The description of the tool."""
