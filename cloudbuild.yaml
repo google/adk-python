@@ -1,0 +1,77 @@
+steps:
+# Build the Docker image for the backend
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/${_PROJECT_ID}/security-agent-backend:${_TAG}', '.']
+  dir: 'contributing/samples/security_agent' # Specify the context directory for Docker build
+
+# Push the backend Docker image to Google Container Registry
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/${_PROJECT_ID}/security-agent-backend:${_TAG}']
+
+# Deploy the backend to Cloud Run
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  args:
+  - gcloud
+  - run
+  - deploy
+  - security-agent-backend
+  - --image
+  - gcr.io/${_PROJECT_ID}/security-agent-backend:${_TAG}
+  - --region=${_REGION}
+  - --platform=managed
+  - --allow-unauthenticated # Adjust as per your authentication requirements
+  - --port=8000 # Specify the port the backend listens on
+  - --set-env-vars=PYTHONPATH=/app
+  - --set-env-vars=GOOGLE_CLOUD_PROJECT=${_PROJECT_ID}
+  # Add other environment variables as needed, e.g., for Vertex AI location
+  # - --set-env-vars=VERTEX_AI_LOCATION=us-central1
+  # - --set-env-vars=ADK_EVALUATION_ENABLED=true
+
+# Build the Docker image for the frontend (reusing the same Dockerfile but targeting frontend app)
+# NOTE: This assumes a single Dockerfile can serve both. If Streamlit and FastAPI have very different needs,
+# you might consider separate Dockerfiles or a more complex entrypoint.
+# For simplicity, we'll build the same image and then deploy with different commands.
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/${_PROJECT_ID}/security-agent-frontend:${_TAG}', '.']
+  dir: 'contributing/samples/security_agent'
+
+# Push the frontend Docker image to Google Container Registry
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/${_PROJECT_ID}/security-agent-frontend:${_TAG}']
+
+# Deploy the frontend to Cloud Run
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  args:
+  - gcloud
+  - run
+  - deploy
+  - security-agent-frontend
+  - --image
+  - gcr.io/${_PROJECT_ID}/security-agent-frontend:${_TAG}
+  - --region=${_REGION}
+  - --platform=managed
+  - --allow-unauthenticated # Adjust as per your authentication requirements
+  - --port=8501 # Specify the port the frontend listens on
+  - --set-env-vars=PYTHONPATH=/app
+  - --set-env-vars=BACKEND_URL=http://security-agent-backend:8000 # Internal service communication
+  - --command=python
+  - --
+  - -m
+  - streamlit
+  - run
+  - frontend/enhanced_security_agent_app.py
+  - --server.port=8501
+  - --server.address=0.0.0.0
+
+# You might want to add a step here for health checks or integration tests after deployment.
+
+substitutions:
+  _TAG: 'latest' # Default tag, can be overridden by Cloud Build triggers
+  _PROJECT_ID: 'your-gcp-project-id' # Replace with your GCP Project ID
+  _REGION: 'us-central1' # Replace with your desired GCP region, e.g., 'us-central1'
+
+options:
+  machineType: 'E2_HIGHCPU_8' # Use a more powerful machine type for faster builds
+  diskSizeGb: 200 # Increase disk size for larger dependencies if needed
+
+timeout: 1200s # 20 minutes timeout for the entire build process

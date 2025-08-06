@@ -28,8 +28,6 @@ logger = logging.getLogger(__name__)
 
 # Google Cloud authentication
 from google.auth import default
-from google.oauth2 import service_account
-import json
 
 # OpenTelemetry imports
 from opentelemetry import trace
@@ -39,80 +37,69 @@ from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
-from api import (
-    security, knowledge, agent, documentation, apihub, compliance, 
-    threat_intelligence, configuration, incidents, evaluation, msa, tracing, openapi_tools, gcp, recommendations, async_security, logs, cloud_logs
-)
-from services.security_service import SecurityService
-from services.documentation_service import DocumentationService
+# Import remaining API modules from api/
+from api import knowledge, agent, apihub, threat_intelligence, configuration, incidents, evaluation, openapi_tools, async_security, logs
+
+# Import feature-based API modules
+from security.api import router as security_router
+from documentation.api import router as documentation_router  
+from msa.api import router as msa_router
+from tracing.api import router as tracing_router
+from gcp.api import router as gcp_router
+from cloud_logging.api import router as cloud_logging_router
+from recommendations.api import router as recommendations_router
+from compliance.api import router as compliance_router
+from iam.api import router as iam_router
+from monitoring.api import router as monitoring_router
+
+# Import remaining services from services/
 from services.agent_service import AgentService
 from services.secret_manager_service import SecretManagerService
 from services.apihub_service import APIHubService
-from services.compliance_service import ComplianceService
 from services.threat_intelligence_service import ThreatIntelligenceService
 from services.configuration_analysis_service import ConfigurationAnalysisService
 from services.incident_response_service import IncidentResponseService
 from services.evaluation_service import SecurityAgentEvaluationService
-from services.msa_service import MSAParsingService
-from services.tracing_service import TracingService
-from services.gcp_service import GCPService
+
+# Import feature-based services  
+from security.service import SecurityService
+from documentation.service import DocumentationService
+from compliance.service import ComplianceService
+from msa.service import MSAParsingService
+from tracing.service import TracingService
+from gcp.service import GCPService
+from cloud_logging.service import CloudLoggingService
+from monitoring.service import MonitoringService
+from apihub.service import APIHubService as NewAPIHubService
+from apihub.api import router as new_apihub_router
 from utils.openapi_converter import create_adk_compatible_openapi
 
 
 def setup_service_account_credentials():
-    """Set up Google Cloud service account credentials."""
+    """Set up Google Cloud service account credentials using Google's standard approach."""
     try:
-        # Check for service account key file (prefer clearer variable name)
-        service_account_path = os.getenv('GOOGLE_SERVICE_ACCOUNT_KEY_FILE') or os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-        project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+        # Use Google's standard default authentication flow
+        # This works with GOOGLE_APPLICATION_CREDENTIALS for local development
+        # and service account attachment for Cloud Run
+        credentials, project_id = default(scopes=[
+            'https://www.googleapis.com/auth/cloud-platform',
+            'https://www.googleapis.com/auth/trace.append',
+            'https://www.googleapis.com/auth/monitoring.write',
+            'https://www.googleapis.com/auth/logging.write'
+        ])
         
-        if service_account_path and os.path.exists(service_account_path):
-            # Load service account credentials
-            credentials = service_account.Credentials.from_service_account_file(
-                service_account_path,
-                scopes=[
-                    'https://www.googleapis.com/auth/cloud-platform',
-                    'https://www.googleapis.com/auth/trace.append',
-                    'https://www.googleapis.com/auth/monitoring.write',
-                    'https://www.googleapis.com/auth/logging.write'
-                ]
-            )
-            logger.info(f"✅ Service account credentials loaded from: {service_account_path}")
-            logger.info(f"✅ Project ID: {project_id}")
-            return credentials, project_id
-        else:
-            # Try service account JSON from environment variable
-            service_account_json = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
-            if service_account_json:
-                service_account_info = json.loads(service_account_json)
-                credentials = service_account.Credentials.from_service_account_info(
-                    service_account_info,
-                    scopes=[
-                        'https://www.googleapis.com/auth/cloud-platform',
-                        'https://www.googleapis.com/auth/trace.append',
-                        'https://www.googleapis.com/auth/monitoring.write',
-                        'https://www.googleapis.com/auth/logging.write'
-                    ]
-                )
-                project_id = service_account_info.get('project_id') or project_id
-                logger.info("✅ Service account credentials loaded from environment JSON")
-                logger.info(f"✅ Project ID: {project_id}")
-                return credentials, project_id
-            else:
-                # Fall back to default credentials
-                logger.warning("⚠️ No service account file found, falling back to default credentials")
-                credentials, project_id = default()
-                return credentials, project_id
+        # Use project from environment if available, otherwise use detected project
+        project_id = os.getenv('GOOGLE_CLOUD_PROJECT') or project_id
+        
+        logger.info("✅ Google Cloud credentials loaded successfully")
+        logger.info(f"✅ Project ID: {project_id}")
+        return credentials, project_id
                 
     except Exception as e:
-        logger.error(f"❌ Failed to set up service account credentials: {e}")
-        logger.info("Falling back to default credentials")
-        try:
-            credentials, project_id = default()
-            return credentials, project_id
-        except Exception as fallback_error:
-            logger.error(f"❌ Failed to get any credentials: {fallback_error}")
-            return None, None
+        logger.error(f"❌ Failed to get Google Cloud credentials: {e}")
+        logger.error("Make sure GOOGLE_APPLICATION_CREDENTIALS is set for local development")
+        logger.error("or service account is attached for Cloud Run deployment")
+        return None, None
 
 
 def setup_tracing(credentials=None, project_id=None):
@@ -163,17 +150,17 @@ async def lifespan(app: FastAPI):
     
     # Initialize core services
     app.state.security_service = SecurityService()
-    app.state.documentation_service = DocumentationService()
+    app.state.documentation_service = DocumentationService(credentials, project_id)
     app.state.agent_service = AgentService()
     
     # Initialize Secret Manager service
     app.state.secret_manager_service = SecretManagerService()
     
-    # Initialize API Hub service
-    app.state.apihub_service = APIHubService(app.state.secret_manager_service)
+    # Initialize API Hub service (replace old with new)
+    app.state.apihub_service = NewAPIHubService()
     
     # Initialize new enhanced services
-    app.state.compliance_service = ComplianceService()
+    app.state.compliance_service = ComplianceService(credentials, project_id)
     app.state.threat_intelligence_service = ThreatIntelligenceService()
     app.state.configuration_analysis_service = ConfigurationAnalysisService()
     app.state.incident_response_service = IncidentResponseService()
@@ -189,6 +176,12 @@ async def lifespan(app: FastAPI):
     
     # Initialize GCP service with credentials
     app.state.gcp_service = GCPService(credentials, project_id)
+    
+    # Initialize cloud logging service
+    app.state.cloud_logging_service = CloudLoggingService(credentials, project_id)
+    
+    # Initialize monitoring service
+    app.state.monitoring_service = MonitoringService()
 
     yield
     
@@ -232,6 +225,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from google.auth import exceptions as auth_exceptions
+
 # Global error handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
@@ -246,11 +241,20 @@ async def global_exception_handler(request, exc):
     
     logger.error(f"Unhandled exception: {error_details}")
     
+    status_code = 500
+    error_message = f"Internal server error: {str(exc)}"
+    if isinstance(exc, auth_exceptions.DefaultCredentialsError):
+        status_code = 401
+        error_message = "Authentication failed. Please check your credentials."
+    elif isinstance(exc, auth_exceptions.RefreshError):
+        status_code = 401
+        error_message = "Authentication token has expired. Please re-authenticate."
+    
     return JSONResponse(
-        status_code=500,
+        status_code=status_code,
         content={
             "success": False,
-            "error": f"Internal server error: {str(exc)}",
+            "error": error_message,
             "error_type": type(exc).__name__,
             "message": "An unexpected error occurred"
         }
@@ -258,14 +262,15 @@ async def global_exception_handler(request, exc):
 
 
 # Include API routers
-app.include_router(security.router, prefix="/api/v1/security", tags=["Security"])
+app.include_router(security_router, prefix="/api/v1/security", tags=["Security"])
 app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge Base"])
 app.include_router(agent.router, prefix="/api/v1/agent", tags=["Agent"])
-app.include_router(documentation.router, prefix="/api/v1/documentation", tags=["Documentation"])
-app.include_router(apihub.router, prefix="/api/v1/apihub", tags=["API Hub"])
+app.include_router(documentation_router, prefix="/api/v1/documentation", tags=["Documentation"])
+app.include_router(new_apihub_router, prefix="/api/v1/apihub", tags=["API Hub"])
+# app.include_router(apihub.router, prefix="/api/v1/apihub-legacy", tags=["API Hub Legacy"])  # Keep old for compatibility
 
 # Include new enhanced API routers
-app.include_router(compliance.router, prefix="/api/v1/compliance", tags=["Compliance"])
+app.include_router(compliance_router, prefix="/api/v1/compliance", tags=["Compliance"])
 app.include_router(threat_intelligence.router, prefix="/api/v1/threat-intelligence", tags=["Threat Intelligence"])
 app.include_router(configuration.router, prefix="/api/v1/configuration", tags=["Configuration Analysis"])
 app.include_router(incidents.router, prefix="/api/v1/incidents", tags=["Incident Response"])
@@ -274,17 +279,17 @@ app.include_router(incidents.router, prefix="/api/v1/incidents", tags=["Incident
 app.include_router(evaluation.router, prefix="/api/v1/evaluation", tags=["Agent Evaluation"])
 
 # Include MSA analysis API router
-app.include_router(msa.router, prefix="/api/v1/msa", tags=["MSA Analysis"])
+app.include_router(msa_router, prefix="/api/v1/msa", tags=["MSA Analysis"])
 
 # Include tracing API router
-app.include_router(tracing.router, prefix="/api/v1/tracing", tags=["Tracing"])
+app.include_router(tracing_router, prefix="/api/v1/tracing", tags=["Tracing"])
 
 # Include OpenAPI tools API router
 app.include_router(openapi_tools.router, prefix="/api/v1/openapi-tools", tags=["OpenAPI Tools"])
-app.include_router(gcp.router, prefix="/api/v1/gcp", tags=["GCP Operations"])
+app.include_router(gcp_router, prefix="/api/v1/gcp", tags=["GCP Operations"])
 
 # Include recommendations API router
-app.include_router(recommendations.router, prefix="/api/v1/recommendations", tags=["Security Recommendations"])
+app.include_router(recommendations_router, prefix="/api/v1/recommendations", tags=["Security Recommendations"])
 
 # Include async security API router
 app.include_router(async_security.router, prefix="/api/v1/async-security", tags=["Async Security Operations"])
@@ -293,7 +298,13 @@ app.include_router(async_security.router, prefix="/api/v1/async-security", tags=
 app.include_router(logs.router, tags=["Log Analysis"])
 
 # Cloud Logging endpoints
-app.include_router(cloud_logs.router, tags=["Cloud Logging"])
+app.include_router(cloud_logging_router, tags=["Cloud Logging"])
+
+# IAM endpoints
+app.include_router(iam_router, prefix="/api/v1/iam", tags=["IAM Analysis"])
+
+# Performance monitoring endpoints
+app.include_router(monitoring_router, prefix="/api/v1/monitoring", tags=["Performance Monitoring"])
 
 
 @app.get("/")
@@ -390,5 +401,6 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8000,
-        log_level="info"
-    ) 
+        log_level="info",
+        reload=True
+    )

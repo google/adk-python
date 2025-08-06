@@ -5,6 +5,10 @@ import time
 import shutil
 import requests # For verify_service
 import argparse
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Import the stop script for pre-flight cleanup
 import stop # Assuming stop.py is in the same directory
@@ -109,6 +113,55 @@ def verify_service(url, service_name, timeout=10, max_attempts=5):
                 print_warning(f"{service_name} may not have started correctly")
                 return False
     return False
+
+def verify_gcp_integrations():
+    """Verify that GCP integrations are working properly."""
+    print_status("Verifying GCP service integrations...")
+    
+    integration_endpoints = [
+        ("http://localhost:8000/api/v1/security/health", "Security Center Integration"),
+        ("http://localhost:8000/api/v1/tracing/health", "Cloud Trace Integration"),
+        ("http://localhost:8000/api/v1/monitoring/monitoring-health", "Cloud Monitoring Integration"),
+        ("http://localhost:8000/api/v1/apihub/health", "API Hub Integration"),
+        ("http://localhost:8000/api/v1/cloud-logs/health", "Cloud Logging Integration")
+    ]
+    
+    integration_results = []
+    for endpoint, integration_name in integration_endpoints:
+        try:
+            response = requests.get(endpoint, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("healthy"):
+                    print_success(f"✅ {integration_name} is healthy")
+                    integration_results.append(True)
+                else:
+                    print_warning(f"⚠️ {integration_name} is not healthy: {data.get('error', 'Unknown error')}")
+                    integration_results.append(False)
+            else:
+                print_warning(f"⚠️ {integration_name} health check failed (HTTP {response.status_code})")
+                integration_results.append(False)
+        except requests.exceptions.RequestException:
+            print_warning(f"⚠️ Could not check {integration_name} health (service may not be ready)")
+            integration_results.append(False)
+    
+    healthy_count = sum(integration_results)
+    total_count = len(integration_results)
+    
+    if healthy_count == total_count:
+        print_success(f"🎉 All {total_count} GCP integrations are healthy!")
+    elif healthy_count > 0:
+        print_warning(f"⚠️ {healthy_count}/{total_count} GCP integrations are healthy. Some features may use mock data.")
+    else:
+        print_warning("⚠️ No GCP integrations are healthy. All features will use mock data.")
+    
+    print_status("💡 To enable real GCP integrations:")
+    print("   1. Ensure all required APIs are enabled (run script will do this)")
+    print("   2. Set up Application Default Credentials: gcloud auth application-default login")
+    print("   3. Set GOOGLE_CLOUD_PROJECT environment variable")
+    print("   4. Ensure service account has proper permissions")
+    
+    return healthy_count > 0
 
 def command_exists(cmd):
     return shutil.which(cmd) is not None
@@ -263,18 +316,30 @@ def provision_gcp_resources(project_id):
     # 1. Enable required APIs
     print_status("Enabling necessary Google Cloud APIs...")
     required_apis = [
-        'aiplatform.googleapis.com',          # For Vertex AI models
+        # Core infrastructure APIs
+        'aiplatform.googleapis.com',          # For Vertex AI models and agent chat
         'secretmanager.googleapis.com',       # For Secret Manager
-        'cloudresourcemanager.googleapis.com',# For project listing, etc.
+        'cloudresourcemanager.googleapis.com',# For project listing and resource management
         'serviceusage.googleapis.com',        # For listing/enabling services
-        'logging.googleapis.com',             # For Cloud Logging
-        'cloudtrace.googleapis.com',          # For Cloud Trace
         'storage.googleapis.com',             # For Cloud Storage
         'compute.googleapis.com',             # For Compute Engine interactions
         'container.googleapis.com',           # For GKE interactions
-        'iam.googleapis.com',                 # For IAM Policy Analyzer
-        'securitycenter.googleapis.com',      # For Security Command Center
-        'apihub.googleapis.com',              # For API Hub
+        
+        # Security and monitoring APIs (NEW INTEGRATIONS)
+        'securitycenter.googleapis.com',      # For Security Center findings and incident response
+        'iam.googleapis.com',                 # For IAM Policy Analyzer and permissions
+        'logging.googleapis.com',             # For Cloud Logging and usage analytics
+        'monitoring.googleapis.com',          # For Cloud Monitoring and performance metrics
+        'cloudtrace.googleapis.com',          # For Cloud Trace and distributed tracing
+        
+        # API management and discovery
+        'apihub.googleapis.com',              # For API Hub discovery and management
+        
+        # Additional services that may be used
+        'cloudasset.googleapis.com',          # For Cloud Asset Inventory (compliance)
+        'cloudkms.googleapis.com',            # For Cloud KMS (security recommendations)
+        'dns.googleapis.com',                 # For Cloud DNS (infrastructure analysis)
+        'networkmanagement.googleapis.com',  # For network connectivity analysis
     ]
     for api in required_apis:
         enable_gcp_api(project_id, api)
@@ -416,6 +481,15 @@ def main():
             # sys.exit(1) # Keep services running for debugging, but indicate failure
         else:
             print_success("All services verified as running.")
+        
+        # Additional verification for GCP integrations
+        if backend_ok:
+            print_status("\nVerifying GCP integrations...")
+            gcp_integrations_ok = verify_gcp_integrations()
+            if gcp_integrations_ok:
+                print_success("GCP integrations are working! You'll see real data from your GCP project.")
+            else:
+                print_warning("GCP integrations are not fully configured. The app will work with demo data.")
 
     # Show startup info
     print("\n")

@@ -68,4 +68,3 @@ credentials/
 *.key
 *.pem
 *.crt
-backend/config/secrets/

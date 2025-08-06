@@ -29,11 +29,6 @@ dist/
 # Logs
 *.log
 logs/
-*.log.json
-.crush/
-.claude/
-.personal_assistant_agent/
-
 
 # Runtime files
 *.pid
@@ -44,7 +39,6 @@ backend.pid
 # Local development settings
 .env.*
 run.log
-.cursorrules
 
 # Duplicate/backup directories
 security_agent/
@@ -68,4 +62,3 @@ credentials/
 *.key
 *.pem
 *.crt
-backend/config/secrets/
