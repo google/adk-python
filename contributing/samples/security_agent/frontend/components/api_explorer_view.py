@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.express as px
 from typing import Dict, Any, List
 import simple_api
+from config import BACKEND_URL, API_V1_BASE_PATH
 
 
 def render_api_explorer_view():
@@ -220,8 +221,8 @@ def render_api_documentation():
     
     # Link to OpenAPI docs
     st.markdown("### 🔗 Interactive Documentation")
-    st.markdown("[📖 Open Interactive API Docs](http://localhost:8000/docs)")
-    st.markdown("[📋 OpenAPI Schema](http://localhost:8000/openapi.json)")
+    st.markdown(f"[📖 Open Interactive API Docs]({BACKEND_URL}/docs)")
+    st.markdown(f"[📋 OpenAPI Schema]({BACKEND_URL}/openapi.json)")
     
     # API overview
     st.markdown("### 📊 API Overview")
@@ -333,33 +334,24 @@ def render_usage_analytics():
         else:
             df_popular = pd.DataFrame([{"endpoint": "No data available", "requests": 0, "avg_time": "N/A"}])
     else:
-        # Fallback to mock data with info message
-        st.info("💡 **Real Cloud Logging Integration Available**: Enable Cloud Logging API to see real usage analytics instead of demo data.")
+        # No real analytics available
+        st.info("💡 **Real Cloud Logging Integration**: Connect to backend to see real API usage analytics.")
         
         with col1:
-            st.metric("Requests Today", "1,247", delta="156")
+            st.metric("Requests Today", "0", delta="0")
         
         with col2:
-            st.metric("Avg Response Time", "234ms", delta="-12ms", delta_color="inverse")
+            st.metric("Avg Response Time", "N/A", delta="0")
         
         with col3:
-            st.metric("Success Rate", "98.7%", delta="0.3%")
+            st.metric("Success Rate", "N/A", delta="0")
         
         with col4:
-            st.metric("Active Users", "23", delta="5")
+            st.metric("Active Users", "0", delta="0")
         
         # Most popular endpoints
         st.subheader("🔥 Most Popular Endpoints")
-        
-        popular_endpoints = [
-            {"endpoint": "/api/v1/security/score", "requests": 234, "avg_time": "145ms"},
-            {"endpoint": "/api/v1/recommendations/dashboard", "requests": 189, "avg_time": "267ms"},
-            {"endpoint": "/api/v1/iam/analyze-user", "requests": 156, "avg_time": "334ms"},
-            {"endpoint": "/api/v1/compliance/evaluate", "requests": 123, "avg_time": "456ms"},
-            {"endpoint": "/api/v1/gcp/projects", "requests": 98, "avg_time": "189ms"}
-        ]
-        
-        df_popular = pd.DataFrame(popular_endpoints)
+        df_popular = pd.DataFrame([{"endpoint": "No data available", "requests": 0, "avg_time": "N/A"}])
     
     fig_popular = px.bar(
         df_popular,
@@ -370,41 +362,35 @@ def render_usage_analytics():
     )
     st.plotly_chart(fig_popular, use_container_width=True)
     
-    # Response time distribution
+    # Response time distribution - get real data or show empty chart
     st.subheader("⏱️ Response Time Distribution")
     
-    # Mock response time data
-    import numpy as np
-    response_times = np.random.lognormal(mean=5.5, sigma=0.5, size=1000)
+    if real_analytics and real_analytics.get("response_time_distribution"):
+        response_data = real_analytics["response_time_distribution"]
+        fig_times = px.histogram(
+            x=response_data,
+            nbins=50,
+            title='API Response Time Distribution',
+            labels={'x': 'Response Time (ms)', 'y': 'Frequency'}
+        )
+        st.plotly_chart(fig_times, use_container_width=True)
+    else:
+        st.info("⚡ Connect to backend to see real response time distribution")
     
-    fig_times = px.histogram(
-        x=response_times,
-        nbins=50,
-        title='API Response Time Distribution',
-        labels={'x': 'Response Time (ms)', 'y': 'Frequency'}
-    )
-    st.plotly_chart(fig_times, use_container_width=True)
-    
-    # Error analysis
+    # Error analysis - get real data or show empty chart
     st.subheader("🚨 Error Analysis")
     
-    error_types = [
-        {"error": "400 Bad Request", "count": 23, "percentage": 45.1},
-        {"error": "401 Unauthorized", "count": 12, "percentage": 23.5},
-        {"error": "404 Not Found", "count": 8, "percentage": 15.7},
-        {"error": "500 Internal Server Error", "count": 5, "percentage": 9.8},
-        {"error": "429 Too Many Requests", "count": 3, "percentage": 5.9}
-    ]
-    
-    df_errors = pd.DataFrame(error_types)
-    
-    fig_errors = px.pie(
-        df_errors,
-        values='count',
-        names='error',
-        title='Error Distribution (Last 24h)'
-    )
-    st.plotly_chart(fig_errors, use_container_width=True)
+    if real_analytics and real_analytics.get("error_distribution"):
+        df_errors = pd.DataFrame(real_analytics["error_distribution"])
+        fig_errors = px.pie(
+            df_errors,
+            values='count',
+            names='error',
+            title='Error Distribution (Last 24h)'
+        )
+        st.plotly_chart(fig_errors, use_container_width=True)
+    else:
+        st.info("⚡ Connect to backend to see real error analysis")
 
 
 def render_api_configuration():
@@ -417,7 +403,7 @@ def render_api_configuration():
     col1, col2 = st.columns(2)
     
     with col1:
-        backend_url = st.text_input("Backend URL:", value="http://localhost:8000")
+        backend_url = st.text_input("Backend URL:", value=BACKEND_URL)
         timeout = st.number_input("Request Timeout (seconds):", 1, 60, 30)
     
     with col2:

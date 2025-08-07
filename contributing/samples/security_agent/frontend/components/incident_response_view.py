@@ -57,11 +57,10 @@ def render_active_incidents():
     with st.expander("➕ Create New Incident"):
         render_create_incident_form()
     
-    # Active incidents list - try to get real security findings first
+    # Get real incidents from backend
     incidents = get_real_security_incidents()
     if not incidents:
-        # Fallback to mock data if no real findings available
-        incidents = get_mock_incidents()
+        incidents = []
     active_incidents = [inc for inc in incidents if inc["status"] not in ["Resolved", "Closed"]]
     
     if active_incidents:
@@ -273,8 +272,22 @@ def render_incident_analytics():
     with col1:
         time_period = st.selectbox("Time Period:", ["Last 7 days", "Last 30 days", "Last 90 days", "All time"])
     
-    # Mock analytics data
-    incidents_data = generate_mock_analytics_data()
+    # Get real analytics data from backend
+    analytics_response = simple_api.get_incidents()
+    if analytics_response.get("success") and "analytics" in analytics_response:
+        incidents_data = analytics_response["analytics"]
+    else:
+        # If no analytics available, show zeros
+        incidents_data = {
+            "total": 0,
+            "growth": 0,
+            "avg_resolution": "N/A",
+            "resolution_improvement": "N/A",
+            "critical": 0,
+            "critical_growth": 0,
+            "resolution_rate": 0,
+            "resolution_rate_improvement": 0
+        }
     
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -636,89 +649,6 @@ def _map_severity_to_impact(severity: str) -> str:
     }
     return impact_map.get(severity, "Medium")
 
-def get_mock_incidents():
-    """Generate mock incident data."""
-    return [
-        {
-            "id": "INC-001",
-            "title": "Suspicious login attempts from unknown IP",
-            "severity": "High",
-            "category": "Access Violation",
-            "status": "Investigating",
-            "reporter": "Security Monitor",
-            "assignee": "Security Team",
-            "priority": "P2",
-            "impact": "Medium",
-            "urgency": "High",
-            "description": "Multiple failed login attempts detected from IP address not in our whitelist.",
-            "tags": ["authentication", "bruteforce", "security"],
-            "created_at": datetime.now() - timedelta(hours=2),
-            "updated_at": datetime.now() - timedelta(minutes=30),
-            "timeline": [
-                {
-                    "timestamp": datetime.now() - timedelta(hours=2),
-                    "user": "System",
-                    "entry": "Incident created automatically by security monitoring"
-                },
-                {
-                    "timestamp": datetime.now() - timedelta(hours=1, minutes=30),
-                    "user": "Security Analyst",
-                    "entry": "Incident assigned to security team for investigation"
-                },
-                {
-                    "timestamp": datetime.now() - timedelta(minutes=30),
-                    "user": "Security Analyst",
-                    "entry": "IP address blocked and monitoring increased"
-                }
-            ]
-        },
-        {
-            "id": "INC-002",
-            "title": "Unusual data access pattern detected",
-            "severity": "Medium",
-            "category": "Data Leak",
-            "status": "In Progress",
-            "reporter": "Data Monitor",
-            "assignee": "Data Team",
-            "priority": "P3",
-            "impact": "Low",
-            "urgency": "Medium",
-            "description": "User accessed unusually large amount of sensitive data outside normal hours.",
-            "tags": ["data-access", "anomaly", "privacy"],
-            "created_at": datetime.now() - timedelta(days=1),
-            "updated_at": datetime.now() - timedelta(hours=6)
-        },
-        {
-            "id": "INC-003",
-            "title": "Malware signature detected on workstation",
-            "severity": "Critical",
-            "category": "Malware",
-            "status": "New",
-            "reporter": "Endpoint Protection",
-            "assignee": "Unassigned",
-            "priority": "P1",
-            "impact": "High",
-            "urgency": "High",
-            "description": "Known malware signature detected on employee workstation in finance department.",
-            "tags": ["malware", "endpoint", "finance"],
-            "created_at": datetime.now() - timedelta(minutes=15),
-            "updated_at": datetime.now() - timedelta(minutes=15)
-        }
-    ]
-
-
-def generate_mock_analytics_data():
-    """Generate mock analytics data."""
-    return {
-        "total": 48,
-        "growth": 5,
-        "avg_resolution": "4.2h",
-        "resolution_improvement": "1.1h",
-        "critical": 7,
-        "critical_growth": 2,
-        "resolution_rate": 94,
-        "resolution_rate_improvement": 3
-    }
 
 
 def execute_playbook(playbook):

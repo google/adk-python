@@ -83,14 +83,14 @@ def render_live_performance_dashboard():
                 help="Average CPU utilization from Cloud Monitoring"
             )
     else:
-        # Fallback to mock metrics with info message
-        st.info("💡 **Real Cloud Monitoring Integration Available**: Enable Cloud Monitoring API to see real performance metrics instead of demo data.")
+        # No real metrics available
+        st.info("⚡ Connect to backend to see real performance metrics")
         
         with col1:
             st.metric(
                 "Response Time",
-                "156ms",
-                delta="-23ms",
+                "N/A",
+                delta="0",
                 help="Average API response time (demo data)"
             )
         
@@ -126,22 +126,18 @@ def render_live_performance_dashboard():
         # Response time trend
         st.subheader("⏱️ Response Time Trend")
         
-        # Generate mock time series data
-        time_range = pd.date_range(
-            start=datetime.now() - timedelta(hours=24),
-            end=datetime.now(),
-            freq='H'
-        )
+        # Get real response time data from backend
+        perf_response = simple_api.get_performance_summary()
         
-        response_times = [
-            120 + (i % 5) * 20 + (i // 6) * 10 
-            for i in range(len(time_range))
-        ]
-        
-        df_response = pd.DataFrame({
-            'Time': time_range,
-            'Response Time (ms)': response_times
-        })
+        if perf_response.get("success") and "time_series" in perf_response:
+            df_response = pd.DataFrame(perf_response["time_series"]["response_time"])
+        else:
+            # Fallback to empty chart with message
+            st.info("⚡ Connect to backend to see real performance data")
+            df_response = pd.DataFrame({
+                'Time': [datetime.now()],
+                'Response Time (ms)': [0]
+            })
         
         fig_response = px.line(
             df_response,
@@ -155,15 +151,15 @@ def render_live_performance_dashboard():
         # Request volume
         st.subheader("📊 Request Volume")
         
-        request_counts = [
-            800 + (i % 3) * 100 + (i // 4) * 50 
-            for i in range(len(time_range))
-        ]
-        
-        df_requests = pd.DataFrame({
-            'Time': time_range,
-            'Requests': request_counts
-        })
+        # Get real request volume data from backend  
+        if perf_response.get("success") and "time_series" in perf_response:
+            df_requests = pd.DataFrame(perf_response["time_series"]["request_volume"])
+        else:
+            # Fallback to empty chart
+            df_requests = pd.DataFrame({
+                'Time': [datetime.now()],
+                'Requests': [0]
+            })
         
         fig_requests = px.area(
             df_requests,
@@ -200,30 +196,8 @@ def render_live_performance_dashboard():
                 last_check = service_health.get("last_check", "N/A")
                 st.text(f"Checked: {last_check}")
     else:
-        # Fallback to mock health data
-        health_metrics = {
-            "Backend API": {"status": "healthy", "uptime": "99.9%", "last_check": "30s ago"},
-            "Database": {"status": "healthy", "uptime": "99.8%", "last_check": "45s ago"},
-            "Cache Layer": {"status": "warning", "uptime": "98.5%", "last_check": "1m ago"},
-            "External APIs": {"status": "healthy", "uptime": "99.2%", "last_check": "2m ago"}
-        }
-        
-        for service, metrics in health_metrics.items():
-            col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-            
-            with col1:
-                status = metrics["status"]
-                emoji = {"healthy": "🟢", "warning": "🟡", "error": "🔴"}.get(status, "⚪")
-                st.markdown(f"{emoji} **{service}**")
-            
-            with col2:
-                st.text(f"Uptime: {metrics['uptime']}")
-            
-            with col3:
-                st.text(f"Status: {status.title()}")
-            
-            with col4:
-                st.text(f"Checked: {metrics['last_check']}")
+        # No real data available
+        st.info("⚡ Connect to backend to see real system health data")
 
 
 def render_request_tracing():
@@ -250,36 +224,15 @@ def render_request_tracing():
     
     if st.button("🔍 Search Traces"):
         with st.spinner("Searching traces..."):
-            # Mock trace data
-            trace_data = [
-                {
-                    "trace_id": "abc123def456",
-                    "span_id": "span_001",
-                    "service": "security-service",
-                    "operation": "evaluate_security",
-                    "duration_ms": 145,
-                    "status": "success",
-                    "timestamp": datetime.now() - timedelta(minutes=5)
-                },
-                {
-                    "trace_id": "abc123def456", 
-                    "span_id": "span_002",
-                    "service": "gcp-service",
-                    "operation": "get_project_info",
-                    "duration_ms": 89,
-                    "status": "success",
-                    "timestamp": datetime.now() - timedelta(minutes=5)
-                },
-                {
-                    "trace_id": "xyz789ghi012",
-                    "span_id": "span_003",
-                    "service": "agent-service",
-                    "operation": "chat_completion",
-                    "duration_ms": 1234,
-                    "status": "success",
-                    "timestamp": datetime.now() - timedelta(minutes=10)
-                }
-            ]
+            # Get real trace data from backend
+            project_id = st.session_state.get('selected_project')
+            trace_response = simple_api.make_request("/tracing/traces/recent", "GET", {"project_id": project_id, "hours": 1})
+            
+            if trace_response.get("success") and "traces" in trace_response:
+                trace_data = trace_response["traces"]
+            else:
+                trace_data = []
+                st.info("⚡ No trace data available. Connect to backend for real tracing data.")
         
         st.subheader("📋 Trace Results")
         
@@ -367,19 +320,19 @@ def render_error_monitoring():
     # Error trend chart
     st.subheader("📈 Error Rate Trend")
     
-    # Generate mock error data
-    time_range = pd.date_range(
-        start=datetime.now() - timedelta(hours=24),
-        end=datetime.now(),
-        freq='H'
-    )
+    # Get real error data from backend
+    project_id = st.session_state.get('selected_project')
+    error_response = simple_api.make_request("/tracing/errors/recent", "GET", {"project_id": project_id, "hours": 24})
     
-    error_rates = [max(0, 0.5 + (i % 7) * 0.2 - 0.3) for i in range(len(time_range))]
-    
-    df_errors = pd.DataFrame({
-        'Time': time_range,
-        'Error Rate (%)': error_rates
-    })
+    if error_response.get("success") and "time_series" in error_response:
+        df_errors = pd.DataFrame(error_response["time_series"])
+    else:
+        # Show message when no data available
+        st.info("⚡ Connect to backend to see real error rate data")
+        df_errors = pd.DataFrame({
+            'Time': [datetime.now()],
+            'Error Rate (%)': [0]
+        })
     
     fig_errors = px.line(
         df_errors,
@@ -666,26 +619,21 @@ def render_capacity_planning():
     # Resource utilization trends
     st.markdown("**Resource Utilization Trends:**")
     
-    # Mock capacity data
-    dates = pd.date_range(start=datetime.now() - timedelta(days=30), end=datetime.now(), freq='D')
-    cpu_usage = [20 + (i % 10) * 3 + (i // 5) * 2 for i in range(len(dates))]
-    memory_usage = [35 + (i % 8) * 4 + (i // 7) * 3 for i in range(len(dates))]
-    storage_usage = [60 + (i % 15) * 1 for i in range(len(dates))]
+    # Get real capacity data from backend
+    project_id = st.session_state.get('selected_project')
+    capacity_response = simple_api.make_request("/monitoring/metrics", "GET", {"project_id": project_id, "hours": 720})  # 30 days
     
-    df_capacity = pd.DataFrame({
-        'Date': dates,
-        'CPU (%)': cpu_usage,
-        'Memory (%)': memory_usage,
-        'Storage (%)': storage_usage
-    })
-    
-    fig_capacity = px.line(
-        df_capacity,
-        x='Date',
-        y=['CPU (%)', 'Memory (%)', 'Storage (%)'],
-        title='30-Day Resource Utilization Trend'
-    )
-    st.plotly_chart(fig_capacity, use_container_width=True)
+    if capacity_response.get("success") and "time_series" in capacity_response:
+        df_capacity = pd.DataFrame(capacity_response["time_series"])
+        fig_capacity = px.line(
+            df_capacity,
+            x='Date',
+            y=['CPU (%)', 'Memory (%)', 'Storage (%)'],
+            title='30-Day Resource Utilization Trend'
+        )
+        st.plotly_chart(fig_capacity, use_container_width=True)
+    else:
+        st.info("⚡ Connect to backend to see real resource utilization trends")
 
 
 def render_change_management():
