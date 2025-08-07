@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from typing import Dict, Any, List
-from api_client import api_client
+import simple_api
 
 
 def render_security_evaluation_view():
@@ -42,14 +42,14 @@ def render_security_evaluation_view():
 def get_security_score():
     """Get and cache the security score."""
     with st.spinner("Calculating security score..."):
-        response = api_client.get_security_score()
+        response = simple_api.get_security_score()
         st.session_state.security_score = response
 
 
 def get_enabled_apis():
     """Get and cache enabled APIs."""
     with st.spinner("Scanning enabled APIs..."):
-        response = api_client.get_enabled_apis()
+        response = simple_api.get_enabled_apis()
         st.session_state.enabled_apis = response
 
 

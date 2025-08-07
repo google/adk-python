@@ -22,7 +22,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-from api_client import api_client
+import simple_api
 from .security_evaluation_view import render_security_summary_card
 from .recommendations_view import render_recommendations_summary_card
 from .iam_analyzer_view import render_iam_summary_card
@@ -93,7 +93,7 @@ def render_project_info_section():
         
         # Get project info
         with st.spinner("Loading project information..."):
-            response = api_client.get_project_info(st.session_state.selected_project)
+            response = simple_api.get_project_info(st.session_state.selected_project)
         
         if response.get("success"):
             project_info = response.get("project_info", {})
@@ -133,7 +133,7 @@ def render_service_status_section():
     
     try:
         # Get service status summary
-        response = api_client.get_services_status_summary()
+        response = simple_api.get_services_status_summary()
         
         if response.get("success"):
             summary = response.get("summary", {})

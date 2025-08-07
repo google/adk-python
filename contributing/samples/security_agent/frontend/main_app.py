@@ -89,7 +89,7 @@ from components import (
 
 # Import shared utilities
 from startup_status import render_startup_screen_if_needed, StartupStatusChecker
-from api_client import api_client
+import simple_api
 
 # Configuration
 BACKEND_URL = "http://localhost:8000"
@@ -122,7 +122,7 @@ def fetch_available_projects():
     """Fetch available GCP projects from backend."""
     try:
         logger.info("Fetching available GCP projects from backend...")
-        response = api_client.get_projects()
+        response = simple_api.get_projects()
         logger.info(f"API response: {response}")
         
         if response.get("success"):
@@ -262,7 +262,7 @@ def render_navigation():
     
     # Service status indicator
     try:
-        services_response = api_client.get_services_status_summary()
+        services_response = simple_api.get_services_status_summary()
         if services_response.get("success"):
             summary = services_response.get("summary", {})
             enabled = summary.get("enabled_services", 0)

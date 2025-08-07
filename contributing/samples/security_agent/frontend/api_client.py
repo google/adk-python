@@ -1,8 +1,8 @@
-"""API client for communicating with the security agent backend.
+"""Simplified API client for the legacy security agent backend.
 
-This module provides a centralized client for making HTTP requests to the 
-security agent backend API. It handles authentication, error handling, and
-provides convenient methods for all backend operations.
+This module provides a simplified client for making HTTP requests to the 
+legacy security agent backend API. It only includes endpoints that are 
+available in the simplified legacy backend.
 
 Example:
     Basic usage:
@@ -15,7 +15,7 @@ Example:
         response = api_client.analyze_user_permissions("user@example.com")
 
 Classes:
-    SecurityAgentAPIClient: Main API client class for backend communication
+    SecurityAgentAPIClient: Simplified API client for legacy backend
     
 Attributes:
     api_client: Global instance of SecurityAgentAPIClient
