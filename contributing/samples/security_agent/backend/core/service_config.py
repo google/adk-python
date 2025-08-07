@@ -357,7 +357,7 @@ class ServiceConfig:
         if not service:
             return []
         
-        return [dep.service_name for dep in service.dependencies]
+        return [dep["service_name"] if isinstance(dep, dict) else dep.service_name for dep in service.dependencies]
     
     def check_dependencies(self, name: str) -> bool:
         """Check if all required dependencies are satisfied."""
@@ -366,7 +366,12 @@ class ServiceConfig:
             return False
         
         for dep in service.dependencies:
-            if dep.required:
+            if isinstance(dep, dict):
+                if dep.get("required", False):
+                    dep_status = self.runtime_status.get(dep["service_name"])
+                    if dep_status in [ServiceStatus.DISABLED, ServiceStatus.ERROR, None]:
+                        return False
+            elif dep.required:
                 dep_status = self.runtime_status.get(dep.service_name)
                 if dep_status in [ServiceStatus.DISABLED, ServiceStatus.ERROR, None]:
                     return False

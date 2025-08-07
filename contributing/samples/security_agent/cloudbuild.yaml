@@ -1,0 +1,39 @@
+# Cloud Build configuration for deploying to Cloud Run
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/security-agent:$COMMIT_SHA', '.']
+  
+  # Push the Docker image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/security-agent:$COMMIT_SHA']
+  
+  # Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'security-agent'
+      - '--image=gcr.io/$PROJECT_ID/security-agent:$COMMIT_SHA'
+      - '--region=us-central1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--port=8000'
+      - '--memory=2Gi'
+      - '--cpu=2'
+      - '--timeout=300'
+      - '--max-instances=10'
+      - '--min-instances=0'
+      - '--set-env-vars=USE_MODULAR=true'
+      - '--set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
+
+# Store images in Artifact Registry
+images:
+  - 'gcr.io/$PROJECT_ID/security-agent:$COMMIT_SHA'
+
+# Set timeout for the entire build
+timeout: '1200s'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
