@@ -24,7 +24,7 @@ steps:
       - '--timeout=300'
       - '--max-instances=10'
       - '--min-instances=0'
-      - '--set-env-vars=USE_MODULAR=true'
+      - '--set-env-vars=USE_LEGACY=true'
       - '--set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
 
 # Store images in Artifact Registry

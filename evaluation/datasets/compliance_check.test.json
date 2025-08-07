@@ -1,0 +1,58 @@
+{
+  "eval_set_id": "compliance_check_v1",
+  "name": "Compliance Framework Evaluation Set",
+  "description": "Test cases for evaluating agent compliance analysis and framework mapping capabilities",
+  "eval_cases": [
+    {
+      "eval_id": "comp_001",
+      "conversation": [
+        {
+          "invocation_id": "comp_001_inv_1",
+          "user_content": {
+            "parts": [
+              {
+                "text": "Analyze this cloud infrastructure setup for SOC 2 compliance. Identify gaps and provide recommendations:\n\n**Current Setup:**\n- AWS EC2 instances running web applications\n- MySQL database on RDS without encryption\n- Application logs stored locally on instances\n- No centralized monitoring or alerting\n- Admin access shared via common credentials\n- No backup strategy implemented\n- Direct SSH access from any IP address"
+              }
+            ]
+          },
+          "final_response": {
+            "parts": [
+              {
+                "text": "## SOC 2 Compliance Analysis\n\n### Current State Assessment\nThe described infrastructure has significant gaps across multiple SOC 2 Trust Service Criteria.\n\n### Critical Compliance Gaps\n\n#### **1. Security (CC6 - Logical and Physical Access Controls)**\n\n**Current Issues:**\n- Shared admin credentials violate access control principles\n- Unrestricted SSH access from any IP creates excessive exposure\n- No evidence of access reviews or provisioning controls\n\n**SOC 2 Requirements:**\n- CC6.1: Unique user identification and authentication\n- CC6.2: Logical access controls restrict unauthorized access\n- CC6.3: Network access controls\n\n**Recommendations:**\n- Implement individual user accounts with unique credentials\n- Enable MFA for all administrative access\n- Restrict SSH access to specific IP ranges or VPN\n- Implement privileged access management (PAM)\n- Regular access reviews and de-provisioning procedures\n\n#### **2. System Operations (CC7 - System Monitoring)**\n\n**Current Issues:**\n- No centralized monitoring violates operational oversight requirements\n- Local log storage creates availability and integrity risks\n- No alerting system for security events\n\n**SOC 2 Requirements:**\n- CC7.1: System monitoring for anomalies and threats\n- CC7.2: Incident response procedures\n- CC7.4: Response to identified vulnerabilities\n\n**Recommendations:**\n- Implement centralized logging (AWS CloudWatch, ELK stack)\n- Deploy SIEM solution for security monitoring\n- Establish incident response procedures\n- Automated alerting for critical events\n- Regular vulnerability scanning\n\n#### **3. Change Management (CC8 - Change Management)**\n\n**Current Issues:**\n- No documented change management process\n- Lack of configuration management controls\n\n**SOC 2 Requirements:**\n- CC8.1: Authorize system changes\n- CC8.2: Design and implement changes\n- CC8.3: Emergency change procedures\n\n**Recommendations:**\n- Implement Infrastructure as Code (Terraform/CloudFormation)\n- Change approval workflows\n- Configuration drift detection\n- Emergency change procedures\n\n#### **4. Availability Criteria Gaps**\n\n**Current Issues:**\n- No backup strategy violates availability requirements\n- Single point of failure risks\n\n**Availability Requirements:**\n- A1.2: System availability monitoring\n- A1.3: System capacity and performance\n\n**Recommendations:**\n- Implement automated backup strategy (RDS automated backups)\n- Multi-AZ deployment for high availability\n- Disaster recovery procedures\n- Capacity monitoring and scaling\n\n#### **5. Processing Integrity Issues**\n\n**Current Issues:**\n- Unencrypted database violates data protection requirements\n- No data integrity monitoring\n\n**Processing Integrity Requirements:**\n- PI1.3: System processing integrity\n\n**Recommendations:**\n- Enable RDS encryption at rest and in transit\n- Implement database integrity checks\n- Data validation and error handling procedures\n\n### Implementation Roadmap\n\n#### **Phase 1: Critical Security (30 days)**\n1. Enable RDS encryption\n2. Implement individual user accounts and MFA\n3. Restrict SSH access via security groups\n4. Enable CloudTrail for audit logging\n\n#### **Phase 2: Monitoring & Logging (60 days)**\n1. Deploy centralized logging solution\n2. Implement CloudWatch monitoring\n3. Set up security alerting\n4. Document incident response procedures\n\n#### **Phase 3: Governance & Compliance (90 days)**\n1. Implement change management process\n2. Establish backup and DR procedures\n3. Conduct access reviews\n4. Prepare for SOC 2 Type I audit\n\n### Evidence Requirements for SOC 2 Audit\n\n- Access control policies and procedures\n- User access provisioning/de-provisioning logs\n- Security monitoring reports\n- Change management documentation\n- Incident response logs\n- Backup and recovery test results\n- Security awareness training records\n\n### Estimated Compliance Score: 25%\n**High Priority:** Address security and monitoring gaps immediately\n**Medium Priority:** Implement governance and availability controls\n**Timeline:** 90 days for basic compliance, 6 months for full audit readiness"
+              }
+            ]
+          },
+          "expected_tool_use": [],
+          "creation_timestamp": 1754020300.0
+        }
+      ],
+      "creation_timestamp": 1754020300.0
+    },
+    {
+      "eval_id": "comp_002",
+      "conversation": [
+        {
+          "invocation_id": "comp_002_inv_1",
+          "user_content": {
+            "parts": [
+              {
+                "text": "Evaluate this payment processing system for PCI DSS compliance:\n\n**System Architecture:**\n- E-commerce website collecting payment card data\n- Customer payment forms submit directly to application server\n- Credit card numbers stored in MySQL database (encrypted)\n- Application server processes payments via third-party API\n- Web server and database on same network segment\n- Standard firewall with basic rules\n- No network segmentation\n- Admin access via VPN with shared credentials"
+              }
+            ]
+          },
+          "final_response": {
+            "parts": [
+              {
+                "text": "## PCI DSS Compliance Analysis\n\n### Scope and Applicability\nThis system handles, processes, and stores cardholder data (CHD), making it subject to **full PCI DSS requirements (Level 1-4 depending on transaction volume)**.\n\n### Critical Non-Compliance Issues\n\n#### **Requirement 1 & 2: Network Security**\n\n**Current Issues:**\n- No network segmentation violates PCI DSS 1.1.3\n- Web server and database on same segment increases attack surface\n- Basic firewall rules insufficient for PCI requirements\n\n**PCI DSS Requirements:**\n- 1.1.3: Network segmentation for cardholder data environment (CDE)\n- 1.2.1: Firewall rules restrict connections to necessary business purposes\n- 2.1: Change vendor defaults before installing systems\n\n**Remediation:**\n- Implement network segmentation (DMZ architecture)\n- Create separate VLAN for cardholder data environment\n- Deploy Web Application Firewall (WAF)\n- Configure restrictive firewall rules (deny-by-default)\n- Harden all systems per PCI DSS requirements\n\n#### **Requirement 3 & 4: Data Protection**\n\n**Current Issues:**\n- Storing CHD unnecessarily (should minimize storage)\n- While encrypted, need to verify encryption meets PCI standards\n- No evidence of proper key management\n- Direct submission to application server bypasses tokenization\n\n**PCI DSS Requirements:**\n- 3.1: Minimize cardholder data storage\n- 3.4: Strong cryptography and encryption (AES-256)\n- 3.5: Document key management procedures\n- 4.1: Encrypt transmission of CHD over open networks\n\n**Remediation:**\n- Implement payment tokenization to avoid storing CHD\n- Use payment processor's secure vault services\n- Verify encryption algorithms meet PCI standards\n- Implement proper key management (HSM recommended)\n- Enable TLS 1.2+ for all CHD transmission\n\n#### **Requirement 7 & 8: Access Control**\n\n**Current Issues:**\n- Shared admin credentials violate individual accountability\n- No evidence of role-based access controls\n- Missing access control documentation\n\n**PCI DSS Requirements:**\n- 7.1: Limit access to CHD by business need-to-know\n- 7.2: Assign unique ID to each person with computer access\n- 8.2: Strong authentication for all system access\n- 8.3: Multi-factor authentication for remote access\n\n**Remediation:**\n- Implement individual user accounts with unique IDs\n- Deploy role-based access control (RBAC)\n- Enforce MFA for all administrative access\n- Regular access reviews and de-provisioning\n- Document access control policies and procedures\n\n#### **Requirement 10 & 11: Monitoring and Testing**\n\n**Current Issues:**\n- No evidence of audit logging\n- No vulnerability scanning program\n- No penetration testing\n- No file integrity monitoring\n\n**PCI DSS Requirements:**\n- 10.1: Audit trails for all access to CHD\n- 10.5: Secure audit trails against tampering\n- 11.2: Quarterly vulnerability scans by ASV\n- 11.3: Annual penetration testing\n\n**Remediation:**\n- Deploy comprehensive audit logging solution\n- Implement Security Information and Event Management (SIEM)\n- Establish quarterly vulnerability scanning program\n- Conduct annual penetration testing\n- File integrity monitoring for critical files\n\n### Recommended Architecture Redesign\n\n#### **Secure Payment Flow:**\n1. **Payment Page:** Use payment processor's hosted fields\n2. **Tokenization:** Replace CHD with secure tokens immediately\n3. **Processing:** Use tokens for payment processing\n4. **Storage:** Store only tokens, never actual CHD\n\n#### **Network Architecture:**\n```\nInternet → WAF → DMZ (Web Servers) → Internal Firewall → CDE Segment\n                                                      ↓\n                                              Database Servers (if needed)\n```\n\n#### **Security Controls:**\n- Web Application Firewall (WAF)\n- Intrusion Detection/Prevention System (IDS/IPS)\n- Database Activity Monitoring (DAM)\n- Security Information and Event Management (SIEM)\n- Vulnerability Management Program\n\n### Implementation Timeline\n\n#### **Phase 1: Critical Security (60 days)**\n1. Implement payment tokenization\n2. Network segmentation\n3. Individual user accounts and MFA\n4. Basic audit logging\n\n#### **Phase 2: Enhanced Controls (120 days)**\n1. Deploy SIEM solution\n2. Vulnerability scanning program\n3. File integrity monitoring\n4. Enhanced firewall rules\n\n#### **Phase 3: Compliance Validation (180 days)**\n1. Annual penetration testing\n2. Quarterly vulnerability scans\n3. PCI DSS assessment preparation\n4. Compensating controls documentation\n\n### Compliance Assessment\n\n**Current Compliance Level: ~15%**\n\n**Major Gaps:**\n- Network security controls (Req 1-2)\n- Data protection implementation (Req 3-4)\n- Access controls (Req 7-8)\n- Monitoring and testing (Req 10-11)\n\n**Immediate Actions Required:**\n1. Stop storing unnecessary CHD\n2. Implement network segmentation\n3. Deploy individual authentication\n4. Begin audit logging\n\n**Cost Estimate:** $50,000-$150,000 for full compliance implementation\n**Timeline:** 6 months minimum for basic compliance\n**Annual Costs:** ~$30,000 (scanning, testing, maintenance)"
+              }
+            ]
+          },
+          "expected_tool_use": [],
+          "creation_timestamp": 1754020400.0
+        }
+      ],
+      "creation_timestamp": 1754020400.0
+    }
+  ],
+  "creation_timestamp": 1754020300.0
+}

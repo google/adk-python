@@ -50,9 +50,8 @@ GOOGLE_APPLICATION_CREDENTIALS=backend/config/secrets/service-account-key.json
 
 ### Service Configuration
 ```env
-# Choose backend architecture
-USE_MODULAR=true                          # Use modular backend (recommended)
-# USE_MODULAR=false                       # Use legacy backend
+# Simplified ADK uses only legacy backend
+USE_LEGACY=true                           # Legacy backend (only option)
 
 # Service configuration file
 SERVICE_CONFIG_PATH=backend/config/services.json

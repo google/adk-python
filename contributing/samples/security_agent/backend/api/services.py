@@ -33,7 +33,7 @@ async def list_services(request: Request, include_health: bool = True) -> Dict[s
                 "required": service_def.required,
                 "status": status_info,
                 "tags": service_def.tags,
-                "dependencies": [dep.service_name for dep in service_def.dependencies],
+                "dependencies": [dep["service_name"] if isinstance(dep, dict) else dep.service_name for dep in service_def.dependencies],
                 "api_prefix": service_def.api_prefix
             })
         
@@ -83,9 +83,9 @@ async def get_service_details(service_name: str, request: Request,
                 "tags": service_def.tags,
                 "dependencies": [
                     {
-                        "service_name": dep.service_name,
-                        "required": dep.required,
-                        "version": dep.version
+                        "service_name": dep["service_name"] if isinstance(dep, dict) else dep.service_name,
+                        "required": dep["required"] if isinstance(dep, dict) else dep.required,
+                        "version": dep["version"] if isinstance(dep, dict) else dep.version
                     }
                     for dep in service_def.dependencies
                 ],

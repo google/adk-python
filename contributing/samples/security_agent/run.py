@@ -10,8 +10,7 @@ This script provides a single entry point for all deployment scenarios:
 
 Usage:
     # Local Development
-    python run.py                    # Run legacy backend (default)
-    python run.py --modular          # Run modular architecture
+    python run.py                    # Run legacy backend (only option)
     
     # Cloud/Production
     python run.py --cloud            # Cloud Run compatible mode
@@ -30,7 +29,7 @@ Environment Variables:
     GOOGLE_CLOUD_PROJECT: GCP project ID
     K_SERVICE: Cloud Run service name (auto-detected)
     K_REVISION: Cloud Run revision (auto-detected)
-    USE_MODULAR: Use modular backend (true/false)
+    USE_LEGACY: Use legacy backend (always true)
     SERVICE_CONFIG_PATH: Path to service configuration
 """
 
@@ -142,7 +141,7 @@ def print_banner():
 🛡️  Enhanced GCP API Security Evaluation Agent
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     Comprehensive security analysis for GCP APIs
-    with modular service architecture
+    with simplified legacy architecture
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)
 
@@ -302,28 +301,16 @@ def kill_existing_processes():
     except Exception as e:
         logger.debug(f"Process cleanup: {e}")
 
-def start_backend(modular: bool = None) -> Optional[subprocess.Popen]:
-    """Start the backend server."""
+def start_backend() -> Optional[subprocess.Popen]:
+    """Start the legacy backend server (only option)."""
     # Kill existing processes first
     kill_existing_processes()
     
-    # Use environment variable if modular not specified
-    if modular is None:
-        modular = os.getenv('USE_MODULAR', 'false').lower() == 'true'
-    
-    if modular:
-        # Modular backend: use backend/main:app and run from backend/ directory
-        main_module = "main:app"
-        working_dir = base_dir / "backend"
-        logger.info("🚀 Starting modular backend server...")
-        logger.info("   • Full service architecture with 16+ services")
-        logger.info("   • Service registry and dynamic router management")
-    else:
-        # Legacy backend: use main_legacy:app and run from root directory
-        main_module = "main_legacy:app"
-        working_dir = base_dir
-        logger.info("🚀 Starting legacy backend server...")
-        logger.info("   • Simple monolithic backend")
+    # Legacy backend: use main_legacy:app and run from root directory
+    main_module = "main_legacy:app"
+    working_dir = base_dir
+    logger.info("🚀 Starting legacy backend server...")
+    logger.info("   • Simple monolithic backend (simplified ADK)")
     
     # Use venv Python if available, otherwise use system Python
     if venv_path.exists() and (venv_path / "bin" / "python").exists():
@@ -504,16 +491,13 @@ def open_browser_tabs():
             logger.warning(f"Failed to open {name}: {e}")
 
 
-def show_status_info(modular: bool = None):
+def show_status_info():
     """Show application status and access information."""
-    if modular is None:
-        modular = os.getenv('USE_MODULAR', 'false').lower() == 'true'
-    
     backend_port = os.getenv('PORT', '8000')
     frontend_port = os.getenv('FRONTEND_PORT', '8501')
     
     print(f"""
-🎉 Security Agent is now running!
+🎉 ADK Security Agent is now running! (Simplified Legacy Mode)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📊 Access Points:
@@ -521,20 +505,11 @@ def show_status_info(modular: bool = None):
    🔧 Backend API:       http://localhost:{backend_port}
    📖 API Documentation: http://localhost:{backend_port}/docs
    🩺 Health Check:      http://localhost:{backend_port}/health
-""")
-    
-    if modular:
-        print("""⚙️  Modular Features:
-   🔧 Service Management: http://localhost:8501 -> Service Management
-   📊 Service Status:     http://localhost:8000/api/v1/services/status/summary
-   🩺 Health Monitoring:  http://localhost:8000/api/v1/services/{service}/health
-""")
-    
-    print("""🚀 Getting Started:
+
+🚀 Getting Started:
    1. Go to http://localhost:8501
    2. Select your GCP project
    3. Start with the Dashboard
-   4. Use Service Management to enable/disable features (modular mode)
 
 ⏹️  To stop: Press Ctrl+C
 
@@ -558,15 +533,9 @@ def run_cloud_mode():
     # Get port from environment (Cloud Run sets this)
     port = int(os.getenv('PORT', 8000))
     
-    # Determine which backend to use
-    use_modular = os.getenv('USE_MODULAR', 'false').lower() == 'true'
-    
-    if use_modular:
-        logger.info("Using modular backend...")
-        app_module = "main:app"
-    else:
-        logger.info("Using legacy backend...")
-        app_module = "main_legacy:app"
+    # Always use legacy backend (simplified ADK)
+    logger.info("Using legacy backend (simplified ADK)...")
+    app_module = "main_legacy:app"
     
     # Determine Python executable
     if venv_path.exists() and not is_docker() and not os.getenv('K_SERVICE'):
@@ -649,7 +618,7 @@ def deploy_to_cloud_run(project_id: str, region: str = "us-central1"):
         "--timeout", "300",
         "--max-instances", "10",
         "--min-instances", "0",
-        "--set-env-vars", f"USE_MODULAR={os.getenv('USE_MODULAR', 'true')}",
+        "--set-env-vars", "USE_LEGACY=true",
         "--set-env-vars", f"GOOGLE_CLOUD_PROJECT={project_id}",
         "--quiet"
     ]
@@ -707,7 +676,6 @@ def main():
 Examples:
   # Local Development
   python run.py                           # Run legacy backend (default)
-  python run.py --modular                 # Run modular backend
   python run.py --backend-only            # Run only backend
   python run.py --frontend-only           # Run only frontend
   
@@ -725,11 +693,6 @@ Examples:
         """
     )
     
-    parser.add_argument(
-        '--modular',
-        action='store_true',
-        help='Use modular architecture (default: legacy)'
-    )
     
     parser.add_argument(
         '--cloud',
@@ -793,7 +756,7 @@ Examples:
     
     # Deploy to Cloud Run
     if args.deploy:
-        os.environ['USE_MODULAR'] = 'true' if args.modular else 'false'
+        os.environ['USE_LEGACY'] = 'true'
         return deploy_to_cloud_run(args.deploy, args.region)
     
     # Docker build only
@@ -820,20 +783,13 @@ Examples:
     # Setup environment
     setup_environment()
     
-    # Check environment variable if not specified via command line
-    if not args.modular and os.getenv('USE_MODULAR', 'false').lower() == 'true':
-        modular = True
-    else:
-        modular = args.modular
-    
-    mode_name = "Modular" if modular else "Legacy"
-    logger.info(f"🔧 Running in {mode_name} mode")
+    logger.info("🔧 Running in Legacy mode (simplified ADK)")
     
     try:
         # Start backend (unless frontend-only)
         backend_process = None
         if not args.frontend_only:
-            backend_process = start_backend(modular=modular)
+            backend_process = start_backend()
             if not backend_process:
                 logger.error("❌ Failed to start backend")
                 return False
@@ -864,7 +820,7 @@ Examples:
             open_browser_tabs()
         
         # Show status
-        show_status_info(modular=modular)
+        show_status_info()
         
         # Keep the script running and monitor processes
         while True:

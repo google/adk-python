@@ -1,8 +1,8 @@
-"""Refactored main Streamlit application for the security agent frontend.
+"""Simplified main Streamlit application for the ADK security agent frontend.
 
-This is the new modular main application that replaces the monolithic 
-enhanced_security_agent_app.py. It uses a component-based architecture where
-each major feature is broken into reusable components.
+This is the simplified legacy application that uses a component-based architecture where
+each major feature is broken into reusable components. All features are available
+in this simplified mode without complex service management.
 
 Key Features:
     - 🏠 Dashboard: Overview of security posture with key metrics
@@ -25,11 +25,8 @@ Architecture:
     - Responsive navigation and error handling
 
 Usage:
-    Run this application with:
+    Run this simplified application with:
         streamlit run frontend/main_app.py
-        
-    Or use the legacy application with:
-        streamlit run frontend/enhanced_security_agent_app.py
 
 Functions:
     main(): Application entry point and configuration
@@ -89,7 +86,6 @@ from components import (
     render_incident_response_view,
     render_multi_agent_graph_view
 )
-from components.services_management_view import render_services_management_view
 
 # Import shared utilities
 from startup_status import render_startup_screen_if_needed, StartupStatusChecker
@@ -205,10 +201,9 @@ def render_project_selector():
 
 def get_available_pages():
     """Get available pages based on service status."""
-    # Always available pages
+    # Always available pages (simplified for legacy mode)
     base_pages = {
-        "dashboard": {"name": "🏠 Dashboard", "service": None},
-        "services": {"name": "⚙️ Service Management", "service": None}
+        "dashboard": {"name": "🏠 Dashboard", "service": None}
     }
     
     # Service-dependent pages
@@ -226,26 +221,9 @@ def get_available_pages():
         "multi_agent_graph": {"name": "🕸️ Multi-Agent Graph", "service": None}
     }
     
-    # Get service status
-    try:
-        services_response = api_client.get_services()
-        if services_response.get("success"):
-            enabled_services = set()
-            for service in services_response.get("services", []):
-                if service.get("enabled") and service.get("status", {}).get("status") in ["running", "not_configured"]:
-                    enabled_services.add(service.get("name"))
-        else:
-            # If we can't get service status, assume legacy mode - show all pages
-            enabled_services = set(service_pages.keys())
-    except:
-        # If service management is not available, assume legacy mode
-        enabled_services = set(service_pages.keys())
-    
-    # Combine available pages
+    # In legacy mode, all features are available
     available_pages = base_pages.copy()
-    for page_key, page_info in service_pages.items():
-        if page_info["service"] in enabled_services:
-            available_pages[page_key] = page_info
+    available_pages.update(service_pages)
     
     return available_pages
 
@@ -324,7 +302,7 @@ def render_main_content():
         if page not in available_pages:
             logger.warning(f"Page '{page}' not in available pages, redirecting to dashboard")
             if page != "dashboard":  # Avoid infinite redirect loop
-                st.warning(f"The {page} feature is not available. Please enable the corresponding service in Service Management.")
+                st.warning(f"The {page} feature is not available in simplified mode.")
                 st.session_state.page = "dashboard"
                 st.rerun()
             page = "dashboard"
@@ -375,9 +353,6 @@ def render_main_content():
         elif page == "multi_agent_graph":
             logger.info("Rendering multi-agent graph view...")
             render_multi_agent_graph_view()
-        elif page == "services":
-            logger.info("Rendering services management view...")
-            render_services_management_view()
         else:
             logger.error(f"Unknown page requested: {page}")
             st.error(f"Unknown page: {page}")
