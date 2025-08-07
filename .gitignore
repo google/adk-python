@@ -281,6 +281,41 @@ internal_tools/
 !config.example.json
 
 # =============================================================================
+# Claude/AI Assistant Files - DO NOT COMMIT
+# =============================================================================
+# Claude Flow files
+.claude-flow/
+claude-flow/
+*claude-flow*
+
+# Claude Code generated files
+enhanced_graph_td_system.py
+demo_graph_td.py
+GRAPH_TD_INTEGRATION_GUIDE.md
+
+# AI assistant artifacts
+*claude*
+*anthropic*
+.claude/
+.anthropic/
+
+# Assistant generated documentation
+*_generated.md
+*_assistant.md
+ai_generated/
+
+# Swarm/orchestration artifacts
+swarm_*
+orchestration_*
+*_swarm*
+*_orchestration*
+
+# Graph TD system files
+graph_td_*
+*graph_td*
+00~*
+
+# =============================================================================
 # Keep Example Files
 # =============================================================================
 !example_configs/
