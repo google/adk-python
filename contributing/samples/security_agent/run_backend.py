@@ -41,7 +41,7 @@ def main():
     log_level = os.getenv('LOG_LEVEL', 'info')
     reload = os.getenv('RELOAD', 'true').lower() == 'true'
     
-    # Build command
+    # Build command (run from backend/ directory)
     cmd = [
         python_exe, "-m", "uvicorn",
         "main_legacy:app",
@@ -53,11 +53,15 @@ def main():
     if reload:
         cmd.append("--reload")
     
+    # Set working directory to backend/
+    backend_dir = base_dir / "backend"
+    
     logger.info("🚀 Starting legacy backend server...")
     logger.info(f"   • Host: {host}")
     logger.info(f"   • Port: {port}")
     logger.info(f"   • Log Level: {log_level}")
     logger.info(f"   • Reload: {reload}")
+    logger.info(f"   • Working Directory: {backend_dir}")
     logger.info(f"Command: {' '.join(cmd)}")
     
     print(f"""
@@ -70,8 +74,8 @@ Press Ctrl+C to stop the backend.
 """)
     
     try:
-        # Run the backend
-        subprocess.run(cmd, cwd=base_dir, check=False)
+        # Run the backend from the backend/ directory
+        subprocess.run(cmd, cwd=backend_dir, check=False)
     except KeyboardInterrupt:
         logger.info("🛑 Backend stopped by user")
     except Exception as e:
