@@ -35,6 +35,17 @@ logs/
 .env.*
 run.log
 
+# Security - CRITICAL: Never commit credentials
+*.json
+secrets/
+config/secrets/
+*.key
+*.pem
+*.p12
+credentials/
+service-account*.json
+gcp-*.json
+
 # Misc
 .DS_Store
 *.swp
@@ -43,3 +54,6 @@ run.log
 *.tmp
 .crush/
 CRUSH.md
+.history/
+.hive-mind/
+.claude-flow/

@@ -25,6 +25,9 @@ def render_chat_view():
     # Chat input
     render_chat_input()
     
+    # IAM Testing Scenarios
+    render_iam_scenarios()
+    
     # Quick action buttons
     render_quick_questions()
 
@@ -89,6 +92,190 @@ def render_chat_input():
         
         if send_button and user_input.strip():
             send_message(user_input.strip())
+
+
+def render_iam_scenarios():
+    """Render IAM testing scenarios."""
+    st.subheader("🛡️ IAM Security Testing Scenarios")
+    st.write("Run predefined security tests and get expert analysis from the security bot.")
+    
+    # Get current project
+    current_project = st.session_state.get('selected_project')
+    if not current_project:
+        st.warning("Please select a project in the sidebar to run IAM scenarios.")
+        return
+    
+    # Get scenarios from API
+    try:
+        with st.spinner("Loading IAM scenarios..."):
+            scenarios_response = api_client.get_iam_testing_scenarios()
+        
+        if not scenarios_response.get("success"):
+            st.error("Failed to load IAM scenarios")
+            return
+        
+        scenarios = scenarios_response.get("scenarios", [])
+        
+        # Group scenarios by category
+        categories = {}
+        for scenario in scenarios:
+            category = scenario.get("category", "other")
+            if category not in categories:
+                categories[category] = []
+            categories[category].append(scenario)
+        
+        # Display scenarios by category
+        for category, category_scenarios in categories.items():
+            category_name = category.replace("_", " ").title()
+            
+            # Category header with icon
+            category_icons = {
+                "high_priority": "🚨",
+                "medium_priority": "⚠️",
+                "compliance": "📋",
+                "optimization": "🔧"
+            }
+            icon = category_icons.get(category, "🔍")
+            
+            with st.expander(f"{icon} {category_name} Tests", expanded=(category == "high_priority")):
+                cols = st.columns(len(category_scenarios))
+                
+                for i, scenario in enumerate(category_scenarios):
+                    with cols[i % len(cols)]:
+                        scenario_card(scenario, current_project)
+    
+    except Exception as e:
+        st.error(f"Error loading scenarios: {str(e)}")
+
+
+def scenario_card(scenario: Dict[str, Any], project_id: str):
+    """Render a single scenario card."""
+    complexity_colors = {
+        "low": "🟢",
+        "medium": "🟡", 
+        "high": "🔴"
+    }
+    
+    complexity_icon = complexity_colors.get(scenario.get("complexity", "medium"), "🟡")
+    
+    st.markdown(f"""
+    <div style="border: 1px solid #ddd; padding: 15px; border-radius: 10px; margin: 10px 0;">
+        <h4>{scenario['title']} {complexity_icon}</h4>
+        <p style="color: #666; font-size: 14px;">{scenario['description']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    button_key = f"run_scenario_{scenario['id']}"
+    if st.button(f"🚀 Run Test", key=button_key, use_container_width=True):
+        run_iam_scenario(scenario, project_id)
+
+
+def run_iam_scenario(scenario: Dict[str, Any], project_id: str):
+    """Run an IAM testing scenario."""
+    scenario_id = scenario["id"]
+    
+    # Add scenario initiation message
+    st.session_state.chat_history.append({
+        "role": "user",
+        "content": f"🧪 Running IAM test: {scenario['title']}",
+        "timestamp": st.session_state.get('timestamp', '')
+    })
+    
+    with st.spinner(f"🔍 Running {scenario['title']} analysis..."):
+        try:
+            # Run the scenario via API
+            result = api_client.run_iam_scenario(scenario_id, project_id)
+            
+            if result.get("success"):
+                # Format results for the bot
+                scenario_data = result.get("results", {})
+                summary = result.get("analysis_summary", {})
+                bot_prompt = result.get("bot_prompt", "")
+                
+                # Create a comprehensive prompt for the bot
+                enhanced_prompt = f"""
+                IAM Security Analysis Results for Project: {project_id}
+                
+                Test: {scenario['title']}
+                Description: {scenario['description']}
+                
+                Analysis Results:
+                {format_scenario_results(scenario_data)}
+                
+                Summary:
+                - Severity: {summary.get('severity', 'Unknown')}
+                - Recommendation: {summary.get('recommendation', 'No specific recommendation')}
+                
+                Original Test Prompt: {bot_prompt}
+                
+                Please provide a detailed analysis of these results, explain the security implications, and give specific actionable recommendations for remediation. Focus on practical steps the user can take to improve their security posture.
+                """
+                
+                # Send enhanced prompt to bot
+                response = api_client.chat_with_agent(enhanced_prompt, [])
+                
+                if response.get("success"):
+                    # Add bot response
+                    agent_response = {
+                        "role": "assistant", 
+                        "content": f"🛡️ **{scenario['title']} Analysis Complete**\n\n{response.get('response', '')}",
+                        "timestamp": st.session_state.get('timestamp', ''),
+                        "trace_id": response.get("trace_id"),
+                        "tool_code_executed": response.get("tool_code_executed", [])
+                    }
+                    st.session_state.chat_history.append(agent_response)
+                else:
+                    # Add error response
+                    error_response = {
+                        "role": "assistant",
+                        "content": f"❌ Sorry, I couldn't analyze the results for {scenario['title']}: {response.get('error', 'Unknown error')}",
+                        "timestamp": st.session_state.get('timestamp', '')
+                    }
+                    st.session_state.chat_history.append(error_response)
+            else:
+                # Scenario execution failed
+                error_response = {
+                    "role": "assistant",
+                    "content": f"❌ Failed to run {scenario['title']}: {result.get('error', 'Unknown error')}",
+                    "timestamp": st.session_state.get('timestamp', '')
+                }
+                st.session_state.chat_history.append(error_response)
+                
+        except Exception as e:
+            # Exception occurred
+            error_response = {
+                "role": "assistant", 
+                "content": f"❌ Error running {scenario['title']}: {str(e)}",
+                "timestamp": st.session_state.get('timestamp', '')
+            }
+            st.session_state.chat_history.append(error_response)
+    
+    # Rerun to show new messages
+    st.rerun()
+
+
+def format_scenario_results(results: Dict[str, Any]) -> str:
+    """Format scenario results for display."""
+    if not results:
+        return "No specific results found."
+    
+    formatted = ""
+    
+    for key, value in results.items():
+        if isinstance(value, list):
+            formatted += f"\n{key.replace('_', ' ').title()}: {len(value)} items found\n"
+            for i, item in enumerate(value[:3]):  # Show first 3 items
+                if isinstance(item, dict):
+                    user = item.get('user', 'Unknown')
+                    formatted += f"  {i+1}. {user}\n"
+                else:
+                    formatted += f"  {i+1}. {item}\n"
+            if len(value) > 3:
+                formatted += f"  ... and {len(value) - 3} more\n"
+        else:
+            formatted += f"{key.replace('_', ' ').title()}: {value}\n"
+    
+    return formatted
 
 
 def render_quick_questions():

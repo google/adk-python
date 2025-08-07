@@ -56,6 +56,9 @@ def render_dashboard_view():
     # Key metrics row
     render_key_metrics_row()
     
+    # Service status section (modular architecture)
+    render_service_status_section()
+    
     # Summary cards in columns
     col1, col2, col3 = st.columns(3)
     
@@ -122,6 +125,77 @@ def render_project_info_section():
             st.warning("Could not load project information")
     else:
         st.warning("No project selected. Please select a project from the sidebar.")
+
+
+def render_service_status_section():
+    """Render service status overview section."""
+    st.subheader("⚙️ Service Status")
+    
+    try:
+        # Get service status summary
+        response = api_client.get_services_status_summary()
+        
+        if response.get("success"):
+            summary = response.get("summary", {})
+            statuses = response.get("statuses", {})
+            
+            # Service summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "Total Services",
+                    summary.get("total_services", 0)
+                )
+            
+            with col2:
+                enabled = summary.get("enabled_services", 0)
+                st.metric(
+                    "Enabled",
+                    enabled,
+                    delta=None
+                )
+            
+            with col3:
+                healthy = summary.get("healthy", 0)
+                st.metric(
+                    "Running",
+                    healthy,
+                    delta=None if healthy == 0 else f"+{healthy}"
+                )
+            
+            with col4:
+                unhealthy = len(summary.get("unhealthy_services", []))
+                st.metric(
+                    "Issues",
+                    unhealthy,
+                    delta=None if unhealthy == 0 else f"+{unhealthy}"
+                )
+            
+            # Service status details
+            if unhealthy > 0:
+                with st.expander("⚠️ Services with Issues"):
+                    for service_name in summary.get("unhealthy_services", []):
+                        st.error(f"🔴 {service_name} - Service has issues")
+            
+            # Quick service management link
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                if st.button("🔧 Manage Services", key="dashboard_manage_services"):
+                    st.session_state.page = "services"
+                    st.rerun()
+            
+            with col2:
+                if st.button("🔄 Refresh Status", key="dashboard_refresh_services"):
+                    st.rerun()
+                    
+        else:
+            # Fallback for legacy mode or when service management is not available
+            st.info("🔄 Service management not available (running in legacy mode)")
+            
+    except Exception as e:
+        # Graceful fallback if service management is not available
+        st.info("🔄 Service status not available (legacy mode or service offline)")
 
 
 def render_key_metrics_row():

@@ -13,8 +13,8 @@ from .performance_monitoring_view import (
     render_performance_summary_card
 )
 from .api_explorer_view import render_api_explorer_view, render_api_explorer_summary_card
-from .oidc_flow_view import render_oidc_flow_view, render_oidc_summary_card
 from .incident_response_view import render_incident_response_view, render_incident_summary_card
+from .services_management_view import render_services_management_view
 
 __all__ = [
     'render_dashboard_view',
@@ -37,8 +37,7 @@ __all__ = [
     'render_performance_summary_card',
     'render_api_explorer_view',
     'render_api_explorer_summary_card',
-    'render_oidc_flow_view',
-    'render_oidc_summary_card',
     'render_incident_response_view',
-    'render_incident_summary_card'
+    'render_incident_summary_card',
+    'render_services_management_view'
 ]

@@ -1,4 +1,4 @@
-google-adk
+google-adk[bigquery]
 google-genai
 streamlit
 fastapi
@@ -44,3 +44,4 @@ tabulate
 a2a
 jsonschema
 litellm
+google-cloud-bigquery

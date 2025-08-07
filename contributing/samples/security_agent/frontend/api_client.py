@@ -196,6 +196,19 @@ class SecurityAgentAPIClient:
         project_id = st.session_state.get('selected_project', '')
         return self._make_request(f"/api/v1/iam/project/{project_id}/analyze-all-users")
     
+    def get_iam_testing_scenarios(self) -> Dict[str, Any]:
+        """Get predefined IAM testing scenarios."""
+        return self._make_request("/api/v1/iam/testing/scenarios", include_project=False)
+    
+    def run_iam_scenario(self, scenario_id: str, project_id: str) -> Dict[str, Any]:
+        """Run a specific IAM testing scenario."""
+        return self._make_request(
+            f"/api/v1/iam/testing/run-scenario/{scenario_id}", 
+            "POST", 
+            {"project_id": project_id},
+            include_project=False
+        )
+    
     # Compliance
     def evaluate_compliance(self, framework: str = "SOC2") -> Dict[str, Any]:
         """Evaluate compliance against a framework."""
@@ -402,6 +415,39 @@ class SecurityAgentAPIClient:
     def get_api_docs(self) -> Dict[str, Any]:
         """Get API documentation."""
         return self._make_request("/docs", include_project=False)
+    
+    # Service Management (Modular Architecture)
+    def get_services(self) -> Dict[str, Any]:
+        """Get all services and their status."""
+        return self._make_request("/api/v1/services/", include_project=False)
+    
+    def get_service_details(self, service_name: str) -> Dict[str, Any]:
+        """Get detailed information about a specific service."""
+        return self._make_request(f"/api/v1/services/{service_name}", include_project=False)
+    
+    def enable_service(self, service_name: str) -> Dict[str, Any]:
+        """Enable a service."""
+        return self._make_request(f"/api/v1/services/{service_name}/enable", "POST", include_project=False)
+    
+    def disable_service(self, service_name: str) -> Dict[str, Any]:
+        """Disable a service."""
+        return self._make_request(f"/api/v1/services/{service_name}/disable", "POST", include_project=False)
+    
+    def restart_service(self, service_name: str) -> Dict[str, Any]:
+        """Restart a service."""
+        return self._make_request(f"/api/v1/services/{service_name}/restart", "POST", include_project=False)
+    
+    def get_service_health(self, service_name: str) -> Dict[str, Any]:
+        """Check health of a specific service."""
+        return self._make_request(f"/api/v1/services/{service_name}/health", include_project=False)
+    
+    def get_services_status_summary(self) -> Dict[str, Any]:
+        """Get summary of all services status."""
+        return self._make_request("/api/v1/services/status/summary", include_project=False)
+    
+    def get_services_by_tag(self, tag: str) -> Dict[str, Any]:
+        """Get services with a specific tag."""
+        return self._make_request(f"/api/v1/services/tags/{tag}", include_project=False)
 
 
 # Global API client instance

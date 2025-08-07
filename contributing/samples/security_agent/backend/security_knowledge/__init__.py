@@ -1,0 +1,1 @@
+"""Security Knowledge module with Vertex AI Search integration."""

@@ -15,7 +15,6 @@ Key Features:
     - 📊 Performance Monitoring: System performance metrics and monitoring
     - 🔧 Day Two SRE: Service reliability engineering operations
     - 🔍 API Explorer: Interactive API testing and documentation
-    - 🔐 OIDC Demo: OpenID Connect authentication flow demonstration
     - 🚨 Incident Response: Security incident management and response
 
 Architecture:
@@ -66,9 +65,9 @@ from components import (
     render_performance_monitoring_view,
     render_day_two_sre_view,
     render_api_explorer_view,
-    render_oidc_flow_view,
     render_incident_response_view
 )
+from components.services_management_view import render_services_management_view
 
 # Import shared utilities
 from startup_status import render_startup_screen_if_needed, StartupStatusChecker
@@ -163,34 +162,94 @@ def render_project_selector():
         st.sidebar.warning("No projects available")
 
 
+def get_available_pages():
+    """Get available pages based on service status."""
+    # Always available pages
+    base_pages = {
+        "dashboard": {"name": "🏠 Dashboard", "service": None},
+        "services": {"name": "⚙️ Service Management", "service": None}
+    }
+    
+    # Service-dependent pages
+    service_pages = {
+        "security": {"name": "🛡️ Security Evaluation", "service": "security"},
+        "recommendations": {"name": "🎯 Recommendations", "service": "recommendations"},
+        "iam": {"name": "🔐 IAM Analysis", "service": "iam"},
+        "compliance": {"name": "📋 Compliance", "service": "compliance"},
+        "chat": {"name": "💬 AI Assistant", "service": "agent"},
+        "msa": {"name": "📄 MSA Analysis", "service": "msa"},
+        "performance": {"name": "📊 Performance Monitoring", "service": "monitoring"},
+        "sre": {"name": "🔧 Day Two SRE", "service": "monitoring"},
+        "api_explorer": {"name": "🔍 API Explorer", "service": "documentation"},
+        "incidents": {"name": "🚨 Incident Response", "service": "incident_response"}
+    }
+    
+    # Get service status
+    try:
+        services_response = api_client.get_services()
+        if services_response.get("success"):
+            enabled_services = set()
+            for service in services_response.get("services", []):
+                if service.get("enabled") and service.get("status", {}).get("status") in ["running", "not_configured"]:
+                    enabled_services.add(service.get("name"))
+        else:
+            # If we can't get service status, assume legacy mode - show all pages
+            enabled_services = set(service_pages.keys())
+    except:
+        # If service management is not available, assume legacy mode
+        enabled_services = set(service_pages.keys())
+    
+    # Combine available pages
+    available_pages = base_pages.copy()
+    for page_key, page_info in service_pages.items():
+        if page_info["service"] in enabled_services:
+            available_pages[page_key] = page_info
+    
+    return available_pages
+
+
 def render_navigation():
-    """Render navigation menu."""
+    """Render navigation menu with service-aware pages."""
     st.sidebar.markdown("---")
     st.sidebar.subheader("📋 Navigation")
     
-    pages = {
-        "dashboard": "🏠 Dashboard",
-        "security": "🛡️ Security Evaluation", 
-        "recommendations": "🎯 Recommendations",
-        "iam": "🔐 IAM Analysis",
-        "compliance": "📋 Compliance",
-        "chat": "💬 AI Assistant",
-        "msa": "📄 MSA Analysis",
-        "performance": "📊 Performance Monitoring",
-        "sre": "🔧 Day Two SRE",
-        "api_explorer": "🔍 API Explorer",
-        "oidc": "🔐 OIDC Demo",
-        "incidents": "🚨 Incident Response"
-    }
+    # Get available pages based on service status
+    pages = get_available_pages()
     
-    for page_key, page_name in pages.items():
-        if st.sidebar.button(page_name, key=f"nav_{page_key}", use_container_width=True):
-            st.session_state.page = page_key
-            st.rerun()
+    # Core navigation
+    core_pages = ["dashboard", "services"]
+    st.sidebar.markdown("**Core**")
+    for page_key in core_pages:
+        if page_key in pages:
+            page_name = pages[page_key]["name"]
+            if st.sidebar.button(page_name, key=f"nav_{page_key}", use_container_width=True):
+                st.session_state.page = page_key
+                st.rerun()
+    
+    # Feature navigation
+    feature_pages = [k for k in pages.keys() if k not in core_pages]
+    if feature_pages:
+        st.sidebar.markdown("**Features**")
+        for page_key in sorted(feature_pages):
+            page_name = pages[page_key]["name"]
+            if st.sidebar.button(page_name, key=f"nav_{page_key}", use_container_width=True):
+                st.session_state.page = page_key
+                st.rerun()
     
     # Current page indicator
-    current_page = pages.get(st.session_state.page, "Unknown")
+    current_page = pages.get(st.session_state.page, {}).get("name", "Unknown")
     st.sidebar.markdown(f"**Current:** {current_page}")
+    
+    # Service status indicator
+    try:
+        services_response = api_client.get_services_status_summary()
+        if services_response.get("success"):
+            summary = services_response.get("summary", {})
+            enabled = summary.get("enabled_services", 0)
+            total = summary.get("total_services", 0)
+            st.sidebar.markdown(f"**Services:** {enabled}/{total} enabled")
+    except:
+        pass  # Don't show status if service management not available
 
 
 def clear_cached_data():
@@ -201,7 +260,6 @@ def clear_cached_data():
         'compliance_gdpr', 'compliance_hipaa', 'compliance_pci_dss',
         'compliance_comparison', 'msa_parse_results', 'org_scan_results',
         'performance_metrics', 'system_health', 'incidents', 'api_history',
-        'oidc_state', 'oidc_code', 'oidc_tokens', 'pkce_verifier'
     ]
     
     for key in keys_to_clear:
@@ -213,6 +271,18 @@ def render_main_content():
     """Render the main content area based on current page."""
     page = st.session_state.page
     
+    # Get available pages to check if current page is accessible
+    available_pages = get_available_pages()
+    
+    # If current page is not available, redirect to dashboard
+    if page not in available_pages:
+        if page != "dashboard":  # Avoid infinite redirect loop
+            st.warning(f"The {page} feature is not available. Please enable the corresponding service in Service Management.")
+            st.session_state.page = "dashboard"
+            st.rerun()
+        page = "dashboard"
+    
+    # Render the appropriate page
     if page == "dashboard":
         render_dashboard_view()
     elif page == "security":
@@ -233,10 +303,10 @@ def render_main_content():
         render_day_two_sre_view()
     elif page == "api_explorer":
         render_api_explorer_view()
-    elif page == "oidc":
-        render_oidc_flow_view()
     elif page == "incidents":
         render_incident_response_view()
+    elif page == "services":
+        render_services_management_view()
     else:
         st.error(f"Unknown page: {page}")
         st.session_state.page = "dashboard"

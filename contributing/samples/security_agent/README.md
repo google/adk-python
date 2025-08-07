@@ -112,19 +112,30 @@ graph TB
 **Deploy the entire security agent with a single command:**
 
 ```bash
-./run.sh
+python run.py
 ```
 
 That's it! The script will:
-- ✅ Set up the environment
-- ✅ Install dependencies
-- ✅ Start backend and frontend servers
-- ✅ Open the application automatically
+- ✅ Check dependencies and setup environment
+- ✅ Start modular backend with service management
+- ✅ Start frontend with service control UI
+- ✅ Open browser tabs automatically
+- ✅ Enable/disable services as needed
 
 **Access Points:**
 - 🌐 **Frontend**: http://localhost:8501
 - 🔧 **Backend API**: http://localhost:8000
 - 📚 **API Documentation**: http://localhost:8000/docs
+- ⚙️ **Service Management**: http://localhost:8501 → Service Management
+
+**Deployment Options:**
+```bash
+python run.py                    # Modular architecture (default)
+python run.py --legacy           # Legacy monolithic backend
+python run.py --docker           # Docker container deployment
+python run.py --backend-only     # Backend server only
+python run.py --frontend-only    # Frontend only
+```
 
 ## 📋 System Requirements
 
@@ -139,55 +150,89 @@ That's it! The script will:
 - **5GB disk space**
 - **Google Cloud Project** (for Vertex AI features)
 
-## 🏗️ Modular Architecture
+## 🏗️ Modular Service Architecture
 
-The application has been refactored to use a **domain-driven, modular architecture** for better maintainability and extensibility:
+The application features a **revolutionary modular service architecture** that allows users to enable/disable individual services independently. This prevents service failures from breaking the entire agent and provides granular control during setup.
 
-### Backend Structure (Feature-Based)
+### 🔑 Key Benefits
+
+- **🛡️ Fault Isolation**: Services can fail independently without affecting others
+- **⚙️ Enable/Disable Control**: Turn services on/off through web UI
+- **🏥 Health Monitoring**: Real-time service health checks and status
+- **📊 Service Management**: Complete service lifecycle management
+- **🔄 Dependency Management**: Automatic service dependency resolution
+- **💾 State Persistence**: Service configurations saved across restarts
+
+### 🔧 Available Services
+
+The system includes **16 modular services** organized by functionality:
+
+#### **Core Services** (Always Required)
+- **🛡️ Security Service**: Core security evaluation and scanning
+- **🔧 GCP Service**: Google Cloud Platform integration
+- **🤖 Agent Service**: AI-powered security agent
+
+#### **Security & Compliance Services**
+- **🔐 IAM Analysis**: Identity and Access Management policy analysis
+- **📋 Compliance**: Multi-framework compliance checking (SOC2, ISO27001, GDPR, etc.)
+- **🚨 Threat Intelligence**: Vulnerability and threat analysis
+- **🔍 Security Analytics**: BigQuery-based security analytics
+- **📚 Security Knowledge**: Vertex AI Search integration
+
+#### **Monitoring & Operations Services**
+- **📊 Cloud Logging**: Google Cloud Logging integration
+- **📈 Performance Monitoring**: System performance metrics
+- **🔍 Distributed Tracing**: OpenTelemetry with Cloud Trace
+- **🚨 Incident Response**: Security incident management
+
+#### **Integration Services**
+- **📄 Documentation**: API documentation scraping
+- **📋 MSA Analysis**: Microsoft Service Agreement parsing
+- **🔗 API Hub**: Google API Hub integration
+- **🎯 Recommendations**: AI-powered security recommendations
+
+### Backend Structure (Modular Architecture)
 ```
 backend/
-├── compliance/          # Compliance evaluation feature
-│   ├── api.py          # Compliance API endpoints
-│   ├── service.py      # Compliance business logic
-│   └── models.py       # Compliance data models
-├── iam/                # IAM analysis feature  
-│   ├── api.py          # IAM API endpoints
-│   ├── service.py      # IAM policy analyzer
-│   └── models.py       # IAM data models
-├── recommendations/    # Security recommendations feature
-│   ├── api.py          # Recommendations API
-│   ├── service.py      # Recommendation engine
-│   └── models.py       # Recommendation models
-├── security/          # Security analysis feature
-│   ├── api.py          # Security evaluation API
-│   ├── service.py      # Security scanner
-│   └── models.py       # Security models
-├── gcp/               # GCP operations feature
-│   ├── api.py          # GCP API operations
-│   ├── service.py      # GCP service integration
-│   └── models.py       # GCP data models
-├── documentation/     # Documentation scraping feature
-├── msa/              # MSA parsing feature
-├── cloud_logging/    # Cloud logging feature
-├── tracing/          # Distributed tracing feature
-└── main.py           # Application orchestrator
+├── core/                    # 🏗️ Service Management Core
+│   ├── service_registry.py  # Central service registry
+│   ├── service_config.py    # Service configuration management
+│   └── base_service.py      # Base service class
+├── main_modular.py          # 🚀 Modular application entry point
+├── main.py                  # 📦 Legacy monolithic entry point
+├── [service_name]/          # 🔧 Individual Service Modules
+│   ├── api.py              # FastAPI routes
+│   ├── service.py          # Business logic
+│   └── models.py           # Data models
+└── config/
+    └── services.json       # 📋 Service configuration
 ```
 
 ### Frontend Structure (Component-Based)
 ```
 frontend/
-├── components/            # Reusable UI components
-│   ├── dashboard_view.py       # Main dashboard
-│   ├── security_evaluation_view.py  # Security analysis UI
-│   ├── recommendations_view.py      # Recommendations UI
-│   ├── iam_analyzer_view.py         # IAM analysis UI
-│   ├── compliance_view.py           # Compliance dashboard
-│   ├── chat_view.py                 # AI chat interface
-│   └── __init__.py                  # Component exports
-├── api_client.py          # Backend communication layer
-├── main_app.py           # New modular main application
-└── enhanced_security_agent_app.py  # Legacy monolithic app
+├── components/                      # 🧩 Reusable UI Components
+│   ├── dashboard_view.py           # 🏠 Main dashboard
+│   ├── services_management_view.py # ⚙️ Service management UI
+│   ├── security_evaluation_view.py # 🛡️ Security analysis UI
+│   ├── iam_analyzer_view.py        # 🔐 IAM analysis UI
+│   ├── compliance_view.py          # 📋 Compliance dashboard
+│   ├── chat_view.py                # 💬 AI chat interface
+│   └── __init__.py                 # Component exports
+├── api_client.py                   # 🌐 Backend communication
+├── main_app.py                     # 🚀 Modular main application
+└── enhanced_security_agent_app.py  # 📦 Legacy monolithic app
 ```
+
+### 🎯 Service Management Interface
+
+The new **Service Management** interface provides complete control:
+
+- **📋 Services Overview**: View all services and their status
+- **⚙️ Service Control**: Enable/disable services with toggle buttons  
+- **🏥 Health Status**: Real-time monitoring with auto-refresh
+- **🔍 Service Details**: Detailed configuration and dependencies
+- **🔄 Service Actions**: Enable, disable, and restart services
 
 ### Key Improvements
 - **🎯 Feature-Based Organization**: Code grouped by business domain rather than technical type
@@ -229,6 +274,8 @@ docker run -p 8000:8000 -p 8501:8501 -d --name security-agent security-agent
 - **Frontend**: http://localhost:8501
 - **Backend**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
+- **Service Management**: http://localhost:8501 → Service Management
+- **Service API**: http://localhost:8000/api/v1/services/
 
 ### Stop Services
 ```bash
@@ -244,6 +291,9 @@ Create a `.env` file and add the following variables:
 GOOGLE_CLOUD_PROJECT="your-project-id"
 GOOGLE_APPLICATION_CREDENTIALS="path/to/service-account.json"
 
+# Service Configuration (Modular Architecture)
+SERVICE_CONFIG_PATH="backend/config/services.json"
+
 # ADK Configuration
 ADK_EVALUATION_ENABLED="true"
 
@@ -252,20 +302,75 @@ VERTEX_AI_PROJECT_ID="your-project-id"
 VERTEX_AI_LOCATION="us-central1"
 ```
 
+### Service Configuration
+The modular architecture uses a service configuration file to manage which services are enabled:
+
+```json
+{
+  "services": {
+    "iam": {
+      "enabled_by_default": true,
+      "config": {
+        "cache_ttl": 300,
+        "max_users_per_scan": 100
+      }
+    },
+    "compliance": {
+      "enabled_by_default": true,
+      "config": {
+        "frameworks": ["SOC2", "ISO27001", "GDPR"]
+      }
+    }
+  },
+  "runtime_status": {
+    "iam": "not_configured",
+    "compliance": "not_configured"
+  }
+}
+```
+
+### Service Management API
+Control services programmatically:
+
+```bash
+# List all services
+curl http://localhost:8000/api/v1/services/
+
+# Get service details  
+curl http://localhost:8000/api/v1/services/iam
+
+# Enable a service
+curl -X POST http://localhost:8000/api/v1/services/iam/enable
+
+# Disable a service
+curl -X POST http://localhost:8000/api/v1/services/threat_intelligence/disable
+
+# Check service health
+curl http://localhost:8000/api/v1/services/iam/health
+
+# Get status summary
+curl http://localhost:8000/api/v1/services/status/summary
+```
+
 ## 🚀 Getting Started
 
 Choose your preferred deployment method based on your use case:
 
-### Option 1: One-Click Deployment (Recommended)
+### Option 1: One-Command Deployment (Recommended)
 Perfect for quick evaluation and testing:
 
 ```bash
 git clone https://github.com/google/adk-python.git
 cd adk-python/contributing/samples/security_agent
-./run.sh
+python run.py
 ```
 
-The script automatically detects your environment and sets up everything needed.
+The script automatically:
+- ✅ Detects your environment and sets up dependencies
+- ✅ Starts modular backend with service management
+- ✅ Launches frontend with service control UI
+- ✅ Opens browser tabs to key interfaces
+- ✅ Enables gradual service activation
 
 ### Option 2: Local Development
 Best for development, customization, and debugging:
@@ -306,17 +411,22 @@ Best for development, customization, and debugging:
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    pip install -r requirements.txt
    
-   # Start backend (Terminal 1)
-   cd backend && uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+   # Option A: Use the integrated launcher
+   python run.py
    
-   # Start frontend (Terminal 2) 
+   # Option B: Start services manually
+   # Terminal 1: Start modular backend
+   cd backend && uvicorn main_modular:app --host 0.0.0.0 --port 8000 --reload
+   
+   # Terminal 2: Start frontend
    cd frontend && streamlit run main_app.py --server.port 8501
    ```
 
 4. **Access the Application**
    - 🌐 **Main Interface**: http://localhost:8501
+   - ⚙️ **Service Management**: http://localhost:8501 → Service Management
    - 🔧 **API Documentation**: http://localhost:8000/docs
-   - 📊 **OpenAPI Schema**: http://localhost:8000/openapi.json
+   - 📊 **Service Status**: http://localhost:8000/api/v1/services/status/summary
 
 ### Option 3: Docker Deployment
 Ideal for production-like environments and containerized deployments:
@@ -330,7 +440,10 @@ Ideal for production-like environments and containerized deployments:
 git clone https://github.com/google/adk-python.git
 cd adk-python/contributing/samples/security_agent
 
-# Build and run with Docker
+# Option A: Use integrated Docker launcher
+python run.py --docker
+
+# Option B: Build and run manually
 docker build -t gcp-security-agent .
 docker run -p 8000:8000 -p 8501:8501 gcp-security-agent
 ```
@@ -361,17 +474,25 @@ Once the application is running, follow these steps to get started:
    ```
 
 ### 3. **Explore Key Features**
-   - 🏠 **Dashboard**: Overview of security posture
+   - 🏠 **Dashboard**: Overview of security posture and system status
+   - ⚙️ **Service Management**: Enable/disable services as needed
    - 🛡️ **Security Evaluation**: Run comprehensive security scans
    - 🎯 **Recommendations**: Get AI-powered security advice
    - 🔐 **IAM Analysis**: Review user permissions and policies
    - 💬 **AI Assistant**: Chat with the security agent
 
-### 4. **Test Core Functionality**
+### 4. **Configure Services** (New!)
+   - Navigate to **Service Management** in the sidebar
+   - Review available services and their status
+   - Enable services gradually based on your needs
+   - Monitor service health in real-time
+   - Use service control toggles to manage functionality
+
+### 5. **Test Core Functionality**
    - Select a GCP project from the sidebar
    - Run a security evaluation
    - Explore the API documentation at http://localhost:8000/docs
-   - Try the interactive API explorer
+   - Try the service management APIs
 
 ## 🔧 Configuration Options
 
@@ -394,11 +515,18 @@ Once the application is running, follow these steps to get started:
 | Issue | Solution |
 |-------|----------|
 | Port 8000/8501 in use | Kill existing processes: `lsof -ti:8000 \| xargs kill -9` |
+| Service won't start | Check Service Management UI for dependencies and health status |
 | Import errors | Ensure virtual environment is activated |
 | GCP authentication errors | Run `gcloud auth application-default login` |
 | Docker container issues | Check Docker daemon is running |
+| Feature not available | Check if corresponding service is enabled in Service Management |
 
 Need more help? See the [Troubleshooting](#troubleshooting) section below.
+
+## 📚 Additional Documentation
+
+- **[Modular Architecture Guide](MODULAR_ARCHITECTURE.md)**: Comprehensive guide to the service-based architecture
+- **[Installation Guide](INSTALL.md)**: Detailed platform-specific setup instructions
 
 ## 🔐 GCP APIs & Service Account Permissions
 
