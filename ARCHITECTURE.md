@@ -27,202 +27,253 @@ The Agent Development Kit (ADK) is built around several key architectural concep
 
 ## 🏗️ System Architecture
 
-### High-Level Architecture
+### High-Level Service Architecture
 
 ```mermaid
 graph TB
     subgraph "Application Layer"
-        Agent[🤖 Agent]
-        Tools[🔧 Tools]
+        AGENT[🤖 Agent Service]
+        TOOLS[🔧 Tool Service]
+        API_GW[🌐 API Gateway]
         
-        Agent -->|uses| Tools
+        AGENT -->|orchestrates| TOOLS
+        API_GW -->|routes to| AGENT
     end
     
-    subgraph "ADK Core"
-        Model[🧠 Model Service]
-        Memory[💾 Memory Service] 
-        Config[⚙️ Configuration Service]
-        Health[🏥 Health Service]
-        Logging[📊 Logging Service]
+    subgraph "Service Registry & Management"
+        SR[📋 Service Registry]
+        SM[⚙️ Service Manager]
+        SC[🔧 Service Config]
         
-        Agent -->|inference| Model
-        Agent -->|context| Memory
-        Agent -->|settings| Config
+        SR -->|manages| SM
+        SM -->|configures| SC
     end
     
-    subgraph "External Integrations"
-        GCP[☁️ Google Cloud]
-        OpenAI[🔥 OpenAI]
-        APIs[🌐 External APIs]
+    subgraph "Core Services"
+        MODEL[🧠 Model Service]
+        MEMORY[💾 Memory Service] 
+        CONFIG[⚙️ Configuration Service]
+        HEALTH[🏥 Health Service]
+        LOGGING[📊 Logging Service]
         
-        Tools -->|calls| GCP
-        Tools -->|calls| OpenAI
-        Tools -->|calls| APIs
-        Model -->|inference| GCP
-        Model -->|inference| OpenAI
+        SR -->|registers| MODEL
+        SR -->|registers| MEMORY
+        SR -->|registers| CONFIG
+        SR -->|registers| HEALTH
+        SR -->|registers| LOGGING
     end
     
-    subgraph "Infrastructure"
-        Container[🐳 Container Runtime]
-        Monitoring[📈 Monitoring]
-        Storage[💿 Storage]
+    subgraph "Integration Services"
+        GCP_SVC[☁️ GCP Service]
+        AI_SVC[🔥 AI Provider Service]
+        API_SVC[🌐 External API Service]
         
-        ADK -->|runs in| Container
-        ADK -->|metrics| Monitoring
-        Memory -->|persists| Storage
+        SR -->|registers| GCP_SVC
+        SR -->|registers| AI_SVC
+        SR -->|registers| API_SVC
     end
+    
+    subgraph "Infrastructure Layer"
+        CONTAINER[🐳 Container Runtime]
+        MONITOR[📈 Monitoring Service]
+        STORAGE[💿 Storage Service]
+        
+        SR -->|registers| MONITOR
+        SR -->|registers| STORAGE
+        CONTAINER -->|hosts| SR
+    end
+    
+    AGENT -->|uses| MODEL
+    AGENT -->|stores| MEMORY
+    AGENT -->|configures| CONFIG
+    TOOLS -->|calls| GCP_SVC
+    TOOLS -->|calls| AI_SVC
+    TOOLS -->|calls| API_SVC
+    HEALTH -->|monitors| SR
+    LOGGING -->|aggregates| SR
     
     classDef app fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef registry fill:#fff3e0,stroke:#ff9800,stroke-width:2px
     classDef core fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px  
-    classDef external fill:#e8f5e8,stroke:#388e3c,stroke-width:2px
-    classDef infra fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef integration fill:#e8f5e8,stroke:#388e3c,stroke-width:2px
+    classDef infra fill:#fce4ec,stroke:#e91e63,stroke-width:2px
     
-    class Agent,Tools app
-    class Model,Memory,Config,Health,Logging core
-    class GCP,OpenAI,APIs external
-    class Container,Monitoring,Storage infra
+    class AGENT,TOOLS,API_GW app
+    class SR,SM,SC registry
+    class MODEL,MEMORY,CONFIG,HEALTH,LOGGING core
+    class GCP_SVC,AI_SVC,API_SVC integration
+    class CONTAINER,MONITOR,STORAGE infra
 ```
 
-### Component Interaction Flow
+### Service Interaction Flow
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Agent
-    participant Model
-    participant Tool
-    participant Memory
-    participant External
+    participant API_Gateway as API Gateway
+    participant Agent_Service as Agent Service
+    participant Service_Registry as Service Registry
+    participant Model_Service as Model Service
+    participant Tool_Service as Tool Service
+    participant Memory_Service as Memory Service
+    participant External_Services as External Services
 
-    User->>Agent: Submit request
-    Agent->>Memory: Retrieve context
-    Agent->>Model: Generate plan
-    Model-->>Agent: Execution plan
+    User->>API_Gateway: Submit request
+    API_Gateway->>Agent_Service: Route request
+    Agent_Service->>Service_Registry: Get available services
+    Service_Registry-->>Agent_Service: Service list
+    
+    Agent_Service->>Memory_Service: Retrieve context
+    Memory_Service-->>Agent_Service: Context data
+    Agent_Service->>Model_Service: Generate execution plan
+    Model_Service-->>Agent_Service: Execution plan
     
     loop For each step in plan
-        Agent->>Tool: Execute tool
-        Tool->>External: API call/operation
-        External-->>Tool: Response
-        Tool-->>Agent: Tool result
-        Agent->>Memory: Store result
+        Agent_Service->>Tool_Service: Execute tool
+        Tool_Service->>Service_Registry: Get external service
+        Service_Registry-->>Tool_Service: Service reference
+        Tool_Service->>External_Services: API call/operation
+        External_Services-->>Tool_Service: Response
+        Tool_Service-->>Agent_Service: Tool result
+        Agent_Service->>Memory_Service: Store result
     end
     
-    Agent->>Model: Synthesize response
-    Model-->>Agent: Final response
-    Agent-->>User: Complete response
+    Agent_Service->>Model_Service: Synthesize response
+    Model_Service-->>Agent_Service: Final response
+    Agent_Service-->>API_Gateway: Complete response
+    API_Gateway-->>User: Response
 ```
 
-## 🔧 Component Details
+## 🔧 Service Details
 
-### Agent Runtime
-The core agent execution environment that:
+### Agent Service
+The core agent execution service that:
 - **Processes requests** using natural language understanding
 - **Plans execution** by breaking down complex tasks
-- **Orchestrates tools** to gather information and perform actions
-- **Manages context** across multi-turn conversations
+- **Orchestrates tool services** to gather information and perform actions
+- **Manages context** across multi-turn conversations through Memory Service
 - **Handles errors** and retries failed operations
 
-**Key Features:**
-- Asynchronous execution for concurrent tool usage
+**Service Features:**
+- Asynchronous execution for concurrent service calls
 - Built-in retry mechanisms with exponential backoff  
 - Context window management for long conversations
-- Tool selection and parameter binding
+- Dynamic service selection and parameter binding
 - Response synthesis and formatting
+- Health monitoring and graceful degradation
 
-### Model Abstraction Layer
-Provides unified interface to multiple LLM providers:
+### Model Service
+Provides unified interface to multiple LLM providers through a service abstraction:
 
 **Supported Providers:**
-- **Vertex AI** - Google's enterprise AI platform
-- **OpenAI** - GPT models and embeddings
-- **Anthropic** - Claude models  
-- **Local Models** - Self-hosted or on-premise models
+- **Vertex AI Service** - Google's enterprise AI platform
+- **OpenAI Service** - GPT models and embeddings
+- **Anthropic Service** - Claude models  
+- **Local Model Service** - Self-hosted or on-premise models
 
-**Features:**
+**Service Features:**
 - Provider-agnostic API
-- Automatic model selection
+- Automatic model selection and failover
 - Cost optimization and routing
 - Response streaming support
-- Token usage tracking
+- Token usage tracking and quotas
+- Service-level authentication management
 
-### Tool Framework  
-Standardized system for integrating external capabilities:
+### Tool Service  
+Standardized service for integrating external capabilities through managed tool execution:
 
-**Tool Types:**
-- **API Tools** - REST/GraphQL API integrations
-- **Data Tools** - File processing, databases, analytics
-- **Cloud Tools** - Cloud provider specific operations
-- **Utility Tools** - Text processing, calculations, formatting
+**Tool Service Categories:**
+- **API Tool Services** - REST/GraphQL API integrations
+- **Data Tool Services** - File processing, databases, analytics
+- **Cloud Tool Services** - Cloud provider specific operations
+- **Utility Tool Services** - Text processing, calculations, formatting
 
-**Tool Lifecycle:**
+**Tool Service Lifecycle:**
 ```python
-@tool
-def my_tool(param: str) -> str:
-    """Tool description for agent understanding."""
-    # Tool implementation
+@tool_service
+def my_tool_service(param: str) -> str:
+    """Tool service description for agent understanding."""
+    # Tool service implementation with error handling
     return result
 
-# Tools are automatically:
-# 1. Registered with the agent
-# 2. Described to the language model  
-# 3. Called with proper parameters
+# Tool services are automatically:
+# 1. Registered with the service registry
+# 2. Described to the model service
+# 3. Called with proper parameters via Tool Service
 # 4. Results integrated into agent reasoning
+# 5. Health monitored and logged
 ```
 
-### Memory Management
-Persistent storage for agent context and knowledge:
+### Memory Service
+Persistent storage service for agent context and knowledge:
 
-**Memory Types:**
-- **Short-term** - Current conversation context
-- **Long-term** - Persistent knowledge across sessions  
-- **Semantic** - Vector-based knowledge retrieval
-- **Episodic** - Historical interaction patterns
+**Memory Service Types:**
+- **Short-term Memory Service** - Current conversation context
+- **Long-term Memory Service** - Persistent knowledge across sessions  
+- **Semantic Memory Service** - Vector-based knowledge retrieval
+- **Episodic Memory Service** - Historical interaction patterns
 
-**Storage Backends:**
-- In-memory (development)
-- PostgreSQL (production)
-- Vector databases (Pinecone, Weaviate)
-- Cloud storage (GCS, S3)
+**Storage Service Backends:**
+- In-memory service (development)
+- PostgreSQL service (production)
+- Vector database services (Pinecone, Weaviate)
+- Cloud storage services (GCS, S3)
 
-## 🔄 Agent Lifecycle
+## 🔄 Service Lifecycle
 
-### Initialization Phase
+### Service Initialization Phase
 ```mermaid
 graph LR
-    A[Load Config] --> B[Initialize Model]
-    B --> C[Load Tools]
-    C --> D[Setup Memory]
-    D --> E[Health Check]
-    E --> F[Agent Ready]
+    A[Load Service Config] --> B[Initialize Service Registry]
+    B --> C[Register Core Services]
+    C --> D[Initialize Service Dependencies]
+    D --> E[Start Health Monitoring]
+    E --> F[Services Ready]
+    
+    subgraph "Service Registration"
+        C --> C1[Model Service]
+        C --> C2[Memory Service]
+        C --> C3[Tool Service]
+        C --> C4[Agent Service]
+    end
 ```
 
-1. **Configuration Loading** - Environment variables, YAML configs
-2. **Model Initialization** - Provider authentication, model loading
-3. **Tool Registration** - Discovery and validation of available tools
-4. **Memory Setup** - Connection to storage backends
-5. **Health Verification** - System readiness checks
+1. **Service Configuration Loading** - Environment variables, service definitions
+2. **Service Registry Initialization** - Central service management setup
+3. **Core Service Registration** - Register essential services with dependencies
+4. **Service Dependency Resolution** - Ensure all service dependencies are met
+5. **Health Monitoring Setup** - Start continuous health checks for all services
+6. **Service Readiness Verification** - Confirm all services are operational
 
-### Request Processing
+### Service Request Processing
 ```mermaid
 graph TD
-    A[Receive Request] --> B[Parse Intent]
-    B --> C[Retrieve Context]
-    C --> D[Plan Execution]
-    D --> E[Execute Tools]
-    E --> F[Synthesize Response]
-    F --> G[Update Memory]
-    G --> H[Return Response]
+    A[API Gateway Receives Request] --> B[Route to Agent Service]
+    B --> C[Agent Service Parses Intent]
+    C --> D[Query Service Registry]
+    D --> E[Retrieve Context from Memory Service]
+    E --> F[Generate Plan via Model Service]
+    F --> G[Execute via Tool Service]
+    G --> H[Synthesize Response via Model Service]
+    H --> I[Store Results in Memory Service]
+    I --> J[Return Response via API Gateway]
     
-    E --> I{More Tools?}
-    I -->|Yes| E
-    I -->|No| F
+    G --> K{More Services Needed?}
+    K -->|Yes| G
+    K -->|No| H
+    
+    D --> L[Check Service Availability]
+    L --> M{Service Healthy?}
+    M -->|Yes| E
+    M -->|No| N[Fallback/Error Response]
 ```
 
-### Shutdown Phase
-- **Graceful termination** of ongoing operations
-- **Memory persistence** of current state
-- **Resource cleanup** and connection closing
-- **Health status updates**
+### Service Shutdown Phase
+- **Graceful service termination** of all registered services
+- **Service state persistence** via Memory Service
+- **Service registry cleanup** and deregistration
+- **Health monitoring shutdown** and final status updates
+- **Resource cleanup** across all service layers
 
 ## 🔧 Tool Integration
 

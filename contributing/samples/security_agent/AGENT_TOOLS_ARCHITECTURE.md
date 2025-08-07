@@ -62,21 +62,30 @@ Provides common functionality used by all agents in the system.
 - Tool collection and management utilities
 - Common agent setup patterns
 
-### Agent Workflow
+### Agent Service Workflow
 
 ```mermaid
 graph TD
-    A[User Request] --> B[Security Agent]
+    A[User Request] --> B[Security Agent Service]
     B --> C{Analyze Request}
-    C -->|Project Info| D[GCP Tools]
-    C -->|Security Analysis| E[Security Tools]
-    C -->|API Calls| F[API Tools]
-    C -->|Risk Assessment| G[Analysis Tools]
-    D --> H[Consolidated Response]
+    C -->|Project Info| D[GCP Tool Services]
+    C -->|Security Analysis| E[Security Tool Services]
+    C -->|API Calls| F[API Tool Services]
+    C -->|Risk Assessment| G[Analysis Tool Services]
+    D --> H[Service Orchestration]
     E --> H
     F --> H
     G --> H
-    H --> I[User]
+    H --> I[Response Synthesis Service]
+    I --> J[User Response]
+    
+    classDef agent fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef tools fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef orchestration fill:#e8f5e8,stroke:#388e3c,stroke-width:2px
+    
+    class A,B,I,J agent
+    class D,E,F,G tools
+    class H orchestration
 ```
 
 ## Tools
@@ -123,49 +132,55 @@ Tools are specialized functions that provide specific capabilities. They are org
 - `get_api_dependency_graph()` - Build API dependency graphs
 - `propagate_risk()` - Analyze risk propagation through dependencies
 
-### Tool Integration Pattern
+### Tool Service Integration Pattern
 
 ```python
-# Tools are integrated into agents through imports and configuration
+# Tool services are integrated into agent services through service registry
 from ..tools.gcp_tools.project_tools import get_gcp_projects
 from ..tools.security_tools.knowledge_base_tools import evaluate_api_security
 
-# Agent uses tools to fulfill user requests
-agent = Agent(
-    name='security_agent',
-    tools=[
+# Agent service uses tool services to fulfill user requests
+agent_service = AgentService(
+    name='security_agent_service',
+    service_registry=service_registry,
+    tool_services=[
         get_gcp_projects,
         evaluate_api_security,
-        # ... other tools
+        # ... other tool services
     ]
 )
+
+# Services are managed through the service registry
+service_registry.register_service(agent_service)
+service_registry.register_tool_services(tool_services)
 ```
 
 ## How It Works for Customers
 
-### 1. Agent Initialization
+### 1. Service Initialization
 
 When the system starts:
-1. **Base agent utilities** initialize Vertex AI and load configuration
-2. **Security agent** collects all relevant tools from different categories
-3. **API Hub integration** dynamically loads additional tools if configured
-4. **Agent service** manages the agent lifecycle and user sessions
+1. **Service registry** initializes and loads service configurations
+2. **Security agent service** registers with available tool services from different categories
+3. **API Hub integration service** dynamically loads additional tool services if configured
+4. **Service manager** handles service lifecycle and user sessions
 
 ### 2. Request Processing
 
 When a customer asks a question:
-1. **Agent receives** the user request through the service layer
-2. **Agent analyzes** the request to determine which tools are needed
-3. **Tools are called** in the appropriate sequence to gather information
-4. **Results are synthesized** into a comprehensive response
+1. **Agent service** receives the user request through the API gateway
+2. **Agent service** analyzes the request to determine which tool services are needed
+3. **Tool services** are called through the service registry in the appropriate sequence
+4. **Results are synthesized** by the agent service into a comprehensive response
 
-### 3. Tool Coordination
+### 3. Service Coordination
 
-The agent intelligently coordinates tools:
-- **Sequential execution:** Some tools depend on outputs from others
-- **Parallel execution:** Independent tools can run simultaneously
-- **Error handling:** Failed tools don't crash the entire workflow
-- **Context management:** Tool results are passed between calls when needed
+The agent service intelligently coordinates tool services:
+- **Sequential execution:** Some tool services depend on outputs from others
+- **Parallel execution:** Independent tool services can run simultaneously
+- **Error handling:** Failed tool services don't crash the entire workflow
+- **Service discovery:** Tool services are dynamically discovered through the service registry
+- **Context management:** Tool service results are passed between calls when needed
 
 ## Example Customer Workflow
 

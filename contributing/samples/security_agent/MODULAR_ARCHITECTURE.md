@@ -15,6 +15,120 @@ The Security Agent has been refactored into a modular architecture that allows u
 
 ## Architecture Components
 
+### Modular Service Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "Service Management Layer"
+        SR[📋 Service Registry]
+        SC[⚙️ Service Config]
+        SM[🔧 Service Manager]
+        
+        SR -->|manages| SC
+        SR -->|controls| SM
+    end
+    
+    subgraph "Required Core Services"
+        GCP[☁️ GCP Service]
+        SEC[🛡️ Security Service]
+        AGENT[🤖 Agent Service]
+        
+        SR -->|manages| GCP
+        SR -->|manages| SEC
+        SR -->|manages| AGENT
+    end
+    
+    subgraph "Optional Services"
+        IAM[🔐 IAM Analysis]
+        COMP[📋 Compliance]
+        LOG[📊 Cloud Logging]
+        TRACE[🔍 Tracing]
+        MON[📈 Monitoring]
+        THREAT[⚠️ Threat Intel]
+        API_HUB[🌐 API Hub]
+        DOCS[📚 Documentation]
+        ANALYTICS[📊 Analytics]
+        KB[🧠 Knowledge Base]
+        MSA[📄 MSA Analysis]
+        INC[🚨 Incident Response]
+        REC[💡 Recommendations]
+        
+        SR -->|optionally manages| IAM
+        SR -->|optionally manages| COMP
+        SR -->|optionally manages| LOG
+        SR -->|optionally manages| TRACE
+        SR -->|optionally manages| MON
+        SR -->|optionally manages| THREAT
+        SR -->|optionally manages| API_HUB
+        SR -->|optionally manages| DOCS
+        SR -->|optionally manages| ANALYTICS
+        SR -->|optionally manages| KB
+        SR -->|optionally manages| MSA
+        SR -->|optionally manages| INC
+        SR -->|optionally manages| REC
+    end
+    
+    classDef required fill:#ffcdd2,stroke:#d32f2f,stroke-width:3px
+    classDef optional fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+    classDef management fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    
+    class GCP,SEC,AGENT required
+    class IAM,COMP,LOG,TRACE,MON,THREAT,API_HUB,DOCS,ANALYTICS,KB,MSA,INC,REC optional
+    class SR,SC,SM management
+```
+
+### Service Dependency Graph
+
+```mermaid
+graph LR
+    subgraph "Core Layer (Required)"
+        GCP[GCP Service]
+        SEC[Security Service]
+        AGENT[Agent Service]
+    end
+
+    subgraph "Security Layer"
+        IAM[IAM Analysis]
+        COMP[Compliance]
+        THREAT[Threat Intelligence]
+        INC[Incident Response]
+    end
+
+    subgraph "Monitoring Layer"
+        LOG[Cloud Logging]
+        TRACE[OpenTelemetry]
+        MON[Monitoring]
+    end
+
+    subgraph "Integration Layer"
+        APIH[API Hub]
+        KNOW[Knowledge Base]
+        ANAL[Analytics]
+        REC[Recommendations]
+        DOCS[Documentation]
+        MSA[MSA Analysis]
+    end
+
+    IAM --> GCP
+    COMP --> GCP
+    LOG --> GCP
+    TRACE --> GCP
+    APIH --> GCP
+    KNOW --> GCP
+    ANAL --> GCP
+    DOCS --> GCP
+    MSA --> GCP
+    REC --> SEC
+    INC --> SEC
+    THREAT --> SEC
+
+    classDef required fill:#ffcdd2,stroke:#d32f2f,stroke-width:3px
+    classDef optional fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+
+    class GCP,SEC,AGENT required
+    class IAM,COMP,THREAT,INC,LOG,TRACE,MON,APIH,KNOW,ANAL,REC,DOCS,MSA optional
+```
+
 ### Core Components
 
 #### 1. Service Registry (`core/service_registry.py`)
@@ -36,15 +150,43 @@ Each service follows a standard lifecycle:
 4. **Running**: Service is available and performing health checks
 5. **Shutdown**: Service is gracefully stopped when disabled
 
+### Service State Management
+
+```mermaid
+stateDiagram-v2
+    [*] --> NOT_CONFIGURED: Service Defined
+    NOT_CONFIGURED --> STARTING: Enable Service
+    STARTING --> RUNNING: Initialization Success
+    STARTING --> ERROR: Initialization Failed
+    RUNNING --> STOPPING: Disable Service
+    STOPPING --> DISABLED: Shutdown Success
+    STOPPING --> ERROR: Shutdown Failed
+    ERROR --> STARTING: Retry/Restart
+    DISABLED --> STARTING: Re-enable Service
+    RUNNING --> ERROR: Health Check Failed
+    ERROR --> RUNNING: Auto-Recovery
+
+    note right of RUNNING
+        - Health checks active
+        - Handling requests
+        - Metrics collection
+    end note
+
+    note right of ERROR
+        - Error logged
+        - Dependencies notified
+        - Recovery attempted
+    end note
+```
+
 ### Service States
 
-- `ENABLED`: Service is configured to run
-- `DISABLED`: Service is turned off
+- `NOT_CONFIGURED`: Service defined but needs configuration
 - `STARTING`: Service is initializing
 - `RUNNING`: Service is active and healthy
 - `STOPPING`: Service is shutting down
+- `DISABLED`: Service is turned off
 - `ERROR`: Service has encountered an error
-- `NOT_CONFIGURED`: Service needs configuration
 
 ## Available Services
 
