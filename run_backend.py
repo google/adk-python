@@ -27,7 +27,7 @@ else:
 import argparse
 import shutil
 
-def run_cloud_build(base_dir):
+def run_cloud_build():
     """Trigger a Cloud Build to build and deploy the application."""
     logger.info("☁️ Starting Cloud Build process...")
 
@@ -46,7 +46,7 @@ def run_cloud_build(base_dir):
     logger.info(f"Using project ID: {project_id}")
 
     # The directory containing the cloudbuild.yaml and source code
-    build_context = os.getcwd() # Changed from base_dir
+    build_context = os.getcwd()
 
     # Substitutions for the Cloud Build command, read from environment or use defaults
     substitutions = {
@@ -69,7 +69,7 @@ def run_cloud_build(base_dir):
     cmd = [
         "gcloud", "builds", "submit",
         str(build_context),
-        "--config", os.path.join(build_context, "contributing/samples/security_agent/cloudbuild.yaml"), # Changed path
+        "--config", os.path.join(build_context, "contributing/samples/security_agent/cloudbuild.yaml"),
         f"--project={project_id}",
         f"--substitutions={substitutions_str}"
     ]
@@ -90,24 +90,20 @@ def main():
     parser.add_argument("--cloud", action="store_true", help="Trigger a Cloud Build to deploy the application.")
     args = parser.parse_args()
 
-    base_dir = Path(__file__).parent
-
     if args.cloud:
-        run_cloud_build(base_dir)
+        run_cloud_build()
         return
         
     print("🛡️ Starting ADK Security Agent Backend")
     print("=" * 50)
     
-    # Get the script directory
-    
     # Check for virtual environment
-    venv_path = base_dir / "venv"
-    if venv_path.exists() and (venv_path / "bin" / "python").exists():
-        python_exe = str(venv_path / "bin" / "python")
+    venv_path = os.path.join(os.getcwd(), "venv")
+    python_exe = sys.executable
+    if os.path.exists(venv_path) and os.path.exists(os.path.join(venv_path, "bin", "python")):
+        python_exe = os.path.join(venv_path, "bin", "python")
         logger.info(f"Using venv Python: {python_exe}")
     else:
-        python_exe = sys.executable
         logger.info(f"Using system Python: {python_exe}")
     
     # Set environment
@@ -132,7 +128,7 @@ def main():
         cmd.append("--reload")
     
     # Set working directory to backend/
-    backend_dir = base_dir / "backend"
+    backend_dir = os.path.join("contributing", "samples", "security_agent", "backend")
     
     logger.info("🚀 Starting legacy backend server...")
     logger.info(f"   • Host: {host}")

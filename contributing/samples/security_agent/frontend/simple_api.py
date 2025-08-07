@@ -8,7 +8,9 @@ import requests
 import streamlit as st
 from typing import Dict, Any, Optional
 
-BACKEND_URL = "http://localhost:8000"
+import os
+
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 def make_request(endpoint: str, method: str = "GET", data: Dict = None) -> Dict[str, Any]:
     """Make a simple HTTP request to the backend."""

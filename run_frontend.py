@@ -27,7 +27,7 @@ if os.path.exists(dotenv_path):
 else:
     logger.warning(f".env file not found at project root. Using default configurations.")
 
-def run_cloud_build(base_dir):
+def run_cloud_build():
     """Trigger a Cloud Build to build and deploy the application."""
     logger.info("☁️ Starting Cloud Build process...")
 
@@ -46,7 +46,7 @@ def run_cloud_build(base_dir):
     logger.info(f"Using project ID: {project_id}")
 
     # The directory containing the cloudbuild.yaml and source code
-    build_context = os.getcwd() # Changed from base_dir
+    build_context = os.getcwd()
 
     # Substitutions for the Cloud Build command, read from environment or use defaults
     substitutions = {
@@ -69,7 +69,7 @@ def run_cloud_build(base_dir):
     cmd = [
         "gcloud", "builds", "submit",
         str(build_context),
-        "--config", os.path.join(build_context, "contributing/samples/security_agent/cloudbuild.yaml"), # Changed path
+        "--config", os.path.join(build_context, "contributing/samples/security_agent/cloudbuild.yaml"),
         f"--project={project_id}",
         f"--substitutions={substitutions_str}"
     ]
@@ -90,17 +90,15 @@ def main():
     parser.add_argument("--cloud", action="store_true", help="Trigger a Cloud Build to deploy the application.")
     args = parser.parse_args()
 
-    base_dir = Path(__file__).parent
-
     if args.cloud:
-        run_cloud_build(base_dir)
+        run_cloud_build()
         return
 
     print("🖥️ Starting ADK Security Agent Frontend")
     print("=" * 50)
     
     # Check for virtual environment
-    venv_path = os.path.join(os.getcwd(), "venv") # Changed path
+    venv_path = os.path.join(os.getcwd(), "venv")
     python_exe = sys.executable
     if os.path.exists(venv_path) and os.path.exists(os.path.join(venv_path, "bin", "python")):
         python_exe = os.path.join(venv_path, "bin", "python")
@@ -113,7 +111,7 @@ def main():
     frontend_host = os.getenv('FRONTEND_HOST', '0.0.0.0')
     
     # Frontend app path
-    frontend_app = os.path.join("contributing", "samples", "security_agent", "frontend", "main_app.py") # Changed path
+    frontend_app = os.path.join("contributing", "samples", "security_agent", "frontend", "main_app.py")
     
     # Build command
     cmd = [
@@ -144,7 +142,7 @@ Press Ctrl+C to stop the frontend.
     
     try:
         # Run the frontend
-        subprocess.run(cmd, cwd=os.getcwd(), check=False) # Changed cwd
+        subprocess.run(cmd, cwd=os.getcwd(), check=False)
     except KeyboardInterrupt:
         logger.info("🛑 Frontend stopped by user")
     except Exception as e:
