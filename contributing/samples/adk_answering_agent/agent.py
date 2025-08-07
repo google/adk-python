@@ -137,6 +137,12 @@ def add_comment_to_discussion(
           }
         }
     """
+  comment_body = (
+      "**Response from ADK Answering Agent (experimental, answer may be"
+      " inaccurate)**\n\n"
+      + comment_body
+  )
+
   variables = {"discussionId": discussion_id, "body": comment_body}
   try:
     response = run_graphql_query(query, variables)
@@ -249,9 +255,6 @@ root_agent = Agent(
         information that is not in the document store. Do not invent citations which are not in the document store.
       * **Be Objective**: your answer should be based on the facts you found in the document store, do not be misled by user's assumptions or user's understanding of ADK.
       * If you can't find the answer or information in the document store, **do not** respond.
-      * Include a bolded note (e.g. "Response from ADK Answering Agent") in your comment
-        to indicate this comment was added by an ADK Answering Agent.
-      * Have an empty line between the note and the rest of your response.
       * Inlclude a short summary of your response in the comment as a TLDR, e.g. "**TLDR**: <your summary>".
       * Have a divider line between the TLDR and your detail response.
       * Do not respond to any other discussion except the one specified by the user.
