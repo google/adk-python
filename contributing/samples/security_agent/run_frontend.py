@@ -18,17 +18,17 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Load environment variables from the root .env file
+dotenv_path = os.path.join(os.getcwd(), '.env')
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path=dotenv_path)
+    logger.info(f"Loaded environment variables from {dotenv_path}")
+else:
+    logger.warning(f".env file not found at project root. Using default configurations.")
+
 def run_cloud_build(base_dir):
     """Trigger a Cloud Build to build and deploy the application."""
     logger.info("☁️ Starting Cloud Build process...")
-
-    # Load .env file from the project root
-    dotenv_path = os.path.join(os.getcwd(), '.env')
-    if os.path.exists(dotenv_path):
-        load_dotenv(dotenv_path=dotenv_path)
-        logger.info(f"Loaded build configuration from {dotenv_path}")
-    else:
-        logger.warning(f".env file not found at {dotenv_path}. Using default or environment-set build configurations.")
 
     # Ensure gcloud is installed
     if not shutil.which("gcloud"):
