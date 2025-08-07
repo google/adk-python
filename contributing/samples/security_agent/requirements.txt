@@ -18,6 +18,8 @@ pydeck
 streamlit-option-menu
 streamlit-authenticator
 streamlit-agraph
+networkx
+graphviz
 google-cloud-aiplatform
 vertexai
 google-cloud-resource-manager

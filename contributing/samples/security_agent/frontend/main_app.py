@@ -65,7 +65,8 @@ from components import (
     render_performance_monitoring_view,
     render_day_two_sre_view,
     render_api_explorer_view,
-    render_incident_response_view
+    render_incident_response_view,
+    render_multi_agent_graph_view
 )
 from components.services_management_view import render_services_management_view
 
@@ -181,7 +182,8 @@ def get_available_pages():
         "performance": {"name": "📊 Performance Monitoring", "service": "monitoring"},
         "sre": {"name": "🔧 Day Two SRE", "service": "monitoring"},
         "api_explorer": {"name": "🔍 API Explorer", "service": "documentation"},
-        "incidents": {"name": "🚨 Incident Response", "service": "incident_response"}
+        "incidents": {"name": "🚨 Incident Response", "service": "incident_response"},
+        "multi_agent_graph": {"name": "🕸️ Multi-Agent Graph", "service": None}
     }
     
     # Get service status
@@ -305,6 +307,8 @@ def render_main_content():
         render_api_explorer_view()
     elif page == "incidents":
         render_incident_response_view()
+    elif page == "multi_agent_graph":
+        render_multi_agent_graph_view()
     elif page == "services":
         render_services_management_view()
     else:

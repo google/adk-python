@@ -15,6 +15,7 @@ from .performance_monitoring_view import (
 from .api_explorer_view import render_api_explorer_view, render_api_explorer_summary_card
 from .incident_response_view import render_incident_response_view, render_incident_summary_card
 from .services_management_view import render_services_management_view
+from .multi_agent_graph_view import render_multi_agent_graph_view
 
 __all__ = [
     'render_dashboard_view',
@@ -39,5 +40,6 @@ __all__ = [
     'render_api_explorer_summary_card',
     'render_incident_response_view',
     'render_incident_summary_card',
-    'render_services_management_view'
+    'render_services_management_view',
+    'render_multi_agent_graph_view'
 ]
