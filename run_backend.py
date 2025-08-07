@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-🖥️ ADK Security Agent - Frontend Only
+🛡️ ADK Security Agent - Backend Only
 
-Simple script to run just the Streamlit frontend.
+Simple script to run just the legacy backend server.
 """
 
 import os
@@ -10,9 +10,6 @@ import sys
 import subprocess
 import logging
 from pathlib import Path
-import argparse
-import shutil
-from dotenv import load_dotenv
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,26 +24,15 @@ if os.path.exists(dotenv_path):
 else:
     logger.warning(f".env file not found at project root. Using default configurations.")
 
+import argparse
+import shutil
+
 def run_cloud_build(base_dir):
     """Trigger a Cloud Build to build and deploy the application."""
     logger.info("☁️ Starting Cloud Build process...")
 
-    # Ensure gcloud is installed
-    if not shutil.which("gcloud"):
-        logger.error("gcloud command not found. Please install the Google Cloud SDK.")
-        return
-
-    # Get project ID from environment (required)
-    project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
-    if not project_id:
-        logger.error("GOOGLE_CLOUD_PROJECT environment variable is not set.")
-        logger.error("Please set it in your .env file or with `export GOOGLE_CLOUD_PROJECT=your-project-id`")
-        return
-
-    logger.info(f"Using project ID: {project_id}")
-
     # The directory containing the cloudbuild.yaml and source code
-    build_context = base_dir
+    build_context = os.getcwd() # Changed from base_dir
 
     # Substitutions for the Cloud Build command, read from environment or use defaults
     substitutions = {
@@ -69,7 +55,7 @@ def run_cloud_build(base_dir):
     cmd = [
         "gcloud", "builds", "submit",
         str(build_context),
-        "--config", str(build_context / "cloudbuild.yaml"),
+        "--config", os.path.join(build_context, "contributing/samples/security_agent/cloudbuild.yaml"), # Changed path
         f"--project={project_id}",
         f"--substitutions={substitutions_str}"
     ]
@@ -85,8 +71,8 @@ def run_cloud_build(base_dir):
         logger.info("🛑 Cloud Build stopped by user.")
 
 def main():
-    """Run the ADK frontend server."""
-    parser = argparse.ArgumentParser(description="🖥️ ADK Security Agent - Frontend Only")
+    """Run the ADK backend server."""
+    parser = argparse.ArgumentParser(description="🛡️ ADK Security Agent - Backend Only")
     parser.add_argument("--cloud", action="store_true", help="Trigger a Cloud Build to deploy the application.")
     args = parser.parse_args()
 
@@ -95,9 +81,11 @@ def main():
     if args.cloud:
         run_cloud_build(base_dir)
         return
-
-    print("🖥️ Starting ADK Security Agent Frontend")
+        
+    print("🛡️ Starting ADK Security Agent Backend")
     print("=" * 50)
+    
+    # Get the script directory
     
     # Check for virtual environment
     venv_path = base_dir / "venv"
@@ -108,47 +96,54 @@ def main():
         python_exe = sys.executable
         logger.info(f"Using system Python: {python_exe}")
     
-    # Frontend configuration
-    frontend_port = os.getenv('FRONTEND_PORT', '8501')
-    frontend_host = os.getenv('FRONTEND_HOST', '0.0.0.0')
+    # Set environment
+    os.environ['USE_LEGACY'] = 'true'
     
-    # Frontend app path
-    frontend_app = base_dir / "frontend" / "main_app.py"
+    # Backend configuration
+    host = os.getenv('HOST', '0.0.0.0')
+    port = os.getenv('PORT', '8000')
+    log_level = os.getenv('LOG_LEVEL', 'info')
+    reload = os.getenv('RELOAD', 'true').lower() == 'true'
     
-    # Build command
+    # Build command (run from backend/ directory)
     cmd = [
-        python_exe, "-m", "streamlit", "run", 
-        str(frontend_app),
-        "--server.port", frontend_port,
-        "--server.address", frontend_host,
-        "--server.headless", "true",
-        "--browser.gatherUsageStats", "false"
+        python_exe, "-m", "uvicorn",
+        "main_legacy:app",
+        "--host", host,
+        "--port", port,
+        "--log-level", log_level
     ]
     
-    logger.info("🚀 Starting Streamlit frontend...")
-    logger.info(f"   • Host: {frontend_host}")
-    logger.info(f"   • Port: {frontend_port}")
-    logger.info(f"   • App: {frontend_app}")
+    if reload:
+        cmd.append("--reload")
+    
+    # Set working directory to backend/
+    backend_dir = base_dir / "backend"
+    
+    logger.info("🚀 Starting legacy backend server...")
+    logger.info(f"   • Host: {host}")
+    logger.info(f"   • Port: {port}")
+    logger.info(f"   • Log Level: {log_level}")
+    logger.info(f"   • Reload: {reload}")
+    logger.info(f"   • Working Directory: {backend_dir}")
     logger.info(f"Command: {' '.join(cmd)}")
     
     print(f"""
-📊 Frontend will be available at:
-   🌐 Web Interface: http://localhost:{frontend_port}
-   💬 Chat Interface: http://localhost:{frontend_port} → Click "💬 AI Assistant"
+📊 Backend will be available at:
+   🔧 API Endpoints: http://localhost:{port}
+   📖 API Docs: http://localhost:{port}/docs
+   🩺 Health Check: http://localhost:{port}/health
 
-⚠️  Make sure the backend is running first!
-   Run in another terminal: python run_backend.py
-
-Press Ctrl+C to stop the frontend.
+Press Ctrl+C to stop the backend.
 """)
     
     try:
-        # Run the frontend
-        subprocess.run(cmd, cwd=base_dir, check=False)
+        # Run the backend from the backend/ directory
+        subprocess.run(cmd, cwd=backend_dir, check=False)
     except KeyboardInterrupt:
-        logger.info("🛑 Frontend stopped by user")
+        logger.info("🛑 Backend stopped by user")
     except Exception as e:
-        logger.error(f"❌ Frontend failed: {e}")
+        logger.error(f"❌ Backend failed: {e}")
         return False
     
     return True

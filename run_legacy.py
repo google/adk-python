@@ -43,11 +43,11 @@ def start_service(service_name, command, pid_file, log_file, cwd=None):
     print_status(f"Starting {service_name}...")
     
     # Ensure log directory exists
-    log_dir = os.path.join("contributing", "samples", "security_agent", "logs")
+    log_dir = os.path.join("logs") # Changed path
     os.makedirs(log_dir, exist_ok=True)
     
     # Full paths for PID and log files
-    full_pid_file = os.path.join(os.path.dirname(__file__), pid_file)
+    full_pid_file = os.path.join(os.getcwd(), pid_file)
     full_log_file = os.path.join(log_dir, log_file)
     
     # Set up environment with PYTHONPATH and loaded .env variables
