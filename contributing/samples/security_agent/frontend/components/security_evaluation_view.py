@@ -60,16 +60,16 @@ def run_full_security_scan():
         results = {}
         
         # Get security score
-        results['security_score'] = api_client.get_security_score()
+        results['security_score'] = simple_api.get_security_score()
         
         # Get enabled APIs
-        results['enabled_apis'] = api_client.get_enabled_apis()
+        results['enabled_apis'] = simple_api.get_enabled_apis()
         
         # Get recommendations
-        results['recommendations'] = api_client.get_recommendations()
+        results['recommendations'] = simple_api.get_recommendations()
         
         # Get compliance status
-        results['compliance'] = api_client.evaluate_compliance()
+        results['compliance'] = simple_api.evaluate_compliance()
         
         st.session_state.full_scan_results = results
 

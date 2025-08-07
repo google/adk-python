@@ -2,11 +2,10 @@
 
 import streamlit as st
 import json
-import requests
 import pandas as pd
 import plotly.express as px
 from typing import Dict, Any, List
-from api_client import api_client
+import simple_api
 
 
 def render_api_explorer_view():
@@ -169,70 +168,35 @@ def render_interactive_testing():
             with st.spinner("Sending API request..."):
                 headers = json.loads(headers_json)
                 
-                # Construct full URL
-                base_url = "http://localhost:8000"
-                full_url = f"{base_url}{final_endpoint}"
-                
-                # Add query parameters
-                if query_params:
-                    query_string = "&".join([f"{k}={v}" for k, v in query_params.items()])
-                    full_url += f"?{query_string}"
-                
-                # Make request
-                if http_method == "GET":
-                    response = requests.get(full_url, headers=headers)
-                elif http_method == "POST":
-                    if request_body:
-                        data = json.loads(request_body)
-                        response = requests.post(full_url, json=data, headers=headers)
-                    else:
-                        response = requests.post(full_url, headers=headers)
-                elif http_method == "PUT":
-                    if request_body:
-                        data = json.loads(request_body)
-                        response = requests.put(full_url, json=data, headers=headers)
-                    else:
-                        response = requests.put(full_url, headers=headers)
-                elif http_method == "DELETE":
-                    response = requests.delete(full_url, headers=headers)
+                # Use make_request from simple_api
+                response_data = simple_api.make_request(
+                    endpoint=final_endpoint,
+                    method=http_method,
+                    data=json.loads(request_body) if request_body else query_params,
+                    headers=headers
+                )
                 
                 # Display response
                 st.subheader("📥 Response")
                 
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Status Code", response.status_code)
-                with col2:
-                    st.metric("Response Time", f"{response.elapsed.total_seconds():.3f}s")
-                with col3:
-                    st.metric("Content Length", f"{len(response.content)} bytes")
-                
-                # Response headers
-                with st.expander("📬 Response Headers"):
-                    st.json(dict(response.headers))
-                
-                # Response body
-                st.subheader("📄 Response Body")
-                try:
-                    response_json = response.json()
-                    st.json(response_json)
-                except:
-                    st.text(response.text)
-                
+                if response_data.get("success"):
+                    st.success("✅ Request successful!")
+                    st.json(response_data)
+                else:
+                    st.error(f"❌ API Error: {response_data.get('error')}")
+                    st.metric("Status Code", response_data.get("status_code", "N/A"))
+
                 # Save to history
                 if 'api_history' not in st.session_state:
                     st.session_state.api_history = []
                 
                 st.session_state.api_history.append({
                     "method": http_method,
-                    "url": full_url,
-                    "status_code": response.status_code,
-                    "response_time": response.elapsed.total_seconds(),
+                    "url": f"{simple_api.BACKEND_URL}{final_endpoint}",
+                    "status_code": response_data.get("status_code", "200" if response_data.get("success") else "Error"),
                     "timestamp": pd.Timestamp.now()
                 })
         
-        except requests.exceptions.ConnectionError:
-            st.error("❌ Could not connect to backend. Make sure the backend server is running.")
         except json.JSONDecodeError as e:
             st.error(f"❌ Invalid JSON in request body or headers: {e}")
         except Exception as e:
@@ -599,7 +563,7 @@ def get_real_usage_analytics(project_id: str = None) -> Dict[str, Any]:
             return None
         
         # Fetch real usage analytics from Cloud Logging
-        response = api_client.get_api_usage_analytics(project_id, hours=24)
+        response = simple_api.get_api_usage_analytics(project_id, hours=24)
         
         if not response.get("success"):
             # If API call fails, show user-friendly message but don't break UI

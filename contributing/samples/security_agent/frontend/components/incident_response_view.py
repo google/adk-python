@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
-from api_client import api_client
+import simple_api
 
 
 def render_incident_response_view():
@@ -561,7 +561,7 @@ def get_real_security_incidents():
             return []
         
         # Fetch real security findings
-        response = api_client.get_security_findings(project_id, days_back=30)
+        response = simple_api.get_security_findings(project_id, days_back=30)
         
         if not response.get("success"):
             # If API call fails, show user-friendly message but don't break UI

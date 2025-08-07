@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from typing import Dict, Any, List
-from api_client import api_client
+import simple_api
 
 
 def render_compliance_view():
@@ -50,7 +50,7 @@ def render_compliance_view():
 def evaluate_compliance(framework: str):
     """Evaluate compliance against a specific framework."""
     with st.spinner(f"Evaluating {framework} compliance..."):
-        response = api_client.evaluate_compliance(framework)
+        response = simple_api.evaluate_compliance(framework)
         st.session_state[f'compliance_{framework.lower()}'] = response
 
 
@@ -63,7 +63,7 @@ def compare_all_frameworks():
         progress_bar = st.progress(0)
         
         for i, framework in enumerate(frameworks):
-            response = api_client.evaluate_compliance(framework)
+            response = simple_api.evaluate_compliance(framework)
             results[framework] = response
             progress_bar.progress((i + 1) / len(frameworks))
         

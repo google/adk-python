@@ -11,8 +11,6 @@ from typing import Dict, List, Any, Optional, Tuple
 import random
 import math
 
-from api_client import api_client
-
 
 def render_multi_agent_graph_view():
     """Render the enhanced multi-agent graph visualization interface."""

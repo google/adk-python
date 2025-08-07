@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from typing import Dict, Any
-from api_client import api_client
+import simple_api
 
 
 def render_recommendations_view():
@@ -33,7 +33,7 @@ def render_recommendations_view():
         # Use cached data if available
         if 'recommendations_cache' not in st.session_state:
             with st.spinner("Fetching recommendations..."):
-                response = api_client.get_recommendations(priority)
+                response = simple_api.get_recommendations(priority)
                 st.session_state.recommendations_cache = response
         else:
             response = st.session_state.recommendations_cache
@@ -153,7 +153,7 @@ def render_recommendations_summary_card():
         st.subheader("🎯 Quick Recommendations")
         
         # Get top 3 high-priority recommendations
-        response = api_client.get_recommendations("high")
+        response = simple_api.get_recommendations("high")
         
         if response.get("success"):
             recommendations = response.get("recommendations", [])[:3]  # Top 3

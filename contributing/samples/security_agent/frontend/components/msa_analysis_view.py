@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from typing import Dict, Any, List
-from api_client import api_client
+import simple_api
 
 
 def render_msa_analysis_view():
@@ -70,7 +70,7 @@ def render_msa_parsing_tab():
     if msa_text and msa_name:
         if st.button("🔍 Parse MSA", type="primary"):
             with st.spinner("Parsing MSA document..."):
-                response = api_client.parse_msa(msa_text, msa_name)
+                response = simple_api.parse_msa(msa_text, msa_name)
             
             if response.get("success"):
                 st.success("✅ MSA parsed successfully!")
@@ -165,21 +165,7 @@ def render_organization_scan_tab():
                 }
             }
             
-            # Mock scan results for demo
-            scan_results = {
-                "success": True,
-                "impact_analysis": {
-                    "affected_projects": 3,
-                    "affected_apis": 12,
-                    "security_risks": 5,
-                    "compliance_gaps": 2,
-                    "recommendations": [
-                        "Review API access patterns for MSA compliance",
-                        "Update IAM policies to align with MSA requirements",
-                        "Implement additional logging for compliance tracking"
-                    ]
-                }
-            }
+            scan_results = simple_api.scan_organization(scan_data)
             
             st.session_state.org_scan_results = scan_results
         

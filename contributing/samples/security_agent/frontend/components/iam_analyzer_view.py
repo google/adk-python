@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from typing import Dict, Any, List
-from api_client import api_client
+import simple_api
 
 
 def render_iam_analyzer_view():
@@ -34,7 +34,7 @@ def render_project_iam_overview():
     
     if st.button("🔍 Analyze Project IAM Policy", type="primary"):
         with st.spinner("Analyzing IAM policy..."):
-            response = api_client.get_iam_policy()
+            response = simple_api.get_iam_policy()
         
         if response.get("success"):
             policy_data = response.get("iam_policy", {})
@@ -127,7 +127,7 @@ def render_user_analysis():
     
     if user_email and st.button("🔍 Analyze User Permissions", type="primary"):
         with st.spinner(f"Analyzing permissions for {user_email}..."):
-            response = api_client.analyze_user_permissions(user_email)
+            response = simple_api.analyze_user_permissions(user_email)
         
         if response.get("success"):
             render_user_analysis_results(user_email, response)
@@ -141,7 +141,7 @@ def render_all_users_analysis():
     
     if st.button("🔍 Analyze All Users", type="primary"):
         with st.spinner("Analyzing all user permissions..."):
-            response = api_client.analyze_all_users()
+            response = simple_api.analyze_all_users()
         
         if response.get("success"):
             users_data = response.get("users_analysis", [])

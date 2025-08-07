@@ -6,7 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
-from api_client import api_client
+import simple_api
 
 
 def render_performance_monitoring_view():
@@ -772,7 +772,7 @@ def get_real_performance_metrics(project_id: str = None) -> Dict[str, Any]:
             return None
         
         # Fetch real performance summary
-        response = api_client.get_performance_summary(project_id, hours=1)
+        response = simple_api.get_performance_summary()
         
         if not response.get("success"):
             # If API call fails, show user-friendly message but don't break UI
@@ -822,7 +822,7 @@ def get_real_system_health(project_id: str = None) -> Dict[str, Any]:
             return None
         
         # Fetch real system health
-        response = api_client.get_system_health(project_id)
+        response = simple_api.get_system_health(project_id)
         
         if not response.get("success"):
             return None

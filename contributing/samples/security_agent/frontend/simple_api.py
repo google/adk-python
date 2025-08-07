@@ -12,17 +12,31 @@ import os
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 API_V1_BASE_PATH = "/api/v1"
 
-def make_request(endpoint: str, method: str = "GET", data: Dict = None) -> Dict[str, Any]:
+def make_request(endpoint: str, method: str = "GET", data: Dict = None, headers: Dict = None) -> Dict[str, Any]:
     """Make a simple HTTP request to the backend."""
     try:
         url = f"{BACKEND_URL}{API_V1_BASE_PATH}{endpoint}"
         
-        if method.upper() == "GET":
-            response = requests.get(url, params=data)
-        elif method.upper() == "POST":
-            response = requests.post(url, json=data)
-        else:
-            return {"success": False, "error": f"Unsupported method: {method}"}
+        # Prepare headers
+        final_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if headers:
+            final_headers.update(headers)
+
+        # Make the request using a session for better performance
+        with requests.Session() as s:
+            s.headers.update(final_headers)
+            
+            method = method.upper()
+            if method == "GET":
+                response = s.get(url, params=data)
+            elif method == "POST":
+                response = s.post(url, json=data)
+            elif method == "PUT":
+                response = s.put(url, json=data)
+            elif method == "DELETE":
+                response = s.delete(url)
+            else:
+                return {"success": False, "error": f"Unsupported method: {method}"}
         
         if response.status_code == 200:
             return response.json()
@@ -98,3 +112,23 @@ def get_incidents():
 def get_project_info(project_id: str):
     """Get project info."""
     return make_request(f"/gcp/projects/{project_id}")
+
+def parse_msa(msa_text: str, msa_name: str):
+    """Parse MSA text."""
+    return make_request("/msa/parse", "POST", {"msa_text": msa_text, "msa_name": msa_name})
+
+def scan_organization(scan_data: Dict):
+    """Scan organization."""
+    return make_request("/msa/scan", "POST", scan_data)
+
+def get_system_health(project_id: str):
+    """Get system health."""
+    return make_request(f"/monitoring/health/{project_id}")
+
+def get_security_findings(project_id: str, days_back: int = 30):
+    """Get security findings."""
+    return make_request(f"/security/findings/{project_id}", "POST", {"days_back": days_back})
+
+def get_api_usage_analytics(project_id: str, hours: int = 24):
+    """Get API usage analytics."""
+    return make_request(f"/usage/analytics/{project_id}", "POST", {"hours": hours})
