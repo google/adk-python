@@ -49,7 +49,28 @@ Examples:
 
 import streamlit as st
 import os
+import logging
+import traceback
+from datetime import datetime
 from typing import Dict, Any
+
+# Configure logging for frontend
+log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, 'frontend.log'), mode='a'),
+        logging.StreamHandler()  # Also log to console
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Also configure Streamlit logging
+streamlit_logger = logging.getLogger('streamlit')
+streamlit_logger.setLevel(logging.DEBUG)
 
 # Import components
 from components import (
@@ -80,30 +101,49 @@ BACKEND_URL = "http://localhost:8000"
 
 def init_session_state():
     """Initialize session state variables."""
-    if 'current_user' not in st.session_state:
-        st.session_state.current_user = {"email": "admin@stuartgano.altostrat.com", "authenticated": True}
-    if 'selected_project' not in st.session_state:
-        st.session_state.selected_project = "mgm-digitalconcierge"
-    if 'available_projects' not in st.session_state:
-        st.session_state.available_projects = []
-    if 'page' not in st.session_state:
-        st.session_state.page = "dashboard"
+    try:
+        logger.info("Initializing session state...")
+        if 'current_user' not in st.session_state:
+            st.session_state.current_user = {"email": "admin@stuartgano.altostrat.com", "authenticated": True}
+            logger.info("Initialized current_user in session state")
+        if 'selected_project' not in st.session_state:
+            st.session_state.selected_project = "mgm-digitalconcierge"
+            logger.info("Initialized selected_project in session state")
+        if 'available_projects' not in st.session_state:
+            st.session_state.available_projects = []
+            logger.info("Initialized available_projects in session state")
+        if 'page' not in st.session_state:
+            st.session_state.page = "dashboard"
+            logger.info("Initialized page in session state")
+        logger.info("Session state initialization completed successfully")
+    except Exception as e:
+        logger.error(f"Error initializing session state: {e}")
+        logger.error(traceback.format_exc())
+        raise
 
 
 def fetch_available_projects():
     """Fetch available GCP projects from backend."""
     try:
+        logger.info("Fetching available GCP projects from backend...")
         response = api_client.get_projects()
+        logger.info(f"API response: {response}")
+        
         if response.get("success"):
             projects = response.get("projects", [])
+            logger.info(f"Successfully fetched {len(projects)} projects: {projects}")
             if not projects:
+                logger.warning("No GCP projects were found for the current user account")
                 st.warning("No GCP projects were found for the current user account.")
             return projects
         else:
             error_message = response.get('error', 'An unknown error occurred')
+            logger.error(f"Failed to fetch GCP projects: {error_message}")
             st.error(f"Failed to fetch GCP projects: {error_message}")
             return []
     except Exception as e:
+        logger.error(f"Critical error while fetching projects: {e}")
+        logger.error(traceback.format_exc())
         st.error(f"A critical error occurred while fetching projects: {e}")
         return []
 
@@ -271,50 +311,87 @@ def clear_cached_data():
 
 def render_main_content():
     """Render the main content area based on current page."""
-    page = st.session_state.page
+    try:
+        page = st.session_state.page
+        logger.info(f"Rendering main content for page: {page}")
+        
+        # Get available pages to check if current page is accessible
+        logger.info("Getting available pages...")
+        available_pages = get_available_pages()
+        logger.info(f"Available pages: {list(available_pages.keys())}")
+        
+        # If current page is not available, redirect to dashboard
+        if page not in available_pages:
+            logger.warning(f"Page '{page}' not in available pages, redirecting to dashboard")
+            if page != "dashboard":  # Avoid infinite redirect loop
+                st.warning(f"The {page} feature is not available. Please enable the corresponding service in Service Management.")
+                st.session_state.page = "dashboard"
+                st.rerun()
+            page = "dashboard"
+        
+        logger.info(f"Attempting to render page: {page}")
+        
+    except Exception as e:
+        logger.error(f"Error in render_main_content setup: {e}")
+        logger.error(traceback.format_exc())
+        st.error(f"Error setting up main content: {e}")
+        return
     
-    # Get available pages to check if current page is accessible
-    available_pages = get_available_pages()
-    
-    # If current page is not available, redirect to dashboard
-    if page not in available_pages:
-        if page != "dashboard":  # Avoid infinite redirect loop
-            st.warning(f"The {page} feature is not available. Please enable the corresponding service in Service Management.")
+    # Render the appropriate page with error handling
+    try:
+        if page == "dashboard":
+            logger.info("Rendering dashboard view...")
+            render_dashboard_view()
+        elif page == "security":
+            logger.info("Rendering security evaluation view...")
+            render_security_evaluation_view()
+        elif page == "recommendations":
+            logger.info("Rendering recommendations view...")
+            render_recommendations_view()
+        elif page == "iam":
+            logger.info("Rendering IAM analyzer view...")
+            render_iam_analyzer_view()
+        elif page == "compliance":
+            logger.info("Rendering compliance view...")
+            render_compliance_view()
+        elif page == "chat":
+            logger.info("Rendering chat view...")
+            render_chat_view()
+        elif page == "msa":
+            logger.info("Rendering MSA analysis view...")
+            render_msa_analysis_view()
+        elif page == "performance":
+            logger.info("Rendering performance monitoring view...")
+            render_performance_monitoring_view()
+        elif page == "sre":
+            logger.info("Rendering day two SRE view...")
+            render_day_two_sre_view()
+        elif page == "api_explorer":
+            logger.info("Rendering API explorer view...")
+            render_api_explorer_view()
+        elif page == "incidents":
+            logger.info("Rendering incident response view...")
+            render_incident_response_view()
+        elif page == "multi_agent_graph":
+            logger.info("Rendering multi-agent graph view...")
+            render_multi_agent_graph_view()
+        elif page == "services":
+            logger.info("Rendering services management view...")
+            render_services_management_view()
+        else:
+            logger.error(f"Unknown page requested: {page}")
+            st.error(f"Unknown page: {page}")
             st.session_state.page = "dashboard"
             st.rerun()
-        page = "dashboard"
-    
-    # Render the appropriate page
-    if page == "dashboard":
-        render_dashboard_view()
-    elif page == "security":
-        render_security_evaluation_view()
-    elif page == "recommendations":
-        render_recommendations_view()
-    elif page == "iam":
-        render_iam_analyzer_view()
-    elif page == "compliance":
-        render_compliance_view()
-    elif page == "chat":
-        render_chat_view()
-    elif page == "msa":
-        render_msa_analysis_view()
-    elif page == "performance":
-        render_performance_monitoring_view()
-    elif page == "sre":
-        render_day_two_sre_view()
-    elif page == "api_explorer":
-        render_api_explorer_view()
-    elif page == "incidents":
-        render_incident_response_view()
-    elif page == "multi_agent_graph":
-        render_multi_agent_graph_view()
-    elif page == "services":
-        render_services_management_view()
-    else:
-        st.error(f"Unknown page: {page}")
-        st.session_state.page = "dashboard"
-        st.rerun()
+            
+        logger.info(f"Successfully rendered page: {page}")
+        
+    except Exception as e:
+        logger.error(f"Error rendering page '{page}': {e}")
+        logger.error(traceback.format_exc())
+        st.error(f"Error rendering {page} page: {e}")
+        with st.expander("Debug Information"):
+            st.code(traceback.format_exc())
 
 
 def render_header():
@@ -348,20 +425,42 @@ def render_header():
 
 def main():
     """Main application entry point."""
-    # Page configuration
-    st.set_page_config(
-        page_title="GCP Security Agent",
-        page_icon="🛡️",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    
-    # Check if backend is running and show startup screen if needed
-    if render_startup_screen_if_needed():
+    try:
+        logger.info("=== Starting Security Agent Frontend ===")
+        logger.info(f"Timestamp: {datetime.now()}")
+        
+        # Page configuration
+        logger.info("Setting up Streamlit page configuration...")
+        st.set_page_config(
+            page_title="GCP Security Agent",
+            page_icon="🛡️",
+            layout="wide",
+            initial_sidebar_state="expanded"
+        )
+        logger.info("Page configuration completed")
+        
+        # Check if backend is running and show startup screen if needed
+        logger.info("Checking if backend startup screen is needed...")
+        backend_ready = render_startup_screen_if_needed()
+        logger.info(f"Backend ready (startup screen NOT needed): {backend_ready}")
+        
+        if not backend_ready:
+            logger.info("Backend not ready, showing startup screen and exiting main app")
+            return
+        
+        logger.info("Backend is ready, proceeding with main app")
+        
+        # Initialize session state
+        logger.info("Initializing session state...")
+        init_session_state()
+        logger.info("Session state initialization completed")
+        
+    except Exception as e:
+        logger.error(f"Critical error in main() startup: {e}")
+        logger.error(traceback.format_exc())
+        st.error(f"Critical error starting application: {e}")
+        st.code(traceback.format_exc())
         return
-    
-    # Initialize session state
-    init_session_state()
     
     # Custom CSS for better styling
     st.markdown("""
@@ -398,18 +497,38 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    # Render application layout
-    render_sidebar()
-    
-    # Main content area
-    with st.container():
-        render_header()
-        st.markdown("---")
-        render_main_content()
-    
-    # Floating chat button on non-chat pages
-    if st.session_state.page != "chat":
-        render_floating_chat_button()
+    try:
+        # Render application layout
+        logger.info("Rendering sidebar...")
+        render_sidebar()
+        logger.info("Sidebar rendered successfully")
+        
+        # Main content area
+        logger.info("Rendering main content area...")
+        with st.container():
+            logger.info("Rendering header...")
+            render_header()
+            logger.info("Header rendered successfully")
+            
+            st.markdown("---")
+            
+            logger.info(f"Rendering main content for page: {st.session_state.page}")
+            render_main_content()
+            logger.info("Main content rendered successfully")
+        
+        # Floating chat button on non-chat pages
+        if st.session_state.page != "chat":
+            logger.info("Rendering floating chat button...")
+            render_floating_chat_button()
+            logger.info("Floating chat button rendered successfully")
+        
+        logger.info("=== Frontend rendering completed successfully ===")
+        
+    except Exception as e:
+        logger.error(f"Error during main app rendering: {e}")
+        logger.error(traceback.format_exc())
+        st.error(f"Error rendering main application: {e}")
+        st.code(traceback.format_exc())
 
 
 if __name__ == "__main__":
