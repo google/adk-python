@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-🛡️ Enhanced GCP API Security Evaluation Agent - Universal Startup Script
+🛡️ ADK Security Agent - Simplified Startup Options
 
-This script provides a single entry point for all deployment scenarios:
-- Local development with virtual environment
-- Docker deployment (local and Cloud Run)
-- Direct Cloud Run deployment
-- Production server mode
+For easier development, use the separate scripts:
 
-Usage:
-    # Local Development
-    python run.py                    # Run legacy backend (only option)
+RECOMMENDED USAGE:
+    # Terminal 1: Start Backend
+    python run_backend.py
     
-    # Cloud/Production
+    # Terminal 2: Start Frontend  
+    python run_frontend.py
+
+LEGACY OPTIONS:
+    python run.py --backend-only     # Backend only
+    python run.py --frontend-only    # Frontend only
+    python run.py                    # Both (may conflict)
+
+Cloud/Production:
     python run.py --cloud            # Cloud Run compatible mode
     python run.py --production       # Production server (no reload)
     
@@ -138,10 +142,14 @@ signal.signal(signal.SIGINT, signal_handler)
 def print_banner():
     """Print startup banner."""
     print("""
-🛡️  Enhanced GCP API Security Evaluation Agent
+🛡️  ADK Security Agent - Simplified Architecture
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Comprehensive security analysis for GCP APIs
-    with simplified legacy architecture
+
+💡 TIP: For easier development, use separate scripts:
+   
+   Terminal 1: python run_backend.py
+   Terminal 2: python run_frontend.py
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)
 
