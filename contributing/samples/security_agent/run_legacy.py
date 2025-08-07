@@ -7,12 +7,13 @@ import requests # For verify_service
 import argparse
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-if os.path.exists('.env'):
-    load_dotenv(dotenv_path='.env')
-    print_status("Loaded environment variables from .env file.")
+# Load environment variables from the root .env file
+dotenv_path = os.path.join(os.getcwd(), '.env')
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path=dotenv_path)
+    print_status(f"Loaded environment variables from {dotenv_path}")
 else:
-    print_warning(".env file not found. GCP integrations might not work as expected.")
+    print_warning(".env file not found at project root. GCP integrations might not work as expected.")
 
 # Import the stop script for pre-flight cleanup
 import stop # Assuming stop.py is in the same directory

@@ -22,8 +22,8 @@ def run_cloud_build(base_dir):
     """Trigger a Cloud Build to build and deploy the application."""
     logger.info("☁️ Starting Cloud Build process...")
 
-    # Load .env file to get build configurations
-    dotenv_path = base_dir / ".env"
+    # Load .env file from the project root
+    dotenv_path = os.path.join(os.getcwd(), '.env')
     if dotenv_path.exists():
         load_dotenv(dotenv_path=dotenv_path)
         logger.info(f"Loaded build configuration from {dotenv_path}")
