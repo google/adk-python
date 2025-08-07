@@ -1,39 +1,44 @@
-# Use a Python base image for building
-FROM python:3.10-slim-buster as builder
+# Multi-stage build for optimized image size
+FROM python:3.11-slim as builder
 
-# Set the working directory inside the container
+# Set working directory
 WORKDIR /app
 
-# Copy only the requirements files first to leverage Docker cache
-COPY contributing/samples/security_agent/requirements.txt ./requirements.txt
-COPY contributing/samples/security_agent/backend/requirements.txt ./backend_requirements.txt
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir -r backend_requirements.txt
+# Copy requirements and install Python dependencies
+COPY contributing/samples/security_agent/requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
 
-# --- Final Stage ---
-FROM python:3.10-slim-buster
+# Production stage
+FROM python:3.11-slim
 
-# Set the working directory inside the container
+# Set working directory
 WORKDIR /app
 
-# Copy installed packages from the builder stage
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
-COPY --from=builder /usr/local/bin/streamlit /usr/local/bin/streamlit
-COPY --from=builder /usr/local/bin/gunicorn /usr/local/bin/gunicorn
+# Copy Python dependencies from builder
+COPY --from=builder /root/.local /root/.local
 
-# Copy the entire application code
-COPY . .
+# Copy application code from the security_agent directory
+COPY contributing/samples/security_agent/ .
 
-# Ensure the run.sh script is executable
-RUN chmod +x ./run.sh
+# Make scripts are executable
+RUN chmod +x run_backend.py run_frontend.py
 
-# Expose the ports for the backend (FastAPI) and frontend (Streamlit)
+# Set Python path
+ENV PATH=/root/.local/bin:$PATH
+ENV PYTHONPATH=/app
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health').raise_for_status()"
+
+# Expose port (Cloud Run will override this)
 EXPOSE 8000
-EXPOSE 8501
 
-# Command to run the application using the run.sh script
-# The run.sh script handles starting both backend and frontend
-CMD ["python", "./run.py"]
+# Run the application using the backend script
+CMD ["python", "run_backend.py"]

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-🛡️ ADK Security Agent - Backend Only
+🖥️ ADK Security Agent - Frontend Only
 
-Simple script to run just the legacy backend server.
+Simple script to run just the Streamlit frontend.
 """
 
 import os
@@ -10,6 +10,9 @@ import sys
 import subprocess
 import logging
 from pathlib import Path
+import argparse
+import shutil
+from dotenv import load_dotenv
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,9 +26,6 @@ if os.path.exists(dotenv_path):
     logger.info(f"Loaded environment variables from {dotenv_path}")
 else:
     logger.warning(f".env file not found at project root. Using default configurations.")
-
-import argparse
-import shutil
 
 def run_cloud_build():
     """Trigger a Cloud Build to build and deploy the application."""
@@ -69,7 +69,7 @@ def run_cloud_build():
     cmd = [
         "gcloud", "builds", "submit",
         str(build_context),
-        "--config", os.path.join(build_context, "contributing/samples/security_agent/cloudbuild.yaml"),
+        "--config", "cloudbuild.yaml",
         f"--project={project_id}",
         f"--substitutions={substitutions_str}"
     ]
@@ -85,16 +85,16 @@ def run_cloud_build():
         logger.info("🛑 Cloud Build stopped by user.")
 
 def main():
-    """Run the ADK backend server."""
-    parser = argparse.ArgumentParser(description="🛡️ ADK Security Agent - Backend Only")
+    """Run the ADK frontend server."""
+    parser = argparse.ArgumentParser(description="🖥️ ADK Security Agent - Frontend Only")
     parser.add_argument("--cloud", action="store_true", help="Trigger a Cloud Build to deploy the application.")
     args = parser.parse_args()
 
     if args.cloud:
         run_cloud_build()
         return
-        
-    print("🛡️ Starting ADK Security Agent Backend")
+
+    print("🖥️ Starting ADK Security Agent Frontend")
     print("=" * 50)
     
     # Check for virtual environment
@@ -106,54 +106,47 @@ def main():
     else:
         logger.info(f"Using system Python: {python_exe}")
     
-    # Set environment
-    os.environ['USE_LEGACY'] = 'true'
+    # Frontend configuration
+    frontend_port = os.getenv('FRONTEND_PORT', '8501')
+    frontend_host = os.getenv('FRONTEND_HOST', '0.0.0.0')
     
-    # Backend configuration
-    host = os.getenv('HOST', '0.0.0.0')
-    port = os.getenv('PORT', '8000')
-    log_level = os.getenv('LOG_LEVEL', 'info')
-    reload = os.getenv('RELOAD', 'true').lower() == 'true'
+    # Frontend app path
+    frontend_app = os.path.join("contributing", "samples", "security_agent", "frontend", "main_app.py")
     
-    # Build command (run from backend/ directory)
+    # Build command
     cmd = [
-        python_exe, "-m", "uvicorn",
-        "main_legacy:app",
-        "--host", host,
-        "--port", port,
-        "--log-level", log_level
+        python_exe, "-m", "streamlit", "run", 
+        str(frontend_app),
+        "--server.port", frontend_port,
+        "--server.address", frontend_host,
+        "--server.headless", "true",
+        "--browser.gatherUsageStats", "false"
     ]
     
-    if reload:
-        cmd.append("--reload")
-    
-    # Set working directory to backend/
-    backend_dir = os.path.join("contributing", "samples", "security_agent", "backend")
-    
-    logger.info("🚀 Starting legacy backend server...")
-    logger.info(f"   • Host: {host}")
-    logger.info(f"   • Port: {port}")
-    logger.info(f"   • Log Level: {log_level}")
-    logger.info(f"   • Reload: {reload}")
-    logger.info(f"   • Working Directory: {backend_dir}")
+    logger.info("🚀 Starting Streamlit frontend...")
+    logger.info(f"   • Host: {frontend_host}")
+    logger.info(f"   • Port: {frontend_port}")
+    logger.info(f"   • App: {frontend_app}")
     logger.info(f"Command: {' '.join(cmd)}")
     
     print(f"""
-📊 Backend will be available at:
-   🔧 API Endpoints: http://localhost:{port}
-   📖 API Docs: http://localhost:{port}/docs
-   🩺 Health Check: http://localhost:{port}/health
+📊 Frontend will be available at:
+   🌐 Web Interface: http://localhost:{frontend_port}
+   💬 Chat Interface: http://localhost:{frontend_port} → Click "💬 AI Assistant"
 
-Press Ctrl+C to stop the backend.
+⚠️  Make sure the backend is running first!
+   Run in another terminal: python run_backend.py
+
+Press Ctrl+C to stop the frontend.
 """)
     
     try:
-        # Run the backend from the backend/ directory
-        subprocess.run(cmd, cwd=backend_dir, check=False)
+        # Run the frontend
+        subprocess.run(cmd, cwd=os.getcwd(), check=False)
     except KeyboardInterrupt:
-        logger.info("🛑 Backend stopped by user")
+        logger.info("🛑 Frontend stopped by user")
     except Exception as e:
-        logger.error(f"❌ Backend failed: {e}")
+        logger.error(f"❌ Frontend failed: {e}")
         return False
     
     return True
