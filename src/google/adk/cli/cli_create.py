@@ -37,6 +37,7 @@ root_agent = Agent(
 """
 
 _AGENT_CONFIG_TEMPLATE = """\
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
 name: root_agent
 description: A helpful assistant for user questions.
 instruction: Answer user questions to the best of your knowledge
