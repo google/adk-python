@@ -31,6 +31,20 @@ def run_cloud_build(base_dir):
     """Trigger a Cloud Build to build and deploy the application."""
     logger.info("☁️ Starting Cloud Build process...")
 
+    # Ensure gcloud is installed
+    if not shutil.which("gcloud"):
+        logger.error("gcloud command not found. Please install the Google Cloud SDK.")
+        return
+
+    # Get project ID from environment (required)
+    project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+    if not project_id:
+        logger.error("GOOGLE_CLOUD_PROJECT environment variable is not set.")
+        logger.error("Please set it in your .env file or with `export GOOGLE_CLOUD_PROJECT=your-project-id`")
+        return
+
+    logger.info(f"Using project ID: {project_id}")
+
     # The directory containing the cloudbuild.yaml and source code
     build_context = os.getcwd() # Changed from base_dir
 
