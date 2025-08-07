@@ -8,7 +8,11 @@ import argparse
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+if os.path.exists('.env'):
+    load_dotenv(dotenv_path='.env')
+    print_status("Loaded environment variables from .env file.")
+else:
+    print_warning(".env file not found. GCP integrations might not work as expected.")
 
 # Import the stop script for pre-flight cleanup
 import stop # Assuming stop.py is in the same directory
@@ -45,14 +49,22 @@ def start_service(service_name, command, pid_file, log_file, cwd=None):
     full_pid_file = os.path.join(os.path.dirname(__file__), pid_file)
     full_log_file = os.path.join(log_dir, log_file)
     
-    # Set up environment with PYTHONPATH
+    # Set up environment with PYTHONPATH and loaded .env variables
     env = os.environ.copy()
     project_root = os.getcwd()
+    
+    # Add project root to PYTHONPATH
     if "PYTHONPATH" in env:
         env["PYTHONPATH"] = f"{project_root}{os.pathsep}{env['PYTHONPATH']}"
     else:
         env["PYTHONPATH"] = project_root
+        
+    # Manually load from .env again to ensure all variables are in this process's environment
+    load_dotenv(dotenv_path=os.path.join(project_root, '.env'), override=True)
     
+    # Update the environment for the subprocess with all current os.environ values
+    env.update(os.environ)
+
     try:
         # Start the service with proper process management
         with open(full_log_file, 'a') as log:

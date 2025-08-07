@@ -15,13 +15,63 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+import argparse
+
+def run_cloud_build(base_dir):
+    """Trigger a Cloud Build to build and deploy the application."""
+    logger.info("☁️ Starting Cloud Build process...")
+
+    # Ensure gcloud is installed
+    if not shutil.which("gcloud"):
+        logger.error("gcloud command not found. Please install the Google Cloud SDK.")
+        return
+
+    # Get project ID from environment
+    project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+    if not project_id:
+        logger.error("GOOGLE_CLOUD_PROJECT environment variable is not set.")
+        logger.error("Please set it to your GCP project ID: `export GOOGLE_CLOUD_PROJECT=your-project-id`")
+        return
+
+    logger.info(f"Using project ID: {project_id}")
+
+    # The directory containing the cloudbuild.yaml and source code
+    build_context = base_dir
+
+    # Cloud Build command
+    cmd = [
+        "gcloud", "builds", "submit",
+        str(build_context),
+        "--config", str(build_context / "cloudbuild.yaml"),
+        f"--project={project_id}"
+    ]
+
+    logger.info(f"Running command: {' '.join(cmd)}")
+    
+    try:
+        subprocess.run(cmd, check=True)
+        logger.info("✅ Cloud Build completed successfully.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ Cloud Build failed: {e}")
+    except KeyboardInterrupt:
+        logger.info("🛑 Cloud Build stopped by user.")
+
 def main():
     """Run the ADK backend server."""
+    parser = argparse.ArgumentParser(description="🛡️ ADK Security Agent - Backend Only")
+    parser.add_argument("--cloud", action="store_true", help="Trigger a Cloud Build to deploy the application.")
+    args = parser.parse_args()
+
+    base_dir = Path(__file__).parent
+
+    if args.cloud:
+        run_cloud_build(base_dir)
+        return
+        
     print("🛡️ Starting ADK Security Agent Backend")
     print("=" * 50)
     
     # Get the script directory
-    base_dir = Path(__file__).parent
     
     # Check for virtual environment
     venv_path = base_dir / "venv"
