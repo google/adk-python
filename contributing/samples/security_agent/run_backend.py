@@ -17,20 +17,31 @@ logger = logging.getLogger(__name__)
 
 import argparse
 
+import shutil
+from dotenv import load_dotenv
+
 def run_cloud_build(base_dir):
     """Trigger a Cloud Build to build and deploy the application."""
     logger.info("☁️ Starting Cloud Build process...")
+
+    # Load .env file to get build configurations
+    dotenv_path = base_dir / ".env"
+    if dotenv_path.exists():
+        load_dotenv(dotenv_path=dotenv_path)
+        logger.info(f"Loaded build configuration from {dotenv_path}")
+    else:
+        logger.warning(f".env file not found at {dotenv_path}. Using default or environment-set build configurations.")
 
     # Ensure gcloud is installed
     if not shutil.which("gcloud"):
         logger.error("gcloud command not found. Please install the Google Cloud SDK.")
         return
 
-    # Get project ID from environment
+    # Get project ID from environment (required)
     project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
     if not project_id:
         logger.error("GOOGLE_CLOUD_PROJECT environment variable is not set.")
-        logger.error("Please set it to your GCP project ID: `export GOOGLE_CLOUD_PROJECT=your-project-id`")
+        logger.error("Please set it in your .env file or with `export GOOGLE_CLOUD_PROJECT=your-project-id`")
         return
 
     logger.info(f"Using project ID: {project_id}")
@@ -38,13 +49,15 @@ def run_cloud_build(base_dir):
     # The directory containing the cloudbuild.yaml and source code
     build_context = base_dir
 
-    # Substitutions for the Cloud Build command
-    substitutions = [
-        "_REGION=us-central1",
-        "_REPO_NAME=adk-security-agent",
-        "_IMAGE_NAME=security-agent",
-        "_SERVICE_NAME=security-agent"
-    ]
+    # Substitutions for the Cloud Build command, read from environment or use defaults
+    substitutions = {
+        "_REGION": os.getenv("_REGION", "us-central1"),
+        "_REPO_NAME": os.getenv("_REPO_NAME", "adk-security-agent"),
+        "_IMAGE_NAME": os.getenv("_IMAGE_NAME", "security-agent"),
+        "_SERVICE_NAME": os.getenv("_SERVICE_NAME", "security-agent")
+    }
+    
+    substitutions_str = ",".join([f"{k}={v}" for k, v in substitutions.items()])
 
     # Cloud Build command
     cmd = [
@@ -52,7 +65,7 @@ def run_cloud_build(base_dir):
         str(build_context),
         "--config", str(build_context / "cloudbuild.yaml"),
         f"--project={project_id}",
-        f"--substitutions={','.join(substitutions)}"
+        f"--substitutions={substitutions_str}"
     ]
 
     logger.info(f"Running command: {' '.join(cmd)}")
