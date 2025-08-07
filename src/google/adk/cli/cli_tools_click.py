@@ -145,13 +145,13 @@ def deploy():
 )
 @click.option(
     "--type",
-    type=click.Choice([t.value for t in cli_create.Type]),
+    type=click.Choice(["CODE", "CONFIG"], case_sensitive=False),
     help=(
         "EXPERIMENTAL Optional. Type of agent to create: 'config' or 'code'."
         " 'config' is not ready for use so it defaults to 'code'. It may change"
         " later once 'config' is ready for use."
     ),
-    default=cli_create.Type.CODE.value,
+    default="CODE",
     show_default=True,
     hidden=True,  # Won't show in --help output. Not ready for use.
 )
@@ -162,7 +162,7 @@ def cli_create_cmd(
     api_key: Optional[str],
     project: Optional[str],
     region: Optional[str],
-    type: Optional[cli_create.Type],
+    type: Optional[str],
 ):
   """Creates a new app in the current folder with prepopulated agent template.
 
