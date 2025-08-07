@@ -203,7 +203,8 @@ def get_available_pages():
     """Get available pages based on service status."""
     # Always available pages (simplified for legacy mode)
     base_pages = {
-        "dashboard": {"name": "🏠 Dashboard", "service": None}
+        "dashboard": {"name": "🏠 Dashboard", "service": None},
+        "chat": {"name": "💬 AI Assistant", "service": None}
     }
     
     # Service-dependent pages
@@ -212,7 +213,6 @@ def get_available_pages():
         "recommendations": {"name": "🎯 Recommendations", "service": "recommendations"},
         "iam": {"name": "🔐 IAM Analysis", "service": "iam"},
         "compliance": {"name": "📋 Compliance", "service": "compliance"},
-        "chat": {"name": "💬 AI Assistant", "service": "agent"},
         "msa": {"name": "📄 MSA Analysis", "service": "msa"},
         "performance": {"name": "📊 Performance Monitoring", "service": "monitoring"},
         "sre": {"name": "🔧 Day Two SRE", "service": "monitoring"},
@@ -237,7 +237,7 @@ def render_navigation():
     pages = get_available_pages()
     
     # Core navigation
-    core_pages = ["dashboard", "services"]
+    core_pages = ["dashboard", "chat"]
     st.sidebar.markdown("**Core**")
     for page_key in core_pages:
         if page_key in pages:
