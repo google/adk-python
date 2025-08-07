@@ -69,12 +69,20 @@ async def get_projects():
     """Get list of available GCP projects."""
     try:
         project_id = os.environ.get('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
+        
+        # Create a friendly display name
+        if project_id == 'mgm-digitalconcierge':
+            project_name = "MGM Digital Concierge"
+        else:
+            # Convert project-id format to Title Case
+            project_name = project_id.replace('-', ' ').title()
+        
         return {
             "success": True,
             "projects": [
                 {
                     "project_id": project_id,
-                    "name": f"Project {project_id}",
+                    "name": project_name,
                     "status": "active",
                     "project_number": "123456789"
                 }

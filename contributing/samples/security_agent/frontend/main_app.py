@@ -180,14 +180,41 @@ def render_project_selector():
     
     # Project selector
     if st.session_state.available_projects:
-        selected_project = st.sidebar.selectbox(
+        # Create display options (project names) and map to project IDs
+        project_options = []
+        project_id_map = {}
+        
+        for project in st.session_state.available_projects:
+            if isinstance(project, dict):
+                project_id = project.get('project_id', 'unknown')
+                project_name = project.get('name', f'Project {project_id}')
+                display_name = f"{project_name} ({project_id})"
+            else:
+                # If it's already a string (backward compatibility)
+                project_id = project
+                display_name = project_id
+            
+            project_options.append(display_name)
+            project_id_map[display_name] = project_id
+        
+        # Find current selection index
+        current_display_name = None
+        for display_name, proj_id in project_id_map.items():
+            if proj_id == st.session_state.selected_project:
+                current_display_name = display_name
+                break
+        
+        current_index = project_options.index(current_display_name) if current_display_name in project_options else 0
+        
+        selected_display_name = st.sidebar.selectbox(
             "Select Project:",
-            options=st.session_state.available_projects,
-            index=st.session_state.available_projects.index(st.session_state.selected_project) 
-                  if st.session_state.selected_project in st.session_state.available_projects 
-                  else 0,
+            options=project_options,
+            index=current_index,
             help="Choose the GCP project to analyze"
         )
+        
+        # Get the actual project ID from the display name
+        selected_project = project_id_map.get(selected_display_name, st.session_state.selected_project)
         
         # Update session state if project changed
         if selected_project != st.session_state.selected_project:
