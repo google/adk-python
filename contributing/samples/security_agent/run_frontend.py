@@ -24,7 +24,7 @@ def run_cloud_build(base_dir):
 
     # Load .env file from the project root
     dotenv_path = os.path.join(os.getcwd(), '.env')
-    if dotenv_path.exists():
+    if os.path.exists(dotenv_path):
         load_dotenv(dotenv_path=dotenv_path)
         logger.info(f"Loaded build configuration from {dotenv_path}")
     else:
