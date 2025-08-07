@@ -72,7 +72,7 @@ class ServiceRegistry:
         thread-safe, it is safe for use with asyncio coroutines.
     """
     
-    def __init__(self, config: ServiceConfig, credentials=None, project_id=None, health_ttl=60):
+    def __init__(self, config: ServiceConfig, credentials=None, project_id=None, health_ttl=60, app=None):
         """Initialize service registry with health-aware capabilities.
         
         Args:
@@ -80,10 +80,12 @@ class ServiceRegistry:
             credentials: GCP credentials for authenticated services
             project_id: GCP project ID
             health_ttl: Health data TTL in seconds (default 60s)
+            app: FastAPI app instance for state registration
         """
         self.config = config
         self.credentials = credentials
         self.project_id = project_id
+        self.app = app
         self.services: Dict[str, BaseService] = {}
         self.routers: Dict[str, Any] = {}
         self._health_check_tasks: Dict[str, asyncio.Task] = {}
@@ -243,6 +245,11 @@ class ServiceRegistry:
             service = self.services[service_name]
             if await service.start():
                 self.config.set_service_status(service_name, ServiceStatus.RUNNING)
+                
+                # Register service to app.state for API access
+                if self.app:
+                    setattr(self.app.state, f"{service_name}_service", service)
+                    logger.info(f"✅ Registered service to app.state: {service_name}_service")
                 
                 # Load router if available
                 if service_def.router_module:

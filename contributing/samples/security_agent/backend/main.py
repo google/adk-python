@@ -164,7 +164,8 @@ async def lifespan(app: FastAPI):
     app.state.service_registry = ServiceRegistry(
         config=app.state.service_config,
         credentials=credentials,
-        project_id=project_id
+        project_id=project_id,
+        app=app
     )
     
     # Initialize all enabled services
