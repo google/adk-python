@@ -54,6 +54,13 @@ def run_cloud_build(base_dir):
         "_IMAGE_NAME": os.getenv("_IMAGE_NAME", "security-agent"),
         "_SERVICE_NAME": os.getenv("_SERVICE_NAME", "security-agent")
     }
+
+    # Validate substitutions
+    for key, value in substitutions.items():
+        if not value:
+            logger.error(f"Build configuration variable '{key}' is missing or empty in your .env file.")
+            logger.error("Please ensure all required build variables are set.")
+            return
     
     substitutions_str = ",".join([f"{k}={v}" for k, v in substitutions.items()])
 
