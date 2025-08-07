@@ -38,12 +38,21 @@ def run_cloud_build(base_dir):
     # The directory containing the cloudbuild.yaml and source code
     build_context = base_dir
 
+    # Substitutions for the Cloud Build command
+    substitutions = [
+        "_REGION=us-central1",
+        "_REPO_NAME=adk-security-agent",
+        "_IMAGE_NAME=security-agent",
+        "_SERVICE_NAME=security-agent"
+    ]
+
     # Cloud Build command
     cmd = [
         "gcloud", "builds", "submit",
         str(build_context),
         "--config", str(build_context / "cloudbuild.yaml"),
-        f"--project={project_id}"
+        f"--project={project_id}",
+        f"--substitutions={','.join(substitutions)}"
     ]
 
     logger.info(f"Running command: {' '.join(cmd)}")

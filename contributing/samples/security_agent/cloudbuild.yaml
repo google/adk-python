@@ -2,20 +2,20 @@
 steps:
   # Build the Docker image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/security-agent:$COMMIT_SHA', '.']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA', '.']
   
-  # Push the Docker image to Container Registry
+  # Push the Docker image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/security-agent:$COMMIT_SHA']
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA']
   
   # Deploy to Cloud Run
   - name: 'gcr.io/cloud-builders/gcloud'
     args:
       - 'run'
       - 'deploy'
-      - 'security-agent'
-      - '--image=gcr.io/$PROJECT_ID/security-agent:$COMMIT_SHA'
-      - '--region=us-central1'
+      - '${_SERVICE_NAME}'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA'
+      - '--region=${_REGION}'
       - '--platform=managed'
       - '--allow-unauthenticated'
       - '--port=8000'
@@ -29,10 +29,17 @@ steps:
 
 # Store images in Artifact Registry
 images:
-  - 'gcr.io/$PROJECT_ID/security-agent:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA'
 
 # Set timeout for the entire build
 timeout: '1200s'
+
+# Define user-defined substitutions
+substitutions:
+  _REGION: 'us-central1'
+  _REPO_NAME: 'adk-security-agent'
+  _IMAGE_NAME: 'security-agent'
+  _SERVICE_NAME: 'security-agent'
 
 options:
   logging: CLOUD_LOGGING_ONLY
