@@ -74,8 +74,8 @@ def render_chat_input():
                                   placeholder="Ask about security score, recommendations, IAM policies, etc.")
         submit_button = st.form_submit_button("Send")
         
-        if submit_button and user_input.strip():
-            send_message(user_input.strip())
+    if submit_button and user_input.strip():
+        send_message(user_input.strip())
 
 
 def render_quick_questions():
