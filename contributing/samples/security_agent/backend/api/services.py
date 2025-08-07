@@ -12,15 +12,18 @@ router = APIRouter()
 
 
 @router.get("/")
-async def list_services(request: Request) -> Dict[str, Any]:
-    """List all services and their current status."""
+async def list_services(request: Request, include_health: bool = True) -> Dict[str, Any]:
+    """List all services and their current status with integrated health checking."""
     try:
         registry = request.app.state.service_registry
         config = request.app.state.service_config
         
+        # Get all statuses with integrated health checking
+        all_statuses = await registry.get_all_statuses(include_health=include_health)
+        
         services = []
         for service_name, service_def in config.get_all_services().items():
-            status = registry.get_service_status(service_name)
+            status_info = all_statuses.get(service_name, {})
             services.append({
                 "name": service_name,
                 "display_name": service_def.display_name,
@@ -28,7 +31,7 @@ async def list_services(request: Request) -> Dict[str, Any]:
                 "version": service_def.version,
                 "enabled": config.get_service_status(service_name) != ServiceStatus.DISABLED,
                 "required": service_def.required,
-                "status": status,
+                "status": status_info,
                 "tags": service_def.tags,
                 "dependencies": [dep.service_name for dep in service_def.dependencies],
                 "api_prefix": service_def.api_prefix
@@ -37,7 +40,11 @@ async def list_services(request: Request) -> Dict[str, Any]:
         return {
             "success": True,
             "services": services,
-            "total": len(services)
+            "total": len(services),
+            "metadata": {
+                "health_included": include_health,
+                "timestamp": "2025-01-08T10:30:00Z"
+            }
         }
         
     except Exception as e:
@@ -46,8 +53,10 @@ async def list_services(request: Request) -> Dict[str, Any]:
 
 
 @router.get("/{service_name}")
-async def get_service_details(service_name: str, request: Request) -> Dict[str, Any]:
-    """Get detailed information about a specific service."""
+async def get_service_details(service_name: str, request: Request, 
+                            include_health: bool = True, 
+                            force_health_check: bool = False) -> Dict[str, Any]:
+    """Get detailed information about a specific service with integrated health checking."""
     try:
         registry = request.app.state.service_registry
         config = request.app.state.service_config
@@ -56,7 +65,10 @@ async def get_service_details(service_name: str, request: Request) -> Dict[str, 
         if not service_def:
             raise HTTPException(status_code=404, detail=f"Service {service_name} not found")
         
-        status = registry.get_service_status(service_name)
+        # Get status with integrated health checking
+        status = await registry.get_service_status(service_name, 
+                                                 include_health=include_health,
+                                                 force_health_check=force_health_check)
         
         return {
             "success": True,
@@ -82,6 +94,11 @@ async def get_service_details(service_name: str, request: Request) -> Dict[str, 
                 "api_prefix": service_def.api_prefix,
                 "requires_gcp_auth": service_def.requires_gcp_auth,
                 "requires_api_keys": service_def.requires_api_keys
+            },
+            "metadata": {
+                "health_included": include_health,
+                "forced_health_check": force_health_check,
+                "timestamp": "2025-01-08T10:30:00Z"
             }
         }
         
@@ -223,7 +240,7 @@ async def restart_service(service_name: str, request: Request) -> Dict[str, Any]
 
 @router.get("/{service_name}/health")
 async def check_service_health(service_name: str, request: Request) -> Dict[str, Any]:
-    """Check health of a specific service."""
+    """Check health of a specific service (DEPRECATED - use /{service_name} with include_health=true)."""
     try:
         registry = request.app.state.service_registry
         config = request.app.state.service_config
@@ -232,23 +249,20 @@ async def check_service_health(service_name: str, request: Request) -> Dict[str,
         if not service_def:
             raise HTTPException(status_code=404, detail=f"Service {service_name} not found")
         
-        service = registry.get_service(service_name)
-        if not service:
-            return {
-                "success": True,
-                "service_name": service_name,
-                "healthy": False,
-                "status": config.get_service_status(service_name).value,
-                "error": "Service not loaded"
-            }
+        # Use the new integrated health-aware method
+        status_info = await registry.get_service_status(service_name, 
+                                                      include_health=True, 
+                                                      force_health_check=True)
         
-        health_status = await service.check_health()
+        # Extract health data for backward compatibility
+        health_data = status_info.get('health', {"healthy": False, "error": "Health check unavailable"})
         
         return {
             "success": True,
             "service_name": service_name,
-            "health_status": health_status,
-            "service_status": service.status.value
+            "health_status": health_data,
+            "service_status": status_info.get('status', 'unknown'),
+            "deprecated_warning": "This endpoint is deprecated. Use GET /{service_name}?include_health=true instead."
         }
         
     except HTTPException:
@@ -259,24 +273,36 @@ async def check_service_health(service_name: str, request: Request) -> Dict[str,
 
 
 @router.get("/status/summary")
-async def get_status_summary(request: Request) -> Dict[str, Any]:
-    """Get summary of all services status."""
+async def get_status_summary(request: Request, include_health: bool = True) -> Dict[str, Any]:
+    """Get summary of all services status with integrated health checking."""
     try:
         registry = request.app.state.service_registry
         config = request.app.state.service_config
         
-        all_statuses = registry.get_all_statuses()
+        # Get all statuses with integrated health checking
+        all_statuses = await registry.get_all_statuses(include_health=include_health)
         
         # Count services by status
         status_counts = {}
+        healthy_count = 0
+        unhealthy_count = 0
+        
         for service_name, status_info in all_statuses.items():
             status = status_info.get('status', 'unknown')
             status_counts[status] = status_counts.get(status, 0) + 1
+            
+            # Count health status if included
+            if include_health and 'health' in status_info:
+                if status_info['health'].get('healthy', False):
+                    healthy_count += 1
+                else:
+                    unhealthy_count += 1
         
         # Get unhealthy services
         unhealthy_services = [
             name for name, status in all_statuses.items()
-            if status.get('status') == ServiceStatus.ERROR.value
+            if status.get('status') == ServiceStatus.ERROR.value or 
+               (include_health and not status.get('health', {}).get('healthy', True))
         ]
         
         # Get disabled services
@@ -285,16 +311,30 @@ async def get_status_summary(request: Request) -> Dict[str, Any]:
             if config.get_service_status(name) == ServiceStatus.DISABLED
         ]
         
+        summary = {
+            "total_services": len(config.get_all_services()),
+            "status_counts": status_counts,
+            "unhealthy_services": unhealthy_services,
+            "disabled_services": disabled_services,
+            "enabled_services": len(config.get_enabled_services())
+        }
+        
+        # Add health metrics if health is included
+        if include_health:
+            summary.update({
+                "healthy_services": healthy_count,
+                "unhealthy_services_count": unhealthy_count,
+                "health_check_coverage": f"{((healthy_count + unhealthy_count) / len(all_statuses) * 100):.1f}%"
+            })
+        
         return {
             "success": True,
-            "summary": {
-                "total_services": len(config.get_all_services()),
-                "status_counts": status_counts,
-                "unhealthy_services": unhealthy_services,
-                "disabled_services": disabled_services,
-                "enabled_services": len(config.get_enabled_services())
-            },
-            "statuses": all_statuses
+            "summary": summary,
+            "statuses": all_statuses,
+            "metadata": {
+                "health_included": include_health,
+                "timestamp": "2025-01-08T10:30:00Z"
+            }
         }
         
     except Exception as e:

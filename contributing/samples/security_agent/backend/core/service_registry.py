@@ -42,7 +42,7 @@ Example:
 from typing import Dict, Any, Optional, List, Type
 import importlib
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 
 from .service_config import ServiceConfig, ServiceDefinition, ServiceStatus
@@ -72,14 +72,26 @@ class ServiceRegistry:
         thread-safe, it is safe for use with asyncio coroutines.
     """
     
-    def __init__(self, config: ServiceConfig, credentials=None, project_id=None):
-        """Initialize service registry."""
+    def __init__(self, config: ServiceConfig, credentials=None, project_id=None, health_ttl=60):
+        """Initialize service registry with health-aware capabilities.
+        
+        Args:
+            config: Service configuration manager
+            credentials: GCP credentials for authenticated services
+            project_id: GCP project ID
+            health_ttl: Health data TTL in seconds (default 60s)
+        """
         self.config = config
         self.credentials = credentials
         self.project_id = project_id
         self.services: Dict[str, BaseService] = {}
         self.routers: Dict[str, Any] = {}
         self._health_check_tasks: Dict[str, asyncio.Task] = {}
+        
+        # Health-aware registry features
+        self.health_ttl = health_ttl
+        self._health_cache: Dict[str, Dict[str, Any]] = {}
+        self._health_timestamps: Dict[str, datetime] = {}
         
     def _load_module(self, module_path: str) -> Any:
         """Dynamically load a module using importlib.
@@ -372,33 +384,104 @@ class ServiceRegistry:
         """Get all service instances."""
         return self.services.copy()
     
-    def get_service_status(self, service_name: str) -> Dict[str, Any]:
-        """Get detailed status of a service."""
+    def _is_health_fresh(self, service_name: str) -> bool:
+        """Check if cached health data is still valid."""
+        if service_name not in self._health_timestamps:
+            return False
+        
+        age = datetime.utcnow() - self._health_timestamps[service_name]
+        return age.total_seconds() < self.health_ttl
+    
+    async def _refresh_health_if_needed(self, service_name: str, force: bool = False) -> Optional[Dict[str, Any]]:
+        """Refresh health data if stale or forced."""
+        service = self.services.get(service_name)
+        if not service:
+            return None
+            
+        # Check if refresh is needed
+        if not force and self._is_health_fresh(service_name):
+            return self._health_cache.get(service_name)
+        
+        try:
+            # Perform health check
+            health_data = await service.check_health()
+            
+            # Cache the results
+            self._health_cache[service_name] = health_data
+            self._health_timestamps[service_name] = datetime.utcnow()
+            
+            return health_data
+        except Exception as e:
+            logger.error(f"Health check failed for {service_name}: {e}")
+            # Return cached data if available, or error status
+            if service_name in self._health_cache:
+                return self._health_cache[service_name]
+            return {"healthy": False, "error": str(e)}
+
+    async def get_service_status(self, service_name: str, include_health: bool = True, 
+                               force_health_check: bool = False) -> Dict[str, Any]:
+        """Get detailed status of a service with optional health check integration.
+        
+        Args:
+            service_name: Name of the service
+            include_health: Whether to include real-time health data
+            force_health_check: Force fresh health check regardless of TTL
+            
+        Returns:
+            Complete service status including health if requested
+        """
         service = self.services.get(service_name)
         if service:
-            return service.get_status()
+            status = service.get_status()
+            
+            if include_health:
+                health_data = await self._refresh_health_if_needed(service_name, force_health_check)
+                if health_data:
+                    status['health'] = health_data
+                    status['health_freshness'] = 'fresh' if self._is_health_fresh(service_name) else 'stale'
+                    status['metadata'] = {
+                        'health_ttl': self.health_ttl,
+                        'health_cached_at': self._health_timestamps.get(service_name, datetime.utcnow()).isoformat()
+                    }
+                else:
+                    status['health'] = {"healthy": False, "error": "Health check unavailable"}
+                    status['health_freshness'] = 'unavailable'
+                    
+            return status
         else:
-            return {
+            base_status = {
                 'service_name': service_name,
                 'status': self.config.get_service_status(service_name).value,
                 'initialized': False,
                 'error': 'Service not loaded'
             }
+            
+            if include_health:
+                base_status['health'] = {"healthy": False, "error": "Service not loaded"}
+                base_status['health_freshness'] = 'unavailable'
+                
+            return base_status
     
-    def get_all_statuses(self) -> Dict[str, Dict[str, Any]]:
-        """Get comprehensive status of all services.
+    async def get_all_statuses(self, include_health: bool = True, 
+                             force_health_check: bool = False) -> Dict[str, Dict[str, Any]]:
+        """Get comprehensive status of all services with integrated health checking.
         
         Provides a complete view of all services in the system, including
-        both running and disabled services. This is useful for monitoring
-        dashboards and health checks.
+        both running and disabled services. This method integrates health
+        checks directly into the status query for efficiency.
+        
+        Args:
+            include_health: Whether to include real-time health data
+            force_health_check: Force fresh health check for all services
         
         Returns:
-            Dict mapping service names to their status information:
+            Dict mapping service names to their complete status information:
                 - service_name: Name of the service
                 - status: Current status (running, disabled, error, etc.)
                 - initialized: Whether the service is initialized
-                - last_health_check: Timestamp of last health check
-                - health_status: Latest health check results
+                - health: Real-time health check results (if include_health=True)
+                - health_freshness: 'fresh', 'stale', or 'unavailable'
+                - metadata: Health caching information
                 - error: Error message if service is not loaded
                 
         Example Return::
@@ -408,21 +491,50 @@ class ServiceRegistry:
                     'service_name': 'security',
                     'status': 'running',
                     'initialized': True,
-                    'last_health_check': '2025-01-08T10:30:00Z',
-                    'health_status': {'healthy': True}
+                    'health': {
+                        'healthy': True,
+                        'latency_ms': 45,
+                        'last_check': '2025-01-08T10:30:00Z'
+                    },
+                    'health_freshness': 'fresh',
+                    'metadata': {
+                        'health_ttl': 60,
+                        'health_cached_at': '2025-01-08T10:29:30Z'
+                    }
                 },
                 'threat_intelligence': {
-                    'service_name': 'threat_intelligence',
+                    'service_name': 'threat_intelligence', 
                     'status': 'disabled',
                     'initialized': False,
-                    'error': 'Service not loaded'
+                    'health': {'healthy': False, 'error': 'Service not loaded'},
+                    'health_freshness': 'unavailable'
                 }
             }
         """
         statuses = {}
         
-        for service_name in self.config.services:
-            statuses[service_name] = self.get_service_status(service_name)
+        # Process services concurrently for better performance
+        service_names = list(self.config.services.keys())
+        tasks = []
+        
+        for service_name in service_names:
+            task = self.get_service_status(service_name, include_health=include_health, 
+                                         force_health_check=force_health_check)
+            tasks.append((service_name, task))
+        
+        # Execute all status checks concurrently
+        for service_name, task in tasks:
+            try:
+                statuses[service_name] = await task
+            except Exception as e:
+                logger.error(f"Error getting status for {service_name}: {e}")
+                statuses[service_name] = {
+                    'service_name': service_name,
+                    'status': 'error',
+                    'error': str(e),
+                    'health': {'healthy': False, 'error': str(e)} if include_health else None,
+                    'health_freshness': 'unavailable' if include_health else None
+                }
         
         return statuses
     
