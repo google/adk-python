@@ -336,7 +336,7 @@ async def root():
     ]
     
     # Get service status summary
-    all_statuses = registry.get_all_statuses()
+    all_statuses = await registry.get_all_statuses()
     running_services = [
         name for name, status in all_statuses.items()
         if status.get('status') == 'running'
@@ -402,7 +402,7 @@ async def health_check():
     config = app.state.service_config
     
     # Get all service statuses
-    all_statuses = registry.get_all_statuses()
+    all_statuses = await registry.get_all_statuses()
     
     # Determine overall health
     unhealthy_services = [

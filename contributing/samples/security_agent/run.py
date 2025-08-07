@@ -281,8 +281,32 @@ def wait_for_service(url: str, timeout: int = 30, service_name: str = "service")
     return False
 
 
+def kill_existing_processes():
+    """Kill any existing backend or frontend processes."""
+    try:
+        # Kill existing uvicorn processes
+        result = subprocess.run(['pkill', '-f', 'uvicorn.*main:app'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            logger.info("🔄 Killed existing backend processes")
+        
+        # Kill existing streamlit processes
+        result = subprocess.run(['pkill', '-f', 'streamlit.*main_app'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            logger.info("🔄 Killed existing frontend processes")
+            
+        # Give processes time to shut down
+        time.sleep(2)
+        
+    except Exception as e:
+        logger.debug(f"Process cleanup: {e}")
+
 def start_backend(modular: bool = None) -> Optional[subprocess.Popen]:
     """Start the backend server."""
+    # Kill existing processes first
+    kill_existing_processes()
+    
     # Use environment variable if modular not specified
     if modular is None:
         modular = os.getenv('USE_MODULAR', 'false').lower() == 'true'
@@ -366,6 +390,14 @@ def start_backend(modular: bool = None) -> Optional[subprocess.Popen]:
 def start_frontend() -> Optional[subprocess.Popen]:
     """Start the Streamlit frontend."""
     logger.info("🌐 Starting frontend server...")
+    
+    # Ensure no conflicting processes (already done in start_backend, but just in case)
+    try:
+        subprocess.run(['pkill', '-f', 'streamlit.*main_app'], 
+                      capture_output=True, text=True)
+        time.sleep(1)
+    except:
+        pass
     
     frontend_dir = base_dir / "frontend"
     
@@ -836,16 +868,22 @@ Examples:
         
         # Keep the script running and monitor processes
         while True:
-            time.sleep(1)
+            time.sleep(5)  # Check less frequently
             
-            # Check if any process has died
+            # Check if any process has died unexpectedly
             if backend_process and backend_process.poll() is not None:
-                logger.error("❌ Backend process has stopped")
-                break
+                # Give it a moment in case it's restarting
+                time.sleep(2)
+                if backend_process.poll() is not None:
+                    logger.error("❌ Backend process has stopped")
+                    break
             
             if frontend_process and frontend_process.poll() is not None:
-                logger.error("❌ Frontend process has stopped")
-                break
+                # Give it a moment in case it's restarting  
+                time.sleep(2)
+                if frontend_process.poll() is not None:
+                    logger.error("❌ Frontend process has stopped")
+                    break
         
     except KeyboardInterrupt:
         # Handled by signal handler

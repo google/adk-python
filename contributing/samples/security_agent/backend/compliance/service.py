@@ -1,6 +1,7 @@
 import os
 import requests
 import asyncio
+import logging
 from typing import List, Dict, Any, Optional
 
 from opentelemetry import trace
@@ -8,15 +9,58 @@ from opentelemetry.trace import Status, StatusCode
 
 import google.auth
 import google.auth.transport.requests
+from core.base_service import BaseService
 
-# Get tracer
+# Get tracer and logger
 tracer = trace.get_tracer(__name__)
+logger = logging.getLogger(__name__)
 
-class ComplianceService:
-    def __init__(self, credentials=None, project_id=None):
+class ComplianceService(BaseService):
+    def __init__(self, service_name: str = 'compliance', credentials=None, project_id=None):
+        super().__init__(service_name, credentials, project_id)
         self.compliance_api_endpoint = os.getenv("COMPLIANCE_API_ENDPOINT", "https://compliance.googleapis.com/v1")
         self.credentials = credentials
         self.project_id = project_id
+    
+    async def initialize(self) -> bool:
+        """Initialize the Compliance service."""
+        try:
+            logger.info("Initializing Compliance service...")
+            # Test basic functionality
+            if self.compliance_api_endpoint:
+                logger.info("Compliance service initialized successfully")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to initialize Compliance service: {e}")
+            return False
+    
+    async def shutdown(self) -> bool:
+        """Shutdown the Compliance service."""
+        try:
+            logger.info("Shutting down Compliance service...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to shutdown Compliance service: {e}")
+            return False
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Check Compliance service health."""
+        try:
+            return {
+                "healthy": True,
+                "status": "running",
+                "endpoint": self.compliance_api_endpoint,
+                "message": "Compliance service is operational"
+            }
+        except Exception as e:
+            logger.error(f"Compliance health check failed: {e}")
+            return {
+                "healthy": False,
+                "status": "error",
+                "error": str(e),
+                "message": "Compliance service health check failed"
+            }
 
     async def _make_compliance_api_request(self, method: str, path: str, json_data: Optional[Dict] = None) -> Dict:
         """Helper to make authenticated requests to a compliance API."""

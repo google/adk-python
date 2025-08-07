@@ -13,14 +13,17 @@ from google.cloud.logging_v2 import entries
 from google.auth import default
 import json
 import os
+from core.base_service import BaseService
 
 logger = logging.getLogger(__name__)
 
-class CloudLoggingService:
+class CloudLoggingService(BaseService):
     """Service for analyzing GCP Cloud Logging data."""
     
-    def __init__(self, credentials=None, project_id=None):
+    def __init__(self, service_name: str = 'cloud_logging', credentials=None, project_id=None):
+        super().__init__(service_name, credentials, project_id)
         """Initialize the Cloud Logging client with optional credentials."""
+        self.client = None
         try:
             if credentials and project_id:
                 # Use provided service account credentials
@@ -45,6 +48,41 @@ class CloudLoggingService:
         except Exception as e:
             logger.error(f"Failed to initialize Cloud Logging client: {e}")
             self.client = None
+    
+    async def initialize(self) -> bool:
+        """Initialize the Cloud Logging service."""
+        try:
+            logger.info("Initializing Cloud Logging service...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize Cloud Logging service: {e}")
+            return False
+    
+    async def shutdown(self) -> bool:
+        """Shutdown the Cloud Logging service."""
+        try:
+            logger.info("Shutting down Cloud Logging service...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to shutdown Cloud Logging service: {e}")
+            return False
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Check Cloud Logging service health."""
+        try:
+            return {
+                "healthy": True,
+                "status": "running",
+                "message": "Cloud Logging service is operational"
+            }
+        except Exception as e:
+            logger.error(f"Cloud Logging health check failed: {e}")
+            return {
+                "healthy": False,
+                "status": "error",
+                "error": str(e),
+                "message": "Cloud Logging service health check failed"
+            }
     
     def _get_credentials(self):
         """Get Google Cloud credentials using standard approach."""

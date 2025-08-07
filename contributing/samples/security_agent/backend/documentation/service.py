@@ -12,16 +12,53 @@ from opentelemetry.trace import Status, StatusCode
 
 import google.auth
 import google.auth.transport.requests
+from core.base_service import BaseService
 
 # Get tracer and logger
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
-class DocumentationService:
-    def __init__(self, credentials=None, project_id=None):
+class DocumentationService(BaseService):
+    def __init__(self, service_name: str = 'documentation', credentials=None, project_id=None):
+        super().__init__(service_name, credentials, project_id)
         self.credentials = credentials
         self.project_id = project_id
         # Base URLs for Google Cloud documentation
+    
+    async def initialize(self) -> bool:
+        """Initialize the Documentation service."""
+        try:
+            logger.info("Initializing Documentation service...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize Documentation service: {e}")
+            return False
+    
+    async def shutdown(self) -> bool:
+        """Shutdown the Documentation service."""
+        try:
+            logger.info("Shutting down Documentation service...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to shutdown Documentation service: {e}")
+            return False
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Check Documentation service health."""
+        try:
+            return {
+                "healthy": True,
+                "status": "running",
+                "message": "Documentation service is operational"
+            }
+        except Exception as e:
+            logger.error(f"Documentation health check failed: {e}")
+            return {
+                "healthy": False,
+                "status": "error",
+                "error": str(e),
+                "message": "Documentation service health check failed"
+            }
         self.gcp_docs_base = "https://cloud.google.com/docs"
         self.api_docs_base = "https://cloud.google.com"
         

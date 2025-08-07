@@ -73,7 +73,7 @@ def create_security_agent() -> Agent:
             'and dynamic API Hub tools. This agent also provides dependency analysis '
             'and risk propagation.'
         ),
-        instruction=\"\"\"
+        instruction="""
             You are a comprehensive security evaluation agent for GCP APIs and projects. 
             
             Your primary functions:
@@ -101,7 +101,7 @@ def create_security_agent() -> Agent:
             
             If an API is not found in your knowledge base, inform the user and suggest updating it.
             Always prioritize security best practices and compliance requirements.
-            \"\"\",
+        """,
         tools=base_tools,
         generate_content_config=types.GenerateContentConfig(
             safety_settings=[

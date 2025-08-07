@@ -4,15 +4,57 @@ import logging
 from typing import Dict, List, Any, Optional
 from google.auth import default
 from google.cloud import resourcemanager_v3
-
+from core.base_service import BaseService
 
 logger = logging.getLogger(__name__)
 
-class IAMPolicyAnalyzer:
+class IAMPolicyAnalyzer(BaseService):
     """Analyze IAM policies against security best practices."""
     
-    def __init__(self):
+    def __init__(self, service_name: str = 'iam', credentials=None, project_id=None):
+        super().__init__(service_name, credentials, project_id)
         self.security_rules = self._load_security_rules()
+    
+    async def initialize(self) -> bool:
+        """Initialize the IAM service."""
+        try:
+            logger.info("Initializing IAM Policy Analyzer service...")
+            # Test basic functionality
+            if self.security_rules:
+                logger.info("IAM service initialized successfully")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to initialize IAM service: {e}")
+            return False
+    
+    async def shutdown(self) -> bool:
+        """Shutdown the IAM service."""
+        try:
+            logger.info("Shutting down IAM Policy Analyzer service...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to shutdown IAM service: {e}")
+            return False
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Check IAM service health."""
+        try:
+            rule_count = len(self.security_rules.get("high_risk_roles", []))
+            return {
+                "healthy": True,
+                "status": "running",
+                "rules_loaded": rule_count,
+                "message": "IAM Policy Analyzer is operational"
+            }
+        except Exception as e:
+            logger.error(f"IAM health check failed: {e}")
+            return {
+                "healthy": False,
+                "status": "error",
+                "error": str(e),
+                "message": "IAM service health check failed"
+            }
     
     def _load_security_rules(self) -> Dict[str, Any]:
         """Load security best practices rules."""
