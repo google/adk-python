@@ -525,8 +525,11 @@ Need more help? See the [Troubleshooting](#troubleshooting) section below.
 
 ## 📚 Additional Documentation
 
+- **[Architecture Overview](ARCHITECTURE.md)**: Complete system architecture documentation
 - **[Modular Architecture Guide](MODULAR_ARCHITECTURE.md)**: Comprehensive guide to the service-based architecture
-- **[Installation Guide](INSTALL.md)**: Detailed platform-specific setup instructions
+- **[Agent Tools Architecture](AGENT_TOOLS_ARCHITECTURE.md)**: Agent and tools organization guide
+- **[API Reference](API_REFERENCE.md)**: Complete API documentation
+- **[Service Documentation](SERVICE_DOCUMENTATION.md)**: Detailed service specifications
 
 ## 🔐 GCP APIs & Service Account Permissions
 

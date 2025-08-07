@@ -1,59 +1,289 @@
+# =============================================================================
+# ADK Project .gitignore - Customer Example
+# =============================================================================
+# This file excludes sensitive data, temporary files, and development artifacts
+# while keeping the project clean for customer examples and demonstrations.
+
+# =============================================================================
+# Security & Credentials - NEVER COMMIT THESE
+# =============================================================================
+# Google Cloud service account keys
+*-service-account*.json
+*-sa-key*.json
+mgm-digitalconcierge-*.json
+service-account-key*.json
+
+# Environment files with secrets
+.env
+.env.local
+.env.production
+.env.development
+.env.*
+
+# Secret directories
+secrets/
+config/secrets/
+backend/config/secrets/
+
+# Authentication files
+*.key
+*.pem
+*.p12
+credentials/
+auth/
+.google-credentials
+
+# API keys and tokens
+api-keys.txt
+*.token
+
+# =============================================================================
 # Python
+# =============================================================================
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
+*$py.class
 *.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Virtual Environment
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+pytest.ini
+
+# =============================================================================
+# Virtual Environments
+# =============================================================================
 venv/
 ENV/
 env/
 .env
 .venv
+.ENV
+.env.bak
+venv.bak/
+pipenv/
 
-# IDE
+# =============================================================================
+# IDEs and Editors
+# =============================================================================
 .idea/
 .vscode/
-
-# Testing
-.coverage
-.pytest_cache/
-.streamlit/
-
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
-
-# Logs
-*.log
-logs/
-
-# Local development settings
-*.pid
-.env.*
-run.log
-
-# Security - CRITICAL: Never commit credentials
-*.json
-secrets/
-config/secrets/
-*.key
-*.pem
-*.p12
-credentials/
-service-account*.json
-gcp-*.json
-
-# Misc
-.DS_Store
 *.swp
 *.swo
-*.bak
+*~
+.project
+.settings/
+.classpath
+
+# Vim
+*.swp
+*.swo
+*.un~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+
+# =============================================================================
+# Node.js (for any frontend tooling)
+# =============================================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+package-lock.json
+yarn.lock
+
+# =============================================================================
+# Logs and Runtime Files
+# =============================================================================
+*.log
+logs/
+backend.log
+frontend.log
+run.log
+access.log
+error.log
+debug.log
+
+# Process IDs
+*.pid
+*.seed
+*.pid.lock
+
+# =============================================================================
+# Streamlit
+# =============================================================================
+.streamlit/
+.streamlit/secrets.toml
+
+# =============================================================================
+# FastAPI / Uvicorn
+# =============================================================================
+uvicorn.log
+fastapi.log
+
+# =============================================================================
+# Database files
+# =============================================================================
+*.db
+*.sqlite
+*.sqlite3
+
+# =============================================================================
+# Temporary and Cache Files
+# =============================================================================
+.cache/
+.temp/
+tmp/
+temp/
 *.tmp
-.crush/
-CRUSH.md
-.history/
-.hive-mind/
-.claude-flow/
+*.bak
+*.backup
+
+# =============================================================================
+# OS Generated Files
+# =============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+*.exe
+*.msi
+*.msm
+*.msp
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# Docker
+# =============================================================================
+.dockerignore
+docker-compose.override.yml
+.docker/
+
+# =============================================================================
+# Development and Testing
+# =============================================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+
+# Profiling
+*.prof
+
+# =============================================================================
+# Documentation Build
+# =============================================================================
+docs/_build/
+site/
+
+# =============================================================================
+# Jupyter Notebooks
+# =============================================================================
+.ipynb_checkpoints
+*.ipynb
+
+# =============================================================================
+# ADK Specific
+# =============================================================================
+# Agent evaluation results
+*.evalset.json
+evalset*.json
+
+# Model caches
+.model_cache/
+model_cache/
+
+# ADK runtime files
+.adk/
+adk.log
+
+# =============================================================================
+# Customer Example Exclusions
+# =============================================================================
+# Local customer data that shouldn't be shared
+customer_data/
+private_configs/
+internal_notes.md
+TODO_INTERNAL.md
+
+# Development scripts not for customers
+dev_scripts/
+internal_tools/
+
+# =============================================================================
+# Allow Important Configuration Files
+# =============================================================================
+# Explicitly allow these important files:
+!requirements.txt
+!package.json
+!docker-compose.yml
+!Dockerfile
+!README.md
+!ARCHITECTURE.md
+!API_REFERENCE.md
+!SERVICE_DOCUMENTATION.md
+!services.example.json
+!.env.example
+!config.example.json
+
+# =============================================================================
+# Keep Example Files
+# =============================================================================
+!example_configs/
+!samples/
+!demos/
+!docs/

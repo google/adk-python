@@ -1,4 +1,43 @@
-"""Service registry for managing modular services."""
+"""Service registry for managing modular services.
+
+This module implements the central registry that manages all services in the
+modular architecture. It handles service lifecycle, dependency resolution,
+health monitoring, and dynamic router registration.
+
+The ServiceRegistry is the orchestrator of the modular architecture, responsible
+for:
+- Loading and instantiating services based on configuration
+- Resolving and enforcing service dependencies
+- Managing service lifecycle (start, stop, restart)
+- Coordinating health checks
+- Dynamically registering API routes
+- Providing service discovery and status reporting
+
+Key Concepts:
+    - Services are loaded dynamically based on configuration
+    - Dependencies are resolved using topological sorting
+    - Health checks run periodically in background tasks
+    - Failed services don't crash the system (fault isolation)
+    - Services can be enabled/disabled at runtime
+
+Example:
+    Basic usage of ServiceRegistry::
+    
+        config = ServiceConfig('config/services.json')
+        registry = ServiceRegistry(config, credentials, project_id)
+        
+        # Initialize all services
+        results = await registry.initialize_all_services()
+        
+        # Get a specific service
+        security_service = registry.get_service('security')
+        
+        # Enable a disabled service
+        await registry.enable_service('threat_intelligence')
+        
+        # Check all service statuses
+        statuses = registry.get_all_statuses()
+"""
 
 from typing import Dict, Any, Optional, List, Type
 import importlib
@@ -13,7 +52,25 @@ logger = logging.getLogger(__name__)
 
 
 class ServiceRegistry:
-    """Central registry for all services."""
+    """Central registry for all services in the modular architecture.
+    
+    The ServiceRegistry acts as a service locator and lifecycle manager,
+    maintaining references to all service instances and coordinating their
+    operations. It ensures services are started in the correct order based
+    on dependencies and provides a unified interface for service management.
+    
+    Attributes:
+        config (ServiceConfig): Service configuration manager
+        credentials: GCP credentials for authenticated services
+        project_id (str): GCP project ID
+        services (Dict[str, BaseService]): Map of service name to instance
+        routers (Dict[str, Any]): Map of service name to router info
+        _health_check_tasks (Dict[str, Task]): Background health check tasks
+        
+    Thread Safety:
+        The registry is designed to be used in an async context. While not
+        thread-safe, it is safe for use with asyncio coroutines.
+    """
     
     def __init__(self, config: ServiceConfig, credentials=None, project_id=None):
         """Initialize service registry."""
@@ -25,7 +82,29 @@ class ServiceRegistry:
         self._health_check_tasks: Dict[str, asyncio.Task] = {}
         
     def _load_module(self, module_path: str) -> Any:
-        """Dynamically load a module."""
+        """Dynamically load a module using importlib.
+        
+        This method enables dynamic loading of service classes and routers
+        at runtime based on configuration. It supports loading any Python
+        class or object using dot notation.
+        
+        Args:
+            module_path: Fully qualified path to the module/class
+                        e.g., 'security.service.SecurityService'
+                        
+        Returns:
+            The loaded class or module object
+            
+        Raises:
+            ImportError: If the module cannot be imported
+            AttributeError: If the specified attribute doesn't exist
+            
+        Example:
+            Loading a service class::
+            
+                service_class = self._load_module('iam.service.IAMPolicyAnalyzer')
+                service_instance = service_class(name, credentials)
+        """
         try:
             parts = module_path.split('.')
             module = importlib.import_module('.'.join(parts[:-1]))
@@ -35,7 +114,27 @@ class ServiceRegistry:
             raise
     
     def _instantiate_service(self, service_def: ServiceDefinition) -> Optional[BaseService]:
-        """Instantiate a service from its definition."""
+        """Instantiate a service from its definition.
+        
+        Creates a service instance based on the service definition, handling:
+        - Dynamic class loading
+        - Credential injection for GCP services
+        - Error handling and status updates
+        
+        Args:
+            service_def: Service definition containing module path and config
+            
+        Returns:
+            BaseService instance if successful, None if instantiation failed
+            
+        Note:
+            Services requiring GCP authentication are instantiated with
+            credentials and project_id. Others are instantiated with just
+            the service name.
+            
+            Failed instantiations are logged and the service status is set
+            to ERROR in the configuration.
+        """
         if not service_def.service_module:
             logger.warning(f"No service module defined for {service_def.name}")
             return None
@@ -77,7 +176,33 @@ class ServiceRegistry:
             return None
     
     async def initialize_service(self, service_name: str) -> bool:
-        """Initialize a single service."""
+        """Initialize a single service with dependency checking.
+        
+        This method orchestrates the complete initialization of a service:
+        1. Validates service exists in configuration
+        2. Checks if service is disabled (skips if so)
+        3. Verifies all dependencies are satisfied
+        4. Instantiates the service class
+        5. Starts the service
+        6. Loads and registers API router
+        7. Starts health monitoring
+        
+        Args:
+            service_name: Name of the service to initialize
+            
+        Returns:
+            bool: True if initialization succeeded, False otherwise
+            
+        Side Effects:
+            - Updates service status in configuration
+            - Adds service to internal registry
+            - Registers API routes if available
+            - Starts background health check task
+            
+        Note:
+            If a service is already initialized, this method will attempt
+            to start it again, effectively acting as a restart.
+        """
         service_def = self.config.get_service(service_name)
         if not service_def:
             logger.error(f"Service {service_name} not found in configuration")
@@ -146,7 +271,30 @@ class ServiceRegistry:
         return results
     
     def _sort_services_by_dependencies(self) -> List[str]:
-        """Sort services by their dependencies (topological sort)."""
+        """Sort services by their dependencies using topological sort.
+        
+        Implements Kahn's algorithm for topological sorting to determine
+        the correct initialization order for services based on their
+        dependencies. This ensures that dependent services are started
+        only after their dependencies are running.
+        
+        Returns:
+            List[str]: Service names in initialization order
+            
+        Algorithm:
+            1. Build adjacency graph of dependencies
+            2. Calculate in-degrees for each service
+            3. Start with services having no dependencies
+            4. Process services as dependencies are satisfied
+            
+        Example:
+            If service A depends on B, and B depends on C:
+            Returns: ['C', 'B', 'A']
+            
+        Note:
+            Circular dependencies would result in an incomplete list,
+            but the configuration validation should prevent this.
+        """
         # Build dependency graph
         graph = {}
         in_degree = {}
@@ -238,7 +386,39 @@ class ServiceRegistry:
             }
     
     def get_all_statuses(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all services."""
+        """Get comprehensive status of all services.
+        
+        Provides a complete view of all services in the system, including
+        both running and disabled services. This is useful for monitoring
+        dashboards and health checks.
+        
+        Returns:
+            Dict mapping service names to their status information:
+                - service_name: Name of the service
+                - status: Current status (running, disabled, error, etc.)
+                - initialized: Whether the service is initialized
+                - last_health_check: Timestamp of last health check
+                - health_status: Latest health check results
+                - error: Error message if service is not loaded
+                
+        Example Return::
+        
+            {
+                'security': {
+                    'service_name': 'security',
+                    'status': 'running',
+                    'initialized': True,
+                    'last_health_check': '2025-01-08T10:30:00Z',
+                    'health_status': {'healthy': True}
+                },
+                'threat_intelligence': {
+                    'service_name': 'threat_intelligence',
+                    'status': 'disabled',
+                    'initialized': False,
+                    'error': 'Service not loaded'
+                }
+            }
+        """
         statuses = {}
         
         for service_name in self.config.services:
@@ -267,12 +447,46 @@ class ServiceRegistry:
         return list(self.routers.values())
     
     async def enable_service(self, service_name: str) -> bool:
-        """Enable and start a service."""
+        """Enable and start a previously disabled service.
+        
+        This method allows runtime enabling of services that were disabled.
+        It updates the configuration and attempts to initialize the service.
+        
+        Args:
+            service_name: Name of the service to enable
+            
+        Returns:
+            bool: True if service was successfully enabled and started
+            
+        Note:
+            The configuration is persisted after enabling the service,
+            so the change survives application restarts.
+        """
         self.config.enable_service(service_name)
         return await self.initialize_service(service_name)
     
     async def disable_service(self, service_name: str) -> bool:
-        """Disable and stop a service."""
+        """Disable and stop a running service.
+        
+        This method allows runtime disabling of services. It ensures:
+        - Required services cannot be disabled
+        - The service is properly shut down
+        - Configuration is updated and persisted
+        - Dependent services are notified (future enhancement)
+        
+        Args:
+            service_name: Name of the service to disable
+            
+        Returns:
+            bool: True if service was successfully disabled
+            
+        Raises:
+            ValueError: If attempting to disable a required service
+            
+        Note:
+            Disabling a service that other services depend on may cause
+            those services to enter an error state.
+        """
         # Check if service can be disabled
         service_def = self.config.get_service(service_name)
         if service_def and service_def.required:
