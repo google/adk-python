@@ -3,11 +3,10 @@ name: ADK Answering Agent for Discussions
 on:
   discussion:
     types: [created]
-  discussion_comment:
-    types: [created]
 
 jobs:
   agent-answer-questions:
+    if: github.event.discussion.category.name == 'Q&A'
     runs-on: ubuntu-latest
 
     steps:
