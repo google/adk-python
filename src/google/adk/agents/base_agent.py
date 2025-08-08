@@ -39,7 +39,7 @@ from typing_extensions import override
 from typing_extensions import TypeAlias
 
 from ..events.event import Event
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
 from .common_configs import AgentRefConfig
@@ -506,6 +506,7 @@ class BaseAgent(BaseModel):
 
   @final
   @classmethod
+  @experimental
   def from_config(
       cls: Type[SelfAgent],
       config: BaseAgentConfig,
@@ -529,6 +530,7 @@ class BaseAgent(BaseModel):
     return cls(**kwargs)
 
   @classmethod
+  @experimental
   def _parse_config(
       cls: Type[SelfAgent],
       config: BaseAgentConfig,

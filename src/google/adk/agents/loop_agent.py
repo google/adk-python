@@ -27,7 +27,7 @@ from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
 from .loop_agent_config import LoopAgentConfig
@@ -78,6 +78,7 @@ class LoopAgent(BaseAgent):
 
   @override
   @classmethod
+  @experimental
   def _parse_config(
       cls: type[LoopAgent],
       config: LoopAgentConfig,
