@@ -618,7 +618,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 
 ### Documentation
 
-* Update the a2a exmaple link in README.md [d0fdfb8](https://github.com/google/adk-python/commit/d0fdfb8c8e2e32801999c81de8d8ed0be3f88e76)
+* Update the a2a example link in README.md [d0fdfb8](https://github.com/google/adk-python/commit/d0fdfb8c8e2e32801999c81de8d8ed0be3f88e76)
 * Adds AGENTS.md to provide relevant project context for the Gemini CLI [37108be](https://github.com/google/adk-python/commit/37108be8557e011f321de76683835448213f8515)
 * Update CONTRIBUTING.md [ffa9b36](https://github.com/google/adk-python/commit/ffa9b361db615ae365ba62c09a8f4226fb761551)
 * Add adk project overview and architecture [28d0ea8](https://github.com/google/adk-python/commit/28d0ea876f2f8de952f1eccbc788e98e39f50cf5)
