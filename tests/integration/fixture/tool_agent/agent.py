@@ -131,7 +131,7 @@ non_exist_rag_retrieval = VertexAiRagRetrieval(
 shell_tool = LangchainTool(ShellTool())
 
 docs_tool = CrewaiTool(
-    name="direcotry_read_tool",
+    name="directory_read_tool",
     description="use this to find files for you.",
     tool=DirectoryReadTool(directory="."),
 )
