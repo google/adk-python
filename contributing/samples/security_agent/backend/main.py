@@ -1630,7 +1630,7 @@ async def get_projects():
                     "project_id": project_id,
                     "name": project_name,
                     "status": "active",
-                    "project_number": f"{hash(self.project_id) % 999999999999}"
+                    "project_number": f"{hash(project_id) % 999999999999}"
                 }
             ]
         }
@@ -1646,7 +1646,7 @@ async def get_project_info(project_id: str):
         "project_info": {
             "project_id": project_id,
             "name": f"Project {project_id}",
-            "project_number": f"{hash(self.project_id) % 999999999999}",
+            "project_number": f"{hash(project_id) % 999999999999}",
             "lifecycle_state": "ACTIVE"
         }
     }
@@ -1720,7 +1720,7 @@ async def get_iam_policy():
         "success": True,
         "policy": {
             "bindings": [
-                {"role": "roles/owner", "members": [f"user@{self.project_id.split('-')[0] if '-' in self.project_id else 'company'}.com"]}
+                {"role": "roles/owner", "members": [f"user@{project_id.split('-')[0] if '-' in project_id else 'company'}.com"]}
             ]
         }
     }
@@ -1741,7 +1741,7 @@ async def analyze_all_users(project_id: str):
     return {
         "success": True,
         "users": [
-            {"email": f"user@{self.project_id.split('-')[0] if '-' in self.project_id else 'company'}.com", "roles": ["roles/owner"], "risk": "low"}
+            {"email": f"user@{project_id.split('-')[0] if '-' in project_id else 'company'}.com", "roles": ["roles/owner"], "risk": "low"}
         ]
     }
 
