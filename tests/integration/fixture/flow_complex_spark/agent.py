@@ -92,7 +92,7 @@ information_retrieval_agent = Agent(
         " question."
     ),
     instruction="""\
-Inspect all the questions after "[question_generation_agent]: " and asnwer them.
+Inspect all the questions after "[question_generation_agent]: " and answer them.
 
 # Instruction on replying format
 
