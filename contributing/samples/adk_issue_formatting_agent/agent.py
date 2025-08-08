@@ -45,7 +45,7 @@ if IS_INTERACTIVE:
 
 
 def list_open_issues(issue_count: int) -> dict[str, Any]:
-  """List most recent `issue_count` numer of open issues in the repo.
+  """List most recent `issue_count` number of open issues in the repo.
 
   Args:
     issue_count: number of issues to return
