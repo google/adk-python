@@ -85,7 +85,7 @@ def _convert_invocation_to_pydantic_schema(
   )
 
 
-def convert_eval_set_to_pydanctic_schema(
+def convert_eval_set_to_pydantic_schema(
     eval_set_id: str,
     eval_set_in_json_format: list[dict[str, Any]],
 ) -> EvalSet:
@@ -183,7 +183,7 @@ def load_eval_set_from_file(
     except ValidationError:
       # We assume that the eval data was specified in the old format and try
       # to convert it to the new format.
-      return convert_eval_set_to_pydanctic_schema(
+      return convert_eval_set_to_pydantic_schema(
           eval_set_id, json.loads(content)
       )
 

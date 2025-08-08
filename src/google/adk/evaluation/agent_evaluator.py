@@ -49,7 +49,7 @@ from .eval_set import EvalSet
 from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
-from .local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
+from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
 from .user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -315,7 +315,7 @@ class AgentEvaluator:
         "data": data,
         "initial_session": initial_session,
     }
-    return convert_eval_set_to_pydanctic_schema(
+    return convert_eval_set_to_pydantic_schema(
         eval_set_id=str(uuid.uuid4()), eval_set_in_json_format=[eval_data]
     )
 
