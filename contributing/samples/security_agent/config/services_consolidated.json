@@ -1,0 +1,307 @@
+{
+  "services": {
+    "security": {
+      "name": "security",
+      "display_name": "Consolidated Security Service",
+      "description": "Unified security service combining vulnerability evaluation, analytics, and knowledge management",
+      "version": "2.0.0",
+      "enabled_by_default": true,
+      "required": true,
+      "dependencies": [],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/security",
+      "router_module": "api.security",
+      "service_module": "services.security.ConsolidatedSecurityService",
+      "requires_gcp_auth": true,
+      "requires_api_keys": [],
+      "tags": [
+        "core",
+        "security",
+        "analytics",
+        "knowledge"
+      ]
+    },
+    "monitoring": {
+      "name": "monitoring",
+      "display_name": "Consolidated Monitoring Service",
+      "description": "Unified monitoring service combining logging, tracing, and performance metrics",
+      "version": "2.0.0",
+      "enabled_by_default": true,
+      "required": false,
+      "dependencies": [],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/monitoring",
+      "router_module": "api.monitoring",
+      "service_module": "services.monitoring.ConsolidatedMonitoringService",
+      "requires_gcp_auth": true,
+      "requires_api_keys": [],
+      "tags": [
+        "monitoring",
+        "logging",
+        "tracing",
+        "metrics"
+      ]
+    },
+    "gcp": {
+      "name": "gcp",
+      "display_name": "Consolidated GCP Service",
+      "description": "Unified GCP service combining API calls, discovery, and project management",
+      "version": "2.0.0",
+      "enabled_by_default": true,
+      "required": true,
+      "dependencies": [],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/gcp",
+      "router_module": "api.gcp",
+      "service_module": "services.gcp.ConsolidatedGCPService",
+      "requires_gcp_auth": true,
+      "requires_api_keys": [],
+      "tags": [
+        "core",
+        "gcp",
+        "discovery",
+        "projects"
+      ]
+    },
+    "iam": {
+      "name": "iam",
+      "display_name": "IAM Analysis",
+      "description": "Identity and Access Management analysis service",
+      "version": "1.0.0",
+      "enabled_by_default": true,
+      "required": false,
+      "dependencies": [
+        {
+          "service_name": "gcp",
+          "required": true,
+          "version": null
+        }
+      ],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/iam",
+      "router_module": "iam.api",
+      "service_module": "iam.service.IAMPolicyAnalyzer",
+      "requires_gcp_auth": true,
+      "requires_api_keys": [],
+      "tags": [
+        "security",
+        "gcp"
+      ]
+    },
+    "compliance": {
+      "name": "compliance",
+      "display_name": "Compliance Checking",
+      "description": "Multi-framework compliance evaluation service",
+      "version": "1.0.0",
+      "enabled_by_default": true,
+      "required": false,
+      "dependencies": [
+        {
+          "service_name": "security",
+          "required": true,
+          "version": null
+        }
+      ],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/compliance",
+      "router_module": "compliance.api",
+      "service_module": "compliance.service.ComplianceService",
+      "requires_gcp_auth": true,
+      "requires_api_keys": [],
+      "tags": [
+        "compliance",
+        "security"
+      ]
+    },
+    "documentation": {
+      "name": "documentation",
+      "display_name": "Documentation Service",
+      "description": "API documentation scraping and analysis",
+      "version": "1.0.0",
+      "enabled_by_default": true,
+      "required": false,
+      "dependencies": [],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/documentation",
+      "router_module": "documentation.api",
+      "service_module": "documentation.service.DocumentationService",
+      "requires_gcp_auth": false,
+      "requires_api_keys": [],
+      "tags": [
+        "documentation",
+        "analysis"
+      ]
+    },
+    "recommendations": {
+      "name": "recommendations",
+      "display_name": "Security Recommendations",
+      "description": "AI-powered security recommendations",
+      "version": "1.0.0",
+      "enabled_by_default": true,
+      "required": false,
+      "dependencies": [
+        {
+          "service_name": "security",
+          "required": true,
+          "version": null
+        }
+      ],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/recommendations",
+      "router_module": "recommendations.api",
+      "service_module": "recommendations.service.RecommendationsService",
+      "requires_gcp_auth": false,
+      "requires_api_keys": [],
+      "tags": [
+        "security",
+        "ai",
+        "recommendations"
+      ]
+    },
+    "msa": {
+      "name": "msa",
+      "display_name": "MSA Analysis",
+      "description": "Microsoft Service Agreement parsing and analysis",
+      "version": "1.0.0",
+      "enabled_by_default": false,
+      "required": false,
+      "dependencies": [],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/msa",
+      "router_module": "msa.api",
+      "service_module": "msa.service.MSAParsingService",
+      "requires_gcp_auth": false,
+      "requires_api_keys": [],
+      "tags": [
+        "analysis",
+        "msa"
+      ]
+    },
+    "apihub": {
+      "name": "apihub",
+      "display_name": "API Hub Integration",
+      "description": "Google API Hub integration and management",
+      "version": "1.0.0",
+      "enabled_by_default": false,
+      "required": false,
+      "dependencies": [
+        {
+          "service_name": "gcp",
+          "required": true,
+          "version": null
+        }
+      ],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/apihub",
+      "router_module": "apihub.api",
+      "service_module": "apihub.service.APIHubService",
+      "requires_gcp_auth": true,
+      "requires_api_keys": [],
+      "tags": [
+        "integration",
+        "apihub"
+      ]
+    },
+    "agent": {
+      "name": "agent",
+      "display_name": "AI Agent Service",
+      "description": "Interactive AI security agent",
+      "version": "1.0.0",
+      "enabled_by_default": true,
+      "required": false,
+      "dependencies": [
+        {
+          "service_name": "security",
+          "required": true,
+          "version": null
+        }
+      ],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/agent",
+      "router_module": "api.agent",
+      "service_module": "services.agent_service.AgentService",
+      "requires_gcp_auth": false,
+      "requires_api_keys": [],
+      "tags": [
+        "ai",
+        "agent"
+      ]
+    },
+    "threat_intelligence": {
+      "name": "threat_intelligence",
+      "display_name": "Threat Intelligence",
+      "description": "Threat intelligence and vulnerability analysis",
+      "version": "1.0.0",
+      "enabled_by_default": false,
+      "required": false,
+      "dependencies": [
+        {
+          "service_name": "security",
+          "required": true,
+          "version": null
+        }
+      ],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/threat-intelligence",
+      "router_module": "api.threat_intelligence",
+      "service_module": "services.threat_intelligence_service.ThreatIntelligenceService",
+      "requires_gcp_auth": false,
+      "requires_api_keys": [],
+      "tags": [
+        "security",
+        "threats"
+      ]
+    },
+    "incident_response": {
+      "name": "incident_response",
+      "display_name": "Incident Response",
+      "description": "Security incident management and response",
+      "version": "1.0.0",
+      "enabled_by_default": false,
+      "required": false,
+      "dependencies": [
+        {
+          "service_name": "security",
+          "required": true,
+          "version": null
+        }
+      ],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/incidents",
+      "router_module": "api.incidents",
+      "service_module": "services.incident_response_service.IncidentResponseService",
+      "requires_gcp_auth": false,
+      "requires_api_keys": [],
+      "tags": [
+        "security",
+        "incidents"
+      ]
+    }
+  },
+  "runtime_status": {
+    "security": "healthy",
+    "monitoring": "healthy",
+    "gcp": "healthy",
+    "iam": "enabled",
+    "compliance": "enabled",
+    "documentation": "enabled",
+    "recommendations": "enabled",
+    "msa": "disabled",
+    "apihub": "disabled",
+    "agent": "enabled",
+    "threat_intelligence": "disabled",
+    "incident_response": "disabled"
+  }
+}

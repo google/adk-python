@@ -1,121 +1,247 @@
 # Agent Development Kit (ADK)
 
-Welcome to the Agent Development Kit (ADK) - a comprehensive framework for building intelligent, AI-powered agents and applications. This repository contains core ADK components, samples, and documentation to help you build sophisticated agent-based systems.
+<div align="center">
+
+[![ADK Version](https://img.shields.io/badge/ADK-v2.0.0-blue.svg)](https://github.com/google/adk-python)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://python.org)
+[![Documentation](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://docs.adk.dev)
+
+**A comprehensive framework for building intelligent, AI-powered agents and applications**
+
+[🚀 Quick Start](#-quick-start) • [📖 Documentation](#-documentation) • [🛠️ Examples](#-sample-applications) • [💬 Community](#-community)
+
+</div>
+
+---
+
+## 📋 Table of Contents
+
+- [What is ADK?](#-what-is-adk)
+- [Key Features](#-key-features)  
+- [Quick Start](#-quick-start)
+- [Sample Applications](#-sample-applications)
+- [Architecture](#-architecture)
+- [Installation](#️-installation)
+- [Configuration](#-configuration)
+- [Development](#-development)
+- [Documentation](#-documentation)
+- [Community & Support](#-community--support)
 
 ## 🎯 What is ADK?
 
-The Agent Development Kit (ADK) is a powerful framework that enables developers to create intelligent agents capable of:
-- **🤖 Complex Reasoning**: Multi-step planning and decision making
-- **🔧 Tool Integration**: Seamless integration with APIs, databases, and cloud services
-- **💬 Natural Language Processing**: Advanced conversational interfaces
-- **📊 Data Analysis**: Intelligent data processing and insights generation
-- **🔄 Workflow Orchestration**: Automated multi-agent coordination
+The Agent Development Kit (ADK) is a powerful framework that enables developers to create intelligent agents capable of complex reasoning, tool integration, and autonomous decision-making. Built on modern AI/ML foundations with enterprise-grade reliability.
 
-## 🚀 Featured Sample: GCP Security Agent
+### 🔑 Key Features
 
-The flagship ADK sample is a comprehensive security evaluation platform for Google Cloud Platform:
+<table>
+<tr>
+<td>
+
+**🤖 Intelligent Agents**
+- Multi-step reasoning & planning
+- Context-aware conversations
+- Memory management
+- Error handling & recovery
+
+</td>
+<td>
+
+**🔧 Tool Integration** 
+- API & database connectors
+- Cloud service integrations
+- Custom function tools  
+- Workflow orchestration
+
+</td>
+</tr>
+<tr>
+<td>
+
+**💬 Natural Language**
+- Advanced conversational UI
+- Multi-modal interactions
+- Real-time responses
+- Language model flexibility
+
+</td>
+<td>
+
+**📊 Enterprise Ready**
+- Security & compliance
+- Scalable deployment
+- Health monitoring
+- Performance analytics
+
+</td>
+</tr>
+</table>
+
+## 🚀 Quick Start
+
+**Get started in under 5 minutes:**
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/google/adk-python.git
+cd adk-python
+
+# 2. Try the flagship security agent
+cd contributing/samples/security_agent
+python run.py
+
+# 3. Access the applications
+# Frontend: http://localhost:8501
+# Backend API: http://localhost:8000/docs
+```
+
+> **💡 New to ADK?** Start with our [GCP Security Agent](#gcp-security-agent) - a full-featured example showcasing ADK capabilities.
+
+## 🛠️ Sample Applications
+
+### GCP Security Agent 
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-green.svg)]()
 
 **Location**: [`contributing/samples/security_agent/`](contributing/samples/security_agent/)
 
-### Key Features
-- **🛡️ Comprehensive Security Analysis**: Multi-layered GCP security evaluation with real-time risk assessment
-- **🤖 AI-Powered Security Agent**: Advanced ADK-based intelligent assistant for security recommendations  
-- **🔐 Advanced IAM Analysis**: Deep IAM permissions analysis with policy testing and compliance checking
-- **📊 Real-time Monitoring**: Live security metrics, alerts, and performance dashboards
-- **🔄 Modular Service Architecture**: Enable/disable individual services for fault isolation and resource optimization
-- **📋 Multi-Framework Compliance**: SOC2, ISO27001, GDPR compliance evaluation and reporting
+A comprehensive security evaluation platform for Google Cloud Platform featuring:
 
-### Quick Start
+- **🛡️ Multi-layered Security Analysis** - Real-time risk assessment & vulnerability scanning
+- **🤖 AI-Powered Assistant** - Intelligent security recommendations with ADK integration  
+- **🔐 Advanced IAM Analysis** - Deep permissions analysis & policy compliance
+- **📊 Live Monitoring** - Performance dashboards with health monitoring
+- **🏗️ Clean Architecture** - Well-organized codebase with clear separation of concerns
+- **📋 Compliance Frameworks** - SOC2, ISO27001, GDPR evaluation
+
+**Quick Launch:**
 ```bash
-cd contributing/samples/security_agent
-python run.py
+cd contributing/samples/security_agent && python run.py
 ```
 
-For detailed setup instructions, see the [Security Agent README](contributing/samples/security_agent/README.md).
+[📖 Documentation](contributing/samples/security_agent/README.md) • [🏗️ Architecture](contributing/samples/security_agent/MODULAR_ARCHITECTURE.md) • [🔧 API Reference](contributing/samples/security_agent/API_REFERENCE.md)
 
-## 📚 Documentation
+### GCP API Explorer
+[![Status](https://img.shields.io/badge/Status-Stable-blue.svg)]()
 
-### Core Documentation
-- **[Architecture Overview](ARCHITECTURE.md)** - ADK system architecture and design principles
+**Location**: [`gcp_api_explorer/`](gcp_api_explorer/)
 
-### Sample Applications
-- **[GCP Security Agent](contributing/samples/security_agent/)** - Enterprise security evaluation platform
-  - [README](contributing/samples/security_agent/README.md) - Getting started guide
-  - [Architecture](contributing/samples/security_agent/MODULAR_ARCHITECTURE.md) - Modular service architecture
-  - [Agent Tools](contributing/samples/security_agent/AGENT_TOOLS_ARCHITECTURE.md) - Agent and tools organization
-  - [API Reference](contributing/samples/security_agent/API_REFERENCE.md) - Complete API documentation
-  - [Service Documentation](contributing/samples/security_agent/SERVICE_DOCUMENTATION.md) - Detailed service specifications
+Interactive Google Cloud API discovery and testing tool:
 
-## 🏗️ ADK Core Architecture
+- **🔍 Dynamic API Discovery** - Automatically discover available GCP APIs
+- **🧪 Interactive Testing** - Test endpoints with real-time responses  
+- **🔐 Multi-Auth Support** - Service accounts, OAuth2, and ADC
+- **📚 Auto-Documentation** - Generated docs from API schemas
+- **🏗️ Request Builder** - Visual interface for complex API requests
 
-ADK follows a modular, service-based architecture that provides:
+[📖 Documentation](gcp_api_explorer/README.md) • [🚀 Usage Guide](gcp_api_explorer/USAGE_GUIDE.md)
 
-- **🔌 Pluggable Components**: Mix and match services as needed
-- **🔄 Dynamic Configuration**: Enable/disable services at runtime  
-- **📊 Health Monitoring**: Built-in service health checks and management
-- **🚀 Scalable Deployment**: Docker, Kubernetes, and cloud-ready
-- **🛡️ Security-First**: Authentication, authorization, and audit logging built-in
+### Agent Evaluation Framework
+[![Status](https://img.shields.io/badge/Status-Beta-yellow.svg)]()
 
-## 🛠️ Getting Started
+**Location**: [`evaluation/`](evaluation/)
+
+Comprehensive agent testing and benchmarking system:
+
+- **📊 Multi-Metric Evaluation** - Performance, accuracy, and security metrics
+- **📋 Standardized Datasets** - Security-focused test cases  
+- **🔄 Automated Benchmarking** - Continuous performance measurement
+- **📈 ADK Integration** - Built on google.adk.evaluation patterns
+
+[📖 Documentation](evaluation/README.md) • [📊 Architecture](evaluation/ARCHITECTURE.md)
+
+## 🏗️ Architecture
+
+ADK follows a modular, service-based architecture designed for enterprise scalability:
+
+<div align="center">
+
+```mermaid
+graph TB
+    subgraph "Agent Layer"
+        A[Agent Core]
+        B[Memory Management]
+        C[Tool Orchestrator]
+    end
+    
+    subgraph "Service Layer"
+        D[Model Services]
+        E[Data Services]
+        F[Integration Services]
+    end
+    
+    subgraph "Infrastructure Layer"
+        G[Authentication]
+        H[Health Monitoring]  
+        I[Scaling & Deployment]
+    end
+    
+    A --> D
+    B --> E
+    C --> F
+    D --> G
+    E --> H
+    F --> I
+    
+    classDef agent fill:#e1f5fe
+    classDef service fill:#f3e5f5
+    classDef infra fill:#e8f5e8
+    
+    class A,B,C agent
+    class D,E,F service
+    class G,H,I infra
+```
+
+</div>
+
+### Core Principles
+
+- **🔌 Modular Design** - Mix and match components as needed
+- **🔄 Dynamic Configuration** - Runtime service management  
+- **📊 Observable** - Built-in monitoring and health checks
+- **🚀 Cloud Native** - Docker, Kubernetes, and multi-cloud ready
+- **🛡️ Security First** - Authentication, authorization, and audit logging
+
+## ⚡ Installation
 
 ### Prerequisites
-- **Python 3.8+** - Core runtime requirement
-- **Docker** - For containerized deployments
-- **Google Cloud SDK** - For GCP integrations (optional)
 
-### Installation
+| Requirement | Version | Purpose |
+|-------------|---------|---------|
+| **Python** | 3.8+ | Core runtime |
+| **Docker** | Latest | Container deployment |
+| **Google Cloud SDK** | Latest | GCP integrations (optional) |
 
-#### Option 1: Quick Start (Recommended)
+### Quick Install
+
 ```bash
+# Clone repository
 git clone https://github.com/google/adk-python.git
 cd adk-python
 
-# Try the security agent sample
-cd contributing/samples/security_agent
-python run.py
+# Option 1: Try sample applications
+cd contributing/samples/security_agent && python run.py
+
+# Option 2: Install ADK core for development  
+pip install -e . && python -c "import adk; print('ADK installed!')"
 ```
 
-#### Option 2: Development Setup
+### Development Setup
+
 ```bash
-git clone https://github.com/google/adk-python.git
-cd adk-python
+# Create virtual environment
+python -m venv adk-env
+source adk-env/bin/activate  # Windows: adk-env\Scripts\activate
 
-# Install ADK core
-pip install -e .
-
-# Explore samples
-ls contributing/samples/
-```
-
-### Basic Usage
-
-ADK provides a simple API for building agents:
-
-```python
-from adk.core import Agent
-from adk.tools import tool
-
-@tool
-def my_custom_tool(query: str) -> str:
-    """A custom tool that processes queries."""
-    return f"Processed: {query}"
-
-# Create an agent with custom tools
-agent = Agent(
-    name="my_agent",
-    tools=[my_custom_tool],
-    description="An example ADK agent"
-)
-
-# Use the agent
-result = agent.run("Hello, ADK!")
+# Install with development dependencies
+pip install -e ".[dev]"
+pytest tests/  # Run test suite
 ```
 
 ## 🔧 Configuration
 
 ### Environment Variables
 
-ADK applications use environment variables for configuration:
+Create a `.env` file or set environment variables:
 
 ```bash
 # Core ADK Configuration
@@ -126,98 +252,193 @@ ADK_MODEL_PROVIDER=vertex_ai  # or 'openai', 'anthropic', etc.
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 
-# Vertex AI Configuration (for Google Cloud users)
+# Vertex AI Configuration
 VERTEX_AI_PROJECT_ID=your-project-id
 VERTEX_AI_LOCATION=us-central1
 
-# OpenAI Configuration (alternative)
+# Alternative: OpenAI
 OPENAI_API_KEY=your-openai-key
 ```
 
-### Agent Configuration
-
-Agents can be configured through code or YAML files:
+### Basic Agent Example
 
 ```python
 from adk.core import Agent
+from adk.tools import tool
 
+@tool
+def analyze_data(data: str) -> str:
+    """Analyzes input data and returns insights."""
+    return f"Analysis complete: {len(data)} characters processed"
+
+# Create and configure agent
 agent = Agent(
-    name="my_agent",
-    model="gemini-pro",  # or any supported model
-    tools=[],  # List of tools to enable
-    instructions="You are a helpful assistant.",
+    name="data_analyst",
+    model="gemini-pro",
+    tools=[analyze_data],
+    instructions="You are a helpful data analyst.",
     max_iterations=10,
     timeout=60
 )
+
+# Use the agent
+result = agent.run("Analyze this dataset: [1,2,3,4,5]")
+print(result)
 ```
 
-## 🏗️ Key Concepts
+## 🧠 Core Concepts
 
-### Agents
-Intelligent entities that can reason, plan, and use tools to accomplish tasks. ADK agents support:
-- **Multi-step reasoning** - Break down complex tasks
-- **Tool orchestration** - Use multiple tools in sequence
-- **Memory management** - Remember context across conversations
-- **Error handling** - Gracefully handle failures and retries
+<details>
+<summary><strong>🤖 Agents</strong> - Intelligent entities with reasoning capabilities</summary>
 
-### Tools
-Functions that agents can call to interact with external systems:
-- **API integrations** - REST APIs, GraphQL, webhooks
-- **Data processing** - File manipulation, data analysis
-- **Cloud services** - Google Cloud, AWS, Azure integrations
-- **Custom functions** - Your own business logic
+**Agents** are the core of ADK - intelligent entities that can:
+- **Multi-step reasoning**: Break down complex tasks into manageable steps
+- **Tool orchestration**: Use multiple tools in sequence to accomplish goals  
+- **Memory management**: Remember context across conversations and sessions
+- **Error handling**: Gracefully handle failures with retries and fallbacks
+- **Learning**: Improve performance based on feedback and experience
 
-### Services
-Modular components that provide specific functionality:
-- **Model services** - LLM providers (Vertex AI, OpenAI, etc.)
-- **Memory services** - Conversation and context storage
-- **Logging services** - Structured logging and monitoring
-- **Health services** - System monitoring and diagnostics
+```python
+agent = Agent(
+    name="security_analyst", 
+    model="gemini-pro",
+    tools=[scan_vulnerabilities, analyze_logs, generate_report]
+)
+```
 
-## 🚀 Deployment
+</details>
 
-### Local Development
+<details>
+<summary><strong>🔧 Tools</strong> - Functions that extend agent capabilities</summary>
+
+**Tools** enable agents to interact with external systems:
+- **API integrations**: REST APIs, GraphQL, webhooks
+- **Data processing**: File manipulation, database queries, data analysis
+- **Cloud services**: Google Cloud, AWS, Azure native integrations  
+- **Custom functions**: Your domain-specific business logic
+
+```python
+@tool
+def query_database(sql: str) -> List[Dict]:
+    """Execute SQL query and return results."""
+    return db.execute(sql).fetchall()
+```
+
+</details>
+
+<details>
+<summary><strong>⚙️ Services</strong> - Modular components for enterprise functionality</summary>
+
+**Services** provide foundational capabilities:
+- **Model services**: LLM providers (Vertex AI, OpenAI, Anthropic)
+- **Memory services**: Conversation and context persistence
+- **Integration services**: Authentication, logging, monitoring
+- **Health services**: System diagnostics and performance metrics
+
+</details>
+
+## 🚀 Deployment Options
+
+<table>
+<tr>
+<th>Environment</th>
+<th>Use Case</th>
+<th>Setup</th>
+</tr>
+<tr>
+<td><strong>🖥️ Local Development</strong></td>
+<td>Development, testing, debugging</td>
+<td>
+
 ```bash
-# Install ADK
 pip install -e .
-
-# Run the security agent sample
-cd contributing/samples/security_agent
 python run.py
 ```
 
-### Docker Deployment
+</td>
+</tr>
+<tr>
+<td><strong>🐳 Docker</strong></td>
+<td>Containerized deployment</td>
+<td>
+
 ```bash
-# Build from any ADK project
-docker build -t my-adk-agent .
-docker run -p 8000:8000 my-adk-agent
+docker build -t adk-app .
+docker run -p 8000:8000 adk-app
 ```
 
-### Cloud Deployment
-ADK applications are cloud-ready and support:
-- **Google Cloud Run** - Serverless container deployment
-- **Kubernetes** - Container orchestration at scale
-- **Docker Compose** - Multi-service local deployment
+</td>
+</tr>
+<tr>
+<td><strong>☁️ Cloud Native</strong></td>
+<td>Production scaling</td>
+<td>
 
-## 🤝 Contributing
+- Google Cloud Run
+- Kubernetes  
+- Docker Compose
 
-We welcome contributions to ADK! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details on how to:
-- Report bugs and request features
-- Submit code changes and improvements  
-- Add new tools and integrations
-- Improve documentation
+</td>
+</tr>
+</table>
+
+## 📖 Documentation
+
+### 📚 Core Documentation
+- **[Project Structure](docs/PROPOSED_STRUCTURE.md)** - Project organization and structure
+- **[Architecture Guide](contributing/samples/security_agent/ARCHITECTURE.md)** - System design and principles  
+- **[Deployment Guide](deploy/README.md)** - Production deployment strategies
+- **[API Reference](contributing/samples/security_agent/API_REFERENCE.md)** - Complete API documentation
+
+### 🛠️ Component Guides
+- **[Agent Development](docs/agents/README.md)** - Creating intelligent agents
+- **[Tool Integration](docs/tools/README.md)** - Building custom tools
+- **[Service Architecture](docs/services/README.md)** - Modular service design
+- **[Testing & Evaluation](evaluation/README.md)** - Agent testing frameworks
+
+### 🎯 Use Case Examples
+- **[Security Analysis](contributing/samples/security_agent/README.md)** - GCP security evaluation
+- **[API Discovery](gcp_api_explorer/README.md)** - Cloud API exploration
+- **[Custom Agents](docs/examples/)** - Agent development tutorials
+
+## 👥 Community & Support
+
+<div align="center">
+
+[![GitHub Issues](https://img.shields.io/github/issues/google/adk-python.svg)](https://github.com/google/adk-python/issues)
+[![GitHub Discussions](https://img.shields.io/github/discussions/google/adk-python.svg)](https://github.com/google/adk-python/discussions)
+[![Contributing](https://img.shields.io/badge/Contributing-Welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+</div>
+
+### 🤝 Contributing
+
+We welcome contributions! Here's how to get started:
+
+1. **🐛 Report Issues**: Use [GitHub Issues](https://github.com/google/adk-python/issues) for bugs and feature requests
+2. **💬 Join Discussions**: Participate in [GitHub Discussions](https://github.com/google/adk-python/discussions)
+3. **📝 Improve Docs**: Help improve documentation and examples
+4. **🔧 Code Contributions**: Submit PRs following our [Contributing Guide](CONTRIBUTING.md)
+
+### 📞 Support Channels
+
+- **📖 Documentation**: [docs.adk.dev](https://docs.adk.dev) (coming soon)
+- **💬 Discussions**: [GitHub Discussions](https://github.com/google/adk-python/discussions)
+- **🐛 Issues**: [GitHub Issues](https://github.com/google/adk-python/issues)
+- **📧 Email**: adk-support@google.com
 
 ## 📄 License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
-## 🔗 Resources
-
-- **Documentation**: [docs.adk.dev](https://docs.adk.dev) (coming soon)
-- **GitHub**: [github.com/google/adk-python](https://github.com/google/adk-python)
-- **Issues**: Report bugs and request features on GitHub Issues
-- **Discussions**: Join the community discussions
-
 ---
 
-**Ready to build your first ADK agent?** Start with the [GCP Security Agent sample](contributing/samples/security_agent/) to see ADK in action!
+<div align="center">
+
+**Ready to build intelligent agents?**
+
+[🚀 Get Started](#-quick-start) • [📖 Read the Docs](#-documentation) • [💬 Join the Community](#-community--support)
+
+**⭐ Star this repo to stay updated!**
+
+</div>

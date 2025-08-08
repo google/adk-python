@@ -21,15 +21,17 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 import re
 import requests
+from .compute_api_service import ComputeAPIService
 
 logger = logging.getLogger(__name__)
 
 class ADKChatService:
     """Advanced ADK Chat Service with real GCP tool integration."""
     
-    def __init__(self, project_id: str):
+    def __init__(self, project_id: str, credentials=None):
         self.project_id = project_id
         self.backend_url = "http://localhost:8000/api/v1"  # Use existing backend endpoints
+        self.compute_api = ComputeAPIService(credentials=credentials, project_id=project_id)
         
         # Query patterns for intelligent routing
         self.query_patterns = {
@@ -530,59 +532,89 @@ class ADKChatService:
             }
     
     async def _handle_asset_inventory_query(self, message: str, context: Dict) -> Dict[str, Any]:
-        """Handle asset inventory queries."""
-        response = f"""📦 **Asset Inventory for {self.project_id}**
+        """Handle asset inventory queries with real GCP API data."""
+        try:
+            logger.info(f"🔍 Fetching real compute inventory for project: {self.project_id}")
+            
+            # Get real compute inventory data
+            compute_data = await self.compute_api.get_compute_inventory()
+            
+            # Format the response with real data
+            response = self.compute_api.format_inventory_response(compute_data)
+            
+            # Add mock data for other resources (can be implemented similarly)
+            response += f"""
 
-🖥️ **Compute Resources:**
-• **VM Instances**: 12 (8 running, 4 stopped)
-• **Instance Groups**: 3 managed groups
-• **Load Balancers**: 2 HTTP(S) load balancers
-• **App Engine**: 1 standard environment
+💾 **Storage Resources:** (Static - implement with Cloud Asset Inventory API)
+• **Cloud Storage**: Checking buckets...
+• **Persistent Disks**: Querying disk inventory...
+• **Cloud SQL**: Analyzing database instances...
 
-💾 **Storage Resources:**
-• **Cloud Storage**: 8 buckets (2.4 TB total)
-• **Persistent Disks**: 15 disks (500 GB total)
-• **Cloud SQL**: 2 instances (MySQL, PostgreSQL)
-• **Cloud Filestore**: 1 instance (1 TB)
+🌐 **Networking:** (Static - implement with Compute API)
+• **VPC Networks**: Analyzing network topology...
+• **Firewall Rules**: Reviewing security rules...
 
-🌐 **Networking:**
-• **VPC Networks**: 3 custom networks
-• **Firewall Rules**: 12 rules (2 need review)
-• **Cloud NAT**: 2 NAT gateways
-• **VPN Tunnels**: 1 active tunnel
+🔐 **Security & Identity:** (Static - implement with IAM API)  
+• **Service Accounts**: Auditing accounts...
+• **IAM Policies**: Analyzing permissions...
 
-🔐 **Security & Identity:**
-• **Service Accounts**: 8 accounts
-• **IAM Policies**: 45 role bindings
-• **Cloud KMS**: 5 encryption keys
-• **Secret Manager**: 12 secrets
-
-📊 **Cost Analysis:**
-• **Monthly Spend**: $1,247
-• **Top Cost Drivers**: Compute (60%), Storage (25%), Networking (15%)
-• **Optimization Potential**: 15-20% savings possible
-
-⚠️ **Resource Alerts:**
-• 2 VM instances running with low utilization (<10%)
-• 1 storage bucket with public access
-• 3 unused persistent disks
-"""
-        
-        return {
-            "success": True,
-            "response": response,
-            "suggestions": [
-                "Show me underutilized resources",
-                "Help me optimize costs",
-                "Review security settings for public resources"
-            ],
-            "data": {
-                "total_resources": 67,
-                "monthly_cost": 1247,
-                "optimization_potential": 20,
-                "security_alerts": 3
+⚡ **Real-time Data**: This compute inventory is live from Google Cloud APIs!
+🔄 **Last Updated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}"""
+            
+            # Calculate totals from real data
+            vm_total = compute_data.get('vm_instances', {}).get('total', 0)
+            lb_total = compute_data.get('load_balancers', {}).get('total', 0)
+            
+            return {
+                "success": True,
+                "response": response,
+                "suggestions": [
+                    "Show me VM instance details",
+                    "Check load balancer configurations", 
+                    "Analyze compute resource utilization"
+                ],
+                "data": {
+                    "vm_instances": vm_total,
+                    "load_balancers": lb_total,
+                    "app_engine": compute_data.get('app_engine', {}).get('exists', False),
+                    "api_calls_made": [
+                        "compute.instances.list",
+                        "compute.instanceGroups.list", 
+                        "compute.forwardingRules.list",
+                        "appengine.apps.get"
+                    ],
+                    "data_source": "live_gcp_apis"
+                }
             }
-        }
+            
+        except Exception as e:
+            logger.error(f"Error getting real compute inventory: {e}")
+            # Fallback to mock data with error indicator
+            return {
+                "success": False,
+                "response": f"""⚠️ **Unable to fetch live compute inventory**
+
+**Error**: {str(e)}
+
+**Fallback Data** (for demonstration):
+🖥️ **Compute Resources:**
+• **VM Instances**: Unable to query (API error)
+• **Instance Groups**: Unable to query (API error)  
+• **Load Balancers**: Unable to query (API error)
+• **App Engine**: Unable to query (API error)
+
+💡 **To Fix**: Check Google Cloud credentials and API permissions.
+🔧 **Required APIs**: Compute Engine API, App Engine Admin API""",
+                "suggestions": [
+                    "Check API credentials",
+                    "Verify Compute Engine API is enabled",
+                    "Review IAM permissions"
+                ],
+                "data": {
+                    "error": str(e),
+                    "data_source": "fallback_mock_data"
+                }
+            }
     
     async def _handle_general_query(self, message: str, context: Dict) -> Dict[str, Any]:
         """Handle general queries with intelligent routing suggestions."""
@@ -643,6 +675,6 @@ Some examples of what you can ask:
     
 
 # Service factory function
-def create_adk_chat_service(project_id: str) -> ADKChatService:
+def create_adk_chat_service(project_id: str, credentials=None) -> ADKChatService:
     """Create ADK Chat Service instance."""
-    return ADKChatService(project_id)
+    return ADKChatService(project_id, credentials=credentials)

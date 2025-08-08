@@ -47,3 +47,5 @@ a2a
 jsonschema
 litellm
 google-cloud-bigquery
+google-cloud-compute
+google-cloud-appengine

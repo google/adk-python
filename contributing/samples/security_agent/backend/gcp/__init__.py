@@ -1,1 +1,0 @@
-"""GCP feature module."""

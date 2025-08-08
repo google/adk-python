@@ -1,50 +1,82 @@
-# ADK Agent Evaluation Framework
+# 📊 ADK Agent Evaluation Framework
 
-This directory contains a comprehensive agent evaluation system built using Google ADK evaluation patterns and frameworks.
+<div align="center">
 
-## Overview
+[![Status](https://img.shields.io/badge/Status-Beta-yellow.svg)]()
+[![ADK](https://img.shields.io/badge/Built%20with-ADK-blue.svg)]()
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://python.org)
 
-The evaluation framework provides:
+**Comprehensive agent testing and benchmarking system**
 
-- **Multi-metric evaluation**: Tool trajectory, response quality, and security-specific metrics
-- **Standardized datasets**: Security-focused evaluation test cases
-- **Automated benchmarking**: Performance and accuracy measurements
-- **Integration with ADK**: Built on google.adk.evaluation patterns
-- **Extensible architecture**: Easy to add new metrics and evaluators
+[🚀 Quick Start](#-quick-start) • [📖 Usage](#-usage) • [📊 Metrics](#-metrics) • [⚙️ Configuration](#-configuration)
 
-## Structure
+</div>
 
-```
-evaluation/
-├── README.md
-├── config/
-│   ├── evaluation_config.yaml
-│   └── test_config.json
-├── datasets/
-│   ├── security_agent_eval.json
-│   ├── vulnerability_assessment.test.json
-│   ├── compliance_check.test.json
-│   └── incident_response.test.json
-├── evaluators/
-│   ├── __init__.py
-│   ├── security_evaluator.py
-│   ├── compliance_evaluator.py
-│   └── performance_evaluator.py
-├── metrics/
-│   ├── __init__.py
-│   ├── security_metrics.py
-│   └── custom_metrics.py
-├── runners/
-│   ├── __init__.py
-│   ├── evaluation_runner.py
-│   └── batch_evaluator.py
-└── results/
-    └── reports/
+---
+
+## 🎯 Overview
+
+A comprehensive agent evaluation system built using Google ADK evaluation patterns and frameworks, providing standardized testing and benchmarking capabilities for intelligent agents.
+
+### ✨ Key Features
+
+- **📊 Multi-metric Evaluation** - Tool trajectory, response quality, and security-specific metrics
+- **📋 Standardized Datasets** - Security-focused evaluation test cases  
+- **🔄 Automated Benchmarking** - Performance and accuracy measurements
+- **🧠 ADK Integration** - Built on google.adk.evaluation patterns
+- **🔧 Extensible Architecture** - Easy to add new metrics and evaluators
+
+## 🚀 Quick Start
+
+```bash
+# Navigate to evaluation framework
+cd evaluation/
+
+# Install dependencies  
+pip install -r requirements.txt
+
+# Run agent evaluation
+python -m runners.evaluation_runner --agent security_agent
 ```
 
-## Usage
+## 📁 Project Structure
 
-### Quick Start
+<table>
+<tr>
+<th>Component</th>
+<th>Location</th> 
+<th>Purpose</th>
+</tr>
+<tr>
+<td><strong>📋 Datasets</strong></td>
+<td><code>datasets/</code></td>
+<td>Test cases and evaluation scenarios</td>
+</tr>
+<tr>
+<td><strong>🧪 Evaluators</strong></td>
+<td><code>evaluators/</code></td>
+<td>Metric calculation and assessment logic</td>
+</tr>
+<tr>
+<td><strong>📊 Metrics</strong></td>
+<td><code>metrics/</code></td>
+<td>Custom metrics and scoring functions</td>
+</tr>
+<tr>
+<td><strong>🏃 Runners</strong></td>
+<td><code>runners/</code></td>
+<td>Execution orchestration and batch processing</td>
+</tr>
+<tr>
+<td><strong>⚙️ Config</strong></td>
+<td><code>config/</code></td>
+<td>Evaluation criteria and test configuration</td>
+</tr>
+</table>
+
+## 📖 Usage
+
+### Basic Agent Evaluation
 
 ```python
 from evaluation.runners.evaluation_runner import AgentEvaluationRunner
@@ -55,9 +87,12 @@ results = await runner.evaluate_agent(
     agent_module="agents.security_agent",
     eval_dataset_dir="evaluation/datasets"
 )
+
+print(f"Overall Score: {results.overall_score}")
+print(f"Tool Trajectory: {results.tool_trajectory_score}")
 ```
 
-### Custom Evaluation
+### Custom Security Evaluation
 
 ```python
 from evaluation.evaluators.security_evaluator import SecurityEvaluator

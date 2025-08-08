@@ -202,6 +202,161 @@ Thumbs.db
 .nfs*
 
 # =============================================================================
+# Additional Development Files
+# =============================================================================
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+
+# Editor specific
+.vscode/
+.idea/
+*.sublime-*
+*.code-workspace
+
+# Generated documentation
+_build/
+build/
+site/
+.sphinx/
+
+# Pytest
+.pytest_cache/
+pytest.xml
+test-results.xml
+
+# Coverage reports
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Profiling
+*.prof
+*.profile
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# =============================================================================
+# Additional AI/ML Files
+# =============================================================================
+# Model files
+*.h5
+*.pkl
+*.pickle
+*.joblib
+*.model
+*.weights
+models/
+checkpoints/
+
+# Data files
+*.csv
+*.parquet
+*.feather
+data/
+datasets/
+raw_data/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# =============================================================================
+# Additional Logs and Runtime
+# =============================================================================
+# More specific log patterns
+*.log.*
+logs/
+log/
+*.access.log
+*.error.log
+*.debug.log
+*.warn.log
+*.info.log
+
+# Runtime directories
+run/
+var/
+tmp/
+temp/
+
+# Lock files
+*.lock
+Pipfile.lock
+
+# =============================================================================
+# Development Tools
+# =============================================================================
+# Linting
+.eslintcache
+.stylelintcache
+.pylintrc.local
+
+# Testing
+.tox/
+.nox/
+.coverage.*
+nosetests.xml
+pytest_cache/
+
+# Monitoring/profiling
+.monitor/
+.profile/
+profile_*
+
+# =============================================================================
+# Cloud and Deployment Specific  
+# =============================================================================
+# Terraform
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Kubernetes
+*.kubeconfig
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Cloud Build
+cloudbuild-local.yaml
+
+# =============================================================================
+# Additional Project-Specific
+# =============================================================================
+# Organization summaries (temporary)
+ORGANIZATION_SUMMARY.md
+CLEANUP_*.md
+TODO_INTERNAL.md
+NOTES_*.md
+
+# Personal assistant agent (if created outside samples)
+/personal-assistant-agent
+contributing/samples/personal_assistant_agent
+
+# Crush tool (if used)
+.crush/
+
+# Evaluation results
+*.evalset.json
+evaluation_results/
+benchmarks/
+
+# =============================================================================
 # Docker
 # =============================================================================
 .dockerignore
@@ -299,6 +454,22 @@ GRAPH_TD_INTEGRATION_GUIDE.md
 .claude/
 .anthropic/
 
+# Additional AI assistant directories
+.roomodes/
+.roomodes
+
+# Cursor AI IDE
+.cursorrules
+**/.cursorrules
+
+# Roo AI assistant
+.roo
+**/.roo
+
+# Shell history
+.history
+**/.history
+
 # Assistant generated documentation
 *_generated.md
 *_assistant.md
@@ -314,6 +485,77 @@ orchestration_*
 graph_td_*
 *graph_td*
 00~*
+
+# =============================================================================
+# Python Development Specific
+# =============================================================================
+# Pip
+pip-log.txt
+pip-delete-this-directory.txt
+.pip/
+
+# PyEnv
+.python-version
+
+# Poetry
+poetry.lock
+
+# Conda
+environment.yml
+conda-env.yml
+
+# Setuptools
+*.egg
+*.egg-info/
+.eggs/
+
+# Wheel
+*.whl
+
+# =============================================================================
+# Additional IDE/Editor Files
+# =============================================================================
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Vim
+*.swp
+*.swo
+*.un~
+Session.vim
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# =============================================================================
+# Additional Cloud/Infrastructure
+# =============================================================================
+# AWS
+.aws/
+*.pem
+
+# Azure
+.azure/
+
+# Local environment overrides
+.env.local
+.env.*.local
 
 # =============================================================================
 # Keep Example Files

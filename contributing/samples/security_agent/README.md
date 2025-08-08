@@ -1,6 +1,79 @@
 # 🛡️ GCP Security Agent
 
-A comprehensive, modular security evaluation platform that provides advanced security analysis capabilities for Google Cloud Platform (GCP) environments. Built with a modern, domain-driven architecture and featuring AI-powered security insights through ADK (Agent Development Kit) integration.
+<div align="center">
+
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-green.svg)]()
+[![ADK](https://img.shields.io/badge/Built%20with-ADK-blue.svg)]()
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://python.org)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](../../../LICENSE)
+
+**Comprehensive security evaluation platform for Google Cloud Platform**
+
+[🚀 Quick Start](#-quick-start) • [📖 Documentation](#-documentation) • [🏗️ Architecture](#-architecture) • [⚙️ Services](#-modular-service-architecture)
+
+</div>
+
+---
+
+## 📋 Table of Contents
+
+- [Overview](#-overview)
+- [Quick Start](#-quick-start)
+- [Key Features](#-key-features)  
+- [Architecture](#-architecture)
+- [Installation](#-installation)
+- [Configuration](#-configuration)
+- [Services](#-modular-service-architecture)
+- [API Reference](#-api--networking)
+- [Development](#-development)
+- [Troubleshooting](#-troubleshooting)
+
+## 🎯 Overview
+
+A comprehensive, modular security evaluation platform that provides advanced security analysis capabilities for Google Cloud Platform (GCP) environments. Built with modern, domain-driven architecture and featuring AI-powered security insights through ADK integration.
+
+### ✨ Key Features
+
+- **🛡️ Multi-layered Security Analysis** - Real-time risk assessment & vulnerability scanning
+- **🤖 AI-Powered Assistant** - Intelligent security recommendations with ADK integration  
+- **🔐 Advanced IAM Analysis** - Deep permissions analysis & policy compliance
+- **📊 Live Monitoring** - Performance dashboards with health monitoring
+- **🏗️ Clean Architecture** - Well-organized codebase with clear separation of concerns
+- **📋 Compliance Frameworks** - SOC2, ISO27001, GDPR evaluation
+
+## 🚀 Quick Start
+
+**Deploy the entire security agent with a single command:**
+
+```bash
+# Clone and navigate
+git clone https://github.com/google/adk-python.git
+cd adk-python/contributing/samples/security_agent
+
+# One-command deployment
+python run.py
+```
+
+**Access Points:**
+- 🌐 **Frontend**: http://localhost:8501
+- 🔧 **Backend API**: http://localhost:8000/docs
+- ⚙️ **Service Management**: http://localhost:8501 → Service Management
+
+<details>
+<summary><strong>📋 System Requirements</strong></summary>
+
+### Minimum Requirements
+- **Docker** (for containerized deployment)
+- **4GB RAM** (8GB recommended)
+- **2GB disk space** 
+- **Internet connection** for package installation
+
+### Recommended Requirements  
+- **8GB RAM**
+- **5GB disk space**
+- **Google Cloud Project** (for full GCP integration)
+
+</details>
 
 ## 🏗️ Architecture Overview
 
@@ -107,89 +180,191 @@ graph TB
     class GCP,ADK,VertexAI external
 ```
 
-## 🚀 Quick Start
-
-**Deploy the entire security agent with a single command:**
-
-```bash
-python run.py
-```
-
-That's it! The script will:
-- ✅ Check dependencies and setup environment
-- ✅ Start modular backend with service management
-- ✅ Start frontend with service control UI
-- ✅ Open browser tabs automatically
-- ✅ Enable/disable services as needed
-
-**Access Points:**
-- 🌐 **Frontend**: http://localhost:8501
-- 🔧 **Backend API**: http://localhost:8000
-- 📚 **API Documentation**: http://localhost:8000/docs
-- ⚙️ **Service Management**: http://localhost:8501 → Service Management
-
 **Deployment Options:**
+
+<details>
+<summary><strong>🚀 Deployment Options</strong></summary>
+
 ```bash
 python run.py                    # Modular architecture (default)
-python run.py --legacy           # Legacy monolithic backend
+python run.py --legacy           # Legacy monolithic backend  
 python run.py --docker           # Docker container deployment
 python run.py --backend-only     # Backend server only
 python run.py --frontend-only    # Frontend only
 ```
 
-## 📋 System Requirements
+The script automatically:
+- ✅ Checks dependencies and sets up environment
+- ✅ Starts modular backend with service management
+- ✅ Launches frontend with service control UI
+- ✅ Opens browser tabs automatically
+- ✅ Enables gradual service activation
 
-### Minimum Requirements
-- **Docker**
-- **4GB RAM** (8GB recommended)
-- **2GB disk space**
-- **Internet connection** for package installation
+</details>
 
-### Recommended Requirements
-- **8GB RAM**
-- **5GB disk space**
-- **Google Cloud Project** (for Vertex AI features)
+## ⚡ Installation
 
-## 🏗️ Modular Service Architecture
+### Option 1: Quick Start (Recommended)
 
-The application features a **revolutionary modular service architecture** that allows users to enable/disable individual services independently. This prevents service failures from breaking the entire agent and provides granular control during setup.
+```bash
+# Clone and run
+git clone https://github.com/google/adk-python.git
+cd adk-python/contributing/samples/security_agent
+python run.py
+```
 
-### 🔑 Key Benefits
+### Option 2: Manual Setup
 
-- **🛡️ Fault Isolation**: Services can fail independently without affecting others
-- **⚙️ Enable/Disable Control**: Turn services on/off through web UI
-- **🏥 Health Monitoring**: Real-time service health checks and status
-- **📊 Service Management**: Complete service lifecycle management
-- **🔄 Dependency Management**: Automatic service dependency resolution
-- **💾 State Persistence**: Service configurations saved across restarts
+<details>
+<summary><strong>📝 Step-by-Step Manual Installation</strong></summary>
 
-### 🔧 Available Services
+1. **Prerequisites**
+   ```bash
+   # Install Python 3.8+, Docker, and Google Cloud SDK (optional)
+   python --version  # Should be 3.8+
+   docker --version
+   ```
 
-The system includes **16 modular services** organized by functionality:
+2. **Environment Setup**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # Windows: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
 
-#### **Core Services** (Always Required)
-- **🛡️ Security Service**: Core security evaluation and scanning
-- **🔧 GCP Service**: Google Cloud Platform integration
-- **🤖 Agent Service**: AI-powered security agent
+3. **Configuration**
+   ```bash
+   # Create .env file
+   cp .env.example .env
+   # Edit .env with your settings
+   ```
 
-#### **Security & Compliance Services**
-- **🔐 IAM Analysis**: Identity and Access Management policy analysis
-- **📋 Compliance**: Multi-framework compliance checking (SOC2, ISO27001, GDPR, etc.)
-- **🚨 Threat Intelligence**: Vulnerability and threat analysis
-- **🔍 Security Analytics**: BigQuery-based security analytics
-- **📚 Security Knowledge**: Vertex AI Search integration
+4. **Launch Services**
+   ```bash
+   # Terminal 1: Backend
+   cd backend && uvicorn main:app --host 0.0.0.0 --port 8000
 
-#### **Monitoring & Operations Services**
-- **📊 Cloud Logging**: Google Cloud Logging integration
-- **📈 Performance Monitoring**: System performance metrics
-- **🔍 Distributed Tracing**: OpenTelemetry with Cloud Trace
-- **🚨 Incident Response**: Security incident management
+   # Terminal 2: Frontend  
+   cd frontend && streamlit run main_app.py --server.port 8501
+   ```
 
-#### **Integration Services**
-- **📄 Documentation**: API documentation scraping
-- **📋 MSA Analysis**: Microsoft Service Agreement parsing
-- **🔗 API Hub**: Google API Hub integration
-- **🎯 Recommendations**: AI-powered security recommendations
+</details>
+
+### Option 3: Docker Deployment
+
+```bash
+# Build and run with Docker
+docker build -t gcp-security-agent .
+docker run -p 8000:8000 -p 8501:8501 gcp-security-agent
+```
+
+## 🔧 Configuration
+
+### Environment Variables
+
+Create a `.env` file with your configuration:
+
+```bash
+# Google Cloud Configuration
+GOOGLE_CLOUD_PROJECT="your-project-id"
+GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+
+# ADK Configuration  
+ADK_EVALUATION_ENABLED="true"
+
+# Vertex AI (Enterprise Features)
+VERTEX_AI_PROJECT_ID="your-project-id"
+VERTEX_AI_LOCATION="us-central1"
+```
+
+<details>
+<summary><strong>🔧 Advanced Configuration Options</strong></summary>
+
+### Service Configuration
+
+The modular architecture uses `backend/config/services.json` to manage services:
+
+```json
+{
+  "services": {
+    "iam": {
+      "enabled_by_default": true,
+      "config": {
+        "cache_ttl": 300,
+        "max_users_per_scan": 100
+      }
+    },
+    "compliance": {
+      "enabled_by_default": true,
+      "config": {
+        "frameworks": ["SOC2", "ISO27001", "GDPR"]
+      }
+    }
+  }
+}
+```
+
+### API Management
+
+Control services programmatically:
+
+```bash
+# List services
+curl http://localhost:8000/api/v1/services/
+
+# Enable/disable service
+curl -X POST http://localhost:8000/api/v1/services/iam/enable
+curl -X POST http://localhost:8000/api/v1/services/iam/disable
+```
+
+</details>
+
+## 🏗️ Application Architecture
+
+The security agent follows a clean, organized architecture with clear separation of concerns:
+
+### 🔑 Core Components
+- **🎯 FastAPI Backend** - RESTful API with automatic documentation
+- **🌐 Streamlit Frontend** - Interactive web interface with real-time updates
+- **🤖 ADK Integration** - AI-powered agent capabilities
+- **☁️ GCP Integration** - Native Google Cloud Platform APIs
+
+### 📁 Project Structure
+
+<table>
+<tr>
+<th>Component</th>
+<th>Location</th>
+<th>Purpose</th>
+</tr>
+<tr>
+<td><strong>🔧 Backend APIs</strong></td>
+<td><code>backend/api/</code></td>
+<td>FastAPI endpoints for all features</td>
+</tr>
+<tr>
+<td><strong>🌐 Frontend UI</strong></td>
+<td><code>frontend/components/</code></td>
+<td>Streamlit components organized by feature</td>
+</tr>
+<tr>
+<td><strong>🤖 Agent Logic</strong></td>
+<td><code>agents/</code></td>
+<td>AI agents and tools</td>
+</tr>
+<tr>
+<td><strong>⚙️ Configuration</strong></td>
+<td><code>backend/config/</code></td>
+<td>Application and service configuration</td>
+</tr>
+</table>
+
+### 🎯 Key Features
+
+- **🛡️ Security Analysis** - IAM analysis, vulnerability scanning, compliance checking
+- **🤖 AI Assistant** - Interactive chat with security recommendations  
+- **📊 Monitoring** - Performance dashboards and health monitoring
+- **🔍 API Explorer** - GCP API discovery and testing tools
 
 ### Backend Structure (Modular Architecture)
 ```
