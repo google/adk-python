@@ -232,7 +232,7 @@ class BaseAgent(BaseModel):
       invalid_fields = set(update) - allowed_fields
       if invalid_fields:
         raise ValueError(
-            f'Cannot update non-existent fields in {self.__class__.__name__}:'
+            f'Cannot update nonexistent fields in {self.__class__.__name__}:'
             f' {invalid_fields}'
         )
 
