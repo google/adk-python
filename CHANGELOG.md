@@ -842,7 +842,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 ## 1.1.1
 
 ### Features
-* Add BigQuery first-party tools. See [here](https://github.com/google/adk-python/commit/d6c6bb4b2489a8b7a4713e4747c30d6df0c07961) for more details.
+* Add [BigQuery first-party tools](https://github.com/google/adk-python/commit/d6c6bb4b2489a8b7a4713e4747c30d6df0c07961).
 
 
 ## 1.1.0
