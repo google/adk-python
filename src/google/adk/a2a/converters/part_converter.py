@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-module containing utilities for conversion betwen A2A Part and Google GenAI Part
+module containing utilities for conversion between A2A Part and Google GenAI Part
 """
 
 from __future__ import annotations
