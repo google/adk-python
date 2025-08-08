@@ -16,7 +16,7 @@ import sys
 # Add the services directory to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'services'))
 
-from asset_inventory_service import GCPAssetInventoryService
+from services.asset_inventory_service import GCPAssetInventoryService
 
 # Minimal fallback implementation for ADK chat services
 def create_adk_chat_service(project_id):

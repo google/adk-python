@@ -12,10 +12,9 @@ google-cloud-service-usage
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
-google-cloud-storage
 google-cloud-asset
 google-cloud-compute
-google-cloud-sql
+google-cloud-storage
 google-cloud-monitoring
 opentelemetry-api
 opentelemetry-sdk
