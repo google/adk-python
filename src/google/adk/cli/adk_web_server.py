@@ -449,7 +449,7 @@ class AdkWebServer:
     self.extra_plugins = extra_plugins or []
     self.logo_text = logo_text
     self.logo_image_url = logo_image_url
-    # Internal propeties we want to allow being modified from callbacks.
+    # Internal properties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
