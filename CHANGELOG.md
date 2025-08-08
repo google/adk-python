@@ -813,7 +813,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 * Fix typos in README for sample bigquery_agent and oauth_calendar_agent ([9bdd813](https://github.com/google/adk-python/commit/9bdd813be15935af5c5d2a6982a2391a640cab23))
 * Make tool_call one span for telemetry and renamed to execute_tool ([999a7fe](https://github.com/google/adk-python/commit/999a7fe69d511b1401b295d23ab3c2f40bccdc6f))
 * Use media type in chat window. Remove isArtifactImage and isArtifactAudio reference ([1452dac](https://github.com/google/adk-python/commit/1452dacfeb6b9970284e1ddeee6c4f3cb56781f8))
-* Set output_schema correctly for LiteLllm ([6157db7](https://github.com/google/adk-python/commit/6157db77f2fba4a44d075b51c83bff844027a147))
+* Set output_schema correctly for LiteLlm ([6157db7](https://github.com/google/adk-python/commit/6157db77f2fba4a44d075b51c83bff844027a147))
 * Update pending event dialog style ([1db601c](https://github.com/google/adk-python/commit/1db601c4bd90467b97a2f26fe9d90d665eb3c740))
 * Remove the gap between event holder and image ([63822c3](https://github.com/google/adk-python/commit/63822c3fa8b0bdce2527bd0d909c038e2b66dd98))
 
