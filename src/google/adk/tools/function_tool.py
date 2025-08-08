@@ -171,7 +171,7 @@ class FunctionTool(BaseTool):
     # Before invoking the function, we check for if the list of args passed in
     # has all the mandatory arguments or not.
     # If the check fails, then we don't invoke the tool and let the Agent know
-    # that there was a missing a input parameter. This will basically help
+    # that there was a missing input parameter. This will basically help
     # the underlying model fix the issue and retry.
     mandatory_args = self._get_mandatory_args()
     missing_mandatory_args = [
