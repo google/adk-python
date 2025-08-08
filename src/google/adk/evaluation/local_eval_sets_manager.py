@@ -265,7 +265,7 @@ class LocalEvalSetsManager(EvalSetsManager):
   def get_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
   ) -> Optional[EvalCase]:
-    """Returns an EvalCase if found, otherwise None."""
+    """Returns an EvalCase if found; otherwise, None."""
     eval_set = self.get_eval_set(app_name, eval_set_id)
     if not eval_set:
       return None

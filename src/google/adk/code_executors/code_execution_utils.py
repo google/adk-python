@@ -122,7 +122,7 @@ class CodeExecutionUtils:
         the code blocks.
 
     Returns:
-      The first code block if found, otherwise None.
+      The first code block if found; otherwise, None.
     """
     if not content or not content.parts:
       return

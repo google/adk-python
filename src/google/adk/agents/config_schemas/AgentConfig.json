@@ -629,7 +629,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The producer of the content. Must be either 'user' or\n      'model'. Useful to set for multi-turn conversations, otherwise can be\n      empty. If role is not specified, SDK will determine the role.",
+          "description": "Optional. The producer of the content. Must be either 'user' or\n      'model'. Useful to set for multi-turn conversations; otherwise, can be\n      empty. If role is not specified, SDK will determine the role.",
           "title": "Role"
         }
       },

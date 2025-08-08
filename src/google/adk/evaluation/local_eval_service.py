@@ -367,7 +367,7 @@ class LocalEvalService(BaseEvalService):
   ) -> EvalStatus:
     final_eval_status = EvalStatus.NOT_EVALUATED
     # Go over the all the eval statuses and mark the final eval status as
-    # passed if all of them pass, otherwise mark the final eval status to
+    # passed if all of them pass; otherwise, mark the final eval status to
     # failed.
     for overall_eval_metric_result in overall_eval_metric_results:
       overall_eval_status = overall_eval_metric_result.eval_status
