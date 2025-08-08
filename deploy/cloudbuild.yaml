@@ -2,11 +2,12 @@
 steps:
   # Build the Docker image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA', '.', '-f', 'deploy/Dockerfile']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${_TAG}', './contributing/samples/security_agent']
+    dir: '.'
   
   # Push the Docker image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA']
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${_TAG}']
   
   # Deploy to Cloud Run
   - name: 'gcr.io/cloud-builders/gcloud'
@@ -14,7 +15,7 @@ steps:
       - 'run'
       - 'deploy'
       - '${_SERVICE_NAME}'
-      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${_TAG}'
       - '--region=${_REGION}'
       - '--platform=managed'
       - '--allow-unauthenticated'
@@ -26,10 +27,11 @@ steps:
       - '--min-instances=0'
       - '--set-env-vars=USE_LEGACY=true'
       - '--set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
+      - '--service-account=security-agent@$PROJECT_ID.iam.gserviceaccount.com'
 
 # Store images in Artifact Registry
 images:
-  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${_TAG}'
 
 # Set timeout for the entire build
 timeout: '1200s'
@@ -40,6 +42,7 @@ substitutions:
   _REPO_NAME: 'adk-security-agent'
   _IMAGE_NAME: 'security-agent'
   _SERVICE_NAME: 'security-agent'
+  _TAG: 'latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY
