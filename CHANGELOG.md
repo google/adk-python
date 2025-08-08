@@ -440,7 +440,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 
 ### Improvements
 
-* Add Github workflow config for the ADK Answering agent ([8dc0c94](https://github.com/google/adk-python/commit/8dc0c949afb9024738ff7ac1b2c19282175c3200))
+* Add GitHub workflow config for the ADK Answering agent ([8dc0c94](https://github.com/google/adk-python/commit/8dc0c949afb9024738ff7ac1b2c19282175c3200))
 * Import AGENT_CARD_WELL_KNOWN_PATH from adk instead of from a2a directly ([37dae9b](https://github.com/google/adk-python/commit/37dae9b631db5060770b66fce0e25cf0ffb56948))
 * Make `LlmRequest.LiveConnectConfig` field default to a factory ([74589a1](https://github.com/google/adk-python/commit/74589a1db7df65e319d1ad2f0676ee0cf5d6ec1d))
 * Update the prompt to make the ADK Answering Agent more objective ([2833030](https://github.com/google/adk-python/commit/283303032a174d51b8d72f14df83c794d66cb605))
@@ -1046,7 +1046,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 
 ### Miscellaneous Chores
 
-* Adds unit tests in Github action.
+* Adds unit tests in GitHub action.
 * Improves test coverage.
 * Various typo fixes.
 

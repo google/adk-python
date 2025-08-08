@@ -58,7 +58,7 @@ def get_pull_request_details(pr_number: int) -> str:
   """Get the details of the specified pull request.
 
   Args:
-    pr_number: number of the Github pull request.
+    pr_number: number of the GitHub pull request.
 
   Returns:
     The status of this request, with the details when successful.
@@ -162,7 +162,7 @@ def add_label_to_pr(pr_number: int, label: str) -> dict[str, Any]:
   """Adds a specified label on a pull request.
 
   Args:
-      pr_number: the number of the Github pull request
+      pr_number: the number of the GitHub pull request
       label: the label to add
 
   Returns:
@@ -175,7 +175,7 @@ def add_label_to_pr(pr_number: int, label: str) -> dict[str, Any]:
         f"Error: Label '{label}' is not an allowed label. Will not apply."
     )
 
-  # Pull Request is a special issue in Github, so we can use issue url for PR.
+  # Pull Request is a special issue in GitHub, so we can use issue url for PR.
   label_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{pr_number}/labels"
   )
@@ -197,7 +197,7 @@ def add_comment_to_pr(pr_number: int, comment: str) -> dict[str, Any]:
   """Add the specified comment to the given PR number.
 
   Args:
-    pr_number: the number of the Github pull request
+    pr_number: the number of the GitHub pull request
     comment: the comment to add
 
   Returns:
@@ -205,7 +205,7 @@ def add_comment_to_pr(pr_number: int, comment: str) -> dict[str, Any]:
   """
   print(f"Attempting to add comment '{comment}' to issue #{pr_number}")
 
-  # Pull Request is a special issue in Github, so we can use issue url for PR.
+  # Pull Request is a special issue in GitHub, so we can use issue url for PR.
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{pr_number}/comments"
   payload = {"body": comment}
 
@@ -225,7 +225,7 @@ root_agent = Agent(
     description="Triage ADK pull requests.",
     instruction=f"""
       # 1. Identity
-      You are a Pull Request (PR) triaging bot for the Github {REPO} repo with the owner {OWNER}.
+      You are a Pull Request (PR) triaging bot for the GitHub {REPO} repo with the owner {OWNER}.
 
       # 2. Responsibilities
       Your core responsibility includes:
