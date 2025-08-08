@@ -4083,7 +4083,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Number of search results to return per query. The default value is 10. The maximumm allowed value is 10.",
+          "description": "Optional. Number of search results to return per query. The default value is 10. The maximum allowed value is 10.",
           "title": "Maxresults"
         }
       },
