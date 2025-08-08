@@ -90,11 +90,11 @@ def complex_function_list_dict(
   raise ValueError("Wrong param")
 
 
-def repetive_call_1(param: str):
-  return f"Call repetive_call_2 tool with param {param + '_repetive'}"
+def repetitive_call_1(param: str):
+  return f"Call repetitive_call_2 tool with param {param + '_repetitive'}"
 
 
-def repetive_call_2(param: str):
+def repetitive_call_2(param: str):
   return param
 
 
@@ -194,8 +194,8 @@ root_agent = Agent(
         list_str_param_function,
         return_list_str_function,
         # complex_function_list_dict,
-        repetive_call_1,
-        repetive_call_2,
+        repetitive_call_1,
+        repetitive_call_2,
         test_case_retrieval,
         valid_rag_retrieval,
         invalid_rag_retrieval,
