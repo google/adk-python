@@ -26,7 +26,7 @@ import uuid
 
 try:
   from a2a.client import A2AClient
-  from a2a.client.client import A2ACardResolver  # Import A2ACardResolver
+  from a2a.client.card_resolver import A2ACardResolver
   from a2a.types import AgentCard
   from a2a.types import Message as A2AMessage
   from a2a.types import MessageSendParams as A2AMessageSendParams
@@ -35,7 +35,6 @@ try:
   from a2a.types import SendMessageRequest
   from a2a.types import SendMessageSuccessResponse
   from a2a.types import Task as A2ATask
-
 except ImportError as e:
   import sys
 
@@ -45,6 +44,12 @@ except ImportError as e:
     ) from e
   else:
     raise e
+
+try:
+  from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
+except ImportError:
+  # Fallback for older versions of a2a-sdk.
+  AGENT_CARD_WELL_KNOWN_PATH = "/.well-known/agent.json"
 
 from google.genai import types as genai_types
 import httpx
@@ -63,10 +68,17 @@ from ..flows.llm_flows.functions import find_matching_function_call
 from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 
+__all__ = [
+    "A2AClientError",
+    "AGENT_CARD_WELL_KNOWN_PATH",
+    "AgentCardResolutionError",
+    "RemoteA2aAgent",
+]
+
+
 # Constants
 A2A_METADATA_PREFIX = "a2a:"
 DEFAULT_TIMEOUT = 600.0
-
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -289,14 +301,14 @@ class RemoteA2aAgent(BaseAgent):
         ctx.session.events[-1], ctx, Role.user
     )
     if function_call_event.custom_metadata:
-      a2a_message.taskId = (
+      a2a_message.task_id = (
           function_call_event.custom_metadata.get(
               A2A_METADATA_PREFIX + "task_id"
           )
           if function_call_event.custom_metadata
           else None
       )
-      a2a_message.contextId = (
+      a2a_message.context_id = (
           function_call_event.custom_metadata.get(
               A2A_METADATA_PREFIX + "context_id"
           )
@@ -380,14 +392,14 @@ class RemoteA2aAgent(BaseAgent):
                 a2a_response.root.result, self.name, ctx
             )
             event.custom_metadata = event.custom_metadata or {}
-            if a2a_response.root.result.taskId:
+            if a2a_response.root.result.task_id:
               event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = (
-                  a2a_response.root.result.taskId
+                  a2a_response.root.result.task_id
               )
 
-          if a2a_response.root.result.contextId:
+          if a2a_response.root.result.context_id:
             event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
-                a2a_response.root.result.contextId
+                a2a_response.root.result.context_id
             )
 
         else:
@@ -461,19 +473,19 @@ class RemoteA2aAgent(BaseAgent):
           id=str(uuid.uuid4()),
           params=A2AMessageSendParams(
               message=A2AMessage(
-                  messageId=str(uuid.uuid4()),
+                  message_id=str(uuid.uuid4()),
                   parts=message_parts,
                   role="user",
-                  contextId=context_id,
+                  context_id=context_id,
               )
           ),
       )
 
-    logger.info(build_a2a_request_log(a2a_request))
+    logger.debug(build_a2a_request_log(a2a_request))
 
     try:
       a2a_response = await self._a2a_client.send_message(request=a2a_request)
-      logger.info(build_a2a_response_log(a2a_response))
+      logger.debug(build_a2a_response_log(a2a_response))
 
       event = await self._handle_a2a_response(a2a_response, ctx)
 

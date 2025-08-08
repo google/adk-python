@@ -14,7 +14,7 @@
 
 import random
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.models.lite_llm import LiteLlm
 
 

@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 import logging
 from typing import List
 from typing import Optional
 from typing import Union
 
+from ...auth.auth_credential import ServiceAccount
 from ..base_toolset import ToolPredicate
 from .google_api_toolset import GoogleApiToolset
 
@@ -29,11 +31,14 @@ class BigQueryToolset(GoogleApiToolset):
 
   def __init__(
       self,
-      client_id: str = None,
-      client_secret: str = None,
+      client_id: Optional[str] = None,
+      client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      service_account: Optional[ServiceAccount] = None,
   ):
-    super().__init__("bigquery", "v2", client_id, client_secret, tool_filter)
+    super().__init__(
+        "bigquery", "v2", client_id, client_secret, tool_filter, service_account
+    )
 
 
 class CalendarToolset(GoogleApiToolset):
@@ -41,11 +46,14 @@ class CalendarToolset(GoogleApiToolset):
 
   def __init__(
       self,
-      client_id: str = None,
-      client_secret: str = None,
+      client_id: Optional[str] = None,
+      client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      service_account: Optional[ServiceAccount] = None,
   ):
-    super().__init__("calendar", "v3", client_id, client_secret, tool_filter)
+    super().__init__(
+        "calendar", "v3", client_id, client_secret, tool_filter, service_account
+    )
 
 
 class GmailToolset(GoogleApiToolset):
@@ -53,11 +61,14 @@ class GmailToolset(GoogleApiToolset):
 
   def __init__(
       self,
-      client_id: str = None,
-      client_secret: str = None,
+      client_id: Optional[str] = None,
+      client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      service_account: Optional[ServiceAccount] = None,
   ):
-    super().__init__("gmail", "v1", client_id, client_secret, tool_filter)
+    super().__init__(
+        "gmail", "v1", client_id, client_secret, tool_filter, service_account
+    )
 
 
 class YoutubeToolset(GoogleApiToolset):
@@ -65,11 +76,14 @@ class YoutubeToolset(GoogleApiToolset):
 
   def __init__(
       self,
-      client_id: str = None,
-      client_secret: str = None,
+      client_id: Optional[str] = None,
+      client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      service_account: Optional[ServiceAccount] = None,
   ):
-    super().__init__("youtube", "v3", client_id, client_secret, tool_filter)
+    super().__init__(
+        "youtube", "v3", client_id, client_secret, tool_filter, service_account
+    )
 
 
 class SlidesToolset(GoogleApiToolset):
@@ -77,11 +91,14 @@ class SlidesToolset(GoogleApiToolset):
 
   def __init__(
       self,
-      client_id: str = None,
-      client_secret: str = None,
+      client_id: Optional[str] = None,
+      client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      service_account: Optional[ServiceAccount] = None,
   ):
-    super().__init__("slides", "v1", client_id, client_secret, tool_filter)
+    super().__init__(
+        "slides", "v1", client_id, client_secret, tool_filter, service_account
+    )
 
 
 class SheetsToolset(GoogleApiToolset):
@@ -89,9 +106,10 @@ class SheetsToolset(GoogleApiToolset):
 
   def __init__(
       self,
-      client_id: str = None,
-      client_secret: str = None,
+      client_id: Optional[str] = None,
+      client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      service_account: Optional[ServiceAccount] = None,
   ):
     super().__init__("sheets", "v4", client_id, client_secret, tool_filter)
 
@@ -101,8 +119,11 @@ class DocsToolset(GoogleApiToolset):
 
   def __init__(
       self,
-      client_id: str = None,
-      client_secret: str = None,
+      client_id: Optional[str] = None,
+      client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      service_account: Optional[ServiceAccount] = None,
   ):
-    super().__init__("docs", "v1", client_id, client_secret, tool_filter)
+    super().__init__(
+        "docs", "v1", client_id, client_secret, tool_filter, service_account
+    )

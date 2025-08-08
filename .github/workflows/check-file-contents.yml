@@ -70,7 +70,7 @@ jobs:
 
             # Use grep -L to find files that DO NOT contain the pattern.
             # This command will output a list of non-compliant files.
-            FILES_MISSING_IMPORT=$(grep -L 'from __future__ import annotations' $CHANGED_FILES)
+            FILES_MISSING_IMPORT=$(grep -L 'from __future__ import annotations' $CHANGED_FILES || true)
 
             # Check if the list of non-compliant files is empty
             if [ -z "$FILES_MISSING_IMPORT" ]; then

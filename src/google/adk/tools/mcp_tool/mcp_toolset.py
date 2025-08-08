@@ -21,12 +21,17 @@ from typing import Optional
 from typing import TextIO
 from typing import Union
 
+from pydantic import model_validator
+from typing_extensions import override
+
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
+from ..tool_configs import BaseToolConfig
+from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
 from .mcp_session_manager import SseConnectionParams
@@ -61,28 +66,27 @@ class MCPToolset(BaseToolset):
   that can be used by an agent. It properly implements the BaseToolset
   interface for easy integration with the agent framework.
 
-  Usage:
-  ```python
-  toolset = MCPToolset(
-      connection_params=StdioServerParameters(
-          command='npx',
-          args=["-y", "@modelcontextprotocol/server-filesystem"],
-      ),
-      tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
-  )
+  Usage::
 
-  # Use in an agent
-  agent = LlmAgent(
-      model='gemini-2.0-flash',
-      name='enterprise_assistant',
-      instruction='Help user accessing their file systems',
-      tools=[toolset],
-  )
+    toolset = MCPToolset(
+        connection_params=StdioServerParameters(
+            command='npx',
+            args=["-y", "@modelcontextprotocol/server-filesystem"],
+        ),
+        tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
+    )
 
-  # Cleanup is handled automatically by the agent framework
-  # But you can also manually close if needed:
-  # await toolset.close()
-  ```
+    # Use in an agent
+    agent = LlmAgent(
+        model='gemini-2.0-flash',
+        name='enterprise_assistant',
+        instruction='Help user accessing their file systems',
+        tools=[toolset],
+    )
+
+    # Cleanup is handled automatically by the agent framework
+    # But you can also manually close if needed:
+    # await toolset.close()
   """
 
   def __init__(
@@ -103,12 +107,12 @@ class MCPToolset(BaseToolset):
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
-        `StdioConnectionParams` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseConnectionParams` for a local/remote SSE server; or
-        `StreamableHTTPConnectionParams` for local/remote Streamable http
-        server. Note, `StdioServerParameters` is also supported for using local
-        mcp server (e.g. using `npx` or `python3` ), but it does not support
-        timeout, and we recommend to use `StdioConnectionParams` instead when
+        ``StdioConnectionParams`` for using local mcp server (e.g. using ``npx`` or
+        ``python3``); or ``SseConnectionParams`` for a local/remote SSE server; or
+        ``StreamableHTTPConnectionParams`` for local/remote Streamable http
+        server. Note, ``StdioServerParameters`` is also supported for using local
+        mcp server (e.g. using ``npx`` or ``python3`` ), but it does not support
+        timeout, and we recommend to use ``StdioConnectionParams`` instead when
         timeout is needed.
       tool_filter: Optional filter to select specific tools. Can be either: - A
         list of tool names to include - A ToolPredicate function for custom
@@ -179,3 +183,67 @@ class MCPToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
+
+  @override
+  @classmethod
+  def from_config(
+      cls: type[MCPToolset], config: ToolArgsConfig, config_abs_path: str
+  ) -> MCPToolset:
+    """Creates an MCPToolset from a configuration object."""
+    mcp_toolset_config = MCPToolsetConfig.model_validate(config.model_dump())
+
+    if mcp_toolset_config.stdio_server_params:
+      connection_params = mcp_toolset_config.stdio_server_params
+    elif mcp_toolset_config.stdio_connection_params:
+      connection_params = mcp_toolset_config.stdio_connection_params
+    elif mcp_toolset_config.sse_connection_params:
+      connection_params = mcp_toolset_config.sse_connection_params
+    elif mcp_toolset_config.streamable_http_connection_params:
+      connection_params = mcp_toolset_config.streamable_http_connection_params
+    else:
+      raise ValueError("No connection params found in MCPToolsetConfig.")
+
+    return cls(
+        connection_params=connection_params,
+        tool_filter=mcp_toolset_config.tool_filter,
+        auth_scheme=mcp_toolset_config.auth_scheme,
+        auth_credential=mcp_toolset_config.auth_credential,
+    )
+
+
+class MCPToolsetConfig(BaseToolConfig):
+  """The config for MCPToolset."""
+
+  stdio_server_params: Optional[StdioServerParameters] = None
+
+  stdio_connection_params: Optional[StdioConnectionParams] = None
+
+  sse_connection_params: Optional[SseConnectionParams] = None
+
+  streamable_http_connection_params: Optional[
+      StreamableHTTPConnectionParams
+  ] = None
+
+  tool_filter: Optional[List[str]] = None
+
+  auth_scheme: Optional[AuthScheme] = None
+
+  auth_credential: Optional[AuthCredential] = None
+
+  @model_validator(mode="after")
+  def _check_only_one_params_field(self):
+    param_fields = [
+        self.stdio_server_params,
+        self.stdio_connection_params,
+        self.sse_connection_params,
+        self.streamable_http_connection_params,
+    ]
+    populated_fields = [f for f in param_fields if f is not None]
+
+    if len(populated_fields) != 1:
+      raise ValueError(
+          "Exactly one of stdio_server_params, stdio_connection_params,"
+          " sse_connection_params, streamable_http_connection_params must be"
+          " set."
+      )
+    return self

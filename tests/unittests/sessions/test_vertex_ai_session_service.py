@@ -21,10 +21,10 @@ from typing import Tuple
 from unittest import mock
 
 from dateutil.parser import isoparse
-from google.adk.events import Event
-from google.adk.events import EventActions
-from google.adk.sessions import Session
-from google.adk.sessions import VertexAiSessionService
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.sessions.session import Session
+from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai import types
 import pytest
 
@@ -201,7 +201,13 @@ class MockApiClient:
         if match:
           session_id = match.group(2)
           if match.group(3):
-            return {'sessionEvents': MOCK_EVENT_JSON_3}
+            page_token = match.group(3)
+            if page_token == 'my_token':
+              response = {'sessionEvents': MOCK_EVENT_JSON_3}
+              response['nextPageToken'] = 'my_token2'
+              return response
+            else:
+              return {}
           events_tuple = self.event_dict.get(session_id, ([], None))
           response = {'sessionEvents': events_tuple[0]}
           if events_tuple[1]:

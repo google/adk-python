@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import base64
 from functools import cached_property
 import logging
 import os
@@ -45,8 +46,6 @@ __all__ = ["Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
 
-MAX_TOKEN = 1024
-
 
 class ClaudeRequest(BaseModel):
   system_instruction: str
@@ -70,6 +69,14 @@ def to_google_genai_finish_reason(
   return "FINISH_REASON_UNSPECIFIED"
 
 
+def _is_image_part(part: types.Part) -> bool:
+  return (
+      part.inline_data
+      and part.inline_data.mime_type
+      and part.inline_data.mime_type.startswith("image")
+  )
+
+
 def part_to_message_block(
     part: types.Part,
 ) -> Union[
@@ -80,7 +87,7 @@ def part_to_message_block(
 ]:
   if part.text:
     return anthropic_types.TextBlockParam(text=part.text, type="text")
-  if part.function_call:
+  elif part.function_call:
     assert part.function_call.name
 
     return anthropic_types.ToolUseBlockParam(
@@ -89,7 +96,7 @@ def part_to_message_block(
         input=part.function_call.args,
         type="tool_use",
     )
-  if part.function_response:
+  elif part.function_response:
     content = ""
     if (
         "result" in part.function_response.response
@@ -105,15 +112,45 @@ def part_to_message_block(
         content=content,
         is_error=False,
     )
-  raise NotImplementedError("Not supported yet.")
+  elif _is_image_part(part):
+    data = base64.b64encode(part.inline_data.data).decode()
+    return anthropic_types.ImageBlockParam(
+        type="image",
+        source=dict(
+            type="base64", media_type=part.inline_data.mime_type, data=data
+        ),
+    )
+  elif part.executable_code:
+    return anthropic_types.TextBlockParam(
+        type="text",
+        text="Code:```python\n" + part.executable_code.code + "\n```",
+    )
+  elif part.code_execution_result:
+    return anthropic_types.TextBlockParam(
+        text="Execution Result:```code_output\n"
+        + part.code_execution_result.output
+        + "\n```",
+        type="text",
+    )
+
+  raise NotImplementedError(f"Not supported yet: {part}")
 
 
 def content_to_message_param(
     content: types.Content,
 ) -> anthropic_types.MessageParam:
+  message_block = []
+  for part in content.parts or []:
+    # Image data is not supported in Claude for model turns.
+    if _is_image_part(part):
+      logger.warning("Image data is not supported in Claude for model turns.")
+      continue
+
+    message_block.append(part_to_message_block(part))
+
   return {
       "role": to_claude_role(content.role),
-      "content": [part_to_message_block(part) for part in content.parts or []],
+      "content": message_block,
   }
 
 
@@ -135,7 +172,8 @@ def content_block_to_part(
 def message_to_generate_content_response(
     message: anthropic_types.Message,
 ) -> LlmResponse:
-  logger.info(
+  logger.info("Received response from Claude.")
+  logger.debug(
       "Claude response: %s",
       message.model_dump_json(indent=2, exclude_none=True),
   )
@@ -205,13 +243,15 @@ class Claude(BaseLlm):
 
   Attributes:
     model: The name of the Claude model.
+    max_tokens: The maximum number of tokens to generate.
   """
 
   model: str = "claude-3-5-sonnet-v2@20241022"
+  max_tokens: int = 8192
 
-  @staticmethod
+  @classmethod
   @override
-  def supported_models() -> list[str]:
+  def supported_models(cls) -> list[str]:
     return [r"claude-3-.*", r"claude-.*-4.*"]
 
   @override
@@ -244,7 +284,7 @@ class Claude(BaseLlm):
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
-        max_tokens=MAX_TOKEN,
+        max_tokens=self.max_tokens,
     )
     yield message_to_generate_content_response(message)
 

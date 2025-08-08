@@ -13,7 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -25,6 +24,11 @@ import urllib.parse
 
 from dateutil import parser
 from google.genai.errors import ClientError
+from tenacity import retry
+from tenacity import retry_if_result
+from tenacity import RetryError
+from tenacity import stop_after_attempt
+from tenacity import wait_exponential
 from typing_extensions import override
 
 from google import genai
@@ -64,6 +68,20 @@ class VertexAiSessionService(BaseSessionService):
     self._location = location
     self._agent_engine_id = agent_engine_id
 
+  async def _get_session_api_response(
+      self,
+      reasoning_engine_id: str,
+      session_id: str,
+      api_client: genai.ApiClient,
+  ):
+    get_session_api_response = await api_client.async_request(
+        http_method='GET',
+        path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
+        request_dict={},
+    )
+    get_session_api_response = _convert_api_response(get_session_api_response)
+    return get_session_api_response
+
   @override
   async def create_session(
       self,
@@ -91,70 +109,73 @@ class VertexAiSessionService(BaseSessionService):
         request_dict=session_json_dict,
     )
     api_response = _convert_api_response(api_response)
-    logger.info(f'Create Session response {api_response}')
+    logger.info('Create session response received.')
+    logger.debug('Create session response: %s', api_response)
 
     session_id = api_response['name'].split('/')[-3]
     operation_id = api_response['name'].split('/')[-1]
-
-    max_retry_attempt = 5
-
     if _is_vertex_express_mode(self._project, self._location):
       # Express mode doesn't support LRO, so we need to poll
       # the session resource.
       # TODO: remove this once LRO polling is supported in Express mode.
-      for i in range(max_retry_attempt):
+      @retry(
+          stop=stop_after_attempt(5),
+          wait=wait_exponential(multiplier=1, min=1, max=3),
+          retry=retry_if_result(lambda response: not response),
+          reraise=True,
+      )
+      async def _poll_session_resource():
         try:
-          await api_client.async_request(
-              http_method='GET',
-              path=(
-                  f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
-              ),
-              request_dict={},
+          return await self._get_session_api_response(
+              reasoning_engine_id, session_id, api_client
           )
-          break
-        except ClientError as e:
-          logger.info('Polling for session %s: %s', session_id, e)
-          # Add slight exponential backoff to avoid excessive polling.
-          await asyncio.sleep(1 + 0.5 * i)
-      else:
-        raise TimeoutError('Session creation failed.')
+        except ClientError:
+          logger.info(f'Polling session resource')
+          return None
+
+      try:
+        await _poll_session_resource()
+      except Exception as exc:
+        raise ValueError('Failed to create session.') from exc
     else:
-      lro_response = None
-      for _ in range(max_retry_attempt):
+
+      @retry(
+          stop=stop_after_attempt(5),
+          wait=wait_exponential(multiplier=1, min=1, max=3),
+          retry=retry_if_result(
+              lambda response: not response.get('done', False),
+          ),
+          reraise=True,
+      )
+      async def _poll_lro():
         lro_response = await api_client.async_request(
             http_method='GET',
             path=f'operations/{operation_id}',
             request_dict={},
         )
         lro_response = _convert_api_response(lro_response)
+        return lro_response
 
-        if lro_response.get('done', None):
-          break
-
-        await asyncio.sleep(1)
-
-      if lro_response is None or not lro_response.get('done', None):
+      try:
+        await _poll_lro()
+      except RetryError as exc:
         raise TimeoutError(
             f'Timeout waiting for operation {operation_id} to complete.'
-        )
+        ) from exc
+      except Exception as exc:
+        raise ValueError('Failed to create session.') from exc
 
-    # Get session resource
-    get_session_api_response = await api_client.async_request(
-        http_method='GET',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
-        request_dict={},
+    get_session_api_response = await self._get_session_api_response(
+        reasoning_engine_id, session_id, api_client
     )
-    get_session_api_response = _convert_api_response(get_session_api_response)
-
-    update_timestamp = isoparse(
-        get_session_api_response['updateTime']
-    ).timestamp()
     session = Session(
         app_name=str(app_name),
         user_id=str(user_id),
         id=str(session_id),
         state=get_session_api_response.get('sessionState', {}),
-        last_update_time=update_timestamp,
+        last_update_time=isoparse(
+            get_session_api_response['updateTime']
+        ).timestamp(),
     )
     return session
 
@@ -171,12 +192,9 @@ class VertexAiSessionService(BaseSessionService):
     api_client = self._get_api_client()
 
     # Get session resource
-    get_session_api_response = await api_client.async_request(
-        http_method='GET',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
-        request_dict={},
+    get_session_api_response = await self._get_session_api_response(
+        reasoning_engine_id, session_id, api_client
     )
-    get_session_api_response = _convert_api_response(get_session_api_response)
 
     if get_session_api_response['userId'] != user_id:
       raise ValueError(f'Session not found: {session_id}')
@@ -198,29 +216,36 @@ class VertexAiSessionService(BaseSessionService):
         path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events',
         request_dict={},
     )
-    list_events_api_response = _convert_api_response(list_events_api_response)
+    converted_api_response = _convert_api_response(list_events_api_response)
 
-    # Handles empty response case
-    if not list_events_api_response or list_events_api_response.get(
+    # Handles empty response case where there are no events to fetch
+    if not converted_api_response or converted_api_response.get(
         'httpHeaders', None
     ):
       return session
 
     session.events += [
         _from_api_event(event)
-        for event in list_events_api_response['sessionEvents']
+        for event in converted_api_response['sessionEvents']
     ]
 
-    while list_events_api_response.get('nextPageToken', None):
-      page_token = list_events_api_response.get('nextPageToken', None)
+    while converted_api_response.get('nextPageToken', None):
+      page_token = converted_api_response.get('nextPageToken', None)
       list_events_api_response = await api_client.async_request(
           http_method='GET',
           path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}/events?pageToken={page_token}',
           request_dict={},
       )
+      converted_api_response = _convert_api_response(list_events_api_response)
+
+      # Handles empty response case where there are no more events to fetch
+      if not converted_api_response or converted_api_response.get(
+          'httpHeaders', None
+      ):
+        break
       session.events += [
           _from_api_event(event)
-          for event in list_events_api_response['sessionEvents']
+          for event in converted_api_response['sessionEvents']
       ]
 
     session.events = [
@@ -255,24 +280,28 @@ class VertexAiSessionService(BaseSessionService):
       parsed_user_id = urllib.parse.quote(f'''"{user_id}"''', safe='')
       path = path + f'?filter=user_id={parsed_user_id}'
 
-    api_response = await api_client.async_request(
+    list_sessions_api_response = await api_client.async_request(
         http_method='GET',
         path=path,
         request_dict={},
     )
-    api_response = _convert_api_response(api_response)
+    list_sessions_api_response = _convert_api_response(
+        list_sessions_api_response
+    )
 
     # Handles empty response case
-    if not api_response or api_response.get('httpHeaders', None):
+    if not list_sessions_api_response or list_sessions_api_response.get(
+        'httpHeaders', None
+    ):
       return ListSessionsResponse()
 
     sessions = []
-    for api_session in api_response['sessions']:
+    for api_session in list_sessions_api_response['sessions']:
       session = Session(
           app_name=app_name,
           user_id=user_id,
           id=api_session['name'].split('/')[-1],
-          state={},
+          state=api_session.get('sessionState', {}),
           last_update_time=isoparse(api_session['updateTime']).timestamp(),
       )
       sessions.append(session)
@@ -326,16 +355,24 @@ class VertexAiSessionService(BaseSessionService):
 
     return match.groups()[-1]
 
+  def _api_client_http_options_override(
+      self,
+  ) -> Optional[genai.types.HttpOptions]:
+    return None
+
   def _get_api_client(self):
     """Instantiates an API client for the given project and location.
 
     It needs to be instantiated inside each request so that the event loop
     management can be properly propagated.
     """
-    client = genai.Client(
+    api_client = genai.Client(
         vertexai=True, project=self._project, location=self._location
-    )
-    return client._api_client
+    )._api_client
+
+    if new_options := self._api_client_http_options_override():
+      api_client._http_options = new_options
+    return api_client
 
 
 def _is_vertex_express_mode(
@@ -363,6 +400,7 @@ def _convert_event_to_json(event: Event) -> Dict[str, Any]:
       'turn_complete': event.turn_complete,
       'interrupted': event.interrupted,
       'branch': event.branch,
+      'custom_metadata': event.custom_metadata,
       'long_running_tool_ids': (
           list(event.long_running_tool_ids)
           if event.long_running_tool_ids
@@ -442,6 +480,9 @@ def _from_api_event(api_event: Dict[str, Any]) -> Event:
     event.turn_complete = api_event['eventMetadata'].get('turnComplete', None)
     event.interrupted = api_event['eventMetadata'].get('interrupted', None)
     event.branch = api_event['eventMetadata'].get('branch', None)
+    event.custom_metadata = api_event['eventMetadata'].get(
+        'customMetadata', None
+    )
     event.grounding_metadata = _session_util.decode_grounding_metadata(
         api_event['eventMetadata'].get('groundingMetadata', None)
     )

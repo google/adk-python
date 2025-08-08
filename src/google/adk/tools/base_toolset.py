@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
@@ -19,10 +20,15 @@ from typing import List
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
+from typing import TYPE_CHECKING
 from typing import Union
 
 from ..agents.readonly_context import ReadonlyContext
 from .base_tool import BaseTool
+
+if TYPE_CHECKING:
+  from ..models.llm_request import LlmRequest
+  from .tool_context import ToolContext
 
 
 @runtime_checkable
@@ -64,7 +70,7 @@ class BaseToolset(ABC):
     """Return all tools in the toolset based on the provided context.
 
     Args:
-      readony_context (ReadonlyContext, optional): Context used to filter tools
+      readonly_context (ReadonlyContext, optional): Context used to filter tools
         available to the agent. If None, all tools in the toolset are returned.
 
     Returns:
@@ -75,10 +81,11 @@ class BaseToolset(ABC):
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
-    NOTE: This method is invoked, for example, at the end of an agent server's
-    lifecycle or when the toolset is no longer needed. Implementations
-    should ensure that any open connections, files, or other managed
-    resources are properly released to prevent leaks.
+    NOTE:
+      This method is invoked, for example, at the end of an agent server's
+      lifecycle or when the toolset is no longer needed. Implementations
+      should ensure that any open connections, files, or other managed
+      resources are properly released to prevent leaks.
     """
 
   def _is_tool_selected(
@@ -94,3 +101,20 @@ class BaseToolset(ABC):
       return tool.name in self.tool_filter
 
     return False
+
+  async def process_llm_request(
+      self, *, tool_context: ToolContext, llm_request: LlmRequest
+  ) -> None:
+    """Processes the outgoing LLM request for this toolset. This method will be
+    called before each tool processes the llm request.
+
+    Use cases:
+    - Instead of let each tool process the llm request, we can let the toolset
+      process the llm request. e.g. ComputerUseToolset can add computer use
+      tool to the llm request.
+
+    Args:
+      tool_context: The context of the tool.
+      llm_request: The outgoing LLM request, mutable this method.
+    """
+    pass

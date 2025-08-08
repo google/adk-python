@@ -45,8 +45,12 @@ class LlmRequest(BaseModel):
   contents: list[types.Content] = Field(default_factory=list)
   """The contents to send to the model."""
 
-  config: Optional[types.GenerateContentConfig] = None
-  live_connect_config: types.LiveConnectConfig = types.LiveConnectConfig()
+  config: types.GenerateContentConfig = Field(
+      default_factory=types.GenerateContentConfig
+  )
+  live_connect_config: types.LiveConnectConfig = Field(
+      default_factory=types.LiveConnectConfig
+  )
   """Additional config for the generate content request.
 
   tools in generate_content_config should not be set.

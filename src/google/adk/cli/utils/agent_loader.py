@@ -16,16 +16,24 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
+from pathlib import Path
 import sys
 from typing import Optional
 
+from pydantic import ValidationError
+from typing_extensions import override
+
 from . import envs
+from ...agents import config_agent_utils
 from ...agents.base_agent import BaseAgent
+from ...utils.feature_decorator import working_in_progress
+from .base_agent_loader import BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
 
 
-class AgentLoader:
+class AgentLoader(BaseAgentLoader):
   """Centralized agent loading with proper isolation, caching, and .env loading.
   Support loading agents from below folder/file structures:
   a)  {agent_name}.agent as a module name:
@@ -34,6 +42,8 @@ class AgentLoader:
       agents_dir/{agent_name}.py (with root_agent defined in the module)
   c)  {agent_name} as a package name
       agents_dir/{agent_name}/__init__.py (with root_agent in the package)
+  d)  {agent_name} as a YAML config folder:
+      agents_dir/{agent_name}/root_agent.yaml defines the root agent
 
   """
 
@@ -128,6 +138,29 @@ class AgentLoader:
 
     return None
 
+  @working_in_progress("_load_from_yaml_config is not ready for use.")
+  def _load_from_yaml_config(self, agent_name: str) -> Optional[BaseAgent]:
+    # Load from the config file at agents_dir/{agent_name}/root_agent.yaml
+    config_path = os.path.join(self.agents_dir, agent_name, "root_agent.yaml")
+    try:
+      agent = config_agent_utils.from_config(config_path)
+      logger.info("Loaded root agent for %s from %s", agent_name, config_path)
+      return agent
+    except FileNotFoundError:
+      logger.debug("Config file %s not found.", config_path)
+      return None
+    except ValidationError as e:
+      logger.error("Config file %s is invalid YAML.", config_path)
+      raise e
+    except Exception as e:
+      if hasattr(e, "msg"):
+        e.msg = f"Fail to load '{config_path}' config. " + e.msg
+        raise e
+      e.args = (
+          f"Fail to load '{config_path}' config. {e.args[0] if e.args else ''}",
+      ) + e.args[1:]
+      raise e
+
   def _perform_load(self, agent_name: str) -> BaseAgent:
     """Internal logic to load an agent"""
     # Add self.agents_dir to sys.path
@@ -145,15 +178,22 @@ class AgentLoader:
     if root_agent := self._load_from_submodule(agent_name):
       return root_agent
 
+    if os.getenv("ADK_ALLOW_WIP_FEATURES") and (
+        root_agent := self._load_from_yaml_config(agent_name)
+    ):
+      return root_agent
+
     # If no root_agent was found by any pattern
     raise ValueError(
         f"No root_agent found for '{agent_name}'. Searched in"
-        f" '{agent_name}.agent.root_agent', '{agent_name}.root_agent'."
+        f" '{agent_name}.agent.root_agent', '{agent_name}.root_agent' and"
+        f" '{agent_name}/root_agent.yaml'."
         f" Ensure '{self.agents_dir}/{agent_name}' is structured correctly,"
         " an .env file can be loaded if present, and a root_agent is"
         " exposed."
     )
 
+  @override
   def load_agent(self, agent_name: str) -> BaseAgent:
     """Load an agent module (with caching & .env) and return its root_agent."""
     if agent_name in self._agent_cache:
@@ -164,3 +204,29 @@ class AgentLoader:
     agent = self._perform_load(agent_name)
     self._agent_cache[agent_name] = agent
     return agent
+
+  @override
+  def list_agents(self) -> list[str]:
+    """Lists all agents available in the agent loader (sorted alphabetically)."""
+    base_path = Path.cwd() / self.agents_dir
+    agent_names = [
+        x
+        for x in os.listdir(base_path)
+        if os.path.isdir(os.path.join(base_path, x))
+        and not x.startswith(".")
+        and x != "__pycache__"
+    ]
+    agent_names.sort()
+    return agent_names
+
+  def remove_agent_from_cache(self, agent_name: str):
+    # Clear module cache for the agent and its submodules
+    keys_to_delete = [
+        module_name
+        for module_name in sys.modules
+        if module_name == agent_name or module_name.startswith(f"{agent_name}.")
+    ]
+    for key in keys_to_delete:
+      logger.debug("Deleting module %s", key)
+      del sys.modules[key]
+    self._agent_cache.pop(agent_name, None)

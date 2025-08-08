@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import re
 
 from ..agents.readonly_context import ReadonlyContext
@@ -34,12 +36,12 @@ async def inject_session_state(
   e.g.
   ```
   ...
-  from google.adk.utils import instructions_utils
+  from google.adk.utils.instructions_utils import inject_session_state
 
   async def build_instruction(
       readonly_context: ReadonlyContext,
   ) -> str:
-    return await instructions_utils.inject_session_state(
+    return await inject_session_state(
         'You can inject a state variable like {var_name} or an artifact '
         '{artifact.file_name} into the instruction template.',
         readonly_context,

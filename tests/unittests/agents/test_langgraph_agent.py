@@ -16,7 +16,8 @@ from unittest.mock import MagicMock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.langgraph_agent import LangGraphAgent
-from google.adk.events import Event
+from google.adk.events.event import Event
+from google.adk.plugins.plugin_manager import PluginManager
 from google.genai import types
 from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
@@ -169,6 +170,7 @@ async def test_langgraph_agent(
   mock_session.events = events_list
   mock_parent_context.invocation_id = "test_invocation_id"
   mock_parent_context.model_copy.return_value = mock_parent_context
+  mock_parent_context.plugin_manager = PluginManager(plugins=[])
 
   weather_agent = LangGraphAgent(
       name="weather_agent",

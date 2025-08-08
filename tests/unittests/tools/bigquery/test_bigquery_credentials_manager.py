@@ -17,11 +17,11 @@ import json
 from unittest.mock import Mock
 from unittest.mock import patch
 
-from google.adk.auth import AuthConfig
-from google.adk.tools import ToolContext
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.bigquery.bigquery_credentials import BIGQUERY_TOKEN_CACHE_KEY
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsManager
+from google.adk.tools.tool_context import ToolContext
 from google.auth.credentials import Credentials as AuthCredentials
 from google.auth.exceptions import RefreshError
 # Mock the Google OAuth and API dependencies

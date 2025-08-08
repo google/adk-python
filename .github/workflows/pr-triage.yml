@@ -1,0 +1,38 @@
+name: ADK Pull Request Triaging Agent
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited]
+
+jobs:
+  agent-triage-pull-request:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-adk
+
+      - name: Run Triaging Script
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: 0
+          OWNER: 'google'
+          REPO: 'adk-python'
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          INTERACTIVE: ${{ vars.PR_TRIAGE_INTERACTIVE }}
+          PYTHONPATH: contributing/samples
+        run: python -m adk_pr_triaging_agent.main

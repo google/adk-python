@@ -17,17 +17,24 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
+from typing import Type
 
 from typing_extensions import override
 
-from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
+from ..utils.feature_decorator import working_in_progress
 from .base_agent import BaseAgent
+from .base_agent import BaseAgentConfig
+from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
+from .sequential_agent_config import SequentialAgentConfig
 
 
 class SequentialAgent(BaseAgent):
   """A shell agent that runs its sub-agents in sequence."""
+
+  config_type: Type[BaseAgentConfig] = SequentialAgentConfig
+  """The config type for this agent."""
 
   @override
   async def _run_async_impl(
@@ -60,7 +67,7 @@ class SequentialAgent(BaseAgent):
         Signals that the model has successfully completed the user's question
         or task.
         """
-        return "Task completion signaled."
+        return 'Task completion signaled.'
 
       if isinstance(sub_agent, LlmAgent):
         # Use function name to dedupe.

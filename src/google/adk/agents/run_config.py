@@ -79,6 +79,9 @@ class RunConfig(BaseModel):
   proactivity: Optional[types.ProactivityConfig] = None
   """Configures the proactivity of the model. This allows the model to respond proactively to the input and to ignore irrelevant input."""
 
+  session_resumption: Optional[types.SessionResumptionConfig] = None
+  """Configures session resumption mechanism. Only support transparent session resumption mode now."""
+
   max_llm_calls: int = 500
   """
   A limit on the total number of llm calls for a given run.
