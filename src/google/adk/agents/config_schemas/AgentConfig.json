@@ -4501,7 +4501,7 @@
     },
     "mcp__types__Tool": {
       "additionalProperties": true,
-      "description": "Definition for a tool the client can call.",
+      "description": "Definition for a tool that the client can call.",
       "properties": {
         "name": {
           "title": "Name",
