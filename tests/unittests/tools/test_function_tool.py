@@ -283,7 +283,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
 
 @pytest.mark.asyncio
 async def test_run_async_with_optional_args_not_set_sync_func():
-  """Test that run_async calls the function for sync funciton with optional args not set."""
+  """Test that run_async calls the function for sync function with optional args not set."""
 
   def func_with_optional_args(arg1, arg2=None, *, arg3, arg4=None, **kwargs):
     return f"{arg1},{arg3}"
@@ -296,7 +296,7 @@ async def test_run_async_with_optional_args_not_set_sync_func():
 
 @pytest.mark.asyncio
 async def test_run_async_with_optional_args_not_set_async_func():
-  """Test that run_async calls the function for async funciton with optional args not set."""
+  """Test that run_async calls the function for async function with optional args not set."""
 
   async def async_func_with_optional_args(
       arg1, arg2=None, *, arg3, arg4=None, **kwargs
