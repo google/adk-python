@@ -6,6 +6,7 @@ import logging
 import traceback
 import os
 from datetime import datetime
+from config import BACKEND_URL
 
 # Setup logging
 log_dir = os.path.join(os.path.dirname(__file__), 'logs')
@@ -73,7 +74,7 @@ def main():
         st.subheader("Backend Connection Test")
         try:
             import requests
-            response = requests.get("http://localhost:8000/health", timeout=5)
+            response = requests.get(f"{BACKEND_URL}/health", timeout=5)
             st.success(f"✅ Backend responds: {response.status_code}")
             logger.info(f"✅ Backend connection successful: {response.status_code}")
         except Exception as e:

@@ -4,6 +4,7 @@ import streamlit as st
 import os
 import traceback
 import sys
+from config import DEFAULT_PROJECT_ID, DEFAULT_USER_EMAIL
 
 st.set_page_config(
     page_title="GCP Security Agent - Debug",
@@ -70,9 +71,10 @@ try:
     try:
         # Initialize session state
         if 'current_user' not in st.session_state:
-            st.session_state.current_user = {"email": "admin@stuartgano.altostrat.com", "authenticated": True}
+            default_email = DEFAULT_USER_EMAIL or "user@example.com"
+            st.session_state.current_user = {"email": default_email, "authenticated": True}
         if 'selected_project' not in st.session_state:
-            st.session_state.selected_project = "mgm-digitalconcierge"
+            st.session_state.selected_project = DEFAULT_PROJECT_ID or "your-project-id"
         if 'available_projects' not in st.session_state:
             st.session_state.available_projects = []
         if 'page' not in st.session_state:
@@ -114,7 +116,8 @@ try:
             st.markdown(f"👤 **User:** {st.session_state.current_user.get('email', 'Unknown')}")
             st.markdown("---")
             st.subheader("🏗️ GCP Project")
-            st.selectbox("Select Project:", ["mgm-digitalconcierge"], key="test_project")
+            project_list = [DEFAULT_PROJECT_ID] if DEFAULT_PROJECT_ID else ["your-project-id"]
+            st.selectbox("Select Project:", project_list, key="test_project")
             
         st.success("✅ Navigation rendering works")
         

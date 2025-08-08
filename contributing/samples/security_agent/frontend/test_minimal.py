@@ -4,6 +4,7 @@
 import streamlit as st
 import sys
 import traceback
+from config import BACKEND_URL
 
 st.title("🛡️ Security Agent - Debug Test")
 
@@ -18,7 +19,7 @@ try:
         
         # Test backend connection
         import requests
-        response = requests.get("http://localhost:8000/health", timeout=5)
+        response = requests.get(f"{BACKEND_URL}/health", timeout=5)
         st.success(f"✅ Backend connection successful (status: {response.status_code})")
         
     except Exception as e:

@@ -9,13 +9,14 @@ import requests
 import time
 from typing import Dict, Any, Optional
 import json
+from config import BACKEND_URL
 
 
 class StartupStatusChecker:
     """Handles backend connectivity checking and startup status display."""
     
-    def __init__(self, backend_url: str = "http://localhost:8000"):
-        self.backend_url = backend_url
+    def __init__(self, backend_url: str = None):
+        self.backend_url = backend_url or BACKEND_URL
         self.health_endpoint = f"{backend_url}/health"
         self.info_endpoint = f"{backend_url}"
         
@@ -213,7 +214,7 @@ class StartupStatusChecker:
                     st.rerun()
 
 
-def check_backend_ready(backend_url: str = "http://localhost:8000", timeout: int = 3) -> bool:
+def check_backend_ready(backend_url: str = None, timeout: int = 3) -> bool:
     """
     Quick check if backend is ready.
     
@@ -221,13 +222,14 @@ def check_backend_ready(backend_url: str = "http://localhost:8000", timeout: int
         bool: True if backend is ready, False otherwise
     """
     try:
-        response = requests.get(f"{backend_url}/health", timeout=timeout)
+        url = backend_url or BACKEND_URL
+        response = requests.get(f"{url}/health", timeout=timeout)
         return response.status_code == 200
     except:
         return False
 
 
-def render_startup_screen_if_needed(backend_url: str = "http://localhost:8000") -> bool:
+def render_startup_screen_if_needed(backend_url: str = None) -> bool:
     """
     Render startup screen if backend is not ready.
     
@@ -235,11 +237,12 @@ def render_startup_screen_if_needed(backend_url: str = "http://localhost:8000") 
         bool: True if should continue to main app, False if still loading
     """
     # Quick check first
-    if check_backend_ready(backend_url):
+    url = backend_url or BACKEND_URL
+    if check_backend_ready(url):
         return True
     
     # If backend not ready, show startup screen
-    checker = StartupStatusChecker(backend_url)
+    checker = StartupStatusChecker(url)
     return checker.render_startup_status()
 
 

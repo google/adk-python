@@ -7,10 +7,7 @@ functions that make direct HTTP requests to the legacy backend endpoints.
 import requests
 import streamlit as st
 from typing import Dict, Any, Optional
-import os
-
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
-API_V1_BASE_PATH = "/api/v1"
+from config import BACKEND_URL, API_V1_BASE_PATH, get_project_id
 
 def make_request(endpoint: str, method: str = "GET", data: Dict = None, headers: Dict = None) -> Dict[str, Any]:
     """Make a simple HTTP request to the backend."""
@@ -85,17 +82,26 @@ def get_iam_policy():
 
 def analyze_user_permissions(user_email: str):
     """Analyze user permissions."""
-    project_id = st.session_state.get('selected_project', '')
+    project_id = st.session_state.get('selected_project') or get_project_id() or ''
     return make_request(f"/iam/project/{project_id}/analyze-user/{user_email}")
 
 def analyze_all_users():
     """Analyze all users."""
-    project_id = st.session_state.get('selected_project', '')
+    project_id = st.session_state.get('selected_project') or get_project_id() or ''
     return make_request(f"/iam/project/{project_id}/analyze-all-users")
 
 def chat_with_agent(message: str):
-    """Chat with agent."""
-    return make_request("/agent/chat", "POST", {"prompt": message})
+    """Chat with agent with project context."""
+    project_id = st.session_state.get('selected_project') or get_project_id() or 'demo-project'
+    return make_request("/agent/chat", "POST", {
+        "prompt": message,
+        "project_id": project_id,
+        "context": {
+            "timestamp": st.session_state.get("timestamp"),
+            "user_email": st.session_state.get("current_user", {}).get("email"),
+            "session_id": st.session_state.get("session_id")
+        }
+    })
 
 def get_services_status_summary():
     """Get services status summary."""
@@ -126,8 +132,8 @@ def get_system_health(project_id: str):
     return make_request(f"/monitoring/health/{project_id}")
 
 def get_security_findings(project_id: str, days_back: int = 30):
-    """Get security findings."""
-    return make_request(f"/security/findings/{project_id}", "POST", {"days_back": days_back})
+    """Get security findings from Security Center."""
+    return make_request("/security/findings", "GET", {"project_id": project_id, "days_back": days_back})
 
 def get_api_usage_analytics(project_id: str, hours: int = 24):
     """Get API usage analytics."""

@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "supabase": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@supabase/mcp-server-supabase@latest",
+        "--access-token",
+        "${env:SUPABASE_ACCESS_TOKEN}"
+      ],
+      "alwaysAllow": [
+        "list_tables",
+        "execute_sql",
+        "listTables",
+        "list_projects",
+        "list_organizations",
+        "get_organization",
+        "apply_migration",
+        "get_project",
+        "execute_query",
+        "generate_typescript_types",
+        "listProjects"
+      ]
+    },
+    "mem0": {
+      "url": "https://mcp.composio.dev/mem0/abandoned-creamy-horse-Y39-hm?agent=cursor"
+    },
+    "perplexityai": {
+      "url": "https://mcp.composio.dev/perplexityai/abandoned-creamy-horse-Y39-hm?agent=cursor"
+    }
+  }
+}

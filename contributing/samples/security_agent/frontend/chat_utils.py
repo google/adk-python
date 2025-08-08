@@ -7,10 +7,9 @@ from typing import Dict, List, Any, Optional
 from urllib.parse import urlencode, parse_qs
 import os
 from dotenv import load_dotenv
+from config import BACKEND_URL, API_V1_BASE_PATH
 
 load_dotenv()
-
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 class StatelessChatManager:
     """Manages chat without relying on Streamlit session state."""
@@ -112,7 +111,7 @@ class StatelessChatManager:
             }
             
             response = requests.post(
-                f"{self.backend_url}/api/v1/async-security/quick-analysis",
+                f"{self.backend_url}{API_V1_BASE_PATH}/async-security/quick-analysis",
                 json=payload,
                 timeout=30  # 30 second timeout for quick analysis
             )
@@ -197,7 +196,7 @@ class StatelessChatManager:
             }
             
             response = requests.post(
-                f"{self.backend_url}/api/v1/async-security/scan",
+                f"{self.backend_url}{API_V1_BASE_PATH}/async-security/scan",
                 json=payload,
                 timeout=10  # Short timeout for initiating scan
             )
@@ -227,7 +226,7 @@ class StatelessChatManager:
         """Check the status of an async task."""
         try:
             response = requests.get(
-                f"{self.backend_url}/api/v1/async-security/status/{task_id}",
+                f"{self.backend_url}{API_V1_BASE_PATH}/async-security/status/{task_id}",
                 timeout=10
             )
             

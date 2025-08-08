@@ -1,5 +1,6 @@
 {
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.70"
+    "@anthropic-ai/claude-code": "^1.0.70",
+    "claude-flow": "^2.0.0-alpha.88"
   }
 }

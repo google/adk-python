@@ -11,6 +11,7 @@ from typing import Dict, Any, List
 import uvicorn
 import os
 import logging
+from services.adk_chat_service import create_adk_chat_service
 
 # Configure logging
 logging.basicConfig(
@@ -231,16 +232,41 @@ async def evaluate_compliance(request: dict):
         "issues": []
     }
 
-# Agent chat endpoint
+# Agent chat endpoint with real ADK integration
 @app.post("/api/v1/agent/chat")
 async def chat_with_agent(request: dict):
-    """Send a message to the agent."""
-    message = request.get("prompt", "")
-    return {
-        "success": True,
-        "response": f"I understand you're asking about: {message}. In legacy mode, I can help with basic security analysis and recommendations.",
-        "suggestions": ["Ask about security score", "Get recommendations", "Analyze IAM policies"]
-    }
+    """Send a message to the agent with real GCP tool integration."""
+    try:
+        message = request.get("prompt", "")
+        project_id = request.get("project_id", "demo-project")
+        context = request.get("context", {})
+        
+        if not message.strip():
+            return {
+                "success": False,
+                "error": "Message cannot be empty",
+                "suggestions": ["Ask about security score", "Get recommendations", "Analyze IAM policies"]
+            }
+        
+        logger.info(f"Processing ADK chat message: '{message}' for project: {project_id}")
+        
+        # Create ADK chat service instance
+        chat_service = create_adk_chat_service(project_id)
+        
+        # Process message with real GCP integration
+        result = await chat_service.process_chat_message(message, context)
+        
+        logger.info(f"ADK chat response generated successfully")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in ADK chat endpoint: {e}")
+        return {
+            "success": False,
+            "response": f"I encountered an error while processing your request: {str(e)}",
+            "error": str(e),
+            "suggestions": ["Try asking about security score", "Ask for IAM analysis", "Request recommendations"]
+        }
 
 # Service management (for compatibility)
 @app.get("/api/v1/services/")

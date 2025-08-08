@@ -87,23 +87,32 @@ from components import (
     render_multi_agent_graph_view
 )
 
+# Import performance monitoring
+from components.performance_monitor import (
+    render_performance_monitor,
+    add_performance_metrics_to_sidebar,
+    initialize_performance_monitoring
+)
+
 # Import shared utilities
 from startup_status import render_startup_screen_if_needed, StartupStatusChecker
 import simple_api
-
-# Configuration
-BACKEND_URL = "http://localhost:8000"
+from config import BACKEND_URL, DEFAULT_PROJECT_ID, DEFAULT_USER_EMAIL
 
 
 def init_session_state():
     """Initialize session state variables."""
     try:
         logger.info("Initializing session state...")
+        
+        # Initialize performance monitoring
+        initialize_performance_monitoring()
         if 'current_user' not in st.session_state:
-            st.session_state.current_user = {"email": "admin@stuartgano.altostrat.com", "authenticated": True}
+            default_email = DEFAULT_USER_EMAIL or "user@example.com"
+            st.session_state.current_user = {"email": default_email, "authenticated": True}
             logger.info("Initialized current_user in session state")
         if 'selected_project' not in st.session_state:
-            st.session_state.selected_project = "mgm-digitalconcierge"
+            st.session_state.selected_project = DEFAULT_PROJECT_ID
             logger.info("Initialized selected_project in session state")
         if 'available_projects' not in st.session_state:
             st.session_state.available_projects = []
@@ -161,6 +170,9 @@ def render_sidebar():
     # Chat sidebar (if on chat page)
     if st.session_state.page == "chat":
         render_chat_sidebar()
+    
+    # Performance metrics in sidebar
+    add_performance_metrics_to_sidebar()
     
     # Footer
     st.sidebar.markdown("---")
@@ -244,6 +256,7 @@ def get_available_pages():
         "performance": {"name": "📊 Performance Monitoring", "service": "monitoring"},
         "sre": {"name": "🔧 Day Two SRE", "service": "monitoring"},
         "api_explorer": {"name": "🔍 API Explorer", "service": "documentation"},
+        "gcp_api_explorer": {"name": "🚀 GCP API Explorer", "service": "gcp_api_explorer"},
         "incidents": {"name": "🚨 Incident Response", "service": "incident_response"},
         "multi_agent_graph": {"name": "🕸️ Multi-Agent Graph", "service": None}
     }
@@ -366,14 +379,18 @@ def render_main_content():
             logger.info("Rendering MSA analysis view...")
             render_msa_analysis_view()
         elif page == "performance":
-            logger.info("Rendering performance monitoring view...")
-            render_performance_monitoring_view()
+            logger.info("Rendering performance monitor...")
+            render_performance_monitor()
         elif page == "sre":
             logger.info("Rendering day two SRE view...")
             render_day_two_sre_view()
         elif page == "api_explorer":
             logger.info("Rendering API explorer view...")
             render_api_explorer_view()
+        elif page == "gcp_api_explorer":
+            logger.info("Rendering GCP API explorer view...")
+            from components.gcp_api_explorer_view import render_gcp_api_explorer_view
+            render_gcp_api_explorer_view()
         elif page == "incidents":
             logger.info("Rendering incident response view...")
             render_incident_response_view()

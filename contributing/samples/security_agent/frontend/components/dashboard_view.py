@@ -26,6 +26,7 @@ import simple_api
 from .security_evaluation_view import render_security_summary_card
 from .recommendations_view import render_recommendations_summary_card
 from .iam_analyzer_view import render_iam_summary_card
+from .gcp_api_explorer_view import render_gcp_api_explorer_summary_card
 
 
 def render_dashboard_view():
@@ -60,7 +61,7 @@ def render_dashboard_view():
     render_service_status_section()
     
     # Summary cards in columns
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         render_security_summary_card()
@@ -70,6 +71,9 @@ def render_dashboard_view():
     
     with col3:
         render_iam_summary_card()
+        
+    with col4:
+        render_gcp_api_explorer_summary_card()
     
     # Recent activity and quick actions
     st.markdown("---")
@@ -199,86 +203,149 @@ def render_service_status_section():
 
 
 def render_key_metrics_row():
-    """Render key security metrics in a row."""
+    """Render key security metrics in a row using real GCP API data."""
     st.subheader("📈 Key Security Metrics")
     
-    # Mock data for demonstration - in real implementation, aggregate from various APIs
+    if not st.session_state.selected_project:
+        st.warning("Please select a project to view metrics")
+        return
+    
+    # Fetch real data from backend APIs
+    with st.spinner("Loading security metrics..."):
+        # Get security score
+        security_response = simple_api.get_security_score()
+        security_score = "N/A"
+        if security_response.get("success"):
+            security_score = f"{security_response.get('score', 0)}/100"
+        
+        # Get enabled APIs
+        apis_response = simple_api.get_enabled_apis()
+        enabled_apis_count = "N/A"
+        if apis_response.get("success"):
+            enabled_apis_count = str(len(apis_response.get("apis", [])))
+        
+        # Get security findings
+        findings_response = simple_api.get_security_findings(st.session_state.selected_project)
+        high_risk_issues = "N/A"
+        if findings_response.get("success"):
+            high_risk_findings = [f for f in findings_response.get("findings", []) 
+                                if f.get("severity") == "HIGH"]
+            high_risk_issues = str(len(high_risk_findings))
+        
+        # Get IAM analysis for user count
+        iam_response = simple_api.analyze_all_users()
+        iam_users_count = "N/A"
+        if iam_response.get("success"):
+            iam_users_count = str(len(iam_response.get("users", [])))
+        
+        # Get compliance score
+        compliance_response = simple_api.evaluate_compliance("SOC2")
+        compliance_score = "N/A"
+        if compliance_response.get("success"):
+            compliance_score = f"{compliance_response.get('score', 0)}%"
+    
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric(
             label="Security Score",
-            value="78/100",
-            delta="-2",
-            delta_color="inverse",
-            help="Overall security posture score"
+            value=security_score,
+            help="Overall security posture score from real GCP Security Center data"
         )
     
     with col2:
         st.metric(
             label="High Risk Issues",
-            value="5",
-            delta="1",
-            delta_color="inverse",
-            help="Critical security issues requiring immediate attention"
+            value=high_risk_issues,
+            help="Critical security findings from Security Center requiring immediate attention"
         )
     
     with col3:
         st.metric(
             label="Enabled APIs",
-            value="23",
-            delta="2",
-            help="Number of enabled GCP APIs"
+            value=enabled_apis_count,
+            help="Number of enabled GCP APIs in the selected project"
         )
     
     with col4:
         st.metric(
             label="IAM Users",
-            value="12",
-            delta="0",
-            help="Active IAM users in the project"
+            value=iam_users_count,
+            help="Active IAM users and service accounts in the project"
         )
     
     with col5:
         st.metric(
             label="Compliance",
-            value="85%",
-            delta="5%",
-            help="Compliance score across frameworks"
+            value=compliance_score,
+            help="SOC2 compliance score based on real security policies"
         )
 
 
 def render_recent_activity_section():
-    """Render recent security-related activity."""
+    """Render recent security-related activity using real GCP data."""
     st.subheader("🕒 Recent Activity")
     
-    # Mock recent activity data
-    activities = [
-        {
-            "time": "2 hours ago",
-            "action": "Security scan completed",
-            "result": "5 new issues found",
-            "severity": "warning"
-        },
-        {
-            "time": "1 day ago", 
-            "action": "IAM policy updated",
-            "result": "User permissions modified",
-            "severity": "info"
-        },
-        {
-            "time": "2 days ago",
-            "action": "Compliance check",
-            "result": "SOC2 compliance verified",
-            "severity": "success"
-        },
-        {
-            "time": "3 days ago",
-            "action": "API enabled",
-            "result": "Cloud Storage API activated",
-            "severity": "info"
-        }
-    ]
+    if not st.session_state.selected_project:
+        st.info("Select a project to view recent activity")
+        return
+    
+    activities = []
+    
+    with st.spinner("Loading recent activity..."):
+        # Get recent security findings
+        findings_response = simple_api.get_security_findings(st.session_state.selected_project, days_back=7)
+        if findings_response.get("success"):
+            findings = findings_response.get("findings", [])
+            for finding in findings[:3]:  # Show last 3 findings
+                severity = finding.get("severity", "UNKNOWN").lower()
+                activities.append({
+                    "time": "Recent",
+                    "action": "Security finding detected",
+                    "result": finding.get("title", "Security issue found"),
+                    "severity": "error" if severity == "high" else "warning" if severity == "medium" else "info"
+                })
+        
+        # Get recent incidents
+        incidents_response = simple_api.get_incidents()
+        if incidents_response.get("success"):
+            incidents = incidents_response.get("incidents", [])
+            for incident in incidents[:2]:  # Show last 2 incidents
+                activities.append({
+                    "time": incident.get("created", "Recent"),
+                    "action": "Security incident",
+                    "result": incident.get("title", "Security incident reported"),
+                    "severity": incident.get("severity", "warning")
+                })
+        
+        # Get performance summary for system health
+        perf_response = simple_api.get_performance_summary()
+        if perf_response.get("success"):
+            cpu_usage = perf_response.get("cpu_usage", 0)
+            if cpu_usage > 80:
+                activities.append({
+                    "time": "Current",
+                    "action": "System performance alert",
+                    "result": f"High CPU usage detected: {cpu_usage}%",
+                    "severity": "warning"
+                })
+    
+    # Show fallback message if no real activity data
+    if not activities:
+        activities = [
+            {
+                "time": "Current",
+                "action": "System monitoring active",
+                "result": "No recent security events detected",
+                "severity": "success"
+            },
+            {
+                "time": "Current",
+                "action": "Dashboard loaded",
+                "result": f"Monitoring project {st.session_state.selected_project}",
+                "severity": "info"
+            }
+        ]
     
     for activity in activities:
         severity_emoji = {
@@ -320,84 +387,193 @@ def render_quick_actions_section():
 
 
 def render_dashboard_charts():
-    """Render dashboard visualization charts."""
-    st.subheader("📊 Security Trends")
+    """Render dashboard visualization charts using real GCP data."""
+    st.subheader("📊 Security Analytics")
+    
+    if not st.session_state.selected_project:
+        st.info("Select a project to view security analytics")
+        return
     
     # Create tabs for different chart types
-    tab1, tab2, tab3 = st.tabs(["Security Score Trend", "Issue Distribution", "API Usage"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Security Findings", "API Services", "System Health", "GCP Resources"])
     
     with tab1:
-        render_security_trend_chart()
+        render_security_findings_chart()
     
     with tab2:
-        render_issue_distribution_chart()
+        render_enabled_apis_chart()
     
     with tab3:
-        render_api_usage_chart()
+        render_system_health_chart()
+    
+    with tab4:
+        render_gcp_resources_chart()
 
 
-def render_security_trend_chart():
-    """Render security score trend over time."""
-    # Mock data for demonstration
-    import pandas as pd
-    
-    # Generate mock time series data
-    dates = pd.date_range(start=datetime.now() - timedelta(days=30), end=datetime.now(), freq='D')
-    scores = [75 + (i % 10) + (i // 10) for i in range(len(dates))]
-    
-    df = pd.DataFrame({
-        'Date': dates,
-        'Security Score': scores
-    })
-    
-    fig = px.line(
-        df,
-        x='Date',
-        y='Security Score',
-        title='Security Score Trend (Last 30 Days)',
-        markers=True
-    )
-    
-    fig.update_layout(
-        yaxis_range=[0, 100],
-        showlegend=False
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+def render_security_findings_chart():
+    """Render security findings distribution chart using real data."""
+    with st.spinner("Loading security findings..."):
+        findings_response = simple_api.get_security_findings(st.session_state.selected_project, days_back=30)
+        
+        if findings_response.get("success"):
+            findings = findings_response.get("findings", [])
+            
+            if findings:
+                # Group findings by severity
+                severity_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+                for finding in findings:
+                    severity = finding.get("severity", "INFO").upper()
+                    if severity in severity_counts:
+                        severity_counts[severity] += 1
+                
+                # Create bar chart
+                fig = px.bar(
+                    x=list(severity_counts.keys()),
+                    y=list(severity_counts.values()),
+                    title=f'Security Findings by Severity (Last 30 Days)',
+                    labels={'x': 'Severity Level', 'y': 'Number of Findings'},
+                    color=list(severity_counts.values()),
+                    color_continuous_scale=['green', 'yellow', 'orange', 'red']
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No security findings found in the last 30 days")
+        else:
+            st.error("Failed to load security findings data")
 
 
-def render_issue_distribution_chart():
-    """Render security issue distribution by type."""
-    # Mock data
-    issue_types = ['IAM Permissions', 'API Security', 'Network Config', 'Data Access', 'Compliance']
-    issue_counts = [8, 5, 3, 2, 7]
-    
-    fig = px.bar(
-        x=issue_counts,
-        y=issue_types,
-        orientation='h',
-        title='Security Issues by Category',
-        labels={'x': 'Number of Issues', 'y': 'Category'},
-        color=issue_counts,
-        color_continuous_scale='Reds'
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+def render_enabled_apis_chart():
+    """Render enabled APIs distribution chart using real data."""
+    with st.spinner("Loading enabled APIs..."):
+        apis_response = simple_api.get_enabled_apis()
+        
+        if apis_response.get("success"):
+            apis = apis_response.get("apis", [])
+            
+            if apis:
+                # Extract API categories
+                api_categories = {}
+                for api in apis:
+                    api_name = api.get("name", "unknown")
+                    
+                    # Categorize APIs
+                    if "compute" in api_name:
+                        category = "Compute"
+                    elif "storage" in api_name:
+                        category = "Storage"
+                    elif "iam" in api_name or "credential" in api_name:
+                        category = "Security & IAM"
+                    elif "monitoring" in api_name or "logging" in api_name:
+                        category = "Observability"
+                    elif "sql" in api_name or "firestore" in api_name:
+                        category = "Databases"
+                    else:
+                        category = "Other Services"
+                    
+                    api_categories[category] = api_categories.get(category, 0) + 1
+                
+                # Create pie chart
+                fig = px.pie(
+                    values=list(api_categories.values()),
+                    names=list(api_categories.keys()),
+                    title=f'Enabled APIs by Category ({len(apis)} total)'
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Show detailed API list
+                with st.expander("View All Enabled APIs"):
+                    for api in apis:
+                        enabled_status = "🟢" if api.get("enabled", False) else "🔴"
+                        st.write(f"{enabled_status} {api.get('name', 'Unknown API')}")
+            else:
+                st.info("No API information available")
+        else:
+            st.error("Failed to load APIs data")
 
 
-def render_api_usage_chart():
-    """Render API usage distribution."""
-    # Mock data
-    api_names = ['Compute Engine', 'Cloud Storage', 'BigQuery', 'Cloud SQL', 'Kubernetes']
-    usage_counts = [150, 89, 76, 45, 32]
-    
-    fig = px.pie(
-        values=usage_counts,
-        names=api_names,
-        title='API Usage Distribution'
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+def render_system_health_chart():
+    """Render system health metrics chart using real data."""
+    with st.spinner("Loading system health metrics..."):
+        perf_response = simple_api.get_performance_summary()
+        
+        if perf_response.get("success"):
+            metrics = {
+                'CPU Usage': perf_response.get('cpu_usage', 0),
+                'Memory Usage': perf_response.get('memory_usage', 0),
+                'Disk Usage': perf_response.get('disk_usage', 0)
+            }
+            
+            # Create gauge-like bar chart
+            fig = px.bar(
+                x=list(metrics.keys()),
+                y=list(metrics.values()),
+                title='System Resource Usage (%)',
+                labels={'x': 'Resource Type', 'y': 'Usage Percentage'},
+                color=list(metrics.values()),
+                color_continuous_scale=['green', 'yellow', 'red']
+            )
+            
+            # Add threshold line at 80%
+            fig.add_hline(y=80, line_dash="dash", line_color="red", 
+                         annotation_text="Warning Threshold (80%)")
+            
+            fig.update_layout(yaxis_range=[0, 100])
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Show response time metric separately
+            response_time = perf_response.get('response_time', 0)
+            st.metric(
+                "Average Response Time", 
+                f"{response_time}ms",
+                help="Average API response time for backend services"
+            )
+        else:
+            st.error("Failed to load system health data")
+
+def render_gcp_resources_chart():
+    """Render GCP project resources overview."""
+    with st.spinner("Loading GCP project information..."):
+        project_info_response = simple_api.get_project_info(st.session_state.selected_project)
+        
+        if project_info_response.get("success"):
+            project_info = project_info_response.get("project_info", {})
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Project Details")
+                st.write(f"**Project ID:** {project_info.get('project_id', 'N/A')}")
+                st.write(f"**Project Number:** {project_info.get('project_number', 'N/A')}")
+                st.write(f"**Lifecycle State:** {project_info.get('lifecycle_state', 'N/A')}")
+                
+                # Show creation info if available
+                created = project_info.get('create_time')
+                if created:
+                    try:
+                        from datetime import datetime
+                        created_date = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                        st.write(f"**Created:** {created_date.strftime('%Y-%m-%d')}")
+                    except:
+                        st.write(f"**Created:** {created}")
+            
+            with col2:
+                st.subheader("Resource Summary")
+                
+                # Get APIs count
+                apis_response = simple_api.get_enabled_apis()
+                apis_count = len(apis_response.get("apis", [])) if apis_response.get("success") else 0
+                
+                # Get IAM users count
+                iam_response = simple_api.analyze_all_users()
+                users_count = len(iam_response.get("users", [])) if iam_response.get("success") else 0
+                
+                st.metric("Enabled APIs", apis_count)
+                st.metric("IAM Principals", users_count)
+                st.metric("Security Score", "View above ↑")
+        else:
+            st.error("Failed to load project information")
 
 
 def render_system_status_card():

@@ -127,8 +127,27 @@ def main():
     if reload:
         cmd.append("--reload")
     
-    # Set working directory to backend/
-    backend_dir = os.path.join("contributing", "samples", "security_agent", "backend")
+    # Set working directory for backend
+    # Determine the correct backend directory path based on current location
+    current_dir = os.getcwd()
+    if current_dir.endswith("security_agent"):
+        # We're in the security_agent directory, backend files are in backend/ subdirectory
+        backend_dir = os.path.join(current_dir, "backend")
+    elif current_dir.endswith("ADK"):
+        # We're in the ADK root directory
+        backend_dir = os.path.join(current_dir, "contributing", "samples", "security_agent", "backend")
+    else:
+        # Try to find the backend directory relative to script location
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = os.path.join(script_dir, "backend")
+    
+    # Check if main_legacy.py exists in the backend directory
+    main_legacy_path = os.path.join(backend_dir, "main_legacy.py")
+    if not os.path.exists(main_legacy_path):
+        logger.error(f"❌ main_legacy.py not found at: {main_legacy_path}")
+        logger.error(f"Current directory: {os.getcwd()}")
+        logger.error("Please run this script from the security_agent directory or the ADK root directory.")
+        return False
     
     logger.info("🚀 Starting legacy backend server...")
     logger.info(f"   • Host: {host}")

@@ -111,7 +111,25 @@ def main():
     frontend_host = os.getenv('FRONTEND_HOST', '0.0.0.0')
     
     # Frontend app path
-    frontend_app = os.path.join("contributing", "samples", "security_agent", "frontend", "main_app.py")
+    # Determine the correct path based on current location
+    current_dir = os.getcwd()
+    if current_dir.endswith("security_agent"):
+        # We're in the security_agent directory
+        frontend_app = os.path.join("frontend", "main_app.py")
+    elif current_dir.endswith("ADK"):
+        # We're in the ADK root directory  
+        frontend_app = os.path.join("contributing", "samples", "security_agent", "frontend", "main_app.py")
+    else:
+        # Try to find main_app.py relative to script location
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        frontend_app = os.path.join(script_dir, "frontend", "main_app.py")
+    
+    # Check if frontend app exists
+    if not os.path.exists(frontend_app):
+        logger.error(f"❌ Frontend app not found at: {frontend_app}")
+        logger.error(f"Current directory: {os.getcwd()}")
+        logger.error("Please run this script from the security_agent directory or the ADK root directory.")
+        return False
     
     # Build command
     cmd = [

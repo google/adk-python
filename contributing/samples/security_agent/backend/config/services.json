@@ -347,6 +347,34 @@
         "ai",
         "recommendations"
       ]
+    },
+    "gcp_api_explorer": {
+      "name": "gcp_api_explorer",
+      "display_name": "GCP API Explorer",
+      "description": "Dynamic Google Cloud API discovery and testing service",
+      "version": "1.0.0",
+      "enabled_by_default": true,
+      "required": false,
+      "dependencies": [
+        {
+          "service_name": "gcp",
+          "required": true,
+          "version": null
+        }
+      ],
+      "health_check": null,
+      "config": {},
+      "api_prefix": "/api/v1/gcp-api-explorer",
+      "router_module": "gcp_api_explorer.service",
+      "service_module": "gcp_api_explorer.service.GCPAPIExplorerService",
+      "requires_gcp_auth": true,
+      "requires_api_keys": [],
+      "tags": [
+        "api-explorer",
+        "gcp",
+        "discovery",
+        "testing"
+      ]
     }
   },
   "runtime_status": {
@@ -365,6 +393,7 @@
     "tracing": "disabled",
     "incident_response": "disabled",
     "apihub": "disabled",
-    "recommendations": "running"
+    "recommendations": "running",
+    "gcp_api_explorer": "running"
   }
 }
