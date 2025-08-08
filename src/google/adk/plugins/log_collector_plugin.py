@@ -36,6 +36,35 @@ class LogCollectorPlugin(BasePlugin):
   """
   A plugin to programmatically and safely collect execution details from all
   callbacks in async environments, organized by session ID.
+
+  The `session_id` is a user-defined string that you pass to the `Session`
+  object when you create it. This allows you to group all related logs for a
+  particular interaction or conversation.
+
+  Example usage:
+    >>> import asyncio
+    >>> from google.adk.agents import Agent
+    >>> from google.adk.plugins import LogCollectorPlugin
+    >>> from google.adk.runners import InMemoryRunner
+    >>>
+    >>> async def main():
+    ...     log_plugin = LogCollectorPlugin()
+    ...     agent = Agent(
+    ...         # ... other agent parameters
+    ...     )
+    ...     runner = InMemoryRunner(agent=agent, plugins=[log_plugin])
+    ...     session = await runner.session_service.create_session(
+    ...         app_name=runner.app_name, user_id="test_user"
+    ...     )
+    ...     # Run the agent with the session
+    ...     # await runner.run_async(...)
+    ...     # Retrieve logs for the specific session
+    ...     session_logs = log_plugin.get_logs_by_session(session.id)
+    ...     print(session_logs)
+    >>>
+    >>> if __name__ == "__main__":
+    ...     asyncio.run(main())
+
   """
 
   def __init__(self, name: str = "log_collector"):
