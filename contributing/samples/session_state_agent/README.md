@@ -6,7 +6,7 @@ After assigning a state using the context object (e.g.
 `tool_context.state['log_query_var'] = 'log_query_var_value'`):
 
 * The state is available for use in a later callback.
-* Once the resulting event is processed by the runner and appneded in the
+* Once the resulting event is processed by the runner and appended in the
   session, the state will be also persisted in the session.
 
 This sample agent is for demonstrating the aforementioned behavior.
