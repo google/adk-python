@@ -707,10 +707,10 @@ def render_performance_summary_card():
                          delta=real_summary["cpu_usage"]["delta"])
         else:
             with col1:
-                st.metric("Response Time", "156ms", delta="-23ms", delta_color="inverse")
+                st.metric("Response Time", "Monitoring...", delta="--", delta_color="inverse")
             
             with col2:
-                st.metric("Uptime", "99.9%", delta="0.1%")
+                st.metric("Uptime", "Calculating...", delta="--")
         
         if st.button("View Performance", key="view_performance"):
             st.session_state.page = "performance"

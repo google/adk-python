@@ -98,7 +98,7 @@ def render_interactive_testing():
             if param == "project_id":
                 default_value = st.session_state.get('selected_project', 'your-project-id')
             elif param == "user_email":
-                default_value = "user@example.com"
+                default_value = st.session_state.get('current_user', {}).get('email', 'admin@organization.com')
             elif param == "priority":
                 default_value = "high"
             else:
@@ -506,20 +506,20 @@ def get_sample_payloads():
     return {
         "POST /api/v1/security/evaluate": {
             "api_name": "compute.googleapis.com",
-            "project_id": "my-project-123"
+            "project_id": "{dynamic_project_id}"
         },
         "POST /api/v1/recommendations/dashboard": {
-            "project_id": "my-project-123",
+            "project_id": "{dynamic_project_id}",
             "priority": "high"
         },
         "POST /api/v1/compliance/evaluate": {
-            "project_id": "my-project-123",
+            "project_id": "{dynamic_project_id}",
             "framework": "SOC2"
         },
         "POST /api/v1/msa/parse": {
             "msa_text": "Sample MSA content...",
             "msa_name": "Sample Agreement",
-            "user_id": "user@example.com"
+            "user_id": "{dynamic_user_email}"
         },
         "POST /api/v1/agent/chat": {
             "prompt": "What are my security recommendations?",

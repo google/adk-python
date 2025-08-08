@@ -2,13 +2,13 @@
 
 <div align="center">
 
-[![Status](https://img.shields.io/badge/Status-Beta-yellow.svg)]()
-[![ADK](https://img.shields.io/badge/Built%20with-ADK-blue.svg)]()
+[![Status](https://img.shields.io/badge/Status-Production-green.svg)]()
+[![ADK](https://img.shields.io/badge/Google%20ADK-Compliant-blue.svg)]()
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://python.org)
 
-**Comprehensive agent testing and benchmarking system**
+**Google ADK-Compliant Agent Evaluation System**
 
-[🚀 Quick Start](#-quick-start) • [📖 Usage](#-usage) • [📊 Metrics](#-metrics) • [⚙️ Configuration](#-configuration)
+[🚀 Quick Start](#-quick-start) • [📖 Usage](#-usage) • [📊 Metrics](#-metrics) • [🧪 Testing](#-testing)
 
 </div>
 
@@ -16,113 +16,139 @@
 
 ## 🎯 Overview
 
-A comprehensive agent evaluation system built using Google ADK evaluation patterns and frameworks, providing standardized testing and benchmarking capabilities for intelligent agents.
+A fully ADK-compliant evaluation framework that follows Google Agent Development Kit patterns for testing and benchmarking AI agents. This implementation provides standardized evaluation metrics, supports both test files and evalsets, and integrates seamlessly with existing ADK workflows.
 
 ### ✨ Key Features
 
-- **📊 Multi-metric Evaluation** - Tool trajectory, response quality, and security-specific metrics
-- **📋 Standardized Datasets** - Security-focused evaluation test cases  
-- **🔄 Automated Benchmarking** - Performance and accuracy measurements
-- **🧠 ADK Integration** - Built on google.adk.evaluation patterns
-- **🔧 Extensible Architecture** - Easy to add new metrics and evaluators
+- **🎯 ADK-Compliant** - Exact implementation of Google ADK evaluation patterns
+- **📊 Standard Metrics** - Tool trajectory, response match, and response evaluation scores
+- **📋 Dual Format Support** - Both `.test.json` and `.evalset.json` formats
+- **🔄 Multiple Evaluation Modes** - Web UI, CLI, and programmatic (pytest) testing
+- **🧪 Test & Evalset Patterns** - Simple tests for unit testing, evalsets for integration
+- **⚡ Async Support** - Built with asyncio for efficient parallel evaluation
 
 ## 🚀 Quick Start
 
+### ADK Pattern Usage
+
+```python
+# Following exact ADK documentation pattern
+from adk_evaluator import ADKEvaluator
+
+async def evaluate():
+    await ADKEvaluator.evaluate(
+        agent_module="security_agent",
+        eval_dataset_file_path_or_dir="datasets/vulnerability_assessment.test.json"
+    )
+```
+
+### Command Line
+
 ```bash
-# Navigate to evaluation framework
-cd evaluation/
+# Web UI evaluation (ADK standard)
+adk web
 
-# Install dependencies  
-pip install -r requirements.txt
+# CLI evaluation
+python examples/simple_agent_test.py
 
-# Run agent evaluation
-python -m runners.evaluation_runner --agent security_agent
+# Pytest integration
+pytest examples/pytest_integration.py
 ```
 
-## 📁 Project Structure
+## 📁 Project Structure (ADK-Compliant)
 
-<table>
-<tr>
-<th>Component</th>
-<th>Location</th> 
-<th>Purpose</th>
-</tr>
-<tr>
-<td><strong>📋 Datasets</strong></td>
-<td><code>datasets/</code></td>
-<td>Test cases and evaluation scenarios</td>
-</tr>
-<tr>
-<td><strong>🧪 Evaluators</strong></td>
-<td><code>evaluators/</code></td>
-<td>Metric calculation and assessment logic</td>
-</tr>
-<tr>
-<td><strong>📊 Metrics</strong></td>
-<td><code>metrics/</code></td>
-<td>Custom metrics and scoring functions</td>
-</tr>
-<tr>
-<td><strong>🏃 Runners</strong></td>
-<td><code>runners/</code></td>
-<td>Execution orchestration and batch processing</td>
-</tr>
-<tr>
-<td><strong>⚙️ Config</strong></td>
-<td><code>config/</code></td>
-<td>Evaluation criteria and test configuration</td>
-</tr>
-</table>
-
-## 📖 Usage
-
-### Basic Agent Evaluation
-
-```python
-from evaluation.runners.evaluation_runner import AgentEvaluationRunner
-
-# Run security agent evaluation
-runner = AgentEvaluationRunner()
-results = await runner.evaluate_agent(
-    agent_module="agents.security_agent",
-    eval_dataset_dir="evaluation/datasets"
-)
-
-print(f"Overall Score: {results.overall_score}")
-print(f"Tool Trajectory: {results.tool_trajectory_score}")
+```
+evaluation/
+├── adk_evaluator.py          # Main ADK-compliant evaluator
+├── datasets/                  # Evaluation datasets
+│   ├── *.test.json           # Single test files (unit testing)
+│   └── *.evalset.json        # Evalset files (integration testing)
+├── examples/                  # Usage examples
+│   ├── simple_agent_test.py  # Basic evaluation patterns
+│   ├── pytest_integration.py # Pytest integration
+│   └── web_ui_example.py     # Web UI simulation
+├── evaluators/               # Extended evaluators
+│   ├── security_evaluator.py # Security-specific metrics
+│   └── compliance_evaluator.py # Compliance metrics
+├── config/                   # Configuration
+│   └── test_config.json     # Evaluation criteria
+└── README.md                 # This file
 ```
 
-### Custom Security Evaluation
+## 📖 Usage Patterns
+
+### 1. Test File Approach (Simple, Unit Testing)
 
 ```python
-from evaluation.evaluators.security_evaluator import SecurityEvaluator
+from adk_evaluator import ADKEvaluator
 
-evaluator = SecurityEvaluator()
-results = await evaluator.evaluate_security_response(
-    query="Analyze this IAM policy for security vulnerabilities",
-    response="Policy analysis with findings...",
-    expected_findings=["overprivileged role", "missing MFA"]
+# Single test file evaluation
+evaluator = ADKEvaluator()
+results = await evaluator.evaluate(
+    agent_module="security_agent",
+    eval_dataset_file_path_or_dir="datasets/simple_test.test.json"
 )
 ```
 
-## Metrics
+### 2. Evalset Approach (Complex, Integration Testing)
 
-### Core Metrics
-- **Tool Trajectory Score**: Measures tool usage accuracy (ADK standard)
-- **Response Match Score**: Rouge-1 text similarity (ADK standard)
-- **Response Evaluation Score**: LLM-based quality assessment (ADK standard)
+```python
+# Multiple conversation evaluation
+results = await evaluator.evaluate(
+    agent_module="security_agent",
+    eval_dataset_file_path_or_dir="datasets/complex.evalset.json",
+    num_runs=3  # Multiple runs for consistency
+)
+```
 
-### Security-Specific Metrics
-- **Vulnerability Detection Accuracy**: Precision/recall for security findings
-- **Compliance Coverage**: Percentage of compliance requirements addressed
-- **Risk Assessment Quality**: Accuracy of risk scoring and prioritization
-- **Incident Response Time**: Speed and quality of security incident handling
+### 3. Directory Evaluation (Comprehensive)
 
-### Performance Metrics
-- **Response Latency**: Time to generate responses
-- **Tool Execution Efficiency**: Tool usage optimization
-- **Memory Usage**: Resource consumption tracking
-- **Scalability**: Performance under load
+```python
+# Evaluate all test files in directory
+results = await evaluator.evaluate(
+    agent_module="security_agent",
+    eval_dataset_file_path_or_dir="datasets/"
+)
+```
+
+### 4. Custom Criteria
+
+```python
+from adk_evaluator import EvaluationCriteria
+
+criteria = EvaluationCriteria(
+    tool_trajectory_avg_score=0.9,  # 90% tool accuracy
+    response_match_score=0.8,        # 80% response similarity
+    response_evaluation_score=0.75   # 75% quality score
+)
+
+evaluator = ADKEvaluator(criteria)
+results = await evaluator.evaluate(...)
+```
+
+## 📊 ADK Standard Metrics
+
+### Core Metrics (Required)
+
+| Metric | Description | Default Threshold | Calculation |
+|--------|-------------|-------------------|-------------|
+| `tool_trajectory_avg_score` | Compares actual vs expected tool usage | 1.0 (100%) | Matching steps / Total steps |
+| `response_match_score` | ROUGE-based text similarity | 0.8 (80%) | Word overlap ratio |
+| `response_evaluation_score` | LLM-based quality assessment | 0.75 (75%) | Model evaluation score |
+
+### How Metrics Work
+
+**Tool Trajectory Score:**
+- Each matching tool invocation = 1 point
+- Each mismatch = 0 points
+- Final score = average of all steps
+
+**Response Match Score:**
+- Uses ROUGE-1 metric for text similarity
+- Default threshold allows for minor variations
+- Compares semantic content, not exact text
+
+**Key Principle:** *"Unlike traditional software testing, LLM agents require qualitative evaluations of both output and decision-making trajectory."* - Google ADK Docs
 
 ## Configuration
 

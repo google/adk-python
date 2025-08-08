@@ -172,6 +172,37 @@ class PerformantAPIClient:
         """Test endpoint - PERFORMANCE OPTIMIZED."""
         return self._make_request("POST", "/api/v1/gcp-api-explorer/test", 
                                 test_request, use_cache=False)
+    
+    def chat_with_agent(self, message: str, context: Dict = None) -> Dict[str, Any]:
+        """Chat with ADK Coordinator Agent - LLM-driven delegation."""
+        return self._make_request(
+            "POST", 
+            "/api/v1/agent/chat",  # Route to hybrid ADK chat endpoint
+            {"prompt": message, "context": context or {}, "use_enhanced": True},
+            use_cache=False
+        )
+    
+    def get_security_findings(self, project_id: str = None, days_back: int = 30) -> Dict[str, Any]:
+        """Get security findings - PERFORMANCE OPTIMIZED."""
+        return self._make_request("GET", "/api/v1/security/findings")
+    
+    def get_enabled_apis(self) -> Dict[str, Any]:
+        """Get enabled APIs - PERFORMANCE OPTIMIZED."""
+        return self._make_request("GET", "/api/v1/security/enabled-apis")
+    
+    def get_performance_summary(self) -> Dict[str, Any]:
+        """Get performance summary - PERFORMANCE OPTIMIZED."""
+        return self._make_request("GET", "/api/v1/monitoring/summary")
+    
+    def get_project_info(self, project_id: str) -> Dict[str, Any]:
+        """Get project information - PERFORMANCE OPTIMIZED."""
+        return self._make_request("GET", f"/api/v1/gcp/projects/{project_id}")
+    
+    def analyze_all_users(self) -> Dict[str, Any]:
+        """Get all users analysis - PERFORMANCE OPTIMIZED."""
+        if hasattr(st.session_state, 'selected_project') and st.session_state.selected_project:
+            return self._make_request("GET", f"/api/v1/iam/project/{st.session_state.selected_project}/analyze-all-users")
+        return {"success": False, "error": "No project selected"}
 
 # Create optimized global instance
 _optimized_client = None
@@ -224,3 +255,9 @@ def monitor_performance(func):
 api_client.get_projects = monitor_performance(api_client.get_projects)
 api_client.get_security_score = monitor_performance(api_client.get_security_score)
 api_client.get_recommendations = monitor_performance(api_client.get_recommendations)
+api_client.chat_with_agent = monitor_performance(api_client.chat_with_agent)
+api_client.get_security_findings = monitor_performance(api_client.get_security_findings)
+api_client.get_enabled_apis = monitor_performance(api_client.get_enabled_apis)
+api_client.get_performance_summary = monitor_performance(api_client.get_performance_summary)
+api_client.get_project_info = monitor_performance(api_client.get_project_info)
+api_client.analyze_all_users = monitor_performance(api_client.analyze_all_users)

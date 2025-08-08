@@ -415,7 +415,7 @@ async def get_available_log_filters(
         "examples": {
             "custom_severity": 'severity >= "WARNING"',
             "custom_resource": 'resource.type = "gce_instance"',
-            "custom_time": 'timestamp >= "2024-01-01T00:00:00Z"'
+            "custom_time": 'timestamp >= "{dynamic_timestamp}"'
         }
     }
 

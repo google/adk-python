@@ -13,6 +13,10 @@ google-auth
 google-auth-oauthlib
 google-auth-httplib2
 google-cloud-storage
+google-cloud-asset
+google-cloud-compute
+google-cloud-sql
+google-cloud-monitoring
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-exporter-gcp-trace

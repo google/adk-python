@@ -20,10 +20,7 @@ def render_gcp_api_explorer_view():
     st.header("🚀 GCP API Explorer")
     st.markdown("Discover, explore, and test Google Cloud Platform APIs dynamically")
     
-    # Check if GCP API Explorer service is available
-    if not check_service_availability():
-        st.error("❌ GCP API Explorer service is not available. Please enable it in the service configuration.")
-        return
+    # GCP API Explorer is always available with ADK agent routing
     
     # Main tabs
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -592,28 +589,16 @@ def render_gcp_api_explorer_summary_card():
     with st.container():
         st.subheader("🚀 GCP API Explorer")
         
-        # Check service status
-        service_available = check_service_availability()
-        
         col1, col2 = st.columns(2)
         
         with col1:
-            if service_available:
-                services_count = len(st.session_state.get('gcp_discovered_services', []))
-                st.metric("Discovered APIs", services_count)
-            else:
-                st.metric("Service Status", "❌ Offline")
+            services_count = len(st.session_state.get('gcp_discovered_services', []))
+            st.metric("Available APIs", services_count if services_count > 0 else "Ready")
         
         with col2:
-            if service_available:
-                test_count = len(st.session_state.get('gcp_test_history', []))
-                st.metric("API Tests", test_count)
-            else:
-                st.metric("Availability", "Disabled")
+            test_count = len(st.session_state.get('gcp_test_history', []))
+            st.metric("Tests Run", test_count)
         
-        if service_available:
-            if st.button("Explore GCP APIs", key="explore_gcp_apis"):
-                st.session_state.page = "gcp_api_explorer"
-                st.rerun()
-        else:
-            st.info("💡 Enable the GCP API Explorer service to discover and test Google Cloud APIs")
+        if st.button("🔍 Explore GCP APIs", key="explore_gcp_apis"):
+            st.session_state.page = "gcp_api_explorer"
+            st.rerun()

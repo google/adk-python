@@ -2,7 +2,7 @@
 steps:
   # Build the Docker image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA', '.', '-f', 'Dockerfile']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:$COMMIT_SHA', '.', '-f', 'deploy/Dockerfile']
   
   # Push the Docker image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'

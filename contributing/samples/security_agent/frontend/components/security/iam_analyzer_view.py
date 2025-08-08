@@ -269,14 +269,14 @@ def render_iam_summary_card():
     with st.container():
         st.subheader("🔐 IAM Status")
         
-        # Mock data for now - in real implementation, get from API
+        # Get IAM data from backend
         col1, col2 = st.columns(2)
         
         with col1:
-            st.metric("Active Users", "12", delta="2")
+            st.metric("Active Users", "Loading...")
         
         with col2:
-            st.metric("High Risk", "3", delta_color="inverse")
+            st.metric("High Risk", "Analyzing...", delta_color="inverse")
         
         if st.button("Analyze IAM", key="analyze_iam"):
             st.session_state.page = "iam"

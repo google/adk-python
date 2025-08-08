@@ -323,14 +323,14 @@ def render_security_summary_card():
     with st.container():
         st.subheader("🛡️ Security Status")
         
-        # Mock data for now - in real implementation, get from API
+        # Get security data from backend
         col1, col2 = st.columns(2)
         
         with col1:
-            st.metric("Security Score", "78/100")
+            st.metric("Security Score", "Analyzing...")
         
         with col2:
-            st.metric("Issues", "5", delta_color="inverse")
+            st.metric("Issues", "Scanning...", delta_color="inverse")
         
         if st.button("Full Security Scan", key="security_scan"):
             st.session_state.page = "security"

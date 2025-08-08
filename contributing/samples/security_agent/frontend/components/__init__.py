@@ -21,13 +21,15 @@ from .monitoring.performance_monitoring_view import (
     render_day_two_sre_view, 
     render_performance_summary_card
 )
-from .monitoring.services_management_enhanced_view import render_services_management_enhanced_view
+# Services management removed - using ADK agent routing instead
 
 # Shared components
 from .shared.recommendations_view import render_recommendations_view, render_recommendations_summary_card
 from .shared.msa_analysis_view import render_msa_analysis_view, render_msa_summary_card
 from .shared.api_explorer_view import render_api_explorer_view, render_api_explorer_summary_card
 from .shared.gcp_api_explorer_view import render_gcp_api_explorer_view, render_gcp_api_explorer_summary_card
+
+# ADK demos now integrated into main chat interface
 
 __all__ = [
     # Dashboard
@@ -55,7 +57,7 @@ __all__ = [
     'render_performance_monitoring_view',
     'render_day_two_sre_view',
     'render_performance_summary_card',
-    'render_services_management_enhanced_view',
+# 'render_services_management_enhanced_view',  # Removed - ADK agent routing
     
     # Shared
     'render_recommendations_view',
@@ -65,5 +67,5 @@ __all__ = [
     'render_api_explorer_view',
     'render_api_explorer_summary_card',
     'render_gcp_api_explorer_view',
-    'render_gcp_api_explorer_summary_card'
+    'render_gcp_api_explorer_summary_card',
 ]

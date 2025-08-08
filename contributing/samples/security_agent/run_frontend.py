@@ -18,14 +18,14 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Load environment variables from the root .env file
+# Load environment variables from the local .env file
 from dotenv import load_dotenv
 dotenv_path = os.path.join(os.getcwd(), '.env')
 if os.path.exists(dotenv_path):
     load_dotenv(dotenv_path=dotenv_path)
     logger.info(f"Loaded environment variables from {dotenv_path}")
 else:
-    logger.warning(f".env file not found at project root. Using default configurations.")
+    logger.warning(f".env file not found at {dotenv_path}. Using default configurations.")
 
 def run_cloud_build():
     """Trigger a Cloud Build to build and deploy the application."""
@@ -65,11 +65,18 @@ def run_cloud_build():
     
     substitutions_str = ",".join([f"{k}={v}" for k, v in substitutions.items()])
 
-    # Cloud Build command
+    # Cloud Build command (using cloudbuild.yaml from deploy directory)
+    adk_root = os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd())))
+    cloudbuild_path = os.path.join(adk_root, "deploy", "cloudbuild.yaml")
+    if not os.path.exists(cloudbuild_path):
+        logger.error(f"cloudbuild.yaml not found at {cloudbuild_path}")
+        logger.error("Please ensure cloudbuild.yaml exists in the /deploy directory")
+        return
+    
     cmd = [
         "gcloud", "builds", "submit",
         str(build_context),
-        "--config", "cloudbuild.yaml",
+        "--config", cloudbuild_path,
         f"--project={project_id}",
         f"--substitutions={substitutions_str}"
     ]

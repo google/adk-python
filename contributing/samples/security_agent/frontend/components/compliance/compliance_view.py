@@ -243,7 +243,7 @@ def render_compliance_summary_card():
     with st.container():
         st.subheader("📋 Compliance Status")
         
-        # Mock data for now - in real implementation, get from API
+        # Sample compliance data - replace with real API call
         col1, col2 = st.columns(2)
         
         with col1:

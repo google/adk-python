@@ -34,11 +34,18 @@ security_agent/                    ← RUN FROM HERE
    nano .env  # or use your preferred editor
    ```
 
-4. **Run the application from root:**
+4. **Run the application from ~./security-agent:**
    ```bash
-   python run.py  # Automatically loads .env from root
+   python run_backend.py
+   python run_frontend.py
+     # Automatically loads .env from root
    ```
-
+4. **Run the application from ~./security-agent:**
+   ```bash
+   python run_backend.py --cloud
+   python run_frontend.py --cloud 
+     # Automatically loads .env from root
+   ```
 ## Environment Variables
 
 ### Google Cloud Configuration
@@ -107,34 +114,6 @@ ENABLE_PROFILING=false
 
 ## 🚀 Running the Application
 
-### Always Run From Root Directory
-
-```bash
-# ✅ CORRECT - Run from security_agent root
-cd /Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent
-python run.py
-
-# ❌ WRONG - Don't run from subdirectories  
-cd backend
-python ../run.py              # This won't work properly
-
-# ❌ WRONG - Don't run from frontend
-cd frontend  
-python ../run.py              # This won't work properly
-```
-
-### Verify You're in the Right Directory
-
-```bash
-# You should see these files in your current directory:
-ls -la
-# Should show: .env, run.py, backend/, frontend/, venv/, etc.
-
-# Current working directory should end with 'security_agent'
-pwd
-# Should show: .../security_agent
-```
-
 ## Usage Examples
 
 ### Local Development
@@ -185,12 +164,6 @@ python run.py --production           # Forces production mode
 ```
 
 ## Deployment Modes
-
-### 1. Local Development
-```bash
-# Uses .env file automatically
-python run.py
-```
 
 ### 2. Cloud Mode
 ```bash

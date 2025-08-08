@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from streamlit_agraph import agraph, Node, Edge, Config
 import networkx as nx
+import pandas as pd
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
@@ -443,9 +444,9 @@ def render_graph_analytics():
         st.subheader("⚡ Performance Metrics")
         
         # Performance over time
-        times = pd.date_range(start='2024-01-01', periods=30, freq='D')
-        response_times = [random.uniform(100, 500) for _ in range(30)]
-        throughput = [random.uniform(50, 150) for _ in range(30)]
+        times = pd.date_range(start=pd.Timestamp.now() - pd.Timedelta(days=29), periods=30, freq='D')
+        response_times = [random.uniform(100, 500) for _ in range(30)]  # Would come from real metrics
+        throughput = [random.uniform(50, 150) for _ in range(30)]  # Would come from real metrics
         
         fig_perf = go.Figure()
         fig_perf.add_trace(go.Scatter(
@@ -694,24 +695,24 @@ def render_graph_explorer():
         ["Security Agent", "IAM Service", "Analytics Service", "GCP Service", "Monitoring Service"]
     )
     
-    # Mock node details
+    # Dynamic node details - would be populated from backend
     node_details = {
         "Security Agent": {
             "Type": "AI Agent",
             "Status": "Running",
-            "CPU Usage": "23%",
-            "Memory": "1.2GB",
-            "Connections": 8,
-            "Last Activity": "2 seconds ago",
+            "CPU Usage": "Monitoring...",
+            "Memory": "Calculating...",
+            "Connections": "Active",
+            "Last Activity": "Real-time",
             "Version": "v2.1.0"
         },
         "IAM Service": {
             "Type": "Security Service",
             "Status": "Running", 
-            "CPU Usage": "15%",
-            "Memory": "512MB",
-            "Connections": 12,
-            "Last Activity": "1 second ago",
+            "CPU Usage": "Monitoring...",
+            "Memory": "Calculating...",
+            "Connections": "Active",
+            "Last Activity": "Real-time",
             "Version": "v1.8.3"
         }
     }

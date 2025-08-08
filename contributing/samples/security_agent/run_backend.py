@@ -15,14 +15,14 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Load environment variables from the root .env file
+# Load environment variables from the local .env file
 from dotenv import load_dotenv
 dotenv_path = os.path.join(os.getcwd(), '.env')
 if os.path.exists(dotenv_path):
     load_dotenv(dotenv_path=dotenv_path)
     logger.info(f"Loaded environment variables from {dotenv_path}")
 else:
-    logger.warning(f".env file not found at project root. Using default configurations.")
+    logger.warning(f".env file not found at {dotenv_path}. Using default configurations.")
 
 import argparse
 import shutil
@@ -65,11 +65,18 @@ def run_cloud_build():
     
     substitutions_str = ",".join([f"{k}={v}" for k, v in substitutions.items()])
 
-    # Cloud Build command
+    # Cloud Build command (using cloudbuild.yaml from deploy directory)
+    adk_root = os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd())))
+    cloudbuild_path = os.path.join(adk_root, "deploy", "cloudbuild.yaml")
+    if not os.path.exists(cloudbuild_path):
+        logger.error(f"cloudbuild.yaml not found at {cloudbuild_path}")
+        logger.error("Please ensure cloudbuild.yaml exists in the /deploy directory")
+        return
+    
     cmd = [
         "gcloud", "builds", "submit",
         str(build_context),
-        "--config", "cloudbuild.yaml",
+        "--config", cloudbuild_path,
         f"--project={project_id}",
         f"--substitutions={substitutions_str}"
     ]
@@ -118,7 +125,7 @@ def main():
     # Build command (run from backend/ directory)
     cmd = [
         python_exe, "-m", "uvicorn",
-        "main_legacy:app",
+        "main:app",
         "--host", host,
         "--port", port,
         "--log-level", log_level
@@ -141,15 +148,15 @@ def main():
         script_dir = os.path.dirname(os.path.abspath(__file__))
         backend_dir = os.path.join(script_dir, "backend")
     
-    # Check if main_legacy.py exists in the backend directory
-    main_legacy_path = os.path.join(backend_dir, "main_legacy.py")
-    if not os.path.exists(main_legacy_path):
-        logger.error(f"❌ main_legacy.py not found at: {main_legacy_path}")
+    # Check if main.py exists in the backend directory
+    main_path = os.path.join(backend_dir, "main.py")
+    if not os.path.exists(main_path):
+        logger.error(f"❌ main.py not found at: {main_path}")
         logger.error(f"Current directory: {os.getcwd()}")
         logger.error("Please run this script from the security_agent directory or the ADK root directory.")
         return False
     
-    logger.info("🚀 Starting legacy backend server...")
+    logger.info("🚀 Starting backend server...")
     logger.info(f"   • Host: {host}")
     logger.info(f"   • Port: {port}")
     logger.info(f"   • Log Level: {log_level}")
