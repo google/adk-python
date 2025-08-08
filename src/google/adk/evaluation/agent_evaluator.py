@@ -283,7 +283,7 @@ class AgentEvaluator:
       try:
         eval_set = EvalSet.model_validate_json(content)
         assert len(initial_session) == 0, (
-            "Intial session should be specified as a part of EvalSet file."
+            "Initial session should be specified as a part of EvalSet file."
             " Explicit initial session is only needed, when specifying data in"
             " the older schema."
         )
