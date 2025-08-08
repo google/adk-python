@@ -1016,7 +1016,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 
 ### ⚠ BREAKING CHANGES
 
-* Fix typo in method name in `Event`: has_trailing_code_exeuction_result --> has_trailing_code_execution_result.
+* Fix typo in method name in `Event`: has_trailing_code_execution_result --> has_trailing_code_execution_result.
 
 ### Features
 
