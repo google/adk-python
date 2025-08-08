@@ -7010,7 +7010,7 @@ This approach involves creating individual test files, each representing a singl
 -   `Expected Intermediate Agent Responses`: These are the natural language
     responses that the agent (or sub-agents) generates as it moves towards
     generating a final answer. These natural language responses are usually an
-    artifact of an multi-agent system, where your root agent depends on sub-agents to achieve a goal. These intermediate responses, may or may not be of
+    artifact of a multi-agent system, where your root agent depends on sub-agents to achieve a goal. These intermediate responses, may or may not be of
     interest to the end user, but for a developer/owner of the system, are of
     critical importance, as they give you the confidence that the agent went
     through the right path to generate final response.

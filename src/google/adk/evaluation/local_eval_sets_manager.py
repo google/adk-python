@@ -89,7 +89,7 @@ def convert_eval_set_to_pydanctic_schema(
     eval_set_id: str,
     eval_set_in_json_format: list[dict[str, Any]],
 ) -> EvalSet:
-  r"""Returns an pydantic EvalSet generated from the json representation.
+  r"""Returns a pydantic EvalSet generated from the json representation.
 
     Args:
       eval_set_id: Eval set id.

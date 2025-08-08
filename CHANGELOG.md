@@ -499,7 +499,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 ### Features
 
 * [Core]Add agent card builder ([18f5bea](https://github.com/google/adk-python/commit/18f5bea411b3b76474ff31bfb2f62742825b45e5))
-* [Core]Add an to_a2a util to convert adk agent to A2A ASGI application ([a77d689](https://github.com/google/adk-python/commit/a77d68964a1c6b7659d6117d57fa59e43399e0c2))
+* [Core]Add a to_a2a util to convert adk agent to A2A ASGI application ([a77d689](https://github.com/google/adk-python/commit/a77d68964a1c6b7659d6117d57fa59e43399e0c2))
 * [Core]Add camel case converter for agents ([0e173d7](https://github.com/google/adk-python/commit/0e173d736334f8c6c171b3144ac6ee5b7125c846))
 * [Evals]Use LocalEvalService to run all evals in cli and web ([d1f182e](https://github.com/google/adk-python/commit/d1f182e8e68c4a5a4141592f3f6d2ceeada78887))
 * [Evals]Enable FinalResponseMatchV2 metric as an experiment ([36e45cd](https://github.com/google/adk-python/commit/36e45cdab3bbfb653eee3f9ed875b59bcd525ea1))
