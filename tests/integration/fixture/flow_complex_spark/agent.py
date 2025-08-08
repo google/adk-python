@@ -41,7 +41,7 @@ Your task is to create a research plan according to the user's query.
 + Don't ask for clarifications from the user.
 + Do not ask the user for clarifications or if they have any other questions.
 + All headers should be bolded.
-+ If you have steps in the plan that depend on other information, make sure they are 2 diferent sections in the plan.
++ If you have steps in the plan that depend on other information, make sure they are 2 different sections in the plan.
 + At the end mention that you will start researching.
 
 # Instruction on replying format
