@@ -5,12 +5,19 @@ import json
 import os
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
-from google.cloud import asset_v1
-from google.cloud import compute_v1
-from google.cloud import storage
-from google.cloud import monitoring_v3
-from google.oauth2 import service_account
 import logging
+
+# Try to import Google Cloud libraries with error handling
+try:
+    from google.cloud import asset_v1
+    from google.cloud import compute_v1
+    from google.cloud import storage
+    from google.cloud import monitoring_v3
+    from google.oauth2 import service_account
+    GCP_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"Google Cloud libraries not available: {e}")
+    GCP_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +27,16 @@ class GCPAssetInventoryService:
     def __init__(self, project_id: str):
         self.project_id = project_id
         self.project_resource = f"projects/{project_id}"
+        self.gcp_available = GCP_AVAILABLE
+        
+        if not GCP_AVAILABLE:
+            logger.warning("Google Cloud libraries not available - using fallback mode")
+            self.credentials = None
+            self.asset_client = None
+            self.compute_client = None
+            self.storage_client = None
+            self.monitoring_client = None
+            return
         
         # Set up authentication
         credentials_path = os.path.join(
@@ -57,10 +74,18 @@ class GCPAssetInventoryService:
                 logger.info("Using default GCP credentials")
         except Exception as e:
             logger.error(f"Failed to initialize GCP clients: {e}")
-            raise
+            # Don't raise - fall back to mock mode
+            self.asset_client = None
+            self.compute_client = None
+            self.storage_client = None
+            self.monitoring_client = None
     
     async def get_complete_asset_inventory(self) -> Dict[str, Any]:
         """Get complete asset inventory for the project."""
+        if not self.gcp_available or not self.asset_client:
+            logger.info(f"GCP not available - returning fallback inventory for {self.project_id}")
+            return self._get_fallback_inventory()
+            
         try:
             logger.info(f"Fetching complete asset inventory for {self.project_id}")
             
