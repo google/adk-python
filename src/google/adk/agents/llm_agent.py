@@ -134,6 +134,12 @@ class LlmAgent(BaseAgent):
   instruction: Union[str, InstructionProvider] = ''
   """Instructions for the LLM model, guiding the agent's behavior."""
 
+  static_instruction: Union[str, InstructionProvider] = ''
+  """Additional instructions for the LLM model that are treated as raw strings.
+  Curly braces in this field will NOT be interpreted as placeholders for state injection.
+  This instruction block is appended after the processed `instruction` field.
+  """
+
   global_instruction: Union[str, InstructionProvider] = ''
   """Instructions for all the agents in the entire agent tree.
 
@@ -337,6 +343,16 @@ class LlmAgent(BaseAgent):
       if inspect.isawaitable(instruction):
         instruction = await instruction
       return instruction, True
+
+  async def canonical_static_instruction(self, ctx: ReadonlyContext) -> str:
+    """The resolved self.static_instruction field."""
+    if isinstance(self.static_instruction, str):
+      return self.static_instruction
+    else:
+      instruction = self.static_instruction(ctx)
+      if inspect.isawaitable(instruction):
+        instruction = await instruction
+      return instruction
 
   async def canonical_global_instruction(
       self, ctx: ReadonlyContext

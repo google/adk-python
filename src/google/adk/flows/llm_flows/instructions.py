@@ -49,6 +49,7 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
       return
 
     root_agent: BaseAgent = agent.root_agent
+    final_instructions = []
 
     # Appends global instructions if set.
     if (
@@ -64,7 +65,7 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
         si = await instructions_utils.inject_session_state(
             raw_si, ReadonlyContext(invocation_context)
         )
-      llm_request.append_instructions([si])
+      final_instructions.append(si)
 
     # Appends agent instructions if set.
     if agent.instruction:  # not empty str
@@ -76,7 +77,17 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
         si = await instructions_utils.inject_session_state(
             raw_si, ReadonlyContext(invocation_context)
         )
-      llm_request.append_instructions([si])
+      final_instructions.append(si)
+
+    # Appends static agent instructions if set.
+    if agent.static_instruction:  # not empty str
+      static_si = await agent.canonical_static_instruction(
+          ReadonlyContext(invocation_context)
+      )
+      final_instructions.append(static_si)
+
+    if final_instructions:
+      llm_request.append_instructions(final_instructions)
 
     # Maintain async generator behavior
     if False:  # Ensures it behaves as a generator
