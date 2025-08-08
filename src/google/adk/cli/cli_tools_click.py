@@ -911,7 +911,7 @@ def adk_services_options():
 
 
 def deprecated_adk_services_options():
-  """Depracated ADK services options."""
+  """Deprecated ADK services options."""
 
   def warn(alternative_param, ctx, param, value):
     if value:
