@@ -130,7 +130,7 @@ def upload_directory_to_gcs(
         )
         return False
 
-  print(f"Sucessfully uploaded {file_count} files to GCS.")
+  print(f"Successfully uploaded {file_count} files to GCS.")
   return True
 
 
