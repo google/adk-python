@@ -55,7 +55,7 @@ state is available after writing via the context object
 
 ### Current Behavior
 
-The current behavior of pesisting states are:
+The current behavior of persisting states are:
 
 * for `before_agent_callback`: state delta will be persisted after all callbacks are processed.
 * for `before_model_callback`: state delta will be persisted with the final LlmResponse,
