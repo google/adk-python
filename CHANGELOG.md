@@ -505,8 +505,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 * [Evals]Enable FinalResponseMatchV2 metric as an experiment ([36e45cd](https://github.com/google/adk-python/commit/36e45cdab3bbfb653eee3f9ed875b59bcd525ea1))
 * [Models]Add support for `model-optimizer-*` family of models in vertex ([ffe2bdb](https://github.com/google/adk-python/commit/ffe2bdbe4c2ea86cc7924eb36e8e3bb5528c0016))
 * [Services]Added a sample for History Management ([67284fc](https://github.com/google/adk-python/commit/67284fc46667b8c2946762bc9234a8453d48a43c))
-* [Services]Support passing fully qualified agent engine resource name when constructing session service and memory service ([2e77804](https://github.com/google/adk-python/commit/2e778049d0a675e458f4e
-35fe4104ca1298dbfcf))
+* [Services]Support passing fully qualified agent engine resource name when constructing session service and memory service ([2e77804](https://github.com/google/adk-python/commit/2e778049d0a675e458f4e35fe4104ca1298dbfcf))
 * [Tools]Add ComputerUseToolset ([083dcb4](https://github.com/google/adk-python/commit/083dcb44650eb0e6b70219ede731f2fa78ea7d28))
 * [Tools]Allow toolset to process llm_request before tools returned by it ([3643b4a](https://github.com/google/adk-python/commit/3643b4ae196fd9e38e52d5dc9d1cd43ea0733d36))
 * [Tools]Support input/output schema by fully-qualified code reference ([dfee06a](https://github.com/google/adk-python/commit/dfee06ac067ea909251d6fb016f8331065d430e9))
