@@ -121,7 +121,7 @@ class AgentEvaluator:
         the agent. There is convention in place here, where the code is going to
         look for 'root_agent' or `get_agent_async` in the loaded module.
       eval_set: The eval set.
-      criteria: Evauation criteria, a dictionary of metric names to their
+      criteria: Evaluation criteria, a dictionary of metric names to their
         respective thresholds. This field is deprecated.
       eval_config: The evauation config.
       num_runs: Number of times all entries in the eval dataset should be

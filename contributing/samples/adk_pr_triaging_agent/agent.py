@@ -242,7 +242,7 @@ root_agent = Agent(
       - If it's about session, memory, artifacts services, label it with "services"
       - If it's about UI/web, label it with "web"
       - If it's related to tools, label it with "tools"
-      - If it's about agent evalaution, then label it with "eval".
+      - If it's about agent evaluation, then label it with "eval".
       - If it's about streaming/live, label it with "live".
       - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
