@@ -143,7 +143,7 @@ def change_issue_type(issue_number: int, issue_type: str) -> dict[str, Any]:
   """Change the issue type of the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue, in string foramt.
+    issue_number: issue number of the Github issue, in string format.
     issue_type: issue type to assign
 
   Returns:
