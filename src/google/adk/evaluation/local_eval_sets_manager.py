@@ -209,9 +209,9 @@ class LocalEvalSetsManager(EvalSetsManager):
     """Creates and returns an empty EvalSet given the app_name and eval_set_id.
 
     Raises:
-      ValueError: If eval set id is not valid or an eval set already exists.
+      ValueError: If Eval Set ID is not valid or an eval set already exists.
     """
-    self._validate_id(id_name="Eval Set Id", id_value=eval_set_id)
+    self._validate_id(id_name="Eval Set ID", id_value=eval_set_id)
 
     # Define the file path
     new_eval_set_path = self._get_eval_set_file_path(app_name, eval_set_id)

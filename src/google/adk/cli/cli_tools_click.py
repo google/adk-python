@@ -518,7 +518,7 @@ def cli_eval(
 
   This will only run eval_1, eval_2 and eval_3 from sample_eval_set_file.json.
 
-  *Eval Set Id*
+  *Eval Set ID*
   For each eval set, all evals will be run by default.
 
   If you want to run only specific evals from a eval set, first create a comma
