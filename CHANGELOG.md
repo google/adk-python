@@ -977,7 +977,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 * Fix google search reading undefined for `renderedContent`.
 
 ### Miscellaneous Chores
-* Docstring improvements, typo fixings, github action to enfore code styles on formatting and imports, etc.
+* Docstring improvements, typo fixings, github action to enforce code styles on formatting and imports, etc.
 
 ## 0.3.0
 
