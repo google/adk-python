@@ -209,7 +209,7 @@ class LocalEvalService(BaseEvalService):
 
     # We also keep track of the overall score for a metric, derived from all
     # invocation. For example, if we were keeping track the metric that compares
-    # how well is the final resposne as compared to a golden answer, then each
+    # how well is the final response as compared to a golden answer, then each
     # invocation will have the value of this metric. We will also have an
     # overall score using aggregation strategy across all invocations. This
     # would be the score for the eval case.
