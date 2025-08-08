@@ -84,7 +84,7 @@ root_agent = Agent(
 
 
 You need to assist the user with their queries by looking at the data and the context in the conversation.
-You final answer should summarize the code and code execution relavant to the user query.
+You final answer should summarize the code and code execution relevant to the user query.
 
 You should include all pieces of data to answer the user query, such as the table from code execution results.
 If you cannot answer the question directly, you should follow the guidelines above to generate the next step.
