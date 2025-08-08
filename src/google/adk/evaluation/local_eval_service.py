@@ -267,7 +267,7 @@ class LocalEvalService(BaseEvalService):
             overall_eval_status=EvalStatus.NOT_EVALUATED
         )
 
-      # Track overall scrore across all invocations.
+      # Track overall score across all invocations.
       eval_metric_result_details = EvalMetricResultDetails(
           rubric_scores=evaluation_result.overall_rubric_scores
       )
