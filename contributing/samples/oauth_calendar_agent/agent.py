@@ -159,7 +159,7 @@ root_agent = Agent(
       {userInfo?}
       </User>
 
-      Currnet time: {_time}
+      Current time: {_time}
 """,
     tools=[
         AuthenticatedFunctionTool(
