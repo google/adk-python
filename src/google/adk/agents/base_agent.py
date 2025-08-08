@@ -588,7 +588,7 @@ class BaseAgent(BaseModel):
     """Creates an agent from a config.
 
     If sub-classes uses a custom agent config, override `_from_config_kwargs`
-    method to return an updated kwargs for agent construstor.
+    method to return an updated kwargs for agent constructor.
 
     Args:
       config: The config to create the agent from.
