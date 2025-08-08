@@ -104,14 +104,25 @@ def main():
     print("🛡️ Starting ADK Security Agent Backend")
     print("=" * 50)
     
-    # Check for virtual environment
-    venv_path = os.path.join(os.getcwd(), "venv")
+    # Determine backend directory first
+    current_dir = os.getcwd()
+    if current_dir.endswith("security_agent"):
+        backend_dir = os.path.join(current_dir, "backend")
+    elif current_dir.endswith("ADK"):
+        backend_dir = os.path.join(current_dir, "contributing", "samples", "security_agent", "backend")
+    else:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = os.path.join(script_dir, "backend")
+    
+    # Check for virtual environment in backend directory
+    venv_path = os.path.join(backend_dir, "venv")
     python_exe = sys.executable
     if os.path.exists(venv_path) and os.path.exists(os.path.join(venv_path, "bin", "python")):
         python_exe = os.path.join(venv_path, "bin", "python")
-        logger.info(f"Using venv Python: {python_exe}")
+        logger.info(f"Using backend venv Python: {python_exe}")
     else:
         logger.info(f"Using system Python: {python_exe}")
+        logger.warning(f"Virtual environment not found at: {venv_path}")
     
     # Set environment
     os.environ['USE_LEGACY'] = 'true'
@@ -134,19 +145,7 @@ def main():
     if reload:
         cmd.append("--reload")
     
-    # Set working directory for backend
-    # Determine the correct backend directory path based on current location
-    current_dir = os.getcwd()
-    if current_dir.endswith("security_agent"):
-        # We're in the security_agent directory, backend files are in backend/ subdirectory
-        backend_dir = os.path.join(current_dir, "backend")
-    elif current_dir.endswith("ADK"):
-        # We're in the ADK root directory
-        backend_dir = os.path.join(current_dir, "contributing", "samples", "security_agent", "backend")
-    else:
-        # Try to find the backend directory relative to script location
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        backend_dir = os.path.join(script_dir, "backend")
+    # Backend directory already determined above
     
     # Check if main.py exists in the backend directory
     main_path = os.path.join(backend_dir, "main.py")
