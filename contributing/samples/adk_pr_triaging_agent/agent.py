@@ -280,7 +280,7 @@ root_agent = Agent(
       - Call the `get_pull_request_details` tool to get the details of the PR.
       - Skip the PR (i.e. do not label or comment) if any of the following is true:
         - the PR is closed
-        - the PR is labeled with "google-contributior"
+        - the PR is labeled with "google-contributor"
         - the PR is already labelled with the above labels (e.g. "documentation", "services", "tools", etc.).
       - Check if the PR is following the contribution guidelines.
         - If it's not following the guidelines, recommend or add a comment to the PR that points to the contribution guidelines (https://github.com/google/adk-python/blob/main/CONTRIBUTING.md).
