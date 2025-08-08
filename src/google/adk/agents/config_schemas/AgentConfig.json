@@ -1095,7 +1095,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Display name of the file data. Used to provide a label or filename to distinguish file datas. It is not currently used in the Gemini GenerateContent calls.",
+          "description": "Optional. Display name of the file data. Used to provide a label or filename to distinguish file data. It is not currently used in the Gemini GenerateContent calls.",
           "title": "Displayname"
         },
         "fileUri": {
