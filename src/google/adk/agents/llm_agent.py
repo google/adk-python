@@ -499,12 +499,6 @@ class LlmAgent(BaseAgent):
           ' sub_agents must be empty to disable agent transfer.'
       )
 
-    if self.tools:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' tools must be empty'
-      )
-
   @field_validator('generate_content_config', mode='after')
   @classmethod
   def __validate_generate_content_config(
