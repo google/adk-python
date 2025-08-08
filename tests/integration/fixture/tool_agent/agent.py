@@ -100,7 +100,7 @@ def repetive_call_2(param: str):
 
 test_case_retrieval = FilesRetrieval(
     name="test_case_retrieval",
-    description="General guidence for agent test cases",
+    description="General guidance for agent test cases",
     input_dir=os.path.join(os.path.dirname(__file__), "files"),
 )
 
@@ -109,7 +109,7 @@ valid_rag_retrieval = VertexAiRagRetrieval(
     rag_corpora=[
         "projects/1096655024998/locations/us-central1/ragCorpora/4985766262475849728"
     ],
-    description="General guidence for agent test cases",
+    description="General guidance for agent test cases",
 )
 
 invalid_rag_retrieval = VertexAiRagRetrieval(
