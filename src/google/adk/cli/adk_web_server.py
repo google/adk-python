@@ -396,7 +396,7 @@ class AdkWebServer:
   If you pass in a web_assets_dir, the static assets will be served under
   /dev-ui in addition to the API endpoints created by default.
 
-  You can add add additional API endpoints by modifying the FastAPI app
+  You can add additional API endpoints by modifying the FastAPI app
   instance returned by get_fast_api_app as this class exposes the agent runners
   and most other bits of state retained during the lifetime of the server.
 
