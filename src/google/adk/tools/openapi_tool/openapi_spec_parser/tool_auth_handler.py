@@ -269,8 +269,8 @@ class ToolAuthHandler:
 
     # here exchangers are doing two different thing:
     # for service account the exchanger is doing actual token exchange
-    # while for oauth2 it's actually doing the credentail conversion
-    # from OAuth2 credential to HTTP credentails for setting credential in
+    # while for oauth2 it's actually doing the credential conversion
+    # from OAuth2 credential to HTTP credentials for setting credential in
     # http header
     # TODO cleanup the logic:
     # 1. service account token exchanger should happen before we store them in
