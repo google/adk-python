@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from typing import Any, Optional, Dict, List, TYPE_CHECKING
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import TYPE_CHECKING
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
@@ -29,7 +33,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 if TYPE_CHECKING:
-    from google.adk.agents.invocation_context import InvocationContext
+  from google.adk.agents.invocation_context import InvocationContext
 
 
 class LogCollectorPlugin(BasePlugin):
@@ -72,13 +76,18 @@ class LogCollectorPlugin(BasePlugin):
     self.logs: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     self._lock = asyncio.Lock()
 
-  async def _log_entry(self, session_id: str, callback_type: str, data: Dict[str, Any]):
+  async def _log_entry(
+      self, session_id: str, callback_type: str, data: Dict[str, Any]
+  ):
     log_entry = {"callback_type": callback_type, **data}
     async with self._lock:
       self.logs[session_id].append(log_entry)
 
   async def on_user_message_callback(
-      self, *, invocation_context: "InvocationContext", user_message: types.Content
+      self,
+      *,
+      invocation_context: "InvocationContext",
+      user_message: types.Content,
   ) -> Optional[types.Content]:
     session_id = invocation_context.session.id
     await self._log_entry(

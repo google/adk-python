@@ -13,5 +13,6 @@
 # limitations under the License.
 
 from .base_plugin import BasePlugin
+from .log_collector_plugin import LogCollectorPlugin
 
-__all__ = ['BasePlugin']
+__all__ = ['BasePlugin', 'LogCollectorPlugin']
