@@ -3,9 +3,8 @@
 ## 📚 Table of Contents
 1. [API Overview](#api-overview)
 2. [Authentication](#authentication)
-3. [Service Management APIs](#service-management-apis)
-4. [Core Service APIs](#core-service-apis)
-5. [Security Service APIs](#security-service-apis)
+3. [Core APIs](#core-apis)
+4. [Security APIs](#security-apis)
 6. [Monitoring APIs](#monitoring-apis)
 7. [Integration APIs](#integration-apis)
 8. [Error Handling](#error-handling)
@@ -14,7 +13,7 @@
 
 ## 🎯 API Overview
 
-The ADK Security Agent provides a comprehensive RESTful API for security evaluation, monitoring, and management of Google Cloud Platform resources.
+The ADK Security Agent provides a comprehensive RESTful API with direct endpoints for security evaluation, monitoring, and management of Google Cloud Platform resources.
 
 ### Base URL
 ```

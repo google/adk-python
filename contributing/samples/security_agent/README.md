@@ -9,7 +9,7 @@
 
 **Comprehensive security evaluation platform for Google Cloud Platform**
 
-[🚀 Quick Start](#-quick-start) • [📖 Documentation](#-documentation) • [🏗️ Architecture](#-architecture) • [⚙️ Services](#-modular-service-architecture)
+[🚀 Quick Start](#-quick-start) • [📖 Documentation](#-documentation) • [🏗️ Architecture](#-architecture) • [⚙️ API Endpoints](#-api-endpoints)
 
 </div>
 
@@ -17,16 +17,22 @@
 
 ## 📋 Table of Contents
 
-- [Overview](#-overview)
-- [Quick Start](#-quick-start)
-- [Key Features](#-key-features)  
-- [Architecture](#-architecture)
-- [Installation](#-installation)
-- [Configuration](#-configuration)
-- [Services](#-modular-service-architecture)
-- [API Reference](#-api--networking)
-- [Development](#-development)
-- [Troubleshooting](#-troubleshooting)
+- [🎯 Overview](#-overview)
+- [📋 Prerequisites](#-prerequisites)  
+- [🚀 Quick Start](#-quick-start)
+- [🚀 Local Deployment Guide](#-local-deployment-guide)
+- [☁️ Cloud Run Deployment Guide](#-cloud-run-deployment-guide)
+- [🏗️ Architecture Overview](#-architecture-overview)
+- [🔧 Environment Variables Reference](#-environment-variables-reference)
+- [⚡ Installation](#-installation)
+- [🛠️ Configuration](#-configuration)
+- [⚙️ API Endpoints](#-api-endpoints)
+- [📡 API & Networking](#-api--networking)
+- [🔐 GCP APIs & Service Account Permissions](#-gcp-apis--service-account-permissions)
+- [🎭 Mock vs Real Data Implementation Status](#-mock-vs-real-data-implementation-status)
+- [🆘 Troubleshooting Guide](#-troubleshooting-guide)
+- [🔧 How to Extend the Application](#-how-to-extend-the-application)
+- [🛠️ Development](#-development)
 
 ## 🎯 Overview
 
@@ -40,6 +46,153 @@ A comprehensive, modular security evaluation platform that provides advanced sec
 - **📊 Live Monitoring** - Performance dashboards with health monitoring
 - **🏗️ Clean Architecture** - Well-organized codebase with clear separation of concerns
 - **📋 Compliance Frameworks** - SOC2, ISO27001, GDPR evaluation
+
+## 📋 Prerequisites
+
+### System Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| **RAM** | 4GB | 8GB+ |
+| **Storage** | 2GB free space | 5GB+ free space |
+| **OS** | Windows 10/11, macOS 10.15+, Ubuntu 18.04+ | Latest versions |
+| **Internet** | Required for installation and GCP APIs | Stable broadband |
+
+### Required Software
+
+#### Core Requirements
+1. **Python 3.8+**
+   ```bash
+   # Check Python version
+   python --version  # Should show 3.8 or higher
+   ```
+
+2. **Google Cloud SDK (gcloud)**
+   ```bash
+   # Install gcloud CLI
+   # macOS: brew install google-cloud-sdk
+   # Windows: Download from https://cloud.google.com/sdk/docs/install
+   # Linux: curl https://sdk.cloud.google.com | bash
+   
+   # Verify installation
+   gcloud version
+   ```
+
+3. **Docker** (for containerized deployment)
+   ```bash
+   # Download from https://www.docker.com/get-started
+   # Verify installation
+   docker --version
+   ```
+
+#### Optional but Recommended
+- **Git** (for cloning repository)
+- **VS Code** or preferred IDE
+- **Google Cloud Console** access
+
+### Google Cloud Project Setup
+
+#### 1. Create or Select a GCP Project
+```bash
+# List existing projects
+gcloud projects list
+
+# Create new project (optional)
+gcloud projects create YOUR_PROJECT_ID --name="Security Agent"
+
+# Set active project
+gcloud config set project YOUR_PROJECT_ID
+```
+
+#### 2. Authentication Setup
+```bash
+# Authenticate with Google Cloud
+gcloud auth login
+gcloud auth application-default login
+
+# Verify authentication
+gcloud auth list
+```
+
+#### 3. Enable Required APIs
+The security agent requires **27 Google Cloud APIs**. Enable them with this one-liner:
+
+```bash
+# Enable all required APIs at once
+gcloud services enable \
+  cloudresourcemanager.googleapis.com \
+  serviceusage.googleapis.com \
+  iam.googleapis.com \
+  iamcredentials.googleapis.com \
+  securitycenter.googleapis.com \
+  cloudkms.googleapis.com \
+  secretmanager.googleapis.com \
+  monitoring.googleapis.com \
+  logging.googleapis.com \
+  cloudtrace.googleapis.com \
+  clouderrorreporting.googleapis.com \
+  compute.googleapis.com \
+  container.googleapis.com \
+  run.googleapis.com \
+  appengine.googleapis.com \
+  storage.googleapis.com \
+  bigquery.googleapis.com \
+  sql.googleapis.com \
+  firestore.googleapis.com \
+  aiplatform.googleapis.com \
+  ml.googleapis.com \
+  dns.googleapis.com \
+  servicenetworking.googleapis.com \
+  cloudbuild.googleapis.com \
+  sourcerepo.googleapis.com \
+  artifactregistry.googleapis.com \
+  recommender.googleapis.com
+```
+
+#### 4. Service Account & Permissions
+Create a service account with required permissions:
+
+```bash
+# Quick setup using the provided script
+python setup_gcp_permissions.py --project-id YOUR_PROJECT_ID
+
+# Manual setup (alternative)
+gcloud iam service-accounts create security-agent \
+    --display-name="GCP Security Agent" \
+    --description="Service account for GCP Security Agent"
+
+# Download service account key
+gcloud iam service-accounts keys create service-account-key.json \
+    --iam-account=security-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com
+```
+
+**Required IAM Roles:**
+- `roles/viewer` - Basic project access
+- `roles/resourcemanager.projectViewer` - Project metadata
+- `roles/serviceusage.serviceUsageViewer` - API usage data
+- `roles/securitycenter.findingsViewer` - Security findings
+- `roles/iam.securityReviewer` - IAM analysis
+- `roles/logging.viewer` - Cloud logging access
+- `roles/monitoring.viewer` - Monitoring data
+- `roles/recommender.viewer` - Security recommendations
+
+### Environment Configuration
+
+Create a `.env` file with your project configuration:
+
+```bash
+# Copy example configuration
+cp .env.example .env
+
+# Edit with your values
+cat > .env << EOF
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_APPLICATION_CREDENTIALS=./service-account-key.json
+ADK_EVALUATION_ENABLED=true
+VERTEX_AI_PROJECT_ID=your-project-id
+VERTEX_AI_LOCATION=us-central1
+EOF
+```
 
 ## 🚀 Quick Start
 
@@ -59,21 +212,314 @@ python run.py
 - 🔧 **Backend API**: http://localhost:8000/docs
 - ⚙️ **Service Management**: http://localhost:8501 → Service Management
 
-<details>
-<summary><strong>📋 System Requirements</strong></summary>
+## 🚀 Local Deployment Guide
 
-### Minimum Requirements
-- **Docker** (for containerized deployment)
-- **4GB RAM** (8GB recommended)
-- **2GB disk space** 
-- **Internet connection** for package installation
+### Method 1: Automated Setup (Recommended)
 
-### Recommended Requirements  
-- **8GB RAM**
-- **5GB disk space**
-- **Google Cloud Project** (for full GCP integration)
+The fastest way to get started locally:
 
-</details>
+```bash
+# 1. Clone repository
+git clone https://github.com/google/adk-python.git
+cd adk-python/contributing/samples/security_agent
+
+# 2. Setup environment (creates .env file, installs dependencies)
+python setup_gcp_permissions.py --project-id YOUR_PROJECT_ID
+
+# 3. One-command deployment
+python run.py
+```
+
+### Method 2: Manual Setup
+
+For full control over the installation process:
+
+#### Step 1: Environment Setup
+```bash
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Setup environment variables
+cp .env.example .env
+# Edit .env with your project settings
+```
+
+#### Step 2: Configure GCP Integration
+```bash
+# Authenticate with Google Cloud
+gcloud auth application-default login
+
+# Set project
+gcloud config set project YOUR_PROJECT_ID
+
+# Place service account key (if using one)
+cp /path/to/your/service-account-key.json ./service-account-key.json
+```
+
+#### Step 3: Launch Services
+
+**Option A: Integrated Launcher**
+```bash
+python run.py
+```
+
+**Option B: Manual Service Startup**
+```bash
+# Terminal 1: Backend
+cd backend
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+# Terminal 2: Frontend
+cd frontend  
+streamlit run main_app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+### Method 3: Docker Deployment
+
+For containerized local deployment:
+
+```bash
+# Build and run with Docker
+docker build -t security-agent .
+docker run -p 8000:8000 -p 8501:8501 \
+  -e GOOGLE_CLOUD_PROJECT=your-project-id \
+  -v ~/.config/gcloud:/root/.config/gcloud \
+  security-agent
+```
+
+### Verification Steps
+
+After deployment, verify everything is working:
+
+1. **Check Service Health**
+   ```bash
+   curl http://localhost:8000/health
+   # Should return: {"status": "healthy"}
+   ```
+
+2. **Test Frontend Access**
+   - Navigate to http://localhost:8501
+   - You should see the Security Agent dashboard
+
+3. **Verify GCP Integration**
+   - Click on "Service Management" in sidebar  
+   - Enable a few services (IAM, GCP)
+   - Go to "GCP Projects" and confirm your project appears
+
+4. **Test API Documentation**
+   - Visit http://localhost:8000/docs
+   - Try the "List Projects" endpoint
+
+## ☁️ Cloud Run Deployment Guide
+
+Deploy the security agent to Google Cloud Run for production use.
+
+### Prerequisites for Cloud Run
+
+1. **Billing Account**: Ensure your GCP project has billing enabled
+2. **Cloud Run API**: Enable the Cloud Run API
+   ```bash
+   gcloud services enable run.googleapis.com
+   ```
+3. **Artifact Registry**: Create a repository for your container
+   ```bash
+   gcloud artifacts repositories create security-agent \
+     --repository-format=docker \
+     --location=us-central1 \
+     --description="Security Agent container repository"
+   ```
+
+### Method 1: Automated Cloud Deployment
+
+Use the provided Cloud Build configuration:
+
+```bash
+# Deploy using Cloud Build
+python run_backend.py --cloud
+# or
+python run_frontend.py --cloud
+```
+
+### Method 2: Manual Cloud Run Deployment
+
+#### Step 1: Build and Push Container
+```bash
+# Set variables
+PROJECT_ID=your-project-id
+SERVICE_NAME=security-agent
+REGION=us-central1
+
+# Configure Docker for Artifact Registry
+gcloud auth configure-docker us-central1-docker.pkg.dev
+
+# Build container
+docker build -t us-central1-docker.pkg.dev/$PROJECT_ID/security-agent/$SERVICE_NAME .
+
+# Push to Artifact Registry  
+docker push us-central1-docker.pkg.dev/$PROJECT_ID/security-agent/$SERVICE_NAME
+```
+
+#### Step 2: Deploy to Cloud Run
+```bash
+# Deploy backend service
+gcloud run deploy security-agent-backend \
+  --image=us-central1-docker.pkg.dev/$PROJECT_ID/security-agent/$SERVICE_NAME \
+  --platform=managed \
+  --region=$REGION \
+  --port=8000 \
+  --memory=2Gi \
+  --cpu=1 \
+  --min-instances=0 \
+  --max-instances=10 \
+  --timeout=3600 \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,PRODUCTION=true" \
+  --service-account=security-agent@$PROJECT_ID.iam.gserviceaccount.com \
+  --allow-unauthenticated
+
+# Deploy frontend service  
+gcloud run deploy security-agent-frontend \
+  --image=us-central1-docker.pkg.dev/$PROJECT_ID/security-agent/$SERVICE_NAME \
+  --platform=managed \
+  --region=$REGION \
+  --port=8501 \
+  --memory=1Gi \
+  --cpu=1 \
+  --min-instances=0 \
+  --max-instances=5 \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,PRODUCTION=true,BACKEND_URL=https://security-agent-backend-[HASH]-uc.a.run.app" \
+  --service-account=security-agent@$PROJECT_ID.iam.gserviceaccount.com \
+  --allow-unauthenticated
+```
+
+#### Step 3: Configure Custom Domain (Optional)
+```bash
+# Map custom domain
+gcloud run domain-mappings create \
+  --service=security-agent-frontend \
+  --domain=security-agent.yourdomain.com \
+  --region=$REGION
+```
+
+### Method 3: Docker Compose for Production
+
+For multi-service deployment with Docker Compose:
+
+```yaml
+# docker-compose.prod.yml
+version: '3.8'
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - PRODUCTION=true
+    volumes:
+      - ./service-account-key.json:/app/service-account-key.json
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+
+  frontend:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
+    command: streamlit run main_app.py --server.port 8501 --server.address 0.0.0.0
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/ssl
+    depends_on:
+      - frontend
+      - backend
+```
+
+### Cloud Run Configuration Options
+
+| Setting | Development | Production |
+|---------|------------|------------|
+| **Memory** | 1Gi | 2-4Gi |
+| **CPU** | 1 | 1-2 |
+| **Min Instances** | 0 | 1 |
+| **Max Instances** | 5 | 10-50 |
+| **Timeout** | 300s | 3600s |
+| **Concurrency** | 80 | 1000 |
+
+### Environment Variables for Cloud Run
+
+```bash
+# Required environment variables
+GOOGLE_CLOUD_PROJECT=your-project-id
+PRODUCTION=true
+PORT=8000  # or 8501 for frontend
+
+# Optional optimizations
+WORKERS=4
+TIMEOUT=3600
+LOG_LEVEL=info
+CACHE_ENABLED=true
+```
+
+### Cloud Run Monitoring & Scaling
+
+#### Setup Monitoring
+```bash
+# Enable monitoring
+gcloud services enable monitoring.googleapis.com
+
+# Create alerting policy
+gcloud alpha monitoring policies create \
+  --policy-from-file=monitoring-policy.yaml
+```
+
+#### Configure Autoscaling
+```bash
+# Update service with scaling configuration
+gcloud run services update security-agent-backend \
+  --region=$REGION \
+  --cpu-throttling \
+  --concurrency=100 \
+  --min-instances=1 \
+  --max-instances=20
+```
+
+### Production Security Considerations
+
+1. **VPC Connector**: Use VPC connector for private resource access
+   ```bash
+   gcloud compute networks vpc-access connectors create security-agent-connector \
+     --network=default \
+     --region=$REGION \
+     --range=10.8.0.0/28
+   ```
+
+2. **IAM Authentication**: Enable IAM authentication for production
+   ```bash
+   gcloud run services update security-agent-backend \
+     --region=$REGION \
+     --clear-env-vars \
+     --no-allow-unauthenticated
+   ```
+
+3. **Custom Service Account**: Use least-privilege service account
+   ```bash
+   gcloud run services update security-agent-backend \
+     --region=$REGION \
+     --service-account=security-agent@$PROJECT_ID.iam.gserviceaccount.com
+   ```
 
 ## 🏗️ Architecture Overview
 
@@ -105,21 +551,18 @@ graph TB
         
         subgraph "Feature Modules"
             subgraph "Security Features"
-                SecurityMod[security/<br/>├── api.py<br/>├── service.py<br/>└── models.py]
-                IAMMod[iam/<br/>├── api.py<br/>├── service.py<br/>└── models.py]
-                ComplianceMod[compliance/<br/>├── api.py<br/>├── service.py<br/>└── models.py]
-                RecommendationsMod[recommendations/<br/>├── api.py<br/>├── service.py<br/>└── models.py]
+                SecurityAPI[security.py<br/>Security analysis endpoints]
+                IAMAPI[iam.py<br/>IAM analysis endpoints]
+                AgentAPI[agent.py<br/>ADK integration endpoints]
+                MonitoringAPI[monitoring.py<br/>Performance monitoring]
             end
             
             subgraph "Platform Features"
-                GCPMod[gcp/<br/>├── api.py<br/>├── service.py<br/>└── models.py]
-                MSAMod[msa/<br/>├── api.py<br/>├── service.py<br/>└── models.py]
-                DocumentationMod[documentation/<br/>├── api.py<br/>├── service.py<br/>└── models.py]
+                GCPAPI[gcp.py<br/>GCP integration endpoints]
+                IncidentsAPI[incidents.py<br/>Incident management]
             end
             
             subgraph "Operations Features"
-                CloudLoggingMod[cloud_logging/<br/>├── api.py<br/>├── service.py<br/>└── models.py]
-                TracingMod[tracing/<br/>├── api.py<br/>├── service.py<br/>└── models.py]
             end
         end
     end
@@ -148,26 +591,21 @@ graph TB
     APIClient --> FastAPI
     
     %% Backend connections
-    FastAPI --> SecurityMod
-    FastAPI --> IAMMod
-    FastAPI --> ComplianceMod
-    FastAPI --> RecommendationsMod
-    FastAPI --> GCPMod
-    FastAPI --> MSAMod
-    FastAPI --> DocumentationMod
-    FastAPI --> CloudLoggingMod
-    FastAPI --> TracingMod
+    FastAPI --> SecurityAPI
+    FastAPI --> IAMAPI
+    FastAPI --> AgentAPI
+    FastAPI --> MonitoringAPI
+    FastAPI --> GCPAPI
+    FastAPI --> IncidentsAPI
     
     %% External service connections
-    SecurityMod --> GCP
-    IAMMod --> GCP
-    ComplianceMod --> GCP
-    GCPMod --> GCP
-    CloudLoggingMod --> GCP
+    SecurityAPI --> GCP
+    IAMAPI --> GCP
+    GCPAPI --> GCP
+    MonitoringAPI --> GCP
     
     Chat --> ADK
-    MSAMod --> ADK
-    RecommendationsMod --> VertexAI
+    AgentAPI --> ADK
     
     %% Styling
     classDef frontend fill:#e1f5fe,stroke:#01579b,stroke-width:2px
@@ -175,9 +613,9 @@ graph TB
     classDef external fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
     classDef feature fill:#fff3e0,stroke:#e65100,stroke-width:1px
     
-    class UI,Dashboard,Security,Recommendations,IAM,Compliance,Chat,MSA,Performance,SRE,APIExplorer,OIDC,Incidents,APIClient frontend
-    class FastAPI,SecurityMod,IAMMod,ComplianceMod,RecommendationsMod,GCPMod,MSAMod,DocumentationMod,CloudLoggingMod,TracingMod backend
-    class GCP,ADK,VertexAI external
+    class UI,Dashboard,Security,IAM,Compliance,Chat,Performance,SRE,APIExplorer,OIDC,Incidents,APIClient frontend
+    class FastAPI,SecurityAPI,IAMAPI,AgentAPI,MonitoringAPI,GCPAPI,IncidentsAPI backend
+    class GCP,ADK external
 ```
 
 **Deployment Options:**
@@ -258,63 +696,242 @@ docker build -t gcp-security-agent .
 docker run -p 8000:8000 -p 8501:8501 gcp-security-agent
 ```
 
-## 🔧 Configuration
+## 🔧 Environment Variables Reference
 
-### Environment Variables
+### Core Configuration
 
-Create a `.env` file with your configuration:
+Create a `.env` file with the following variables:
+
+#### Required Variables
+
+| Variable | Description | Example | Required |
+|----------|-------------|---------|----------|
+| `GOOGLE_CLOUD_PROJECT` | GCP Project ID | `my-security-project` | ✅ Yes |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Service account key path | `./service-account-key.json` | ⚠️ If not using ADC |
+
+#### Authentication Options
+
+**Option 1: Service Account Key (Recommended for local)**
+```bash
+GOOGLE_APPLICATION_CREDENTIALS=./service-account-key.json
+```
+
+**Option 2: Application Default Credentials (Cloud deployment)**
+```bash
+# No explicit credentials needed when running on:
+# - Google Cloud Run
+# - Google Compute Engine  
+# - Google Kubernetes Engine
+# Just ensure service account is attached to the resource
+```
+
+#### Feature Configuration
+
+| Variable | Description | Default | Options |
+|----------|-------------|---------|---------|
+| `ADK_EVALUATION_ENABLED` | Enable ADK agent features | `false` | `true`, `false` |
+| `VERTEX_AI_PROJECT_ID` | Vertex AI project ID | Same as `GOOGLE_CLOUD_PROJECT` | Any GCP project |
+| `VERTEX_AI_LOCATION` | Vertex AI region | `us-central1` | `us-central1`, `us-east1`, etc. |
+| `USE_LEGACY` | Use legacy backend | `true` | `true`, `false` |
+
+#### Server Configuration
+
+| Variable | Description | Default | Notes |
+|----------|-------------|---------|-------|
+| `PORT` | Backend port | `8000` | API server port |
+| `HOST` | Backend host | `0.0.0.0` | Bind address |
+| `FRONTEND_PORT` | Frontend port | `8501` | Streamlit port |
+| `FRONTEND_HOST` | Frontend host | `0.0.0.0` | Streamlit bind address |
+| `LOG_LEVEL` | Logging verbosity | `info` | `debug`, `info`, `warning`, `error` |
+| `RELOAD` | Auto-reload on changes | `true` | `true`, `false` |
+
+#### Production Settings
+
+| Variable | Description | Default | Production Value |
+|----------|-------------|---------|------------------|
+| `PRODUCTION` | Production mode flag | `false` | `true` |
+| `DEBUG` | Debug mode | `true` | `false` |
+| `WORKERS` | Number of worker processes | `1` | `4-8` |
+| `TIMEOUT` | Request timeout (seconds) | `300` | `3600` |
+| `SECRET_KEY` | Security key for sessions | `your-secret-key-here` | Generate secure key |
+
+#### Service Features
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `IAM_ANALYSIS_ENABLED` | Enable IAM analysis | `true` |
+| `COMPLIANCE_ENABLED` | Enable compliance checking | `true` |
+| `THREAT_INTELLIGENCE_ENABLED` | Enable threat intel | `false` |
+| `SECURITY_ANALYTICS_ENABLED` | Enable security analytics | `false` |
+| `ENABLE_TRACING` | Enable distributed tracing | `false` |
+| `ENABLE_METRICS` | Enable metrics collection | `false` |
+
+#### Cache & Performance
+
+| Variable | Description | Default | Notes |
+|----------|-------------|---------|-------|
+| `CACHE_ENABLED` | Enable response caching | `true` | Improves performance |
+| `CACHE_TTL` | Cache time-to-live (seconds) | `3600` | 1 hour default |
+| `RATE_LIMIT_ENABLED` | Enable API rate limiting | `false` | For production |
+| `RATE_LIMIT_PER_MINUTE` | Requests per minute limit | `60` | Adjust as needed |
+
+#### Complete .env Example
 
 ```bash
-# Google Cloud Configuration
-GOOGLE_CLOUD_PROJECT="your-project-id"
-GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+# ====================================
+# GCP Security Agent Configuration
+# ====================================
 
-# ADK Configuration  
-ADK_EVALUATION_ENABLED="true"
+# === REQUIRED SETTINGS ===
+GOOGLE_CLOUD_PROJECT=my-security-project
+GOOGLE_APPLICATION_CREDENTIALS=./service-account-key.json
 
-# Vertex AI (Enterprise Features)
-VERTEX_AI_PROJECT_ID="your-project-id"
-VERTEX_AI_LOCATION="us-central1"
+# === SERVER CONFIGURATION ===
+PORT=8000
+HOST=0.0.0.0
+FRONTEND_PORT=8501
+FRONTEND_HOST=0.0.0.0
+LOG_LEVEL=info
+RELOAD=true
+
+# === PRODUCTION SETTINGS ===
+PRODUCTION=false
+DEBUG=true
+WORKERS=1
+SECRET_KEY=your-secure-secret-key-here
+ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0
+
+# === FEATURE FLAGS ===
+ADK_EVALUATION_ENABLED=true
+USE_LEGACY=true
+IAM_ANALYSIS_ENABLED=true
+COMPLIANCE_ENABLED=true
+THREAT_INTELLIGENCE_ENABLED=false
+SECURITY_ANALYTICS_ENABLED=false
+
+# === AI/ML CONFIGURATION ===
+VERTEX_AI_PROJECT_ID=my-security-project
+VERTEX_AI_LOCATION=us-central1
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+
+# === PERFORMANCE & CACHING ===
+CACHE_ENABLED=true
+CACHE_TTL=3600
+RATE_LIMIT_ENABLED=false
+RATE_LIMIT_PER_MINUTE=60
+
+# === MONITORING & OBSERVABILITY ===
+ENABLE_TRACING=false
+ENABLE_METRICS=false
+ENABLE_PROFILING=false
+SENTRY_DSN=
+DATADOG_API_KEY=
+PROMETHEUS_ENABLED=false
+
+# === LOGGING ===
+LOG_TO_FILE=true
+LOG_FILE_PATH=logs/app.log
+LOG_MAX_SIZE=10485760
+LOG_BACKUP_COUNT=5
+
+# === CLOUD RUN (Auto-detected) ===
+K_SERVICE=
+K_REVISION=
+K_CONFIGURATION=
+
+# === DATABASE (Optional) ===
+DATABASE_URL=
 ```
+
+### Environment-Specific Configurations
+
+#### Development Environment
+```bash
+# .env.development
+PRODUCTION=false
+DEBUG=true
+LOG_LEVEL=debug
+RELOAD=true
+CACHE_ENABLED=false
+ENABLE_TRACING=true
+```
+
+#### Production Environment  
+```bash
+# .env.production
+PRODUCTION=true
+DEBUG=false
+LOG_LEVEL=info
+RELOAD=false
+WORKERS=4
+CACHE_ENABLED=true
+RATE_LIMIT_ENABLED=true
+SECRET_KEY=your-production-secret-key
+```
+
+#### Docker Environment
+```bash
+# .env.docker
+HOST=0.0.0.0
+PORT=8000
+FRONTEND_HOST=0.0.0.0  
+FRONTEND_PORT=8501
+GOOGLE_APPLICATION_CREDENTIALS=/app/service-account-key.json
+```
+
+### Security Best Practices
+
+1. **Never commit .env files to version control**
+   ```bash
+   # Add to .gitignore
+   echo ".env*" >> .gitignore
+   echo "service-account-key.json" >> .gitignore
+   ```
+
+2. **Use different configurations per environment**
+   - `.env.local` for local development
+   - `.env.staging` for staging environment  
+   - `.env.production` for production
+
+3. **Rotate secrets regularly**
+   - Service account keys (every 90 days)
+   - API keys and tokens
+   - Secret keys for sessions
+
+4. **Use Google Secret Manager for production**
+   ```bash
+   # Store secrets in Secret Manager
+   gcloud secrets create security-agent-config --data-file=.env.production
+   ```
 
 <details>
 <summary><strong>🔧 Advanced Configuration Options</strong></summary>
 
-### Service Configuration
+### API Configuration
 
-The modular architecture uses `backend/config/services.json` to manage services:
+The application uses `backend/config/timeout_config.py` for endpoint timeouts:
 
-```json
-{
-  "services": {
-    "iam": {
-      "enabled_by_default": true,
-      "config": {
-        "cache_ttl": 300,
-        "max_users_per_scan": 100
-      }
-    },
-    "compliance": {
-      "enabled_by_default": true,
-      "config": {
-        "frameworks": ["SOC2", "ISO27001", "GDPR"]
-      }
-    }
-  }
-}
+```python
+# API timeout configurations
+DEFAULT_TIMEOUT = 300  # 5 minutes
+SECURITY_SCAN_TIMEOUT = 600  # 10 minutes for intensive scans
+IAM_ANALYSIS_TIMEOUT = 180  # 3 minutes for IAM operations
 ```
 
 ### API Management
 
-Control services programmatically:
+Access all endpoints through the FastAPI interface:
 
 ```bash
-# List services
-curl http://localhost:8000/api/v1/services/
+# View all available endpoints
+curl http://localhost:8000/docs
 
-# Enable/disable service
-curl -X POST http://localhost:8000/api/v1/services/iam/enable
-curl -X POST http://localhost:8000/api/v1/services/iam/disable
+# Health check
+curl http://localhost:8000/health
+
+# Security analysis
+curl -X POST http://localhost:8000/api/security/analyze
 ```
 
 </details>
@@ -355,7 +972,7 @@ The security agent follows a clean, organized architecture with clear separation
 <tr>
 <td><strong>⚙️ Configuration</strong></td>
 <td><code>backend/config/</code></td>
-<td>Application and service configuration</td>
+<td>Application configuration and timeouts</td>
 </tr>
 </table>
 
@@ -366,55 +983,60 @@ The security agent follows a clean, organized architecture with clear separation
 - **📊 Monitoring** - Performance dashboards and health monitoring
 - **🔍 API Explorer** - GCP API discovery and testing tools
 
-### Backend Structure (Modular Architecture)
+### Backend Structure (Simplified Architecture)
 ```
 backend/
-├── core/                    # 🏗️ Service Management Core
-│   ├── service_registry.py  # Central service registry
-│   ├── service_config.py    # Service configuration management
-│   └── base_service.py      # Base service class
-├── main_modular.py          # 🚀 Modular application entry point
-├── main.py                  # 📦 Legacy monolithic entry point
-├── [service_name]/          # 🔧 Individual Service Modules
-│   ├── api.py              # FastAPI routes
-│   ├── service.py          # Business logic
-│   └── models.py           # Data models
+├── api/                     # 🔧 FastAPI Endpoint Modules
+│   ├── security.py         # Security analysis endpoints
+│   ├── agent.py            # ADK agent integration
+│   ├── gcp.py              # GCP API endpoints
+│   ├── iam.py              # IAM analysis endpoints
+│   ├── monitoring.py       # Performance monitoring endpoints
+│   └── incidents.py        # Security incident endpoints
+├── main.py                 # 🚀 FastAPI application entry point
+├── models/                 # 📊 Data models
+│   └── api_models.py       # Pydantic models
 └── config/
-    └── services.json       # 📋 Service configuration
+    └── timeout_config.py   # 📋 API timeout configuration
 ```
 
 ### Frontend Structure (Component-Based)
 ```
 frontend/
 ├── components/                      # 🧩 Reusable UI Components
-│   ├── dashboard_view.py           # 🏠 Main dashboard
-│   ├── services_management_view.py # ⚙️ Service management UI
-│   ├── security_evaluation_view.py # 🛡️ Security analysis UI
-│   ├── iam_analyzer_view.py        # 🔐 IAM analysis UI
-│   ├── compliance_view.py          # 📋 Compliance dashboard
-│   ├── chat_view.py                # 💬 AI chat interface
-│   └── __init__.py                 # Component exports
-├── api_client.py                   # 🌐 Backend communication
-├── main_app.py                     # 🚀 Modular main application
-└── enhanced_security_agent_app.py  # 📦 Legacy monolithic app
+│   ├── dashboard/
+│   │   └── dashboard_view.py       # 🏠 Main dashboard
+│   ├── security/
+│   │   ├── security_evaluation_view.py # 🛡️ Security analysis UI
+│   │   ├── iam_analyzer_view.py    # 🔐 IAM analysis UI
+│   │   └── incident_response_view.py # 🚨 Incident response UI
+│   ├── compliance/
+│   │   └── compliance_view.py      # 📋 Compliance dashboard
+│   ├── chat/
+│   │   └── chat_view.py            # 💬 AI chat interface
+│   └── monitoring/
+│       └── performance_monitor.py  # 📊 Performance monitoring
+├── api_client_consolidated.py      # 🌐 Backend communication
+└── main_app.py                     # 🚀 Streamlit main application
 ```
 
-### 🎯 Service Management Interface
+### 🎯 API Endpoints
 
-The new **Service Management** interface provides complete control:
+The FastAPI backend provides direct endpoints for all functionality:
 
-- **📋 Services Overview**: View all services and their status
-- **⚙️ Service Control**: Enable/disable services with toggle buttons  
-- **🏥 Health Status**: Real-time monitoring with auto-refresh
-- **🔍 Service Details**: Detailed configuration and dependencies
-- **🔄 Service Actions**: Enable, disable, and restart services
+- **🛡️ Security Analysis**: `/api/security/` - Security evaluation and vulnerability scanning
+- **🔐 IAM Analysis**: `/api/iam/` - Identity and access management analysis  
+- **🤖 Agent Integration**: `/api/agent/` - ADK agent communication and chat
+- **☁️ GCP Integration**: `/api/gcp/` - Google Cloud Platform API access
+- **📊 Monitoring**: `/api/monitoring/` - Performance and health monitoring
+- **🚨 Incidents**: `/api/incidents/` - Security incident management
 
 ### Key Improvements
-- **🎯 Feature-Based Organization**: Code grouped by business domain rather than technical type
-- **🔄 Reusable Components**: Frontend broken into modular, reusable components  
-- **🌐 Centralized API Client**: Single point for backend communication
-- **📦 Consistent Structure**: All features follow the same `api.py`, `service.py`, `models.py` pattern
-- **🚀 Easy Extension**: Adding new features is now straightforward
+- **🎯 Simplified Architecture**: Direct FastAPI endpoints without service layer complexity
+- **🔄 Reusable Components**: Frontend organized by feature domains
+- **🌐 Consolidated API Client**: Single point for all backend communication
+- **🤖 Direct ADK Integration**: Seamless AI agent integration without middleware
+- **🚀 Easy Extension**: Adding new endpoints and UI components is straightforward
 
 ## 🔧 Manual Installation (Alternative)
 
@@ -449,8 +1071,7 @@ docker run -p 8000:8000 -p 8501:8501 -d --name security-agent security-agent
 - **Frontend**: http://localhost:8501
 - **Backend**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
-- **Service Management**: http://localhost:8501 → Service Management
-- **Service API**: http://localhost:8000/api/v1/services/
+- **Interactive API**: http://localhost:8000/docs → FastAPI documentation
 
 ### Stop Services
 ```bash
@@ -1941,31 +2562,217 @@ The modular architecture makes it easy to add new features. Follow these steps:
 - **Write tests**: Add unit tests for your services and integration tests for APIs
 - **Update documentation**: Document your new feature's API endpoints and usage
 
-## Troubleshooting
+## 🆘 Troubleshooting Guide
 
-### "Connection refused" error
-If you encounter a "Connection refused" error, it's likely due to a lingering backend process. To fix this:
+### Quick Diagnostics
 
-1.  **Find the process using port 8000**:
-    ```bash
-    lsof -i :8000
-    ```
-2.  **Kill the process using its PID**:
-    ```bash
-    kill <PID>
-    ```
-3.  **Restart the agent**:
-    ```bash
-    ./run.sh
-    ```
+Run this diagnostic script to check your environment:
 
-### "v1/models" error
-If you encounter a "v1/models" error in the ADK Chat, it means the agent is trying to call the public Gemini API instead of the local server. To fix this, modify `backend/services/agent_service.py` to use `LiteLlm`:
+```bash
+# Quick system check
+echo "=== GCP Security Agent Diagnostics ==="
+
+# Check Python version
+echo "Python version:"
+python --version
+
+# Check required tools
+echo -e "\nTool availability:"
+which gcloud && echo "✅ gcloud CLI found" || echo "❌ gcloud CLI missing"
+which docker && echo "✅ Docker found" || echo "❌ Docker missing"  
+which python && echo "✅ Python found" || echo "❌ Python missing"
+
+# Check authentication
+echo -e "\nGCP Authentication:"
+gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/null | head -1 | \
+  { read account; [ "$account" ] && echo "✅ Authenticated as: $account" || echo "❌ Not authenticated"; }
+
+# Check project setting
+echo -e "\nGCP Project:"
+project=$(gcloud config get-value project 2>/dev/null)
+[ "$project" ] && echo "✅ Active project: $project" || echo "❌ No project set"
+
+# Check ports
+echo -e "\nPort availability:"
+lsof -i :8000 >/dev/null 2>&1 && echo "⚠️  Port 8000 in use" || echo "✅ Port 8000 available"
+lsof -i :8501 >/dev/null 2>&1 && echo "⚠️  Port 8501 in use" || echo "✅ Port 8501 available"
+
+echo "=== Diagnostics Complete ==="
+```
+
+### Common Issues & Solutions
+
+#### 1. Connection Refused Errors
+
+**Problem**: `Connection refused` when accessing localhost:8000 or localhost:8501
+
+**Solutions**:
+
+```bash
+# Check if processes are running
+lsof -i :8000  # Backend port
+lsof -i :8501  # Frontend port
+
+# Kill existing processes (if needed)
+pkill -f "uvicorn.*main:app"
+pkill -f "streamlit.*main_app.py"
+
+# Alternative: Kill by port
+lsof -ti:8000 | xargs kill -9  # Backend
+lsof -ti:8501 | xargs kill -9  # Frontend
+
+# Restart services
+python run.py
+```
+
+**Windows PowerShell**:
+```powershell
+# Check ports
+netstat -ano | findstr :8000
+netstat -ano | findstr :8501
+
+# Kill process by PID
+taskkill /PID <PID> /F
+```
+
+#### 2. GCP Authentication Errors
+
+**Problem**: `DefaultCredentialsError` or `invalid parent name` errors
+
+**Solutions**:
+
+```bash
+# Re-authenticate
+gcloud auth login
+gcloud auth application-default login
+
+# Verify authentication
+gcloud auth list
+gcloud auth print-access-token
+
+# Set correct project
+gcloud config set project YOUR_PROJECT_ID
+
+# For service account issues
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
+```
+
+**Check credentials file**:
+```bash
+# Verify service account key exists and is readable
+ls -la ./service-account-key.json
+python -c "import json; print(json.load(open('./service-account-key.json'))['project_id'])"
+```
+
+#### 3. Docker Issues
+
+**Problem**: Docker-related errors during build or run
+
+**Solutions**:
+
+```bash
+# Check Docker daemon
+docker info
+
+# Restart Docker daemon (Linux)
+sudo systemctl restart docker
+
+# Clear Docker cache
+docker system prune -a
+
+# Check Docker permissions (Linux)
+sudo usermod -aG docker $USER
+# Then logout and login again
+
+# Build with verbose output
+docker build --progress=plain --no-cache -t security-agent .
+```
+
+#### 4. Python Dependency Issues
+
+**Problem**: Import errors or package conflicts
+
+**Solutions**:
+
+```bash
+# Create fresh virtual environment
+rm -rf venv
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Upgrade pip and install requirements
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# For specific import errors
+pip list | grep google-cloud
+pip install --upgrade google-cloud-resource-manager
+
+# Clear pip cache
+pip cache purge
+```
+
+#### 5. API Enablement Issues
+
+**Problem**: `API not enabled` or `quota exceeded` errors
+
+**Solutions**:
+
+```bash
+# Check API status
+gcloud services list --enabled --filter="name:cloudresourcemanager.googleapis.com"
+
+# Enable specific APIs
+gcloud services enable cloudresourcemanager.googleapis.com
+gcloud services enable iam.googleapis.com
+gcloud services enable securitycenter.googleapis.com
+
+# Check quotas
+gcloud compute project-info describe --format="value(quotas[].limit, quotas[].metric)"
+
+# Check billing account
+gcloud billing accounts list
+gcloud billing projects describe $PROJECT_ID
+```
+
+#### 6. Service Account Permission Issues
+
+**Problem**: `Forbidden` or `Access Denied` errors
+
+**Solutions**:
+
+```bash
+# List current roles
+gcloud projects get-iam-policy $PROJECT_ID \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:security-agent@$PROJECT_ID.iam.gserviceaccount.com"
+
+# Add missing roles
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:security-agent@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/viewer"
+
+# Test API access
+gcloud auth activate-service-account --key-file=service-account-key.json
+gcloud projects list  # Should work without errors
+```
+
+#### 7. ADK and Agent Issues
+
+**Problem**: `v1/models` error or ADK chat not working
+
+**Solutions**:
+
+```bash
+# Check ADK installation
+python -c "import google.adk; print('ADK imported successfully')"
+
+# For model API issues, modify backend/services/agent_service.py:
+```
 
 ```python
+# Replace the model initialization with:
 from google.adk.models.lite_llm import LiteLlm
-
-...
 
 llm = LiteLlm(
     model="adk",
@@ -1974,54 +2781,147 @@ llm = LiteLlm(
 agent_module.root_agent.model = llm
 ```
 
-### "invalid parent name" error
-If you encounter an "invalid parent name" error when fetching GCP projects, it's likely due to an issue with the Resource Manager Python client. To fix this, modify `backend/api/gcp.py` to use a direct `curl` command:
+#### 8. Streamlit Frontend Issues
 
-```python
-import subprocess
-import json
+**Problem**: Streamlit app not loading or showing errors
 
-...
+**Solutions**:
 
-token_process = subprocess.run(
-    ["gcloud", "auth", "application-default", "print-access-token"],
-    capture_output=True, text=True, check=True
-)
-access_token = token_process.stdout.strip()
-
-...
-
-curl_command = [
-    "curl", "-X", "GET",
-    "https://cloudresourcemanager.googleapis.com/v3/projects",
-    "--header", f"Authorization: Bearer {access_token}",
-    "--header", "Content-Type: application/json"
-]
-
-response_process = subprocess.run(
-    curl_command,
-    capture_output=True, text=True, check=True
-)
-
-data = json.loads(response_process.stdout)
-```
-
-### Docker Daemon Not Running
-If you see an error message like "Cannot connect to the Docker daemon", make sure the Docker daemon is running.
-
--   **macOS:** Open the Docker Desktop application.
--   **Windows:** Open the Docker Desktop application.
--   **Linux:** Run `sudo systemctl start docker`.
-
-### Port Conflicts
-If you see an error message like "Port is already allocated", it means that another application is using port 8000 or 8501. You can either stop the other application or change the ports in the `docker-compose.yml` file.
-
-### Issues with `gcloud`
-If you have issues with `gcloud` commands, make sure you have the [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) installed and authenticated:
 ```bash
-gcloud auth login
-gcloud auth application-default login
+# Clear Streamlit cache
+streamlit cache clear
+
+# Run with detailed logging
+streamlit run frontend/main_app.py --server.port 8501 --logger.level debug
+
+# Check Streamlit config
+ls ~/.streamlit/
+cat ~/.streamlit/config.toml
+
+# Reset Streamlit config
+rm -rf ~/.streamlit/
 ```
+
+#### 9. Cloud Run Deployment Issues
+
+**Problem**: Deployment failures or service errors
+
+**Solutions**:
+
+```bash
+# Check Cloud Run service logs
+gcloud logging read "resource.type=cloud_run_revision" --limit=50 --format=json
+
+# Update service with more resources
+gcloud run services update security-agent-backend \
+  --region=us-central1 \
+  --memory=4Gi \
+  --cpu=2 \
+  --timeout=3600
+
+# Check service status
+gcloud run services describe security-agent-backend --region=us-central1
+
+# Test service endpoint
+curl -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  https://your-service-url/health
+```
+
+#### 10. Network and Firewall Issues
+
+**Problem**: Cannot access services from external networks
+
+**Solutions**:
+
+```bash
+# Check if services bind to correct interface
+netstat -tlnp | grep :8000
+netstat -tlnp | grep :8501
+
+# For Cloud environments, check firewall rules
+gcloud compute firewall-rules list
+gcloud compute firewall-rules create allow-security-agent \
+  --allow tcp:8000,tcp:8501 \
+  --source-ranges 0.0.0.0/0 \
+  --description "Allow Security Agent access"
+```
+
+### Environment-Specific Troubleshooting
+
+#### Local Development
+- Ensure virtual environment is activated
+- Check `.env` file exists and has correct values
+- Verify file permissions on service account key
+
+#### Docker Deployment
+- Check Docker daemon is running
+- Verify port mapping in docker run command
+- Mount service account key correctly
+
+#### Cloud Run Deployment
+- Ensure billing is enabled
+- Check service account attached to Cloud Run service
+- Verify environment variables are set
+
+### Getting Help
+
+#### Debug Commands
+```bash
+# Enable verbose logging
+export LOG_LEVEL=debug
+python run.py
+
+# Check application logs
+tail -f logs/app.log
+
+# Test individual components
+curl http://localhost:8000/health
+curl http://localhost:8000/api/v1/gcp/projects
+```
+
+#### Log Analysis
+```bash
+# Backend logs
+docker logs <container_name> 2>&1 | grep ERROR
+
+# Streamlit logs
+streamlit run main_app.py --server.headless true --logger.level debug
+
+# GCP API logs
+gcloud logging read "resource.type=gce_instance" --limit=10 --format=json
+```
+
+#### Creating Support Issues
+
+When reporting issues, include:
+
+1. **Environment Information**:
+   ```bash
+   uname -a  # OS version
+   python --version
+   gcloud version
+   docker --version
+   ```
+
+2. **Error Messages**: Complete error messages and stack traces
+
+3. **Configuration**: Sanitized `.env` file (remove secrets)
+
+4. **Logs**: Relevant log excerpts with timestamps
+
+5. **Steps to Reproduce**: Clear steps that led to the issue
+
+#### Common Log Messages
+
+| Message | Meaning | Solution |
+|---------|---------|----------|
+| `DefaultCredentialsError` | GCP credentials not found | Run `gcloud auth application-default login` |
+| `Permission denied` | Service account lacks permissions | Add required IAM roles |
+| `API not enabled` | Required API is disabled | Enable API with `gcloud services enable` |
+| `Connection refused` | Service not running | Start the service or check ports |
+| `ModuleNotFoundError` | Python package missing | Install requirements with `pip install -r requirements.txt` |
+
+This troubleshooting guide should resolve most common issues. If problems persist, check the project's issue tracker or create a new issue with the information above.
 
 
 

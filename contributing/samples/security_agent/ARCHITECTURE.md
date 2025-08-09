@@ -4,7 +4,7 @@
 1. [System Overview](#system-overview)
 2. [Architecture Diagrams](#architecture-diagrams)
 3. [Core Components](#core-components)
-4. [Service Architecture](#service-architecture)
+4. [API Architecture](#api-architecture)
 5. [Data Flow](#data-flow)
 6. [API Design](#api-design)
 7. [Security Model](#security-model)
@@ -12,15 +12,15 @@
 
 ## 🎯 System Overview
 
-The ADK Security Agent is an enterprise-ready security evaluation platform for Google Cloud Platform (GCP) built with a revolutionary modular service architecture. It provides comprehensive security analysis, AI-powered recommendations, and real-time monitoring capabilities.
+The ADK Security Agent is an enterprise-ready security evaluation platform for Google Cloud Platform (GCP) built with a simplified, direct API architecture. It provides comprehensive security analysis, AI-powered recommendations, and real-time monitoring capabilities.
 
 ### Key Architectural Principles
-- **Modular Service Architecture**: 16 independently manageable services
-- **Fault Isolation**: Services fail independently without affecting others
-- **Dynamic Configuration**: Enable/disable services at runtime
-- **Dependency Management**: Automatic service dependency resolution
+- **Simplified API Architecture**: Direct FastAPI endpoints without service layer complexity
+- **Direct ADK Integration**: Seamless AI agent communication without middleware
+- **Clean Separation**: Clear separation between API endpoints, UI components, and agents
 - **Asynchronous Operations**: Built on FastAPI with async/await patterns
 - **Cloud-Native Design**: Ready for containerization and cloud deployment
+- **Component Isolation**: Each API endpoint handles specific domain logic
 
 ## 🏗️ Architecture Diagrams
 
@@ -37,69 +37,36 @@ graph TB
         APIGW[FastAPI Backend<br/>Port 8000]
     end
 
-    subgraph "Service Registry"
-        SR[Service Registry]
-        SC[Service Config]
-        SM[Service Manager]
+    subgraph "API Endpoints"
+        SEC[Security API]
+        IAM[IAM API]
+        GCP[GCP API]
+        AGENT[Agent API]
+        MON[Monitoring API]
+        INC[Incidents API]
     end
 
-    subgraph "Core Services"
-        GCP[GCP Service]
-        SEC[Security Service]
-        AGENT[Agent Service]
-    end
-
-    subgraph "Security Services"
-        IAM[IAM Analysis]
-        COMP[Compliance]
-        THREAT[Threat Intel]
-        INC[Incident Response]
-    end
-
-    subgraph "Monitoring Services"
-        LOG[Cloud Logging]
-        TRACE[Cloud Trace]
-        MON[Monitoring]
-        PERF[Performance]
-    end
-
-    subgraph "Integration Services"
-        APIH[API Hub]
-        KNOW[Knowledge Base]
-        ANAL[Security Analytics]
-        DOC[Documentation]
-    end
-
-    subgraph "Google Cloud Platform"
-        RM[Resource Manager]
-        IAM_API[IAM API]
-        SC_API[Security Center]
-        LOG_API[Cloud Logging]
-        TRACE_API[Cloud Trace]
-        VA[Vertex AI]
+    subgraph "External Services"
+        GCP_EXT[Google Cloud Platform]
+        ADK_EXT[ADK Agent Framework]
     end
 
     UI --> APIGW
     ADK --> APIGW
-    APIGW --> SR
-    SR --> SM
-    SR --> SC
     
-    SM --> GCP
-    SM --> SEC
-    SM --> AGENT
-    SM --> IAM
-    SM --> COMP
-    SM --> LOG
-    SM --> TRACE
-    SM --> APIH
+    APIGW --> SEC
+    APIGW --> IAM
+    APIGW --> GCP
+    APIGW --> AGENT
+    APIGW --> MON
+    APIGW --> INC
     
-    GCP --> RM
-    IAM --> IAM_API
-    SEC --> SC_API
-    LOG --> LOG_API
-    TRACE --> TRACE_API
-    AGENT --> VA
+    SEC --> GCP_EXT
+    IAM --> GCP_EXT
+    GCP --> GCP_EXT
+    MON --> GCP_EXT
+    
+    AGENT --> ADK_EXT
 
     classDef frontend fill:#e1f5e1,stroke:#4caf50,stroke-width:2px
     classDef gateway fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
@@ -305,31 +272,27 @@ flowchart TD
     end
 ```
 
-## 📦 Service Architecture
+## 📦 API Architecture
 
-### Service Categories
+### API Endpoint Categories
 
-1. **Core Services (Required)**
-   - Cannot be disabled
-   - Foundation for other services
-   - Examples: GCP, Security, Agent
+1. **Core API Endpoints**
+   - Direct FastAPI routes
+   - No intermediate service layer
+   - Examples: `/api/security/`, `/api/gcp/`, `/api/agent/`
 
-2. **Security Services**
-   - IAM Analysis
-   - Compliance Checking
-   - Threat Intelligence
-   - Incident Response
+2. **Security Endpoints**
+   - IAM Analysis: `/api/iam/`
+   - Security Evaluation: `/api/security/`
+   - Incident Response: `/api/incidents/`
 
-3. **Monitoring Services**
-   - Cloud Logging
-   - OpenTelemetry Tracing
-   - Performance Monitoring
+3. **Monitoring Endpoints**
+   - Performance Monitoring: `/api/monitoring/`
+   - Health Checks: `/health`
 
-4. **Integration Services**
-   - API Hub
-   - Security Knowledge Base
-   - Analytics
-   - Documentation
+4. **Integration Endpoints**
+   - ADK Agent Communication: `/api/agent/`
+   - GCP API Access: `/api/gcp/`
 
 ### Service Communication Pattern
 
