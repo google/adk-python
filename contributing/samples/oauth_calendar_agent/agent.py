@@ -19,15 +19,15 @@ from dotenv import load_dotenv
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
-from google.adk import Agent
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.auth import AuthConfig
-from google.adk.auth import AuthCredential
-from google.adk.auth import AuthCredentialTypes
-from google.adk.auth import OAuth2Auth
-from google.adk.tools import ToolContext
+from google.adk.agents.llm_agent import Agent
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
 from google.adk.tools.google_api_tool import CalendarToolset
+from google.adk.tools.tool_context import ToolContext
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 

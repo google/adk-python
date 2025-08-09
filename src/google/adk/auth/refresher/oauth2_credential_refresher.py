@@ -34,9 +34,9 @@ from .base_credential_refresher import BaseCredentialRefresher
 try:
   from authlib.oauth2.rfc6749 import OAuth2Token
 
-  AUTHLIB_AVIALABLE = True
+  AUTHLIB_AVAILABLE = True
 except ImportError:
-  AUTHLIB_AVIALABLE = False
+  AUTHLIB_AVAILABLE = False
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -63,7 +63,7 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
 
     # Handle regular OAuth2 credentials
     if auth_credential.oauth2:
-      if not AUTHLIB_AVIALABLE:
+      if not AUTHLIB_AVAILABLE:
         return False
 
       return OAuth2Token({
@@ -93,7 +93,7 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
 
     # Handle regular OAuth2 credentials
     if auth_credential.oauth2 and auth_scheme:
-      if not AUTHLIB_AVIALABLE:
+      if not AUTHLIB_AVAILABLE:
         return auth_credential
 
       if not auth_credential.oauth2:

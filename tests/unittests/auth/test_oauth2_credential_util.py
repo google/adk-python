@@ -132,10 +132,12 @@ class TestOAuth2CredentialUtil:
         ),
     )
 
+    # Store the expected expiry time to avoid timing issues
+    expected_expires_at = int(time.time()) + 3600
     tokens = OAuth2Token({
         "access_token": "new_access_token",
         "refresh_token": "new_refresh_token",
-        "expires_at": int(time.time()) + 3600,
+        "expires_at": expected_expires_at,
         "expires_in": 3600,
     })
 
@@ -143,5 +145,5 @@ class TestOAuth2CredentialUtil:
 
     assert credential.oauth2.access_token == "new_access_token"
     assert credential.oauth2.refresh_token == "new_refresh_token"
-    assert credential.oauth2.expires_at == int(time.time()) + 3600
+    assert credential.oauth2.expires_at == expected_expires_at
     assert credential.oauth2.expires_in == 3600

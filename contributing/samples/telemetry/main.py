@@ -20,7 +20,7 @@ import agent
 from dotenv import load_dotenv
 from google.adk.agents.run_config import RunConfig
 from google.adk.runners import InMemoryRunner
-from google.adk.sessions import Session
+from google.adk.sessions.session import Session
 from google.genai import types
 from opentelemetry import trace
 from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter

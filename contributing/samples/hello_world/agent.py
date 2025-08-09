@@ -15,8 +15,6 @@
 import random
 
 from google.adk import Agent
-from google.adk.planners import BuiltInPlanner
-from google.adk.planners import PlanReActPlanner
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 

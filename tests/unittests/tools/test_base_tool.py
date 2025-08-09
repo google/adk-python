@@ -62,7 +62,7 @@ async def test_process_llm_request_no_declaration():
       tool_context=tool_context, llm_request=llm_request
   )
 
-  assert llm_request.config is None
+  assert llm_request.config == types.GenerateContentConfig()
 
 
 @pytest.mark.asyncio

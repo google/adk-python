@@ -14,7 +14,7 @@
 
 from typing import Any
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.genai import types
 
 from ... import testing_utils

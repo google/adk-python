@@ -36,7 +36,11 @@ class EvalSetsManager(ABC):
 
   @abstractmethod
   def list_eval_sets(self, app_name: str) -> list[str]:
-    """Returns a list of EvalSets that belong to the given app_name."""
+    """Returns a list of EvalSets that belong to the given app_name.
+
+    Raises:
+      NotFoundError: If the app_name doesn't exist.
+    """
 
   @abstractmethod
   def get_eval_case(

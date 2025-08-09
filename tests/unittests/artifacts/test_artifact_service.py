@@ -19,8 +19,8 @@ from typing import Optional
 from typing import Union
 from unittest import mock
 
-from google.adk.artifacts import GcsArtifactService
-from google.adk.artifacts import InMemoryArtifactService
+from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.genai import types
 import pytest
 
@@ -138,9 +138,7 @@ class MockClient:
 
 def mock_gcs_artifact_service():
   with mock.patch("google.cloud.storage.Client", return_value=MockClient()):
-    service = GcsArtifactService(bucket_name="test_bucket")
-    service.bucket = service.storage_client.bucket("test_bucket")
-    return service
+    return GcsArtifactService(bucket_name="test_bucket")
 
 
 def get_artifact_service(
@@ -253,7 +251,7 @@ async def test_list_versions(service_type):
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
-  filename = "filename"
+  filename = "with/slash/filename"
   versions = [
       types.Part.from_bytes(
           data=i.to_bytes(2, byteorder="big"), mime_type="text/plain"

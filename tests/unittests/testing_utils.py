@@ -23,13 +23,15 @@ from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
-from google.adk.artifacts import InMemoryArtifactService
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.runners import InMemoryRunner as AfInMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -57,7 +59,10 @@ class ModelContent(types.Content):
 
 
 async def create_invocation_context(
-    agent: Agent, user_content: str = '', run_config: RunConfig = None
+    agent: Agent,
+    user_content: str = '',
+    run_config: RunConfig = None,
+    plugins: list[BasePlugin] = [],
 ):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
@@ -67,6 +72,7 @@ async def create_invocation_context(
       artifact_service=artifact_service,
       session_service=session_service,
       memory_service=memory_service,
+      plugin_manager=PluginManager(plugins=plugins),
       invocation_id=invocation_id,
       agent=agent,
       session=await session_service.create_session(
@@ -165,6 +171,7 @@ class InMemoryRunner:
       self,
       root_agent: Union[Agent, LlmAgent],
       response_modalities: list[str] = None,
+      plugins: list[BasePlugin] = [],
   ):
     self.root_agent = root_agent
     self.runner = Runner(
@@ -173,6 +180,7 @@ class InMemoryRunner:
         artifact_service=InMemoryArtifactService(),
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
+        plugins=plugins,
     )
     self.session_id = None
 
@@ -239,6 +247,7 @@ class MockModel(BaseLlm):
 
   requests: list[LlmRequest] = []
   responses: list[LlmResponse]
+  error: Union[Exception, None] = None
   response_index: int = -1
 
   @classmethod
@@ -247,7 +256,10 @@ class MockModel(BaseLlm):
       responses: Union[
           list[types.Part], list[LlmResponse], list[str], list[list[types.Part]]
       ],
+      error: Union[Exception, None] = None,
   ):
+    if error and not responses:
+      return cls(responses=[], error=error)
     if not responses:
       return cls(responses=[])
     elif isinstance(responses[0], LlmResponse):
@@ -270,13 +282,16 @@ class MockModel(BaseLlm):
 
       return cls(responses=responses)
 
-  @staticmethod
-  def supported_models() -> list[str]:
+  @classmethod
+  @override
+  def supported_models(cls) -> list[str]:
     return ['mock']
 
   def generate_content(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> Generator[LlmResponse, None, None]:
+    if self.error:
+      raise self.error
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
     self.requests.append(llm_request)
@@ -295,6 +310,7 @@ class MockModel(BaseLlm):
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
     """Creates a live connection to the LLM."""
+    self.requests.append(llm_request)
     yield MockLlmConnection(self.responses)
 
 

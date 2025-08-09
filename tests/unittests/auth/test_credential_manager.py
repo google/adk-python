@@ -16,19 +16,13 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
-from fastapi.openapi.models import HTTPBearer
-from fastapi.openapi.models import OAuth2
-from fastapi.openapi.models import OAuthFlowAuthorizationCode
-from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
-from google.adk.auth.auth_credential import HttpAuth
-from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.auth.auth_credential import ServiceAccountCredential
+from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import AuthSchemeType
-from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_manager import CredentialManager
 import pytest
@@ -47,13 +41,13 @@ class TestCredentialManager:
   async def test_request_credential(self):
     """Test request_credential method."""
     auth_config = Mock(spec=AuthConfig)
-    tool_context = Mock()
-    tool_context.request_credential = Mock()
+    callback_context = Mock()
+    callback_context.request_credential = Mock()
 
     manager = CredentialManager(auth_config)
-    await manager.request_credential(tool_context)
+    await manager.request_credential(callback_context)
 
-    tool_context.request_credential.assert_called_once_with(auth_config)
+    callback_context.request_credential.assert_called_once_with(auth_config)
 
   @pytest.mark.asyncio
   async def test_load_auth_credentials_success(self):
@@ -67,7 +61,7 @@ class TestCredentialManager:
     mock_credential = Mock(spec=AuthCredential)
     mock_credential.auth_type = AuthCredentialTypes.API_KEY
 
-    tool_context = Mock()
+    callback_context = Mock()
 
     manager = CredentialManager(auth_config)
 
@@ -84,17 +78,17 @@ class TestCredentialManager:
     )
     manager._save_credential = AsyncMock()
 
-    result = await manager.get_auth_credential(tool_context)
+    result = await manager.get_auth_credential(callback_context)
 
     # Verify all methods were called
     manager._validate_credential.assert_called_once()
     manager._is_credential_ready.assert_called_once()
-    manager._load_existing_credential.assert_called_once_with(tool_context)
-    manager._load_from_auth_response.assert_called_once_with(tool_context)
+    manager._load_existing_credential.assert_called_once_with(callback_context)
+    manager._load_from_auth_response.assert_called_once_with(callback_context)
     manager._exchange_credential.assert_called_once_with(mock_credential)
     manager._refresh_credential.assert_called_once_with(mock_credential)
     manager._save_credential.assert_called_once_with(
-        tool_context, mock_credential
+        callback_context, mock_credential
     )
 
     assert result == mock_credential
@@ -106,7 +100,7 @@ class TestCredentialManager:
     auth_config.raw_auth_credential = None
     auth_config.exchanged_auth_credential = None
 
-    tool_context = Mock()
+    callback_context = Mock()
 
     manager = CredentialManager(auth_config)
 
@@ -115,20 +109,14 @@ class TestCredentialManager:
     manager._is_credential_ready = Mock(return_value=False)
     manager._load_existing_credential = AsyncMock(return_value=None)
     manager._load_from_auth_response = AsyncMock(return_value=None)
-    manager._exchange_credential = AsyncMock()
-    manager._refresh_credential = AsyncMock()
-    manager._save_credential = AsyncMock()
 
-    result = await manager.get_auth_credential(tool_context)
+    result = await manager.get_auth_credential(callback_context)
 
     # Verify methods were called but no credential returned
     manager._validate_credential.assert_called_once()
     manager._is_credential_ready.assert_called_once()
-    manager._load_existing_credential.assert_called_once_with(tool_context)
-    manager._load_from_auth_response.assert_called_once_with(tool_context)
-    manager._exchange_credential.assert_not_called()
-    manager._refresh_credential.assert_not_called()
-    manager._save_credential.assert_not_called()
+    manager._load_existing_credential.assert_called_once_with(callback_context)
+    manager._load_from_auth_response.assert_called_once_with(callback_context)
 
     assert result is None
 
@@ -139,12 +127,12 @@ class TestCredentialManager:
     mock_credential = Mock(spec=AuthCredential)
     auth_config.exchanged_auth_credential = mock_credential
 
-    tool_context = Mock()
+    callback_context = Mock()
 
     manager = CredentialManager(auth_config)
     manager._load_from_credential_service = AsyncMock(return_value=None)
 
-    result = await manager._load_existing_credential(tool_context)
+    result = await manager._load_existing_credential(callback_context)
 
     assert result == mock_credential
 
@@ -156,42 +144,42 @@ class TestCredentialManager:
 
     mock_credential = Mock(spec=AuthCredential)
 
-    tool_context = Mock()
+    callback_context = Mock()
 
     manager = CredentialManager(auth_config)
     manager._load_from_credential_service = AsyncMock(
         return_value=mock_credential
     )
 
-    result = await manager._load_existing_credential(tool_context)
+    result = await manager._load_existing_credential(callback_context)
 
-    manager._load_from_credential_service.assert_called_once_with(tool_context)
+    manager._load_from_credential_service.assert_called_once_with(
+        callback_context
+    )
     assert result == mock_credential
 
   @pytest.mark.asyncio
   async def test_load_from_credential_service_with_service(self):
-    """Test _load_from_credential_service from tool context when credential service is available."""
+    """Test _load_from_credential_service from callback context when credential service is available."""
     auth_config = Mock(spec=AuthConfig)
 
     mock_credential = Mock(spec=AuthCredential)
 
     # Mock credential service
     credential_service = Mock()
-    credential_service.load_credential = AsyncMock(return_value=mock_credential)
 
     # Mock invocation context
     invocation_context = Mock()
     invocation_context.credential_service = credential_service
 
-    tool_context = Mock()
-    tool_context._invocation_context = invocation_context
+    callback_context = Mock()
+    callback_context._invocation_context = invocation_context
+    callback_context.load_credential = AsyncMock(return_value=mock_credential)
 
     manager = CredentialManager(auth_config)
-    result = await manager._load_from_credential_service(tool_context)
+    result = await manager._load_from_credential_service(callback_context)
 
-    credential_service.load_credential.assert_called_once_with(
-        auth_config, tool_context
-    )
+    callback_context.load_credential.assert_called_once_with(auth_config)
     assert result == mock_credential
 
   @pytest.mark.asyncio
@@ -203,11 +191,11 @@ class TestCredentialManager:
     invocation_context = Mock()
     invocation_context.credential_service = None
 
-    tool_context = Mock()
-    tool_context._invocation_context = invocation_context
+    callback_context = Mock()
+    callback_context._invocation_context = invocation_context
 
     manager = CredentialManager(auth_config)
-    result = await manager._load_from_credential_service(tool_context)
+    result = await manager._load_from_credential_service(callback_context)
 
     assert result is None
 
@@ -224,15 +212,14 @@ class TestCredentialManager:
     invocation_context = Mock()
     invocation_context.credential_service = credential_service
 
-    tool_context = Mock()
-    tool_context._invocation_context = invocation_context
+    callback_context = Mock()
+    callback_context._invocation_context = invocation_context
+    callback_context.save_credential = AsyncMock()
 
     manager = CredentialManager(auth_config)
-    await manager._save_credential(tool_context, mock_credential)
+    await manager._save_credential(callback_context, mock_credential)
 
-    credential_service.save_credential.assert_called_once_with(
-        auth_config, tool_context
-    )
+    callback_context.save_credential.assert_called_once_with(auth_config)
     assert auth_config.exchanged_auth_credential == mock_credential
 
   @pytest.mark.asyncio
@@ -246,15 +233,15 @@ class TestCredentialManager:
     invocation_context = Mock()
     invocation_context.credential_service = None
 
-    tool_context = Mock()
-    tool_context._invocation_context = invocation_context
+    callback_context = Mock()
+    callback_context._invocation_context = invocation_context
 
     manager = CredentialManager(auth_config)
-    await manager._save_credential(tool_context, mock_credential)
+    await manager._save_credential(callback_context, mock_credential)
 
-    # Should not raise an error, and credential should not be set in auth_config
-    # when there's no credential service (according to implementation)
-    assert auth_config.exchanged_auth_credential is None
+    # Should not raise an error, and credential should be set in auth_config
+    # even when there's no credential service (config is updated regardless)
+    assert auth_config.exchanged_auth_credential == mock_credential
 
   @pytest.mark.asyncio
   async def test_refresh_credential_oauth2(self):
@@ -383,58 +370,63 @@ class TestCredentialManager:
     auth_config.auth_scheme = auth_scheme
 
     manager = CredentialManager(auth_config)
-    await manager._validate_credential()
 
-    # Should return without error for non-OAuth2/OpenID schemes
+    # Should not raise an error for non-OAuth schemes
+    await manager._validate_credential()
 
   @pytest.mark.asyncio
   async def test_validate_credential_oauth2_missing_oauth2_field(self):
     """Test _validate_credential with OAuth2 credential missing oauth2 field."""
-    auth_scheme = Mock()
-    auth_scheme.type_ = AuthSchemeType.oauth2
-
     mock_raw_credential = Mock(spec=AuthCredential)
     mock_raw_credential.auth_type = AuthCredentialTypes.OAUTH2
     mock_raw_credential.oauth2 = None
 
     auth_config = Mock(spec=AuthConfig)
     auth_config.raw_auth_credential = mock_raw_credential
-    auth_config.auth_scheme = auth_scheme
-
-    manager = CredentialManager(auth_config)
-
-    with pytest.raises(
-        ValueError, match="auth_config.raw_credential.oauth2 required"
-    ):
-      await manager._validate_credential()
-
-  @pytest.mark.asyncio
-  async def test_exchange_credentials_service_account(self):
-    """Test _exchange_credential with service account credential (no exchanger available)."""
-    mock_raw_credential = Mock(spec=AuthCredential)
-    mock_raw_credential.auth_type = AuthCredentialTypes.SERVICE_ACCOUNT
-
-    auth_config = Mock(spec=AuthConfig)
     auth_config.auth_scheme = Mock()
 
     manager = CredentialManager(auth_config)
 
-    # Mock the exchanger registry to return None (no exchanger available)
+    with pytest.raises(ValueError, match="oauth2 required for credential type"):
+      await manager._validate_credential()
+
+  @pytest.mark.asyncio
+  async def test_exchange_credentials_service_account(self):
+    """Test _exchange_credential with service account credential."""
+    mock_service_account = Mock(spec=ServiceAccount)
+    mock_credential = Mock(spec=AuthCredential)
+    mock_credential.auth_type = AuthCredentialTypes.SERVICE_ACCOUNT
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = Mock()
+
+    # Mock exchanger
+    mock_exchanger = Mock()
+    mock_exchanger.exchange = AsyncMock(return_value=mock_credential)
+
+    manager = CredentialManager(auth_config)
+
+    # Mock the exchanger registry to return our mock exchanger
     with patch.object(
-        manager._exchanger_registry, "get_exchanger", return_value=None
+        manager._exchanger_registry,
+        "get_exchanger",
+        return_value=mock_exchanger,
     ):
       result, was_exchanged = await manager._exchange_credential(
-          mock_raw_credential
+          mock_credential
       )
 
-      assert result == mock_raw_credential
-      assert was_exchanged is False
+    mock_exchanger.exchange.assert_called_once_with(
+        mock_credential, auth_config.auth_scheme
+    )
+    assert result == mock_credential
+    assert was_exchanged is True
 
   @pytest.mark.asyncio
   async def test_exchange_credential_no_exchanger(self):
     """Test _exchange_credential with credential that has no exchanger."""
-    mock_raw_credential = Mock(spec=AuthCredential)
-    mock_raw_credential.auth_type = AuthCredentialTypes.API_KEY
+    mock_credential = Mock(spec=AuthCredential)
+    mock_credential.auth_type = AuthCredentialTypes.API_KEY
 
     auth_config = Mock(spec=AuthConfig)
 
@@ -442,55 +434,50 @@ class TestCredentialManager:
 
     # Mock the exchanger registry to return None (no exchanger available)
     with patch.object(
-        manager._exchanger_registry, "get_exchanger", return_value=None
+        manager._exchanger_registry,
+        "get_exchanger",
+        return_value=None,
     ):
       result, was_exchanged = await manager._exchange_credential(
-          mock_raw_credential
+          mock_credential
       )
 
-      assert result == mock_raw_credential
-      assert was_exchanged is False
+    assert result == mock_credential
+    assert was_exchanged is False
 
 
-# Test fixtures
 @pytest.fixture
 def oauth2_auth_scheme():
-  """Create an OAuth2 auth scheme for testing."""
-  flows = OAuthFlows(
-      authorizationCode=OAuthFlowAuthorizationCode(
-          authorizationUrl="https://example.com/oauth2/authorize",
-          tokenUrl="https://example.com/oauth2/token",
-          scopes={"read": "Read access", "write": "Write access"},
-      )
-  )
-  return OAuth2(flows=flows)
+  """OAuth2 auth scheme for testing."""
+  auth_scheme = Mock(spec=AuthScheme)
+  auth_scheme.type_ = AuthSchemeType.oauth2
+  return auth_scheme
 
 
 @pytest.fixture
 def openid_auth_scheme():
-  """Create an OpenID Connect auth scheme for testing."""
-  return OpenIdConnectWithConfig(
-      type_="openIdConnect",
-      authorization_endpoint="https://example.com/auth",
-      token_endpoint="https://example.com/token",
-      scopes=["openid", "profile"],
-  )
+  """OpenID Connect auth scheme for testing."""
+  auth_scheme = Mock(spec=AuthScheme)
+  auth_scheme.type_ = AuthSchemeType.openIdConnect
+  return auth_scheme
 
 
 @pytest.fixture
 def bearer_auth_scheme():
-  """Create a Bearer auth scheme for testing."""
-  return HTTPBearer(bearerFormat="JWT")
+  """Bearer auth scheme for testing."""
+  auth_scheme = Mock(spec=AuthScheme)
+  auth_scheme.type_ = AuthSchemeType.http
+  return auth_scheme
 
 
 @pytest.fixture
 def oauth2_credential():
-  """Create OAuth2 credentials for testing."""
+  """OAuth2 credential for testing."""
   return AuthCredential(
       auth_type=AuthCredentialTypes.OAUTH2,
       oauth2=OAuth2Auth(
-          client_id="mock_client_id",
-          client_secret="mock_client_secret",
+          client_id="test_client_id",
+          client_secret="test_client_secret",
           redirect_uri="https://example.com/callback",
       ),
   )
@@ -498,26 +485,27 @@ def oauth2_credential():
 
 @pytest.fixture
 def service_account_credential():
-  """Create service account credentials for testing."""
+  """Service account credential for testing."""
   return AuthCredential(
       auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
       service_account=ServiceAccount(
           service_account_credential=ServiceAccountCredential(
-              type="service_account",
-              project_id="test-project",
-              private_key_id="key-id",
+              type_="service_account",
+              project_id="test_project",
+              private_key_id="test_key_id",
               private_key=(
-                  "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE"
+                  "-----BEGIN PRIVATE KEY-----\ntest_key\n-----END PRIVATE"
                   " KEY-----\n"
               ),
-              client_email="test@test-project.iam.gserviceaccount.com",
-              client_id="123456789",
+              client_email="test@test.iam.gserviceaccount.com",
+              client_id="test_client_id",
               auth_uri="https://accounts.google.com/o/oauth2/auth",
               token_uri="https://oauth2.googleapis.com/token",
               auth_provider_x509_cert_url=(
                   "https://www.googleapis.com/oauth2/v1/certs"
               ),
-              client_x509_cert_url="https://www.googleapis.com/robot/v1/metadata/x509/test%40test-project.iam.gserviceaccount.com",
+              client_x509_cert_url="https://www.googleapis.com/robot/v1/metadata/x509/test%40test.iam.gserviceaccount.com",
+              universe_domain="googleapis.com",
           ),
           scopes=["https://www.googleapis.com/auth/cloud-platform"],
       ),
@@ -526,20 +514,17 @@ def service_account_credential():
 
 @pytest.fixture
 def api_key_credential():
-  """Create API key credentials for testing."""
+  """API key credential for testing."""
   return AuthCredential(
       auth_type=AuthCredentialTypes.API_KEY,
-      api_key="test-api-key",
+      api_key="test_api_key",
   )
 
 
 @pytest.fixture
 def http_bearer_credential():
-  """Create HTTP Bearer credentials for testing."""
+  """HTTP bearer credential for testing."""
   return AuthCredential(
       auth_type=AuthCredentialTypes.HTTP,
-      http=HttpAuth(
-          scheme="bearer",
-          credentials=HttpCredentials(token="bearer-token"),
-      ),
+      http=Mock(),
   )

@@ -23,6 +23,7 @@ from google.cloud import exceptions as cloud_exceptions
 from google.cloud import storage
 from typing_extensions import override
 
+from ..errors.not_found_error import NotFoundError
 from ._eval_sets_manager_utils import add_eval_case_to_eval_set
 from ._eval_sets_manager_utils import delete_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_case_from_eval_set
@@ -130,7 +131,7 @@ class GcsEvalSetsManager(EvalSetsManager):
         eval_sets.append(eval_set_id)
       return sorted(eval_sets)
     except cloud_exceptions.NotFound as e:
-      raise ValueError(
+      raise NotFoundError(
           f"App `{app_name}` not found in GCS bucket `{self.bucket_name}`."
       ) from e
 

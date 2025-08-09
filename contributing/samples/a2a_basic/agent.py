@@ -14,7 +14,8 @@
 
 import random
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
+from google.adk.agents.remote_a2a_agent import AGENT_CARD_WELL_KNOWN_PATH
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.tools.example_tool import ExampleTool
 from google.genai import types
@@ -87,13 +88,13 @@ prime_agent = RemoteA2aAgent(
     name="prime_agent",
     description="Agent that handles checking if numbers are prime.",
     agent_card=(
-        "http://localhost:8001/a2a/check_prime_agent/.well-known/agent.json"
+        f"http://localhost:8001/a2a/check_prime_agent{AGENT_CARD_WELL_KNOWN_PATH}"
     ),
 )
 
 
 root_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.0-flash",
     name="root_agent",
     instruction="""
       You are a helpful assistant that can roll dice and check if numbers are prime.

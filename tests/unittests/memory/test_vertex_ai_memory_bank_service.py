@@ -16,9 +16,9 @@ import re
 from typing import Any
 from unittest import mock
 
-from google.adk.events import Event
+from google.adk.events.event import Event
 from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
-from google.adk.sessions import Session
+from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 
@@ -44,6 +44,20 @@ MOCK_SESSION = Session(
             invocation_id='456',
             author='user',
             timestamp=12345,
+        ),
+        # Function call event, should be ignored
+        Event(
+            id='666',
+            invocation_id='456',
+            author='agent',
+            timestamp=23456,
+            content=types.Content(
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(name='test_function')
+                    )
+                ]
+            ),
         ),
     ],
 )

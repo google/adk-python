@@ -29,9 +29,9 @@ try:
   from authlib.integrations.requests_client import OAuth2Session
   from authlib.oauth2.rfc6749 import OAuth2Token
 
-  AUTHLIB_AVIALABLE = True
+  AUTHLIB_AVAILABLE = True
 except ImportError:
-  AUTHLIB_AVIALABLE = False
+  AUTHLIB_AVAILABLE = False
 
 
 logger = logging.getLogger("google_adk." + __name__)

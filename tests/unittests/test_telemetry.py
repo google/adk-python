@@ -22,7 +22,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
-from google.adk.sessions import InMemorySessionService
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry import trace_call_llm
 from google.adk.telemetry import trace_merged_tool_calls
 from google.adk.telemetry import trace_tool_call
@@ -155,7 +155,9 @@ async def test_trace_call_llm_usage_metadata(monkeypatch, mock_span_fixture):
   llm_response = LlmResponse(
       turn_complete=True,
       usage_metadata=types.GenerateContentResponseUsageMetadata(
-          total_token_count=100, prompt_token_count=50
+          total_token_count=100,
+          prompt_token_count=50,
+          candidates_token_count=50,
       ),
   )
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
@@ -163,7 +165,7 @@ async def test_trace_call_llm_usage_metadata(monkeypatch, mock_span_fixture):
   expected_calls = [
       mock.call('gen_ai.system', 'gcp.vertex.agent'),
       mock.call('gen_ai.usage.input_tokens', 50),
-      mock.call('gen_ai.usage.output_tokens', 100),
+      mock.call('gen_ai.usage.output_tokens', 50),
   ]
   assert mock_span_fixture.set_attribute.call_count == 9
   mock_span_fixture.set_attribute.assert_has_calls(

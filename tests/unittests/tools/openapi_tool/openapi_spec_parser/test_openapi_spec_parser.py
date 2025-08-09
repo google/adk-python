@@ -624,3 +624,60 @@ def test_parse_spec_with_duplicate_parameter_names(openapi_spec_generator):
   assert body_param is not None
   assert body_param.original_name == "name"
   assert body_param.py_name == "name_0"
+
+
+def test_parse_spec_with_path_level_parameters(openapi_spec_generator):
+  """Test that operation parameters are correctly combined with path-level parameters."""
+  openapi_spec = {
+      "openapi": "3.1.0",
+      "info": {"title": "Combine Parameters API", "version": "1.0.0"},
+      "paths": {
+          "/test": {
+              "parameters": [{
+                  "name": "global_param",
+                  "in": "query",
+                  "schema": {"type": "string"},
+              }],
+              "get": {
+                  "parameters": [{
+                      "name": "local_param",
+                      "in": "header",
+                      "schema": {"type": "integer"},
+                  }],
+                  "operationId": "testGet",
+                  "responses": {
+                      "200": {
+                          "description": "Successful response",
+                          "content": {
+                              "application/json": {"schema": {"type": "string"}}
+                          },
+                      }
+                  },
+              },
+          }
+      },
+  }
+
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+  assert len(parsed_operations) == 1
+
+  operation = parsed_operations[0]
+  assert len(operation.parameters) == 2
+
+  # Verify the combined parameters
+  global_param = next(
+      (p for p in operation.parameters if p.original_name == "global_param"),
+      None,
+  )
+  local_param = next(
+      (p for p in operation.parameters if p.original_name == "local_param"),
+      None,
+  )
+
+  assert global_param is not None
+  assert global_param.param_location == "query"
+  assert global_param.type_value is str
+
+  assert local_param is not None
+  assert local_param.param_location == "header"
+  assert local_param.type_value is int

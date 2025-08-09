@@ -537,7 +537,7 @@ class TestIntegrationClient:
         mock.patch(
             "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
             return_value=(mock_credentials, "test_project_id"),
-        ),
+        ) as mock_default_service_credential,
         mock.patch.object(mock_credentials, "refresh", return_value=None),
     ):
       client = IntegrationClient(
@@ -552,6 +552,10 @@ class TestIntegrationClient:
       )
       token = client._get_access_token()
       assert token == "test_token"
+      # Verify default_service_credential is called with the correct scopes parameter
+      mock_default_service_credential.assert_called_once_with(
+          scopes=["https://www.googleapis.com/auth/cloud-platform"]
+      )
 
   def test_get_access_token_no_valid_credentials(
       self, project, location, integration_name, triggers, connection_name

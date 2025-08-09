@@ -125,7 +125,10 @@ def test_exchange_credential_use_default_credential_success(
   assert result.auth_type == AuthCredentialTypes.HTTP
   assert result.http.scheme == "bearer"
   assert result.http.credentials.token == "mock_access_token"
-  mock_google_auth_default.assert_called_once()
+  # Verify google.auth.default is called with the correct scopes parameter
+  mock_google_auth_default.assert_called_once_with(
+      scopes=["https://www.googleapis.com/auth/cloud-platform"]
+  )
   mock_credentials.refresh.assert_called_once()
 
 

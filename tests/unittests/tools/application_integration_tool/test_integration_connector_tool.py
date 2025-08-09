@@ -14,8 +14,8 @@
 
 from unittest import mock
 
-from google.adk.auth import AuthCredential
-from google.adk.auth import AuthCredentialTypes
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.tools.application_integration_tool.integration_connector_tool import IntegrationConnectorTool

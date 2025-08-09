@@ -26,6 +26,7 @@ classifiers = [ # List of https://pypi.org/classifiers/
 dependencies = [
   # go/keep-sorted start
   "PyYAML>=6.0.2",                                  # For APIHubToolset.
+  "absolufy-imports>=0.3.1",                        # For Agent Engine deployment.
   "anyio>=4.9.0;python_version>='3.10'",            # For MCP Session Manager
   "authlib>=1.5.1",                                 # For RestAPI Tool
   "click>=8.1.8",                                   # For CLI tools
@@ -47,9 +48,11 @@ dependencies = [
   "requests>=2.32.4",
   "sqlalchemy>=2.0",                                # SQL database ORM
   "starlette>=0.46.2",                              # For FastAPI CLI
+  "tenacity>=8.0.0",                                # For Retry management
   "typing-extensions>=4.5, <5",
   "tzlocal>=5.3",                                   # Time zone utilities
   "uvicorn>=0.34.0",                                # ASGI server for FastAPI
+  "watchdog>=6.0.0",                                # For file change detection and hot reload
   "websockets>=15.0.1",                             # For BaseLlmFlow
   # go/keep-sorted end
 ]
@@ -78,13 +81,13 @@ dev = [
 
 a2a = [
   # go/keep-sorted start
-  "a2a-sdk>=0.2.7;python_version>='3.10'"
+  "a2a-sdk>=0.3.0,<0.4.0;python_version>='3.10'",
   # go/keep-sorted end
 ]
 
 eval = [
   # go/keep-sorted start
-  "google-cloud-aiplatform[evaluation]>=1.87.0",
+  "google-cloud-aiplatform[evaluation]>=1.100.0",
   "pandas>=2.2.3",
   "tabulate>=0.9.0",
   "rouge-score>=0.1.2",
@@ -103,6 +106,7 @@ test = [
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
   "pytest>=8.3.4",
+  "python-multipart>=0.0.9",
   # go/keep-sorted end
 ]
 

@@ -16,9 +16,9 @@ import os
 
 from dotenv import load_dotenv
 from google.adk import Agent
-from google.adk.auth import AuthCredential
-from google.adk.auth import AuthCredentialTypes
-from google.adk.auth import OAuth2Auth
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.tools.application_integration_tool.application_integration_toolset import ApplicationIntegrationToolset
 from google.adk.tools.openapi_tool.auth.auth_helpers import dict_to_auth_scheme
 from google.genai import types

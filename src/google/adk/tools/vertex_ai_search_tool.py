@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from ..utils.model_name_utils import is_gemini_1_model
+from ..utils.model_name_utils import is_gemini_model
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -86,8 +88,8 @@ class VertexAiSearchTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    if llm_request.model and 'gemini-' in llm_request.model:
-      if 'gemini-1' in llm_request.model and llm_request.config.tools:
+    if is_gemini_model(llm_request.model):
+      if is_gemini_1_model(llm_request.model) and llm_request.config.tools:
         raise ValueError(
             'Vertex AI search tool can not be used with other tools in Gemini'
             ' 1.x.'

@@ -122,3 +122,32 @@ async def test_generate_content_async(
       assert len(responses) == 1
       assert isinstance(responses[0], LlmResponse)
       assert responses[0].content.parts[0].text == "Hello, how can I help you?"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_max_tokens(
+    llm_request, generate_content_response, generate_llm_response
+):
+  claude_llm = Claude(model="claude-3-5-sonnet-v2@20241022", max_tokens=4096)
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+      # Create a mock coroutine that returns the generate_content_response.
+      async def mock_coro():
+        return generate_content_response
+
+      # Assign the coroutine to the mocked method
+      mock_client.messages.create.return_value = mock_coro()
+
+      _ = [
+          resp
+          async for resp in claude_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      assert kwargs["max_tokens"] == 4096

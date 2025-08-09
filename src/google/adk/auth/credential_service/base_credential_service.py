@@ -18,7 +18,7 @@ from abc import ABC
 from abc import abstractmethod
 from typing import Optional
 
-from ...tools.tool_context import ToolContext
+from ...agents.callback_context import CallbackContext
 from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
 from ..auth_tool import AuthConfig
@@ -33,10 +33,10 @@ class BaseCredentialService(ABC):
   async def load_credential(
       self,
       auth_config: AuthConfig,
-      tool_context: ToolContext,
+      callback_context: CallbackContext,
   ) -> Optional[AuthCredential]:
     """
-    Loads the credential by auth config and current tool context from the
+    Loads the credential by auth config and current callback context from the
     backend credential store.
 
     Args:
@@ -44,7 +44,7 @@ class BaseCredentialService(ABC):
         credential information. auth_config.get_credential_key will be used to
         build the key to load the credential.
 
-        tool_context: The context of the current invocation when the tool is
+        callback_context: The context of the current invocation when the tool is
         trying to load the credential.
 
     Returns:
@@ -56,7 +56,7 @@ class BaseCredentialService(ABC):
   async def save_credential(
       self,
       auth_config: AuthConfig,
-      tool_context: ToolContext,
+      callback_context: CallbackContext,
   ) -> None:
     """
     Saves the exchanged_auth_credential in auth config to the backend credential
@@ -67,7 +67,7 @@ class BaseCredentialService(ABC):
         credential information. auth_config.get_credential_key will be used to
         build the key to save the credential.
 
-        tool_context: The context of the current invocation when the tool is
+        callback_context: The context of the current invocation when the tool is
         trying to save the credential.
 
     Returns:
