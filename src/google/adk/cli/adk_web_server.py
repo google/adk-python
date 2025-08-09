@@ -87,6 +87,9 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 
+TAG_DEBUG = "Debug"
+TAG_EVALUATION = "Evaluation"
+
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
 
@@ -352,14 +355,14 @@ class AdkWebServer:
     def list_apps() -> list[str]:
       return self.agent_loader.list_agents()
 
-    @app.get("/debug/trace/{event_id}")
+    @app.get("/debug/trace/{event_id}", tags=[TAG_DEBUG])
     def get_trace_dict(event_id: str) -> Any:
       event_dict = trace_dict.get(event_id, None)
       if event_dict is None:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
 
-    @app.get("/debug/trace/session/{session_id}")
+    @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
     def get_session_trace(session_id: str) -> Any:
       spans = memory_exporter.get_finished_spans(session_id)
       if not spans:
@@ -456,6 +459,7 @@ class AdkWebServer:
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     def create_eval_set(
         app_name: str,
@@ -473,6 +477,7 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_sets",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     def list_eval_sets(app_name: str) -> list[str]:
       """Lists all eval sets for the given app."""
@@ -485,6 +490,7 @@ class AdkWebServer:
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     async def add_session_to_eval_set(
         app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
@@ -524,6 +530,7 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     def list_evals_in_eval_set(
         app_name: str,
@@ -542,6 +549,7 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     def get_eval(
         app_name: str, eval_set_id: str, eval_case_id: str
@@ -564,6 +572,7 @@ class AdkWebServer:
     @app.put(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     def update_eval(
         app_name: str,
@@ -592,7 +601,10 @@ class AdkWebServer:
       except NotFoundError as nfe:
         raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
-    @app.delete("/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}")
+    @app.delete(
+        "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+        tags=[TAG_EVALUATION],
+    )
     def delete_eval(app_name: str, eval_set_id: str, eval_case_id: str):
       try:
         self.eval_sets_manager.delete_eval_case(
@@ -604,6 +616,7 @@ class AdkWebServer:
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     async def run_eval(
         app_name: str, eval_set_id: str, req: RunEvalRequest
@@ -675,6 +688,7 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_results/{eval_result_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     def get_eval_result(
         app_name: str,
@@ -693,6 +707,7 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_results",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     def list_eval_results(app_name: str) -> list[str]:
       """Lists all eval results for the given app."""
@@ -701,6 +716,7 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_metrics",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     def list_eval_metrics(app_name: str) -> list[MetricInfo]:
       """Lists all eval metrics for the given app."""
@@ -867,6 +883,7 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/events/{event_id}/graph",
         response_model_exclude_none=True,
+        tags=[TAG_DEBUG],
     )
     async def get_event_graph(
         app_name: str, user_id: str, session_id: str, event_id: str
