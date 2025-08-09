@@ -12,11 +12,62 @@ import os
 import logging
 import asyncio
 import sys
+import tempfile
+import json
+
+# Import Secret Manager for runtime credential loading
+try:
+    from google.cloud import secretmanager
+    SECRETMANAGER_AVAILABLE = True
+except ImportError:
+    SECRETMANAGER_AVAILABLE = False
+    logging.warning("Google Cloud Secret Manager not available")
 
 # Add the services directory to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'services'))
 
-from services.asset_inventory_service import GCPAssetInventoryService
+def setup_service_account_from_secret():
+    """Setup service account credentials from Google Secret Manager."""
+    if not SECRETMANAGER_AVAILABLE:
+        logging.warning("Secret Manager not available, using default credentials")
+        return
+        
+    # Only fetch from Secret Manager if running in Cloud Run
+    if not os.getenv('K_SERVICE'):
+        logging.info("Not running in Cloud Run, using local credentials")
+        return
+        
+    try:
+        project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+        if not project_id:
+            logging.error("GOOGLE_CLOUD_PROJECT not set")
+            return
+            
+        # Create Secret Manager client (uses Cloud Run's service account)
+        client = secretmanager.SecretManagerServiceClient()
+        secret_name = f"projects/{project_id}/secrets/security-agent-sa-key/versions/latest"
+        
+        logging.info(f"Fetching service account key from Secret Manager: {secret_name}")
+        response = client.access_secret_version(request={"name": secret_name})
+        secret_data = response.payload.data.decode("UTF-8")
+        
+        # Create temporary file for the service account key
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.json', prefix='sa_key_')
+        with os.fdopen(temp_fd, 'w') as temp_file:
+            temp_file.write(secret_data)
+        
+        # Set the environment variable to point to the temporary file
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = temp_path
+        logging.info(f"✅ Service account credentials loaded from Secret Manager")
+        
+        return temp_path
+        
+    except Exception as e:
+        logging.error(f"❌ Failed to load service account from Secret Manager: {e}")
+        logging.info("Falling back to default Cloud Run credentials")
+
+# Removed: from services.asset_inventory_service import GCPAssetInventoryService
+# Service layer has been replaced with direct API endpoints
 
 # Minimal fallback implementation for ADK chat services
 def create_adk_chat_service(project_id):
@@ -124,17 +175,24 @@ def create_enhanced_adk_chat_service(project_id):
                     agent_used = msg.get("agent_used")
                     if agent_used:
                         agents_used.append(agent_used)
+                        # Map agent names to topics for proper routing
+                        if "security" in agent_used:
+                            topics_discussed.append("security")
+                        elif "storage" in agent_used:
+                            topics_discussed.append("storage")
+                        elif "iam" in agent_used:
+                            topics_discussed.append("iam")
                         
-                    # Extract findings from previous responses
+                    # Extract findings from previous responses (enhanced detection)
                     content = msg.get("content", "").lower()
-                    if "storage" in content or "bucket" in content:
+                    if "storage" in content or "bucket" in content or "gcs" in content:
                         topics_discussed.append("storage")
                         session_findings["storage"] = {
                             "buckets_found": 3,
                             "public_access_risk": True,
                             "lifecycle_missing": True
                         }
-                    elif "security" in content or "findings" in content:
+                    elif any(word in content for word in ["security", "findings", "vulnerability", "mfa", "audit", "fix"]):
                         topics_discussed.append("security")
                         session_findings["security"] = {
                             "score": "analysis_required",
@@ -142,7 +200,7 @@ def create_enhanced_adk_chat_service(project_id):
                             "mfa_status": "check_required",
                             "account_permissions": "audit_needed"
                         }
-                    elif "iam" in content or "permissions" in content:
+                    elif "iam" in content or "permissions" in content or "roles" in content:
                         topics_discussed.append("iam") 
                         session_findings["iam"] = {
                             "total_users": "counting",
@@ -178,10 +236,19 @@ def create_enhanced_adk_chat_service(project_id):
             # Check if this is a follow-up question
             is_follow_up = any(pattern in message_lower for pattern in follow_up_patterns)
             
-            if is_follow_up and previous_context.get("previous_topic"):
+            # Enhanced follow-up detection for conversation continuity
+            implicit_followups = [
+                'walk me through', 'help me', 'how do i', 'what should i do',
+                'next step', 'after that', 'then what', 'and then', 'also',
+                'what about', 'can you', 'should i', 'do i need to'
+            ]
+            is_implicit_followup = any(pattern in message_lower for pattern in implicit_followups)
+            
+            if (is_follow_up or is_implicit_followup) and previous_context.get("previous_topic"):
                 # Route follow-ups to the same specialist that provided the initial findings
                 current_topic = previous_context.get("previous_topic")
-                logger.info(f"[ADK-FOLLOWUP] Routing follow-up question to {current_topic} specialist")
+                logger.info(f"[ADK-FOLLOWUP] Routing {'explicit' if is_follow_up else 'implicit'} follow-up question to {current_topic} specialist")
+                logger.info(f"[ADK-FOLLOWUP] Previous topic was: {current_topic}, current message: '{message[:50]}...'")
                 return current_topic
             
             # Direct routing keywords (always override context)
@@ -1576,6 +1643,16 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize service account credentials from Secret Manager on startup."""
+    logger.info("🚀 Starting up Security Agent Backend...")
+    
+    # Setup service account credentials from Secret Manager
+    setup_service_account_from_secret()
+    
+    logger.info("✅ Security Agent Backend startup complete")
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -1786,6 +1863,7 @@ async def chat_with_agent(request: dict):
         project_id = request.get("project_id", os.environ.get('GOOGLE_CLOUD_PROJECT', 'demo-project'))
         context = request.get("context", {})
         use_enhanced = request.get("use_enhanced", True)  # Default to enhanced hybrid mode
+        timestamp = request.get("timestamp", 0)
         
         if not message.strip():
             return {
@@ -1796,6 +1874,17 @@ async def chat_with_agent(request: dict):
         
         logger.info(f"🔥 HYBRID ADK CHAT - Processing: '{message}' for project: {project_id}")
         logger.info(f"   Mode: {'Enhanced (Tool Registry + Direct GCP)' if use_enhanced else 'Legacy (Backend Proxy)'}")
+        logger.info(f"   Context: {len(context)} items, timestamp: {timestamp}")
+        
+        # Debug conversation continuity
+        if context.get("chat_history"):
+            history = context.get("chat_history", [])
+            logger.info(f"   📚 Chat History: {len(history)} messages")
+            if len(history) > 1:
+                logger.info(f"      Previous message: '{history[-2].get('content', '')[:30]}...'")
+                logger.info(f"      Current message: '{message[:30]}...'")
+        else:
+            logger.info("   📚 No chat history found - starting new conversation")
         
         if use_enhanced:
             # 🚀 HYBRID APPROACH - Enhanced ADK Chat Service 

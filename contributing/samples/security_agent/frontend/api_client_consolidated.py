@@ -175,12 +175,40 @@ class PerformantAPIClient:
     
     def chat_with_agent(self, message: str, context: Dict = None) -> Dict[str, Any]:
         """Chat with ADK Coordinator Agent - LLM-driven delegation."""
-        return self._make_request(
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Debug logging for conversation continuity
+        logger.info(f"🔥 API Client: Sending message to /api/v1/agent/chat")
+        logger.info(f"   Message: '{message[:50]}...' (length: {len(message)})")
+        logger.info(f"   Context: {type(context)} with {len(context or {})} items")
+        
+        payload = {
+            "prompt": message, 
+            "context": context or {}, 
+            "use_enhanced": True,
+            "timestamp": time.time()  # Add timestamp for debugging
+        }
+        
+        # Add conversation history for follow-up context
+        if context and "chat_history" in context:
+            history_length = len(context["chat_history"])
+            logger.info(f"   Chat history: {history_length} messages")
+            
+        result = self._make_request(
             "POST", 
             "/api/v1/agent/chat",  # Route to hybrid ADK chat endpoint
-            {"prompt": message, "context": context or {}, "use_enhanced": True},
+            payload,
             use_cache=False
         )
+        
+        # Debug log the response type
+        if isinstance(result, dict):
+            logger.info(f"✅ API Response: success={result.get('success')}, has_response={bool(result.get('response'))}")
+            if not result.get('success'):
+                logger.error(f"❌ API Error: {result.get('error', 'Unknown error')}")
+        
+        return result
     
     def get_security_findings(self, project_id: str = None, days_back: int = 30) -> Dict[str, Any]:
         """Get security findings - PERFORMANCE OPTIMIZED."""

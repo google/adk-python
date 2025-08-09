@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import logging
 
-from services.gcp import ConsolidatedGCPService
+# Removed: from services.gcp import ConsolidatedGCPService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

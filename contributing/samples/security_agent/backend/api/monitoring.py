@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import logging
 
-from services.monitoring import ConsolidatedMonitoringService
+# Removed: from services.monitoring import ConsolidatedMonitoringService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

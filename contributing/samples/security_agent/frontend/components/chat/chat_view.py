@@ -938,7 +938,14 @@ def render_suggestions(suggestions: list):
             import time
             unique_key = f"suggestion_{i}_{int(time.time() * 1000000)}_{hash(suggestion)}"
             if st.button(f"→ {suggestion}", key=unique_key):
-                send_smart_message(suggestion)
+                # Use the proper message sending function based on current chat mode
+                chat_mode = st.session_state.get('chat_mode', 'delegation')
+                if chat_mode == 'delegation':
+                    send_smart_message(suggestion)
+                elif chat_mode == 'patterns':
+                    send_enhanced_message(suggestion)
+                else:
+                    send_message(suggestion)
 
 def render_chat_sidebar():
     """Sidebar functionality moved to main navigation."""
