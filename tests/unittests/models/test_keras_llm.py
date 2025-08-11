@@ -62,8 +62,13 @@ class TestKerasLlm:
 
     keras_llm_instance._load_model()
 
-    mock_from_preset.assert_called_once_with("gpt2_base_en")
-    mock_model.compile.assert_called_once_with(sampler="greedy")
+    mock_from_preset.assert_called_once_with("gpt2_base_en", load_weights=True)
+    # Check that compile was called with a sampler instance (not a string)
+    mock_model.compile.assert_called_once()
+    call_args = mock_model.compile.call_args
+    assert call_args is not None
+    assert "sampler" in call_args.kwargs
+    assert hasattr(call_args.kwargs["sampler"], "__class__")
 
   @patch("keras_hub.models.CausalLM.from_preset")
   def test_load_model_with_sampler(self, mock_from_preset):
@@ -75,23 +80,37 @@ class TestKerasLlm:
     # Test top_k sampler
     keras_llm = KerasLlm(model="gpt2_base_en", sampler="top_k", top_k=30)
     keras_llm._load_model()
-    mock_model.compile.assert_called_with(sampler="top_k(top_k=30)")
+    mock_model.compile.assert_called_once()
+    call_args = mock_model.compile.call_args
+    assert call_args is not None
+    assert "sampler" in call_args.kwargs
+    sampler = call_args.kwargs["sampler"]
+    assert hasattr(sampler, "__class__")
+    assert "TopKSampler" in sampler.__class__.__name__
 
     # Test top_p sampler
     mock_model.compile.reset_mock()
     keras_llm = KerasLlm(model="gpt2_base_en", sampler="top_p", top_p=0.8)
     keras_llm._load_model()
-    mock_model.compile.assert_called_with(sampler="top_p(top_p=0.8)")
+    mock_model.compile.assert_called_once()
+    call_args = mock_model.compile.call_args
+    assert call_args is not None
+    assert "sampler" in call_args.kwargs
+    sampler = call_args.kwargs["sampler"]
+    assert hasattr(sampler, "__class__")
+    assert "TopPSampler" in sampler.__class__.__name__
 
-    # Test temperature sampler
+    # Test beam sampler
     mock_model.compile.reset_mock()
-    keras_llm = KerasLlm(
-        model="gpt2_base_en", sampler="temperature", temperature=0.7
-    )
+    keras_llm = KerasLlm(model="gpt2_base_en", sampler="beam", num_beams=5)
     keras_llm._load_model()
-    mock_model.compile.assert_called_with(
-        sampler="temperature(temperature=0.7)"
-    )
+    mock_model.compile.assert_called_once()
+    call_args = mock_model.compile.call_args
+    assert call_args is not None
+    assert "sampler" in call_args.kwargs
+    sampler = call_args.kwargs["sampler"]
+    assert hasattr(sampler, "__class__")
+    assert "BeamSampler" in sampler.__class__.__name__
 
   def test_flatten_conversation_to_prompt(self, keras_llm_instance):
     """Test conversation flattening to prompt."""

@@ -95,7 +95,9 @@ class KerasLlm(BaseLlm):
       # For causal language models, use CausalLM.from_preset
       from keras_hub.models import CausalLM
 
-      self._keras_model = CausalLM.from_preset(preset)
+      # Optional: allow skipping weight download for quick tests
+      load_weights = self._additional_args.get("load_weights", True)
+      self._keras_model = CausalLM.from_preset(preset, load_weights=load_weights)
     except Exception as e:
       raise ValueError(
           f"Failed to load model '{self.model}'. "
@@ -103,31 +105,79 @@ class KerasLlm(BaseLlm):
           f"Error: {e}"
       )
 
-    # Configure the sampler using KerasHub's native samplers
-    sampler = self._additional_args.get("sampler", "greedy")
-    temperature = self._additional_args.get("temperature", 1.0)
+    # Configure the sampler using KerasHub's official sampler classes
+    sampler_choice = str(self._additional_args.get("sampler", "greedy")).lower()
 
-    if sampler == "greedy":
-      self._keras_model.compile(sampler="greedy")
-    elif sampler == "top_k":
-      top_k = self._additional_args.get("top_k", 50)
-      self._keras_model.compile(sampler=f"top_k(top_k={top_k})")
-    elif sampler == "top_p":
-      top_p = self._additional_args.get("top_p", 0.9)
-      self._keras_model.compile(sampler=f"top_p(top_p={top_p})")
-    elif sampler == "temperature":
-      self._keras_model.compile(
-          sampler=f"temperature(temperature={temperature})"
+    # Import official samplers from KerasHub
+    try:
+      from keras_hub.samplers import (
+          GreedySampler,
+          TopKSampler,
+          TopPSampler,
+          BeamSampler,
+          RandomSampler,
+          ContrastiveSampler,
       )
-    elif sampler == "beam_search":
-      beam_size = self._additional_args.get("beam_size", 5)
-      self._keras_model.compile(sampler=f"beam_search(beam_size={beam_size})")
-    elif sampler == "nucleus":
-      nucleus_p = self._additional_args.get("nucleus_p", 0.9)
-      self._keras_model.compile(sampler=f"nucleus(nucleus_p={nucleus_p})")
+    except Exception as e:
+      raise ImportError(
+          "Failed to import keras_hub.samplers. Please ensure keras-hub is up to date."
+      )
+
+    # Get sampler parameters
+    top_k = self._additional_args.get("top_k", None)
+    top_p = self._additional_args.get("top_p", None)
+    num_beams = self._additional_args.get("num_beams", None)
+    beam_size = self._additional_args.get("beam_size", None)  # Alias for num_beams
+    contrastive_k = self._additional_args.get("contrastive_k", None)
+    contrastive_alpha = self._additional_args.get("contrastive_alpha", None)
+    seed = self._additional_args.get("seed", None)
+
+    sampler_instance = None
+    if sampler_choice == "greedy":
+      sampler_instance = GreedySampler()
+    elif sampler_choice == "top_k":
+      kwargs: Dict[str, Any] = {}
+      if isinstance(top_k, int):
+        kwargs["k"] = top_k
+      if isinstance(seed, int):
+        kwargs["seed"] = seed
+      sampler_instance = TopKSampler(**kwargs)
+    elif sampler_choice == "top_p":
+      kwargs: Dict[str, Any] = {}
+      if isinstance(top_p, (int, float)):
+        kwargs["p"] = top_p
+      if isinstance(top_k, int):
+        kwargs["k"] = top_k
+      if isinstance(seed, int):
+        kwargs["seed"] = seed
+      sampler_instance = TopPSampler(**kwargs)
+    elif sampler_choice == "beam":
+      kwargs: Dict[str, Any] = {}
+      # Support both num_beams and beam_size
+      if isinstance(num_beams, int):
+        kwargs["num_beams"] = num_beams
+      elif isinstance(beam_size, int):
+        kwargs["num_beams"] = beam_size
+      if isinstance(seed, int):
+        kwargs["seed"] = seed
+      sampler_instance = BeamSampler(**kwargs)
+    elif sampler_choice == "random":
+      kwargs: Dict[str, Any] = {}
+      if isinstance(seed, int):
+        kwargs["seed"] = seed
+      sampler_instance = RandomSampler(**kwargs)
+    elif sampler_choice == "contrastive":
+      kwargs: Dict[str, Any] = {}
+      if isinstance(contrastive_k, int):
+        kwargs["k"] = contrastive_k
+      if isinstance(contrastive_alpha, (int, float)):
+        kwargs["alpha"] = contrastive_alpha
+      sampler_instance = ContrastiveSampler(**kwargs)
     else:
-      # Default to greedy sampling
-      self._keras_model.compile(sampler="greedy")
+      # Default to greedy sampling for safety
+      sampler_instance = GreedySampler()
+
+    self._keras_model.compile(sampler=sampler_instance)
 
   def _flatten_conversation_to_prompt(self, llm_request: LlmRequest) -> str:
     """Flattens the conversation into a single text prompt.
@@ -196,69 +246,57 @@ class KerasLlm(BaseLlm):
   def supported_models(cls) -> list[str]:
     """Returns a list of supported models in regex for LlmRegistry.
     
-    This is not exhaustive - KerasHub supports many more models dynamically.
-    These patterns cover the most common model families that are actually available.
+    Based on KerasHub CausalLM presets available in the library.
+    These patterns cover the most common model families.
     """
     return [
         # KerasHub prefix for explicit local model selection
         "keras/.*",
         
-        # GPT Family (actual presets: gpt2_base_en, gpt2_large_en, etc.)
+        # GPT Family
         "gpt2_.*_en",
-        "gpt_neo_.*_en",
-        "gpt_neox_.*_en",
         
         # OPT Family
         "opt_.*_en",
         
         # BLOOM Family
-        "bloom_.*_en",
+        "bloom_.*_multi",
+        "bloomz_.*_multi",
         
-        # LLaMA Family (actual presets: llama2_7b_en, llama3_8b_en, etc.)
+        # LLaMA Family
         "llama2_.*_en",
         "llama3_.*_en",
+        "llama3\\.1_.*",
+        "llama3\\.2_.*",
+        "vicuna_.*_en",
         
-        # Gemma Family (actual presets: gemma2_27b_en, gemma2_2b_en, etc.)
+        # Gemma Family
         "gemma_.*_en",
         "gemma2_.*_en",
-        "gemma3_.*_en",
+        "gemma3_.*",
         "shieldgemma_.*_en",
         "code_gemma_.*_en",
         
-        # BERT Family
-        "bert_.*_en",
-        "roberta_.*_en",
-        "distilbert_.*_en",
-        "albert_.*_en",
-        "deberta_.*_en",
-        
-        # T5 Family
-        "t5_.*_en",
-        "flan_t5_.*_en",
-        "ul2_.*_en",
-        
-        # Modern Models (actually available)
+        # Modern Models
         "falcon_.*_en",
         "mistral_.*_en",
         "mixtral_.*_en",
         "qwen_.*_en",
-        "qwen2_.*_en",
-        "qwen_moe_.*_en",
+        "qwen1\\.5_.*_en",
+        "qwen2\\.5_.*_en",
         "phi3_.*_en",
         
-        # Vision-Language Models (actually available)
-        "pali_gemma_.*_en",
-        "pali_gemma2_.*_en",
+        # Vision-Language Models
+        "pali_gemma_.*",
+        "pali_gemma2_.*",
         
-        # Audio Models (actually available)
-        "whisper_.*_en",
+        # Audio Models
         "moonshine_.*_en",
         
-        # Text-to-Image Models (actually available)
-        "stable_diffusion_.*_en",
-        "flux_.*_en",
+        # BART Family
+        "bart_.*_en",
         
-        # Generic patterns for any KerasHub model
-        ".*_en",  # Any English model
+        # Generic patterns
+        ".*_en",  # English models
         ".*_multi",  # Multilingual models
     ]
