@@ -19,10 +19,10 @@ from a2a.types import Message
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
 
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 
 
-@experimental
+@a2a_experimental
 class TaskResultAggregator:
   """Aggregates the task status updates and provides the final task state."""
 
