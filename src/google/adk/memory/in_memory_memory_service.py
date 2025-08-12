@@ -76,7 +76,7 @@ class InMemoryMemoryService(BaseMemoryService):
     with self._lock:
       session_event_lists = self._session_events.get(user_key, {})
 
-    words_in_query = set(query.lower().split())
+    words_in_query = _extract_words_lower(query)
     response = SearchMemoryResponse()
 
     for session_events in session_event_lists.values():

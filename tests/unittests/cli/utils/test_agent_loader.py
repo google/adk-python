@@ -31,8 +31,6 @@ class TestAgentLoader:
     """Ensure sys.path is restored after each test."""
     original_path = sys.path.copy()
     original_env = os.environ.copy()
-    # Enable WIP features for YAML agent loading tests
-    os.environ["ADK_ALLOW_WIP_FEATURES"] = "true"
     yield
     sys.path[:] = original_path
     # Restore environment variables
@@ -555,8 +553,7 @@ class TestAgentLoader:
 
       # Create invalid YAML content with wrong field name
       invalid_yaml_content = dedent("""
-        agent_type: LlmAgent
-        name: invalid_yaml_test_agent
+        not_exist_field: invalid_yaml_test_agent
         model: gemini-2.0-flash
         instruction: You are a test agent with invalid YAML
       """)

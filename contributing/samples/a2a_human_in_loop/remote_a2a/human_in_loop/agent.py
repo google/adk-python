@@ -15,8 +15,8 @@
 from typing import Any
 
 from google.adk import Agent
-from google.adk.tools import ToolContext
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 

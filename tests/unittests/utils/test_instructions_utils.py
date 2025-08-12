@@ -1,7 +1,7 @@
-from google.adk.agents import Agent
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import Agent
 from google.adk.agents.readonly_context import ReadonlyContext
-from google.adk.sessions import Session
+from google.adk.sessions.session import Session
 from google.adk.utils import instructions_utils
 import pytest
 

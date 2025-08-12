@@ -22,8 +22,7 @@ try:
 except ImportError as e:
   if sys.version_info < (3, 10):
     raise ImportError(
-        'A2A Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
+        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
     ) from e
   else:
     raise e
@@ -31,7 +30,7 @@ except ImportError as e:
 from google.genai import types as genai_types
 
 from ...runners import RunConfig
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 from .part_converter import convert_a2a_part_to_genai_part
 
 
@@ -48,7 +47,7 @@ def _get_user_id(request: RequestContext) -> str:
   return f'A2A_USER_{request.context_id}'
 
 
-@experimental
+@a2a_experimental
 def convert_a2a_request_to_adk_run_args(
     request: RequestContext,
 ) -> dict[str, Any]:

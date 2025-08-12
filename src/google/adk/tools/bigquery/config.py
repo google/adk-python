@@ -54,3 +54,8 @@ class BigQueryToolConfig(BaseModel):
   By default, the tool will allow only read operations. This behaviour may
   change in future versions.
   """
+
+  max_query_result_rows: int = 50
+  """Maximum number of rows to return from a query.
+
+  By default, the query result will be limited to 50 rows."""

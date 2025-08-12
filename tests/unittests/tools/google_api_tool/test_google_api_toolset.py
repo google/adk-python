@@ -15,16 +15,16 @@ from typing import Optional
 from unittest import mock
 
 from google.adk.agents.readonly_context import ReadonlyContext
-from google.adk.auth import OpenIdConnectWithConfig
 from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.auth.auth_credential import ServiceAccountCredential
-from google.adk.tools import BaseTool
+from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import ToolPredicate
 from google.adk.tools.google_api_tool.google_api_tool import GoogleApiTool
 from google.adk.tools.google_api_tool.google_api_toolset import GoogleApiToolset
 from google.adk.tools.google_api_tool.googleapi_to_openapi_converter import GoogleApiToOpenApiConverter
-from google.adk.tools.openapi_tool import OpenAPIToolset
-from google.adk.tools.openapi_tool import RestApiTool
+from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_toolset import OpenAPIToolset
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
 import pytest
 
 TEST_API_NAME = "calendar"

@@ -26,6 +26,7 @@ classifiers = [ # List of https://pypi.org/classifiers/
 dependencies = [
   # go/keep-sorted start
   "PyYAML>=6.0.2",                                  # For APIHubToolset.
+  "absolufy-imports>=0.3.1",                        # For Agent Engine deployment.
   "anyio>=4.9.0;python_version>='3.10'",            # For MCP Session Manager
   "authlib>=1.5.1",                                 # For RestAPI Tool
   "click>=8.1.8",                                   # For CLI tools
@@ -80,7 +81,7 @@ dev = [
 
 a2a = [
   # go/keep-sorted start
-  "a2a-sdk>=0.2.7;python_version>='3.10'"
+  "a2a-sdk>=0.3.0,<0.4.0;python_version>='3.10'",
   # go/keep-sorted end
 ]
 
@@ -105,6 +106,7 @@ test = [
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
   "pytest>=8.3.4",
+  "python-multipart>=0.0.9",
   # go/keep-sorted end
 ]
 

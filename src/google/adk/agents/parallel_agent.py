@@ -17,17 +17,19 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from typing import AsyncGenerator
-from typing import Literal
+from typing import ClassVar
+from typing import Dict
 from typing import Type
 
 from typing_extensions import override
 
-from ..agents.base_agent import BaseAgentConfig
-from ..agents.base_agent import working_in_progress
-from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from .base_agent import BaseAgent
+from .base_agent_config import BaseAgentConfig
+from .invocation_context import InvocationContext
+from .parallel_agent_config import ParallelAgentConfig
 
 
 def _create_branch_ctx_for_sub_agent(
@@ -96,6 +98,9 @@ class ParallelAgent(BaseAgent):
   - Generating multiple responses for review by a subsequent evaluation agent.
   """
 
+  config_type: ClassVar[type[BaseAgentConfig]] = ParallelAgentConfig
+  """The config type for this agent."""
+
   @override
   async def _run_async_impl(
       self, ctx: InvocationContext
@@ -115,20 +120,3 @@ class ParallelAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     raise NotImplementedError('This is not supported yet for ParallelAgent.')
     yield  # AsyncGenerator requires having at least one yield statement
-
-  @classmethod
-  @override
-  @working_in_progress('ParallelAgent.from_config is not ready for use.')
-  def from_config(
-      cls: Type[ParallelAgent],
-      config: ParallelAgentConfig,
-      config_abs_path: str,
-  ) -> ParallelAgent:
-    return super().from_config(config, config_abs_path)
-
-
-@working_in_progress('ParallelAgentConfig is not ready for use.')
-class ParallelAgentConfig(BaseAgentConfig):
-  """The config for the YAML schema of a ParallelAgent."""
-
-  agent_class: Literal['ParallelAgent'] = 'ParallelAgent'

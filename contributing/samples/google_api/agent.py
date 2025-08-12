@@ -15,8 +15,8 @@
 import os
 
 from dotenv import load_dotenv
-from google.adk import Agent
-from google.adk.tools.google_api_tool import BigQueryToolset
+from google.adk.agents.llm_agent import Agent
+from google.adk.tools.google_api_tool.google_api_toolsets import BigQueryToolset
 
 # Load environment variables from .env file
 load_dotenv()

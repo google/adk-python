@@ -17,21 +17,23 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
-from typing import Literal
 from typing import Type
 
 from typing_extensions import override
 
-from ..agents.base_agent import BaseAgentConfig
-from ..agents.base_agent import working_in_progress
-from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from .base_agent import BaseAgent
+from .base_agent import BaseAgentConfig
+from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
+from .sequential_agent_config import SequentialAgentConfig
 
 
 class SequentialAgent(BaseAgent):
   """A shell agent that runs its sub-agents in sequence."""
+
+  config_type: Type[BaseAgentConfig] = SequentialAgentConfig
+  """The config type for this agent."""
 
   @override
   async def _run_async_impl(
@@ -78,20 +80,3 @@ class SequentialAgent(BaseAgent):
     for sub_agent in self.sub_agents:
       async for event in sub_agent.run_live(ctx):
         yield event
-
-  @classmethod
-  @override
-  @working_in_progress('SequentialAgent.from_config is not ready for use.')
-  def from_config(
-      cls: Type[SequentialAgent],
-      config: SequentialAgentConfig,
-      config_abs_path: str,
-  ) -> SequentialAgent:
-    return super().from_config(config, config_abs_path)
-
-
-@working_in_progress('SequentialAgentConfig is not ready for use.')
-class SequentialAgentConfig(BaseAgentConfig):
-  """The config for the YAML schema of a SequentialAgent."""
-
-  agent_class: Literal['SequentialAgent'] = 'SequentialAgent'

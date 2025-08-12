@@ -60,7 +60,7 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
         eval_set_result.eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
     )
     logger.info("Writing eval result to file: %s", eval_set_result_file_path)
-    with open(eval_set_result_file_path, "w") as f:
+    with open(eval_set_result_file_path, "w", encoding="utf-8") as f:
       f.write(json.dumps(eval_set_result_json, indent=2))
 
   @override
@@ -78,7 +78,7 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     )
     if not os.path.exists(maybe_eval_result_file_path):
       raise NotFoundError(f"Eval set result `{eval_set_result_id}` not found.")
-    with open(maybe_eval_result_file_path, "r") as file:
+    with open(maybe_eval_result_file_path, "r", encoding="utf-8") as file:
       eval_result_data = json.load(file)
     return EvalSetResult.model_validate_json(eval_result_data)
 

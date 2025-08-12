@@ -17,12 +17,12 @@ from unittest.mock import Mock
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
-from google.adk.tools.tool_context import ToolContext
 import pytest
 
 
@@ -69,9 +69,9 @@ class TestInMemoryCredentialService:
     )
 
   @pytest.fixture
-  def tool_context(self):
-    """Create a mock ToolContext for testing."""
-    mock_context = Mock(spec=ToolContext)
+  def callback_context(self):
+    """Create a mock CallbackContext for testing."""
+    mock_context = Mock(spec=CallbackContext)
     mock_invocation_context = Mock()
     mock_invocation_context.app_name = "test_app"
     mock_invocation_context.user_id = "test_user"
@@ -79,9 +79,9 @@ class TestInMemoryCredentialService:
     return mock_context
 
   @pytest.fixture
-  def another_tool_context(self):
-    """Create another mock ToolContext with different app/user for testing isolation."""
-    mock_context = Mock(spec=ToolContext)
+  def another_callback_context(self):
+    """Create another mock CallbackContext with different app/user for testing isolation."""
+    mock_context = Mock(spec=CallbackContext)
     mock_invocation_context = Mock()
     mock_invocation_context.app_name = "another_app"
     mock_invocation_context.user_id = "another_user"
@@ -95,22 +95,26 @@ class TestInMemoryCredentialService:
 
   @pytest.mark.asyncio
   async def test_load_credential_not_found(
-      self, credential_service, auth_config, tool_context
+      self, credential_service, auth_config, callback_context
   ):
     """Test loading a credential that doesn't exist returns None."""
-    result = await credential_service.load_credential(auth_config, tool_context)
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
     assert result is None
 
   @pytest.mark.asyncio
   async def test_save_and_load_credential(
-      self, credential_service, auth_config, tool_context
+      self, credential_service, auth_config, callback_context
   ):
     """Test saving and then loading a credential."""
     # Save the credential
-    await credential_service.save_credential(auth_config, tool_context)
+    await credential_service.save_credential(auth_config, callback_context)
 
     # Load the credential
-    result = await credential_service.load_credential(auth_config, tool_context)
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
 
     # Verify the credential was saved and loaded correctly
     assert result is not None
@@ -120,11 +124,15 @@ class TestInMemoryCredentialService:
 
   @pytest.mark.asyncio
   async def test_save_credential_updates_existing(
-      self, credential_service, auth_config, tool_context, oauth2_credentials
+      self,
+      credential_service,
+      auth_config,
+      callback_context,
+      oauth2_credentials,
   ):
     """Test that saving a credential updates an existing one."""
     # Save initial credential
-    await credential_service.save_credential(auth_config, tool_context)
+    await credential_service.save_credential(auth_config, callback_context)
 
     # Create a new credential and update the auth_config
     new_credential = AuthCredential(
@@ -138,35 +146,43 @@ class TestInMemoryCredentialService:
     auth_config.exchanged_auth_credential = new_credential
 
     # Save the updated credential
-    await credential_service.save_credential(auth_config, tool_context)
+    await credential_service.save_credential(auth_config, callback_context)
 
     # Load and verify the credential was updated
-    result = await credential_service.load_credential(auth_config, tool_context)
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
     assert result is not None
     assert result.oauth2.client_id == "updated_client_id"
     assert result.oauth2.client_secret == "updated_client_secret"
 
   @pytest.mark.asyncio
   async def test_credentials_isolated_by_context(
-      self, credential_service, auth_config, tool_context, another_tool_context
+      self,
+      credential_service,
+      auth_config,
+      callback_context,
+      another_callback_context,
   ):
     """Test that credentials are isolated between different app/user contexts."""
     # Save credential in first context
-    await credential_service.save_credential(auth_config, tool_context)
+    await credential_service.save_credential(auth_config, callback_context)
 
     # Try to load from another context
     result = await credential_service.load_credential(
-        auth_config, another_tool_context
+        auth_config, another_callback_context
     )
     assert result is None
 
     # Verify original context still has the credential
-    result = await credential_service.load_credential(auth_config, tool_context)
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
     assert result is not None
 
   @pytest.mark.asyncio
   async def test_multiple_credentials_same_context(
-      self, credential_service, tool_context, oauth2_auth_scheme
+      self, credential_service, callback_context, oauth2_auth_scheme
   ):
     """Test storing multiple credentials in the same context with different keys."""
     # Create two different auth configs with different credential keys
@@ -203,15 +219,15 @@ class TestInMemoryCredentialService:
     )
 
     # Save both credentials
-    await credential_service.save_credential(auth_config1, tool_context)
-    await credential_service.save_credential(auth_config2, tool_context)
+    await credential_service.save_credential(auth_config1, callback_context)
+    await credential_service.save_credential(auth_config2, callback_context)
 
     # Load and verify both credentials
     result1 = await credential_service.load_credential(
-        auth_config1, tool_context
+        auth_config1, callback_context
     )
     result2 = await credential_service.load_credential(
-        auth_config2, tool_context
+        auth_config2, callback_context
     )
 
     assert result1 is not None
@@ -220,10 +236,12 @@ class TestInMemoryCredentialService:
     assert result2.oauth2.client_id == "client2"
 
   def test_get_bucket_for_current_context_creates_nested_structure(
-      self, credential_service, tool_context
+      self, credential_service, callback_context
   ):
     """Test that _get_bucket_for_current_context creates the proper nested structure."""
-    storage = credential_service._get_bucket_for_current_context(tool_context)
+    storage = credential_service._get_bucket_for_current_context(
+        callback_context
+    )
 
     # Verify the nested structure was created
     assert "test_app" in credential_service._credentials
@@ -232,27 +250,33 @@ class TestInMemoryCredentialService:
     assert storage is credential_service._credentials["test_app"]["test_user"]
 
   def test_get_bucket_for_current_context_reuses_existing(
-      self, credential_service, tool_context
+      self, credential_service, callback_context
   ):
     """Test that _get_bucket_for_current_context reuses existing structure."""
     # Create initial structure
-    storage1 = credential_service._get_bucket_for_current_context(tool_context)
+    storage1 = credential_service._get_bucket_for_current_context(
+        callback_context
+    )
     storage1["test_key"] = "test_value"
 
     # Get storage again
-    storage2 = credential_service._get_bucket_for_current_context(tool_context)
+    storage2 = credential_service._get_bucket_for_current_context(
+        callback_context
+    )
 
     # Verify it's the same storage instance
     assert storage1 is storage2
     assert storage2["test_key"] == "test_value"
 
   def test_get_storage_different_apps(
-      self, credential_service, tool_context, another_tool_context
+      self, credential_service, callback_context, another_callback_context
   ):
     """Test that different apps get different storage instances."""
-    storage1 = credential_service._get_bucket_for_current_context(tool_context)
+    storage1 = credential_service._get_bucket_for_current_context(
+        callback_context
+    )
     storage2 = credential_service._get_bucket_for_current_context(
-        another_tool_context
+        another_callback_context
     )
 
     # Verify they are different storage instances
@@ -270,26 +294,26 @@ class TestInMemoryCredentialService:
   ):
     """Test that the same user in different apps get isolated storage."""
     # Create two contexts with same user but different apps
-    context1 = Mock(spec=ToolContext)
+    context1 = Mock(spec=CallbackContext)
     mock_invocation_context1 = Mock()
     mock_invocation_context1.app_name = "app1"
     mock_invocation_context1.user_id = "same_user"
     context1._invocation_context = mock_invocation_context1
 
-    context2 = Mock(spec=ToolContext)
+    context2 = Mock(spec=CallbackContext)
     mock_invocation_context2 = Mock()
     mock_invocation_context2.app_name = "app2"
     mock_invocation_context2.user_id = "same_user"
     context2._invocation_context = mock_invocation_context2
 
-    # Save credential in app1
+    # Save credential in first app
     await credential_service.save_credential(auth_config, context1)
 
-    # Try to load from app2 (should not find it)
+    # Try to load from second app
     result = await credential_service.load_credential(auth_config, context2)
     assert result is None
 
-    # Verify app1 still has the credential
+    # Verify first app still has the credential
     result = await credential_service.load_credential(auth_config, context1)
     assert result is not None
 
@@ -299,25 +323,25 @@ class TestInMemoryCredentialService:
   ):
     """Test that different users in the same app get isolated storage."""
     # Create two contexts with same app but different users
-    context1 = Mock(spec=ToolContext)
+    context1 = Mock(spec=CallbackContext)
     mock_invocation_context1 = Mock()
     mock_invocation_context1.app_name = "same_app"
     mock_invocation_context1.user_id = "user1"
     context1._invocation_context = mock_invocation_context1
 
-    context2 = Mock(spec=ToolContext)
+    context2 = Mock(spec=CallbackContext)
     mock_invocation_context2 = Mock()
     mock_invocation_context2.app_name = "same_app"
     mock_invocation_context2.user_id = "user2"
     context2._invocation_context = mock_invocation_context2
 
-    # Save credential for user1
+    # Save credential for first user
     await credential_service.save_credential(auth_config, context1)
 
-    # Try to load for user2 (should not find it)
+    # Try to load for second user
     result = await credential_service.load_credential(auth_config, context2)
     assert result is None
 
-    # Verify user1 still has the credential
+    # Verify first user still has the credential
     result = await credential_service.load_credential(auth_config, context1)
     assert result is not None

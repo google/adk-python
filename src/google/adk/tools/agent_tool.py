@@ -18,20 +18,22 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import model_validator
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
+from ..agents.common_configs import AgentRefConfig
 from ..memory.in_memory_memory_service import InMemoryMemoryService
-from ..runners import Runner
-from ..sessions.in_memory_session_service import InMemorySessionService
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
+from .tool_configs import BaseToolConfig
+from .tool_configs import ToolArgsConfig
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
-  from ..agents.llm_agent import LlmAgent
 
 
 class AgentTool(BaseTool):
@@ -61,6 +63,7 @@ class AgentTool(BaseTool):
   @override
   def _get_declaration(self) -> types.FunctionDeclaration:
     from ..agents.llm_agent import LlmAgent
+    from ..utils.variant_utils import GoogleLLMVariant
 
     if isinstance(self.agent, LlmAgent) and self.agent.input_schema:
       result = _automatic_function_calling_util.build_function_declaration(
@@ -80,6 +83,17 @@ class AgentTool(BaseTool):
           description=self.agent.description,
           name=self.name,
       )
+
+    # Set response schema for non-GEMINI_API variants
+    if self._api_variant != GoogleLLMVariant.GEMINI_API:
+      # Determine response type based on agent's output schema
+      if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
+        # Agent has structured output schema - response is an object
+        result.response = types.Schema(type=types.Type.OBJECT)
+      else:
+        # Agent returns text - response is a string
+        result.response = types.Schema(type=types.Type.STRING)
+
     result.name = self.name
     return result
 
@@ -91,6 +105,8 @@ class AgentTool(BaseTool):
       tool_context: ToolContext,
   ) -> Any:
     from ..agents.llm_agent import LlmAgent
+    from ..runners import Runner
+    from ..sessions.in_memory_session_service import InMemorySessionService
 
     if self.skip_summarization:
       tool_context.actions.skip_summarization = True
@@ -143,3 +159,29 @@ class AgentTool(BaseTool):
     else:
       tool_result = merged_text
     return tool_result
+
+  @classmethod
+  @override
+  def from_config(
+      cls, config: ToolArgsConfig, config_abs_path: str
+  ) -> AgentTool:
+    from ..agents import config_agent_utils
+
+    agent_tool_config = AgentToolConfig.model_validate(config.model_dump())
+
+    agent = config_agent_utils.resolve_agent_reference(
+        agent_tool_config.agent, config_abs_path
+    )
+    return cls(
+        agent=agent, skip_summarization=agent_tool_config.skip_summarization
+    )
+
+
+class AgentToolConfig(BaseToolConfig):
+  """The config for the AgentTool."""
+
+  agent: AgentRefConfig
+  """The reference to the agent instance."""
+
+  skip_summarization: bool = False
+  """Whether to skip summarization of the agent output."""

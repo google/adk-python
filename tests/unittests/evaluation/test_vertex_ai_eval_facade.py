@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Tests for the Response Evaluator."""
+import math
 import random
 from unittest.mock import patch
 
@@ -122,7 +123,18 @@ class TestVertexAiEvalFacade:
         vertexai_types.PrebuiltMetric.COHERENCE.name
     ]
 
-  def test_evaluate_invocations_metric_no_score(self, mock_perform_eval):
+  @pytest.mark.parametrize(
+      "summary_metric_with_no_score",
+      [
+          ([]),
+          ([vertexai_types.AggregatedMetricResult(mean_score=float("nan"))]),
+          ([vertexai_types.AggregatedMetricResult(mean_score=None)]),
+          ([vertexai_types.AggregatedMetricResult(mean_score=math.nan)]),
+      ],
+  )
+  def test_evaluate_invocations_metric_no_score(
+      self, mock_perform_eval, summary_metric_with_no_score
+  ):
     """Test evaluate_invocations function for a metric."""
     actual_invocations = [
         Invocation(
@@ -151,7 +163,7 @@ class TestVertexAiEvalFacade:
     )
     # Mock the return value of _perform_eval
     mock_perform_eval.return_value = vertexai_types.EvaluationResult(
-        summary_metrics=[],
+        summary_metrics=summary_metric_with_no_score,
         eval_case_results=[],
     )
 

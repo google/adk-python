@@ -683,7 +683,7 @@ class TestA2aAgentExecutor:
     from a2a.types import TextPart
 
     test_message = Mock(spec=Message)
-    test_message.messageId = "test-message-id"
+    test_message.message_id = "test-message-id"
     test_message.role = Role.agent
     test_message.parts = [Mock(spec=TextPart)]
 
@@ -764,7 +764,7 @@ class TestA2aAgentExecutor:
     from a2a.types import TextPart
 
     test_message = Mock(spec=Message)
-    test_message.messageId = "test-message-id"
+    test_message.message_id = "test-message-id"
     test_message.role = Role.agent
     test_message.parts = [Mock(spec=TextPart)]
 
@@ -849,7 +849,7 @@ class TestA2aAgentExecutor:
     from a2a.types import TextPart
 
     test_message = Mock(spec=Message)
-    test_message.messageId = "test-message-id"
+    test_message.message_id = "test-message-id"
     test_message.role = Role.agent
     test_message.parts = [Part(root=TextPart(text="test content"))]
 
@@ -911,12 +911,12 @@ class TestA2aAgentExecutor:
               call[0][0]
               for call in self.mock_event_queue.enqueue_event.call_args_list
               if hasattr(call[0][0], "artifact")
-              and call[0][0].lastChunk == True
+              and call[0][0].last_chunk == True
           ]
           assert len(artifact_events) == 1
           artifact_event = artifact_events[0]
-          assert artifact_event.taskId == "test-task-id"
-          assert artifact_event.contextId == "test-context-id"
+          assert artifact_event.task_id == "test-task-id"
+          assert artifact_event.context_id == "test-context-id"
           # Check that artifact parts correspond to message parts
           assert len(artifact_event.artifact.parts) == len(test_message.parts)
           assert artifact_event.artifact.parts == test_message.parts
@@ -930,8 +930,8 @@ class TestA2aAgentExecutor:
           assert len(final_events) >= 1
           final_event = final_events[-1]  # Get the last final event
           assert final_event.status.state == TaskState.completed
-          assert final_event.taskId == "test-task-id"
-          assert final_event.contextId == "test-context-id"
+          assert final_event.task_id == "test-task-id"
+          assert final_event.context_id == "test-context-id"
 
   @pytest.mark.asyncio
   async def test_handle_request_with_non_working_state_publishes_status_only(
@@ -949,7 +949,7 @@ class TestA2aAgentExecutor:
     from a2a.types import TextPart
 
     test_message = Mock(spec=Message)
-    test_message.messageId = "test-message-id"
+    test_message.message_id = "test-message-id"
     test_message.role = Role.agent
     test_message.parts = [Part(root=TextPart(text="test content"))]
 
@@ -1011,7 +1011,7 @@ class TestA2aAgentExecutor:
               call[0][0]
               for call in self.mock_event_queue.enqueue_event.call_args_list
               if hasattr(call[0][0], "artifact")
-              and call[0][0].lastChunk == True
+              and call[0][0].last_chunk == True
           ]
           assert len(artifact_events) == 0
 
@@ -1025,5 +1025,5 @@ class TestA2aAgentExecutor:
           final_event = final_events[-1]  # Get the last final event
           assert final_event.status.state == TaskState.auth_required
           assert final_event.status.message == test_message
-          assert final_event.taskId == "test-task-id"
-          assert final_event.contextId == "test-context-id"
+          assert final_event.task_id == "test-task-id"
+          assert final_event.context_id == "test-context-id"

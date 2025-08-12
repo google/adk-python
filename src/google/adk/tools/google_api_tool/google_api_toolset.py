@@ -21,8 +21,8 @@ from typing import Union
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
-from ...auth import OpenIdConnectWithConfig
 from ...auth.auth_credential import ServiceAccount
+from ...auth.auth_schemes import OpenIdConnectWithConfig
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
 from ..openapi_tool import OpenAPIToolset

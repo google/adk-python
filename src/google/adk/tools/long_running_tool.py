@@ -12,7 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Callable
+from typing import Optional
+
+from google.genai import types
+from typing_extensions import override
 
 from .function_tool import FunctionTool
 
@@ -37,3 +43,18 @@ class LongRunningFunctionTool(FunctionTool):
   def __init__(self, func: Callable):
     super().__init__(func)
     self.is_long_running = True
+
+  @override
+  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+    declaration = super()._get_declaration()
+    if declaration:
+      instruction = (
+          "\n\nNOTE: This is a long-running operation. Do not call this tool"
+          " again if it has already returned some intermediate or pending"
+          " status."
+      )
+      if declaration.description:
+        declaration.description += instruction
+      else:
+        declaration.description = instruction.lstrip()
+    return declaration

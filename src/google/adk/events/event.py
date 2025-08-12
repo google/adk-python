@@ -42,7 +42,6 @@ class Event(LlmResponse):
     branch: The branch of the event.
     id: The unique identifier of the event.
     timestamp: The timestamp of the event.
-    is_final_response: Whether the event is the final response of the agent.
     get_function_calls: Returns the function calls in the event.
   """
 
@@ -92,7 +91,13 @@ class Event(LlmResponse):
       self.id = Event.new_id()
 
   def is_final_response(self) -> bool:
-    """Returns whether the event is the final response of the agent."""
+    """Returns whether the event is the final response of an agent.
+
+    NOTE: This method is ONLY for use by Agent Development Kit.
+
+    Note that when multiple agents participage in one invocation, there could be
+    one event has `is_final_response()` as True for each participating agent.
+    """
     if self.actions.skip_summarization or self.long_running_tool_ids:
       return True
     return (

@@ -39,7 +39,7 @@ except ImportError as e:
 
 from google.genai import types as genai_types
 
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -51,7 +51,7 @@ A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = 'code_execution_result'
 A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
 
 
-@experimental
+@a2a_experimental
 def convert_a2a_part_to_genai_part(
     a2a_part: a2a_types.Part,
 ) -> Optional[genai_types.Part]:
@@ -64,7 +64,7 @@ def convert_a2a_part_to_genai_part(
     if isinstance(part.file, a2a_types.FileWithUri):
       return genai_types.Part(
           file_data=genai_types.FileData(
-              file_uri=part.file.uri, mime_type=part.file.mimeType
+              file_uri=part.file.uri, mime_type=part.file.mime_type
           )
       )
 
@@ -72,7 +72,7 @@ def convert_a2a_part_to_genai_part(
       return genai_types.Part(
           inline_data=genai_types.Blob(
               data=base64.b64decode(part.file.bytes),
-              mime_type=part.file.mimeType,
+              mime_type=part.file.mime_type,
           )
       )
     else:
@@ -140,7 +140,7 @@ def convert_a2a_part_to_genai_part(
   return None
 
 
-@experimental
+@a2a_experimental
 def convert_genai_part_to_a2a_part(
     part: genai_types.Part,
 ) -> Optional[a2a_types.Part]:
@@ -157,7 +157,7 @@ def convert_genai_part_to_a2a_part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithUri(
                 uri=part.file_data.file_uri,
-                mimeType=part.file_data.mime_type,
+                mime_type=part.file_data.mime_type,
             )
         )
     )
@@ -166,7 +166,7 @@ def convert_genai_part_to_a2a_part(
     a2a_part = a2a_types.FilePart(
         file=a2a_types.FileWithBytes(
             bytes=base64.b64encode(part.inline_data.data).decode('utf-8'),
-            mimeType=part.inline_data.mime_type,
+            mime_type=part.inline_data.mime_type,
         )
     )
 

@@ -16,11 +16,11 @@ from datetime import datetime
 from datetime import timezone
 import enum
 
-from google.adk.events import Event
-from google.adk.events import EventActions
-from google.adk.sessions import DatabaseSessionService
-from google.adk.sessions import InMemorySessionService
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.base_session_service import GetSessionConfig
+from google.adk.sessions.database_session_service import DatabaseSessionService
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 import pytest
 
@@ -106,7 +106,10 @@ async def test_create_and_list_sessions(service_type):
   session_ids = ['session' + str(i) for i in range(5)]
   for session_id in session_ids:
     await session_service.create_session(
-        app_name=app_name, user_id=user_id, session_id=session_id
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state={'key': 'value' + session_id},
     )
 
   list_sessions_response = await session_service.list_sessions(
@@ -115,6 +118,7 @@ async def test_create_and_list_sessions(service_type):
   sessions = list_sessions_response.sessions
   for i in range(len(sessions)):
     assert sessions[i].id == session_ids[i]
+    assert sessions[i].state == {'key': 'value' + session_ids[i]}
 
 
 @pytest.mark.asyncio
@@ -201,7 +205,7 @@ async def test_session_state(service_type):
   assert session_11.state.get('user:key1') == 'value1'
   assert not session_11.state.get('temp:key')
 
-  # Make sure a malicious user can obtain a session and events not belonging to them
+  # Make sure a malicious user cannot obtain a session and events not belonging to them
   session_mismatch = await session_service.get_session(
       app_name=app_name, user_id=user_id_malicious, session_id=session_id_11
   )

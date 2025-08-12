@@ -24,6 +24,24 @@ from pydantic import Field
 from ..tools.base_tool import BaseTool
 
 
+def _find_tool_with_function_declarations(
+    llm_request: LlmRequest,
+) -> Optional[types.Tool]:
+  """Find an existing Tool with function_declarations in the LlmRequest."""
+  # TODO: add individual tool with declaration and merge in google_llm.py
+  if not llm_request.config or not llm_request.config.tools:
+    return None
+
+  return next(
+      (
+          tool
+          for tool in llm_request.config.tools
+          if isinstance(tool, types.Tool) and tool.function_declarations
+      ),
+      None,
+  )
+
+
 class LlmRequest(BaseModel):
   """LLM request class that allows passing in tools, output schema and system
 
@@ -45,8 +63,12 @@ class LlmRequest(BaseModel):
   contents: list[types.Content] = Field(default_factory=list)
   """The contents to send to the model."""
 
-  config: Optional[types.GenerateContentConfig] = None
-  live_connect_config: types.LiveConnectConfig = types.LiveConnectConfig()
+  config: types.GenerateContentConfig = Field(
+      default_factory=types.GenerateContentConfig
+  )
+  live_connect_config: types.LiveConnectConfig = Field(
+      default_factory=types.LiveConnectConfig
+  )
   """Additional config for the generate content request.
 
   tools in generate_content_config should not be set.
@@ -77,15 +99,26 @@ class LlmRequest(BaseModel):
       return
     declarations = []
     for tool in tools:
-      if isinstance(tool, BaseTool):
-        declaration = tool._get_declaration()
-      else:
-        declaration = tool.get_declaration()
+      declaration = tool._get_declaration()
       if declaration:
         declarations.append(declaration)
         self.tools_dict[tool.name] = tool
     if declarations:
-      self.config.tools.append(types.Tool(function_declarations=declarations))
+      if self.config.tools is None:
+        self.config.tools = []
+
+      # Find existing tool with function_declarations and append to it
+      if tool_with_function_declarations := _find_tool_with_function_declarations(
+          self
+      ):
+        if tool_with_function_declarations.function_declarations is None:
+          tool_with_function_declarations.function_declarations = []
+        tool_with_function_declarations.function_declarations.extend(
+            declarations
+        )
+      else:
+        # No existing tool with function_declarations, create new one
+        self.config.tools.append(types.Tool(function_declarations=declarations))
 
   def set_output_schema(self, base_model: type[BaseModel]) -> None:
     """Sets the output schema for the request.

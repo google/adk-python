@@ -14,7 +14,7 @@
 
 """Unit tests for LlmAgent output saving functionality."""
 
-from unittest.mock import Mock
+import logging
 from unittest.mock import patch
 
 from google.adk.agents.llm_agent import LlmAgent
@@ -61,20 +61,33 @@ class TestLlmAgentOutputSave:
 
   def test_maybe_save_output_to_state_skips_different_author(self, caplog):
     """Test that output is not saved when event author differs from agent name."""
-    agent = LlmAgent(name="agent_a", output_key="result")
-    event = create_test_event(author="agent_b", content_text="Response from B")
-
-    with caplog.at_level("DEBUG"):
-      agent._LlmAgent__maybe_save_output_to_state(event)
-
-    # Should not add anything to state_delta
-    assert len(event.actions.state_delta) == 0
-
-    # Should log the skip
-    assert (
-        "Skipping output save for agent agent_a: event authored by agent_b"
-        in caplog.text
+    # Set the LlmAgent logger to DEBUG level
+    llm_agent_logger = logging.getLogger(
+        "google_adk.google.adk.agents.llm_agent"
     )
+    original_level = llm_agent_logger.level
+    llm_agent_logger.setLevel(logging.DEBUG)
+
+    try:
+      agent = LlmAgent(name="agent_a", output_key="result")
+      event = create_test_event(
+          author="agent_b", content_text="Response from B"
+      )
+
+      with caplog.at_level("DEBUG"):
+        agent._LlmAgent__maybe_save_output_to_state(event)
+
+      # Should not add anything to state_delta
+      assert len(event.actions.state_delta) == 0
+
+      # Should log the skip
+      assert (
+          "Skipping output save for agent agent_a: event authored by agent_b"
+          in caplog.text
+      )
+    finally:
+      # Restore original logger level
+      llm_agent_logger.setLevel(original_level)
 
   def test_maybe_save_output_to_state_saves_same_author(self):
     """Test that output is saved when event author matches agent name."""
@@ -163,36 +176,61 @@ class TestLlmAgentOutputSave:
     # Scenario: Agent A transfers to Agent B, Agent B produces output
     # Agent A should not save Agent B's output
 
-    agent_a = LlmAgent(name="support_agent", output_key="support_result")
-    agent_b_event = create_test_event(
-        author="billing_agent", content_text="Your bill is $100"
+    # Set the LlmAgent logger to DEBUG level
+    llm_agent_logger = logging.getLogger(
+        "google_adk.google.adk.agents.llm_agent"
     )
+    original_level = llm_agent_logger.level
+    llm_agent_logger.setLevel(logging.DEBUG)
 
-    with caplog.at_level("DEBUG"):
-      agent_a._LlmAgent__maybe_save_output_to_state(agent_b_event)
+    try:
+      agent_a = LlmAgent(name="support_agent", output_key="support_result")
+      agent_b_event = create_test_event(
+          author="billing_agent", content_text="Your bill is $100"
+      )
 
-    # Agent A should not save Agent B's output
-    assert len(agent_b_event.actions.state_delta) == 0
-    assert (
-        "Skipping output save for agent support_agent: event authored by"
-        " billing_agent"
-        in caplog.text
-    )
+      with caplog.at_level("DEBUG"):
+        agent_a._LlmAgent__maybe_save_output_to_state(agent_b_event)
+
+      # Agent A should not save Agent B's output
+      assert len(agent_b_event.actions.state_delta) == 0
+      assert (
+          "Skipping output save for agent support_agent: event authored by"
+          " billing_agent"
+          in caplog.text
+      )
+    finally:
+      # Restore original logger level
+      llm_agent_logger.setLevel(original_level)
 
   def test_maybe_save_output_to_state_case_sensitive_names(self, caplog):
     """Test that agent name comparison is case-sensitive."""
-    agent = LlmAgent(name="TestAgent", output_key="result")
-    event = create_test_event(author="testagent", content_text="Test response")
-
-    with caplog.at_level("DEBUG"):
-      agent._LlmAgent__maybe_save_output_to_state(event)
-
-    # Should not save due to case mismatch
-    assert len(event.actions.state_delta) == 0
-    assert (
-        "Skipping output save for agent TestAgent: event authored by testagent"
-        in caplog.text
+    # Set the LlmAgent logger to DEBUG level
+    llm_agent_logger = logging.getLogger(
+        "google_adk.google.adk.agents.llm_agent"
     )
+    original_level = llm_agent_logger.level
+    llm_agent_logger.setLevel(logging.DEBUG)
+
+    try:
+      agent = LlmAgent(name="TestAgent", output_key="result")
+      event = create_test_event(
+          author="testagent", content_text="Test response"
+      )
+
+      with caplog.at_level("DEBUG"):
+        agent._LlmAgent__maybe_save_output_to_state(event)
+
+      # Should not save due to case mismatch
+      assert len(event.actions.state_delta) == 0
+      assert (
+          "Skipping output save for agent TestAgent: event authored by"
+          " testagent"
+          in caplog.text
+      )
+    finally:
+      # Restore original logger level
+      llm_agent_logger.setLevel(original_level)
 
   @patch("google.adk.agents.llm_agent.logger")
   def test_maybe_save_output_to_state_logging(self, mock_logger):

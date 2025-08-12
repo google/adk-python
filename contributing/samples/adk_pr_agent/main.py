@@ -20,7 +20,7 @@ import time
 import agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.runners import InMemoryRunner
-from google.adk.sessions import Session
+from google.adk.sessions.session import Session
 from google.genai import types
 
 

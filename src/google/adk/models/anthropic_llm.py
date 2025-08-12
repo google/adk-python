@@ -46,8 +46,6 @@ __all__ = ["Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
 
-MAX_TOKEN = 8192
-
 
 class ClaudeRequest(BaseModel):
   system_instruction: str
@@ -174,7 +172,8 @@ def content_block_to_part(
 def message_to_generate_content_response(
     message: anthropic_types.Message,
 ) -> LlmResponse:
-  logger.info(
+  logger.info("Received response from Claude.")
+  logger.debug(
       "Claude response: %s",
       message.model_dump_json(indent=2, exclude_none=True),
   )
@@ -244,13 +243,15 @@ class Claude(BaseLlm):
 
   Attributes:
     model: The name of the Claude model.
+    max_tokens: The maximum number of tokens to generate.
   """
 
   model: str = "claude-3-5-sonnet-v2@20241022"
+  max_tokens: int = 8192
 
-  @staticmethod
+  @classmethod
   @override
-  def supported_models() -> list[str]:
+  def supported_models(cls) -> list[str]:
     return [r"claude-3-.*", r"claude-.*-4.*"]
 
   @override
@@ -283,7 +284,7 @@ class Claude(BaseLlm):
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
-        max_tokens=MAX_TOKEN,
+        max_tokens=self.max_tokens,
     )
     yield message_to_generate_content_response(message)
 

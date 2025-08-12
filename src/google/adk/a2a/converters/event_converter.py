@@ -38,7 +38,7 @@ from google.genai import types as genai_types
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
@@ -193,7 +193,7 @@ def convert_a2a_task_to_event(
     message = None
     if a2a_task.artifacts:
       message = Message(
-          messageId="", role=Role.agent, parts=a2a_task.artifacts[-1].parts
+          message_id="", role=Role.agent, parts=a2a_task.artifacts[-1].parts
       )
     elif a2a_task.status and a2a_task.status.message:
       message = a2a_task.status.message
@@ -224,7 +224,7 @@ def convert_a2a_task_to_event(
     raise
 
 
-@experimental
+@a2a_experimental
 def convert_a2a_message_to_event(
     a2a_message: Message,
     author: Optional[str] = None,
@@ -320,7 +320,7 @@ def convert_a2a_message_to_event(
     raise RuntimeError(f"Failed to convert message: {e}") from e
 
 
-@experimental
+@a2a_experimental
 def convert_event_to_a2a_message(
     event: Event, invocation_context: InvocationContext, role: Role = Role.agent
 ) -> Optional[Message]:
@@ -353,7 +353,7 @@ def convert_event_to_a2a_message(
         _process_long_running_tool(a2a_part, event)
 
     if a2a_parts:
-      return Message(messageId=str(uuid.uuid4()), role=role, parts=a2a_parts)
+      return Message(message_id=str(uuid.uuid4()), role=role, parts=a2a_parts)
 
   except Exception as e:
     logger.error("Failed to convert event to status message: %s", e)
@@ -387,13 +387,13 @@ def _create_error_status_event(
     event_metadata[_get_adk_metadata_key("error_code")] = str(event.error_code)
 
   return TaskStatusUpdateEvent(
-      taskId=task_id,
-      contextId=context_id,
+      task_id=task_id,
+      context_id=context_id,
       metadata=event_metadata,
       status=TaskStatus(
           state=TaskState.failed,
           message=Message(
-              messageId=str(uuid.uuid4()),
+              message_id=str(uuid.uuid4()),
               role=Role.agent,
               parts=[TextPart(text=error_message)],
               metadata={
@@ -463,15 +463,15 @@ def _create_status_update_event(
     status.state = TaskState.input_required
 
   return TaskStatusUpdateEvent(
-      taskId=task_id,
-      contextId=context_id,
+      task_id=task_id,
+      context_id=context_id,
       status=status,
       metadata=_get_context_metadata(event, invocation_context),
       final=False,
   )
 
 
-@experimental
+@a2a_experimental
 def convert_event_to_a2a_events(
     event: Event,
     invocation_context: InvocationContext,

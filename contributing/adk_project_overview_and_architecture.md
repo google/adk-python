@@ -28,20 +28,22 @@ Google Agent Development Kit (ADK) for Python
 
 Adhere to this structure for compatibility with ADK tooling.
 
-my_adk_project/ \
-└── src/ \
-    └── my_app/ \
-        ├── agents/ \
-        │   ├── my_agent/ \
+```
+my_adk_project/
+└── src/
+    └── my_app/
+        ├── agents/
+        │   ├── my_agent/
         │   │   ├── __init__.py   # Must contain: from. import agent \
         │   │   └── agent.py      # Must contain: root_agent = Agent(...) \
-        │   └── another_agent/ \
-        │       ├── __init__.py \
+        │   └── another_agent/
+        │       ├── __init__.py
         │       └── agent.py\
+```
 
 agent.py: Must define the agent and assign it to a variable named root_agent. This is how ADK's tools find it.
 
-__init__.py: In each agent directory, it must contain from. import agent to make the agent discoverable.
+`__init__.py`: In each agent directory, it must contain from. import agent to make the agent discoverable.
 
 ## Local Development & Debugging
 
@@ -108,4 +110,3 @@ Test Cases: Create JSON files with input and a reference (expected tool calls an
 Metrics: tool_trajectory_avg_score (does it use tools correctly?) and response_match_score (is the final answer good?).
 
 Run via: adk web (UI), pytest (for CI/CD), or adk eval (CLI).
-

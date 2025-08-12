@@ -36,11 +36,13 @@ from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
 from litellm import ChatCompletionDeveloperMessage
 from litellm import ChatCompletionFileObject
+from litellm import ChatCompletionImageObject
 from litellm import ChatCompletionImageUrlObject
 from litellm import ChatCompletionMessageToolCall
 from litellm import ChatCompletionTextObject
 from litellm import ChatCompletionToolMessage
 from litellm import ChatCompletionUserMessage
+from litellm import ChatCompletionVideoObject
 from litellm import ChatCompletionVideoUrlObject
 from litellm import completion
 from litellm import CustomStreamWrapper
@@ -250,17 +252,25 @@ def _get_content(
       data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
 
       if part.inline_data.mime_type.startswith("image"):
+        # Extract format from mime type (e.g., "image/png" -> "png")
+        format_type = part.inline_data.mime_type.split("/")[-1]
         content_objects.append(
-            ChatCompletionImageUrlObject(
+            ChatCompletionImageObject(
                 type="image_url",
-                image_url=data_uri,
+                image_url=ChatCompletionImageUrlObject(
+                    url=data_uri, format=format_type
+                ),
             )
         )
       elif part.inline_data.mime_type.startswith("video"):
+        # Extract format from mime type (e.g., "video/mp4" -> "mp4")
+        format_type = part.inline_data.mime_type.split("/")[-1]
         content_objects.append(
-            ChatCompletionVideoUrlObject(
+            ChatCompletionVideoObject(
                 type="video_url",
-                video_url=data_uri,
+                video_url=ChatCompletionVideoUrlObject(
+                    url=data_uri, format=format_type
+                ),
             )
         )
       elif part.inline_data.mime_type == "application/pdf":
@@ -301,7 +311,9 @@ TYPE_LABELS = {
 
 
 def _schema_to_dict(schema: types.Schema) -> dict:
-  """Recursively converts a types.Schema to a dictionary.
+  """
+  Recursively converts a types.Schema to a pure-python dict
+  with all enum values written as lower-case strings.
 
   Args:
     schema: The schema to convert.
@@ -309,29 +321,40 @@ def _schema_to_dict(schema: types.Schema) -> dict:
   Returns:
     The dictionary representation of the schema.
   """
-
+  # Dump without json encoding so we still get Enum members
   schema_dict = schema.model_dump(exclude_none=True)
+
+  # ---- normalise this level ------------------------------------------------
   if "type" in schema_dict:
-    schema_dict["type"] = schema_dict["type"].lower()
+    # schema_dict["type"] can be an Enum or a str
+    t = schema_dict["type"]
+    schema_dict["type"] = (t.value if isinstance(t, types.Type) else t).lower()
+
+  # ---- recurse into `items` -----------------------------------------------
   if "items" in schema_dict:
-    if isinstance(schema_dict["items"], dict):
-      schema_dict["items"] = _schema_to_dict(
-          types.Schema.model_validate(schema_dict["items"])
-      )
-    elif isinstance(schema_dict["items"]["type"], types.Type):
-      schema_dict["items"]["type"] = TYPE_LABELS[
-          schema_dict["items"]["type"].value
-      ]
+    schema_dict["items"] = _schema_to_dict(
+        schema.items
+        if isinstance(schema.items, types.Schema)
+        else types.Schema.model_validate(schema_dict["items"])
+    )
+
+  # ---- recurse into `properties` ------------------------------------------
   if "properties" in schema_dict:
-    properties = {}
+    new_props = {}
     for key, value in schema_dict["properties"].items():
-      if isinstance(value, types.Schema):
-        properties[key] = _schema_to_dict(value)
+      # value is a dict → rebuild a Schema object and recurse
+      if isinstance(value, dict):
+        new_props[key] = _schema_to_dict(types.Schema.model_validate(value))
+      # value is already a Schema instance
+      elif isinstance(value, types.Schema):
+        new_props[key] = _schema_to_dict(value)
+      # plain dict without nested schemas
       else:
-        properties[key] = value
-        if "type" in properties[key]:
-          properties[key]["type"] = properties[key]["type"].lower()
-    schema_dict["properties"] = properties
+        new_props[key] = value
+        if "type" in new_props[key]:
+          new_props[key]["type"] = new_props[key]["type"].lower()
+    schema_dict["properties"] = new_props
+
   return schema_dict
 
 
@@ -825,9 +848,9 @@ class LiteLlm(BaseLlm):
       response = await self.llm_client.acompletion(**completion_args)
       yield _model_response_to_generate_content_response(response)
 
-  @staticmethod
+  @classmethod
   @override
-  def supported_models() -> list[str]:
+  def supported_models(cls) -> list[str]:
     """Provides the list of supported models.
 
     LiteLlm supports all models supported by litellm. We do not keep track of

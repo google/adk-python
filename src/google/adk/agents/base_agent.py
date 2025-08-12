@@ -19,10 +19,9 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import ClassVar
 from typing import Dict
 from typing import final
-from typing import List
-from typing import Literal
 from typing import Mapping
 from typing import Optional
 from typing import Type
@@ -36,13 +35,14 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
-from pydantic import model_validator
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
 from ..events.event import Event
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
+from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
+from .common_configs import AgentRefConfig
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
@@ -75,6 +75,22 @@ class BaseAgent(BaseModel):
       extra='forbid',
   )
   """The pydantic model config."""
+
+  config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+  """The config type for this agent.
+
+  Sub-classes should override this to specify their own config type.
+
+  Example:
+
+  ```
+  class MyAgentConfig(BaseAgentConfig):
+    my_field: str = ''
+
+  class MyAgent(BaseAgent):
+    config_type: ClassVar[type[BaseAgentConfig]] = MyAgentConfig
+  ```
+  """
 
   name: str
   """The agent's name.
@@ -488,8 +504,9 @@ class BaseAgent(BaseModel):
       sub_agent.parent_agent = self
     return self
 
+  @final
   @classmethod
-  @working_in_progress('BaseAgent.from_config is not ready for use.')
+  @experimental
   def from_config(
       cls: Type[SelfAgent],
       config: BaseAgentConfig,
@@ -497,19 +514,54 @@ class BaseAgent(BaseModel):
   ) -> SelfAgent:
     """Creates an agent from a config.
 
-    This method converts fields in a config to the corresponding
-    fields in an agent.
-
-    Child classes should re-implement this method to support loading from their
-    custom config types.
+    If sub-classes uses a custom agent config, override `_from_config_kwargs`
+    method to return an updated kwargs for agent construstor.
 
     Args:
       config: The config to create the agent from.
+      config_abs_path: The absolute path to the config file that contains the
+        agent config.
 
     Returns:
       The created agent.
     """
-    from .config_agent_utils import build_sub_agent
+    kwargs = cls.__create_kwargs(config, config_abs_path)
+    kwargs = cls._parse_config(config, config_abs_path, kwargs)
+    return cls(**kwargs)
+
+  @classmethod
+  @experimental
+  def _parse_config(
+      cls: Type[SelfAgent],
+      config: BaseAgentConfig,
+      config_abs_path: str,
+      kwargs: Dict[str, Any],
+  ) -> Dict[str, Any]:
+    """Parses the config and returns updated kwargs to construct the agent.
+
+    Sub-classes should override this method to use a custome agent config class.
+
+    Args:
+      config: The config to parse.
+      config_abs_path: The absolute path to the config file that contains the
+        agent config.
+      kwargs: The keyword arguments used for agent constructor.
+
+    Returns:
+      The updated keyword arguments used for agent constructor.
+    """
+    return kwargs
+
+  @classmethod
+  def __create_kwargs(
+      cls,
+      config: BaseAgentConfig,
+      config_abs_path: str,
+  ) -> Dict[str, Any]:
+    """Creates kwargs for the fields of BaseAgent."""
+
+    from .config_agent_utils import resolve_agent_reference
+    from .config_agent_utils import resolve_callbacks
 
     kwargs: Dict[str, Any] = {
         'name': config.name,
@@ -518,92 +570,16 @@ class BaseAgent(BaseModel):
     if config.sub_agents:
       sub_agents = []
       for sub_agent_config in config.sub_agents:
-        sub_agent = build_sub_agent(
-            sub_agent_config, config_abs_path.rsplit('/', 1)[0]
-        )
+        sub_agent = resolve_agent_reference(sub_agent_config, config_abs_path)
         sub_agents.append(sub_agent)
       kwargs['sub_agents'] = sub_agents
-    return cls(**kwargs)
 
-
-class SubAgentConfig(BaseModel):
-  """The config for a sub-agent."""
-
-  model_config = ConfigDict(extra='forbid')
-
-  config: Optional[str] = None
-  """The YAML config file path of the sub-agent.
-
-  Only one of `config` or `code` can be set.
-
-  Example:
-
-    ```
-    sub_agents:
-      - config: search_agent.yaml
-      - config: my_library/my_custom_agent.yaml
-    ```
-  """
-
-  code: Optional[str] = None
-  """The agent instance defined in the code.
-
-  Only one of `config` or `code` can be set.
-
-  Example:
-
-    For the following agent defined in Python code:
-
-    ```
-    # my_library/custom_agents.py
-    from google.adk.agents import LlmAgent
-
-    my_custom_agent = LlmAgent(
-        name="my_custom_agent",
-        instruction="You are a helpful custom agent.",
-        model="gemini-2.0-flash",
-    )
-    ```
-
-    The yaml config should be:
-
-    ```
-    sub_agents:
-      - code: my_library.custom_agents.my_custom_agent
-    ```
-  """
-
-  @model_validator(mode='after')
-  def validate_exactly_one_field(self):
-    code_provided = self.code is not None
-    config_provided = self.config is not None
-
-    if code_provided and config_provided:
-      raise ValueError('Only one of code or config should be provided')
-    if not code_provided and not config_provided:
-      raise ValueError('Exactly one of code or config must be provided')
-
-    return self
-
-
-@working_in_progress('BaseAgentConfig is not ready for use.')
-class BaseAgentConfig(BaseModel):
-  """The config for the YAML schema of a BaseAgent.
-
-  Do not use this class directly. It's the base class for all agent configs.
-  """
-
-  model_config = ConfigDict(extra='forbid')
-
-  agent_class: Literal['BaseAgent'] = 'BaseAgent'
-  """Required. The class of the agent. The value is used to differentiate
-  among different agent classes."""
-
-  name: str
-  """Required. The name of the agent."""
-
-  description: str = ''
-  """Optional. The description of the agent."""
-
-  sub_agents: Optional[List[SubAgentConfig]] = None
-  """Optional. The sub-agents of the agent."""
+    if config.before_agent_callbacks:
+      kwargs['before_agent_callback'] = resolve_callbacks(
+          config.before_agent_callbacks
+      )
+    if config.after_agent_callbacks:
+      kwargs['after_agent_callback'] = resolve_callbacks(
+          config.after_agent_callbacks
+      )
+    return kwargs

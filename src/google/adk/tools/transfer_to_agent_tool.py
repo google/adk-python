@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from .tool_context import ToolContext
 
 
-def transfer_to_agent(agent_name: str, tool_context: ToolContext):
+def transfer_to_agent(agent_name: str, tool_context: ToolContext) -> None:
   """Transfer the question to another agent.
 
   This tool hands off control to another agent when it's more suitable to

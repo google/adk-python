@@ -67,11 +67,17 @@ class FullOverridePlugin(BasePlugin):
   async def after_tool_callback(self, **kwargs) -> str:
     return "overridden_after_tool"
 
+  async def on_tool_error_callback(self, **kwargs) -> str:
+    return "overridden_on_tool_error"
+
   async def before_model_callback(self, **kwargs) -> str:
     return "overridden_before_model"
 
   async def after_model_callback(self, **kwargs) -> str:
     return "overridden_after_model"
+
+  async def on_model_error_callback(self, **kwargs) -> str:
+    return "overridden_on_model_error"
 
 
 def test_base_plugin_initialization():
@@ -138,6 +144,15 @@ async def test_base_plugin_default_callbacks_return_none():
       is None
   )
   assert (
+      await plugin.on_tool_error_callback(
+          tool=mock_context,
+          tool_args={},
+          tool_context=mock_context,
+          error=Exception(),
+      )
+      is None
+  )
+  assert (
       await plugin.before_model_callback(
           callback_context=mock_context, llm_request=mock_context
       )
@@ -146,6 +161,14 @@ async def test_base_plugin_default_callbacks_return_none():
   assert (
       await plugin.after_model_callback(
           callback_context=mock_context, llm_response=mock_context
+      )
+      is None
+  )
+  assert (
+      await plugin.on_model_error_callback(
+          callback_context=mock_context,
+          llm_request=mock_context,
+          error=Exception(),
       )
       is None
   )
@@ -170,6 +193,7 @@ async def test_base_plugin_all_callbacks_can_be_overridden():
   mock_llm_request = Mock(spec=LlmRequest)
   mock_llm_response = Mock(spec=LlmResponse)
   mock_event = Mock(spec=Event)
+  mock_error = Mock(spec=Exception)
 
   # Call each method and assert it returns the unique string from the override.
   # This proves that the subclass's method was executed.
@@ -236,4 +260,21 @@ async def test_base_plugin_all_callbacks_can_be_overridden():
           result={},
       )
       == "overridden_after_tool"
+  )
+  assert (
+      await plugin.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args={},
+          tool_context=mock_tool_context,
+          error=mock_error,
+      )
+      == "overridden_on_tool_error"
+  )
+  assert (
+      await plugin.on_model_error_callback(
+          callback_context=mock_callback_context,
+          llm_request=mock_llm_request,
+          error=mock_error,
+      )
+      == "overridden_on_model_error"
   )

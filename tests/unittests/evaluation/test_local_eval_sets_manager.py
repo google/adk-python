@@ -407,6 +407,15 @@ class TestLocalEvalSetsManager:
 
     assert eval_sets == ["eval_set_1", "eval_set_2"]
 
+  def test_local_eval_sets_manager_list_eval_sets_not_found(
+      self, local_eval_sets_manager, mocker
+  ):
+    app_name = "test_app"
+    mocker.patch("os.listdir", side_effect=FileNotFoundError)
+
+    with pytest.raises(NotFoundError):
+      local_eval_sets_manager.list_eval_sets(app_name)
+
   def test_local_eval_sets_manager_add_eval_case_success(
       self, local_eval_sets_manager, mocker
   ):

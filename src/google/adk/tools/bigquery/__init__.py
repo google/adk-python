@@ -20,11 +20,11 @@ definition. The rationales to have customized tool are:
 
 1. BigQuery APIs have functions overlaps and LLM can't tell what tool to use
 2. BigQuery APIs have a lot of parameters with some rarely used, which are not
- LLM-friendly
+   LLM-friendly
 3. We want to provide more high-level tools like forecasting, RAG, segmentation,
- etc.
+   etc.
 4. We want to provide extra access guardrails in those tools. For example,
- execute_sql can't arbitrarily mutate existing data.
+   execute_sql can't arbitrarily mutate existing data.
 """
 
 from .bigquery_credentials import BigQueryCredentialsConfig

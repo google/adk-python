@@ -21,7 +21,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
-from google.adk.events import Event
+from google.adk.events.event import Event
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 import pytest

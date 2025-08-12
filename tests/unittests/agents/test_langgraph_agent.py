@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.langgraph_agent import LangGraphAgent
-from google.adk.events import Event
+from google.adk.events.event import Event
 from google.adk.plugins.plugin_manager import PluginManager
 from google.genai import types
 from langchain_core.messages import AIMessage

@@ -21,18 +21,20 @@ from adk_triaging_agent.settings import OWNER
 from adk_triaging_agent.settings import REPO
 from adk_triaging_agent.utils import error_response
 from adk_triaging_agent.utils import get_request
+from adk_triaging_agent.utils import patch_request
 from adk_triaging_agent.utils import post_request
-from google.adk import Agent
+from google.adk.agents.llm_agent import Agent
 import requests
 
 LABEL_TO_OWNER = {
-    "documentation": "polong",
+    "agent engine": "yeesian",
+    "documentation": "polong-lin",
     "services": "DeanChensj",
     "question": "",
     "tools": "seanzhou1023",
     "eval": "ankursharmas",
     "live": "hangfei",
-    "models": "selcukgun",
+    "models": "genquan9",
     "tracing": "Jacksunwei",
     "core": "Jacksunwei",
     "web": "wyf7107",
@@ -136,6 +138,30 @@ def add_label_and_owner_to_issue(
   }
 
 
+def change_issue_type(issue_number: int, issue_type: str) -> dict[str, Any]:
+  """Change the issue type of the given issue number.
+
+  Args:
+    issue_number: issue number of the Github issue, in string foramt.
+    issue_type: issue type to assign
+
+  Returns:
+    The the status of this request, with the applied issue type when successful.
+  """
+  print(
+      f"Attempting to change issue type '{issue_type}' to issue #{issue_number}"
+  )
+  url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}"
+  payload = {"type": issue_type}
+
+  try:
+    response = patch_request(url, payload)
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Error: {e}")
+
+  return {"status": "success", "message": response, "issue_type": issue_type}
+
+
 root_agent = Agent(
     model="gemini-2.5-pro",
     name="adk_triaging_assistant",
@@ -143,6 +169,7 @@ root_agent = Agent(
     instruction=f"""
       You are a triaging bot for the Github {REPO} repo with the owner {OWNER}. You will help get issues, and recommend a label.
       IMPORTANT: {APPROVAL_INSTRUCTION}
+
       Here are the rules for labeling:
       - If the user is asking about documentation-related questions, label it with "documentation".
       - If it's about session, memory services, label it with "services"
@@ -154,14 +181,24 @@ root_agent = Agent(
       - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
       - If it's agent orchestration, agent definition, label it with "core".
+      - If it's about agent engine, label it with "agent engine".
       - If you can't find a appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
 
       Call the `add_label_and_owner_to_issue` tool to label the issue, which will also assign the issue to the owner of the label.
+
+      After you label the issue, call the `change_issue_type` tool to change the issue type:
+      - If the issue is a bug report, change the issue type to "Bug".
+      - If the issue is a feature request, change the issue type to "Feature".
+      - Otherwise, **do not change the issue type**.
 
       Present the followings in an easy to read format highlighting issue number and your label.
       - the issue summary in a few sentence
       - your label recommendation and justification
       - the owner of the label if you assign the issue to an owner
     """,
-    tools=[list_unlabeled_issues, add_label_and_owner_to_issue],
+    tools=[
+        list_unlabeled_issues,
+        add_label_and_owner_to_issue,
+        change_issue_type,
+    ],
 )

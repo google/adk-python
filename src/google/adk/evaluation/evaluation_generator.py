@@ -24,6 +24,8 @@ from pydantic import BaseModel
 from ..agents.llm_agent import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
+from ..memory.base_memory_service import BaseMemoryService
+from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
@@ -142,10 +144,14 @@ class EvaluationGenerator:
       session_id: Optional[str] = None,
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
+      memory_service: Optional[BaseMemoryService] = None,
   ) -> list[Invocation]:
     """Scrapes the root agent given the list of Invocations."""
     if not session_service:
       session_service = InMemorySessionService()
+
+    if not memory_service:
+      memory_service = InMemoryMemoryService()
 
     app_name = (
         initial_session.app_name if initial_session else "EvaluationGenerator"
@@ -168,6 +174,7 @@ class EvaluationGenerator:
         agent=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
+        memory_service=memory_service,
     )
 
     # Reset agent state for each query

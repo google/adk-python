@@ -24,6 +24,9 @@ from google.adk.evaluation.base_eval_service import InferenceResult
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
+from google.adk.evaluation.eval_metrics import Interval
+from google.adk.evaluation.eval_metrics import MetricInfo
+from google.adk.evaluation.eval_metrics import MetricValueInfo
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_set import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
@@ -61,7 +64,7 @@ def eval_service(
     dummy_agent, mock_eval_sets_manager, mock_eval_set_results_manager
 ):
   DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
-      metric_name="fake_metric", evaluator=FakeEvaluator
+      metric_info=FakeEvaluator.get_metric_info(), evaluator=FakeEvaluator
   )
   return LocalEvalService(
       root_agent=dummy_agent,
@@ -74,6 +77,16 @@ class FakeEvaluator(Evaluator):
 
   def __init__(self, eval_metric: EvalMetric):
     self._eval_metric = eval_metric
+
+  @staticmethod
+  def get_metric_info() -> MetricInfo:
+    return MetricInfo(
+        metric_name="fake_metric",
+        description="Fake metric description",
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )
 
   def evaluate_invocations(
       self,

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows.contents import _convert_foreign_event
@@ -20,7 +20,7 @@ from google.adk.flows.llm_flows.contents import _get_contents
 from google.adk.flows.llm_flows.contents import _merge_function_response_events
 from google.adk.flows.llm_flows.contents import _rearrange_events_for_async_function_responses_in_history
 from google.adk.flows.llm_flows.contents import _rearrange_events_for_latest_function_response
-from google.adk.models import LlmRequest
+from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
 

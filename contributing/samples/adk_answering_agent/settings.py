@@ -29,8 +29,14 @@ VERTEXAI_DATASTORE_ID = os.getenv("VERTEXAI_DATASTORE_ID")
 if not VERTEXAI_DATASTORE_ID:
   raise ValueError("VERTEXAI_DATASTORE_ID environment variable not set")
 
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+ADK_DOCS_ROOT_PATH = os.getenv("ADK_DOCS_ROOT_PATH")
+ADK_PYTHON_ROOT_PATH = os.getenv("ADK_PYTHON_ROOT_PATH")
+
 OWNER = os.getenv("OWNER", "google")
 REPO = os.getenv("REPO", "adk-python")
+BOT_RESPONSE_LABEL = os.getenv("BOT_RESPONSE_LABEL", "bot responded")
 DISCUSSION_NUMBER = os.getenv("DISCUSSION_NUMBER")
 
 IS_INTERACTIVE = os.getenv("INTERACTIVE", "1").lower() in ["true", "1"]

@@ -48,6 +48,8 @@ PluginCallbackName = Literal[
     "after_tool_callback",
     "before_model_callback",
     "after_model_callback",
+    "on_tool_error_callback",
+    "on_model_error_callback",
 ]
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -195,6 +197,21 @@ class PluginManager:
         result=result,
     )
 
+  async def run_on_model_error_callback(
+      self,
+      *,
+      callback_context: CallbackContext,
+      llm_request: LlmRequest,
+      error: Exception,
+  ) -> Optional[LlmResponse]:
+    """Runs the `on_model_error_callback` for all plugins."""
+    return await self._run_callbacks(
+        "on_model_error_callback",
+        callback_context=callback_context,
+        llm_request=llm_request,
+        error=error,
+    )
+
   async def run_before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
   ) -> Optional[LlmResponse]:
@@ -213,6 +230,23 @@ class PluginManager:
         "after_model_callback",
         callback_context=callback_context,
         llm_response=llm_response,
+    )
+
+  async def run_on_tool_error_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> Optional[dict]:
+    """Runs the `on_tool_error_callback` for all plugins."""
+    return await self._run_callbacks(
+        "on_tool_error_callback",
+        tool=tool,
+        tool_args=tool_args,
+        tool_context=tool_context,
+        error=error,
     )
 
   async def _run_callbacks(

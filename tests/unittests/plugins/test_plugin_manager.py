@@ -77,11 +77,17 @@ class TestPlugin(BasePlugin):
   async def after_tool_callback(self, **kwargs):
     return await self._handle_callback("after_tool_callback")
 
+  async def on_tool_error_callback(self, **kwargs):
+    return await self._handle_callback("on_tool_error_callback")
+
   async def before_model_callback(self, **kwargs):
     return await self._handle_callback("before_model_callback")
 
   async def after_model_callback(self, **kwargs):
     return await self._handle_callback("after_model_callback")
+
+  async def on_model_error_callback(self, **kwargs):
+    return await self._handle_callback("on_model_error_callback")
 
 
 @pytest.fixture
@@ -227,11 +233,22 @@ async def test_all_callbacks_are_supported(
   await service.run_after_tool_callback(
       tool=mock_context, tool_args={}, tool_context=mock_context, result={}
   )
+  await service.run_on_tool_error_callback(
+      tool=mock_context,
+      tool_args={},
+      tool_context=mock_context,
+      error=mock_context,
+  )
   await service.run_before_model_callback(
       callback_context=mock_context, llm_request=mock_context
   )
   await service.run_after_model_callback(
       callback_context=mock_context, llm_response=mock_context
+  )
+  await service.run_on_model_error_callback(
+      callback_context=mock_context,
+      llm_request=mock_context,
+      error=mock_context,
   )
 
   # Verify all callbacks were logged
@@ -244,7 +261,9 @@ async def test_all_callbacks_are_supported(
       "after_agent_callback",
       "before_tool_callback",
       "after_tool_callback",
+      "on_tool_error_callback",
       "before_model_callback",
       "after_model_callback",
+      "on_model_error_callback",
   ]
   assert set(plugin1.call_log) == set(expected_callbacks)

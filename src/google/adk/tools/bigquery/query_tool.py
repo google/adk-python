@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import functools
+import json
+import sys
+import textwrap
 import types
 from typing import Callable
 
@@ -24,7 +29,6 @@ from ..tool_context import ToolContext
 from .config import BigQueryToolConfig
 from .config import WriteMode
 
-MAX_DOWNLOADED_QUERY_RESULT_ROWS = 50
 BIGQUERY_SESSION_INFO_KEY = "bigquery_session_info"
 
 
@@ -157,17 +161,28 @@ def execute_sql(
         query,
         job_config=job_config,
         project=project_id,
-        max_results=MAX_DOWNLOADED_QUERY_RESULT_ROWS,
+        max_results=config.max_query_result_rows,
     )
-    rows = [{key: val for key, val in row.items()} for row in row_iterator]
+    rows = []
+    for row in row_iterator:
+      row_values = {}
+      for key, val in row.items():
+        try:
+          # if the json serialization of the value succeeds, use it as is
+          json.dumps(val)
+        except:
+          val = str(val)
+        row_values[key] = val
+      rows.append(row_values)
+
     result = {"status": "SUCCESS", "rows": rows}
     if (
-        MAX_DOWNLOADED_QUERY_RESULT_ROWS is not None
-        and len(rows) == MAX_DOWNLOADED_QUERY_RESULT_ROWS
+        config.max_query_result_rows is not None
+        and len(rows) == config.max_query_result_rows
     ):
       result["result_is_likely_truncated"] = True
     return result
-  except Exception as ex:
+  except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
         "error_details": str(ex),
@@ -481,8 +496,17 @@ def get_execute_sql(config: BigQueryToolConfig) -> Callable[..., dict]:
 
   # Now, set the new docstring
   if config.write_mode == WriteMode.PROTECTED:
-    execute_sql_wrapper.__doc__ += _execute_sql_protecetd_write_examples
+    examples = _execute_sql_protecetd_write_examples
   else:
-    execute_sql_wrapper.__doc__ += _execute_sql_write_examples
+    examples = _execute_sql_write_examples
+
+  # Handle Python 3.13+ inspect.cleandoc behavior change
+  # Python 3.13 changed inspect.cleandoc from lstrip() to lstrip(' '), making it
+  # more conservative. The appended examples have inconsistent indentation that
+  # Python 3.11/3.12's aggressive cleandoc would fix, but 3.13+ needs help.
+  if sys.version_info >= (3, 13):
+    examples = textwrap.dedent(examples)
+
+  execute_sql_wrapper.__doc__ += examples
 
   return execute_sql_wrapper

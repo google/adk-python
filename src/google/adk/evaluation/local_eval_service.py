@@ -24,13 +24,13 @@ import uuid
 
 from typing_extensions import override
 
-from ..agents import BaseAgent
+from ..agents.base_agent import BaseAgent
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..errors.not_found_error import NotFoundError
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -60,7 +60,7 @@ def _get_session_id() -> str:
   return f'{EVAL_SESSION_ID_PREFIX}{str(uuid.uuid4())}'
 
 
-@working_in_progress("Incomplete feature, don't use yet")
+@experimental
 class LocalEvalService(BaseEvalService):
   """An implementation of BaseEvalService, that runs the evals locally."""
 
@@ -114,8 +114,6 @@ class LocalEvalService(BaseEvalService):
           if eval_case.eval_id in inference_request.eval_case_ids
       ]
 
-    root_agent = self._root_agent.clone()
-
     semaphore = asyncio.Semaphore(
         value=inference_request.inference_config.parallelism
     )
@@ -126,7 +124,7 @@ class LocalEvalService(BaseEvalService):
             app_name=inference_request.app_name,
             eval_set_id=inference_request.eval_set_id,
             eval_case=eval_case,
-            root_agent=root_agent,
+            root_agent=self._root_agent,
         )
 
     inference_results = [run_inference(eval_case) for eval_case in eval_cases]

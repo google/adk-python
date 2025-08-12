@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import ClassVar
 from typing import Dict
 from typing import Literal
 from typing import Optional
@@ -36,8 +38,6 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
-from ..examples.base_example_provider import BaseExampleProvider
-from ..examples.example import Example
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
 from ..flows.llm_flows.single_flow import SingleFlow
@@ -49,12 +49,14 @@ from ..planners.base_planner import BasePlanner
 from ..tools.base_tool import BaseTool
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
+from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
-from .base_agent import BaseAgentConfig
+from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
+from .llm_agent_config import LlmAgentConfig
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -104,7 +106,6 @@ InstructionProvider: TypeAlias = Callable[
 ]
 
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
-ExamplesUnion = Union[list[Example], BaseExampleProvider]
 
 
 async def _convert_tool_union_to_tools(
@@ -126,6 +127,9 @@ class LlmAgent(BaseAgent):
 
   When not set, the agent will inherit the model from its ancestor.
   """
+
+  config_type: ClassVar[type[BaseAgentConfig]] = LlmAgentConfig
+  """The config type for this agent."""
 
   instruction: Union[str, InstructionProvider] = ''
   """Instructions for the LLM model, guiding the agent's behavior."""
@@ -168,9 +172,9 @@ class LlmAgent(BaseAgent):
   """Controls content inclusion in model requests.
 
   Options:
-      default: Model receives relevant conversation history
-      none: Model receives no prior history, operates solely on current
-            instruction and input
+    default: Model receives relevant conversation history
+    none: Model receives no prior history, operates solely on current
+    instruction and input
   """
 
   # Controlled input/output configurations - Start
@@ -179,8 +183,9 @@ class LlmAgent(BaseAgent):
   output_schema: Optional[type[BaseModel]] = None
   """The output schema when agent replies.
 
-  NOTE: when this is set, agent can ONLY reply and CANNOT use any tools, such as
-  function tools, RAGs, agent transfer, etc.
+  NOTE:
+    When this is set, agent can ONLY reply and CANNOT use any tools, such as
+    function tools, RAGs, agent transfer, etc.
   """
   output_key: Optional[str] = None
   """The key in session state to store the output of the agent.
@@ -195,9 +200,9 @@ class LlmAgent(BaseAgent):
   planner: Optional[BasePlanner] = None
   """Instructs the agent to make a plan and execute it step by step.
 
-  NOTE: to use model's built-in thinking features, set the `thinking_config`
-  field in `google.adk.planners.built_in_planner`.
-
+  NOTE:
+    To use model's built-in thinking features, set the `thinking_config`
+    field in `google.adk.planners.built_in_planner`.
   """
 
   code_executor: Optional[BaseCodeExecutor] = None
@@ -206,7 +211,8 @@ class LlmAgent(BaseAgent):
 
   Check out available code executions in `google.adk.code_executor` package.
 
-  NOTE: to use model's built-in code executor, use the `BuiltInCodeExecutor`.
+  NOTE:
+    To use model's built-in code executor, use the `BuiltInCodeExecutor`.
   """
   # Advance features - End
 
@@ -493,12 +499,6 @@ class LlmAgent(BaseAgent):
           ' sub_agents must be empty to disable agent transfer.'
       )
 
-    if self.tools:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' tools must be empty'
-      )
-
   @field_validator('generate_content_config', mode='after')
   @classmethod
   def __validate_generate_content_config(
@@ -521,54 +521,113 @@ class LlmAgent(BaseAgent):
     return generate_content_config
 
   @classmethod
+  @experimental
+  def _resolve_tools(
+      cls, tool_configs: list[ToolConfig], config_abs_path: str
+  ) -> list[Any]:
+    """Resolve tools from configuration.
+
+    Args:
+      tool_configs: List of tool configurations (ToolConfig objects).
+      config_abs_path: The absolute path to the agent config file.
+
+    Returns:
+      List of resolved tool objects.
+    """
+
+    resolved_tools = []
+    for tool_config in tool_configs:
+      if '.' not in tool_config.name:
+        # ADK built-in tools
+        module = importlib.import_module('google.adk.tools')
+        obj = getattr(module, tool_config.name)
+      else:
+        # User-defined tools
+        module_path, obj_name = tool_config.name.rsplit('.', 1)
+        module = importlib.import_module(module_path)
+        obj = getattr(module, obj_name)
+
+      if isinstance(obj, BaseTool) or isinstance(obj, BaseToolset):
+        logger.debug(
+            'Tool %s is an instance of BaseTool/BaseToolset.', tool_config.name
+        )
+        resolved_tools.append(obj)
+      elif inspect.isclass(obj) and (
+          issubclass(obj, BaseTool) or issubclass(obj, BaseToolset)
+      ):
+        logger.debug(
+            'Tool %s is a sub-class of BaseTool/BaseToolset.', tool_config.name
+        )
+        resolved_tools.append(
+            obj.from_config(tool_config.args, config_abs_path)
+        )
+      elif callable(obj):
+        if tool_config.args:
+          logger.debug(
+              'Tool %s is a user-defined tool-generating function.',
+              tool_config.name,
+          )
+          resolved_tools.append(obj(tool_config.args))
+        else:
+          logger.debug(
+              'Tool %s is a user-defined function tool.', tool_config.name
+          )
+          resolved_tools.append(obj)
+      else:
+        raise ValueError(f'Invalid tool YAML config: {tool_config}.')
+
+    return resolved_tools
+
   @override
-  @working_in_progress('LlmAgent.from_config is not ready for use.')
-  def from_config(
+  @classmethod
+  @experimental
+  def _parse_config(
       cls: Type[LlmAgent],
       config: LlmAgentConfig,
       config_abs_path: str,
-  ) -> LlmAgent:
-    agent = super().from_config(config, config_abs_path)
+      kwargs: Dict[str, Any],
+  ) -> Dict[str, Any]:
+    from .config_agent_utils import resolve_callbacks
+    from .config_agent_utils import resolve_code_reference
+
     if config.model:
-      agent.model = config.model
+      kwargs['model'] = config.model
     if config.instruction:
-      agent.instruction = config.instruction
+      kwargs['instruction'] = config.instruction
     if config.disallow_transfer_to_parent:
-      agent.disallow_transfer_to_parent = config.disallow_transfer_to_parent
+      kwargs['disallow_transfer_to_parent'] = config.disallow_transfer_to_parent
     if config.disallow_transfer_to_peers:
-      agent.disallow_transfer_to_peers = config.disallow_transfer_to_peers
+      kwargs['disallow_transfer_to_peers'] = config.disallow_transfer_to_peers
     if config.include_contents != 'default':
-      agent.include_contents = config.include_contents
+      kwargs['include_contents'] = config.include_contents
+    if config.input_schema:
+      kwargs['input_schema'] = resolve_code_reference(config.input_schema)
+    if config.output_schema:
+      kwargs['output_schema'] = resolve_code_reference(config.output_schema)
     if config.output_key:
-      agent.output_key = config.output_key
-    return agent
+      kwargs['output_key'] = config.output_key
+    if config.tools:
+      kwargs['tools'] = cls._resolve_tools(config.tools, config_abs_path)
+    if config.before_model_callbacks:
+      kwargs['before_model_callback'] = resolve_callbacks(
+          config.before_model_callbacks
+      )
+    if config.after_model_callbacks:
+      kwargs['after_model_callback'] = resolve_callbacks(
+          config.after_model_callbacks
+      )
+    if config.before_tool_callbacks:
+      kwargs['before_tool_callback'] = resolve_callbacks(
+          config.before_tool_callbacks
+      )
+    if config.after_tool_callbacks:
+      kwargs['after_tool_callback'] = resolve_callbacks(
+          config.after_tool_callbacks
+      )
+    if config.generate_content_config:
+      kwargs['generate_content_config'] = config.generate_content_config
+
+    return kwargs
 
 
 Agent: TypeAlias = LlmAgent
-
-
-class LlmAgentConfig(BaseAgentConfig):
-  """The config for the YAML schema of a LlmAgent."""
-
-  agent_class: Literal['LlmAgent', ''] = 'LlmAgent'
-  """The value is used to uniquely identify the LlmAgent class. If it is
-  empty, it is by default an LlmAgent."""
-
-  model: Optional[str] = None
-  """Optional. LlmAgent.model. If not set, the model will be inherited from
-  the ancestor."""
-
-  instruction: str
-  """Required. LlmAgent.instruction."""
-
-  disallow_transfer_to_parent: Optional[bool] = None
-  """Optional. LlmAgent.disallow_transfer_to_parent."""
-
-  disallow_transfer_to_peers: Optional[bool] = None
-  """Optional. LlmAgent.disallow_transfer_to_peers."""
-
-  output_key: Optional[str] = None
-  """Optional. LlmAgent.output_key."""
-
-  include_contents: Literal['default', 'none'] = 'default'
-  """Optional. LlmAgent.include_contents."""
