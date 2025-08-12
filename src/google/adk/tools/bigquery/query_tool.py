@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import functools
 import json
+import sys
+import textwrap
 import types
 from typing import Callable
 
@@ -494,8 +496,17 @@ def get_execute_sql(config: BigQueryToolConfig) -> Callable[..., dict]:
 
   # Now, set the new docstring
   if config.write_mode == WriteMode.PROTECTED:
-    execute_sql_wrapper.__doc__ += _execute_sql_protecetd_write_examples
+    examples = _execute_sql_protecetd_write_examples
   else:
-    execute_sql_wrapper.__doc__ += _execute_sql_write_examples
+    examples = _execute_sql_write_examples
+
+  # Handle Python 3.13+ inspect.cleandoc behavior change
+  # Python 3.13 changed inspect.cleandoc from lstrip() to lstrip(' '), making it
+  # more conservative. The appended examples have inconsistent indentation that
+  # Python 3.11/3.12's aggressive cleandoc would fix, but 3.13+ needs help.
+  if sys.version_info >= (3, 13):
+    examples = textwrap.dedent(examples)
+
+  execute_sql_wrapper.__doc__ += examples
 
   return execute_sql_wrapper
