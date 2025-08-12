@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import logging
 import time
 
 from adk_answering_agent import agent
@@ -21,10 +22,13 @@ from adk_answering_agent.settings import OWNER
 from adk_answering_agent.settings import REPO
 from adk_answering_agent.utils import call_agent_async
 from adk_answering_agent.utils import parse_number_string
+from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 
 APP_NAME = "adk_answering_app"
 USER_ID = "adk_answering_user"
+
+logs.setup_adk_logger(level=logging.DEBUG)
 
 
 async def main():
