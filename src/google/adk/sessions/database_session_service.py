@@ -548,8 +548,6 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    logger.info(f"Append event: {event} to session {session.id}")
-
     if event.partial:
       return event
 
