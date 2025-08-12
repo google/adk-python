@@ -113,10 +113,11 @@ async def _convert_tool_union_to_tools(
 ) -> list[BaseTool]:
   if isinstance(tool_union, BaseTool):
     return [tool_union]
-  if isinstance(tool_union, Callable):
+  if callable(tool_union):
     return [FunctionTool(func=tool_union)]
 
-  return await tool_union.get_tools(ctx)
+  # At this point, tool_union must be a BaseToolset
+  return await tool_union.get_tools_with_prefix(ctx)
 
 
 class LlmAgent(BaseAgent):
