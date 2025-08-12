@@ -17,25 +17,25 @@ from __future__ import annotations
 from ...utils.feature_decorator import experimental
 from .._google_credentials import BaseGoogleCredentialsConfig
 
-BIGQUERY_TOKEN_CACHE_KEY = "bigquery_token_cache"
-BIGQUERY_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/bigquery"]
+SPANNER_TOKEN_CACHE_KEY = "spanner_token_cache"
+SPANNER_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/spanner.data"]
 
 
 @experimental
-class BigQueryCredentialsConfig(BaseGoogleCredentialsConfig):
-  """BigQuery Credentials Configuration for Google API tools (Experimental).
+class SpannerCredentialsConfig(BaseGoogleCredentialsConfig):
+  """Spanner Credentials Configuration for Google API tools (Experimental).
 
   Please do not use this in production, as it may be deprecated later.
   """
 
-  def __post_init__(self) -> BigQueryCredentialsConfig:
+  def __post_init__(self) -> SpannerCredentialsConfig:
     """Populate default scope if scopes is None."""
     super().__post_init__()
 
     if not self.scopes:
-      self.scopes = BIGQUERY_DEFAULT_SCOPE
+      self.scopes = SPANNER_DEFAULT_SCOPE
 
     # Set the token cache key
-    self._token_cache_key = BIGQUERY_TOKEN_CACHE_KEY
+    self._token_cache_key = SPANNER_TOKEN_CACHE_KEY
 
     return self

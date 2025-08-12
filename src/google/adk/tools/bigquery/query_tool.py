@@ -36,7 +36,7 @@ def execute_sql(
     project_id: str,
     query: str,
     credentials: Credentials,
-    config: BigQueryToolConfig,
+    settings: BigQueryToolConfig,
     tool_context: ToolContext,
 ) -> dict:
   """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
@@ -46,7 +46,7 @@ def execute_sql(
         executed.
       query (str): The BigQuery SQL query to be executed.
       credentials (Credentials): The credentials to use for the request.
-      config (BigQueryToolConfig): The configuration for the tool.
+      settings (BigQueryToolConfig): The settings for the tool.
       tool_context (ToolContext): The context for the tool.
 
   Returns:
@@ -89,7 +89,7 @@ def execute_sql(
     # BigQuery connection properties where applicable
     bq_connection_properties = None
 
-    if not config or config.write_mode == WriteMode.BLOCKED:
+    if not settings or settings.write_mode == WriteMode.BLOCKED:
       dry_run_query_job = bq_client.query(
           query,
           project=project_id,
@@ -100,7 +100,7 @@ def execute_sql(
             "status": "ERROR",
             "error_details": "Read-only mode only supports SELECT statements.",
         }
-    elif config.write_mode == WriteMode.PROTECTED:
+    elif settings.write_mode == WriteMode.PROTECTED:
       # In protected write mode, write operation only to a temporary artifact is
       # allowed. This artifact must have been created in a BigQuery session. In
       # such a scenario the session info (session id and the anonymous dataset
@@ -161,7 +161,7 @@ def execute_sql(
         query,
         job_config=job_config,
         project=project_id,
-        max_results=config.max_query_result_rows,
+        max_results=settings.max_query_result_rows,
     )
     rows = []
     for row in row_iterator:
@@ -177,8 +177,8 @@ def execute_sql(
 
     result = {"status": "SUCCESS", "rows": rows}
     if (
-        config.max_query_result_rows is not None
-        and len(rows) == config.max_query_result_rows
+        settings.max_query_result_rows is not None
+        and len(rows) == settings.max_query_result_rows
     ):
       result["result_is_likely_truncated"] = True
     return result
@@ -462,19 +462,19 @@ _execute_sql_protecetd_write_examples = """
   """
 
 
-def get_execute_sql(config: BigQueryToolConfig) -> Callable[..., dict]:
-  """Get the execute_sql tool customized as per the given tool config.
+def get_execute_sql(settings: BigQueryToolConfig) -> Callable[..., dict]:
+  """Get the execute_sql tool customized as per the given tool settings.
 
   Args:
-      config: BigQuery tool configuration indicating the behavior of the
+      settings: BigQuery tool settings indicating the behavior of the
         execute_sql tool.
 
   Returns:
       callable[..., dict]: A version of the execute_sql tool respecting the tool
-      config.
+      settings.
   """
 
-  if not config or config.write_mode == WriteMode.BLOCKED:
+  if not settings or settings.write_mode == WriteMode.BLOCKED:
     return execute_sql
 
   # Create a new function object using the original function's code and globals.
@@ -495,7 +495,7 @@ def get_execute_sql(config: BigQueryToolConfig) -> Callable[..., dict]:
   functools.update_wrapper(execute_sql_wrapper, execute_sql)
 
   # Now, set the new docstring
-  if config.write_mode == WriteMode.PROTECTED:
+  if settings.write_mode == WriteMode.PROTECTED:
     examples = _execute_sql_protecetd_write_examples
   else:
     examples = _execute_sql_write_examples

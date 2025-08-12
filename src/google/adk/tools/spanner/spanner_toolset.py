@@ -28,25 +28,28 @@ from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
 from ...tools.google_tool import GoogleTool
 from ...utils.feature_decorator import experimental
-from .bigquery_credentials import BigQueryCredentialsConfig
-from .config import BigQueryToolConfig
+from .settings import Capabilities
+from .settings import SpannerToolSettings
+from .spanner_credentials import SpannerCredentialsConfig
 
 
 @experimental
-class BigQueryToolset(BaseToolset):
-  """BigQuery Toolset contains tools for interacting with BigQuery data and metadata."""
+class SpannerToolset(BaseToolset):
+  """Spanner Toolset contains tools for interacting with Spanner data, database and table information."""
 
   def __init__(
       self,
       *,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
-      credentials_config: Optional[BigQueryCredentialsConfig] = None,
-      bigquery_tool_config: Optional[BigQueryToolConfig] = None,
+      credentials_config: Optional[SpannerCredentialsConfig] = None,
+      spanner_tool_settings: Optional[SpannerToolSettings] = None,
   ):
     self.tool_filter = tool_filter
     self._credentials_config = credentials_config
     self._tool_settings = (
-        bigquery_tool_config if bigquery_tool_config else BigQueryToolConfig()
+        spanner_tool_settings
+        if spanner_tool_settings
+        else SpannerToolSettings()
     )
 
   def _is_tool_selected(
@@ -75,13 +78,27 @@ class BigQueryToolset(BaseToolset):
             tool_settings=self._tool_settings,
         )
         for func in [
-            metadata_tool.get_dataset_info,
-            metadata_tool.get_table_info,
-            metadata_tool.list_dataset_ids,
-            metadata_tool.list_table_ids,
-            query_tool.get_execute_sql(self._tool_settings),
+            # Metadata tools
+            metadata_tool.list_table_names,
+            metadata_tool.list_table_indexes,
+            metadata_tool.list_table_index_columns,
+            metadata_tool.list_named_schemas,
+            metadata_tool.get_table_schema,
         ]
     ]
+
+    # Query tools
+    if (
+        self._tool_settings
+        and Capabilities.DATA_READ in self._tool_settings.capabilities
+    ):
+      all_tools.append(
+          GoogleTool(
+              func=query_tool.execute_sql,
+              credentials_config=self._credentials_config,
+              tool_settings=self._tool_settings,
+          )
+      )
 
     return [
         tool
