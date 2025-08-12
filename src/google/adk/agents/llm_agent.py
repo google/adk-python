@@ -51,7 +51,7 @@ from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
@@ -499,12 +499,6 @@ class LlmAgent(BaseAgent):
           ' sub_agents must be empty to disable agent transfer.'
       )
 
-    if self.tools:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' tools must be empty'
-      )
-
   @field_validator('generate_content_config', mode='after')
   @classmethod
   def __validate_generate_content_config(
@@ -527,7 +521,7 @@ class LlmAgent(BaseAgent):
     return generate_content_config
 
   @classmethod
-  @working_in_progress('LlmAgent._resolve_tools is not ready for use.')
+  @experimental
   def _resolve_tools(
       cls, tool_configs: list[ToolConfig], config_abs_path: str
   ) -> list[Any]:
@@ -586,6 +580,7 @@ class LlmAgent(BaseAgent):
 
   @override
   @classmethod
+  @experimental
   def _parse_config(
       cls: Type[LlmAgent],
       config: LlmAgentConfig,

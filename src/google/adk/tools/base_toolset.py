@@ -77,7 +77,6 @@ class BaseToolset(ABC):
       list[BaseTool]: A list of tools available under the specified context.
     """
 
-  @abstractmethod
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
