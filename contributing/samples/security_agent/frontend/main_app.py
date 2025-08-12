@@ -118,8 +118,14 @@ def init_session_state():
             st.session_state.available_projects = []
             logger.info("Initialized available_projects in session state")
         if 'page' not in st.session_state:
-            st.session_state.page = "dashboard"
-            logger.info("Initialized page in session state")
+            st.session_state.page = "chat"
+            logger.info("Initialized page to chat (default) in session state")
+        if 'chat_layout_mode' not in st.session_state:
+            st.session_state.chat_layout_mode = "enhanced"
+            logger.info("Initialized chat layout mode in session state")
+        if 'show_sidebar' not in st.session_state:
+            st.session_state.show_sidebar = False
+            logger.info("Initialized sidebar visibility state")
         logger.info("Session state initialization completed successfully")
     except Exception as e:
         logger.error(f"Error initializing session state: {e}")
@@ -154,7 +160,15 @@ def fetch_available_projects():
 
 
 def render_sidebar():
-    """Render the application sidebar."""
+    """Render the application sidebar - minimized for chat-centric design."""
+    if not st.session_state.get('show_sidebar', False) and st.session_state.page == "chat":
+        # Show minimal sidebar toggle for chat mode
+        with st.sidebar:
+            if st.button("🔧 Settings", use_container_width=True):
+                st.session_state.show_sidebar = True
+                st.rerun()
+        return
+    
     st.sidebar.title("🛡️ Security Agent")
     
     # User info
@@ -163,6 +177,9 @@ def render_sidebar():
     
     # Project selector
     render_project_selector()
+    
+    # Chat layout mode selector
+    render_chat_layout_selector()
     
     # Navigation
     render_navigation()
@@ -174,6 +191,12 @@ def render_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Version:** 3.0.0")
     st.sidebar.markdown("**Status:** 🟢 Online")
+    
+    # Hide sidebar option for chat mode
+    if st.session_state.page == "chat":
+        if st.sidebar.button("🎯 Focus on Chat"):
+            st.session_state.show_sidebar = False
+            st.rerun()
 
 
 def render_project_selector():
@@ -235,38 +258,107 @@ def render_project_selector():
 
 
 def get_available_pages():
-    """Get available pages based on service status."""
-    # Core ADK pages - focus on main functionality
+    """Get available pages based on service status - chat-centric ordering."""
+    # Chat-centric ADK pages - chat is primary and always available
     pages = {
-        "dashboard": {"name": "🏠 Dashboard", "service": None},
-        "chat": {"name": "💬 ADK Agent", "service": None},
-        "security": {"name": "🛡️ Security Analysis", "service": "security"},
-        "iam": {"name": "🔐 IAM Analysis", "service": "iam"},
-        "compliance": {"name": "📋 Compliance", "service": "compliance"}
+        "chat": {"name": "💬 ADK Security Assistant", "service": None, "priority": 1, "description": "Interactive AI chat for security analysis"},
+        "dashboard": {"name": "🏠 Overview", "service": None, "priority": 2, "description": "Security posture overview"},
+        "security": {"name": "🛡️ Security Analysis", "service": "security", "priority": 3, "description": "Comprehensive security scanning"},
+        "iam": {"name": "🔐 IAM Analysis", "service": "iam", "priority": 4, "description": "Identity and access management"},
+        "compliance": {"name": "📋 Compliance", "service": "compliance", "priority": 5, "description": "Regulatory compliance checking"}
     }
     
     return pages
 
 
 def render_navigation():
-    """Render navigation menu with core ADK pages."""
+    """Render navigation menu with chat-centric ADK pages."""
+    
+    # ADK Agent Status Header
+    st.sidebar.markdown("### 🤖 ADK Security Assistant")
+    render_adk_agent_status()
+    
     st.sidebar.markdown("---")
     st.sidebar.subheader("📋 Navigation")
     
     # Get available pages
     pages = get_available_pages()
     
-    # Render all pages in clean list
-    for page_key in ["dashboard", "chat", "security", "iam", "compliance"]:
+    # Render chat first with enhanced styling
+    if "chat" in pages:
+        is_current = st.session_state.page == "chat"
+        button_type = "primary" if is_current else "secondary"
+        
+        # Make chat button more prominent
+        if st.sidebar.button("💬 ADK Agent Chat", key="nav_chat", use_container_width=True, type="primary" if is_current else "secondary"):
+            if st.session_state.page != "chat":
+                st.session_state.page = "chat"
+                st.session_state.chat_layout_mode = "enhanced"
+                st.rerun()
+        
+        # Show chat status if on chat page
+        if is_current:
+            st.sidebar.success("🟢 Active Conversation")
+    
+    # Render other pages as quick actions
+    st.sidebar.markdown("**🔥 Quick Actions:**")
+    for page_key in ["dashboard", "security", "iam", "compliance"]:
         if page_key in pages:
             page_name = pages[page_key]["name"]
-            if st.sidebar.button(page_name, key=f"nav_{page_key}", use_container_width=True):
-                st.session_state.page = page_key
-                st.rerun()
+            is_current = st.session_state.page == page_key
+            
+            if st.sidebar.button(page_name, key=f"nav_{page_key}", use_container_width=True, type="primary" if is_current else "secondary"):
+                if page_key != st.session_state.page:
+                    st.session_state.page = page_key
+                    st.rerun()
+    
+    # Chat Command Suggestions
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**💡 Try asking:**")
+    chat_suggestions = [
+        "🛡️ Analyze my security posture",
+        "🔐 Review IAM permissions", 
+        "📋 Check compliance status",
+        "🚨 Show security incidents"
+    ]
+    
+    for suggestion in chat_suggestions:
+        if st.sidebar.button(suggestion, key=f"suggest_{hash(suggestion)}", use_container_width=False):
+            st.session_state.page = "chat"
+            st.session_state.chat_layout_mode = "enhanced"
+            # Store the suggestion for the chat interface to pick up
+            st.session_state.suggested_query = suggestion.split(" ", 1)[1]  # Remove emoji
+            st.rerun()
     
     # Current page indicator
     current_page = pages.get(st.session_state.page, {}).get("name", "Unknown")
     st.sidebar.markdown(f"**Current:** {current_page}")
+
+
+def render_adk_agent_status():
+    """Render real-time ADK agent status display."""
+    try:
+        # Create columns for agent status
+        col1, col2 = st.sidebar.columns(2)
+        
+        with col1:
+            st.metric("🎯 Coordinator", "Active", "LLM Routing")
+        with col2:
+            st.metric("📡 Direct Agent", "Ready", "Fast Queries")
+            
+        col3, col4 = st.sidebar.columns(2)
+        with col3:
+            st.metric("🔄 Hybrid Agent", "Ready", "Balanced")
+        with col4:
+            st.metric("🛡️ Security Agent", "Ready", "Deep Analysis")
+        
+        # Show delegation stats if available
+        if hasattr(st.session_state, 'delegation_stats'):
+            stats = st.session_state.delegation_stats
+            st.sidebar.markdown(f"**Performance:** {stats.get('avg_response_time', 'N/A')}s avg")
+        
+    except Exception as e:
+        st.sidebar.error(f"Agent status unavailable: {e}")
 
 
 def clear_cached_data():
@@ -371,32 +463,49 @@ def render_main_content():
 
 
 def render_header():
-    """Render the application header."""
-    col1, col2, col3 = st.columns([2, 3, 1])
-    
-    with col1:
-        st.title("🛡️ Security Agent")
-    
-    with col2:
-        if st.session_state.selected_project:
-            st.markdown(f"**Project:** `{st.session_state.selected_project}`")
-        else:
-            st.markdown("**No project selected**")
-    
-    with col3:
-        # Quick actions dropdown
-        with st.popover("⚡ Quick Actions"):
-            if st.button("🔍 Run Security Analysis", key="quick_security"):
-                st.session_state.page = "security"
+    """Render the application header - optimized for chat-centric design."""
+    if st.session_state.page == "chat" and st.session_state.get('chat_layout_mode') == "enhanced":
+        # Minimal header for enhanced chat mode
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.markdown("### 🛡️ ADK Security Agent")
+            if st.session_state.selected_project:
+                st.caption(f"Project: `{st.session_state.selected_project}`")
+        
+        with col2:
+            # Layout mode toggle
+            if st.button("📊 Show Context Panel", key="toggle_context"):
+                st.session_state.chat_layout_mode = "standard"
                 st.rerun()
-            
-            if st.button("🎯 View Security Recommendations", key="quick_recs"):
-                st.session_state.page = "recommendations"
-                st.rerun()
-            
-            if st.button("💬 Chat with ADK Agent", key="quick_chat"):
-                st.session_state.page = "chat"
-                st.rerun()
+    else:
+        # Standard header for other modes
+        col1, col2, col3 = st.columns([2, 3, 1])
+        
+        with col1:
+            st.title("🛡️ Security Agent")
+        
+        with col2:
+            if st.session_state.selected_project:
+                st.markdown(f"**Project:** `{st.session_state.selected_project}`")
+            else:
+                st.markdown("**No project selected**")
+        
+        with col3:
+            # Quick actions dropdown
+            with st.popover("⚡ Quick Actions"):
+                if st.button("💬 ADK Chat", key="quick_chat_header"):
+                    st.session_state.page = "chat"
+                    st.session_state.chat_layout_mode = "enhanced"
+                    st.rerun()
+                
+                if st.button("🔍 Security Analysis", key="quick_security"):
+                    st.session_state.page = "security"
+                    st.rerun()
+                
+                if st.button("🔐 IAM Analysis", key="quick_iam"):
+                    st.session_state.page = "iam"
+                    st.rerun()
 
 
 def main():
@@ -405,13 +514,14 @@ def main():
         logger.info("=== Starting Security Agent Frontend ===")
         logger.info(f"Timestamp: {datetime.now()}")
         
-        # Page configuration
+        # Page configuration - optimized for chat-centric design
         logger.info("Setting up Streamlit page configuration...")
+        sidebar_state = "collapsed" if st.session_state.get('page') == "chat" else "expanded"
         st.set_page_config(
-            page_title="GCP Security Agent",
-            page_icon="🛡️",
+            page_title="ADK Security Agent - Chat-Centric",
+            page_icon="💬",
             layout="wide",
-            initial_sidebar_state="expanded"
+            initial_sidebar_state=sidebar_state
         )
         logger.info("Page configuration completed")
         

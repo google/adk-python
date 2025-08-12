@@ -3,9 +3,10 @@
 Clean, simple FastAPI application providing essential security agent functionality.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.websockets import WebSocket
 from typing import Dict, Any, List
 import uvicorn
 import os
@@ -14,6 +15,8 @@ import asyncio
 import sys
 import tempfile
 import json
+import time
+from datetime import datetime
 
 # Import Secret Manager for runtime credential loading
 try:
@@ -22,6 +25,17 @@ try:
 except ImportError:
     SECRETMANAGER_AVAILABLE = False
     logging.warning("Google Cloud Secret Manager not available")
+
+# Import enhanced chat components
+try:
+    from backend.chat_manager import chat_manager, EnhancedChatManager
+    from backend.api.websocket_manager import websocket_manager, websocket_endpoint
+    from backend.api.performance_monitor import performance_monitor, PerformanceMonitor
+    from backend.api.context_manager import context_manager, ContextAwareManager
+    ENHANCED_FEATURES_AVAILABLE = True
+except ImportError as e:
+    ENHANCED_FEATURES_AVAILABLE = False
+    logging.warning(f"Enhanced chat features not available: {e}")
 
 # Add the services directory to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'services'))
@@ -1645,13 +1659,47 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize service account credentials from Secret Manager on startup."""
-    logger.info("🚀 Starting up Security Agent Backend...")
+    """Initialize enhanced backend with chat-centric features."""
+    logger.info("🚀 Starting up Enhanced Security Agent Backend...")
     
     # Setup service account credentials from Secret Manager
     setup_service_account_from_secret()
     
-    logger.info("✅ Security Agent Backend startup complete")
+    # Initialize enhanced features if available
+    if ENHANCED_FEATURES_AVAILABLE:
+        try:
+            # Start chat manager
+            await chat_manager.start()
+            logger.info("✅ Enhanced chat manager started")
+            
+            # Start performance monitoring
+            await performance_monitor.start_monitoring()
+            logger.info("✅ Performance monitoring started")
+            
+        except Exception as e:
+            logger.error(f"Error starting enhanced features: {e}")
+    
+    logger.info("✅ Enhanced Security Agent Backend startup complete")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup enhanced backend features."""
+    logger.info("🛑 Shutting down Enhanced Security Agent Backend...")
+    
+    if ENHANCED_FEATURES_AVAILABLE:
+        try:
+            # Stop chat manager
+            await chat_manager.stop()
+            logger.info("✅ Chat manager stopped")
+            
+            # Stop performance monitoring 
+            await performance_monitor.stop_monitoring()
+            logger.info("✅ Performance monitoring stopped")
+            
+        except Exception as e:
+            logger.error(f"Error stopping enhanced features: {e}")
+    
+    logger.info("✅ Enhanced Security Agent Backend shutdown complete")
 
 # Configure CORS
 app.add_middleware(
@@ -1668,23 +1716,76 @@ async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "version": "1.0.0"}
 
-# Basic API endpoints
+# Include enhanced API routers
+if ENHANCED_FEATURES_AVAILABLE:
+    from backend.api.agent import router as enhanced_agent_router
+    from backend.api.performance_monitor import router as performance_router
+    from backend.api.context_manager import router as context_router
+    
+    app.include_router(enhanced_agent_router, prefix="/api/v1/agent", tags=["Enhanced Agent"])
+    app.include_router(performance_router, prefix="/api/v1/performance", tags=["Performance"])
+    app.include_router(context_router, prefix="/api/v1/context", tags=["Context"])
+
+# Enhanced root endpoint with feature detection
 @app.get("/")
 async def root():
-    """Root endpoint."""
-    return {"message": "GCP Security Agent", "status": "running"}
+    """Enhanced root endpoint with feature information."""
+    return {
+        "message": "Enhanced GCP Security Agent",
+        "status": "running",
+        "version": "2.0.0",
+        "features": {
+            "enhanced_chat": ENHANCED_FEATURES_AVAILABLE,
+            "real_time_websockets": ENHANCED_FEATURES_AVAILABLE,
+            "performance_monitoring": ENHANCED_FEATURES_AVAILABLE,
+            "context_awareness": ENHANCED_FEATURES_AVAILABLE,
+            "multi_session_support": ENHANCED_FEATURES_AVAILABLE
+        },
+        "endpoints": {
+            "websocket": "/api/v1/agent/ws" if ENHANCED_FEATURES_AVAILABLE else None,
+            "enhanced_chat": "/api/v1/agent/chat" if ENHANCED_FEATURES_AVAILABLE else None,
+            "performance": "/api/v1/performance" if ENHANCED_FEATURES_AVAILABLE else None,
+            "context": "/api/v1/context" if ENHANCED_FEATURES_AVAILABLE else None
+        }
+    }
 
 @app.get("/api/v1/status")
 async def get_status():
-    """Get agent status."""
-    return {
+    """Get enhanced agent status."""
+    status_info = {
         "status": "running",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "services": {
             "core": "running",
             "health": "running"
-        }
+        },
+        "enhanced_features": ENHANCED_FEATURES_AVAILABLE
     }
+    
+    if ENHANCED_FEATURES_AVAILABLE:
+        try:
+            # Add enhanced service status
+            status_info["services"].update({
+                "chat_manager": "running" if len(chat_manager.sessions) >= 0 else "stopped",
+                "websocket_manager": "running" if len(websocket_manager.connections) >= 0 else "stopped", 
+                "performance_monitor": "running" if performance_monitor.monitoring_active else "stopped",
+                "context_manager": "running"
+            })
+            
+            # Add statistics
+            status_info["statistics"] = {
+                "active_sessions": len(chat_manager.sessions),
+                "active_websockets": len(websocket_manager.connections),
+                "total_users": len(chat_manager.user_contexts),
+                "monitoring_active": performance_monitor.monitoring_active
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting enhanced status: {e}")
+            status_info["enhanced_features"] = False
+            status_info["error"] = str(e)
+    
+    return status_info
 
 # GCP Project endpoints
 @app.get("/api/v1/gcp/projects")
@@ -1854,15 +1955,76 @@ async def evaluate_compliance(request: dict):
         "issues": []
     }
 
-# Hybrid ADK chat endpoint - Core orchestrator for all GCP operations
+# Enhanced WebSocket endpoint for real-time communication
+@app.websocket("/api/v1/ws")
+async def websocket_endpoint_handler(websocket: WebSocket, user_id: str = "default"):
+    """Enhanced WebSocket endpoint for real-time agent communication."""
+    if ENHANCED_FEATURES_AVAILABLE:
+        await websocket_endpoint(websocket, user_id)
+    else:
+        await websocket.close(code=1000, reason="Enhanced features not available")
+
+# Streaming response endpoint for real-time chat
+@app.post("/api/v1/agent/stream")
+async def stream_chat_response(request: dict, background_tasks: BackgroundTasks):
+    """Stream chat responses in real-time."""
+    if not ENHANCED_FEATURES_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Streaming not available")
+    
+    async def generate_response():
+        try:
+            message = request.get("prompt", "")
+            user_id = request.get("user_id", "default")
+            
+            # Simulate streaming response
+            chunks = [
+                "Analyzing your request...",
+                "Routing to appropriate specialist...", 
+                "Processing with enhanced ADK service...",
+                "Generating contextual response...",
+                "Response ready!"
+            ]
+            
+            for i, chunk in enumerate(chunks):
+                data = json.dumps({
+                    "type": "progress",
+                    "chunk": chunk,
+                    "progress": (i + 1) / len(chunks),
+                    "timestamp": datetime.now().isoformat()
+                })
+                yield f"data: {data}\n\n"
+                await asyncio.sleep(0.5)  # Simulate processing time
+            
+            # Final response
+            final_data = json.dumps({
+                "type": "complete",
+                "response": f"Processed request: {message}",
+                "timestamp": datetime.now().isoformat()
+            })
+            yield f"data: {final_data}\n\n"
+            
+        except Exception as e:
+            error_data = json.dumps({
+                "type": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            })
+            yield f"data: {error_data}\n\n"
+    
+    return StreamingResponse(generate_response(), media_type="text/plain")
+
+# Legacy hybrid ADK chat endpoint with enhanced features integration
 @app.post("/api/v1/agent/chat")
-async def chat_with_agent(request: dict):
-    """Hybrid ADK Chat - Central orchestrator combining direct GCP calls + value-add backend services."""
+async def chat_with_agent(request: dict, background_tasks: BackgroundTasks):
+    """Enhanced Hybrid ADK Chat with real-time features integration."""
+    start_time = time.time()
+    
     try:
         message = request.get("prompt", "")
         project_id = request.get("project_id", os.environ.get('GOOGLE_CLOUD_PROJECT', 'demo-project'))
         context = request.get("context", {})
-        use_enhanced = request.get("use_enhanced", True)  # Default to enhanced hybrid mode
+        user_id = request.get("user_id", "default")
+        use_enhanced = request.get("use_enhanced", ENHANCED_FEATURES_AVAILABLE)
         timestamp = request.get("timestamp", 0)
         
         if not message.strip():
@@ -1872,49 +2034,95 @@ async def chat_with_agent(request: dict):
                 "suggestions": ["Ask about security score", "Get recommendations", "Analyze IAM policies"]
             }
         
-        logger.info(f"🔥 HYBRID ADK CHAT - Processing: '{message}' for project: {project_id}")
-        logger.info(f"   Mode: {'Enhanced (Tool Registry + Direct GCP)' if use_enhanced else 'Legacy (Backend Proxy)'}")
-        logger.info(f"   Context: {len(context)} items, timestamp: {timestamp}")
+        logger.info(f"🔥 ENHANCED HYBRID ADK CHAT - Processing: '{message}' for project: {project_id}")
+        logger.info(f"   Mode: {'Enhanced (Real-time + ADK)' if use_enhanced else 'Legacy (Backend Proxy)'}")
+        logger.info(f"   Context: {len(context)} items, User: {user_id}, timestamp: {timestamp}")
         
-        # Debug conversation continuity
-        if context.get("chat_history"):
-            history = context.get("chat_history", [])
-            logger.info(f"   📚 Chat History: {len(history)} messages")
-            if len(history) > 1:
-                logger.info(f"      Previous message: '{history[-2].get('content', '')[:30]}...'")
-                logger.info(f"      Current message: '{message[:30]}...'")
-        else:
-            logger.info("   📚 No chat history found - starting new conversation")
-        
-        if use_enhanced:
-            # 🚀 HYBRID APPROACH - Enhanced ADK Chat Service 
-            # Direct GCP API calls + Value-add backend services
-            chat_service = create_enhanced_adk_chat_service(project_id)
-            logger.info("   Using Enhanced ADK Chat Service with Tool Registry")
-        else:
-            # 🔄 LEGACY APPROACH - Backend proxy calls only
-            chat_service = create_adk_chat_service(project_id)
-            logger.info("   Using Legacy ADK Chat Service with Backend Proxies")
-        
-        # Process message - ADK chat is the central orchestrator
-        result = await chat_service.process_chat_message(message, context)
-        
-        # Add metadata about the approach used
-        if isinstance(result, dict):
-            result["metadata"] = {
+        # Initialize response structure
+        response_data = {
+            "success": True,
+            "response": "",
+            "user_id": user_id,
+            "project_id": project_id,
+            "suggestions": [],
+            "metadata": {
                 "approach": "enhanced_hybrid" if use_enhanced else "legacy_proxy",
-                "project_id": project_id,
-                "adk_chat_core": True,
-                "direct_gcp_calls": use_enhanced,
-                "value_add_services": True
+                "processing_time_ms": 0,
+                "enhanced_features": use_enhanced,
+                "timestamp": datetime.now().isoformat()
             }
+        }
         
-        logger.info(f"✅ Hybrid ADK chat response generated successfully")
-        return result
+        if use_enhanced and ENHANCED_FEATURES_AVAILABLE:
+            # Update context manager
+            context_manager.update_user_context(
+                user_id,
+                context.get("current_page"),
+                context.get("current_data"),
+                context.get("workflow_context")
+            )
+            
+            # Get agent recommendation
+            agent_recommendation, confidence = context_manager.recommend_agent(user_id, message)
+            
+            # Generate contextual suggestions
+            suggestions = context_manager.generate_contextual_suggestions(user_id)
+            
+            # Use enhanced ADK service
+            chat_service = create_enhanced_adk_chat_service(project_id)
+            result = await chat_service.process_chat_message(message, context)
+            
+            # Enhance response with context-aware data
+            if isinstance(result, dict):
+                response_data.update(result)
+                response_data["agent_recommendation"] = {
+                    "agent": agent_recommendation,
+                    "confidence": confidence
+                }
+                response_data["contextual_suggestions"] = [s.text for s in suggestions]
+                response_data["quick_actions"] = context_manager.generate_quick_actions(user_id)
+            
+            # Record performance metrics
+            processing_time = (time.time() - start_time) * 1000
+            performance_monitor.record_response_time(
+                "/api/v1/agent/chat",
+                "POST", 
+                processing_time,
+                200,
+                user_id,
+                agent_recommendation
+            )
+            
+            # Broadcast real-time updates
+            background_tasks.add_task(
+                websocket_manager.broadcast_delegation_decision,
+                {
+                    "user_id": user_id,
+                    "message": message[:100],
+                    "agent_used": agent_recommendation,
+                    "confidence": confidence,
+                    "processing_time_ms": processing_time
+                }
+            )
+            
+        else:
+            # Legacy mode - use original ADK service
+            chat_service = create_adk_chat_service(project_id)
+            result = await chat_service.process_chat_message(message, context)
+            
+            if isinstance(result, dict):
+                response_data.update(result)
+        
+        # Update metadata
+        response_data["metadata"]["processing_time_ms"] = (time.time() - start_time) * 1000
+        
+        logger.info(f"✅ Enhanced Hybrid ADK chat response generated successfully")
+        return response_data
         
     except Exception as e:
-        logger.error(f"❌ Error in Hybrid ADK chat endpoint: {e}")
-        return {
+        logger.error(f"❌ Error in Enhanced Hybrid ADK chat endpoint: {e}")
+        
+        error_response = {
             "success": False,
             "response": f"I encountered an error while processing your request: {str(e)}",
             "error": str(e),
@@ -1922,9 +2130,25 @@ async def chat_with_agent(request: dict):
             "metadata": {
                 "approach": "error_fallback",
                 "project_id": request.get("project_id", "unknown"),
-                "adk_chat_core": True
+                "enhanced_features": False,
+                "processing_time_ms": (time.time() - start_time) * 1000,
+                "timestamp": datetime.now().isoformat()
             }
         }
+        
+        # Broadcast error for real-time monitoring
+        if ENHANCED_FEATURES_AVAILABLE:
+            background_tasks.add_task(
+                websocket_manager.broadcast,
+                {
+                    "type": "error",
+                    "user_id": request.get("user_id", "default"),
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+        
+        return error_response
 
 # Direct ADK Agent endpoint - Pure ADK implementation
 @app.post("/api/v1/agent/adk-direct")

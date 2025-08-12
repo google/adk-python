@@ -1,4 +1,23 @@
-"""Unified ADK Chat Interface with LLM-Driven Agent Delegation, Pattern Selection, and Enhanced Features."""
+"""Enhanced Chat-Centric Interface for ADK Security Agent.
+
+This module implements the main chat interface as the primary application interface,
+following the chat-centric architecture design. It integrates with the enhanced
+chat layout manager to provide multiple layout modes and conversation management.
+
+Key Features:
+    - Chat-first user experience with ADK delegation
+    - Multi-conversation management with session persistence
+    - Real-time ADK agent status display
+    - Context-aware quick actions and suggestions
+    - Mobile-first responsive design
+    - Integration with existing security analysis components
+
+Architecture:
+    - Uses enhanced_chat_layout.py for layout management
+    - Integrates with existing ADK delegation patterns
+    - Provides seamless access to all security features via chat
+    - Maintains conversation context across sessions
+"""
 
 import streamlit as st
 import time
@@ -9,21 +28,52 @@ import os
 # Add path to access frontend root directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 from api_client_consolidated import api_client as simple_api
+from .enhanced_chat_layout import ChatLayoutManager
 
 def render_chat_view():
-    """Render the intelligent ADK chat interface with automatic agent delegation."""
+    """Render the enhanced chat-centric interface as the main application interface."""
+    # Check if we should use the enhanced chat layout
+    chat_layout_mode = st.session_state.get('chat_layout_mode', 'enhanced')
+    
+    if chat_layout_mode in ['enhanced', 'standard', 'mobile']:
+        # Use the new enhanced chat layout manager
+        layout_manager = ChatLayoutManager()
+        layout_manager.render_chat_centric_layout()
+        return
+    
+    # Fallback to legacy chat interface for compatibility
+    render_legacy_chat_interface()
+
+def render_legacy_chat_interface():
+    """Render the legacy chat interface for backward compatibility."""
     st.header("💬 ADK Security Agent - AI Assistant")
     
-    st.info("""
-    **🤖 Intelligent Agent Routing:** Ask me anything about your GCP security posture. I'll automatically route your questions to:
+    # Handle suggested queries from navigation
+    handle_suggested_queries()
     
-    • **Storage Specialist** - Cloud Storage buckets, permissions, costs  
-    • **Security Expert** - Findings, vulnerabilities, compliance gaps
-    • **IAM Analyst** - User permissions, service accounts, access policies
-    • **General Coordinator** - Multi-domain questions and project overview
+    # Enhanced welcome message with chat-centric features
+    st.info("""
+    **🎯 Chat-Centric Security Agent:** This is your primary interface for GCP security management. 
+    I automatically route your questions to specialized agents:
+    
+    • **🛡️ Security Expert** - Findings, vulnerabilities, compliance gaps
+    • **🔐 IAM Analyst** - User permissions, service accounts, access policies
+    • **📊 Storage Specialist** - Cloud Storage buckets, permissions, costs  
+    • **🎯 General Coordinator** - Multi-domain questions and project overview
+    
+    **💡 Try:** "/help" for commands, "/security scan" for analysis, or just ask naturally!
     """)
+    
+    # Show recent conversation context if available
+    render_conversation_context_hint()
 
-    # Initialize session management for single large conversation
+    # Enhanced session management for chat-centric interface
+    initialize_enhanced_chat_state()
+    
+    # Render enhanced navigation hints
+    render_chat_navigation_hints()
+    
+    # Enhanced session management for single large conversation
     if 'session_id' not in st.session_state:
         import uuid
         st.session_state.session_id = str(uuid.uuid4())
@@ -40,18 +90,21 @@ def render_chat_view():
     if 'current_topic' not in st.session_state:
         st.session_state.current_topic = None
     
-    # Display chat history with smart delegation info
+    # Enhanced chat interface layout
+    render_enhanced_chat_header()
+    
+    # Display chat history with enhanced delegation info
     for message in st.session_state.chat_history:
-        render_message_with_delegation(message)
+        render_message_with_enhanced_delegation(message)
     
-    # Chat controls
-    render_chat_controls()
+    # Enhanced chat controls with layout options
+    render_enhanced_chat_controls()
     
-    # Smart chat input
-    render_smart_chat_input()
+    # Smart chat input with command support
+    render_enhanced_chat_input()
 
-    # Quick questions optimized for different scenarios
-    render_smart_quick_questions()
+    # Context-aware quick questions and actions
+    render_contextual_quick_actions()
 
 def render_delegation_status():
     """Show current ADK delegation status."""
@@ -950,6 +1003,36 @@ def render_suggestions(suggestions: list):
 def render_chat_sidebar():
     """Sidebar functionality moved to main navigation."""
     pass
+
+def handle_suggested_queries():
+    """Handle suggested queries from navigation or other sources."""
+    if hasattr(st.session_state, 'suggested_query') and st.session_state.suggested_query:
+        suggested_query = st.session_state.suggested_query
+        
+        # Show that we're processing a suggested query
+        st.success(f"📝 Processing suggestion: '{suggested_query}'")
+        
+        # Send the suggested query automatically
+        send_smart_message(suggested_query)
+        
+        # Clear the suggestion so it doesn't repeat
+        del st.session_state.suggested_query
+
+
+def render_conversation_context_hint():
+    """Render conversation context hints for better continuity."""
+    if hasattr(st.session_state, 'conversation_context') and st.session_state.conversation_context:
+        context = st.session_state.conversation_context
+        
+        # Show context hints
+        with st.expander("💭 Conversation Context", expanded=False):
+            if 'last_topic' in context:
+                st.write(f"**Last topic:** {context['last_topic']}")
+            if 'active_analysis' in context:
+                st.write(f"**Active analysis:** {context['active_analysis']}")
+            if 'recent_projects' in context:
+                st.write(f"**Recent projects:** {', '.join(context['recent_projects'][-3:])}")
+
 
 def render_floating_chat_button():
     """Floating chat button functionality removed."""
