@@ -65,12 +65,11 @@ def run_cloud_build():
     
     substitutions_str = ",".join([f"{k}={v}" for k, v in substitutions.items()])
 
-    # Cloud Build command (using cloudbuild.yaml from deploy directory)
-    adk_root = os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd())))
-    cloudbuild_path = os.path.join(adk_root, "deploy", "cloudbuild.yaml")
+    # Cloud Build command (using local cloudbuild.yaml)
+    cloudbuild_path = os.path.join(build_context, "cloudbuild.yaml")
     if not os.path.exists(cloudbuild_path):
         logger.error(f"cloudbuild.yaml not found at {cloudbuild_path}")
-        logger.error("Please ensure cloudbuild.yaml exists in the /deploy directory")
+        logger.error("Please ensure cloudbuild.yaml exists in the current directory")
         return
     
     cmd = [
