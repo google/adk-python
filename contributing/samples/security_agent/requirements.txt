@@ -1,5 +1,6 @@
 google-cloud-bigquery
 google-generativeai
+google-adk
 streamlit
 fastapi
 uvicorn

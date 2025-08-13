@@ -188,37 +188,44 @@ def get_query_type(query: str) -> str:
 
 def get_adk_setup_guidance() -> str:
     """Provide guidance for setting up ADK agents properly"""
-    return """🚨 **ADK Integration Required**
+    return """🚨 **Google ADK Required**
 
-To use the ADK Security Agent, please ensure:
+The chat interface requires Google Agent Development Kit (ADK) to function.
 
-**1. Google ADK Setup:**
-• Install Google ADK: `pip install google-adk`
-• Configure credentials: `gcloud auth application-default login`
-• Set project: `gcloud config set project YOUR_PROJECT_ID`
+**📋 Quick Setup:**
 
-**2. Agent Dependencies:**
-• Vertex AI API enabled
-• Security Command Center API enabled
-• Cloud Resource Manager API enabled
+1. **Install ADK:**
+```bash
+pip install google-adk google-generativeai
+```
 
-**3. Authentication:**
-• Service account with proper permissions
-• Vertex AI access for LLM models
-• GCP resource read permissions
+2. **Authenticate:**
+```bash
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+```
 
-**4. Backend Services:**
-• Ensure backend is running: `python run_backend.py`
-• Check API endpoints are accessible
-• Verify project configuration
+3. **Enable APIs:**
+```bash
+gcloud services enable aiplatform.googleapis.com
+gcloud services enable generativelanguage.googleapis.com
+```
 
-🔧 **Next Steps:**
-1. Configure ADK authentication
-2. Restart the application
-3. Select your GCP project
-4. Try your query again
+4. **Restart Application:**
+```bash
+python run_backend.py  # Terminal 1
+python run_frontend.py # Terminal 2
+```
 
-For detailed setup: https://cloud.google.com/agent-development-kit"""
+**🔍 Current Status:**
+• Google ADK: ❌ Not installed
+• Please run: `pip install google-adk`
+
+**📖 Full Setup Guide:**
+See `docs/ADK_SETUP_GUIDE.md` for detailed instructions including service accounts, environment variables, and troubleshooting.
+
+**💡 Need Help?**
+The ADK is currently in preview - ensure you have access through Google Cloud."""
 
 # Quick action buttons
 def render_quick_actions():

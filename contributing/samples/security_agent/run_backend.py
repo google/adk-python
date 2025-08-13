@@ -142,8 +142,6 @@ def main():
         logger.info(f"Using system Python: {python_exe}")
         logger.warning(f"Virtual environment not found at: {venv_path}")
     
-    # Set environment
-    os.environ['USE_LEGACY'] = 'true'
     
     # Backend configuration
     host = os.getenv('HOST', '0.0.0.0')
@@ -151,10 +149,10 @@ def main():
     log_level = os.getenv('LOG_LEVEL', 'info')
     reload = os.getenv('RELOAD', 'true').lower() == 'true'
     
-    # Build command (run from backend/ directory)
+    # Build command (run from security_agent/ directory with proper module path)
     cmd = [
         python_exe, "-m", "uvicorn",
-        "main:app",
+        "backend.main:app",
         "--host", host,
         "--port", port,
         "--log-level", log_level
@@ -191,8 +189,9 @@ Press Ctrl+C to stop the backend.
 """)
     
     try:
-        # Run the backend from the backend/ directory
-        subprocess.run(cmd, cwd=backend_dir, check=False)
+        # Run the backend from the security_agent/ directory so Python can find modules
+        security_agent_dir = os.path.dirname(backend_dir)
+        subprocess.run(cmd, cwd=security_agent_dir, check=False)
     except KeyboardInterrupt:
         logger.info("🛑 Backend stopped by user")
     except Exception as e:

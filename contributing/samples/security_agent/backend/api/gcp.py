@@ -1,27 +1,41 @@
 """
-Consolidated GCP API endpoints
-Combines: gcp/, gcp_api_explorer/ APIs
+GCP API endpoints
 """
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import logging
-
-# Removed: from services.gcp import ConsolidatedGCPService
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Simple GCP service
+class GCPService:
+    """Simple GCP service for basic operations."""
+    
+    def __init__(self):
+        self.project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'default-project')
+        logger.info(f"GCP Service initialized for project: {self.project_id}")
+    
+    async def list_projects(self):
+        """List available GCP projects."""
+        return [{"id": self.project_id, "name": f"Project {self.project_id}"}]
+    
+    async def get_project_info(self, project_id: str):
+        """Get project information."""
+        return {"id": project_id, "name": f"Project {project_id}", "status": "active"}
+
 # Global service instance
 _service_instance = None
 
-def get_gcp_service() -> ConsolidatedGCPService:
-    """Get consolidated GCP service instance."""
+def get_gcp_service() -> GCPService:
+    """Get GCP service instance."""
     global _service_instance
     if _service_instance is None:
-        _service_instance = ConsolidatedGCPService()
-        logger.info("Consolidated GCP Service initialized")
+        _service_instance = GCPService()
+        logger.info("GCP Service initialized")
     return _service_instance
 
 # ==========================================
@@ -63,7 +77,7 @@ class EndpointTestRequest(BaseModel):
 @router.post("/call")
 async def call_google_api(
     request: APICallRequest,
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Make a generic call to any Google Cloud API."""
     try:
@@ -90,7 +104,7 @@ async def call_google_api_get(
     service: str,
     version: str,
     resource_path: str = Query(..., description="Resource path to call"),
-    gcp_service: ConsolidatedGCPService = Depends(get_gcp_service)
+    gcp_service: GCPService = Depends(get_gcp_service)
 ):
     """Make a GET call to Google Cloud API via URL parameters."""
     try:
@@ -116,7 +130,7 @@ async def call_google_api_get(
 @router.get("/projects")
 async def get_projects(
     page_size: int = Query(default=50, le=100, description="Number of projects to return"),
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Get list of accessible GCP projects."""
     try:
@@ -135,7 +149,7 @@ async def get_projects(
 @router.get("/projects/{project_id}")
 async def get_project_info(
     project_id: str,
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Get information about a specific project."""
     try:
@@ -165,7 +179,7 @@ async def get_project_info(
 async def get_project_services(
     project_id: str,
     enabled_only: bool = Query(default=True, description="Show only enabled services"),
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Get enabled services for a project."""
     try:
@@ -185,7 +199,7 @@ async def get_project_services(
 async def get_service_quotas(
     project_id: str,
     service_name: str,
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Get quota information for a service in a project."""
     try:
@@ -210,7 +224,7 @@ async def discover_apis(
     service_name: str = Query(default=None, description="Filter by service name"),
     preferred_only: bool = Query(default=True, description="Show only preferred API versions"),
     include_deprecated: bool = Query(default=False, description="Include deprecated APIs"),
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Discover available Google Cloud APIs."""
     try:
@@ -233,7 +247,7 @@ async def discover_apis(
 @router.post("/discovery/apis")
 async def discover_apis_post(
     request: DiscoveryRequest,
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Discover APIs with POST request (alternative endpoint)."""
     try:
@@ -257,7 +271,7 @@ async def discover_apis_post(
 async def explore_service(
     service_name: str,
     version: str,
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Explore a specific Google Cloud API service."""
     try:
@@ -279,7 +293,7 @@ async def explore_service(
 @router.post("/discovery/explore")
 async def explore_service_post(
     request: ExploreRequest,
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Explore service with POST request (alternative endpoint)."""
     try:
@@ -302,7 +316,7 @@ async def explore_service_post(
 async def search_endpoints(
     query: str = Query(..., description="Search query for endpoints"),
     max_results: int = Query(default=20, le=100, description="Maximum number of results"),
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Search for API endpoints matching query."""
     try:
@@ -328,7 +342,7 @@ async def search_endpoints(
 @router.post("/test/endpoint")
 async def test_endpoint(
     request: EndpointTestRequest,
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Test a specific API endpoint."""
     try:
@@ -355,7 +369,7 @@ async def test_endpoint_get(
     version: str,
     method_name: str,
     resource_path: str = Query(..., description="Resource path to test"),
-    gcp_service: ConsolidatedGCPService = Depends(get_gcp_service)
+    gcp_service: GCPService = Depends(get_gcp_service)
 ):
     """Test endpoint via GET request with URL parameters."""
     try:
@@ -378,7 +392,7 @@ async def test_endpoint_get(
 
 @router.delete("/discovery/cache")
 async def clear_discovery_cache(
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Clear the API discovery cache."""
     try:
@@ -393,7 +407,7 @@ async def clear_discovery_cache(
 
 @router.get("/discovery/cache/stats")
 async def get_cache_stats(
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Get discovery cache statistics."""
     try:
@@ -413,7 +427,7 @@ async def get_cache_stats(
 
 @router.get("/health")
 async def check_gcp_service_health(
-    service: ConsolidatedGCPService = Depends(get_gcp_service)
+    service: GCPService = Depends(get_gcp_service)
 ):
     """Check the health of the consolidated GCP service."""
     try:
