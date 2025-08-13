@@ -20,7 +20,7 @@ from typing import Dict
 from typing import Optional
 from typing import Union
 
-from google.genai import types
+from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
 from ...auth.auth_credential import AuthCredential
@@ -115,9 +115,7 @@ class IntegrationConnectorTool(BaseTool):
     self._auth_credential = auth_credential
 
   @override
-  def _get_declaration(
-      self, ignore_return_declaration: bool = False
-  ) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> FunctionDeclaration:
     """Returns the function declaration in the Gemini Schema format."""
     schema_dict = self._rest_api_tool._operation_parser.get_json_schema()
     for field in self.EXCLUDE_FIELDS:
@@ -128,7 +126,7 @@ class IntegrationConnectorTool(BaseTool):
         schema_dict['required'].remove(field)
 
     parameters = _to_gemini_schema(schema_dict)
-    function_decl = types.FunctionDeclaration(
+    function_decl = FunctionDeclaration(
         name=self.name, description=self.description, parameters=parameters
     )
     return function_decl

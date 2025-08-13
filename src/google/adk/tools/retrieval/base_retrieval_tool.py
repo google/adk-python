@@ -11,9 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from __future__ import annotations
-
-from typing import Optional
 
 from google.genai import types
 from typing_extensions import override
@@ -24,9 +21,7 @@ from ..base_tool import BaseTool
 class BaseRetrievalTool(BaseTool):
 
   @override
-  def _get_declaration(
-      self, ignore_return_declaration: bool = False
-  ) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration:
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,

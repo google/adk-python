@@ -101,9 +101,7 @@ class LangchainTool(FunctionTool):
     # else: keep default from FunctionTool
 
   @override
-  def _get_declaration(
-      self, ignore_return_declaration: bool = False
-  ) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration:
     """Build the function declaration for the tool.
 
     Returns:

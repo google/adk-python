@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -38,10 +37,7 @@ class LoadArtifactsTool(BaseTool):
         description='Loads the artifacts and adds them to the session.',
     )
 
-  @override
-  def _get_declaration(
-      self, ignore_return_declaration: bool = False
-  ) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,

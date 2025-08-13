@@ -195,7 +195,6 @@ def build_function_declaration(
     func: Union[Callable, BaseModel],
     ignore_params: Optional[list[str]] = None,
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
-    ignore_return_declaration: bool = False,
 ) -> types.FunctionDeclaration:
   signature = inspect.signature(func)
   should_update_signature = False
@@ -233,11 +232,9 @@ def build_function_declaration(
       new_func.__annotations__ = func.__annotations__
 
   return (
-      from_function_with_options(func, variant, ignore_return_declaration)
+      from_function_with_options(func, variant)
       if not should_update_signature
-      else from_function_with_options(
-          new_func, variant, ignore_return_declaration
-      )
+      else from_function_with_options(new_func, variant)
   )
 
 
@@ -296,7 +293,6 @@ def build_function_declaration_util(
 def from_function_with_options(
     func: Callable,
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
-    ignore_return_declaration: bool = False,
 ) -> 'types.FunctionDeclaration':
 
   parameters_properties = {}
@@ -328,8 +324,7 @@ def from_function_with_options(
             declaration.parameters
         )
     )
-
-  if variant == GoogleLLMVariant.GEMINI_API or ignore_return_declaration:
+  if variant == GoogleLLMVariant.GEMINI_API:
     return declaration
 
   return_annotation = inspect.signature(func).return_annotation

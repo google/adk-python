@@ -62,9 +62,7 @@ class FunctionTool(BaseTool):
     self._ignore_params = ['tool_context', 'input_stream']
 
   @override
-  def _get_declaration(
-      self, ignore_return_declaration: bool = False
-  ) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     function_decl = types.FunctionDeclaration.model_validate(
         build_function_declaration(
             func=self.func,
@@ -72,7 +70,6 @@ class FunctionTool(BaseTool):
             # input_stream is for streaming tool
             ignore_params=self._ignore_params,
             variant=self._api_variant,
-            ignore_return_declaration=ignore_return_declaration,
         )
     )
 

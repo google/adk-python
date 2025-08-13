@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -62,9 +61,7 @@ class AgentTool(BaseTool):
     return data
 
   @override
-  def _get_declaration(
-      self, ignore_return_declaration: bool = False
-  ) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration:
     from ..agents.llm_agent import LlmAgent
     from ..utils.variant_utils import GoogleLLMVariant
 

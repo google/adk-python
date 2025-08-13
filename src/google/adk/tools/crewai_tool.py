@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.genai import types
 from typing_extensions import override
 
@@ -64,9 +62,7 @@ class CrewaiTool(FunctionTool):
       self.description = tool.description
 
   @override
-  def _get_declaration(
-      self, ignore_return_declaration: bool = False
-  ) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration:
     """Build the function declaration for the tool."""
     function_declaration = _automatic_function_calling_util.build_function_declaration_for_params_for_crewai(
         False,

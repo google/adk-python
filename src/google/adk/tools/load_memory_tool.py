@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -59,9 +58,7 @@ class LoadMemoryTool(FunctionTool):
     super().__init__(load_memory)
 
   @override
-  def _get_declaration(
-      self, ignore_return_declaration: bool = False
-  ) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,

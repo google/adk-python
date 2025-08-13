@@ -19,7 +19,6 @@ import logging
 from typing import Optional
 
 from fastapi.openapi.models import APIKeyIn
-from google.genai import types
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
@@ -98,9 +97,7 @@ class MCPTool(BaseAuthenticatedTool):
     self._mcp_session_manager = mcp_session_manager
 
   @override
-  def _get_declaration(
-      self, ignore_return_declaration: bool = False
-  ) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> FunctionDeclaration:
     """Gets the function declaration for the tool.
 
     Returns:
