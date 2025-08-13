@@ -45,7 +45,9 @@ class LongRunningFunctionTool(FunctionTool):
     self.is_long_running = True
 
   @override
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(
+      self, ignore_return_declaration: bool = False
+  ) -> Optional[types.FunctionDeclaration]:
     declaration = super()._get_declaration()
     if declaration:
       instruction = (

@@ -23,6 +23,7 @@ from typing import Tuple
 from typing import Union
 
 from fastapi.openapi.models import Operation
+from google.genai import types
 from google.genai.types import FunctionDeclaration
 import requests
 from typing_extensions import override
@@ -181,7 +182,9 @@ class RestApiTool(BaseTool):
     return RestApiTool.from_parsed_operation(operation)
 
   @override
-  def _get_declaration(self) -> FunctionDeclaration:
+  def _get_declaration(
+      self, ignore_return_declaration: bool = False
+  ) -> Optional[types.FunctionDeclaration]:
     """Returns the function declaration in the Gemini Schema format."""
     schema_dict = self._operation_parser.get_json_schema()
     parameters = _to_gemini_schema(schema_dict)

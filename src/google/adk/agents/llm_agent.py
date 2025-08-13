@@ -109,7 +109,8 @@ ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
 
 
 async def _convert_tool_union_to_tools(
-    tool_union: ToolUnion, ctx: ReadonlyContext
+    tool_union: ToolUnion,
+    ctx: ReadonlyContext,
 ) -> list[BaseTool]:
   if isinstance(tool_union, BaseTool):
     return [tool_union]

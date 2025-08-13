@@ -22,6 +22,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
+from typing_extensions import override
 
 
 class _TestingTool(BaseTool):
@@ -33,7 +34,10 @@ class _TestingTool(BaseTool):
     super().__init__(name='test_tool', description='test_description')
     self.declaration = declaration
 
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  @override
+  def _get_declaration(
+      self, ignore_return_declaration: bool = False
+  ) -> Optional[types.FunctionDeclaration]:
     return self.declaration
 
 

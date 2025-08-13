@@ -11,14 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from __future__ import annotations
 
 from typing import Any
 from typing import Dict
 from typing import Optional
 
-from google.genai.types import FunctionDeclaration
+from google.genai import types
 from typing_extensions import override
 
 from ...auth.auth_credential import AuthCredential
@@ -52,7 +51,9 @@ class GoogleApiTool(BaseTool):
       self.configure_auth(client_id, client_secret)
 
   @override
-  def _get_declaration(self) -> FunctionDeclaration:
+  def _get_declaration(
+      self, ignore_return_declaration: bool = False
+  ) -> Optional[types.FunctionDeclaration]:
     return self._rest_api_tool._get_declaration()
 
   @override

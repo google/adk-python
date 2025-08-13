@@ -26,6 +26,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
+from typing_extensions import override
 
 
 def dummy_tool(query: str) -> str:
@@ -178,7 +179,10 @@ class _MockTool(BaseTool):
   def __init__(self, name: str):
     super().__init__(name=name, description=f'Mock tool {name}')
 
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  @override
+  def _get_declaration(
+      self, ignore_return_declaration: bool = False
+  ) -> Optional[types.FunctionDeclaration]:
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,

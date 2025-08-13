@@ -78,7 +78,9 @@ class BaseTool(ABC):
     self.is_long_running = is_long_running
     self.custom_metadata = custom_metadata
 
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(
+      self, ignore_return_declaration: bool = False
+  ) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool in the form of a FunctionDeclaration.
 
     NOTE:

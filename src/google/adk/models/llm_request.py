@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator as ABCAsyncGenerator
+import inspect
+from typing import get_origin
 from typing import Optional
 
 from google.genai import types
@@ -22,6 +25,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from ..tools.base_tool import BaseTool
+from ..tools.function_tool import FunctionTool
 
 
 def _find_tool_with_function_declarations(
@@ -66,12 +70,12 @@ class LlmRequest(BaseModel):
   config: types.GenerateContentConfig = Field(
       default_factory=types.GenerateContentConfig
   )
-  live_connect_config: types.LiveConnectConfig = Field(
-      default_factory=types.LiveConnectConfig
-  )
   """Additional config for the generate content request.
 
   tools in generate_content_config should not be set.
+  """
+  live_connect_config: Optional[types.LiveConnectConfig] = None
+  """Live connection config.
   """
   tools_dict: dict[str, BaseTool] = Field(default_factory=dict, exclude=True)
   """The tools dictionary."""
@@ -99,7 +103,23 @@ class LlmRequest(BaseModel):
       return
     declarations = []
     for tool in tools:
-      declaration = tool._get_declaration()
+      if self.live_connect_config is not None:
+        # ignore response for tools that returns AsyncGenerator that the model
+        # can't understand yet even though the model can't handle it, streaming
+        # tools can handle it.
+        # to check type, use typing.collections.abc.AsyncGenerator and not
+        # typing.AsyncGenerator
+        is_async_generator_return = False
+        if isinstance(tool, FunctionTool):
+          signature = inspect.signature(tool.func)
+          is_async_generator_return = (
+              get_origin(signature.return_annotation) is ABCAsyncGenerator
+          )
+        declaration = tool._get_declaration(
+            ignore_return_declaration=is_async_generator_return
+        )
+      else:
+        declaration = tool._get_declaration()
       if declaration:
         declarations.append(declaration)
         self.tools_dict[tool.name] = tool

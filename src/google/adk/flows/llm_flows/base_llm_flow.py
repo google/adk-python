@@ -73,7 +73,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow using live api."""
-    llm_request = LlmRequest()
+    llm_request = LlmRequest(live_connect_config=types.LiveConnectConfig())
     event_id = Event.new_id()
 
     # Preprocess before calling the LLM.
@@ -373,7 +373,9 @@ class BaseLlmFlow(ABC):
         yield event
 
   async def _preprocess_async(
-      self, invocation_context: InvocationContext, llm_request: LlmRequest
+      self,
+      invocation_context: InvocationContext,
+      llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:
     from ...agents.llm_agent import LlmAgent
 

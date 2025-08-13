@@ -81,7 +81,9 @@ class SetModelResponseTool(BaseTool):
     )
 
   @override
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(
+      self, ignore_return_declaration: bool = False
+  ) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool."""
     function_decl = types.FunctionDeclaration.model_validate(
         build_function_declaration(
