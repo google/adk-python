@@ -19,5 +19,5 @@ instruction: |
   You should always perform the previous 3 steps when asking for a roll and checking prime numbers.
   You should not rely on the previous history on prime results.
 tools:
-  - name: tools.tools.roll_die
-  - name: tools.tools.check_prime
+  - name: tool_functions.tools.roll_die
+  - name: tool_functions.tools.check_prime
