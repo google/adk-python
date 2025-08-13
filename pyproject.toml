@@ -25,36 +25,36 @@ classifiers = [ # List of https://pypi.org/classifiers/
 ]
 dependencies = [
   # go/keep-sorted start
-  "PyYAML>=6.0.2",                                  # For APIHubToolset.
-  "absolufy-imports>=0.3.1",                        # For Agent Engine deployment.
-  "anyio>=4.9.0;python_version>='3.10'",            # For MCP Session Manager
-  "authlib>=1.5.1",                                 # For RestAPI Tool
-  "click>=8.1.8",                                   # For CLI tools
-  "fastapi>=0.115.0",                               # FastAPI framework
-  "google-api-python-client>=2.157.0",              # Google API client discovery
-  "google-cloud-aiplatform[agent_engines]>=1.95.1", # For VertexAI integrations, e.g. example store.
-  "google-cloud-secret-manager>=2.22.0",            # Fetching secrets in RestAPI Tool
-  "google-cloud-spanner>=3.56.0",                   # For Spanner database
-  "google-cloud-speech>=2.30.0",                    # For Audio Transcription
+  "PyYAML>=6.0.2, <7.0.0",                          # For APIHubToolset.
+  "absolufy-imports>=0.3.1, <1.0.0",                # For Agent Engine deployment.
+  "anyio>=4.9.0, <5.0.0;python_version>='3.10'",    # For MCP Session Manager
+  "authlib>=1.5.1, <2.0.0",                         # For RestAPI Tool
+  "click>=8.1.8, <9.0.0",                           # For CLI tools
+  "fastapi>=0.115.0, <1.0.0",                       # FastAPI framework
+  "google-api-python-client>=2.157.0, <3.0.0",      # Google API client discovery
+  "google-cloud-aiplatform[agent_engines]>=1.95.1, <2.0.0", # For VertexAI integrations, e.g. example store.
+  "google-cloud-secret-manager>=2.22.0, <3.0.0",    # Fetching secrets in RestAPI Tool
+  "google-cloud-spanner>=3.56.0, <4.0.0",           # For Spanner database
+  "google-cloud-speech>=2.30.0, <3.0.0",            # For Audio Transcription
   "google-cloud-storage>=2.18.0, <3.0.0",           # For GCS Artifact service
-  "google-genai>=1.21.1",                           # Google GenAI SDK
-  "graphviz>=0.20.2",                               # Graphviz for graph rendering
-  "mcp>=1.8.0;python_version>='3.10'",              # For MCP Toolset
-  "opentelemetry-api>=1.31.0",                      # OpenTelemetry
-  "opentelemetry-exporter-gcp-trace>=1.9.0",
-  "opentelemetry-sdk>=1.31.0",
+  "google-genai>=1.21.1, <2.0.0",                   # Google GenAI SDK
+  "graphviz>=0.20.2, <1.0.0",                       # Graphviz for graph rendering
+  "mcp>=1.8.0, <2.0.0;python_version>='3.10'",      # For MCP Toolset
+  "opentelemetry-api>=1.31.0, <2.0.0",              # OpenTelemetry
+  "opentelemetry-exporter-gcp-trace>=1.9.0, <2.0.0",
+  "opentelemetry-sdk>=1.31.0, <2.0.0",
   "pydantic>=2.0, <3.0.0",                          # For data validation/models
-  "python-dateutil>=2.9.0.post0",                   # For Vertext AI Session Service
-  "python-dotenv>=1.0.0",                           # To manage environment variables
-  "requests>=2.32.4",
-  "sqlalchemy>=2.0",                                # SQL database ORM
-  "starlette>=0.46.2",                              # For FastAPI CLI
-  "tenacity>=8.0.0",                                # For Retry management
+  "python-dateutil>=2.9.0.post0, <3.0.0",           # For Vertext AI Session Service
+  "python-dotenv>=1.0.0, <2.0.0",                   # To manage environment variables
+  "requests>=2.32.4, <3.0.0",
+  "sqlalchemy>=2.0, <3.0.0",                        # SQL database ORM
+  "starlette>=0.46.2, <1.0.0",                      # For FastAPI CLI
+  "tenacity>=8.0.0, <9.0.0",                        # For Retry management
   "typing-extensions>=4.5, <5",
-  "tzlocal>=5.3",                                   # Time zone utilities
-  "uvicorn>=0.34.0",                                # ASGI server for FastAPI
-  "watchdog>=6.0.0",                                # For file change detection and hot reload
-  "websockets>=15.0.1",                             # For BaseLlmFlow
+  "tzlocal>=5.3, <6.0",                             # Time zone utilities
+  "uvicorn>=0.34.0, <1.0.0",                        # ASGI server for FastAPI
+  "watchdog>=6.0.0, <7.0.0",                        # For file change detection and hot reload
+  "websockets>=15.0.1, <16.0.0",                    # For BaseLlmFlow
   # go/keep-sorted end
 ]
 dynamic = ["version"]
