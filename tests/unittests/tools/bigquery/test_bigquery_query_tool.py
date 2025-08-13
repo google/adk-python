@@ -37,7 +37,7 @@ import pytest
 
 
 async def get_tool(
-    name: str, tool_config: Optional[BigQueryToolConfig] = None
+    name: str, tool_settings: Optional[BigQueryToolConfig] = None
 ) -> BaseTool:
   """Get a tool from BigQuery toolset.
 
@@ -54,7 +54,7 @@ async def get_tool(
   toolset = BigQueryToolset(
       credentials_config=credentials_config,
       tool_filter=[name],
-      bigquery_tool_config=tool_config,
+      bigquery_tool_config=tool_settings,
   )
 
   tools = await toolset.get_tools()
@@ -64,7 +64,7 @@ async def get_tool(
 
 
 @pytest.mark.parametrize(
-    ("tool_config",),
+    ("tool_settings",),
     [
         pytest.param(None, id="no-config"),
         pytest.param(BigQueryToolConfig(), id="default-config"),
@@ -75,14 +75,14 @@ async def get_tool(
     ],
 )
 @pytest.mark.asyncio
-async def test_execute_sql_declaration_read_only(tool_config):
+async def test_execute_sql_declaration_read_only(tool_settings):
   """Test BigQuery execute_sql tool declaration in read-only mode.
 
   This test verifies that the execute_sql tool declaration reflects the
   read-only capability.
   """
   tool_name = "execute_sql"
-  tool = await get_tool(tool_name, tool_config)
+  tool = await get_tool(tool_name, tool_settings)
   assert tool.name == tool_name
   assert tool.description == textwrap.dedent("""\
     Run a BigQuery or BigQuery ML SQL query in the project and return the result.
@@ -92,7 +92,7 @@ async def test_execute_sql_declaration_read_only(tool_config):
           executed.
         query (str): The BigQuery SQL query to be executed.
         credentials (Credentials): The credentials to use for the request.
-        config (BigQueryToolConfig): The configuration for the tool.
+        settings (BigQueryToolConfig): The settings for the tool.
         tool_context (ToolContext): The context for the tool.
 
     Returns:
@@ -127,7 +127,7 @@ async def test_execute_sql_declaration_read_only(tool_config):
 
 
 @pytest.mark.parametrize(
-    ("tool_config",),
+    ("tool_settings",),
     [
         pytest.param(
             BigQueryToolConfig(write_mode=WriteMode.ALLOWED),
@@ -136,14 +136,14 @@ async def test_execute_sql_declaration_read_only(tool_config):
     ],
 )
 @pytest.mark.asyncio
-async def test_execute_sql_declaration_write(tool_config):
+async def test_execute_sql_declaration_write(tool_settings):
   """Test BigQuery execute_sql tool declaration with all writes enabled.
 
   This test verifies that the execute_sql tool declaration reflects the write
   capability.
   """
   tool_name = "execute_sql"
-  tool = await get_tool(tool_name, tool_config)
+  tool = await get_tool(tool_name, tool_settings)
   assert tool.name == tool_name
   assert tool.description == textwrap.dedent("""\
     Run a BigQuery or BigQuery ML SQL query in the project and return the result.
@@ -153,7 +153,7 @@ async def test_execute_sql_declaration_write(tool_config):
           executed.
         query (str): The BigQuery SQL query to be executed.
         credentials (Credentials): The credentials to use for the request.
-        config (BigQueryToolConfig): The configuration for the tool.
+        settings (BigQueryToolConfig): The settings for the tool.
         tool_context (ToolContext): The context for the tool.
 
     Returns:
@@ -326,7 +326,7 @@ async def test_execute_sql_declaration_write(tool_config):
 
 
 @pytest.mark.parametrize(
-    ("tool_config",),
+    ("tool_settings",),
     [
         pytest.param(
             BigQueryToolConfig(write_mode=WriteMode.PROTECTED),
@@ -335,14 +335,14 @@ async def test_execute_sql_declaration_write(tool_config):
     ],
 )
 @pytest.mark.asyncio
-async def test_execute_sql_declaration_protected_write(tool_config):
+async def test_execute_sql_declaration_protected_write(tool_settings):
   """Test BigQuery execute_sql tool declaration with protected writes enabled.
 
   This test verifies that the execute_sql tool declaration reflects the
   protected write capability.
   """
   tool_name = "execute_sql"
-  tool = await get_tool(tool_name, tool_config)
+  tool = await get_tool(tool_name, tool_settings)
   assert tool.name == tool_name
   assert tool.description == textwrap.dedent("""\
     Run a BigQuery or BigQuery ML SQL query in the project and return the result.
@@ -352,7 +352,7 @@ async def test_execute_sql_declaration_protected_write(tool_config):
           executed.
         query (str): The BigQuery SQL query to be executed.
         credentials (Credentials): The credentials to use for the request.
-        config (BigQueryToolConfig): The configuration for the tool.
+        settings (BigQueryToolConfig): The settings for the tool.
         tool_context (ToolContext): The context for the tool.
 
     Returns:
@@ -530,7 +530,7 @@ def test_execute_sql_select_stmt(write_mode):
   statement_type = "SELECT"
   query_result = [{"num": 123}]
   credentials = mock.create_autospec(Credentials, instance=True)
-  tool_config = BigQueryToolConfig(write_mode=write_mode)
+  tool_settings = BigQueryToolConfig(write_mode=write_mode)
   tool_context = mock.create_autospec(ToolContext, instance=True)
   tool_context.state.get.return_value = (
       "test-bq-session-id",
@@ -550,7 +550,9 @@ def test_execute_sql_select_stmt(write_mode):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(project, query, credentials, tool_config, tool_context)
+    result = execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
     assert result == {"status": "SUCCESS", "rows": query_result}
 
 
@@ -586,7 +588,7 @@ def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
   project = "my_project"
   query_result = []
   credentials = mock.create_autospec(Credentials, instance=True)
-  tool_config = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
   tool_context = mock.create_autospec(ToolContext, instance=True)
 
   with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
@@ -602,7 +604,9 @@ def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(project, query, credentials, tool_config, tool_context)
+    result = execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
     assert result == {"status": "SUCCESS", "rows": query_result}
 
 
@@ -638,7 +642,7 @@ def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
   project = "my_project"
   query_result = []
   credentials = mock.create_autospec(Credentials, instance=True)
-  tool_config = BigQueryToolConfig(write_mode=WriteMode.BLOCKED)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.BLOCKED)
   tool_context = mock.create_autospec(ToolContext, instance=True)
 
   with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
@@ -654,7 +658,9 @@ def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(project, query, credentials, tool_config, tool_context)
+    result = execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
     assert result == {
         "status": "ERROR",
         "error_details": "Read-only mode only supports SELECT statements.",
@@ -693,7 +699,7 @@ def test_execute_sql_non_select_stmt_write_protected(query, statement_type):
   project = "my_project"
   query_result = []
   credentials = mock.create_autospec(Credentials, instance=True)
-  tool_config = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
   tool_context = mock.create_autospec(ToolContext, instance=True)
   tool_context.state.get.return_value = (
       "test-bq-session-id",
@@ -714,7 +720,9 @@ def test_execute_sql_non_select_stmt_write_protected(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(project, query, credentials, tool_config, tool_context)
+    result = execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
     assert result == {"status": "SUCCESS", "rows": query_result}
 
 
@@ -756,7 +764,7 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
   project = "my_project"
   query_result = []
   credentials = mock.create_autospec(Credentials, instance=True)
-  tool_config = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
   tool_context = mock.create_autospec(ToolContext, instance=True)
   tool_context.state.get.return_value = (
       "test-bq-session-id",
@@ -777,7 +785,9 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(project, query, credentials, tool_config, tool_context)
+    result = execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
     assert result == {
         "status": "ERROR",
         "error_details": (
@@ -808,7 +818,7 @@ def test_execute_sql_no_default_auth(
   statement_type = "SELECT"
   query_result = [{"num": 123}]
   credentials = mock.create_autospec(Credentials, instance=True)
-  tool_config = BigQueryToolConfig(write_mode=write_mode)
+  tool_settings = BigQueryToolConfig(write_mode=write_mode)
   tool_context = mock.create_autospec(ToolContext, instance=True)
   tool_context.state.get.return_value = (
       "test-bq-session-id",
@@ -830,7 +840,7 @@ def test_execute_sql_no_default_auth(
   mock_query_and_wait.return_value = query_result
 
   # Test the tool worked without invoking default auth
-  result = execute_sql(project, query, credentials, tool_config, tool_context)
+  result = execute_sql(project, query, credentials, tool_settings, tool_context)
   assert result == {"status": "SUCCESS", "rows": query_result}
   mock_default_auth.assert_not_called()
 
@@ -959,7 +969,7 @@ def test_execute_sql_result_dtype(
   project = "my_project"
   statement_type = "SELECT"
   credentials = mock.create_autospec(Credentials, instance=True)
-  tool_config = BigQueryToolConfig()
+  tool_settings = BigQueryToolConfig()
   tool_context = mock.create_autospec(ToolContext, instance=True)
 
   # Simulate the result of query API
@@ -971,5 +981,5 @@ def test_execute_sql_result_dtype(
   mock_query_and_wait.return_value = query_result
 
   # Test the tool worked without invoking default auth
-  result = execute_sql(project, query, credentials, tool_config, tool_context)
+  result = execute_sql(project, query, credentials, tool_settings, tool_context)
   assert result == {"status": "SUCCESS", "rows": tool_result_rows}

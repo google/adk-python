@@ -22,7 +22,6 @@ from typing import Type
 from typing_extensions import override
 
 from ..events.event import Event
-from ..utils.feature_decorator import working_in_progress
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentConfig
 from .invocation_context import InvocationContext

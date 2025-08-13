@@ -511,6 +511,14 @@ class TestToGeminiSchema:
         "type": "object",
     }
 
+  def test_to_gemini_schema_properties_is_none(self):
+    """Tests schema conversion when 'properties' field is None."""
+    openapi_schema = {"type": "object", "properties": None}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties is None
+
 
 class TestToSnakeCase:
 

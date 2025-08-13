@@ -22,7 +22,7 @@ from typing import List
 
 import yaml
 
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .agent_config import AgentConfig
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
@@ -30,7 +30,7 @@ from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
 
-@working_in_progress("from_config is not ready for use.")
+@experimental
 def from_config(config_path: str) -> BaseAgent:
   """Build agent from a configfile path.
 
@@ -79,7 +79,6 @@ def _resolve_agent_class(agent_class: str) -> type[BaseAgent]:
   )
 
 
-@working_in_progress("_load_config_from_path is not ready for use.")
 def _load_config_from_path(config_path: str) -> AgentConfig:
   """Load an agent's configuration from a YAML file.
 
@@ -103,7 +102,7 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   return AgentConfig.model_validate(config_data)
 
 
-@working_in_progress("resolve_fully_qualified_name is not ready for use.")
+@experimental
 def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
@@ -113,7 +112,7 @@ def resolve_fully_qualified_name(name: str) -> Any:
     raise ValueError(f"Invalid fully qualified name: {name}") from e
 
 
-@working_in_progress("resolve_agent_reference is not ready for use.")
+@experimental
 def resolve_agent_reference(
     ref_config: AgentRefConfig, referencing_agent_config_abs_path: str
 ) -> BaseAgent:
@@ -143,7 +142,6 @@ def resolve_agent_reference(
     raise ValueError("AgentRefConfig must have either 'code' or 'config_path'")
 
 
-@working_in_progress("_resolve_agent_code_reference is not ready for use.")
 def _resolve_agent_code_reference(code: str) -> Any:
   """Resolve a code reference to an actual agent instance.
 
@@ -172,7 +170,7 @@ def _resolve_agent_code_reference(code: str) -> Any:
   return obj
 
 
-@working_in_progress("resolve_code_reference is not ready for use.")
+@experimental
 def resolve_code_reference(code_config: CodeConfig) -> Any:
   """Resolve a code reference to actual Python object.
 
@@ -201,7 +199,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
     return obj
 
 
-@working_in_progress("resolve_callbacks is not ready for use.")
+@experimental
 def resolve_callbacks(callbacks_config: List[CodeConfig]) -> Any:
   """Resolve callbacks from configuration.
 

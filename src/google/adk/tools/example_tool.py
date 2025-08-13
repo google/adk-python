@@ -24,6 +24,8 @@ from ..examples import example_util
 from ..examples.base_example_provider import BaseExampleProvider
 from ..examples.example import Example
 from .base_tool import BaseTool
+from .tool_configs import BaseToolConfig
+from .tool_configs import ToolArgsConfig
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
@@ -60,3 +62,34 @@ class ExampleTool(BaseTool):
             self.examples, parts[0].text, llm_request.model
         )
     ])
+
+  @override
+  @classmethod
+  def from_config(
+      cls: type[ExampleTool], config: ToolArgsConfig, config_abs_path: str
+  ) -> ExampleTool:
+    from ..agents import config_agent_utils
+
+    example_tool_config = ExampleToolConfig.model_validate(config.model_dump())
+    if isinstance(example_tool_config.examples, str):
+      example_provider = config_agent_utils.resolve_fully_qualified_name(
+          example_tool_config.examples
+      )
+      if not isinstance(example_provider, BaseExampleProvider):
+        raise ValueError(
+            'Example provider must be an instance of BaseExampleProvider.'
+        )
+      return cls(example_provider)
+    elif isinstance(example_tool_config.examples, list):
+      return cls(example_tool_config.examples)
+    else:
+      raise ValueError(
+          'Example tool config must be a list of examples or a fully-qualified'
+          ' name to a BaseExampleProvider object in code.'
+      )
+
+
+class ExampleToolConfig(BaseToolConfig):
+  examples: Union[list[Example], str]
+  """The examples to add to the LLM request. User can either provide a list of
+  examples or a fully-qualified name to a BaseExampleProvider object in code."""

@@ -120,7 +120,7 @@ def _sanitize_schema_formats_for_gemini(
       snake_case_schema[field_name] = [
           _sanitize_schema_formats_for_gemini(value) for value in field_value
       ]
-    elif field_name in dict_schema_field_names:
+    elif field_name in dict_schema_field_names and field_value is not None:
       snake_case_schema[field_name] = {
           key: _sanitize_schema_formats_for_gemini(value)
           for key, value in field_value.items()

@@ -22,7 +22,7 @@ from typing import Optional
 from google.genai import types
 from pydantic import ConfigDict
 
-from ..tools.base_tool import ToolConfig
+from ..tools.tool_configs import ToolConfig
 from .base_agent_config import BaseAgentConfig
 from .common_configs import CodeConfig
 

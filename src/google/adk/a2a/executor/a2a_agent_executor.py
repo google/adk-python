@@ -50,23 +50,23 @@ from google.adk.runners import Runner
 from pydantic import BaseModel
 from typing_extensions import override
 
-from ...utils.feature_decorator import experimental
 from ..converters.event_converter import convert_event_to_a2a_events
 from ..converters.request_converter import convert_a2a_request_to_adk_run_args
 from ..converters.utils import _get_adk_metadata_key
+from ..experimental import a2a_experimental
 from .task_result_aggregator import TaskResultAggregator
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
+@a2a_experimental
 class A2aAgentExecutorConfig(BaseModel):
   """Configuration for the A2aAgentExecutor."""
 
   pass
 
 
-@experimental
+@a2a_experimental
 class A2aAgentExecutor(AgentExecutor):
   """An AgentExecutor that runs an ADK Agent against an A2A request and
   publishes updates to an event queue.

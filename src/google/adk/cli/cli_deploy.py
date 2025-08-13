@@ -433,6 +433,7 @@ def to_agent_engine(
             'stream': ['stream_query', 'streaming_agent_run_with_events'],
         },
         sys_paths=[temp_folder[1:]],
+        agent_framework='google-adk',
     )
     agent_config = dict(
         agent_engine=agent_engine,

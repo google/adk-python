@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.10.0](https://github.com/google/adk-python/compare/v1.9.0...v1.10.0) (2025-08-07)
+
+### Features
+
+* [Live] Implement Live Session Resumption ([71fbc92](https://github.com/google/adk-python/commit/71fbc9275b3d74700ec410cb4155ba0cb18580b7))
+* [Tool] Support parallel execution of parallel function calls ([57cd41f](https://github.com/google/adk-python/commit/57cd41f424b469fb834bb8f2777b5f7be9aa6cdf))
+* [Models] Allow max tokens to be customizable in Claude ([7556ebc](https://github.com/google/adk-python/commit/7556ebc76abd3c776922c2803aed831661cf7f82))
+* [Tool] Create enterprise_web_search_tool as a tool instance ([0e28d64](https://github.com/google/adk-python/commit/0e28d64712e481cfd3b964be0166f529657024f6))
+
+### Bug Fixes
+
+* Fix shared default plugin manager and cost manager instances among multiple invocations ([423542a](https://github.com/google/adk-python/commit/423542a43fb8316195e9f79d97f87593751bebd3))
+* Correct the type annotation in anthropic_llm implementation ([97318bc](https://github.com/google/adk-python/commit/97318bcd199acdacadfe8664da3fbfc3c806cdd2))
+* Fix adk deploy cloud_run cli, which was broken in v1.9.0 ([e41dbcc](https://github.com/google/adk-python/commit/e41dbccf7f610e249108f9321f60f71fe2cc10f4))
+* Remove thoughts from contents in llm requests from history contents ([d620bcb](https://github.com/google/adk-python/commit/d620bcb384d3068228ea2059fb70274e68e69682))
+* Annotate response type as None for transfer_to_agent tool ([86a4487](https://github.com/google/adk-python/commit/86a44873e9b2dfc7e62fa31a9ac3be57c0bbff7b))
+* Fix incompatible a2a sdk changes ([faadef1](https://github.com/google/adk-python/commit/faadef167ee8e4dd1faf4da5685a577c3155556e))
+* Fix adk cli options and method parameters mismatching ([8ef2177](https://github.com/google/adk-python/commit/8ef2177658fbfc74b1a74b0c3ea8150bae866796))
+
+### Improvements
+
+* Add Github workflow config for the ADK Answering agent ([8dc0c94](https://github.com/google/adk-python/commit/8dc0c949afb9024738ff7ac1b2c19282175c3200))
+* Import AGENT_CARD_WELL_KNOWN_PATH from adk instead of from a2a directly ([37dae9b](https://github.com/google/adk-python/commit/37dae9b631db5060770b66fce0e25cf0ffb56948))
+* Make `LlmRequest.LiveConnectConfig` field default to a factory ([74589a1](https://github.com/google/adk-python/commit/74589a1db7df65e319d1ad2f0676ee0cf5d6ec1d))
+* Update the prompt to make the ADK Answering Agent more objective ([2833030](https://github.com/google/adk-python/commit/283303032a174d51b8d72f14df83c794d66cb605))
+* Add sample agent for testing parallel functions execution ([90b9193](https://github.com/google/adk-python/commit/90b9193a20499b8dd7f57d119cda4c534fcfda10))
+* Hide the ask_data_insights tool until the API is publicly available ([bead607](https://github.com/google/adk-python/commit/bead607364be7ac8109357c9d3076d9b345e9e8a))
+* Change `LlmRequest.config`'s default value to be `types.GenerateContentConfig()` ([041f04e](https://github.com/google/adk-python/commit/041f04e89cee30532facccce4900d10f1b8c69ce))
+* Prevent triggering of _load_from_yaml_config in AgentLoader ([db975df](https://github.com/google/adk-python/commit/db975dfe2a09a6d056d02bc03c1247ac10f6da7d))
+
+### Documentation
+
+* Fix typos ([16a15c8](https://github.com/google/adk-python/commit/16a15c8709b47c9bebe7cffe888e8e7e48ec605a))
+
+
 ## [1.9.0](https://github.com/google/adk-python/compare/v1.8.0...v1.9.0) (2025-07-31)
 
 
