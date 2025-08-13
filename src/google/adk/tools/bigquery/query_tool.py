@@ -330,7 +330,7 @@ _execute_sql_write_examples = """
   """
 
 
-_execute_sql_protecetd_write_examples = """
+_execute_sql_protected_write_examples = """
       Create a temporary table with schema prescribed:
 
           >>> execute_sql("my_project",
@@ -496,7 +496,7 @@ def get_execute_sql(settings: BigQueryToolConfig) -> Callable[..., dict]:
 
   # Now, set the new docstring
   if settings.write_mode == WriteMode.PROTECTED:
-    examples = _execute_sql_protecetd_write_examples
+    examples = _execute_sql_protected_write_examples
   else:
     examples = _execute_sql_write_examples
 
