@@ -22,6 +22,7 @@ from typing import Type
 from typing_extensions import override
 
 from ..events.event import Event
+from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentConfig
 from .invocation_context import InvocationContext
@@ -40,8 +41,9 @@ class SequentialAgent(BaseAgent):
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     for sub_agent in self.sub_agents:
-      async for event in sub_agent.run_async(ctx):
-        yield event
+      async with Aclosing(sub_agent.run_async(ctx)) as agen:
+        async for event in agen:
+          yield event
 
   @override
   async def _run_live_impl(
@@ -78,5 +80,6 @@ class SequentialAgent(BaseAgent):
           do not generate any text other than the function call."""
 
     for sub_agent in self.sub_agents:
-      async for event in sub_agent.run_live(ctx):
-        yield event
+      async with Aclosing(sub_agent.run_live(ctx)) as agen:
+        async for event in agen:
+          yield event

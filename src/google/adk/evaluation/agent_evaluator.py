@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
+from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -538,10 +539,11 @@ class AgentEvaluator:
     # Generate inferences
     inference_results = []
     for inference_request in inference_requests:
-      async for inference_result in eval_service.perform_inference(
-          inference_request=inference_request
-      ):
-        inference_results.append(inference_result)
+      async with Aclosing(
+          eval_service.perform_inference(inference_request=inference_request)
+      ) as agen:
+        async for inference_result in agen:
+          inference_results.append(inference_result)
 
     # Evaluate metrics
     # As we perform more than one run for an eval case, we collect eval results
@@ -551,14 +553,15 @@ class AgentEvaluator:
         inference_results=inference_results,
         evaluate_config=EvaluateConfig(eval_metrics=eval_metrics),
     )
-    async for eval_result in eval_service.evaluate(
-        evaluate_request=evaluate_request
-    ):
-      eval_id = eval_result.eval_id
-      if eval_id not in eval_results_by_eval_id:
-        eval_results_by_eval_id[eval_id] = []
+    async with Aclosing(
+        eval_service.evaluate(evaluate_request=evaluate_request)
+    ) as agen:
+      async for eval_result in agen:
+        eval_id = eval_result.eval_id
+        if eval_id not in eval_results_by_eval_id:
+          eval_results_by_eval_id[eval_id] = []
 
-      eval_results_by_eval_id[eval_id].append(eval_result)
+        eval_results_by_eval_id[eval_id].append(eval_result)
 
     return eval_results_by_eval_id
 
