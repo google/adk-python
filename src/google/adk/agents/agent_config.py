@@ -20,7 +20,7 @@ from typing import Union
 from pydantic import Discriminator
 from pydantic import RootModel
 
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgentConfig
 from .llm_agent_config import LlmAgentConfig
 from .loop_agent_config import LoopAgentConfig
@@ -55,7 +55,7 @@ def agent_config_discriminator(v: Any):
 
 # Use a RootModel to represent the agent directly at the top level.
 # The `discriminator` is applied to the union within the RootModel.
-@working_in_progress("AgentConfig is not ready for use.")
+@experimental
 class AgentConfig(RootModel[ConfigsUnion]):
   """The config for the YAML schema to create an agent."""
 

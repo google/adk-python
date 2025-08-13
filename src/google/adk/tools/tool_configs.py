@@ -19,10 +19,10 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 
 
-@working_in_progress("BaseToolConfig is not ready for use.")
+@experimental
 class BaseToolConfig(BaseModel):
   """The base class for all tool configs."""
 
@@ -30,14 +30,14 @@ class BaseToolConfig(BaseModel):
   """Forbid extra fields."""
 
 
-@working_in_progress("ToolArgsConfig is not ready for use.")
+@experimental
 class ToolArgsConfig(BaseModel):
   """Config to host free key-value pairs for the args in ToolConfig."""
 
   model_config = ConfigDict(extra="allow")
 
 
-@working_in_progress("ToolConfig is not ready for use.")
+@experimental
 class ToolConfig(BaseModel):
   """The configuration for a tool.
 

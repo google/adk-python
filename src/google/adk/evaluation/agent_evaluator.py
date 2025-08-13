@@ -174,11 +174,14 @@ class AgentEvaluator:
 
       failures.extend(failures_per_eval_case)
 
-    assert not failures, (
-        "Following are all the test failures. If you looking to get more"
-        " details on the failures, then please re-run this test with"
-        " `print_details` set to `True`.\n{}".format("\n".join(failures))
-    )
+    failure_message = "Following are all the test failures."
+    if not print_detailed_results:
+      failure_message += (
+          " If you looking to get more details on the failures, then please"
+          " re-run this test with `print_detailed_results` set to `True`."
+      )
+    failure_message += "\n" + "\n".join(failures)
+    assert not failures, failure_message
 
   @staticmethod
   async def evaluate(
@@ -187,6 +190,7 @@ class AgentEvaluator:
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
       initial_session_file: Optional[str] = None,
+      print_detailed_results: bool = True,
   ):
     """Evaluates an Agent given eval data.
 
@@ -203,6 +207,8 @@ class AgentEvaluator:
       agent_name: The name of the agent.
       initial_session_file: File that contains initial session state that is
         needed by all the evals in the eval dataset.
+      print_detailed_results: Whether to print detailed results for each metric
+        evaluation.
     """
     test_files = []
     if isinstance(eval_dataset_file_path_or_dir, str) and os.path.isdir(
@@ -229,6 +235,7 @@ class AgentEvaluator:
           criteria=criteria,
           num_runs=num_runs,
           agent_name=agent_name,
+          print_detailed_results=print_detailed_results,
       )
 
   @staticmethod

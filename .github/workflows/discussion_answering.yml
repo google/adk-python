@@ -27,14 +27,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-adk
+          pip install google-adk google-cloud-discoveryengine
 
       - name: Run Answering Script
         env:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          ADK_GCP_SA_KEY: ${{ secrets.ADK_GCP_SA_KEY }}
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ secrets.GOOGLE_CLOUD_LOCATION }}
           VERTEXAI_DATASTORE_ID: ${{ secrets.VERTEXAI_DATASTORE_ID }}
+          GEMINI_API_DATASTORE_ID: ${{ secrets.GEMINI_API_DATASTORE_ID }}
           GOOGLE_GENAI_USE_VERTEXAI: 1
           OWNER: 'google'
           REPO: 'adk-python'

@@ -34,6 +34,7 @@ dependencies = [
   "google-api-python-client>=2.157.0",              # Google API client discovery
   "google-cloud-aiplatform[agent_engines]>=1.95.1", # For VertexAI integrations, e.g. example store.
   "google-cloud-secret-manager>=2.22.0",            # Fetching secrets in RestAPI Tool
+  "google-cloud-spanner>=3.56.0",                   # For Spanner database
   "google-cloud-speech>=2.30.0",                    # For Audio Transcription
   "google-cloud-storage>=2.18.0, <3.0.0",           # For GCS Artifact service
   "google-genai>=1.21.1",                           # Google GenAI SDK

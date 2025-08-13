@@ -14,46 +14,25 @@
 
 from __future__ import annotations
 
-import inspect
-from typing import Any
-from typing import AsyncGenerator
-from typing import Awaitable
-from typing import Callable
-from typing import Dict
-from typing import final
 from typing import List
 from typing import Literal
-from typing import Mapping
 from typing import Optional
 from typing import Type
 from typing import TYPE_CHECKING
 from typing import TypeVar
 from typing import Union
 
-from google.genai import types
-from opentelemetry import trace
 from pydantic import BaseModel
 from pydantic import ConfigDict
-from pydantic import Field
-from pydantic import field_validator
-from pydantic import model_validator
-from typing_extensions import override
-from typing_extensions import TypeAlias
 
-from ..events.event import Event
-from ..utils.feature_decorator import working_in_progress
-from .callback_context import CallbackContext
+from ..utils.feature_decorator import experimental
 from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
-
-if TYPE_CHECKING:
-  from .invocation_context import InvocationContext
-
 
 TBaseAgentConfig = TypeVar('TBaseAgentConfig', bound='BaseAgentConfig')
 
 
-@working_in_progress('BaseAgentConfig is not ready for use.')
+@experimental
 class BaseAgentConfig(BaseModel):
   """The config for the YAML schema of a BaseAgent.
 

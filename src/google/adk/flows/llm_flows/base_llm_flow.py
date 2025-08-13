@@ -28,6 +28,7 @@ from google.genai import types
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
+from . import _output_schema_processor
 from . import functions
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
@@ -500,7 +501,20 @@ class BaseLlmFlow(ABC):
       function_response_event = await functions.handle_function_calls_live(
           invocation_context, model_response_event, llm_request.tools_dict
       )
+      # Always yield the function response event first
       yield function_response_event
+
+      # Check if this is a set_model_response function response
+      if json_response := _output_schema_processor.get_structured_model_response(
+          function_response_event
+      ):
+        # Create and yield a final model response event
+        final_event = (
+            _output_schema_processor.create_final_model_response_event(
+                invocation_context, json_response
+            )
+        )
+        yield final_event
 
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
@@ -532,7 +546,20 @@ class BaseLlmFlow(ABC):
       if auth_event:
         yield auth_event
 
+      # Always yield the function response event first
       yield function_response_event
+
+      # Check if this is a set_model_response function response
+      if json_response := _output_schema_processor.get_structured_model_response(
+          function_response_event
+      ):
+        # Create and yield a final model response event
+        final_event = (
+            _output_schema_processor.create_final_model_response_event(
+                invocation_context, json_response
+            )
+        )
+        yield final_event
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
         agent_to_run = self._get_agent_to_run(
