@@ -77,6 +77,7 @@ from components import (
     render_iam_analyzer_view,
     render_compliance_view,
     render_chat_view,
+    render_roadmap_view,
     render_msa_analysis_view,
     render_performance_monitoring_view,
     render_day_two_sre_view,
@@ -254,9 +255,10 @@ def get_available_pages():
     pages = {
         "chat": {"name": "💬 ADK Security Assistant", "service": None, "priority": 1, "description": "Interactive AI chat for security analysis"},
         "dashboard": {"name": "🏠 Overview", "service": None, "priority": 2, "description": "Security posture overview"},
-        "security": {"name": "🛡️ Security Analysis", "service": "security", "priority": 3, "description": "Comprehensive security scanning"},
-        "iam": {"name": "🔐 IAM Analysis", "service": "iam", "priority": 4, "description": "Identity and access management"},
-        "compliance": {"name": "📋 Compliance", "service": "compliance", "priority": 5, "description": "Regulatory compliance checking"}
+        "roadmap": {"name": "🚀 Implementation Roadmap", "service": None, "priority": 3, "description": "Chat-centric architecture roadmap"},
+        "security": {"name": "🛡️ Security Analysis", "service": "security", "priority": 4, "description": "Comprehensive security scanning"},
+        "iam": {"name": "🔐 IAM Analysis", "service": "iam", "priority": 5, "description": "Identity and access management"},
+        "compliance": {"name": "📋 Compliance", "service": "compliance", "priority": 6, "description": "Regulatory compliance checking"}
     }
     
     return pages
@@ -293,7 +295,7 @@ def render_navigation():
     
     # Render other pages as quick actions
     st.sidebar.markdown("**🔥 Quick Actions:**")
-    for page_key in ["dashboard", "security", "iam", "compliance"]:
+    for page_key in ["dashboard", "roadmap", "security", "iam", "compliance"]:
         if page_key in pages:
             page_name = pages[page_key]["name"]
             is_current = st.session_state.page == page_key
@@ -415,6 +417,9 @@ def render_main_content():
         elif page == "chat":
             logger.info("Rendering simplified chat view...")
             render_chat_view()
+        elif page == "roadmap":
+            logger.info("Rendering implementation roadmap view...")
+            render_roadmap_view()
         elif page == "msa":
             logger.info("Rendering MSA analysis view...")
             render_msa_analysis_view()

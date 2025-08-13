@@ -13,7 +13,10 @@ from .security.incident_response_view import render_incident_response_view, rend
 from .compliance.compliance_view import render_compliance_view, render_compliance_summary_card
 
 # Chat components
-from .chat.chat_view import render_chat_view, render_chat_sidebar, render_floating_chat_button
+from .chat.chat_view import render_chat_view
+
+# Roadmap components
+from .roadmap.roadmap_view import render_roadmap_view
 
 # Monitoring components
 from .monitoring.performance_monitoring_view import (
@@ -50,8 +53,9 @@ __all__ = [
     
     # Chat
     'render_chat_view',
-    'render_chat_sidebar',
-    'render_floating_chat_button',
+    
+    # Roadmap
+    'render_roadmap_view',
     
     # Monitoring
     'render_performance_monitoring_view',
