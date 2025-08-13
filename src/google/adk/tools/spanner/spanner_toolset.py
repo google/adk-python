@@ -44,7 +44,7 @@ class SpannerToolset(BaseToolset):
       credentials_config: Optional[SpannerCredentialsConfig] = None,
       spanner_tool_settings: Optional[SpannerToolSettings] = None,
   ):
-    self.tool_filter = tool_filter
+    super().__init__(tool_filter=tool_filter)
     self._credentials_config = credentials_config
     self._tool_settings = (
         spanner_tool_settings

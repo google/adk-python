@@ -47,13 +47,13 @@ class GoogleApiToolset(BaseToolset):
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
   ):
+    super().__init__(tool_filter=tool_filter)
     self.api_name = api_name
     self.api_version = api_version
     self._client_id = client_id
     self._client_secret = client_secret
     self._service_account = service_account
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
-    self.tool_filter = tool_filter
 
   @override
   async def get_tools(

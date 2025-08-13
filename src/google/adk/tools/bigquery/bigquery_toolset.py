@@ -43,7 +43,7 @@ class BigQueryToolset(BaseToolset):
       credentials_config: Optional[BigQueryCredentialsConfig] = None,
       bigquery_tool_config: Optional[BigQueryToolConfig] = None,
   ):
-    self.tool_filter = tool_filter
+    super().__init__(tool_filter=tool_filter)
     self._credentials_config = credentials_config
     self._tool_settings = (
         bigquery_tool_config if bigquery_tool_config else BigQueryToolConfig()
