@@ -77,8 +77,6 @@ from components import (
     render_iam_analyzer_view,
     render_compliance_view,
     render_chat_view,
-    render_chat_sidebar,
-    render_floating_chat_button,
     render_msa_analysis_view,
     render_performance_monitoring_view,
     render_day_two_sre_view,
@@ -160,9 +158,9 @@ def fetch_available_projects():
 
 
 def render_sidebar():
-    """Render the application sidebar - minimized for chat-centric design."""
-    if not st.session_state.get('show_sidebar', False) and st.session_state.page == "chat":
-        # Show minimal sidebar toggle for chat mode
+    """Render the application sidebar - simple navigation only."""
+    # Simple sidebar with just navigation
+    if not st.session_state.get('show_sidebar', True):
         with st.sidebar:
             if st.button("🔧 Settings", use_container_width=True):
                 st.session_state.show_sidebar = True
@@ -178,8 +176,6 @@ def render_sidebar():
     # Project selector
     render_project_selector()
     
-    # Chat layout mode selector
-    render_chat_layout_selector()
     
     # Navigation
     render_navigation()
@@ -192,11 +188,6 @@ def render_sidebar():
     st.sidebar.markdown("**Version:** 3.0.0")
     st.sidebar.markdown("**Status:** 🟢 Online")
     
-    # Hide sidebar option for chat mode
-    if st.session_state.page == "chat":
-        if st.sidebar.button("🎯 Focus on Chat"):
-            st.session_state.show_sidebar = False
-            st.rerun()
 
 
 def render_project_selector():
@@ -290,7 +281,7 @@ def render_navigation():
         button_type = "primary" if is_current else "secondary"
         
         # Make chat button more prominent
-        if st.sidebar.button("💬 ADK Agent Chat", key="nav_chat", use_container_width=True, type="primary" if is_current else "secondary"):
+        if st.sidebar.button("💬 Chat", key="nav_chat", use_container_width=True, type="primary" if is_current else "secondary"):
             if st.session_state.page != "chat":
                 st.session_state.page = "chat"
                 st.session_state.chat_layout_mode = "enhanced"
@@ -422,7 +413,7 @@ def render_main_content():
             logger.info("Rendering compliance view...")
             render_compliance_view()
         elif page == "chat":
-            logger.info("Rendering chat view...")
+            logger.info("Rendering simplified chat view...")
             render_chat_view()
         elif page == "msa":
             logger.info("Rendering MSA analysis view...")
@@ -602,11 +593,6 @@ def main():
             render_main_content()
             logger.info("Main content rendered successfully")
         
-        # Floating chat button on non-chat pages
-        if st.session_state.page != "chat":
-            logger.info("Rendering floating chat button...")
-            render_floating_chat_button()
-            logger.info("Floating chat button rendered successfully")
         
         logger.info("=== Frontend rendering completed successfully ===")
         
