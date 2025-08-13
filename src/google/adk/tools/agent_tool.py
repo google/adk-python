@@ -49,9 +49,15 @@ class AgentTool(BaseTool):
     skip_summarization: Whether to skip summarization of the agent output.
   """
 
-  def __init__(self, agent: BaseAgent, skip_summarization: bool = False):
+  def __init__(
+      self,
+      agent: BaseAgent,
+      skip_summarization: bool = False,
+      skip_thoughts: bool = False,
+  ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
+    self.skip_thoughts: bool = skip_thoughts
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -155,7 +161,14 @@ class AgentTool(BaseTool):
 
     if not last_event or not last_event.content or not last_event.content.parts:
       return ''
-    merged_text = '\n'.join(p.text for p in last_event.content.parts if p.text)
+    if self.skip_thoughts:
+      merged_text = '\n'.join(
+          p.text for p in last_event.content.parts if (p.text and not p.thought)
+      )
+    else:
+      merged_text = '\n'.join(
+          p.text for p in last_event.content.parts if p.text
+      )
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
           merged_text
