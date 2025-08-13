@@ -90,6 +90,22 @@ def run_cloud_build():
     except KeyboardInterrupt:
         logger.info("🛑 Cloud Build stopped by user.")
 
+def kill_existing_processes():
+    """Kill any existing processes on port 8000 for clean development flow"""
+    try:
+        logger.info("🧹 Cleaning up existing processes on port 8000...")
+        # Kill processes on port 8000
+        subprocess.run(
+            "lsof -ti:8000 | xargs kill -9 2>/dev/null || true", 
+            shell=True, 
+            check=False
+        )
+        import time
+        time.sleep(1)  # Give processes time to die
+        logger.info("✅ Port 8000 cleaned up")
+    except Exception as e:
+        logger.warning(f"⚠️ Warning: Could not clean port 8000: {e}")
+
 def main():
     """Run the ADK backend server."""
     parser = argparse.ArgumentParser(description="🛡️ ADK Security Agent - Backend Only")
@@ -99,6 +115,9 @@ def main():
     if args.cloud:
         run_cloud_build()
         return
+        
+    # Kill existing processes first for clean development flow
+    kill_existing_processes()
         
     print("🛡️ Starting ADK Security Agent Backend")
     print("=" * 50)

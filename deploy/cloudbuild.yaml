@@ -2,8 +2,7 @@
 steps:
   # Build the Docker image from security_agent directory
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${_TAG}', '-f', 'Dockerfile', '.']
-    dir: 'contributing/samples/security_agent'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${_TAG}', '-f', './Dockerfile', '.']
   
   # Push the Docker image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'

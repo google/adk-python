@@ -8,40 +8,7 @@ This roadmap outlines the systematic transformation of the ADK Security Agent fr
 
 ### Phase 1: Foundation & Layout Transformation (Weeks 1-2)
 
-#### Week 1: Core Layout Architecture
-**Objective:** Establish the fundamental chat-centric layout structure
 
-##### Day 1-2: Streamlit Layout Redesign
-```python
-# Tasks:
-- [ ] Create new `ChatCentricLayoutManager` class
-- [ ] Implement 70/30 chat/context column split
-- [ ] Hide traditional sidebar navigation
-- [ ] Create persistent bottom input bar
-- [ ] Add responsive breakpoints for mobile
-
-# Deliverables:
-- Modified `frontend/main_app.py` with new layout
-- New `frontend/components/layout/chat_centric_layout.py`
-- Updated CSS for chat-first design
-```
-
-**Implementation Details:**
-```python
-class ChatCentricLayoutManager:
-    def render_main_layout(self):
-        # Hide sidebar
-        st.set_page_config(initial_sidebar_state="collapsed")
-        
-        # Main columns: Chat (70%) + Context (30%)
-        col_chat, col_context = st.columns([7, 3])
-        
-        with col_chat:
-            self.render_primary_chat_interface()
-            
-        with col_context:
-            self.render_dynamic_context_panel()
-```
 
 ##### Day 3-4: Agent Status Integration
 ```python

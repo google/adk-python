@@ -1,55 +1,65 @@
 """
-Simplified Chat View - Direct ADK Integration
-Core principle: Simple passthrough to ADK agents without complex abstractions
+Direct ADK Chat View - Single Version Only
+Direct integration with Google ADK agents without fallbacks or multiple versions
 """
 
 import streamlit as st
-import asyncio
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Optional, Tuple
 import os
 import sys
 
 # Add project root to path for imports
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+current_dir = os.path.dirname(__file__)
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
 sys.path.append(project_root)
 
 logger = logging.getLogger(__name__)
 
-# Safe import of ADK agents and conversation memory
+# Import ADK agents and conversation memory directly
 try:
     from agents.coordinator_agent import create_coordinator_agent
-    from backend.services.conversation_memory import conversation_memory
     ADK_AGENTS_AVAILABLE = True
-    logger.info("✅ ADK agents loaded successfully")
+    logger.info("✅ ADK coordinator agent loaded")
 except ImportError as e:
-    logger.warning(f"ADK agents not available: {e}")
+    logger.error(f"ADK coordinator agent required but not available: {e}")
     ADK_AGENTS_AVAILABLE = False
     create_coordinator_agent = None
+
+# Import conversation memory from correct path
+try:
+    sys.path.append(os.path.join(project_root, 'backend'))
+    from services.conversation_memory import conversation_memory
+    CONVERSATION_MEMORY_AVAILABLE = True
+    logger.info("✅ Conversation memory loaded")
+except ImportError as e:
+    logger.warning(f"Conversation memory not available: {e}")
+    CONVERSATION_MEMORY_AVAILABLE = False
     conversation_memory = None
 
 def render_chat_view():
-    """Render simplified chat interface - direct ADK passthrough"""
+    """Direct ADK chat interface - single version only"""
     st.header("💬 ADK Security Agent")
     
-    # Show ADK status
-    if ADK_AGENTS_AVAILABLE:
-        st.success("🎯 Connected to ADK agents - intelligent routing enabled")
-    else:
-        st.warning("⚠️ ADK agents loading - using fallback responses")
+    # Check ADK availability - required for operation
+    if not ADK_AGENTS_AVAILABLE:
+        st.error("🚨 ADK agents are required for this interface to function")
+        st.info(get_adk_setup_guidance())
+        return
     
-    # Initialize conversation session
-    if 'conv_session_id' not in st.session_state and conversation_memory:
+    st.success("🎯 Connected to ADK agents - ready for security analysis")
+    
+    # Initialize conversation session if available
+    if CONVERSATION_MEMORY_AVAILABLE and 'conv_session_id' not in st.session_state:
         session_id = conversation_memory.create_session("streamlit_user")
         st.session_state.conv_session_id = session_id
-        st.info(f"✅ Started conversation session: {session_id[:8]}...")
     
     # Initialize chat state
     if 'chat_messages' not in st.session_state:
         st.session_state.chat_messages = []
     
     # Display conversation context if available
-    if conversation_memory and st.session_state.get('conv_session_id'):
+    if CONVERSATION_MEMORY_AVAILABLE and st.session_state.get('conv_session_id'):
         context = conversation_memory.get_conversation_context(st.session_state.conv_session_id)
         if context and context.topic:
             with st.expander("💭 Conversation Context", expanded=False):
@@ -84,8 +94,8 @@ def render_chat_view():
         
         # Process with ADK delegation
         with st.chat_message("assistant"):
-            with st.spinner("🧠 ADK processing with intelligent delegation..."):
-                response, agent = process_adk_with_delegation(prompt)
+            with st.spinner("🧠 Processing with ADK agents..."):
+                response, agent = process_with_adk_coordinator(prompt)
                 st.write(response)
                 
                 # Add assistant response
@@ -102,119 +112,65 @@ def render_chat_view():
     if st.session_state.chat_messages:
         if st.button("🗑️ Clear Chat"):
             st.session_state.chat_messages = []
-            if conversation_memory and st.session_state.get('conv_session_id'):
+            if CONVERSATION_MEMORY_AVAILABLE and st.session_state.get('conv_session_id'):
                 # Start new session
                 session_id = conversation_memory.create_session("streamlit_user")
                 st.session_state.conv_session_id = session_id
             st.rerun()
 
-def process_adk_with_delegation(query: str) -> Tuple[str, str]:
-    """Process query with real ADK agent delegation and conversation memory"""
+def process_with_adk_coordinator(query: str) -> Tuple[str, str]:
+    """Process query using ADK coordinator agent - direct integration only"""
     try:
         session_id = st.session_state.get('conv_session_id')
         project_id = st.session_state.get('selected_project', 'default-project')
         
-        # Add user message to conversation memory
-        if conversation_memory and session_id:
+        # Add user message to conversation memory if available
+        if CONVERSATION_MEMORY_AVAILABLE and conversation_memory and session_id:
             conversation_memory.add_message(session_id, 'user', query)
-        
-        # Use real ADK agents if available
-        if ADK_AGENTS_AVAILABLE and create_coordinator_agent:
-            response, agent_name = process_with_adk_coordinator(query, project_id, session_id)
-        else:
-            # Attempt to bootstrap or provide setup guidance
-            response, agent_name = process_adk_fallback(query)
-        
-        # Add assistant response to conversation memory
-        if conversation_memory and session_id:
-            conversation_memory.add_message(
-                session_id, 
-                'assistant', 
-                response,
-                metadata={'agent_used': agent_name, 'query_type': get_query_type(query)}
-            )
-            
-            # Update context based on response
-            if 'bucket' in query.lower():
-                conversation_memory.update_context(
-                    session_id,
-                    analysis_results={
-                        'type': 'bucket_analysis',
-                        'buckets_found': ['my-data-bucket', 'backup-bucket', 'logs-bucket']
-                    },
-                    recommendations=[
-                        'Enable encryption on my-data-bucket',
-                        'Review public access settings',
-                        'Set up lifecycle policies'
-                    ]
-                )
-        
-        return response, agent_name
-        
-    except Exception as e:
-        logger.error(f"ADK delegation error: {e}")
-        return f"Error in ADK delegation: {str(e)}", "ErrorHandler"
-
-def process_with_adk_coordinator(query: str, project_id: str, session_id: Optional[str]) -> Tuple[str, str]:
-    """Process query using real ADK coordinator agent"""
-    try:
-        # Get conversation context for intelligent routing
-        routing_context = {}
-        if conversation_memory and session_id:
+            # Get conversation context for intelligent routing
             routing_context = conversation_memory.get_context_for_agent_routing(session_id)
+        else:
+            routing_context = {}
         
-        # Create coordinator agent
+        # Create and use coordinator agent
         coordinator = create_coordinator_agent(project_id)
         
-        # Add routing context to the query
+        # Add routing context to the query if available
         enhanced_query = query
         if routing_context.get('topic'):
             enhanced_query = f"[Context: {routing_context['topic']}] {query}"
         
-        # Process with coordinator (this will delegate to appropriate sub-agent)
-        logger.info(f"Delegating to ADK coordinator: {enhanced_query}")
+        # Process with coordinator (delegates to appropriate sub-agent)
+        logger.info(f"Processing with ADK coordinator: {enhanced_query}")
         response = coordinator.send_message(enhanced_query)
         
-        # Extract the agent that was used from response metadata
-        agent_used = "CoordinatorAgent"  # Default
+        # Determine which agent was used
+        agent_used = "CoordinatorAgent"
         if hasattr(response, 'metadata') and response.metadata:
             agent_used = response.metadata.get('delegated_agent', 'CoordinatorAgent')
+        
+        # Add response to conversation memory if available
+        if CONVERSATION_MEMORY_AVAILABLE and conversation_memory and session_id:
+            conversation_memory.add_message(
+                session_id,
+                'assistant', 
+                str(response),
+                metadata={'agent_used': agent_used, 'query_type': get_query_type(query)}
+            )
+            
+            # Update context based on response type
+            if 'bucket' in query.lower():
+                conversation_memory.update_context(
+                    session_id,
+                    analysis_results={'type': 'bucket_analysis'},
+                    recommendations=['Security recommendations based on analysis']
+                )
         
         return str(response), agent_used
         
     except Exception as e:
-        logger.error(f"ADK coordinator error: {e}")
-        # Fall back to mock response
-        return process_adk_fallback(query)
-
-def process_adk_fallback(query: str) -> Tuple[str, str]:
-    """Fallback processing when ADK agents aren't available - attempts to bootstrap ADK connection"""
-    try:
-        # Attempt to initialize ADK agents even if initial import failed
-        project_id = st.session_state.get('selected_project', 'default-project')
-        
-        # Try to import and create coordinator on demand
-        if not ADK_AGENTS_AVAILABLE:
-            try:
-                # Dynamic import attempt
-                sys.path.append(project_root)
-                from agents.coordinator_agent import create_coordinator_agent
-                coordinator = create_coordinator_agent(project_id)
-                logger.info("✅ Successfully bootstrapped ADK agents")
-                
-                # Process with real coordinator
-                response = coordinator.send_message(query)
-                return str(response), "CoordinatorAgent (Bootstrapped)"
-                
-            except Exception as bootstrap_error:
-                logger.error(f"ADK bootstrap failed: {bootstrap_error}")
-                return get_adk_setup_guidance(), "SetupRequired"
-        
-        return "ADK agents are loading. Please wait and try again.", "SystemLoading"
-        
-    except Exception as e:
-        logger.error(f"ADK fallback error: {e}")
-        return f"Unable to connect to ADK services: {str(e)}", "ConnectionError"
+        logger.error(f"ADK coordinator processing error: {e}")
+        return f"Error processing with ADK coordinator: {str(e)}", "ErrorHandler"
 
 def get_query_type(query: str) -> str:
     """Determine query type for metadata"""
