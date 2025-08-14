@@ -114,27 +114,26 @@ class BaseLlmFlow(ABC):
         async with llm.connect(llm_request) as llm_connection:
           if llm_request.contents:
             # Sends the conversation history to the model.
-            # with tracer.start_as_current_span('send_data'):
+            with tracer.start_as_current_span('send_data'):
+              if invocation_context.transcription_cache:
+                from . import audio_transcriber
 
-            if invocation_context.transcription_cache:
-              from . import audio_transcriber
-
-              audio_transcriber = audio_transcriber.AudioTranscriber(
-                  init_client=True
-                  if invocation_context.run_config.input_audio_transcription
-                  is None
-                  else False
-              )
-              contents = audio_transcriber.transcribe_file(invocation_context)
-              logger.debug('Sending history to model: %s', contents)
-              await llm_connection.send_history(contents)
-              invocation_context.transcription_cache = None
-              trace_send_data(invocation_context, event_id, contents)
-            else:
-              await llm_connection.send_history(llm_request.contents)
-              trace_send_data(
-                  invocation_context, event_id, llm_request.contents
-              )
+                audio_transcriber = audio_transcriber.AudioTranscriber(
+                    init_client=True
+                    if invocation_context.run_config.input_audio_transcription
+                    is None
+                    else False
+                )
+                contents = audio_transcriber.transcribe_file(invocation_context)
+                logger.debug('Sending history to model: %s', contents)
+                await llm_connection.send_history(contents)
+                invocation_context.transcription_cache = None
+                trace_send_data(invocation_context, event_id, contents)
+              else:
+                await llm_connection.send_history(llm_request.contents)
+                trace_send_data(
+                    invocation_context, event_id, llm_request.contents
+                )
 
           send_task = asyncio.create_task(
               self._send_to_model(llm_connection, invocation_context)
@@ -641,65 +640,65 @@ class BaseLlmFlow(ABC):
     llm = self.__get_llm(invocation_context)
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
-      # with tracer.start_as_current_span('call_llm'):
-      if invocation_context.run_config.support_cfc:
-        invocation_context.live_request_queue = LiveRequestQueue()
-        responses_generator = self.run_live(invocation_context)
-        async with Aclosing(
-            self._run_and_handle_error(
-                responses_generator,
-                invocation_context,
-                llm_request,
-                model_response_event,
-            )
-        ) as agen:
-          async for llm_response in agen:
-            # Runs after_model_callback if it exists.
-            if altered_llm_response := await self._handle_after_model_callback(
-                invocation_context, llm_response, model_response_event
-            ):
-              llm_response = altered_llm_response
-            # only yield partial response in SSE streaming mode
-            if (
-                invocation_context.run_config.streaming_mode
-                == StreamingMode.SSE
-                or not llm_response.partial
-            ):
-              yield llm_response
-            if llm_response.turn_complete:
-              invocation_context.live_request_queue.close()
-      else:
-        # Check if we can make this llm call or not. If the current call
-        # pushes the counter beyond the max set value, then the execution is
-        # stopped right here, and exception is thrown.
-        invocation_context.increment_llm_call_count()
-        responses_generator = llm.generate_content_async(
-            llm_request,
-            stream=invocation_context.run_config.streaming_mode
-            == StreamingMode.SSE,
-        )
-        async with Aclosing(
-            self._run_and_handle_error(
-                responses_generator,
-                invocation_context,
-                llm_request,
-                model_response_event,
-            )
-        ) as agen:
-          async for llm_response in agen:
-            trace_call_llm(
-                invocation_context,
-                model_response_event.id,
-                llm_request,
-                llm_response,
-            )
-            # Runs after_model_callback if it exists.
-            if altered_llm_response := await self._handle_after_model_callback(
-                invocation_context, llm_response, model_response_event
-            ):
-              llm_response = altered_llm_response
+      with tracer.start_as_current_span('call_llm'):
+        if invocation_context.run_config.support_cfc:
+          invocation_context.live_request_queue = LiveRequestQueue()
+          responses_generator = self.run_live(invocation_context)
+          async with Aclosing(
+              self._run_and_handle_error(
+                  responses_generator,
+                  invocation_context,
+                  llm_request,
+                  model_response_event,
+              )
+          ) as agen:
+            async for llm_response in agen:
+              # Runs after_model_callback if it exists.
+              if altered_llm_response := await self._handle_after_model_callback(
+                  invocation_context, llm_response, model_response_event
+              ):
+                llm_response = altered_llm_response
+              # only yield partial response in SSE streaming mode
+              if (
+                  invocation_context.run_config.streaming_mode
+                  == StreamingMode.SSE
+                  or not llm_response.partial
+              ):
+                yield llm_response
+              if llm_response.turn_complete:
+                invocation_context.live_request_queue.close()
+        else:
+          # Check if we can make this llm call or not. If the current call
+          # pushes the counter beyond the max set value, then the execution is
+          # stopped right here, and exception is thrown.
+          invocation_context.increment_llm_call_count()
+          responses_generator = llm.generate_content_async(
+              llm_request,
+              stream=invocation_context.run_config.streaming_mode
+              == StreamingMode.SSE,
+          )
+          async with Aclosing(
+              self._run_and_handle_error(
+                  responses_generator,
+                  invocation_context,
+                  llm_request,
+                  model_response_event,
+              )
+          ) as agen:
+            async for llm_response in agen:
+              trace_call_llm(
+                  invocation_context,
+                  model_response_event.id,
+                  llm_request,
+                  llm_response,
+              )
+              # Runs after_model_callback if it exists.
+              if altered_llm_response := await self._handle_after_model_callback(
+                  invocation_context, llm_response, model_response_event
+              ):
+                llm_response = altered_llm_response
 
-            yield llm_response
+              yield llm_response
 
     async with Aclosing(_call_llm_with_tracing()) as agen:
       async for event in agen:
