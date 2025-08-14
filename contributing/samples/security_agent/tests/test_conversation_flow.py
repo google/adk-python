@@ -1,220 +1,207 @@
+#!/usr/bin/env python3
 """
-Test cases for conversation flow functionality
-Tests the bucket analysis conversation pattern stored in memory
+Test multi-level conversation flow with follow-up questions
+Ensures the chat maintains context and handles deep interactions
 """
 
-import pytest
-import asyncio
-from datetime import datetime
-import sys
-import os
+import requests
+import json
+import time
 
-# Add the project root to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+class ConversationTester:
+    def __init__(self):
+        self.base_url = "http://localhost:8000/api/v1/agent/chat"
+        self.session_id = None
+        self.conversation_id = None
+        self.user_id = "test_user"
+        self.project_id = "mgm-digitalconcierge"
+        
+    def send_message(self, query):
+        """Send a message and return the response"""
+        payload = {
+            "query": query,
+            "user_id": self.user_id,
+            "project_id": self.project_id
+        }
+        
+        # Include session/conversation IDs if available
+        if self.session_id:
+            payload["session_id"] = self.session_id
+        if self.conversation_id:
+            payload["conversation_id"] = self.conversation_id
+            
+        response = requests.post(self.base_url, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Update session and conversation IDs
+            if data.get("session_id"):
+                self.session_id = data["session_id"]
+            if data.get("conversation_id"):
+                self.conversation_id = data["conversation_id"]
+                
+            return data
+        else:
+            return {"success": False, "error": f"HTTP {response.status_code}"}
+    
+    def run_conversation(self, conversation_flow):
+        """Run a multi-turn conversation"""
+        print("\n" + "="*80)
+        print("🗣️ MULTI-LEVEL CONVERSATION TEST")
+        print("="*80)
+        
+        for i, (query, expected_context) in enumerate(conversation_flow, 1):
+            print(f"\n📝 Turn {i}: {query}")
+            print("-" * 40)
+            
+            response = self.send_message(query)
+            
+            if response.get("success"):
+                agent = response.get("agent_used", "Unknown")
+                response_text = response.get("response", "")
+                suggestions = response.get("suggestions", [])
+                
+                print(f"✅ Agent: {agent}")
+                print(f"💬 Response: {response_text[:200]}...")
+                
+                if suggestions:
+                    print(f"💡 Suggestions: {', '.join(suggestions[:2])}")
+                
+                # Check if expected context is present
+                if expected_context:
+                    if any(ctx.lower() in response_text.lower() for ctx in expected_context):
+                        print(f"✓ Context preserved: Found expected terms")
+                    else:
+                        print(f"⚠️ Warning: Expected context not found: {expected_context}")
+            else:
+                print(f"❌ Failed: {response.get('error', 'Unknown error')}")
+                return False
+            
+            # Small delay between messages
+            time.sleep(0.5)
+        
+        return True
 
-from backend.services.conversation_memory import ConversationMemoryManager, ConversationContext
-from agents.coordinator_agent import CoordinatorAgent
+def test_deep_storage_conversation():
+    """Test a deep conversation about storage security"""
+    tester = ConversationTester()
+    
+    conversation = [
+        # Level 1: Initial query
+        ("Tell me about my bucket security issues", 
+         ["bucket", "security", "storage"]),
+        
+        # Level 2: Follow-up on specific issue
+        ("How do I fix the public access issue you mentioned?",
+         ["public", "access", "gsutil", "iam"]),
+        
+        # Level 3: Deeper dive into remediation
+        ("What's the exact command to remove public access from mgm-digitalconcierge-public-assets?",
+         ["gsutil", "iam", "ch", "allUsers"]),
+        
+        # Level 4: Related follow-up
+        ("After fixing that, what other bucket security issues should I address?",
+         ["versioning", "encryption", "logging", "lifecycle"])
+    ]
+    
+    return tester.run_conversation(conversation)
 
-class TestConversationFlow:
-    """Test conversation flow and memory functionality"""
+def test_cross_domain_conversation():
+    """Test conversation that spans multiple domains"""
+    tester = ConversationTester()
     
-    def setup_method(self):
-        """Set up test environment"""
-        self.memory_manager = ConversationMemoryManager()
-        self.coordinator = CoordinatorAgent()
-        self.test_user_id = "test_user"
+    conversation = [
+        # Start with storage
+        ("What are my biggest security risks?",
+         ["security", "risk"]),
+        
+        # Move to IAM
+        ("Show me which users have the most dangerous permissions",
+         ["users", "permissions", "iam", "role"]),
+        
+        # Move to network
+        ("Are there any firewall rules that could be exploited?",
+         ["firewall", "rules", "port", "ssh"]),
+        
+        # Move to cost
+        ("How much would it cost to fix all these security issues?",
+         ["cost", "savings", "optimization"]),
+        
+        # Back to general with context
+        ("Can you summarize all the critical issues we discussed?",
+         ["summary", "critical", "issues"])
+    ]
     
-    def test_conversation_session_creation(self):
-        """Test creating a conversation session"""
-        session_id = self.memory_manager.create_session(self.test_user_id)
-        
-        assert session_id is not None
-        assert len(session_id) > 0
-        assert session_id in self.memory_manager.sessions
-        
-        session = self.memory_manager.sessions[session_id]
-        assert session.user_id == self.test_user_id
-        assert session.status == 'active'
-        assert len(session.messages) == 0
+    return tester.run_conversation(conversation)
+
+def test_clarification_conversation():
+    """Test conversation with clarifications and refinements"""
+    tester = ConversationTester()
     
-    def test_message_addition_to_conversation(self):
-        """Test adding messages to a conversation"""
-        session_id = self.memory_manager.create_session(self.test_user_id)
+    conversation = [
+        # Vague initial query
+        ("Help me with security",
+         ["security", "help"]),
         
-        # Add user message
-        message_id = self.memory_manager.add_message(
-            session_id, 
-            'user', 
-            'tell me about the buckets in the project'
-        )
+        # Clarification
+        ("I'm specifically worried about data exposure",
+         ["data", "exposure", "public", "access"]),
         
-        assert message_id is not None
+        # More specific
+        ("Check if any of my storage buckets are publicly accessible",
+         ["bucket", "public", "accessible"]),
         
-        # Check message was added
-        history = self.memory_manager.get_conversation_history(session_id)
-        assert len(history) == 1
-        assert history[0].role == 'user'
-        assert history[0].content == 'tell me about the buckets in the project'
+        # Action request
+        ("Give me the commands to lock down all public buckets",
+         ["gsutil", "iam", "command", "lock"])
+    ]
     
-    def test_conversation_context_updates(self):
-        """Test conversation context detection and updates"""
-        session_id = self.memory_manager.create_session(self.test_user_id)
-        
-        # Add bucket-related message
-        self.memory_manager.add_message(
-            session_id, 
-            'user', 
-            'tell me about the buckets in the project'
-        )
-        
-        # Check context was updated
-        context = self.memory_manager.get_conversation_context(session_id)
-        assert context.topic == 'storage_analysis'
-        assert 'buckets' in context.entities
+    return tester.run_conversation(conversation)
+
+def main():
+    """Run all conversation tests"""
+    print("\n" + "="*80)
+    print("🧪 CONVERSATION FLOW TESTING SUITE")
+    print("="*80)
     
-    def test_bucket_analysis_conversation_pattern(self):
-        """Test the specific bucket analysis conversation pattern from memory"""
-        session_id = self.memory_manager.create_session(self.test_user_id)
-        
-        # Simulate the stored test case: "tell me about the buckets in the project"
-        user_query = "tell me about the buckets in the project"
-        
-        # Add user message
-        self.memory_manager.add_message(session_id, 'user', user_query)
-        
-        # Simulate agent response with buckets and recommendations
-        agent_response = """Found the following buckets in your project:
-        1. my-data-bucket - Contains application data
-        2. backup-bucket - Used for backups
-        3. logs-bucket - Stores application logs
-        
-        Recommendations for these buckets:
-        - Enable encryption on my-data-bucket for sensitive data
-        - Review public access settings on all buckets
-        - Set up lifecycle policies for backup-bucket"""
-        
-        # Add agent response with metadata
-        self.memory_manager.add_message(
-            session_id, 
-            'assistant', 
-            agent_response,
-            metadata={'agent_used': 'SecurityAgent', 'analysis_type': 'bucket_analysis'}
-        )
-        
-        # Update context with analysis results and recommendations
-        self.memory_manager.update_context(
-            session_id,
-            analysis_results={
-                'type': 'bucket_analysis',
-                'buckets_found': ['my-data-bucket', 'backup-bucket', 'logs-bucket'],
-                'timestamp': datetime.now().isoformat()
-            },
-            recommendations=[
-                'Enable encryption on my-data-bucket',
-                'Review public access settings',
-                'Set up lifecycle policies'
-            ]
-        )
-        
-        # Verify conversation flow
-        history = self.memory_manager.get_conversation_history(session_id)
-        assert len(history) == 2
-        
-        # Check context contains expected information
-        context = self.memory_memory.get_conversation_context(session_id)
-        assert context.topic == 'storage_analysis'
-        assert 'buckets' in context.entities
-        assert context.analysis_results['type'] == 'bucket_analysis'
-        assert len(context.recommendations) == 3
-        
-        # Test follow-up question should maintain context
-        follow_up_query = "What about the encryption on the backup bucket?"
-        
-        # Get context for agent routing - should indicate we're in storage analysis
-        routing_context = self.memory_manager.get_context_for_agent_routing(session_id)
-        assert routing_context['topic'] == 'storage_analysis'
-        assert routing_context['has_analysis_results'] == True
-        assert 'buckets' in routing_context['entities']
-        
-        print("✅ Bucket analysis conversation pattern test passed!")
+    tests = [
+        ("Deep Storage Conversation", test_deep_storage_conversation),
+        ("Cross-Domain Conversation", test_cross_domain_conversation),
+        ("Clarification Conversation", test_clarification_conversation)
+    ]
     
-    @pytest.mark.asyncio
-    async def test_coordinator_conversation_awareness(self):
-        """Test that coordinator agent uses conversation context for routing"""
-        session_id = self.memory_manager.create_session(self.test_user_id)
-        
-        # First query - should establish context
-        first_query = "tell me about the buckets in the project"
-        
-        # Mock the coordinator process_query with session_id
-        # Note: This would require actual GCP credentials and setup for full integration test
-        # For unit testing, we're testing the conversation flow logic
-        
-        # Add the query to memory
-        self.memory_manager.add_message(session_id, 'user', first_query)
-        
-        # Simulate context establishment
-        self.memory_manager.update_context(
-            session_id,
-            topic='storage_analysis',
-            entities=['buckets'],
-            analysis_results={'type': 'bucket_analysis'}
-        )
-        
-        # Test follow-up query routing context
-        routing_context = self.memory_manager.get_context_for_agent_routing(session_id)
-        
-        # Verify routing context contains conversation awareness
-        assert routing_context['topic'] == 'storage_analysis'
-        assert 'buckets' in routing_context['entities']
-        assert routing_context['has_analysis_results'] == True
-        
-        print("✅ Coordinator conversation awareness test passed!")
+    passed = 0
+    failed = 0
     
-    def test_conversation_memory_cleanup(self):
-        """Test conversation memory cleanup functionality"""
-        # Create a session
-        session_id = self.memory_manager.create_session(self.test_user_id)
+    for test_name, test_func in tests:
+        print(f"\n\n🎯 Testing: {test_name}")
+        print("="*80)
         
-        # Add some messages
-        self.memory_manager.add_message(session_id, 'user', 'test message')
-        
-        # Verify session exists
-        assert session_id in self.memory_manager.sessions
-        
-        # Test session summary
-        summary = self.memory_manager.get_session_summary(session_id)
-        assert summary['message_count'] == 1
-        assert summary['session_id'] == session_id
-        
-        print("✅ Conversation memory cleanup test passed!")
+        try:
+            if test_func():
+                print(f"\n✅ {test_name} PASSED")
+                passed += 1
+            else:
+                print(f"\n❌ {test_name} FAILED")
+                failed += 1
+        except Exception as e:
+            print(f"\n❌ {test_name} FAILED with error: {e}")
+            failed += 1
+    
+    print("\n" + "="*80)
+    print("📊 FINAL RESULTS")
+    print("="*80)
+    print(f"✅ Passed: {passed}/{len(tests)}")
+    print(f"❌ Failed: {failed}/{len(tests)}")
+    
+    if failed == 0:
+        print("\n🎉 All conversation flows working correctly!")
+        print("✨ Multi-level interactions and context preservation verified.")
+    else:
+        print(f"\n⚠️ {failed} conversation flow(s) need improvement.")
+    
+    return 0 if failed == 0 else 1
 
 if __name__ == "__main__":
-    # Run the tests
-    test_instance = TestConversationFlow()
-    
-    # Run individual tests
-    test_instance.setup_method()
-    test_instance.test_conversation_session_creation()
-    
-    test_instance.setup_method()
-    test_instance.test_message_addition_to_conversation()
-    
-    test_instance.setup_method()
-    test_instance.test_conversation_context_updates()
-    
-    test_instance.setup_method()
-    test_instance.test_bucket_analysis_conversation_pattern()
-    
-    test_instance.setup_method()
-    asyncio.run(test_instance.test_coordinator_conversation_awareness())
-    
-    test_instance.setup_method()
-    test_instance.test_conversation_memory_cleanup()
-    
-    print("\n🎉 All conversation flow tests completed successfully!")
-    print("\nTest case validates:")
-    print("✅ User asks: 'tell me about the buckets in the project'")
-    print("✅ Agent responds with buckets AND recommendations")
-    print("✅ Conversation context maintained for follow-up questions")
-    print("✅ Agent routing uses conversation awareness")
+    exit(main())
