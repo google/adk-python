@@ -1,81 +1,66 @@
-# ADK Security Agent Documentation
+# Documentation
 
-This directory contains documentation for the Google ADK Security Agent with chat-centric architecture.
+This directory contains comprehensive documentation for the GCP Security Agent with ADK integration.
 
-## 📋 Documentation Index
+## Documentation Structure
 
-### Setup & Configuration
-- **[ADK_SETUP_GUIDE.md](ADK_SETUP_GUIDE.md)** - Complete guide to installing and configuring Google ADK
+### 📁 `/guides` - Setup & Configuration Guides
+- **[QUICK_START.md](guides/QUICK_START.md)** - Get running in 5 minutes
+- **[ENV_SETUP.md](guides/ENV_SETUP.md)** - Environment configuration details
+- **[ADK_SETUP_GUIDE.md](ADK_SETUP_GUIDE.md)** - Complete Google ADK setup
 - **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** - Production deployment instructions
-- **[MANUAL_DEPLOYMENT.md](MANUAL_DEPLOYMENT.md)** - Manual deployment procedures
+- **[MANUAL_DEPLOYMENT.md](MANUAL_DEPLOYMENT.md)** - Step-by-step manual deployment
 
-### Architecture & Implementation
+### 📁 `/architecture` - System Architecture & Design
+- **[ARCHITECTURE.md](architecture/ARCHITECTURE.md)** - System design overview and patterns
+- **[AGENT_TOOLS_ARCHITECTURE.md](architecture/AGENT_TOOLS_ARCHITECTURE.md)** - Agent and tools architecture
+- **[CHAT_CENTRIC_ARCHITECTURE.md](architecture/CHAT_CENTRIC_ARCHITECTURE.md)** - Chat-first interface design
+- **[CHAT_INTERFACE_COMPONENTS.md](architecture/CHAT_INTERFACE_COMPONENTS.md)** - Chat UI component details
+- **[IMPLEMENTATION_ROADMAP.md](architecture/IMPLEMENTATION_ROADMAP.md)** - Development roadmap
+
+### 📁 Implementation Details
 - **[ADK_DELEGATION_PATTERN_IMPLEMENTATION.md](ADK_DELEGATION_PATTERN_IMPLEMENTATION.md)** - ADK agent delegation patterns
-- **[CHAT_CENTRIC_IMPLEMENTATION_SUMMARY.md](CHAT_CENTRIC_IMPLEMENTATION_SUMMARY.md)** - Chat-first architecture overview
-- **[architecture/](architecture/)** - Detailed architecture documentation
+- **[CHAT_CENTRIC_IMPLEMENTATION_SUMMARY.md](CHAT_CENTRIC_IMPLEMENTATION_SUMMARY.md)** - Chat architecture implementation
+- **[API_REFERENCE.md](API_REFERENCE.md)** - Complete API endpoint documentation
 
-## 🚀 Quick Start
+## Quick Navigation
 
-1. **Prerequisites**: Google Cloud Project with ADK access
-2. **Setup**: Follow [ADK_SETUP_GUIDE.md](ADK_SETUP_GUIDE.md)
-3. **Architecture**: Review [CHAT_CENTRIC_IMPLEMENTATION_SUMMARY.md](CHAT_CENTRIC_IMPLEMENTATION_SUMMARY.md)
-4. **Deployment**: Use [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+### Getting Started
+1. Start with [QUICK_START.md](guides/QUICK_START.md) for rapid deployment
+2. Configure environment using [ENV_SETUP.md](guides/ENV_SETUP.md)
+3. Setup ADK with [ADK_SETUP_GUIDE.md](ADK_SETUP_GUIDE.md)
 
-## 🎯 Key Concepts
+### Understanding the System
+1. Review [ARCHITECTURE.md](architecture/ARCHITECTURE.md) for system overview
+2. Explore [CHAT_CENTRIC_ARCHITECTURE.md](architecture/CHAT_CENTRIC_ARCHITECTURE.md) for chat design
+3. Check [API_REFERENCE.md](API_REFERENCE.md) for API details
+
+### Deployment
+1. Follow [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for production deployment
+2. Use [MANUAL_DEPLOYMENT.md](MANUAL_DEPLOYMENT.md) for custom setups
+
+## Key Concepts
 
 ### ADK Integration
-- **Direct Integration**: Single version chat interface
 - **Coordinator Agent**: LLM-driven delegation to specialized agents
-- **Real GCP Data**: No mock responses - live project data only
+- **Direct Integration**: Single version chat interface
+- **Real GCP Data**: Live project data integration
 
 ### Chat-Centric Architecture
-- **Primary Interface**: Chat is the main user interaction
-- **Agent Delegation**: Automatic routing to security, IAM, storage specialists
-- **Conversation Memory**: Context persistence across sessions
+- **Primary Interface**: Chat as main user interaction
+- **Agent Delegation**: Automatic routing to specialists
+- **Conversation Memory**: Context persistence
 
-## 🔧 Development
+### Security Features
+- **IAM Analysis**: Deep permissions review
+- **Vulnerability Scanning**: Real-time security assessment
+- **Compliance Evaluation**: SOC2, ISO27001, GDPR frameworks
 
-### Required Dependencies
-```bash
-pip install google-adk google-generativeai google-cloud-aiplatform
-```
+## Recent Updates
 
-### Authentication
-```bash
-gcloud auth application-default login
-gcloud config set project YOUR_PROJECT_ID
-```
-
-## 📊 Architecture Overview
-
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Chat UI       │───▶│  Coordinator     │───▶│  Specialized    │
-│   (Frontend)    │    │  Agent (ADK)     │    │  Agents (ADK)   │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-        │                       │                       │
-        ▼                       ▼                       ▼
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│  Conversation   │    │  LLM-Driven      │    │  • Security     │
-│  Memory         │    │  Routing         │    │  • IAM          │
-└─────────────────┘    └──────────────────┘    │  • Storage      │
-                                               │  • Compliance   │
-                                               └─────────────────┘
-```
-
-## 🆕 Recent Changes
-
-- **Simplified Architecture**: Removed enhanced/hybrid patterns
-- **Single Chat Version**: Eliminated multiple chat implementations
-- **Direct ADK Only**: No fallback modes or mock responses
-- **Clean Documentation**: Removed obsolete implementation docs
-
-## 📖 Additional Resources
-
-- [Google ADK Documentation](https://cloud.google.com/agent-development-kit)
-- [Vertex AI Documentation](https://cloud.google.com/vertex-ai/docs)
-- [Architecture Roadmap](architecture/IMPLEMENTATION_ROADMAP.md)
+- **v2.0**: Simplified architecture with single chat version
+- **Direct ADK Only**: Removed fallback modes
+- **Clean Documentation**: Reorganized for clarity
 
 ---
-**Last Updated**: August 2025  
-**Version**: 2.0 (Simplified Architecture)
+**Last Updated**: August 2025

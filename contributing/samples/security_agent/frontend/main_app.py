@@ -69,34 +69,66 @@ logger = logging.getLogger(__name__)
 streamlit_logger = logging.getLogger('streamlit')
 streamlit_logger.setLevel(logging.DEBUG)
 
-# Import components
-from components import (
-    render_dashboard_view,
-    render_security_evaluation_view,
-    render_recommendations_view,
-    render_iam_analyzer_view,
-    render_compliance_view,
-    render_chat_view,
-    render_roadmap_view,
-    render_msa_analysis_view,
-    render_performance_monitoring_view,
-    render_day_two_sre_view,
-    render_api_explorer_view,
-    render_incident_response_view,
-    render_multi_agent_graph_view
-)
+# Import components - use relative imports when run as main
+try:
+    from components import (
+        render_dashboard_view,
+        render_security_evaluation_view,
+        render_recommendations_view,
+        render_iam_analyzer_view,
+        render_compliance_view,
+        render_chat_view,
+        render_roadmap_view,
+        render_msa_analysis_view,
+        render_performance_monitoring_view,
+        render_day_two_sre_view,
+        render_api_explorer_view,
+        render_incident_response_view,
+        render_multi_agent_graph_view
+    )
+except ImportError:
+    # Fallback to absolute imports
+    from frontend.components import (
+        render_dashboard_view,
+        render_security_evaluation_view,
+        render_recommendations_view,
+        render_iam_analyzer_view,
+        render_compliance_view,
+        render_chat_view,
+        render_roadmap_view,
+        render_msa_analysis_view,
+        render_performance_monitoring_view,
+        render_day_two_sre_view,
+        render_api_explorer_view,
+        render_incident_response_view,
+        render_multi_agent_graph_view
+    )
 
 # Import performance monitoring
-from components.monitoring.performance_monitor import (
-    render_performance_monitor,
-    add_performance_metrics_to_sidebar,
-    initialize_performance_monitoring
-)
+try:
+    from components.monitoring.performance_monitor import (
+        render_performance_monitor,
+        add_performance_metrics_to_sidebar,
+        initialize_performance_monitoring
+    )
+except ImportError:
+    from frontend.components.monitoring.performance_monitor import (
+        render_performance_monitor,
+        add_performance_metrics_to_sidebar,
+        initialize_performance_monitoring
+    )
 
 # Import shared utilities
-from startup_status import render_startup_screen_if_needed, StartupStatusChecker
-from api_client_consolidated import api_client as simple_api
-from config import BACKEND_URL, DEFAULT_PROJECT_ID, DEFAULT_USER_EMAIL
+try:
+    from startup_status import render_startup_screen_if_needed, StartupStatusChecker
+    from api_client_consolidated import api_client as simple_api
+except ImportError:
+    from frontend.startup_status import render_startup_screen_if_needed, StartupStatusChecker
+    from frontend.api_client_consolidated import api_client as simple_api
+try:
+    from config import BACKEND_URL, DEFAULT_PROJECT_ID, DEFAULT_USER_EMAIL
+except ImportError:
+    from frontend.config import BACKEND_URL, DEFAULT_PROJECT_ID, DEFAULT_USER_EMAIL
 
 
 def init_session_state():
@@ -209,7 +241,8 @@ def render_project_selector():
         
         for project in st.session_state.available_projects:
             if isinstance(project, dict):
-                project_id = project.get('project_id', 'unknown')
+                # Backend returns 'id' not 'project_id'
+                project_id = project.get('id', project.get('project_id', 'unknown'))
                 project_name = project.get('name', f'Project {project_id}')
                 display_name = f"{project_name} ({project_id})"
             else:

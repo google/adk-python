@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
@@ -87,6 +88,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     message_type: Optional[str] = "chat"  # chat, follow_up, clarification
     metadata: Optional[Dict[str, Any]] = None
+    project_id: Optional[str] = None  # GCP project ID for routing
 
 class ChatResponse(BaseModel):
     """Enhanced response model for agent chat."""
@@ -269,28 +271,281 @@ async def chat_with_agent(chat_request: ChatRequest, request: Request, backgroun
             "conversation_id": conversation_id
         }
         
-        # Process with enhanced ADK service
+        # Process with smart routing based on query context
         try:
-            # Import here to avoid circular imports
-            import sys
-            import os
-            sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-            from backend.main import create_enhanced_adk_chat_service
+            from backend.api.query_router import query_router, Specialist
             
-            project_id = os.environ.get('GOOGLE_CLOUD_PROJECT', 'demo-project')
-            chat_service = create_enhanced_adk_chat_service(project_id)
+            project_id = chat_request.project_id or os.environ.get('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
             
-            # Get response with delegation tracking
-            result = await chat_service.process_chat_message(chat_request.query, enhanced_context)
+            # Use smart router to detect specialist
+            routing_decision = query_router.route_query(chat_request.query)
+            specialist = routing_decision["specialist"]
+            confidence = routing_decision["confidence"]
+            routing_context = routing_decision["context"]
             
-        except Exception as service_error:
-            logger.error(f"Chat service error: {service_error}")
-            # Fallback response
+            logger.info(f"Query routing decision: {routing_decision['explanation']}")
+            
+            # Route to appropriate specialist
+            if specialist == Specialist.STORAGE:
+                # Route to storage analysis
+                logger.info(f"Routing to Storage Specialist for: {chat_request.query}")
+                
+                try:
+                    # Import and call storage analysis directly
+                    from backend.api.storage import analyze_buckets
+                    storage_data = await analyze_buckets(project_id, detailed=True)
+                except Exception as e:
+                    logger.error(f"Failed to get storage analysis: {e}")
+                    storage_data = {"success": False, "error": str(e)}
+                
+                if storage_data.get("success"):
+                    # Format the response with specific bucket findings
+                    findings = storage_data.get("security_findings", {})
+                    recommendations = storage_data.get("specific_recommendations", [])
+                    immediate_actions = storage_data.get("immediate_actions", [])
+                    
+                    response_text = f"🔍 **Storage Security Analysis for Project: {project_id}**\n\n"
+                    response_text += f"I analyzed {storage_data['summary']['total_buckets']} buckets in your project. Here are the specific findings:\n\n"
+                    
+                    # Critical issues
+                    if findings.get("critical"):
+                        response_text += "🚨 **CRITICAL ISSUES FOUND:**\n"
+                        for issue in findings["critical"]:
+                            response_text += f"• **{issue['bucket']}**: {issue['issue']}\n"
+                            response_text += f"  → {issue['description']}\n"
+                            response_text += f"  **Fix:** `{issue['remediation']}`\n\n"
+                    
+                    # High priority issues
+                    if findings.get("high"):
+                        response_text += "⚠️ **HIGH PRIORITY ISSUES:**\n"
+                        for issue in findings["high"][:3]:  # Show top 3
+                            response_text += f"• **{issue['bucket']}**: {issue['issue']}\n"
+                            response_text += f"  → {issue['description']}\n\n"
+                    
+                    # Immediate actions
+                    response_text += "📋 **IMMEDIATE ACTIONS REQUIRED:**\n"
+                    for idx, action in enumerate(immediate_actions[:3], 1):
+                        response_text += f"\n{idx}. {action['action']}\n"
+                        response_text += f"   ```bash\n   {action['command']}\n   ```\n"
+                        response_text += f"   Impact: {action['impact']}\n"
+                    
+                    result = {
+                        "success": True,
+                        "response": response_text,
+                        "agent_used": "StorageSecuritySpecialist",
+                        "delegation_path": ["SecurityAgent", "StorageSpecialist"],
+                        "suggestions": [
+                            "How do I fix the public access issue?",
+                            "Show me the lifecycle policies I should implement",
+                            "What's the impact of enabling versioning?",
+                            "Help me set up CMEK encryption"
+                        ],
+                        "gcp_api_calls": ["storage.buckets.list", "storage.buckets.getIamPolicy"],
+                        "findings_summary": storage_data.get("summary", {})
+                    }
+                else:
+                    result = storage_data
+            
+            elif specialist == Specialist.IAM:
+                # Route to IAM analysis
+                logger.info(f"Routing to IAM Specialist")
+                
+                try:
+                    # Import and call IAM analysis directly
+                    from backend.api.iam import analyze_all_users
+                    iam_data = await analyze_all_users(project_id)
+                    
+                    response_text = f"🔐 **IAM Security Analysis for Project: {project_id}**\n\n"
+                    response_text += f"Analyzed {iam_data.get('total_users', 0)} users:\n"
+                    response_text += f"• 🔴 High Risk Users: {iam_data.get('high_risk_users', 0)}\n"
+                    response_text += f"• 🟡 Medium Risk Users: {iam_data.get('medium_risk_users', 0)}\n"
+                    response_text += f"• 🟢 Low Risk Users: {iam_data.get('low_risk_users', 0)}\n\n"
+                    
+                    if iam_data.get('users'):
+                        response_text += "**Top Findings:**\n"
+                        for user in iam_data['users'][:3]:
+                            response_text += f"• {user['email']}: {', '.join(user['roles'])} ({user['risk_level']} risk)\n"
+                    
+                    result = {
+                        "success": True,
+                        "response": response_text,
+                        "agent_used": "IAMSecuritySpecialist",
+                        "suggestions": [
+                            "Show me users with owner roles",
+                            "How do I implement least privilege?",
+                            "Check service account permissions"
+                        ]
+                    }
+                except Exception as e:
+                    logger.error(f"IAM analysis failed: {e}")
+                    result = {"success": False, "error": str(e)}
+            
+            elif specialist == Specialist.NETWORK:
+                # Route to Network analysis
+                logger.info(f"Routing to Network Specialist")
+                
+                try:
+                    # Import and call network analysis directly
+                    from backend.api.network import analyze_network_security
+                    network_data = await analyze_network_security(project_id, detailed=True)
+                    
+                    if network_data.get("success"):
+                        findings = network_data.get("security_findings", {})
+                        
+                        response_text = f"🌐 **Network Security Analysis for Project: {project_id}**\n\n"
+                        
+                        # Critical network issues
+                        if findings.get("critical"):
+                            response_text += "🚨 **CRITICAL NETWORK ISSUES:**\n"
+                            for issue in findings["critical"]:
+                                response_text += f"• {issue['resource']}: {issue['issue']}\n"
+                                response_text += f"  Fix: `{issue['remediation']}`\n\n"
+                        
+                        # High priority network issues
+                        if findings.get("high"):
+                            response_text += "⚠️ **HIGH PRIORITY ISSUES:**\n"
+                            for issue in findings["high"][:2]:
+                                response_text += f"• {issue['resource']}: {issue['issue']}\n\n"
+                        
+                        # Immediate actions
+                        actions = network_data.get("immediate_actions", [])
+                        if actions:
+                            response_text += "📋 **IMMEDIATE ACTIONS:**\n"
+                            for action in actions[:3]:
+                                response_text += f"• {action['action']}\n"
+                                response_text += f"  ```bash\n  {action['command']}\n  ```\n"
+                        
+                        result = {
+                            "success": True,
+                            "response": response_text,
+                            "agent_used": "NetworkSecuritySpecialist",
+                            "suggestions": [
+                                "How do I restrict SSH access?",
+                                "Show me all open ports",
+                                "Help me configure Cloud Armor",
+                                "Review my VPC configuration"
+                            ]
+                        }
+                    else:
+                        result = network_data
+                except Exception as e:
+                    logger.error(f"Network analysis failed: {e}")
+                    result = {"success": False, "error": str(e)}
+            
+            elif specialist == Specialist.COMPLIANCE:
+                # Route to Compliance analysis
+                logger.info(f"Routing to Compliance Specialist")
+                
+                try:
+                    # Import and call compliance analysis directly
+                    from backend.api.compliance import evaluate_compliance
+                    from backend.api.compliance import ComplianceRequest
+                    compliance_req = ComplianceRequest(
+                        project_id=project_id,
+                        frameworks=["SOC2", "ISO27001", "GDPR"]
+                    )
+                    compliance_data = await evaluate_compliance(compliance_req)
+                    
+                    response_text = f"📋 **Compliance Analysis for Project: {project_id}**\n\n"
+                    response_text += f"Overall Compliance Score: **{compliance_data.get('overall_score', 0)}%**\n\n"
+                    
+                    frameworks = compliance_data.get('frameworks', {})
+                    for fw_name, fw_data in frameworks.items():
+                        emoji = "✅" if fw_data['score'] > 80 else "⚠️" if fw_data['score'] > 60 else "❌"
+                        response_text += f"{emoji} **{fw_name}**: {fw_data['score']}% ({fw_data['status']})\n"
+                        response_text += f"   • Findings: {fw_data['findings']} (Critical: {fw_data['critical']})\n"
+                    
+                    result = {
+                        "success": True,
+                        "response": response_text,
+                        "agent_used": "ComplianceSpecialist",
+                        "suggestions": [
+                            "What do I need for SOC2 compliance?",
+                            "Show me GDPR requirements",
+                            "How do I improve my compliance score?"
+                        ]
+                    }
+                except Exception as e:
+                    logger.error(f"Compliance analysis failed: {e}")
+                    result = {"success": False, "error": str(e)}
+            
+            elif specialist == Specialist.FINOPS:
+                # Route to Cost/FinOps analysis
+                logger.info(f"Routing to FinOps Specialist")
+                
+                try:
+                    # Import and call cost analysis directly
+                    from backend.api.cost import analyze_costs
+                    cost_data = await analyze_costs(project_id, detailed=False, include_security=True)
+                    
+                    if cost_data.get("success"):
+                        summary = cost_data.get("summary", {})
+                        
+                        response_text = f"💰 **Cost Analysis for Project: {project_id}**\n\n"
+                        response_text += f"📊 **Current Month Spend**: {summary.get('current_month_spend', 'N/A')}\n"
+                        response_text += f"📈 **Projected Spend**: {summary.get('projected_month_spend', 'N/A')}\n"
+                        response_text += f"🎯 **Budget**: {summary.get('budget', 'N/A')}\n"
+                        response_text += f"⚠️ **Status**: {summary.get('budget_status', 'UNKNOWN')}\n\n"
+                        
+                        response_text += f"💡 **Potential Monthly Savings**: {summary.get('total_potential_savings', '$0')}\n\n"
+                        
+                        # Top spending services
+                        response_text += "**Top Spending Services:**\n"
+                        for service in cost_data.get("top_spending_services", [])[:3]:
+                            waste = f" (Waste: {service['waste']})" if service.get('waste') else ""
+                            response_text += f"• {service['service']}: {service['cost']} ({service['percentage']}){waste}\n"
+                        
+                        # Immediate cost actions
+                        response_text += "\n**🚀 Quick Wins to Save Money:**\n"
+                        for action in cost_data.get("immediate_actions", [])[:3]:
+                            response_text += f"\n• {action['action']}\n"
+                            response_text += f"  Savings: {action['monthly_savings']}\n"
+                            response_text += f"  ```bash\n  {action['command']}\n  ```\n"
+                        
+                        result = {
+                            "success": True,
+                            "response": response_text,
+                            "agent_used": "FinOpsSpecialist",
+                            "suggestions": [
+                                "Show me unused resources",
+                                "How can I reduce my compute costs?",
+                                "What about committed use discounts?",
+                                "Analyze my storage costs"
+                            ]
+                        }
+                    else:
+                        result = cost_data
+                except Exception as e:
+                    logger.error(f"Cost analysis failed: {e}")
+                    result = {"success": False, "error": str(e)}
+                    
+            else:
+                # Default routing for unmatched queries
+                result = {
+                    "success": True,
+                    "response": f"I understand you're asking about: {chat_request.query}. Based on my analysis, this seems to be a {routing_context.get('query_type', 'general')} question.\n\nLet me help you with that. You can ask me about:\n• Storage security\n• IAM and permissions\n• Network configuration\n• Compliance status\n• Cost optimization",
+                    "suggestions": [
+                        "Analyze my security posture",
+                        "Check my bucket security", 
+                        "Review IAM permissions",
+                        "Show network vulnerabilities",
+                        "What's my compliance score?",
+                        "How can I reduce costs?"
+                    ],
+                "agent_used": "fallback_agent"
+            }
+        except Exception as e:
+            logger.error(f"Error in smart routing: {e}")
+            # Fallback response if routing fails
             result = {
                 "success": True,
-                "response": f"I'm processing your request about: {chat_request.query}. The enhanced ADK service is temporarily unavailable, but I can still help with basic queries.",
-                "suggestions": ["Try asking about security analysis", "Request IAM review", "Ask about recommendations"],
-                "agent_used": "fallback_agent"
+                "response": f"I'll help you with: {chat_request.query}\n\nI can assist with:\n• Storage security analysis\n• IAM and permissions review\n• Network configuration checks\n• Compliance evaluation\n• Cost optimization",
+                "suggestions": [
+                    "Analyze my security posture",
+                    "Check bucket security",
+                    "Review IAM permissions"
+                ],
+                "agent_used": "error_fallback"
             }
         
         # Add response to conversation history

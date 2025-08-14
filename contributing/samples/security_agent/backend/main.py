@@ -145,45 +145,138 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include available routers
+# ===========================================
+# API ROUTER REGISTRATION
+# ===========================================
+# Standardized API path structure:
+# /api/v1/agent/* - Agent and chat endpoints
+# /api/v1/gcp/* - Google Cloud Platform endpoints
+# /api/v1/security/* - Security analysis endpoints
+# /api/v1/iam/* - IAM analysis endpoints
+# /api/v1/compliance/* - Compliance evaluation endpoints
+# /api/v1/monitoring/* - Monitoring and logs endpoints
+# /api/v1/recommendations/* - Recommendations endpoints
+# /api/v1/msa/* - Master Service Agreement endpoints
+# /api/v1/performance/* - Performance monitoring endpoints
+# /api/v1/context/* - Context management endpoints
+
+# Agent router (includes chat endpoints)
+# Try LLM-based agent first, fallback to standard agent
+agent_router_loaded = False
 if chat_manager_available:
     try:
-        from backend.api.agent import router as agent_router
-        app.include_router(agent_router, prefix="/api/v1")
-        logger.info("✅ Agent router included")
-    except ImportError:
-        logger.info("Enhanced agent router not available")
+        from backend.api.agent_llm import router as agent_router
+        app.include_router(agent_router, prefix="/api/v1/agent")
+        logger.info("✅ LLM Agent router included at /api/v1/agent (with intelligent steering)")
+        agent_router_loaded = True
+    except ImportError as e:
+        logger.info(f"LLM Agent router not available, trying standard router: {e}")
+        
+    if not agent_router_loaded:
+        try:
+            from backend.api.agent import router as agent_router
+            app.include_router(agent_router, prefix="/api/v1/agent")
+            logger.info("✅ Standard Agent router included at /api/v1/agent")
+        except ImportError as e:
+            logger.warning(f"No agent router available: {e}")
 
+# GCP router
+try:
+    from backend.api.gcp import router as gcp_router
+    app.include_router(gcp_router, prefix="/api/v1/gcp")
+    logger.info("✅ GCP router included at /api/v1/gcp")
+except ImportError as e:
+    logger.error(f"GCP router not available: {e}")
+
+# Security router
+try:
+    from backend.api.security import router as security_router
+    app.include_router(security_router, prefix="/api/v1/security")
+    logger.info("✅ Security router included at /api/v1/security")
+except ImportError as e:
+    logger.error(f"Security router not available: {e}")
+
+# Monitoring router
+try:
+    from backend.api.monitoring import router as monitoring_router
+    app.include_router(monitoring_router, prefix="/api/v1/monitoring")
+    logger.info("✅ Monitoring router included at /api/v1/monitoring")
+except ImportError as e:
+    logger.warning(f"Monitoring router not available: {e}")
+
+# Performance monitor router (if available)
 if performance_monitor_available:
     try:
         from backend.api.performance_monitor import router as performance_router
-        app.include_router(performance_router, prefix="/api/v1")
-        logger.info("✅ Performance monitor router included")
-    except ImportError:
-        logger.info("Performance router not available")
+        app.include_router(performance_router, prefix="/api/v1/performance")
+        logger.info("✅ Performance router included at /api/v1/performance")
+    except ImportError as e:
+        logger.warning(f"Performance router not available: {e}")
 
+# Context manager router (if available)
 if context_manager_available:
     try:
         from backend.api.context_manager import router as context_router
-        app.include_router(context_router, prefix="/api/v1")
-        logger.info("✅ Context manager router included")
-    except ImportError:
-        logger.info("Context router not available")
+        app.include_router(context_router, prefix="/api/v1/context")
+        logger.info("✅ Context router included at /api/v1/context")
+    except ImportError as e:
+        logger.warning(f"Context router not available: {e}")
 
-# Always include core routers
+# IAM router
 try:
-    from backend.api.gcp import router as gcp_router
-    app.include_router(gcp_router, prefix="/api/v1")
-    logger.info("✅ GCP router included")
-except ImportError:
-    logger.info("GCP router not available")
+    from backend.api.iam import router as iam_router
+    app.include_router(iam_router, prefix="/api/v1/iam")
+    logger.info("✅ IAM router included at /api/v1/iam")
+except ImportError as e:
+    logger.warning(f"IAM router not available: {e}")
 
+# Compliance router
 try:
-    from backend.api.security import router as security_router
-    app.include_router(security_router, prefix="/api/v1")
-    logger.info("✅ Security router included")
-except ImportError:
-    logger.info("Security router not available")
+    from backend.api.compliance import router as compliance_router
+    app.include_router(compliance_router, prefix="/api/v1/compliance")
+    logger.info("✅ Compliance router included at /api/v1/compliance")
+except ImportError as e:
+    logger.warning(f"Compliance router not available: {e}")
+
+# Recommendations router
+try:
+    from backend.api.recommendations import router as recommendations_router
+    app.include_router(recommendations_router, prefix="/api/v1/recommendations")
+    logger.info("✅ Recommendations router included at /api/v1/recommendations")
+except ImportError as e:
+    logger.warning(f"Recommendations router not available: {e}")
+
+# MSA router
+try:
+    from backend.api.msa import router as msa_router
+    app.include_router(msa_router, prefix="/api/v1/msa")
+    logger.info("✅ MSA router included at /api/v1/msa")
+except ImportError as e:
+    logger.warning(f"MSA router not available: {e}")
+
+# Storage router
+try:
+    from backend.api.storage import router as storage_router
+    app.include_router(storage_router, prefix="/api/v1/storage")
+    logger.info("✅ Storage router included at /api/v1/storage")
+except ImportError as e:
+    logger.warning(f"Storage router not available: {e}")
+
+# Network router
+try:
+    from backend.api.network import router as network_router
+    app.include_router(network_router, prefix="/api/v1/network")
+    logger.info("✅ Network router included at /api/v1/network")
+except ImportError as e:
+    logger.warning(f"Network router not available: {e}")
+
+# Cost/FinOps router
+try:
+    from backend.api.cost import router as cost_router
+    app.include_router(cost_router, prefix="/api/v1/cost")
+    logger.info("✅ Cost router included at /api/v1/cost")
+except ImportError as e:
+    logger.warning(f"Cost router not available: {e}")
 
 @app.get("/")
 async def root():

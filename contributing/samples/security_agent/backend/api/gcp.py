@@ -21,11 +21,32 @@ class GCPService:
     
     async def list_projects(self):
         """List available GCP projects."""
-        return [{"id": self.project_id, "name": f"Project {self.project_id}"}]
+        return {
+            "success": True,
+            "projects": [{"id": self.project_id, "name": f"Project {self.project_id}"}],
+            "total": 1
+        }
+    
+    async def get_projects(self, page_size: int = 50):
+        """Get projects - alias for list_projects for compatibility."""
+        result = await self.list_projects()
+        return result
     
     async def get_project_info(self, project_id: str):
         """Get project information."""
         return {"id": project_id, "name": f"Project {project_id}", "status": "active"}
+    
+    async def call_google_api(self, service: str, version: str, resource_path: str, 
+                            method: str = "GET", body: dict = None, query_params: dict = None):
+        """Mock implementation of Google API calls."""
+        return {
+            "success": True,
+            "data": {
+                "projectId": self.project_id,
+                "name": f"Project {self.project_id}",
+                "state": "ACTIVE"
+            }
+        }
 
 # Global service instance
 _service_instance = None

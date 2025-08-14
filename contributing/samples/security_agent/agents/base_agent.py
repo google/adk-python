@@ -31,21 +31,23 @@ def initialize_vertex_ai():
     load_env_file()
 
     # Set Vertex AI environment variables for auto-detection
-    os.environ.setdefault('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
+    # Use environment variables or prompt user to set them
+    default_project = os.environ.get('GOOGLE_CLOUD_PROJECT', 'your-gcp-project-id')
+    os.environ.setdefault('GOOGLE_CLOUD_PROJECT', default_project)
     os.environ.setdefault('GOOGLE_CLOUD_LOCATION', 'us-central1')
 
     # Set google-genai specific environment variables for Vertex AI configuration
     os.environ.setdefault('GOOGLE_GENAI_USE_VERTEXAI', 'true')
-    os.environ.setdefault('GOOGLE_GENAI_PROJECT', 'mgm-digitalconcierge')
+    os.environ.setdefault('GOOGLE_GENAI_PROJECT', default_project)
     os.environ.setdefault('GOOGLE_GENAI_LOCATION', 'us-central1')
 
     try:
         # Initialize Vertex AI
         vertexai.init(
-            project=os.environ.get('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge'),
+            project=os.environ.get('GOOGLE_CLOUD_PROJECT', default_project),
             location=os.environ.get('GOOGLE_CLOUD_LOCATION', 'us-central1')
         )
-        print(f"✅ Vertex AI initialized for project: {os.environ.get('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')}")
+        print(f"✅ Vertex AI initialized for project: {os.environ.get('GOOGLE_CLOUD_PROJECT', default_project)}")
         return True
     except Exception as e:
         print(f"❌ Vertex AI initialization failed: {e}")

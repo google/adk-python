@@ -38,16 +38,20 @@ class GCPAssetInventoryService:
             self.monitoring_client = None
             return
         
-        # Set up authentication
-        credentials_path = os.path.join(
-            os.path.dirname(__file__), 
-            "..", 
-            "config", 
-            "secrets", 
-            f"{project_id}-52fed2a2dac3.json"
-        )
+        # Set up authentication - use environment variable or default path
+        credentials_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
         
-        if os.path.exists(credentials_path):
+        if not credentials_path:
+            # Try default location
+            credentials_path = os.path.join(
+                os.path.dirname(__file__), 
+                "..", 
+                "config", 
+                "secrets", 
+                "service-account-key.json"
+            )
+        
+        if credentials_path and os.path.exists(credentials_path):
             credentials = service_account.Credentials.from_service_account_file(
                 credentials_path
             )

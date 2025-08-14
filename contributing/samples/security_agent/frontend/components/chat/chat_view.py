@@ -16,13 +16,16 @@ sys.path.append(project_root)
 
 logger = logging.getLogger(__name__)
 
-# Import ADK agents and conversation memory directly
+# Import security coordinator agent directly
 try:
     from agents.coordinator_agent import create_coordinator_agent
+    # Test if Google packages are available
+    import google.generativeai
+    import vertexai
     ADK_AGENTS_AVAILABLE = True
-    logger.info("✅ ADK coordinator agent loaded")
+    logger.info("✅ Security coordinator agent loaded with Google GenAI")
 except ImportError as e:
-    logger.error(f"ADK coordinator agent required but not available: {e}")
+    logger.error(f"Security coordinator agent dependencies missing: {e}")
     ADK_AGENTS_AVAILABLE = False
     create_coordinator_agent = None
 
@@ -119,10 +122,13 @@ def render_chat_view():
             st.rerun()
 
 def process_with_adk_coordinator(query: str) -> Tuple[str, str]:
-    """Process query using ADK coordinator agent - direct integration only"""
+    """Process query using backend API with smart routing"""
+    import requests
+    
     try:
-        session_id = st.session_state.get('conv_session_id')
-        project_id = st.session_state.get('selected_project', 'default-project')
+        session_id = st.session_state.get('conv_session_id', 'default_session')
+        project_id = st.session_state.get('selected_project', 'mgm-digitalconcierge')
+        user_id = st.session_state.get('user_id', 'default_user')
         
         # Add user message to conversation memory if available
         if CONVERSATION_MEMORY_AVAILABLE and conversation_memory and session_id:
@@ -132,45 +138,71 @@ def process_with_adk_coordinator(query: str) -> Tuple[str, str]:
         else:
             routing_context = {}
         
-        # Create and use coordinator agent
-        coordinator = create_coordinator_agent(project_id)
-        
         # Add routing context to the query if available
         enhanced_query = query
         if routing_context.get('topic'):
             enhanced_query = f"[Context: {routing_context['topic']}] {query}"
         
-        # Process with coordinator (delegates to appropriate sub-agent)
-        logger.info(f"Processing with ADK coordinator: {enhanced_query}")
-        response = coordinator.send_message(enhanced_query)
+        # Call backend chat endpoint with smart routing
+        logger.info(f"Calling backend API with query: {enhanced_query}")
         
-        # Determine which agent was used
-        agent_used = "CoordinatorAgent"
-        if hasattr(response, 'metadata') and response.metadata:
-            agent_used = response.metadata.get('delegated_agent', 'CoordinatorAgent')
+        response = requests.post(
+            "http://localhost:8000/api/v1/agent/chat",
+            json={
+                "query": enhanced_query,
+                "user_id": user_id,
+                "project_id": project_id,
+                "session_id": session_id,
+                "context": routing_context
+            },
+            timeout=30
+        )
         
-        # Add response to conversation memory if available
-        if CONVERSATION_MEMORY_AVAILABLE and conversation_memory and session_id:
-            conversation_memory.add_message(
-                session_id,
-                'assistant', 
-                str(response),
-                metadata={'agent_used': agent_used, 'query_type': get_query_type(query)}
-            )
+        if response.status_code == 200:
+            data = response.json()
             
-            # Update context based on response type
-            if 'bucket' in query.lower():
-                conversation_memory.update_context(
+            # Extract response and agent info
+            response_text = data.get("response", "No response received")
+            agent_used = data.get("agent_used", "UnknownAgent")
+            
+            # Update suggestions if provided
+            if data.get("suggestions"):
+                st.session_state.suggestions = data["suggestions"]
+            
+            # Add response to conversation memory if available
+            if CONVERSATION_MEMORY_AVAILABLE and conversation_memory and session_id:
+                conversation_memory.add_message(
                     session_id,
-                    analysis_results={'type': 'bucket_analysis'},
-                    recommendations=['Security recommendations based on analysis']
+                    'assistant', 
+                    response_text,
+                    metadata={'agent_used': agent_used, 'query_type': get_query_type(query)}
                 )
+                
+                # Update context based on response type
+                if 'bucket' in query.lower():
+                    conversation_memory.update_context(
+                        session_id,
+                        analysis_results={'type': 'bucket_analysis'},
+                        recommendations=['Security recommendations based on analysis']
+                    )
+            
+            return response_text, agent_used
+        else:
+            error_msg = f"Backend API error: {response.status_code}"
+            logger.error(f"{error_msg}: {response.text}")
+            return error_msg, "ErrorHandler"
         
-        return str(response), agent_used
-        
+    except requests.exceptions.Timeout:
+        error_msg = "Request timed out. Backend may be processing a complex query."
+        logger.error(error_msg)
+        return error_msg, "ErrorHandler"
+    except requests.exceptions.ConnectionError:
+        error_msg = "Cannot connect to backend. Please ensure the backend is running on port 8000."
+        logger.error(error_msg)
+        return error_msg, "ErrorHandler"
     except Exception as e:
-        logger.error(f"ADK coordinator processing error: {e}")
-        return f"Error processing with ADK coordinator: {str(e)}", "ErrorHandler"
+        logger.error(f"Backend API error: {e}")
+        return f"Error processing query: {str(e)}", "ErrorHandler"
 
 def get_query_type(query: str) -> str:
     """Determine query type for metadata"""
