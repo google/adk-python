@@ -10,8 +10,7 @@ import os
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 import logging
 
@@ -83,37 +82,24 @@ class ChatResponse(BaseModel):
     performance_metrics: Optional[Dict[str, Any]] = None
     timestamp: Optional[str] = None
 
-# Session management
-class ChatSessionManager:
-    def __init__(self):
-        self.sessions: Dict[str, Dict[str, Any]] = {}
-        self.conversations: Dict[str, List[Dict[str, Any]]] = {}
-        self.user_contexts: Dict[str, Dict[str, Any]] = {}
-        
-    def create_session(self, user_id: str, session_type: str = "chat") -> str:
-        session_id = f"{user_id}_{int(time.time())}"
-        self.sessions[session_id] = {
-            "user_id": user_id,
-            "session_type": session_type,
-            "created_at": datetime.now(),
-            "last_activity": datetime.now(),
-            "active": True
-        }
-        return session_id
-        
-    def create_conversation(self, session_id: str, topic: str = None) -> str:
-        conversation_id = f"{session_id}_conv_{int(time.time())}"
-        if conversation_id not in self.conversations:
-            self.conversations[conversation_id] = []
-        return conversation_id
-        
-    def add_message(self, conversation_id: str, message: Dict[str, Any]):
-        if conversation_id not in self.conversations:
-            self.conversations[conversation_id] = []
-        message["timestamp"] = datetime.now().isoformat()
-        self.conversations[conversation_id].append(message)
-
-session_manager = ChatSessionManager()
+# Import the enhanced chat manager from backend
+try:
+    import sys
+    import os
+    backend_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if backend_path not in sys.path:
+        sys.path.append(backend_path)
+    from chat_manager import chat_manager, ChatMessage, MessageType
+    CHAT_MANAGER_AVAILABLE = True
+    logger.info("✅ Enhanced chat manager loaded")
+except ImportError as e:
+    CHAT_MANAGER_AVAILABLE = False
+    logger.warning(f"⚠️ Enhanced chat manager not available: {e}")
+    
+    # Enhanced chat manager not available - this should be installed
+    chat_manager = None
+    logger.error("Enhanced chat manager is required for ADK session management")
+    logger.error("Please ensure the chat_manager module is properly installed")
 
 def create_llm_agent(agent_type: str, project_id: str):
     """Create an LLM agent of the specified type."""
@@ -139,51 +125,224 @@ def create_llm_agent(agent_type: str, project_id: str):
         logger.error(f"Failed to create {agent_type} agent: {e}")
         return None
 
-async def process_with_llm_agent(query: str, project_id: str, context: Dict = None) -> Tuple[str, str]:
-    """Process query using LLM agent steering."""
+async def process_with_llm_agent(query: str, project_id: str, context: Dict = None, request_id: str = "unknown") -> Tuple[str, str]:
+    """Process query using LLM agent steering with real data."""
     
     # Detect query intent for routing
     query_lower = query.lower()
+    
+    logger.info(f"🎯 [AGENT-{request_id}] Starting agent routing analysis...")
+    logger.info(f"   🔍 Query keywords: {[word for word in ['bucket', 'storage', 'iam', 'user', 'network', 'firewall', 'compliance', 'cost'] if word in query_lower]}")
     
     # Determine which specialist agent to use
     if any(word in query_lower for word in ["bucket", "storage", "backup", "archive"]):
         agent_type = "storage"
         agent_name = "StorageSecurityAgent"
+        routing_reason = "Storage keywords detected: bucket, storage, backup, archive"
     elif any(word in query_lower for word in ["user", "permission", "iam", "role", "access"]):
         agent_type = "iam"
         agent_name = "IAMSecurityAgent"
+        routing_reason = "IAM keywords detected: user, permission, iam, role, access"
     elif any(word in query_lower for word in ["firewall", "network", "port", "vpc", "subnet"]):
         agent_type = "network"
         agent_name = "NetworkSecurityAgent"
+        routing_reason = "Network keywords detected: firewall, network, port, vpc, subnet"
     elif any(word in query_lower for word in ["compliance", "soc2", "gdpr", "iso", "audit"]):
         agent_type = "compliance"
         agent_name = "ComplianceAgent"
+        routing_reason = "Compliance keywords detected: compliance, soc2, gdpr, iso, audit"
     elif any(word in query_lower for word in ["cost", "spend", "budget", "savings", "optimize"]):
         agent_type = "cost"
         agent_name = "CostOptimizationAgent"
+        routing_reason = "Cost keywords detected: cost, spend, budget, savings, optimize"
     else:
         agent_type = "coordinator"
         agent_name = "CoordinatorAgent"
+        routing_reason = "No specific keywords found, using coordinator"
     
-    logger.info(f"Routing to {agent_name} for query: {query}")
+    logger.info(f"🎯 [AGENT-{request_id}] ROUTING DECISION:")
+    logger.info(f"   🤖 Selected Agent: {agent_name}")
+    logger.info(f"   📊 Agent Type: {agent_type}")
+    logger.info(f"   💭 Reasoning: {routing_reason}")
+    logger.info(f"   🎯 Project: {project_id}")
     
     if AGENTS_AVAILABLE:
+        logger.info(f"🤖 [AGENT-{request_id}] LLM agents available, attempting to use real agent...")
         # Use real LLM agent
         agent = create_llm_agent(agent_type, project_id)
         if agent:
             try:
                 # Send query to agent for intelligent processing
+                logger.info(f"🚀 [AGENT-{request_id}] Calling {agent_name} with query processing...")
                 response = await agent.process_query(query, context)
+                logger.info(f"✅ [AGENT-{request_id}] {agent_name} processed successfully")
                 return str(response), agent_name
             except Exception as e:
-                logger.error(f"Agent processing failed: {e}")
+                logger.error(f"❌ [AGENT-{request_id}] Agent processing failed: {e}")
                 return f"Error processing with {agent_name}: {str(e)}", "ErrorHandler"
+        else:
+            logger.warning(f"⚠️  [AGENT-{request_id}] Failed to create {agent_name}, falling back to API data")
+    else:
+        logger.info(f"📡 [AGENT-{request_id}] LLM agents not available, using real data APIs...")
     
-    # Fallback to intelligent mock responses if agents not available
-    return generate_intelligent_response(query, project_id, agent_type), agent_name
+    # Use real data APIs instead of mock responses
+    logger.info(f"🔄 [AGENT-{request_id}] Delegating to real data API for {agent_type}")
+    response = await generate_response_with_real_data(query, project_id, agent_type, request_id)
+    logger.info(f"✅ [AGENT-{request_id}] Real data API response generated")
+    return response, agent_name
+
+async def generate_response_with_real_data(query: str, project_id: str, agent_type: str, request_id: str = "unknown") -> str:
+    """Generate response using real data from our APIs."""
+    
+    logger.info(f"🔍 [API-{request_id}] Fetching real data for {agent_type} query")
+    
+    if agent_type == "storage":
+        try:
+            logger.info(f"📦 [API-{request_id}] STORAGE API CALLS STARTING:")
+            logger.info(f"   🔄 Importing storage API module...")
+            # Import and call the real storage API
+            from backend.api.storage import analyze_buckets
+            
+            logger.info(f"   📞 API Call: storage.buckets.list")
+            logger.info(f"   📞 API Call: storage.buckets.getIamPolicy")
+            logger.info(f"   🎯 Target Project: {project_id}")
+            logger.info(f"   ⚙️  Detailed Analysis: True")
+            
+            api_start_time = time.time()
+            storage_data = await analyze_buckets(project_id, detailed=True)
+            api_duration = time.time() - api_start_time
+            
+            logger.info(f"   ⏱️  API calls completed in {api_duration:.2f}s")
+            
+            if storage_data.get("success"):
+                buckets = storage_data.get("buckets", [])
+                findings = storage_data.get("security_findings", {})
+                actions = storage_data.get("immediate_actions", [])
+                
+                logger.info(f"✅ [API-{request_id}] Storage API SUCCESS:")
+                logger.info(f"   📊 Buckets found: {len(buckets)}")
+                logger.info(f"   🔍 Findings: {len(findings.get('critical', []))} critical, {len(findings.get('high', []))} high")
+                logger.info(f"   📋 Actions recommended: {len(actions)}")
+                
+                response = f"🔍 **Storage Security Analysis for Project: {project_id}**\n\n"
+                response += f"I analyzed {len(buckets)} buckets in your project:\n\n"
+                
+                # List actual bucket names
+                response += "**Your Buckets:**\n"
+                for bucket in buckets[:5]:  # Show first 5
+                    status = "🔴 PUBLIC" if bucket.get("public_access") else "🟢 PRIVATE"
+                    response += f"• **{bucket['name']}** - {status}\n"
+                    if bucket.get("issues"):
+                        for issue in bucket["issues"][:2]:
+                            response += f"  ⚠️ {issue}\n"
+                
+                # Critical findings
+                if findings.get("critical"):
+                    response += "\n🚨 **CRITICAL ISSUES:**\n"
+                    for finding in findings["critical"][:3]:
+                        response += f"• **{finding['bucket']}**: {finding['issue']}\n"
+                        response += f"  Fix: `{finding['remediation']}`\n"
+                
+                # Immediate actions
+                if actions:
+                    response += "\n📋 **IMMEDIATE ACTIONS:**\n"
+                    for action in actions[:3]:
+                        response += f"• {action['action']}\n"
+                        response += f"  ```bash\n  {action['command']}\n  ```\n"
+                
+                logger.info(f"✅ [API-{request_id}] Response generated: {len(response)} chars")
+                return response
+            else:
+                error_msg = storage_data.get('error', 'Unknown storage API error')
+                logger.error(f"❌ [API-{request_id}] Storage API failed: {error_msg}")
+        except Exception as e:
+            logger.error(f"❌ [API-{request_id}] Storage API exception: {e}")
+            import traceback
+            logger.error(f"   📋 Stack trace: {traceback.format_exc()}")
+    
+    elif agent_type == "iam":
+        try:
+            from backend.api.iam import analyze_all_users
+            
+            logger.info(f"👤 Calling GCP API: iam.projects.serviceAccounts.list for project {project_id}")
+            logger.info(f"👤 Calling GCP API: cloudresourcemanager.projects.getIamPolicy")
+            
+            iam_data = await analyze_all_users(project_id)
+            
+            response = f"🔐 **IAM Security Analysis for Project: {project_id}**\n\n"
+            response += f"Analyzed {iam_data.get('total_users', 0)} users and service accounts:\n\n"
+            
+            # Show actual users
+            if iam_data.get("users"):
+                response += "**Top Risk Accounts:**\n"
+                for user in iam_data["users"][:5]:
+                    risk_emoji = "🔴" if user["risk_level"] == "high" else "🟡" if user["risk_level"] == "medium" else "🟢"
+                    response += f"• {risk_emoji} **{user['email']}**\n"
+                    response += f"  Roles: {', '.join(user['roles'][:3])}\n"
+            
+            logger.info(f"✅ Generated IAM response with {iam_data.get('total_users', 0)} users")
+            return response
+        except Exception as e:
+            logger.error(f"Error getting real IAM data: {e}")
+    
+    elif agent_type == "network":
+        try:
+            from backend.api.network import analyze_network_security
+            
+            logger.info(f"🌐 Calling GCP API: compute.firewalls.list for project {project_id}")
+            logger.info(f"🌐 Calling GCP API: compute.networks.list")
+            
+            network_data = await analyze_network_security(project_id, detailed=True)
+            
+            if network_data.get("success"):
+                response = f"🌐 **Network Security Analysis for Project: {project_id}**\n\n"
+                
+                findings = network_data.get("security_findings", {})
+                if findings.get("critical"):
+                    response += "🚨 **CRITICAL FIREWALL RULES:**\n"
+                    for finding in findings["critical"][:3]:
+                        response += f"• **{finding['resource']}**: {finding['issue']}\n"
+                        response += f"  Fix: `{finding['remediation']}`\n"
+                
+                logger.info("✅ Generated network response with firewall rules")
+                return response
+        except Exception as e:
+            logger.error(f"Error getting real network data: {e}")
+    
+    elif agent_type == "cost":
+        try:
+            from backend.api.cost import analyze_costs
+            
+            logger.info(f"💰 Calling GCP API: cloudbilling.services.list")
+            logger.info(f"💰 Calling GCP API: cloudbilling.projects.getBillingInfo for project {project_id}")
+            
+            cost_data = await analyze_costs(project_id, detailed=False, include_security=True)
+            
+            if cost_data.get("success"):
+                summary = cost_data.get("summary", {})
+                response = f"💰 **Cost Analysis for Project: {project_id}**\n\n"
+                response += f"**Current Month:** {summary.get('current_month_spend', 'N/A')}\n"
+                response += f"**Budget:** {summary.get('budget', 'N/A')}\n"
+                response += f"**Status:** {summary.get('budget_status', 'N/A')}\n\n"
+                
+                # Show actual unused resources
+                if cost_data.get("immediate_actions"):
+                    response += "**Resources to Delete:**\n"
+                    for action in cost_data["immediate_actions"][:3]:
+                        response += f"• {action['action']}\n"
+                        response += f"  Savings: {action['monthly_savings']}\n"
+                        response += f"  ```bash\n  {action['command']}\n  ```\n"
+                
+                logger.info("✅ Generated cost response with spending data")
+                return response
+        except Exception as e:
+            logger.error(f"Error getting real cost data: {e}")
+    
+    # Fallback to intelligent response if real data fetch fails
+    return generate_intelligent_response(query, project_id, agent_type)
 
 def generate_intelligent_response(query: str, project_id: str, agent_type: str) -> str:
-    """Generate an intelligent mock response when LLM agents are not available."""
+    """Generate an intelligent mock response when real data is not available."""
     
     if agent_type == "storage":
         return f"""🔍 **Storage Security Analysis for Project: {project_id}**
@@ -268,44 +427,87 @@ For project {project_id}, I can help with:
 Please provide more specific details about what you'd like to analyze, and I'll route your request to the appropriate specialist agent."""
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat_with_llm_agent(chat_request: ChatRequest, request: Request, background_tasks: BackgroundTasks):
+async def chat_with_llm_agent(chat_request: ChatRequest):
     """Process chat with LLM agent steering for intelligent responses."""
     start_time = time.time()
+    request_id = f"req_{int(time.time() * 1000)}"
+    
+    logger.info(f"🚀 [CHAT-{request_id}] Incoming chat request")
+    logger.info(f"   📋 Query: '{chat_request.query[:100]}{'...' if len(chat_request.query) > 100 else ''}'")
+    logger.info(f"   👤 User: {chat_request.user_id}")
+    logger.info(f"   🎯 Project: {chat_request.project_id}")
+    logger.info(f"   🔗 Session: {chat_request.session_id[:20] + '...' if chat_request.session_id else 'None (will create)'}")
     
     try:
+        # ADK session management (required)
+        if not CHAT_MANAGER_AVAILABLE:
+            logger.error(f"❌ [CHAT-{request_id}] Chat manager not available")
+            raise HTTPException(
+                status_code=503, 
+                detail="ADK session management not available. Enhanced chat manager is required."
+            )
+        
+        logger.info(f"✅ [CHAT-{request_id}] Chat manager available, proceeding...")
+        
         # Create or get session
         session_id = chat_request.session_id
         if not session_id:
-            session_id = session_manager.create_session(chat_request.user_id)
-            
-        # Create or get conversation
-        conversation_id = chat_request.conversation_id
-        if not conversation_id:
-            conversation_id = session_manager.create_conversation(session_id)
-            
-        # Add user message to conversation
-        session_manager.add_message(conversation_id, {
-            "role": "user",
-            "content": chat_request.query,
-            "message_type": chat_request.message_type or "chat"
-        })
+            logger.info(f"🆕 [CHAT-{request_id}] Creating new session for user: {chat_request.user_id}")
+            session_id = chat_manager.create_session(chat_request.user_id, {
+                "project_id": chat_request.project_id,
+                "source": "api_chat",
+                "adk_compliant": True,
+                "request_id": request_id
+            })
+            logger.info(f"✅ [CHAT-{request_id}] Created session: {session_id}")
+        else:
+            logger.info(f"🔄 [CHAT-{request_id}] Using existing session: {session_id[:20]}...")
+        
+        # Add user message using enhanced manager
+        logger.info(f"💬 [CHAT-{request_id}] Adding user message to session")
+        await chat_manager.add_message(
+            session_id=session_id,
+            content=chat_request.query,
+            sender_type="user",
+            performance_data={"start_time": start_time, "request_id": request_id}
+        )
+        logger.info(f"✅ [CHAT-{request_id}] User message added successfully")
         
         # Get project ID
         project_id = chat_request.project_id or os.environ.get('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
+        logger.info(f"🎯 [CHAT-{request_id}] Using project: {project_id}")
         
         # Process with LLM agent steering
+        logger.info(f"🧠 [CHAT-{request_id}] Starting agent routing and processing...")
         response_text, agent_used = await process_with_llm_agent(
             chat_request.query,
             project_id,
-            chat_request.context
+            chat_request.context,
+            request_id=request_id
         )
+        logger.info(f"✅ [CHAT-{request_id}] Agent processing completed")
+        logger.info(f"   🤖 Agent used: {agent_used}")
+        logger.info(f"   📝 Response length: {len(response_text)} characters")
         
         # Add response to conversation
-        session_manager.add_message(conversation_id, {
-            "role": "assistant",
-            "content": response_text,
-            "agent_used": agent_used
-        })
+        logger.info(f"💾 [CHAT-{request_id}] Saving assistant response to session...")
+        await chat_manager.add_message(
+            session_id=session_id,
+            content=response_text,
+            sender_type="assistant",
+            agent_used=agent_used,
+            delegation_path=["SecurityAgent", agent_used],
+            performance_data={
+                "response_time_ms": round((time.time() - start_time) * 1000, 2),
+                "request_id": request_id
+            }
+        )
+        logger.info(f"✅ [CHAT-{request_id}] Assistant response saved successfully")
+        
+        # Get conversation ID from the session
+        session = chat_manager.get_session(session_id)
+        conversation_id = list(session.conversations.keys())[0] if session and session.conversations else "main"
+        logger.info(f"📋 [CHAT-{request_id}] Using conversation: {conversation_id}")
         
         # Calculate performance metrics
         response_time = time.time() - start_time
@@ -315,13 +517,22 @@ async def chat_with_llm_agent(chat_request: ChatRequest, request: Request, backg
             "query_length": len(chat_request.query),
             "response_length": len(response_text),
             "session_id": session_id,
+            "request_id": request_id,
             "timestamp": datetime.now().isoformat()
         }
         
+        logger.info(f"📊 [CHAT-{request_id}] PERFORMANCE METRICS:")
+        logger.info(f"   ⏱️  Total time: {response_time:.2f}s ({metrics['response_time_ms']}ms)")
+        logger.info(f"   📏 Query length: {metrics['query_length']} chars")
+        logger.info(f"   📏 Response length: {metrics['response_length']} chars")
+        
         # Generate contextual suggestions
-        suggestions = generate_suggestions(chat_request.query, agent_used)
+        logger.info(f"💡 [CHAT-{request_id}] Generating contextual suggestions...")
+        suggestions = chat_manager.get_contextual_suggestions(session_id) or generate_suggestions(chat_request.query, agent_used)
+        logger.info(f"✅ [CHAT-{request_id}] Generated {len(suggestions)} suggestions")
         
         # Create response
+        logger.info(f"📤 [CHAT-{request_id}] Creating final response...")
         response = ChatResponse(
             success=True,
             response=response_text,
@@ -335,10 +546,24 @@ async def chat_with_llm_agent(chat_request: ChatRequest, request: Request, backg
             timestamp=datetime.now().isoformat()
         )
         
+        logger.info(f"🎉 [CHAT-{request_id}] REQUEST COMPLETED SUCCESSFULLY")
+        logger.info(f"   ✅ Status: Success")
+        logger.info(f"   🔗 Session: {session_id[:20]}...")
+        logger.info(f"   🤖 Agent: {agent_used}")
+        logger.info(f"   ⏱️  Duration: {response_time:.2f}s")
+        logger.info(f"   💡 Suggestions: {len(suggestions)}")
+        
         return response
         
     except Exception as e:
-        logger.error(f"LLM chat processing error: {e}")
+        error_time = time.time() - start_time
+        logger.error(f"💥 [CHAT-{request_id}] REQUEST FAILED after {error_time:.2f}s")
+        logger.error(f"   ❌ Error: {str(e)}")
+        logger.error(f"   📋 Query: '{chat_request.query[:50]}...'")
+        logger.error(f"   👤 User: {chat_request.user_id}")
+        import traceback
+        logger.error(f"   📋 Stack trace: {traceback.format_exc()}")
+        
         return ChatResponse(
             success=False,
             response=f"I encountered an error processing your request. Please try rephrasing or contact support.",
@@ -392,6 +617,72 @@ def generate_suggestions(query: str, agent_used: str) -> List[str]:
         "Generate recommendations"
     ])[:3]
 
+@router.post("/sessions/create")
+async def create_session(request: Dict[str, Any]):
+    """Create a new ADK session following thin client best practices."""
+    user_id = request.get("user_id", "default_user")
+    
+    if not CHAT_MANAGER_AVAILABLE:
+        raise HTTPException(
+            status_code=503, 
+            detail="ADK session management not available. Enhanced chat manager is required."
+        )
+    
+    session_id = chat_manager.create_session(user_id, {
+        "source": "thin_client_api",
+        "adk_compliant": True,
+        "project_id": request.get("project_id")
+    })
+    
+    logger.info(f"Created ADK session {session_id} for thin client")
+    
+    return {
+        "success": True,
+        "session_id": session_id,
+        "user_id": user_id,
+        "created_at": datetime.now().isoformat()
+    }
+
+@router.get("/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str, limit: Optional[int] = None):
+    """Get messages for an ADK session."""
+    if not CHAT_MANAGER_AVAILABLE:
+        raise HTTPException(
+            status_code=503, 
+            detail="ADK session management not available. Enhanced chat manager is required."
+        )
+    
+    messages = chat_manager.get_conversation_history(session_id, limit=limit)
+    return {
+        "success": True,
+        "session_id": session_id,
+        "messages": [
+            {
+                "sender_type": msg.sender_type,
+                "content": msg.content,
+                "agent_used": msg.agent_used,
+                "timestamp": msg.timestamp.isoformat()
+            } for msg in messages
+        ]
+    }
+
+@router.get("/sessions/{session_id}/status")
+async def get_session_status(session_id: str):
+    """Get ADK session status and analytics."""
+    if not CHAT_MANAGER_AVAILABLE:
+        raise HTTPException(
+            status_code=503, 
+            detail="ADK session management not available. Enhanced chat manager is required."
+        )
+    
+    analytics = chat_manager.get_session_analytics(session_id)
+    return {
+        "success": True,
+        "session_id": session_id,
+        "analytics": analytics,
+        "active": analytics.get("status") == "active" if analytics else False
+    }
+
 @router.get("/")
 async def get_agent_info():
     """Get LLM agent information and capabilities."""
@@ -405,7 +696,9 @@ async def get_agent_info():
                 "llm_agent_steering",
                 "contextual_responses",
                 "multi_agent_delegation",
-                "natural_language_understanding"
+                "natural_language_understanding",
+                "adk_session_management",
+                "thin_client_optimized"
             ],
             "available_agents": [
                 "StorageSecurityAgent",
@@ -415,7 +708,9 @@ async def get_agent_info():
                 "CostOptimizationAgent",
                 "CoordinatorAgent"
             ],
-            "llm_available": AGENTS_AVAILABLE
+            "llm_available": AGENTS_AVAILABLE,
+            "adk_compliant": True,
+            "thin_client_ready": True
         },
         "status": "ready"
     }

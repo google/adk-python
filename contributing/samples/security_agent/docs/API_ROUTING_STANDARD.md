@@ -9,17 +9,31 @@ http://localhost:8000/api/v1/{service}/{resource}
 ## Service Routing Map
 
 ### 1. Agent Service (`/api/v1/agent`)
-**Router:** `backend/api/agent.py`
-**Prefix:** `/api/v1` (Note: agent endpoints are at root of v1)
+**Router:** `backend/api/agent_llm.py` (ADK-compliant with enhanced session management)
+**Prefix:** `/api/v1/agent`
 ```
-POST /api/v1/agent/chat           - Chat with AI agent
-GET  /api/v1/agent/ws             - WebSocket connection
-GET  /api/v1/sessions             - List sessions
-POST /api/v1/sessions/{user_id}   - Create session
-GET  /api/v1/conversations        - List conversations
+POST /api/v1/agent/chat                    - Chat with ADK agent (intelligent steering)
+GET  /api/v1/agent/ws                      - WebSocket connection
+POST /api/v1/agent/sessions/create         - Create ADK session
+GET  /api/v1/agent/sessions/{id}/messages  - Get session messages
+GET  /api/v1/agent/sessions/{id}/status    - Get session status
 ```
 
-### 2. GCP Service (`/api/v1/gcp`)
+### 2. Sessions Service (`/api/v1/sessions`)
+**Router:** `backend/api/sessions.py` (ADK session management)
+**Prefix:** `/api/v1/sessions`
+```
+POST /api/v1/sessions/create           - Create new ADK session
+GET  /api/v1/sessions/{id}             - Get session details
+GET  /api/v1/sessions/{id}/messages    - Get session messages (paginated)
+POST /api/v1/sessions/{id}/close       - Close session
+GET  /api/v1/sessions/{id}/analytics   - Get session analytics
+GET  /api/v1/sessions/{id}/suggestions - Get contextual suggestions
+GET  /api/v1/sessions/user/{user_id}/sessions - Get user sessions
+POST /api/v1/sessions/{id}/restore     - Restore session
+```
+
+### 3. GCP Service (`/api/v1/gcp`)
 **Router:** `backend/api/gcp.py`
 **Prefix:** `/api/v1/gcp`
 ```
@@ -30,7 +44,7 @@ POST /api/v1/gcp/call                        - Generic API call
 GET  /api/v1/gcp/discovery/apis              - Discover available APIs
 ```
 
-### 3. Security Service (`/api/v1/security`)
+### 4. Security Service (`/api/v1/security`)
 **Router:** `backend/api/security.py`
 **Prefix:** `/api/v1/security`
 ```
@@ -41,7 +55,7 @@ GET  /api/v1/security/enabled-apis           - List enabled security APIs
 POST /api/v1/security/vulnerability/evaluate - Evaluate vulnerabilities
 ```
 
-### 4. IAM Service (`/api/v1/iam`)
+### 5. IAM Service (`/api/v1/iam`)
 **Router:** `backend/api/iam.py`
 **Prefix:** `/api/v1/iam`
 ```

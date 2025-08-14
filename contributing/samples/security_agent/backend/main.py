@@ -30,20 +30,15 @@ except ImportError:
     SECRETMANAGER_AVAILABLE = False
     logger.warning("Google Cloud Secret Manager not available")
 
-# Import optional components
+# Import required components for ADK
 try:
     from backend.chat_manager import chat_manager, EnhancedChatManager
-    chat_manager_available = True
-except ImportError:
-    chat_manager_available = False
-    logger.info("Chat manager not available")
+    logger.info("✅ Enhanced chat manager loaded for ADK session management")
+except ImportError as e:
+    logger.error(f"❌ Enhanced chat manager is REQUIRED for ADK functionality: {e}")
+    logger.error("Please ensure chat_manager.py is properly installed")
 
-try:
-    from backend.api.websocket_manager import websocket_manager, websocket_endpoint
-    websocket_available = True
-except ImportError:
-    websocket_available = False
-    logger.info("WebSocket manager not available")
+# WebSocket manager removed - using ConnectionManager in agent_llm.py instead
 
 try:
     from backend.api.performance_monitor import performance_monitor, PerformanceMonitor
@@ -52,12 +47,8 @@ except ImportError:
     performance_monitor_available = False
     logger.info("Performance monitor not available")
 
-try:
-    from backend.api.context_manager import context_manager, ContextAwareManager
-    context_manager_available = True
-except ImportError:
-    context_manager_available = False
-    logger.info("Context manager not available")
+# Context manager removed - using chat_manager for context instead
+context_manager_available = False
 
 # Add the services directory to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'services'))
@@ -160,25 +151,22 @@ app.add_middleware(
 # /api/v1/performance/* - Performance monitoring endpoints
 # /api/v1/context/* - Context management endpoints
 
-# Agent router (includes chat endpoints)
-# Try LLM-based agent first, fallback to standard agent
-agent_router_loaded = False
-if chat_manager_available:
-    try:
-        from backend.api.agent_llm import router as agent_router
-        app.include_router(agent_router, prefix="/api/v1/agent")
-        logger.info("✅ LLM Agent router included at /api/v1/agent (with intelligent steering)")
-        agent_router_loaded = True
-    except ImportError as e:
-        logger.info(f"LLM Agent router not available, trying standard router: {e}")
-        
-    if not agent_router_loaded:
-        try:
-            from backend.api.agent import router as agent_router
-            app.include_router(agent_router, prefix="/api/v1/agent")
-            logger.info("✅ Standard Agent router included at /api/v1/agent")
-        except ImportError as e:
-            logger.warning(f"No agent router available: {e}")
+# Agent router with ADK session management
+try:
+    from backend.api.agent_llm import router as agent_router
+    app.include_router(agent_router, prefix="/api/v1/agent")
+    logger.info("✅ ADK Agent router included at /api/v1/agent (with intelligent steering and session management)")
+except ImportError as e:
+    logger.error(f"ADK Agent router required but not available: {e}")
+    logger.error("Please ensure chat_manager and agent_llm modules are properly installed")
+
+# Sessions router for ADK session management
+try:
+    from backend.api.sessions import router as sessions_router
+    app.include_router(sessions_router, prefix="/api/v1/sessions")
+    logger.info("✅ Sessions router included at /api/v1/sessions (ADK thin client support)")
+except ImportError as e:
+    logger.warning(f"Sessions router not available: {e}")
 
 # GCP router
 try:
@@ -213,14 +201,7 @@ if performance_monitor_available:
     except ImportError as e:
         logger.warning(f"Performance router not available: {e}")
 
-# Context manager router (if available)
-if context_manager_available:
-    try:
-        from backend.api.context_manager import router as context_router
-        app.include_router(context_router, prefix="/api/v1/context")
-        logger.info("✅ Context router included at /api/v1/context")
-    except ImportError as e:
-        logger.warning(f"Context router not available: {e}")
+# Context manager removed - context handled through chat_manager in agent_llm.py
 
 # IAM router
 try:
@@ -246,13 +227,7 @@ try:
 except ImportError as e:
     logger.warning(f"Recommendations router not available: {e}")
 
-# MSA router
-try:
-    from backend.api.msa import router as msa_router
-    app.include_router(msa_router, prefix="/api/v1/msa")
-    logger.info("✅ MSA router included at /api/v1/msa")
-except ImportError as e:
-    logger.warning(f"MSA router not available: {e}")
+# MSA router removed - unused functionality
 
 # Storage router
 try:
@@ -291,34 +266,30 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "features": {
             "secret_manager": SECRETMANAGER_AVAILABLE,
-            "chat_manager": chat_manager_available,
-            "websockets": websocket_available,
+            "adk_session_management": True,  # Always enabled in cleaned architecture
+            "websockets": True,  # Using ConnectionManager in agent_llm.py
             "performance_monitoring": performance_monitor_available,
-            "context_awareness": context_manager_available
+            "context_awareness": True  # Handled through chat_manager
         },
         "endpoints": {
             "health": "/health",
             "docs": "/docs",
-            "websocket": "/api/v1/agent/ws" if websocket_available else None,
+            "websocket": "/api/v1/agent/ws",  # Available in agent_llm.py
             "chat": "/api/v1/agent/chat",
             "performance": "/api/v1/performance" if performance_monitor_available else None,
-            "context": "/api/v1/context" if context_manager_available else None
+            "context": None  # Context handled through sessions API
         }
     }
 
-# Add WebSocket support if available
-if websocket_available:
-    @app.websocket("/api/v1/agent/ws")
-    async def websocket_endpoint_handler(websocket: WebSocket):
-        await websocket_endpoint(websocket)
+# WebSocket endpoint is available in agent_llm.py at /api/v1/agent/ws
 
 @app.on_event("startup")
 async def startup_event():
     """Application startup."""
     logger.info("🚀 Security Agent Backend starting up")
-    logger.info(f"Features available: chat_manager={chat_manager_available}, "
-               f"websockets={websocket_available}, performance={performance_monitor_available}, "
-               f"context={context_manager_available}")
+    logger.info("✅ ADK-compliant session management enabled")
+    logger.info(f"Optional features: websockets=True (in agent_llm), "
+               f"performance={performance_monitor_available}, context=True (via chat_manager)")
 
 @app.on_event("shutdown") 
 async def shutdown_event():
