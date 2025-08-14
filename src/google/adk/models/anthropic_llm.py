@@ -216,25 +216,31 @@ def _update_type_string(value_dict: dict[str, Any]):
 def function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
 ) -> anthropic_types.ToolParam:
+  """Converts a function declaration to an Anthropic tool param."""
   assert function_declaration.name
 
   properties = {}
-  if (
-      function_declaration.parameters
-      and function_declaration.parameters.properties
-  ):
-    for key, value in function_declaration.parameters.properties.items():
-      value_dict = value.model_dump(exclude_none=True)
-      _update_type_string(value_dict)
-      properties[key] = value_dict
+  required_params = []
+  if function_declaration.parameters:
+    if function_declaration.parameters.properties:
+      for key, value in function_declaration.parameters.properties.items():
+        value_dict = value.model_dump(exclude_none=True)
+        _update_type_string(value_dict)
+        properties[key] = value_dict
+    if function_declaration.parameters.required:
+      required_params = function_declaration.parameters.required
+
+  input_schema = {
+      "type": "object",
+      "properties": properties,
+  }
+  if required_params:
+    input_schema["required"] = required_params
 
   return anthropic_types.ToolParam(
       name=function_declaration.name,
       description=function_declaration.description or "",
-      input_schema={
-          "type": "object",
-          "properties": properties,
-      },
+      input_schema=input_schema,
   )
 
 
