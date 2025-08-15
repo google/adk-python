@@ -19,7 +19,17 @@ router = APIRouter()
 
 # Import the new ADK-compliant agents
 try:
-    # Try absolute import from backend.agents
+    # Import ADK agents with built-in tools
+    from backend.agents.adk_agents import (
+        get_adk_router,
+        create_search_agent,
+        create_code_analysis_agent,
+        create_security_coordinator,
+        get_available_adk_tools,
+        ADK_AVAILABLE
+    )
+    
+    # Also import custom tool-based agents for fallback
     from backend.agents.coordinator_agent import create_coordinator_agent, SecurityCoordinatorAgent
     from backend.agents.storage_agent import StorageSecurityAgent
     from backend.agents.iam_agent import IAMAgent
@@ -27,12 +37,18 @@ try:
     from backend.agents.compliance_agent import ComplianceAgent
     from backend.agents.cost_agent import CostOptimizationAgent
     from backend.agents.search_enabled_agent import create_search_enabled_agent
+    
     AGENTS_AVAILABLE = True
-    logger.info("✅ ADK Agents loaded successfully with tools")
+    logger.info("✅ ADK Agents loaded successfully with built-in tools")
+    if ADK_AVAILABLE:
+        logger.info("✅ Google ADK built-in tools are available")
+    else:
+        logger.info("⚠️ Using fallback agents (Google ADK not installed)")
 except ImportError as e:
     # Fallback to creating inline if imports fail
     logger.warning(f"⚠️ ADK Agents not imported, creating inline: {e}")
     AGENTS_AVAILABLE = False
+    ADK_AVAILABLE = False
     
     # Import base agent for inline creation
     try:
@@ -237,7 +253,23 @@ def create_llm_agent(agent_type: str, project_id: str):
     """Create an LLM agent of the specified type."""
     if not AGENTS_AVAILABLE:
         return None
-        
+    
+    # If ADK is available, use ADK router for proper built-in tool agents
+    if ADK_AVAILABLE and agent_type in ["search", "coordinator"]:
+        try:
+            logger.info(f"🚀 Creating ADK agent with built-in tools: {agent_type}")
+            adk_router = get_adk_router(project_id)
+            
+            if agent_type == "search":
+                # Return ADK search agent with google_search built-in tool
+                return adk_router.agents.get('search')
+            elif agent_type == "coordinator":
+                # Return ADK coordinator
+                return adk_router.agents.get('coordinator')
+        except Exception as e:
+            logger.warning(f"Failed to create ADK agent, falling back: {e}")
+    
+    # Fallback to custom tool-based agents
     try:
         if agent_type == "recommendation":
             # Create recommendation agent - use coordinator with special context
@@ -349,12 +381,23 @@ async def process_with_llm_agent(query: str, project_id: str, context: Dict = No
                 # Send query to agent for intelligent processing
                 logger.info(f"🚀 [AGENT-{request_id}] Calling {agent_name} with query processing...")
                 
-                # All agents now use the unified ADK process_query method
-                response_dict = await agent.process_query(
-                    query=query,
-                    context=context,
-                    session_id=request_id
-                )
+                # Handle different agent types
+                if ADK_AVAILABLE and hasattr(agent, 'arun'):
+                    # ADK Agent with built-in tools - use arun method
+                    logger.info(f"🎯 [AGENT-{request_id}] Using ADK Agent with built-in tools")
+                    response_text = await agent.arun(query)
+                    response_dict = {
+                        "success": True,
+                        "response": response_text,
+                        "tool_used": "adk_built_in_tool"
+                    }
+                else:
+                    # Custom agent with process_query method
+                    response_dict = await agent.process_query(
+                        query=query,
+                        context=context,
+                        session_id=request_id
+                    )
                 
                 # Extract response from the dict
                 if isinstance(response_dict, dict):
@@ -1047,6 +1090,15 @@ async def list_available_tools():
     
     tools_by_agent = {}
     
+    # First check for ADK built-in tools
+    if ADK_AVAILABLE:
+        try:
+            adk_tools_info = get_available_adk_tools()
+            tools_by_agent["ADK Built-in Tools"] = adk_tools_info
+            logger.info("✅ Added ADK built-in tools to listing")
+        except Exception as e:
+            logger.warning(f"Failed to get ADK built-in tools: {e}")
+    
     try:
         # Create a coordinator agent to get its tools
         coordinator = create_coordinator_agent("default")
@@ -1090,12 +1142,14 @@ async def list_available_tools():
             "architecture": {
                 "pattern": "Agent -> Tools -> APIs",
                 "description": "Agents use tools (Python functions) which call GCP APIs",
-                "example": "StorageAgent -> list_buckets tool -> Cloud Storage API"
+                "example": "StorageAgent -> list_buckets tool -> Cloud Storage API",
+                "adk_pattern": "Uses google.adk.tools for built-in tools when available"
             },
+            "adk_available": ADK_AVAILABLE,
             "agents_and_tools": tools_by_agent,
             "gcp_api_integrations": api_integrations,
             "total_agents": len(tools_by_agent),
-            "total_tools": sum(len(agent.get("tools", [])) for agent in tools_by_agent.values())
+            "total_tools": sum(len(agent.get("tools", [])) if isinstance(agent, dict) else 0 for agent in tools_by_agent.values())
         }
         
     except Exception as e:
@@ -1324,6 +1378,44 @@ async def get_session_status(session_id: str):
         "active": analytics.get("status") == "active" if analytics else False
     }
 
+@router.get("/adk/status")
+async def get_adk_status():
+    """Get ADK built-in tools status and configuration."""
+    adk_info = {
+        "adk_available": ADK_AVAILABLE,
+        "built_in_tools": {},
+        "requirements": [],
+        "configuration": {}
+    }
+    
+    if ADK_AVAILABLE:
+        try:
+            tools_info = get_available_adk_tools()
+            adk_info["built_in_tools"] = tools_info.get("built_in_tools", {})
+            adk_info["requirements"] = [
+                "Google ADK SDK installed",
+                "Gemini 2.0 models for built-in tools",
+                "Vertex AI project configured"
+            ]
+            adk_info["configuration"] = {
+                "pattern": "Following https://google.github.io/adk-docs/tools/built-in-tools/",
+                "google_search": "Available with Gemini 2.0",
+                "code_executor": "Available for code analysis",
+                "vertex_ai_search": "Requires Vertex AI setup",
+                "bigquery": "Requires BigQuery access"
+            }
+        except Exception as e:
+            adk_info["error"] = str(e)
+    else:
+        adk_info["message"] = "ADK not installed - using fallback agents with custom tools"
+        adk_info["install_instructions"] = [
+            "pip install google-adk",
+            "Configure Vertex AI project",
+            "Enable required APIs"
+        ]
+    
+    return adk_info
+
 @router.get("/")
 async def get_agent_info():
     """Get LLM agent information and capabilities."""
@@ -1339,20 +1431,22 @@ async def get_agent_info():
                 "multi_agent_delegation",
                 "natural_language_understanding",
                 "adk_session_management",
-                "thin_client_optimized"
+                "thin_client_optimized",
+                "adk_built_in_tools" if ADK_AVAILABLE else "custom_tools_fallback"
             ],
             "available_agents": [
                 "RecommendationAgent",
-                "SearchAgent",
+                "SearchAgent" + (" (ADK google_search)" if ADK_AVAILABLE else " (custom)"),
                 "StorageSecurityAgent",
                 "IAMSecurityAgent",
                 "NetworkSecurityAgent",
                 "ComplianceAgent",
                 "CostOptimizationAgent",
-                "CoordinatorAgent"
+                "CoordinatorAgent" + (" (ADK)" if ADK_AVAILABLE else "")
             ],
             "llm_available": AGENTS_AVAILABLE,
             "adk_compliant": True,
+            "adk_built_in_tools": ADK_AVAILABLE,
             "thin_client_ready": True
         },
         "status": "ready"
