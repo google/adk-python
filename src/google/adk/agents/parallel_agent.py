@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from typing import Any
 from typing import AsyncGenerator
 from typing import ClassVar
@@ -63,8 +64,11 @@ async def _merge_agent_run(
   Yields:
       Event: The next event from the merged generator.
   """
+  # asyncio.create_task seems to be using a wrong context and breaks context
+  # propagation for OTel traces. To fix it, we pass the context explicitly.
+  ctx = contextvars.copy_context()
   tasks = [
-      asyncio.create_task(events_for_one_agent.__anext__())
+      asyncio.create_task(events_for_one_agent.__anext__(), context=ctx)
       for events_for_one_agent in agent_runs
   ]
   pending_tasks = set(tasks)
@@ -80,7 +84,9 @@ async def _merge_agent_run(
         # Find the generator that produced this event and move it on.
         for i, original_task in enumerate(tasks):
           if task == original_task:
-            new_task = asyncio.create_task(agent_runs[i].__anext__())
+            new_task = asyncio.create_task(
+                agent_runs[i].__anext__(), context=ctx
+            )
             tasks[i] = new_task
             pending_tasks.add(new_task)
             break  # stop iterating once found
