@@ -233,7 +233,11 @@ class EnhancedChatManager:
         """Add a message to a session."""
         session = self.get_session(session_id)
         if not session:
-            raise ValueError(f"Session {session_id} not found")
+            # Try to reload session from database if not in memory
+            self._load_single_session(session_id)
+            session = self.get_session(session_id)
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
         
         # Create conversation if it doesn't exist
         conversation_id = "main"
@@ -364,6 +368,33 @@ class EnhancedChatManager:
         conn.close()
         logger.info(f"Initialized database at {self.db_path}")
     
+    def _load_single_session(self, session_id: str):
+        """Load a single session from the database."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT session_data 
+                FROM sessions 
+                WHERE session_id = ? AND status IN ('active', 'idle')
+            """, (session_id,))
+            
+            result = cursor.fetchone()
+            if result:
+                session_data = result[0]
+                session = pickle.loads(session_data)
+                self.sessions[session_id] = session
+                logger.info(f"Loaded session {session_id} from database")
+            else:
+                logger.warning(f"Session {session_id} not found in database")
+                
+        except Exception as e:
+            logger.error(f"Error loading session {session_id}: {e}")
+        finally:
+            if 'conn' in locals():
+                conn.close()
+
     def _load_sessions(self):
         """Load all sessions from the database."""
         try:
