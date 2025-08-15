@@ -1,12 +1,15 @@
-"""Enhanced Chat Manager for real-time multi-session conversation management."""
+"""Enhanced Chat Manager for real-time multi-session conversation management with persistence."""
 
 import asyncio
 import json
 import logging
 import time
+import sqlite3
+import pickle
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Set
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 import uuid
 
@@ -154,13 +157,23 @@ class ConversationAnalyzer:
         return suggestions[:5]  # Return top 5 suggestions
 
 class EnhancedChatManager:
-    """Enhanced chat manager with real-time capabilities and multi-session support."""
+    """Enhanced chat manager with real-time capabilities, multi-session support, and persistence."""
     
-    def __init__(self):
+    def __init__(self, db_path: str = None):
         self.sessions: Dict[str, ChatSession] = {}
         self.active_connections: Dict[str, Set[str]] = {}  # user_id -> set of connection_ids
         self.conversation_analyzer = ConversationAnalyzer()
         self.performance_tracker = PerformanceTracker()
+        
+        # Database setup for persistence
+        if db_path is None:
+            db_dir = Path(__file__).parent / "data"
+            db_dir.mkdir(exist_ok=True)
+            db_path = str(db_dir / "chat_sessions.db")
+        
+        self.db_path = db_path
+        self._init_database()
+        self._load_sessions()
         
         # Background task for cleanup
         self._cleanup_task = None
@@ -174,6 +187,7 @@ class EnhancedChatManager:
         """Stop the chat manager and cleanup."""
         if self._cleanup_task:
             self._cleanup_task.cancel()
+        self._save_all_sessions()
     
     def create_session(self, user_id: str, metadata: Dict[str, Any] = None) -> str:
         """Create a new chat session."""
@@ -186,6 +200,7 @@ class EnhancedChatManager:
         )
         
         self.sessions[session_id] = session
+        self._save_session(session_id, session)
         logger.info(f"Created new session {session_id} for user {user_id}")
         
         return session_id
@@ -246,6 +261,9 @@ class EnhancedChatManager:
         if performance_data:
             self.performance_tracker.record_metrics(session_id, performance_data)
         
+        # Save session to database
+        self._save_session(session_id, session)
+        
         logger.info(f"Added message to session {session_id}")
         return message
     
@@ -281,6 +299,7 @@ class EnhancedChatManager:
         if session:
             session.user_context.update(context_updates)
             session.last_activity = datetime.now()
+            self._save_session(session_id, session)
     
     def get_user_context(self, session_id: str) -> Dict[str, Any]:
         """Get user context for a session."""
@@ -293,6 +312,7 @@ class EnhancedChatManager:
         if session:
             session.status = SessionStatus.CLOSED
             session.metadata["closed_at"] = datetime.now().isoformat()
+            self._save_session(session_id, session)
             logger.info(f"Closed session {session_id}")
     
     def get_session_analytics(self, session_id: str) -> Dict[str, Any]:
@@ -319,6 +339,94 @@ class EnhancedChatManager:
             "performance_metrics": self.performance_tracker.get_session_summary(session_id)
         }
     
+    def _init_database(self):
+        """Initialize the SQLite database for session persistence."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Create sessions table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                session_data BLOB NOT NULL,
+                created_at TIMESTAMP,
+                last_activity TIMESTAMP,
+                status TEXT
+            )
+        """)
+        
+        # Create indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_id ON sessions(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_last_activity ON sessions(last_activity)")
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Initialized database at {self.db_path}")
+    
+    def _load_sessions(self):
+        """Load all sessions from the database."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Load active and idle sessions (not archived or closed)
+            cursor.execute("""
+                SELECT session_id, session_data 
+                FROM sessions 
+                WHERE status IN ('active', 'idle')
+                ORDER BY last_activity DESC
+            """)
+            
+            rows = cursor.fetchall()
+            for session_id, session_data in rows:
+                try:
+                    session = pickle.loads(session_data)
+                    self.sessions[session_id] = session
+                    logger.info(f"Loaded session {session_id}")
+                except Exception as e:
+                    logger.error(f"Failed to load session {session_id}: {e}")
+            
+            conn.close()
+            logger.info(f"Loaded {len(self.sessions)} sessions from database")
+            
+        except Exception as e:
+            logger.error(f"Failed to load sessions from database: {e}")
+    
+    def _save_session(self, session_id: str, session: ChatSession):
+        """Save a single session to the database."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            session_data = pickle.dumps(session)
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO sessions 
+                (session_id, user_id, session_data, created_at, last_activity, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                session_id,
+                session.user_id,
+                session_data,
+                session.created_at,
+                session.last_activity,
+                session.status.value
+            ))
+            
+            conn.commit()
+            conn.close()
+            logger.debug(f"Saved session {session_id} to database")
+            
+        except Exception as e:
+            logger.error(f"Failed to save session {session_id}: {e}")
+    
+    def _save_all_sessions(self):
+        """Save all sessions to the database."""
+        for session_id, session in self.sessions.items():
+            self._save_session(session_id, session)
+        logger.info(f"Saved {len(self.sessions)} sessions to database")
+    
     async def _cleanup_old_sessions(self):
         """Background task to cleanup old sessions."""
         while True:
@@ -328,7 +436,28 @@ class EnhancedChatManager:
                 for session_id, session in list(self.sessions.items()):
                     if session.last_activity < cutoff_time and session.status != SessionStatus.ARCHIVED:
                         session.status = SessionStatus.ARCHIVED
+                        self._save_session(session_id, session)
+                        # Remove from memory after archiving
+                        del self.sessions[session_id]
                         logger.info(f"Archived old session {session_id}")
+                
+                # Also cleanup database
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Delete very old archived sessions (> 30 days)
+                old_cutoff = datetime.now() - timedelta(days=30)
+                cursor.execute("""
+                    DELETE FROM sessions 
+                    WHERE status = 'archived' AND last_activity < ?
+                """, (old_cutoff,))
+                
+                deleted = cursor.rowcount
+                if deleted > 0:
+                    logger.info(f"Deleted {deleted} old archived sessions from database")
+                
+                conn.commit()
+                conn.close()
                 
                 await asyncio.sleep(3600)  # Check every hour
                 
