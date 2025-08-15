@@ -19,25 +19,25 @@ instruction: |
   You should always perform the previous 3 steps when asking for a roll and checking prime numbers.
   You should not rely on the previous history on prime results.
 tools:
-  - name: callbacks.tools.roll_die
-  - name: callbacks.tools.check_prime
+  - name: core_callback.tools.roll_die
+  - name: core_callback.tools.check_prime
 before_agent_callbacks:
-  - name: callbacks.callbacks.before_agent_callback1
-  - name: callbacks.callbacks.before_agent_callback2
-  - name: callbacks.callbacks.before_agent_callback3
+  - name: core_callback.callbacks.before_agent_callback1
+  - name: core_callback.callbacks.before_agent_callback2
+  - name: core_callback.callbacks.before_agent_callback3
 after_agent_callbacks:
-  - name: callbacks.callbacks.after_agent_callback1
-  - name: callbacks.callbacks.after_agent_callback2
-  - name: callbacks.callbacks.after_agent_callback3
+  - name: core_callback.callbacks.after_agent_callback1
+  - name: core_callback.callbacks.after_agent_callback2
+  - name: core_callback.callbacks.after_agent_callback3
 before_model_callbacks:
-  - name: callbacks.callbacks.before_model_callback
+  - name: core_callback.callbacks.before_model_callback
 after_model_callbacks:
-  - name: callbacks.callbacks.after_model_callback
+  - name: core_callback.callbacks.after_model_callback
 before_tool_callbacks:
-  - name: callbacks.callbacks.before_tool_callback1
-  - name: callbacks.callbacks.before_tool_callback2
-  - name: callbacks.callbacks.before_tool_callback3
+  - name: core_callback.callbacks.before_tool_callback1
+  - name: core_callback.callbacks.before_tool_callback2
+  - name: core_callback.callbacks.before_tool_callback3
 after_tool_callbacks:
-  - name: callbacks.callbacks.after_tool_callback1
-  - name: callbacks.callbacks.after_tool_callback2
-  - name: callbacks.callbacks.after_tool_callback3
+  - name: core_callback.callbacks.after_tool_callback1
+  - name: core_callback.callbacks.after_tool_callback2
+  - name: core_callback.callbacks.after_tool_callback3
