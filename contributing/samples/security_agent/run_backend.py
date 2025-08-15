@@ -102,6 +102,7 @@ except ImportError:
     port = os.getenv('PORT', '8000')
     print(f"Access the API at: http://localhost:{port}")
     print(f"API Documentation: http://localhost:{port}/docs")
+    print(f"Healthcheck endpoint: http://localhost:{port}/health")
     print("\nPress Ctrl+C to stop the server\n")
     
     # Run the server using virtual environment

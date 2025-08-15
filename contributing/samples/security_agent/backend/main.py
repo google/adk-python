@@ -406,6 +406,18 @@ async def startup_event():
     logger.info(f"🔐 Secret Manager: {'✅ available' if SECRETMANAGER_AVAILABLE else '⚠️ not configured'}")
     logger.info("🔄 All API endpoints operational with intelligent fallbacks")
     logger.info("🎯 System ready to handle requests even with missing dependencies")
+    
+    # Perform internal healthcheck on startup
+    logger.info("🏥 Running startup healthcheck...")
+    try:
+        health_status = await health_check()
+        logger.info(f"✅ Healthcheck passed: {health_status['status']}")
+        logger.info(f"📋 Components status: {json.dumps(health_status['components'], indent=2)}")
+        logger.info(f"🔧 Active features: {json.dumps(health_status['features'], indent=2)}")
+        logger.info(f"🌐 Available endpoints: {len([e for e in health_status['endpoints'].values() if e is not None])} active")
+    except Exception as e:
+        logger.error(f"❌ Healthcheck failed: {e}")
+        logger.warning("⚠️ System may have limited functionality")
 
 @app.on_event("shutdown") 
 async def shutdown_event():
