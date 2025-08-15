@@ -130,7 +130,7 @@ class LlmAgent(BaseAgent):
   When not set, the agent will inherit the model from its ancestor.
   """
 
-  config_type: ClassVar[type[BaseAgentConfig]] = LlmAgentConfig
+  config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent."""
 
   instruction: Union[str, InstructionProvider] = ''

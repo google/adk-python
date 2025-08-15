@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
+from typing import ClassVar
 from typing import Type
 
 from typing_extensions import override
@@ -33,7 +34,7 @@ from .sequential_agent_config import SequentialAgentConfig
 class SequentialAgent(BaseAgent):
   """A shell agent that runs its sub-agents in sequence."""
 
-  config_type: Type[BaseAgentConfig] = SequentialAgentConfig
+  config_type: ClassVar[Type[BaseAgentConfig]] = SequentialAgentConfig
   """The config type for this agent."""
 
   @override
