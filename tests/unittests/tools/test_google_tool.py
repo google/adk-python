@@ -16,18 +16,19 @@
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.adk.tools._google_credentials import GoogleCredentialsManager
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
-from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsManager
-from google.adk.tools.bigquery.bigquery_tool import BigQueryTool
 from google.adk.tools.bigquery.config import BigQueryToolConfig
+from google.adk.tools.google_tool import GoogleTool
+from google.adk.tools.spanner.settings import SpannerToolSettings
 from google.adk.tools.tool_context import ToolContext
 # Mock the Google OAuth and API dependencies
 from google.oauth2.credentials import Credentials
 import pytest
 
 
-class TestBigQueryTool:
-  """Test suite for BigQueryTool OAuth integration and execution.
+class TestGoogleTool:
+  """Test suite for GoogleTool OAuth integration and execution.
 
   This class tests the high-level tool execution logic that combines
   credential management with actual function execution.
@@ -88,18 +89,18 @@ class TestBigQueryTool:
   def test_tool_initialization_with_credentials(
       self, sample_function, credentials_config
   ):
-    """Test that BigQueryTool initializes correctly with credentials.
+    """Test that GoogleTool initializes correctly with credentials.
 
     The tool should properly inherit from FunctionTool while adding
     Google API specific credential management capabilities.
     """
-    tool = BigQueryTool(
+    tool = GoogleTool(
         func=sample_function, credentials_config=credentials_config
     )
 
     assert tool.func == sample_function
     assert tool._credentials_manager is not None
-    assert isinstance(tool._credentials_manager, BigQueryCredentialsManager)
+    assert isinstance(tool._credentials_manager, GoogleCredentialsManager)
     # Verify that 'credentials' parameter is ignored in function signature analysis
     assert "credentials" in tool._ignore_params
 
@@ -109,7 +110,7 @@ class TestBigQueryTool:
     Some tools might handle authentication externally or use service
     accounts, so credential management should be optional.
     """
-    tool = BigQueryTool(func=sample_function, credentials_config=None)
+    tool = GoogleTool(func=sample_function, credentials_config=None)
 
     assert tool.func == sample_function
     assert tool._credentials_manager is None
@@ -123,7 +124,7 @@ class TestBigQueryTool:
     This tests the main happy path where credentials are available
     and the underlying function executes successfully.
     """
-    tool = BigQueryTool(
+    tool = GoogleTool(
         func=sample_function, credentials_config=credentials_config
     )
 
@@ -152,7 +153,7 @@ class TestBigQueryTool:
     When credentials aren't available and OAuth flow is needed,
     the tool should return a user-friendly message rather than failing.
     """
-    tool = BigQueryTool(
+    tool = GoogleTool(
         func=sample_function, credentials_config=credentials_config
     )
 
@@ -178,7 +179,7 @@ class TestBigQueryTool:
     Tools without credential managers should execute normally,
     passing None for credentials if the function accepts them.
     """
-    tool = BigQueryTool(func=sample_function, credentials_config=None)
+    tool = GoogleTool(func=sample_function, credentials_config=None)
 
     result = await tool.run_async(
         args={"param1": "test_value"}, tool_context=mock_tool_context
@@ -196,7 +197,7 @@ class TestBigQueryTool:
     The tool should correctly detect and execute async functions,
     which is important for tools that make async API calls.
     """
-    tool = BigQueryTool(
+    tool = GoogleTool(
         func=async_sample_function, credentials_config=credentials_config
     )
 
@@ -227,7 +228,7 @@ class TestBigQueryTool:
     def failing_function(param1: str, credentials: Credentials = None) -> dict:
       raise ValueError("Something went wrong")
 
-    tool = BigQueryTool(
+    tool = GoogleTool(
         func=failing_function, credentials_config=credentials_config
     )
 
@@ -259,7 +260,7 @@ class TestBigQueryTool:
     ) -> dict:
       return {"success": True}
 
-    tool = BigQueryTool(
+    tool = GoogleTool(
         func=complex_function, credentials_config=credentials_config
     )
 
@@ -270,7 +271,7 @@ class TestBigQueryTool:
     assert "optional_param" not in mandatory_args
 
   @pytest.mark.parametrize(
-      "input_config, expected_config",
+      "input_settings, expected_settings",
       [
           pytest.param(
               BigQueryToolConfig(
@@ -281,22 +282,36 @@ class TestBigQueryTool:
               ),
               id="with_provided_config",
           ),
-          pytest.param(
-              None,
-              BigQueryToolConfig(),
-              id="with_none_config_creates_default",
-          ),
       ],
   )
-  def test_tool_config_initialization(self, input_config, expected_config):
-    """Tests that self._tool_config is correctly initialized by comparing its
+  def test_tool_bigquery_config_initialization(
+      self, input_settings, expected_settings
+  ):
+    """Tests that self._tool_settings is correctly initialized by comparing its
 
     final state to an expected configuration object.
     """
     # 1. Initialize the tool with the parameterized config
-    tool = BigQueryTool(func=None, bigquery_tool_config=input_config)
+    tool = GoogleTool(func=None, tool_settings=input_settings)
 
     # 2. Assert that the tool's config has the same attribute values
     #    as the expected config. Comparing the __dict__ is a robust
     #    way to check for value equality.
-    assert tool._tool_config.__dict__ == expected_config.__dict__  # pylint: disable=protected-access
+    assert tool._tool_settings.__dict__ == expected_settings.__dict__  # pylint: disable=protected-access
+
+  @pytest.mark.parametrize(
+      "input_settings, expected_settings",
+      [
+          pytest.param(
+              SpannerToolSettings(max_executed_query_result_rows=10),
+              SpannerToolSettings(max_executed_query_result_rows=10),
+              id="with_provided_settings",
+          ),
+      ],
+  )
+  def test_tool_spanner_settings_initialization(
+      self, input_settings, expected_settings
+  ):
+    """Tests that self._tool_settings is correctly initialized with SpannerToolSettings by comparing its final state to an expected configuration object."""
+    tool = GoogleTool(func=None, tool_settings=input_settings)
+    assert tool._tool_settings.__dict__ == expected_settings.__dict__  # pylint: disable=protected-access

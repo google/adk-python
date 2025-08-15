@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+name: notion_agent
+model: gemini-2.0-flash
+instruction: |
+  You are my workspace assistant. Use the provided tools to read, search, comment on, or create
+  Notion pages. Ask clarifying questions when unsure.
+tools:
+- name: MCPToolset
+  args:
+    stdio_server_params:
+      command: "npx"
+      args:
+      - "-y"
+      - "@notionhq/notion-mcp-server"
+      env:
+        OPENAPI_MCP_HEADERS: "{'Authorization': 'Bearer fake_notion_api_key', 'Notion-Version': '2022-06-28'}"

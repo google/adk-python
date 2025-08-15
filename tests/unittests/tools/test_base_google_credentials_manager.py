@@ -18,9 +18,9 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.tools._google_credentials import GoogleCredentialsManager
 from google.adk.tools.bigquery.bigquery_credentials import BIGQUERY_TOKEN_CACHE_KEY
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
-from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsManager
 from google.adk.tools.tool_context import ToolContext
 from google.auth.credentials import Credentials as AuthCredentials
 from google.auth.exceptions import RefreshError
@@ -29,8 +29,8 @@ from google.oauth2.credentials import Credentials as OAuthCredentials
 import pytest
 
 
-class TestBigQueryCredentialsManager:
-  """Test suite for BigQueryCredentialsManager OAuth flow handling.
+class TestGoogleCredentialsManager:
+  """Test suite for GoogleCredentialsManager OAuth flow handling.
 
   This class tests the complex credential management logic including
   credential validation, refresh, OAuth flow orchestration, and the
@@ -63,7 +63,7 @@ class TestBigQueryCredentialsManager:
   @pytest.fixture
   def manager(self, credentials_config):
     """Create a credentials manager instance for testing."""
-    return BigQueryCredentialsManager(credentials_config)
+    return GoogleCredentialsManager(credentials_config)
 
   @pytest.mark.parametrize(
       ("credentials_class",),
@@ -336,7 +336,7 @@ class TestBigQueryCredentialsManager:
 
     # Use the full module path as it appears in the project structure
     with patch(
-        "google.adk.tools.bigquery.bigquery_credentials.google.oauth2.credentials.Credentials",
+        "google.adk.tools._google_credentials.google.oauth2.credentials.Credentials",
         return_value=mock_creds,
     ) as mock_credentials_class:
       result = await manager.get_valid_credentials(mock_tool_context)
@@ -388,7 +388,7 @@ class TestBigQueryCredentialsManager:
     credential manager, avoiding redundant OAuth flows.
     """
     # Create first manager instance and simulate OAuth completion
-    manager1 = BigQueryCredentialsManager(credentials_config)
+    manager1 = GoogleCredentialsManager(credentials_config)
 
     # Mock OAuth response for first manager
     mock_auth_response = Mock()
@@ -412,7 +412,7 @@ class TestBigQueryCredentialsManager:
 
     # Use the correct module path - without the 'src.' prefix
     with patch(
-        "google.adk.tools.bigquery.bigquery_credentials.google.oauth2.credentials.Credentials",
+        "google.adk.tools._google_credentials.google.oauth2.credentials.Credentials",
         return_value=mock_creds,
     ) as mock_credentials_class:
       # Complete OAuth flow with first manager
@@ -424,7 +424,7 @@ class TestBigQueryCredentialsManager:
       assert cached_creds_json == mock_creds_json
 
     # Create second manager instance (simulating new request/session)
-    manager2 = BigQueryCredentialsManager(credentials_config)
+    manager2 = GoogleCredentialsManager(credentials_config)
     credentials_config.credentials = None
 
     # Reset auth response to None (no new OAuth flow available)
@@ -432,7 +432,7 @@ class TestBigQueryCredentialsManager:
 
     # Mock the from_authorized_user_info method for the second manager
     with patch(
-        "google.adk.tools.bigquery.bigquery_credentials.google.oauth2.credentials.Credentials.from_authorized_user_info"
+        "google.adk.tools._google_credentials.google.oauth2.credentials.Credentials.from_authorized_user_info"
     ) as mock_from_json:
       mock_cached_creds = Mock(spec=OAuthCredentials)
       mock_cached_creds.valid = True
