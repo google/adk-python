@@ -189,9 +189,10 @@ class EnhancedChatManager:
             self._cleanup_task.cancel()
         self._save_all_sessions()
     
-    def create_session(self, user_id: str, metadata: Dict[str, Any] = None) -> str:
+    def create_session(self, user_id: str, metadata: Dict[str, Any] = None, session_id: str = None) -> str:
         """Create a new chat session."""
-        session_id = f"{user_id}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        if not session_id:
+            session_id = f"{user_id}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         
         session = ChatSession(
             session_id=session_id,
@@ -209,6 +210,18 @@ class EnhancedChatManager:
         """Get a session by ID."""
         return self.sessions.get(session_id)
     
+    def session_exists(self, session_id: str) -> bool:
+        """Check if a session exists."""
+        if session_id in self.sessions:
+            return True
+        # Check database as well
+        self._load_single_session(session_id)
+        return session_id in self.sessions
+    
+    async def session_exists_async(self, session_id: str) -> bool:
+        """Async version of session_exists for compatibility."""
+        return self.session_exists(session_id)
+    
     def get_user_sessions(self, user_id: str, active_only: bool = False) -> List[ChatSession]:
         """Get all sessions for a user."""
         sessions = [
@@ -220,6 +233,10 @@ class EnhancedChatManager:
             sessions = [s for s in sessions if s.status == SessionStatus.ACTIVE]
         
         return sorted(sessions, key=lambda s: s.last_activity, reverse=True)
+    
+    async def create_session_async(self, user_id: str, metadata: Dict[str, Any] = None, session_id: str = None) -> str:
+        """Async version of create_session for compatibility."""
+        return self.create_session(user_id, metadata, session_id)
     
     async def add_message(
         self, 

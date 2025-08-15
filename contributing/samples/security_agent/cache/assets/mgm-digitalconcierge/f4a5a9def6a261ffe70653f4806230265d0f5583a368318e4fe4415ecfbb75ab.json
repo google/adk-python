@@ -15,7 +15,7 @@
       "container": 21
     },
     "security_findings_count": 20,
-    "api_response_time": "2025-08-15T17:39:12.441344"
+    "api_response_time": "2025-08-15T17:52:10.950023"
   },
   "assets_by_category": {
     "other": {
@@ -4521,11 +4521,11 @@
   ],
   "total_security_findings": 20,
   "api_calls_made": [],
-  "timestamp": "2025-08-15T17:39:12.441364",
+  "timestamp": "2025-08-15T17:52:10.950033",
   "api_metadata": {
-    "call_duration": 0.3585391044616699,
+    "call_duration": 0.38162899017333984,
     "endpoint": "projects/mgm-digitalconcierge:searchAllResources",
-    "timestamp": "2025-08-15T17:39:12.441372",
+    "timestamp": "2025-08-15T17:52:10.950040",
     "source": "live_api"
   }
 }
