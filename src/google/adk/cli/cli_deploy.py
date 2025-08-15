@@ -19,6 +19,7 @@ import subprocess
 from typing import Optional
 
 import click
+from packaging.version import parse
 
 _DOCKERFILE_TEMPLATE = """
 FROM python:3.11-slim
@@ -91,7 +92,8 @@ def _get_service_option_by_adk_version(
     memory_uri: Optional[str],
 ) -> str:
   """Returns service option string based on adk_version."""
-  if adk_version >= '1.3.0':
+  parsed_version = parse(adk_version)
+  if parsed_version >= parse('1.3.0'):
     session_option = (
         f'--session_service_uri={session_uri}' if session_uri else ''
     )
@@ -100,7 +102,7 @@ def _get_service_option_by_adk_version(
     )
     memory_option = f'--memory_service_uri={memory_uri}' if memory_uri else ''
     return f'{session_option} {artifact_option} {memory_option}'
-  elif adk_version >= '1.2.0':
+  elif parsed_version >= parse('1.2.0'):
     session_option = f'--session_db_url={session_uri}' if session_uri else ''
     artifact_option = (
         f'--artifact_storage_uri={artifact_uri}' if artifact_uri else ''
