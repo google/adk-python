@@ -26,11 +26,23 @@ class GkeCodeExecutor(BaseCodeExecutor):
     - Efficient, event-driven waiting using the Kubernetes watch API.
 
     RBAC Permissions:
-    This executor interacts with the Kubernetes API and requires a ServiceAccount 
-    with specific RBAC permissions to function. The agent's pod needs permissions
-    to create/watch Jobs, create/delete ConfigMaps, and list Pods to read logs.
-    For a complete, working example of the required Role and RoleBinding, see the
-    file at: contributing/samples/gke_agent_sandbox/deployment_rbac.yaml
+    This executor requires a ServiceAccount with specific RBAC permissions. The
+    Role granted to the ServiceAccount must include rules to manage Jobs,
+    ConfigMaps, and Pod logs. Below is a minimal set of required permissions:
+
+    rules:
+    # For creating/deleting code ConfigMaps and patching ownerReferences
+    - apiGroups: [""] # Core API Group
+    resources: ["configmaps"]
+    verbs: ["create", "delete", "get", "patch"]
+    # For watching Job completion status
+    - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+    # For retrieving logs from the completed Job's Pod
+    - apiGroups: [""] # Core API Group
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
     """
     namespace: str = "default"
     image: str = "python:3.11-slim"
