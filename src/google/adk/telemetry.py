@@ -211,10 +211,11 @@ def trace_call_llm(
         'gen_ai.usage.input_tokens',
         llm_response.usage_metadata.prompt_token_count,
     )
-    span.set_attribute(
-        'gen_ai.usage.output_tokens',
-        llm_response.usage_metadata.candidates_token_count,
-    )
+    if llm_response.usage_metadata.candidates_token_count is not None:
+      span.set_attribute(
+          'gen_ai.usage.output_tokens',
+          llm_response.usage_metadata.candidates_token_count,
+      )
   if llm_response.finish_reason:
     span.set_attribute(
         'gen_ai.response.finish_reasons',
