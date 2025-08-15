@@ -7,15 +7,38 @@ import plotly.graph_objects as go
 from typing import Dict, Any, List
 import sys
 import os
+import json
+from datetime import datetime
 # Add path to access frontend root directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 from api_client_consolidated import api_client as simple_api
 
+try:
+    from frontend.services.asset_data_service import AssetDataService
+except ImportError:
+    try:
+        from services.asset_data_service import AssetDataService
+    except ImportError:
+        AssetDataService = None
+        st.warning("AssetDataService not available - asset integration disabled")
+
 
 def render_security_evaluation_view():
-    """Render the security evaluation dashboard."""
+    """Render the enhanced security evaluation dashboard with asset integration."""
     st.header("🛡️ Security Evaluation Dashboard")
-    st.write("Comprehensive security assessment of your GCP project.")
+    st.write("Comprehensive security assessment of your GCP project with asset correlation.")
+    
+    # Initialize asset service
+    asset_service = None
+    if AssetDataService:
+        try:
+            asset_service = AssetDataService()
+        except Exception as e:
+            st.warning(f"Asset service initialization failed: {e}")
+    
+    # Asset overview section
+    if asset_service:
+        render_asset_security_overview(asset_service)
     
     # Action buttons
     col1, col2, col3 = st.columns(3)
@@ -318,19 +341,157 @@ def render_full_scan_results():
             st.error("Failed to get compliance data")
 
 
+def render_asset_security_overview(asset_service):
+    """Render asset-integrated security overview."""
+    st.subheader("📊 Asset Security Overview")
+    
+    with st.spinner("Loading asset security data..."):
+        try:
+            # Get asset data
+            asset_data = asset_service.get_assets_summary()
+            
+            if asset_data and isinstance(asset_data, dict):
+                # Asset security metrics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    total_assets = asset_data.get('total_assets', 0)
+                    st.metric("🏢 Total Assets", total_assets)
+                
+                with col2:
+                    storage_buckets = asset_data.get('storage_buckets', 0)
+                    st.metric("🗂️ Storage Assets", storage_buckets)
+                
+                with col3:
+                    iam_accounts = asset_data.get('iam_accounts', 0) 
+                    st.metric("👤 IAM Assets", iam_accounts)
+                
+                with col4:
+                    compute_instances = asset_data.get('compute_instances', 0)
+                    st.metric("💻 Compute Assets", compute_instances)
+                
+                # Asset risk visualization
+                if 'risk_distribution' in asset_data:
+                    render_asset_risk_chart(asset_data['risk_distribution'])
+                
+                # Security findings by asset type
+                if 'security_findings' in asset_data:
+                    render_security_findings_by_asset(asset_data['security_findings'])
+                    
+        except Exception as e:
+            st.error(f"Failed to load asset security data: {e}")
+
+
+def render_asset_risk_chart(risk_data):
+    """Render asset risk distribution chart."""
+    if not risk_data:
+        return
+        
+    st.subheader("⚠️ Asset Risk Distribution")
+    
+    # Create risk distribution chart
+    risk_df = pd.DataFrame([
+        {"Risk Level": risk, "Count": count}
+        for risk, count in risk_data.items()
+    ])
+    
+    if not risk_df.empty:
+        color_map = {
+            "High": "#ff4b4b",
+            "Medium": "#ffa500", 
+            "Low": "#00cc88",
+            "Critical": "#8b0000"
+        }
+        
+        fig = px.pie(
+            risk_df,
+            values="Count",
+            names="Risk Level",
+            title="Asset Risk Level Distribution",
+            color="Risk Level",
+            color_discrete_map=color_map
+        )
+        
+        fig.update_traces(textposition='inside', textinfo='percent+label')
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def render_security_findings_by_asset(findings_data):
+    """Render security findings grouped by asset type."""
+    if not findings_data:
+        return
+        
+    st.subheader("🔍 Security Findings by Asset Type")
+    
+    # Create findings chart
+    findings_df = pd.DataFrame([
+        {"Asset Type": asset_type, "Finding": finding, "Count": count}
+        for asset_type, findings in findings_data.items()
+        for finding, count in findings.items()
+    ])
+    
+    if not findings_df.empty:
+        fig = px.bar(
+            findings_df,
+            x="Asset Type",
+            y="Count",
+            color="Finding",
+            title="Security Findings by Asset Type",
+            barmode="stack"
+        )
+        
+        fig.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Show detailed findings
+        with st.expander("📋 Detailed Security Findings"):
+            for asset_type in findings_data:
+                st.markdown(f"**{asset_type.title()} Assets:**")
+                for finding, count in findings_data[asset_type].items():
+                    risk_icon = "🔴" if "critical" in finding.lower() or "high" in finding.lower() else "🟡" if "medium" in finding.lower() else "🟢"
+                    st.markdown(f"  {risk_icon} {finding}: {count} instances")
+                st.markdown("")
+
+
 def render_security_summary_card():
     """Render a compact security summary card for the dashboard."""
     with st.container():
         st.subheader("🛡️ Security Status")
         
-        # Get security data from backend
-        col1, col2 = st.columns(2)
+        # Get asset-aware security data
+        asset_service = None
+        if AssetDataService:
+            try:
+                asset_service = AssetDataService()
+                asset_summary = asset_service.get_assets_summary()
+                
+                if asset_summary:
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        total_assets = asset_summary.get('total_assets', 0)
+                        st.metric("📊 Assets", total_assets)
+                    
+                    with col2:
+                        high_risk = asset_summary.get('high_risk_assets', 0)
+                        st.metric("⚠️ High Risk", high_risk, delta_color="inverse")
+                    
+                    with col3:
+                        security_score = asset_summary.get('security_score', 'N/A')
+                        st.metric("🛡️ Score", security_score)
+                        
+            except Exception as e:
+                st.error(f"Asset service error: {e}")
         
-        with col1:
-            st.metric("Security Score", "Analyzing...")
-        
-        with col2:
-            st.metric("Issues", "Scanning...", delta_color="inverse")
+        # Fallback to original metrics
+        if not asset_service:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.metric("Security Score", "Analyzing...")
+            
+            with col2:
+                st.metric("Issues", "Scanning...", delta_color="inverse")
         
         if st.button("Full Security Scan", key="security_scan"):
             st.session_state.page = "security"

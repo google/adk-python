@@ -10,12 +10,24 @@ import os
 # Add path to access frontend root directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 from api_client_consolidated import api_client as simple_api
+from services.asset_data_service import AssetDataService
 
 
 def render_iam_analyzer_view():
-    """Render the IAM analysis dashboard."""
-    st.header("🔐 IAM Policy Analyzer")
-    st.write("Analyze IAM permissions and policies for security best practices.")
+    """Render the asset-aware IAM analysis dashboard."""
+    st.header("🔐 Asset-Aware IAM Analyzer")
+    st.write("Analyze IAM permissions correlated with your asset inventory.")
+    
+    # Initialize asset service and get asset context
+    asset_service = AssetDataService()
+    project_id = st.session_state.get('selected_project', 'mgm-digitalconcierge')
+    
+    # Get asset context for IAM correlation
+    with st.spinner("Loading asset context for IAM analysis..."):
+        asset_data = asset_service.get_asset_summary(project_id)
+    
+    # Asset-IAM overview
+    render_asset_iam_overview(asset_data)
     
     # Analysis type selector
     analysis_type = st.radio(
@@ -32,21 +44,87 @@ def render_iam_analyzer_view():
         render_all_users_analysis()
 
 
+def render_asset_iam_overview(asset_data: Dict[str, Any]):
+    """Render asset-aware IAM overview."""
+    st.subheader("🎯 Asset-IAM Security Overview")
+    
+    if asset_data.get('success') and asset_data.get('total_assets', 0) > 0:
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_assets = asset_data.get('total_assets', 0)
+            st.metric(
+                "Assets Under IAM",
+                total_assets,
+                help="Total assets subject to IAM policies"
+            )
+        
+        with col2:
+            # Estimate IAM-sensitive assets (compute, storage typically have more IAM complexity)
+            categories = asset_data.get('asset_categories', {})
+            sensitive_count = categories.get('Compute Engine', 0) + categories.get('Cloud Storage', 0)
+            st.metric(
+                "IAM-Sensitive Assets",
+                sensitive_count,
+                delta=f"{(sensitive_count/total_assets*100):.0f}% of total" if total_assets > 0 else "0%",
+                help="Assets that typically require complex IAM policies"
+            )
+        
+        with col3:
+            # Simulate IAM complexity score based on asset diversity
+            iam_complexity = min(100, len(categories) * 10 + total_assets // 10)
+            complexity_color = "inverse" if iam_complexity > 70 else "normal"
+            st.metric(
+                "IAM Complexity Score",
+                f"{iam_complexity}/100",
+                delta="Asset-driven calculation",
+                delta_color=complexity_color,
+                help="IAM complexity estimated from asset inventory"
+            )
+        
+        with col4:
+            high_risk_assets = asset_data.get('high_risk_count', 0)
+            st.metric(
+                "High-Risk IAM Assets",
+                high_risk_assets,
+                delta_color="inverse" if high_risk_assets > 0 else "normal",
+                help="Assets with potential IAM security issues"
+            )
+    else:
+        st.warning("🔍 No asset data available for IAM correlation. Run asset discovery first.")
+
+
 def render_project_iam_overview():
-    """Render project-wide IAM policy overview."""
+    """Render project-wide IAM policy overview with asset correlation."""
     st.subheader("📊 Project IAM Policy Overview")
     
-    if st.button("🔍 Analyze Project IAM Policy", type="primary"):
-        with st.spinner("Analyzing IAM policy..."):
+    # Get asset context for correlation
+    asset_service = AssetDataService()
+    project_id = st.session_state.get('selected_project', 'mgm-digitalconcierge')
+    asset_data = asset_service.get_asset_summary(project_id)
+    
+    if st.button("🔍 Analyze Asset-IAM Correlation", type="primary"):
+        with st.spinner("Analyzing IAM policy with asset correlation..."):
             response = simple_api.get_iam_policy()
+            # Store both IAM and asset data for correlation
+            if response.get("success"):
+                st.session_state.current_iam_analysis = {
+                    'iam_data': response,
+                    'asset_data': asset_data,
+                    'correlation': correlate_iam_with_assets(response, asset_data)
+                }
         
         if response.get("success"):
             policy_data = response.get("iam_policy", {})
             
-            # Display policy summary
-            st.subheader("📋 Policy Summary")
+            # Display asset-aware policy summary
+            st.subheader("📋 Asset-Aware Policy Summary")
             
             bindings = policy_data.get("bindings", [])
+            
+            # Show asset-IAM correlation insights
+            if hasattr(st.session_state, 'current_iam_analysis'):
+                render_asset_iam_correlation_insights(st.session_state.current_iam_analysis)
             
             if bindings:
                 # Count roles and members
@@ -264,20 +342,146 @@ def render_user_analysis_results(user_email: str, response: Dict[str, Any]):
         st.success("✅ No security concerns found for this user.")
 
 
-def render_iam_summary_card():
-    """Render a compact IAM summary card for the dashboard."""
-    with st.container():
-        st.subheader("🔐 IAM Status")
+def correlate_iam_with_assets(iam_data: Dict[str, Any], asset_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Correlate IAM policies with asset inventory."""
+    correlation = {
+        "asset_iam_coverage": {},
+        "high_risk_correlations": [],
+        "iam_asset_mapping": {},
+        "security_insights": []
+    }
+    
+    if iam_data.get("success") and asset_data.get('success'):
+        # Analyze IAM coverage across asset types
+        asset_categories = asset_data.get('asset_categories', {})
+        iam_policy = iam_data.get("iam_policy", {})
+        bindings = iam_policy.get("bindings", [])
         
-        # Get IAM data from backend
+        # Calculate IAM complexity vs asset count
+        total_assets = asset_data.get('total_assets', 0)
+        iam_bindings_count = len(bindings)
+        
+        if total_assets > 0:
+            iam_density = iam_bindings_count / total_assets
+            
+            if iam_density > 0.5:
+                correlation["security_insights"].append(
+                    f"High IAM density: {iam_bindings_count} bindings for {total_assets} assets"
+                )
+            
+            # Asset type specific insights
+            for category, count in asset_categories.items():
+                if "compute" in category.lower() and count > 5:
+                    correlation["high_risk_correlations"].append(
+                        f"{category}: {count} assets may need dedicated service accounts"
+                    )
+                elif "storage" in category.lower() and count > 3:
+                    correlation["high_risk_correlations"].append(
+                        f"{category}: {count} assets require data access controls"
+                    )
+        
+        # Map roles to asset types
+        for binding in bindings:
+            role = binding.get("role", "")
+            if "compute" in role.lower():
+                correlation["iam_asset_mapping"]["Compute Assets"] = correlation["iam_asset_mapping"].get("Compute Assets", 0) + 1
+            elif "storage" in role.lower():
+                correlation["iam_asset_mapping"]["Storage Assets"] = correlation["iam_asset_mapping"].get("Storage Assets", 0) + 1
+    
+    return correlation
+
+
+def render_asset_iam_correlation_insights(analysis_data: Dict[str, Any]):
+    """Render insights from asset-IAM correlation."""
+    correlation = analysis_data.get('correlation', {})
+    asset_data = analysis_data.get('asset_data', {})
+    
+    st.subheader("🔗 Asset-IAM Correlation Insights")
+    
+    # Security insights
+    insights = correlation.get('security_insights', [])
+    if insights:
+        st.markdown("**Security Insights:**")
+        for insight in insights:
+            st.info(f"💡 {insight}")
+    
+    # High-risk correlations
+    high_risk = correlation.get('high_risk_correlations', [])
+    if high_risk:
+        st.markdown("**High-Risk Correlations:**")
+        for risk in high_risk:
+            st.warning(f"⚠️ {risk}")
+    
+    # IAM-Asset mapping
+    mapping = correlation.get('iam_asset_mapping', {})
+    if mapping:
+        st.markdown("**IAM Coverage by Asset Type:**")
         col1, col2 = st.columns(2)
         
         with col1:
-            st.metric("Active Users", "Loading...")
+            fig = px.pie(
+                values=list(mapping.values()),
+                names=list(mapping.keys()),
+                title="IAM Policies by Asset Type"
+            )
+            st.plotly_chart(fig, use_container_width=True)
         
         with col2:
-            st.metric("High Risk", "Analyzing...", delta_color="inverse")
+            # Show coverage percentages
+            total_iam_policies = sum(mapping.values())
+            for asset_type, policy_count in mapping.items():
+                percentage = (policy_count / total_iam_policies * 100) if total_iam_policies > 0 else 0
+                st.metric(
+                    asset_type,
+                    f"{policy_count} policies",
+                    delta=f"{percentage:.1f}% of IAM"
+                )
+
+
+def render_iam_summary_card():
+    """Render enhanced IAM summary card with asset integration."""
+    with st.container():
+        st.subheader("🔐 Asset-IAM Status")
         
-        if st.button("Analyze IAM", key="analyze_iam"):
+        # Get both IAM and asset data
+        project_id = st.session_state.get('selected_project', 'mgm-digitalconcierge')
+        asset_service = AssetDataService()
+        
+        try:
+            asset_data = asset_service.get_asset_summary(project_id)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if asset_data.get('success'):
+                    iam_assets = asset_data.get('asset_categories', {}).get('IAM Accounts', 0)
+                    st.metric(
+                        "IAM Assets",
+                        iam_assets,
+                        help="Service accounts and IAM resources"
+                    )
+                else:
+                    st.metric("IAM Assets", "Scan Required")
+            
+            with col2:
+                if asset_data.get('success'):
+                    # Estimate IAM complexity from asset diversity
+                    categories_count = len(asset_data.get('asset_categories', {}))
+                    complexity = "High" if categories_count > 5 else "Medium" if categories_count > 2 else "Low"
+                    complexity_color = "inverse" if complexity == "High" else "normal"
+                    st.metric(
+                        "IAM Complexity",
+                        complexity,
+                        delta=f"{categories_count} asset types",
+                        delta_color=complexity_color,
+                        help="Complexity estimated from asset diversity"
+                    )
+                else:
+                    st.metric("IAM Complexity", "Analyzing...")
+        
+        except Exception as e:
+            st.error(f"Failed to load asset-IAM data: {str(e)[:50]}...")
+        
+        if st.button("Asset-IAM Analysis", key="analyze_iam"):
             st.session_state.page = "iam"
             st.rerun()

@@ -49,13 +49,52 @@ def render_active_incidents():
         st.metric("Active Incidents", "3", delta="1", delta_color="inverse")
     
     with col2:
-        st.metric("Critical", "1", delta_color="inverse")
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #fdcb6e 0%, #f39c12 100%);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            color: white;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        ">
+            <div style="font-size: 24px; font-weight: bold;">1</div>
+            <div style="font-size: 12px; opacity: 0.9;">Critical</div>
+            <div style="font-size: 10px; margin-top: 5px;">Immediate attention</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col3:
-        st.metric("Avg Response Time", "12min", delta="-3min", delta_color="inverse")
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            color: white;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        ">
+            <div style="font-size: 24px; font-weight: bold;">12min</div>
+            <div style="font-size: 12px; opacity: 0.9;">Avg Response</div>
+            <div style="font-size: 10px; margin-top: 5px;">\u2191-3min improved</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col4:
-        st.metric("Resolution Rate", "94%", delta="2%")
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #00b894 0%, #00a085 100%);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            color: white;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        ">
+            <div style="font-size: 24px; font-weight: bold;">94%</div>
+            <div style="font-size: 12px; opacity: 0.9;">Resolution Rate</div>
+            <div style="font-size: 10px; margin-top: 5px;">\u21912% improvement</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Create new incident
     with st.expander("➕ Create New Incident"):

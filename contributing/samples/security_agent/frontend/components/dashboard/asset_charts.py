@@ -19,8 +19,21 @@ import logging
 logger = logging.getLogger(__name__)
 
 def render_asset_breakdown_chart():
-    """Render asset type breakdown chart using centralized asset data service (DRY principle)."""
-    st.subheader("🏗️ Asset Type Breakdown")
+    """Render enhanced asset type breakdown chart with modern UI design."""
+    # Enhanced header with better styling
+    st.markdown("""
+    <div style="
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        color: white;
+        text-align: center;
+    ">
+        <h2 style="margin: 0; font-weight: 600;">🏗️ Asset Type Breakdown</h2>
+        <p style="margin: 5px 0 0 0; opacity: 0.9;">Real-time visualization of your GCP asset inventory</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     if not st.session_state.selected_project:
         st.info("Select a project to view asset breakdown")
@@ -40,54 +53,169 @@ def render_asset_breakdown_chart():
                 asset_types = dict(zip(asset_breakdown["labels"], asset_breakdown["values"]))
                 
                 if asset_types:
-                    # Create pie chart for asset types
+                    # Enhanced pie chart with modern design
                     fig = px.pie(
                         values=list(asset_types.values()),
                         names=list(asset_types.keys()),
-                        title=f"Asset Distribution - {asset_breakdown['total']} Total Assets",
-                        color_discrete_sequence=px.colors.qualitative.Set3
+                        title=f"<b>Asset Distribution</b><br><span style='font-size:14px;color:#666'>Total: {asset_breakdown['total']:,} Assets</span>",
+                        color_discrete_sequence=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F']
                     )
                     
                     fig.update_traces(
                         textposition='inside',
                         textinfo='percent+label',
-                        hovertemplate='<b>%{label}</b><br>Count: %{value}<br>Percentage: %{percent}<extra></extra>'
+                        hovertemplate='<b>%{label}</b><br>Count: %{value:,}<br>Percentage: %{percent}<br>Click for details<extra></extra>',
+                        marker=dict(
+                            line=dict(color='white', width=2),
+                            opacity=0.8
+                        )
                     )
                     
                     fig.update_layout(
-                        font=dict(size=12),
+                        font=dict(size=13, family="Arial, sans-serif"),
                         showlegend=True,
-                        legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.01)
+                        legend=dict(
+                            orientation="v", 
+                            yanchor="middle", 
+                            y=0.5, 
+                            xanchor="left", 
+                            x=1.02,
+                            bgcolor="rgba(255,255,255,0.8)",
+                            bordercolor="rgba(0,0,0,0.1)",
+                            borderwidth=1
+                        ),
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        margin=dict(t=80, b=40, l=40, r=120)
                     )
                     
                     st.plotly_chart(fig, use_container_width=True)
                     
-                    # Show detailed breakdown table
-                    with st.expander("📋 Detailed Asset Breakdown"):
-                        df = pd.DataFrame(list(asset_types.items()), columns=['Asset Type', 'Count'])
-                        df['Percentage'] = (df['Count'] / df['Count'].sum() * 100).round(1)
-                        df = df.sort_values('Count', ascending=False)
-                        st.dataframe(df, use_container_width=True)
+                    # Enhanced metrics cards with modern design
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    df = pd.DataFrame(list(asset_types.items()), columns=['Asset Type', 'Count'])
+                    df['Percentage'] = (df['Count'] / df['Count'].sum() * 100).round(1)
+                    df = df.sort_values('Count', ascending=False)
+                    
+                    with col1:
+                        st.markdown(f"""
+                        <div style="
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            padding: 15px;
+                            border-radius: 8px;
+                            text-align: center;
+                            color: white;
+                            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                        ">
+                            <div style="font-size: 24px; font-weight: bold;">{asset_breakdown['total']:,}</div>
+                            <div style="font-size: 12px; opacity: 0.9;">Total Assets</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        st.markdown(f"""
+                        <div style="
+                            background: linear-gradient(135deg, #ffeaa7 0%, #fab1a0 100%);
+                            padding: 15px;
+                            border-radius: 8px;
+                            text-align: center;
+                            color: white;
+                            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                        ">
+                            <div style="font-size: 24px; font-weight: bold;">{len(asset_types)}</div>
+                            <div style="font-size: 12px; opacity: 0.9;">Asset Types</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col3:
+                        diversity_score = len([x for x in asset_types.values() if x > 0]) / len(asset_types) * 100
+                        st.markdown(f"""
+                        <div style="
+                            background: linear-gradient(135deg, #00b894 0%, #00a085 100%);
+                            padding: 15px;
+                            border-radius: 8px;
+                            text-align: center;
+                            color: white;
+                            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                        ">
+                            <div style="font-size: 24px; font-weight: bold;">{diversity_score:.0f}%</div>
+                            <div style="font-size: 12px; opacity: 0.9;">Diversity Score</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col4:
+                        most_common = df.iloc[0]['Asset Type']
+                        st.markdown(f"""
+                        <div style="
+                            background: linear-gradient(135deg, #e17055 0%, #d63031 100%);
+                            padding: 15px;
+                            border-radius: 8px;
+                            text-align: center;
+                            color: white;
+                            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                        ">
+                            <div style="font-size: 24px; font-weight: bold;">{df.iloc[0]['Count']}</div>
+                            <div style="font-size: 12px; opacity: 0.9;">Top: {most_common[:12]}{'...' if len(most_common) > 12 else ''}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # Enhanced detailed breakdown table
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    with st.expander("📋 Detailed Asset Breakdown", expanded=False):
+                        # Style the dataframe
+                        styled_df = df.style.format({'Count': '{:,}', 'Percentage': '{:.1f}%'})\
+                                           .background_gradient(subset=['Count'], cmap='viridis', alpha=0.3)\
+                                           .set_properties(**{'text-align': 'center'})
                         
-                        # Add quick stats
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Most Common Asset", df.iloc[0]['Asset Type'], f"{df.iloc[0]['Count']} instances")
-                        with col2:
-                            st.metric("Asset Categories", len(asset_types), "different types")
-                        with col3:
-                            diversity_score = len([x for x in asset_types.values() if x > 0]) / len(asset_types) * 100
-                            st.metric("Asset Diversity", f"{diversity_score:.1f}%", "distribution score")
+                        st.dataframe(styled_df, use_container_width=True, height=300)
                 
                 else:
-                    st.info("No assets found in the selected project")
+                    st.markdown("""
+                    <div style="
+                        background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
+                        padding: 30px;
+                        border-radius: 10px;
+                        text-align: center;
+                        color: white;
+                        margin: 20px 0;
+                    ">
+                        <h3 style="margin: 0;">🔍 No Assets Found</h3>
+                        <p style="margin: 10px 0 0 0; opacity: 0.9;">Start asset discovery to see your GCP inventory here</p>
+                    </div>
+                    """, unsafe_allow_html=True)
                     
             else:
-                st.info("No assets found in the selected project")
+                st.markdown("""
+                <div style="
+                    background: linear-gradient(135deg, #a29bfe 0%, #6c5ce7 100%);
+                    padding: 30px;
+                    border-radius: 10px;
+                    text-align: center;
+                    color: white;
+                    margin: 20px 0;
+                ">
+                    <h3 style="margin: 0;">📊 Ready for Discovery</h3>
+                    <p style="margin: 10px 0 0 0; opacity: 0.9;">Use the asset discovery feature to populate this dashboard</p>
+                </div>
+                """, unsafe_allow_html=True)
                 
         except Exception as e:
             logger.error(f"Error rendering asset breakdown chart: {e}")
-            st.error(f"Failed to load asset breakdown: {e}")
+            st.markdown(f"""
+            <div style="
+                background: linear-gradient(135deg, #e17055 0%, #d63031 100%);
+                padding: 20px;
+                border-radius: 10px;
+                text-align: center;
+                color: white;
+                margin: 20px 0;
+            ">
+                <h3 style="margin: 0;">⚠️ Loading Error</h3>
+                <p style="margin: 10px 0 0 0; opacity: 0.9;">Failed to load asset data: {str(e)[:50]}{'...' if len(str(e)) > 50 else ''}</p>
+            </div>
+            """, unsafe_allow_html=True)
 
 def render_security_analysis_chart():
     """Render security analysis charts with findings and risk assessment."""
@@ -169,15 +297,22 @@ def render_security_analysis_chart():
                                 'threshold': {
                                     'line': {'color': "red", 'width': 4},
                                     'thickness': 0.75,
-                                    'value': 90
-                                }
-                            }
-                        ))
+                        )
                         
-                        fig_gauge.update_layout(height=300)
-                        st.plotly_chart(fig_gauge, use_container_width=True)
+                        st.plotly_chart(fig_trend, use_container_width=True)
                     else:
-                        st.metric("Security Score", "N/A", "No assets to analyze")
+                        st.markdown("""
+                        <div style="
+                            background: linear-gradient(135deg, #a29bfe 0%, #6c5ce7 100%);
+                            padding: 20px;
+                            border-radius: 10px;
+                            text-align: center;
+                            color: white;
+                        ">
+                            <h4 style="margin: 0;">📊 No Trends</h4>
+                            <p style="margin: 5px 0 0 0; opacity: 0.9;">No security data available</p>
+                        </div>
+                        """, unsafe_allow_html=True)
                 
                 # Security findings breakdown
                 if security_findings > 0:
