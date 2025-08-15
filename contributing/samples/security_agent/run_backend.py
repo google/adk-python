@@ -1,204 +1,265 @@
 #!/usr/bin/env python3
 """
-🛡️ ADK Security Agent - Backend Only
-
-Simple script to run just the legacy backend server.
+Run Backend Server
+Starts the GCP Security Agent backend with optional cloud deployment
 """
 
 import os
 import sys
+import argparse
 import subprocess
-import logging
 from pathlib import Path
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Load environment variables from the local .env file
-from dotenv import load_dotenv
-dotenv_path = os.path.join(os.getcwd(), '.env')
-if os.path.exists(dotenv_path):
-    load_dotenv(dotenv_path=dotenv_path)
-    logger.info(f"Loaded environment variables from {dotenv_path}")
-else:
-    logger.warning(f".env file not found at {dotenv_path}. Using default configurations.")
-
-import argparse
-import shutil
-
-def run_cloud_build():
-    """Trigger a Cloud Build to build and deploy the application."""
-    logger.info("☁️ Starting Cloud Build process...")
-
-    # Ensure gcloud is installed
-    if not shutil.which("gcloud"):
-        logger.error("gcloud command not found. Please install the Google Cloud SDK.")
-        return
-
-    # Get project ID from environment (required)
-    project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
-    if not project_id:
-        logger.error("GOOGLE_CLOUD_PROJECT environment variable is not set.")
-        logger.error("Please set it in your .env file or with `export GOOGLE_CLOUD_PROJECT=your-project-id`")
-        return
-
-    logger.info(f"Using project ID: {project_id}")
-
-    # The directory containing the cloudbuild.yaml and source code
-    build_context = os.getcwd()
-
-    # Substitutions for the Cloud Build command, read from environment or use defaults
-    substitutions = {
-        "_REGION": os.getenv("_REGION", "us-central1"),
-        "_REPO_NAME": os.getenv("_REPO_NAME", "adk-security-agent"),
-        "_IMAGE_NAME": os.getenv("_IMAGE_NAME", "security-agent"),
-        "_SERVICE_NAME": os.getenv("_SERVICE_NAME", "security-agent")
-    }
-
-    # Validate substitutions
-    for key, value in substitutions.items():
-        if not value:
-            logger.error(f"Build configuration variable '{key}' is missing or empty in your .env file.")
-            logger.error("Please ensure all required build variables are set.")
-            return
+def setup_environment():
+    """Setup environment variables from .env file"""
+    from dotenv import load_dotenv
+    load_dotenv()
     
-    substitutions_str = ",".join([f"{k}={v}" for k, v in substitutions.items()])
-
-    # Cloud Build command (using local cloudbuild.yaml)
-    cloudbuild_path = os.path.join(build_context, "cloudbuild.yaml")
-    if not os.path.exists(cloudbuild_path):
-        logger.error(f"cloudbuild.yaml not found at {cloudbuild_path}")
-        logger.error("Please ensure cloudbuild.yaml exists in the current directory")
-        return
+    # Set Python path
+    project_root = Path(__file__).parent
+    sys.path.insert(0, str(project_root))
     
-    cmd = [
-        "gcloud", "builds", "submit",
-        str(build_context),
-        "--config", cloudbuild_path,
-        f"--project={project_id}",
-        f"--substitutions={substitutions_str}"
+    # Set default environment variables
+    os.environ.setdefault("PYTHONPATH", str(project_root))
+    os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "mgm-digitalconcierge")
+    os.environ.setdefault("PORT", "8000")
+
+def run_local():
+    """Run backend server locally"""
+    print("🚀 Starting GCP Security Agent Backend (Local)")
+    print(f"Project: {os.getenv('GOOGLE_CLOUD_PROJECT')}")
+    print(f"Port: {os.getenv('PORT', '8000')}")
+    print("")
+    
+    # Check for virtual environment
+    if not os.path.exists("venv"):
+        print("📦 Creating virtual environment...")
+        subprocess.run([sys.executable, "-m", "venv", "venv"], check=True)
+    
+    # Install dependencies
+    print("📦 Installing dependencies...")
+    pip_cmd = "venv/bin/pip" if os.path.exists("venv/bin/pip") else "pip"
+    subprocess.run([pip_cmd, "install", "-q", "-r", "backend/requirements.txt"], check=False)
+    
+    # Test GCP connectivity
+    print("🔧 Testing GCP connectivity...")
+    test_cmd = f"""
+import os
+from google.cloud import storage
+project = os.getenv('GOOGLE_CLOUD_PROJECT')
+print(f'✅ Connected to GCP project: {{project}}')
+"""
+    subprocess.run([sys.executable, "-c", test_cmd], check=False)
+    
+    print("\n🚀 Starting backend server...")
+    print("Access the API at: http://localhost:8000")
+    print("API Documentation: http://localhost:8000/docs")
+    print("\nPress Ctrl+C to stop the server\n")
+    
+    # Run the server
+    subprocess.run([
+        sys.executable, "-m", "uvicorn",
+        "backend.main:app",
+        "--host", "0.0.0.0",
+        "--port", os.getenv("PORT", "8000"),
+        "--reload"
+    ])
+
+def deploy_cloud():
+    """Deploy backend to Google Cloud Run"""
+    print("☁️  Deploying GCP Security Agent Backend to Cloud Run")
+    
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "mgm-digitalconcierge")
+    region = os.getenv("REGION", "us-central1")
+    service_name = "gcp-security-agent"
+    
+    print(f"Project: {project_id}")
+    print(f"Region: {region}")
+    print(f"Service: {service_name}")
+    print("")
+    
+    # Check if gcloud is installed
+    try:
+        subprocess.run(["gcloud", "--version"], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("❌ Error: gcloud CLI not found. Please install Google Cloud SDK")
+        print("Visit: https://cloud.google.com/sdk/docs/install")
+        sys.exit(1)
+    
+    # Enable required APIs
+    print("📦 Enabling required Google Cloud APIs...")
+    apis = [
+        "run.googleapis.com",
+        "cloudbuild.googleapis.com",
+        "containerregistry.googleapis.com",
+        "secretmanager.googleapis.com",
+        "compute.googleapis.com",
+        "iam.googleapis.com",
+        "storage.googleapis.com",
+        "bigquery.googleapis.com",
+        "pubsub.googleapis.com",
+        "container.googleapis.com",
+        "cloudfunctions.googleapis.com",
+        "recommender.googleapis.com",
+        "securitycenter.googleapis.com"
     ]
-
-    logger.info(f"Running command: {' '.join(cmd)}")
     
+    for api in apis:
+        print(f"  Enabling {api}...")
+        subprocess.run([
+            "gcloud", "services", "enable", api,
+            "--project", project_id
+        ], capture_output=True)
+    
+    # Check if Docker is available
+    print("\n🐳 Checking Docker...")
     try:
-        subprocess.run(cmd, check=True)
-        logger.info("✅ Cloud Build completed successfully.")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Cloud Build failed: {e}")
-    except KeyboardInterrupt:
-        logger.info("🛑 Cloud Build stopped by user.")
+        subprocess.run(["docker", "--version"], capture_output=True, check=True)
+        use_docker = True
+        print("✅ Docker found - using local build")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        use_docker = False
+        print("⚠️  Docker not found - using Cloud Build")
+    
+    # Build and deploy
+    if use_docker and os.path.exists("deploy/Dockerfile"):
+        # Build locally with Docker
+        print("\n🔨 Building Docker image locally...")
+        image_name = f"gcr.io/{project_id}/{service_name}"
+        
+        subprocess.run([
+            "docker", "build",
+            "-t", image_name,
+            "-f", "deploy/Dockerfile",
+            "."
+        ], check=True)
+        
+        print("\n📤 Pushing image to Container Registry...")
+        subprocess.run(["docker", "push", image_name], check=True)
+        
+        print("\n☁️  Deploying to Cloud Run...")
+        subprocess.run([
+            "gcloud", "run", "deploy", service_name,
+            "--image", image_name,
+            "--platform", "managed",
+            "--region", region,
+            "--project", project_id,
+            "--allow-unauthenticated",
+            "--memory", "2Gi",
+            "--cpu", "2",
+            "--timeout", "300",
+            "--max-instances", "10",
+            "--min-instances", "1",
+            "--set-env-vars", f"GOOGLE_CLOUD_PROJECT={project_id}",
+            "--set-env-vars", f"VERTEX_AI_PROJECT_ID={project_id}",
+            "--set-env-vars", f"VERTEX_AI_LOCATION={region}"
+        ], check=True)
+    else:
+        # Use Cloud Build
+        print("\n🔨 Building with Cloud Build...")
+        
+        # Create a simple Dockerfile if it doesn't exist
+        if not os.path.exists("Dockerfile"):
+            print("Creating Dockerfile...")
+            dockerfile_content = """
+FROM python:3.11-slim
 
-def kill_existing_processes():
-    """Kill any existing processes on port 8000 for clean development flow"""
-    try:
-        logger.info("🧹 Cleaning up existing processes on port 8000...")
-        # Kill processes on port 8000
-        subprocess.run(
-            "lsof -ti:8000 | xargs kill -9 2>/dev/null || true", 
-            shell=True, 
-            check=False
-        )
-        import time
-        time.sleep(1)  # Give processes time to die
-        logger.info("✅ Port 8000 cleaned up")
-    except Exception as e:
-        logger.warning(f"⚠️ Warning: Could not clean port 8000: {e}")
+WORKDIR /app
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV PYTHONPATH=/app
+ENV PORT=8080
+
+EXPOSE 8080
+
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8080"]
+"""
+            with open("Dockerfile", "w") as f:
+                f.write(dockerfile_content)
+        
+        # Submit to Cloud Build and deploy
+        print("\n☁️  Building and deploying with Cloud Build...")
+        subprocess.run([
+            "gcloud", "run", "deploy", service_name,
+            "--source", ".",
+            "--platform", "managed",
+            "--region", region,
+            "--project", project_id,
+            "--allow-unauthenticated",
+            "--memory", "2Gi",
+            "--cpu", "2",
+            "--timeout", "300",
+            "--max-instances", "10",
+            "--min-instances", "1",
+            "--set-env-vars", f"GOOGLE_CLOUD_PROJECT={project_id}",
+            "--set-env-vars", f"VERTEX_AI_PROJECT_ID={project_id}",
+            "--set-env-vars", f"VERTEX_AI_LOCATION={region}"
+        ], check=True)
+    
+    # Get service URL
+    result = subprocess.run([
+        "gcloud", "run", "services", "describe", service_name,
+        "--platform", "managed",
+        "--region", region,
+        "--project", project_id,
+        "--format", "value(status.url)"
+    ], capture_output=True, text=True, check=True)
+    
+    service_url = result.stdout.strip()
+    
+    print("\n✅ Deployment complete!")
+    print(f"🌐 Service URL: {service_url}")
+    print(f"\nTest the deployment:")
+    print(f"  curl {service_url}/health")
+    print(f"  curl {service_url}/api/v1/asset-inventory/summary?project_id={project_id}")
 
 def main():
-    """Run the ADK backend server."""
-    parser = argparse.ArgumentParser(description="🛡️ ADK Security Agent - Backend Only")
-    parser.add_argument("--cloud", action="store_true", help="Trigger a Cloud Build to deploy the application.")
+    parser = argparse.ArgumentParser(description="Run GCP Security Agent Backend")
+    parser.add_argument(
+        "--cloud",
+        action="store_true",
+        help="Deploy to Google Cloud Run instead of running locally"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to run the server on (local only)"
+    )
+    parser.add_argument(
+        "--project",
+        type=str,
+        help="Google Cloud project ID"
+    )
+    parser.add_argument(
+        "--region",
+        type=str,
+        default="us-central1",
+        help="Google Cloud region for deployment"
+    )
+    
     args = parser.parse_args()
-
+    
+    # Setup environment
+    setup_environment()
+    
+    # Override with command line arguments
+    if args.port:
+        os.environ["PORT"] = str(args.port)
+    if args.project:
+        os.environ["GOOGLE_CLOUD_PROJECT"] = args.project
+    if args.region:
+        os.environ["REGION"] = args.region
+    
+    # Run appropriate mode
     if args.cloud:
-        run_cloud_build()
-        return
-        
-    # Kill existing processes first for clean development flow
-    kill_existing_processes()
-        
-    print("🛡️ Starting ADK Security Agent Backend")
-    print("=" * 50)
-    
-    # Determine backend directory first
-    current_dir = os.getcwd()
-    if current_dir.endswith("security_agent"):
-        backend_dir = os.path.join(current_dir, "backend")
-    elif current_dir.endswith("ADK"):
-        backend_dir = os.path.join(current_dir, "contributing", "samples", "security_agent", "backend")
+        deploy_cloud()
     else:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        backend_dir = os.path.join(script_dir, "backend")
-    
-    # Check for virtual environment in backend directory
-    venv_path = os.path.join(backend_dir, "venv")
-    python_exe = sys.executable
-    if os.path.exists(venv_path) and os.path.exists(os.path.join(venv_path, "bin", "python")):
-        python_exe = os.path.join(venv_path, "bin", "python")
-        logger.info(f"Using backend venv Python: {python_exe}")
-    else:
-        logger.info(f"Using system Python: {python_exe}")
-        logger.warning(f"Virtual environment not found at: {venv_path}")
-    
-    
-    # Backend configuration
-    host = os.getenv('HOST', '0.0.0.0')
-    port = os.getenv('PORT', '8000')
-    log_level = os.getenv('LOG_LEVEL', 'info')
-    reload = os.getenv('RELOAD', 'true').lower() == 'true'
-    
-    # Build command (run from security_agent/ directory with proper module path)
-    cmd = [
-        python_exe, "-m", "uvicorn",
-        "backend.main:app",
-        "--host", host,
-        "--port", port,
-        "--log-level", log_level
-    ]
-    
-    if reload:
-        cmd.append("--reload")
-    
-    # Backend directory already determined above
-    
-    # Check if main.py exists in the backend directory
-    main_path = os.path.join(backend_dir, "main.py")
-    if not os.path.exists(main_path):
-        logger.error(f"❌ main.py not found at: {main_path}")
-        logger.error(f"Current directory: {os.getcwd()}")
-        logger.error("Please run this script from the security_agent directory or the ADK root directory.")
-        return False
-    
-    logger.info("🚀 Starting backend server...")
-    logger.info(f"   • Host: {host}")
-    logger.info(f"   • Port: {port}")
-    logger.info(f"   • Log Level: {log_level}")
-    logger.info(f"   • Reload: {reload}")
-    logger.info(f"   • Working Directory: {backend_dir}")
-    logger.info(f"Command: {' '.join(cmd)}")
-    
-    print(f"""
-📊 Backend will be available at:
-   🔧 API Endpoints: http://localhost:{port}
-   📖 API Docs: http://localhost:{port}/docs
-   🩺 Health Check: http://localhost:{port}/health
-
-Press Ctrl+C to stop the backend.
-""")
-    
-    try:
-        # Run the backend from the security_agent/ directory so Python can find modules
-        security_agent_dir = os.path.dirname(backend_dir)
-        subprocess.run(cmd, cwd=security_agent_dir, check=False)
-    except KeyboardInterrupt:
-        logger.info("🛑 Backend stopped by user")
-    except Exception as e:
-        logger.error(f"❌ Backend failed: {e}")
-        return False
-    
-    return True
+        run_local()
 
 if __name__ == "__main__":
     main()
