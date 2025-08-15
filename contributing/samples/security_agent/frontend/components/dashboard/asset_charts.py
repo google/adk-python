@@ -280,23 +280,13 @@ def render_security_analysis_chart():
                         risk_ratio = (high_risk_assets + security_findings) / total_assets
                         security_score = max(0, 100 - int(risk_ratio * 100))
                         
-                        fig_gauge = go.Figure(go.Indicator(
-                            mode = "gauge+number+delta",
-                            value = security_score,
-                            domain = {'x': [0, 1], 'y': [0, 1]},
-                            title = {'text': "Security Score"},
-                            delta = {'reference': 80},
-                            gauge = {
-                                'axis': {'range': [None, 100]},
-                                'bar': {'color': "darkblue"},
-                                'steps': [
-                                    {'range': [0, 50], 'color': "lightgray"},
-                                    {'range': [50, 80], 'color': "yellow"},
-                                    {'range': [80, 100], 'color': "green"}
-                                ],
-                                'threshold': {
-                                    'line': {'color': "red", 'width': 4},
-                                    'thickness': 0.75,
+                        # Simple visualization instead of complex gauge
+                        fig_trend = px.bar(
+                            x=['Security Score'],
+                            y=[security_score],
+                            title=f'Security Score: {security_score}/100',
+                            color=[security_score],
+                            color_continuous_scale=['red', 'yellow', 'green']
                         )
                         
                         st.plotly_chart(fig_trend, use_container_width=True)
