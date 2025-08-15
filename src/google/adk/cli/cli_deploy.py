@@ -21,8 +21,10 @@ from typing import Optional
 import click
 from packaging.version import parse
 
+BASE_BUILD_IMAGE = 'python:3.11-slim'
+
 _DOCKERFILE_TEMPLATE = """
-FROM python:3.11-slim
+FROM {build_image}
 WORKDIR /app
 
 # Create a non-root user
@@ -130,6 +132,7 @@ def to_cloud_run(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    build_image: Optional[str] = BASE_BUILD_IMAGE,
     a2a: bool = False,
 ):
   """Deploys an agent to Google Cloud Run.
@@ -163,6 +166,7 @@ def to_cloud_run(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    build_image: The image to use for building the Dockerfile.
   """
   app_name = app_name or os.path.basename(agent_folder)
 
@@ -211,6 +215,7 @@ def to_cloud_run(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
+        build_image=build_image,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -474,6 +479,7 @@ def to_gke(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    build_image: Optional[str] = BASE_BUILD_IMAGE,
     a2a: bool = False,
 ):
   """Deploys an agent to Google Kubernetes Engine(GKE).
@@ -495,6 +501,7 @@ def to_gke(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    build_image: The image to use for building the Dockerfile.
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -556,6 +563,7 @@ def to_gke(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',
+        build_image=build_image,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)

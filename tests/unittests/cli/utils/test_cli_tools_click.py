@@ -168,11 +168,43 @@ def test_cli_deploy_cloud_run_success(
           "proj",
           "--region",
           "asia-northeast1",
+          "--build_image",
+          "my-custom-image",
           str(agent_dir),
       ],
   )
   assert result.exit_code == 0
   assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  called_kwargs = rec.calls[0][1]
+  assert called_kwargs.get("build_image") == "my-custom-image"
+
+
+def test_cli_deploy_cloud_run_default_build_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that the default build_image is used."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent2"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--project",
+          "proj",
+          "--region",
+          "asia-northeast1",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  called_kwargs = rec.calls[0][1]
+  assert called_kwargs.get("build_image") == cli_tools_click.BASE_BUILD_IMAGE
 
 
 def test_cli_deploy_cloud_run_failure(
@@ -251,6 +283,8 @@ def test_cli_deploy_gke_success(
           "us-central1",
           "--cluster_name",
           "my-cluster",
+          "--build_image",
+          "my-gke-image",
           str(agent_dir),
       ],
   )
@@ -260,6 +294,37 @@ def test_cli_deploy_gke_success(
   assert called_kwargs.get("project") == "test-proj"
   assert called_kwargs.get("region") == "us-central1"
   assert called_kwargs.get("cluster_name") == "my-cluster"
+  assert called_kwargs.get("build_image") == "my-gke-image"
+
+
+def test_cli_deploy_gke_default_build_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that the default build_image is used for gke."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_gke", rec)
+
+  agent_dir = tmp_path / "agent_gke"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "gke",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--cluster_name",
+          "my-cluster",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_gke must be invoked"
+  called_kwargs = rec.calls[0][1]
+  assert called_kwargs.get("build_image") == cli_tools_click.BASE_BUILD_IMAGE
 
 
 # cli eval
