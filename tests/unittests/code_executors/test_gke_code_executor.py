@@ -65,7 +65,7 @@ class TestGkeCodeExecutor:
         assert executor.namespace == "default"
         assert executor.image == "python:3.11-slim"
         assert executor.timeout_seconds == 300
-        assert executor.cpu_request == "200m"
+        assert executor.cpu_requested == "200m"
         assert executor.mem_limit == "512Mi"
 
     def test_init_with_overrides(self):
