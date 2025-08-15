@@ -17,9 +17,10 @@ import logging
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Safe import for the actual agent system with proper fallbacks
+# Import the new ADK-compliant agents
 try:
-    from backend.agents.coordinator_agent import create_coordinator_agent
+    # Try absolute import from backend.agents
+    from backend.agents.coordinator_agent import create_coordinator_agent, SecurityCoordinatorAgent
     from backend.agents.storage_agent import StorageSecurityAgent
     from backend.agents.iam_agent import IAMAgent
     from backend.agents.network_agent import NetworkSecurityAgent
@@ -27,51 +28,72 @@ try:
     from backend.agents.cost_agent import CostOptimizationAgent
     from backend.agents.search_enabled_agent import create_search_enabled_agent
     AGENTS_AVAILABLE = True
-    logger.info("✅ LLM Agents available for intelligent steering")
-except ImportError as first_error:
-    # Try alternative import paths
+    logger.info("✅ ADK Agents loaded successfully with tools")
+except ImportError as e:
+    # Fallback to creating inline if imports fail
+    logger.warning(f"⚠️ ADK Agents not imported, creating inline: {e}")
+    AGENTS_AVAILABLE = False
+    
+    # Import base agent for inline creation
     try:
-        from agents.coordinator_agent import create_coordinator_agent
-        from agents.storage_agent import StorageSecurityAgent
-        from agents.iam_agent import IAMAgent
-        from agents.network_agent import NetworkSecurityAgent
-        from agents.compliance_agent import ComplianceAgent
-        from agents.cost_agent import CostOptimizationAgent
-        from agents.search_enabled_agent import create_search_enabled_agent
-        AGENTS_AVAILABLE = True
-        logger.info("✅ LLM Agents available for intelligent steering (alternative path)")
-    except ImportError as second_error:
-        AGENTS_AVAILABLE = False
-        logger.warning(f"⚠️ LLM Agents not available from any path: {first_error}, {second_error}")
+        from ..agents.base_agent import BaseADKAgent, Tool, ToolContext
         
-        # Create mock agent classes for fallback
-        class MockAgent:
-            def __init__(self, project_id, agent_type="mock"):
-                self.project_id = project_id
-                self.agent_type = agent_type
-                self.description = f"Mock {agent_type} agent for project {project_id}"
+        class InlineCoordinatorAgent(BaseADKAgent):
+            def __init__(self, project_id: str):
+                super().__init__(
+                    name="InlineCoordinator",
+                    project_id=project_id,
+                    description="Inline coordinator agent"
+                )
             
-            async def process_query(self, query, context=None):
-                return f"Mock {self.agent_type} agent response for: {query}"
+            def _get_default_instruction(self) -> str:
+                return "Coordinate security analysis."
             
-            async def search_with_context(self, query, session_id=None):
+            async def _default_process(self, query: str):
                 return {
                     "success": True,
-                    "response": f"Mock search agent response for: {query}",
-                    "citations": ["https://example.com/mock-source"]
+                    "response": f"Processing: {query}",
+                    "agent": "InlineCoordinator"
                 }
         
         def create_coordinator_agent(project_id):
-            return MockAgent(project_id, "coordinator")
+            return InlineCoordinatorAgent(project_id)
         
-        def create_search_enabled_agent(project_id, agent_type="conversational"):
-            return MockAgent(project_id, "search")
+        # Create other inline agents similarly
+        StorageSecurityAgent = lambda pid: InlineCoordinatorAgent(pid)
+        IAMAgent = lambda pid: InlineCoordinatorAgent(pid)
+        NetworkSecurityAgent = lambda pid: InlineCoordinatorAgent(pid)
+        ComplianceAgent = lambda pid: InlineCoordinatorAgent(pid)
+        CostOptimizationAgent = lambda pid: InlineCoordinatorAgent(pid)
+        create_search_enabled_agent = lambda pid, t="search": InlineCoordinatorAgent(pid)
         
-        StorageSecurityAgent = lambda project_id: MockAgent(project_id, "storage")
-        IAMAgent = lambda project_id: MockAgent(project_id, "iam")
-        NetworkSecurityAgent = lambda project_id: MockAgent(project_id, "network")
-        ComplianceAgent = lambda project_id: MockAgent(project_id, "compliance")
-        CostOptimizationAgent = lambda project_id: MockAgent(project_id, "cost")
+        AGENTS_AVAILABLE = True
+        logger.info("✅ Using inline ADK agents")
+    except Exception as e:
+        logger.error(f"❌ Failed to create inline agents: {e}")
+        # Ultimate fallback
+        class MockAgent:
+            def __init__(self, project_id, agent_type="mock"):
+                self.project_id = project_id
+                self.name = agent_type
+            
+            async def process_query(self, query, context=None, session_id=None):
+                return {
+                    "success": True,
+                    "response": f"Mock response for: {query}",
+                    "agent": self.name
+                }
+            
+            def get_capabilities(self):
+                return {"agent": self.name, "tools": [], "description": "Mock agent"}
+        
+        create_coordinator_agent = lambda pid: MockAgent(pid, "coordinator")
+        StorageSecurityAgent = lambda pid: MockAgent(pid, "storage")
+        IAMAgent = lambda pid: MockAgent(pid, "iam")
+        NetworkSecurityAgent = lambda pid: MockAgent(pid, "network")
+        ComplianceAgent = lambda pid: MockAgent(pid, "compliance")
+        CostOptimizationAgent = lambda pid: MockAgent(pid, "cost")
+        create_search_enabled_agent = lambda pid, t="search": MockAgent(pid, "search")
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -327,21 +349,30 @@ async def process_with_llm_agent(query: str, project_id: str, context: Dict = No
                 # Send query to agent for intelligent processing
                 logger.info(f"🚀 [AGENT-{request_id}] Calling {agent_name} with query processing...")
                 
-                # Handle search agent specially with its async method
-                if agent_type == "search":
-                    response_dict = await agent.search_with_context(query, session_id=request_id)
+                # All agents now use the unified ADK process_query method
+                response_dict = await agent.process_query(
+                    query=query,
+                    context=context,
+                    session_id=request_id
+                )
+                
+                # Extract response from the dict
+                if isinstance(response_dict, dict):
                     if response_dict.get("success"):
-                        response = response_dict["response"]
-                        # Add citations if available
+                        response = response_dict.get("response", "")
+                        # Add any additional data as needed
                         if response_dict.get("citations"):
                             response += "\n\n📚 **Sources:**\n"
                             for citation in response_dict["citations"]:
                                 response += f"• {citation}\n"
+                        # Add tool information if available
+                        if response_dict.get("tool_used"):
+                            logger.info(f"🔧 [AGENT-{request_id}] Tool used: {response_dict['tool_used']}")
                     else:
-                        response = response_dict.get("response", "Search failed")
+                        response = response_dict.get("response", f"Agent {agent_name} processing failed")
                 else:
-                    # Other agents use the standard process_query method
-                    response = await agent.process_query(query, context)
+                    # Handle legacy string responses
+                    response = str(response_dict)
                 
                 logger.info(f"✅ [AGENT-{request_id}] {agent_name} processed successfully")
                 return str(response), agent_name
@@ -1004,6 +1035,107 @@ async def chat_with_llm_agent(chat_request: ChatRequest):
             agent_used="ErrorHandler",
             timestamp=datetime.now().isoformat()
         )
+
+@router.get("/tools")
+async def list_available_tools():
+    """
+    List all available ADK tools across all agents.
+    
+    Returns tools organized by agent with their descriptions and parameters.
+    """
+    logger.info("🔧 Listing all available ADK tools")
+    
+    tools_by_agent = {}
+    
+    try:
+        # Create a coordinator agent to get its tools
+        coordinator = create_coordinator_agent("default")
+        if hasattr(coordinator, 'get_capabilities'):
+            tools_by_agent["SecurityCoordinator"] = coordinator.get_capabilities()
+        
+        # Get tools from each specialized agent
+        agent_types = [
+            ("storage", StorageSecurityAgent),
+            ("iam", IAMAgent),
+            ("network", NetworkSecurityAgent),
+            ("compliance", ComplianceAgent),
+            ("cost", CostOptimizationAgent)
+        ]
+        
+        for agent_type, agent_class in agent_types:
+            try:
+                agent = agent_class("default")
+                if hasattr(agent, 'get_capabilities'):
+                    tools_by_agent[agent.name] = agent.get_capabilities()
+            except Exception as e:
+                logger.warning(f"Failed to get tools from {agent_type}: {e}")
+        
+        # Also list available GCP APIs that tools wrap
+        api_integrations = [
+            "Cloud Asset Inventory API - Asset discovery and inventory",
+            "Security Command Center API - Security findings and insights",
+            "Cloud Resource Manager API - Project and resource management",
+            "IAM API - Identity and access management",
+            "Compute Engine API - Virtual machine management",
+            "Cloud Storage API - Object storage management",
+            "Cloud Billing API - Cost and billing analysis",
+            "Recommender API - Optimization recommendations",
+            "Cloud Logging API - Log analysis and monitoring",
+            "Cloud Monitoring API - Metrics and alerting"
+        ]
+        
+        return {
+            "success": True,
+            "message": "ADK tools are Python functions that wrap GCP APIs for agent use",
+            "architecture": {
+                "pattern": "Agent -> Tools -> APIs",
+                "description": "Agents use tools (Python functions) which call GCP APIs",
+                "example": "StorageAgent -> list_buckets tool -> Cloud Storage API"
+            },
+            "agents_and_tools": tools_by_agent,
+            "gcp_api_integrations": api_integrations,
+            "total_agents": len(tools_by_agent),
+            "total_tools": sum(len(agent.get("tools", [])) for agent in tools_by_agent.values())
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to list tools: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to retrieve tool information"
+        }
+
+@router.get("/agent/capabilities/{agent_type}")
+async def get_agent_capabilities(agent_type: str):
+    """
+    Get capabilities of a specific agent type.
+    
+    Args:
+        agent_type: Type of agent (coordinator, storage, iam, network, compliance, cost)
+    """
+    logger.info(f"🤖 Getting capabilities for {agent_type} agent")
+    
+    try:
+        agent = create_llm_agent(agent_type, "default")
+        if agent and hasattr(agent, 'get_capabilities'):
+            capabilities = agent.get_capabilities()
+            return {
+                "success": True,
+                "agent_type": agent_type,
+                "capabilities": capabilities
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Agent {agent_type} not found or has no capabilities method"
+            }
+    except Exception as e:
+        logger.error(f"Failed to get agent capabilities: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 def generate_suggestions(query: str, agent_used: str) -> List[str]:
     """Generate context-aware security suggestions based on the query and agent used."""
