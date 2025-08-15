@@ -477,6 +477,64 @@ class AssetDataService:
         
         return health_status
     
+    def get_assets(self, project_id: str, asset_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get detailed list of assets for a project.
+        
+        Args:
+            project_id: GCP project ID
+            asset_type: Optional filter by asset type
+            
+        Returns:
+            List of asset dictionaries
+        """
+        cache_key = f"assets_list_{project_id}_{asset_type or 'all'}"
+        
+        # Check cache first
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data:
+            return cached_data
+        
+        try:
+            # Call backend API for detailed asset list
+            params = {"project_id": project_id}
+            if asset_type:
+                params["asset_type"] = asset_type
+                
+            response = self.session.get(
+                f"{self.backend_url}/api/v1/assets/list",
+                params=params,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                assets = data.get("data", {}).get("assets", [])
+                
+                # Cache the result
+                self._store_in_cache(cache_key, assets)
+                return assets
+            else:
+                logger.warning(f"Assets list endpoint error: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching assets list: {e}")
+            return []
+
+    def get_assets_by_type(self, project_id: str, asset_type: str) -> List[Dict[str, Any]]:
+        """
+        Get assets filtered by specific type.
+        
+        Args:
+            project_id: GCP project ID
+            asset_type: Asset type to filter by
+            
+        Returns:
+            List of assets of the specified type
+        """
+        return self.get_assets(project_id, asset_type)
+
     def get_debug_info(self, project_id: str) -> Dict[str, Any]:
         """Get comprehensive debug information for troubleshooting."""
         return {

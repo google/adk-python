@@ -13,8 +13,6 @@ import os
 import asyncio
 from datetime import datetime
 
-from services.cache_service import cache_service
-
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -26,6 +24,7 @@ try:
 except ImportError as e:
     logger.warning(f"Enhanced Asset Inventory Service not available: {e}")
     SERVICE_AVAILABLE = False
+    cache_service = None
 
 # Request/Response models
 class AssetDiscoveryRequest(BaseModel):
