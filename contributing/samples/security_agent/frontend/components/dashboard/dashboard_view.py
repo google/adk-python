@@ -158,134 +158,242 @@ def render_service_status_section():
 
 
 def render_key_metrics_row():
-    """Render key security metrics in a row using real GCP API data."""
+    """Render key security metrics in a row using real GCP Asset Inventory API data."""
     st.subheader("📈 Key Security Metrics")
     
     if not st.session_state.selected_project:
         st.warning("Please select a project to view metrics")
         return
     
-    # Fetch real data from backend APIs
-    with st.spinner("Loading security metrics..."):
-        # Get security score
-        security_response = simple_api.get_security_score()
-        security_score = "N/A"
-        if security_response.get("success"):
-            security_score = f"{security_response.get('score', 0)}/100"
-        
-        # Try to get available data using existing API methods
-        enabled_apis_count = "Scan Required"
-        high_risk_issues = "Scan Required"
-        iam_users_count = "Scan Required"
-        compliance_score = "Evaluate Required"
-        
-        # Try to get security score (one of the available methods)
+    # Fetch real data from asset inventory API
+    with st.spinner("Loading asset inventory metrics..."):
         try:
-            security_response = simple_api.get_security_score()
-            if security_response.get("success"):
-                # Update display to show we have connectivity
-                enabled_apis_count = "Available"
-                high_risk_issues = "Run Scan"
-                iam_users_count = "Analyze Required"
-                compliance_score = "Evaluate Required"
-        except:
-            pass
-    
+            # Get asset inventory summary - this calls the real GCP Asset Inventory API
+            import requests
+            backend_url = "http://localhost:8000"
+            
+            response = requests.get(
+                f"{backend_url}/api/v1/asset-inventory/summary",
+                params={"project_id": st.session_state.selected_project},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                asset_data = response.json()
+                data = asset_data.get("data", {})
+                
+                total_assets = data.get("total_assets", 0)
+                security_findings = data.get("security_findings", 0)
+                high_risk_assets = data.get("high_risk_assets", 0)
+                active_recommendations = data.get("active_recommendations", 0)
+                asset_types = data.get("asset_types", {})
+                
+                # Calculate security score based on findings ratio
+                if total_assets > 0:
+                    risk_ratio = (high_risk_assets + security_findings) / total_assets
+                    security_score = max(0, 100 - int(risk_ratio * 100))
+                else:
+                    security_score = 100
+                
+                # Display real metrics
+                col1, col2, col3, col4, col5 = st.columns(5)
+                
+                with col1:
+                    delta_color = "normal"
+                    if security_score >= 80:
+                        delta_color = "normal"
+                    elif security_score >= 60:
+                        delta_color = "off"
+                    else:
+                        delta_color = "inverse"
+                        
+                    st.metric(
+                        label="Security Score",
+                        value=f"{security_score}/100",
+                        delta=f"Based on {total_assets} assets",
+                        delta_color=delta_color,
+                        help="Overall security posture calculated from real asset inventory data"
+                    )
+                
+                with col2:
+                    st.metric(
+                        label="High Risk Assets",
+                        value=high_risk_assets,
+                        delta=f"Out of {total_assets} total",
+                        delta_color="inverse" if high_risk_assets > 0 else "normal",
+                        help="Assets with critical security findings requiring immediate attention"
+                    )
+                
+                with col3:
+                    st.metric(
+                        label="Security Findings",
+                        value=security_findings,
+                        delta="Active issues",
+                        delta_color="inverse" if security_findings > 0 else "normal",
+                        help="Total security findings across all discovered assets"
+                    )
+                
+                with col4:
+                    iam_count = asset_types.get("IAM Accounts", 0)
+                    st.metric(
+                        label="IAM Accounts",
+                        value=iam_count,
+                        delta="Active principals",
+                        help="Service accounts and IAM principals in the project"
+                    )
+                
+                with col5:
+                    st.metric(
+                        label="Recommendations",
+                        value=active_recommendations,
+                        delta="Action items",
+                        delta_color="off" if active_recommendations > 0 else "normal",
+                        help="Active security recommendations to improve posture"
+                    )
+                    
+            else:
+                # Fallback metrics when API is not available
+                render_fallback_metrics()
+                
+        except Exception as e:
+            st.error(f"Failed to load asset inventory data: {e}")
+            render_fallback_metrics()
+
+def render_fallback_metrics():
+    """Render fallback metrics when asset inventory API is unavailable."""
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric(
             label="Security Score",
-            value=security_score,
-            help="Overall security posture score from real GCP Security Center data"
+            value="Scan Required",
+            help="Run asset inventory scan to get security score"
         )
     
     with col2:
         st.metric(
-            label="High Risk Issues",
-            value=high_risk_issues,
-            help="Critical security findings from Security Center requiring immediate attention"
+            label="High Risk Assets",
+            value="Unknown",
+            help="Asset discovery needed to identify high-risk resources"
         )
     
     with col3:
         st.metric(
-            label="Enabled APIs",
-            value=enabled_apis_count,
-            help="Number of enabled GCP APIs in the selected project"
+            label="Security Findings",
+            value="Scan Required",
+            help="Security analysis needed to detect findings"
         )
     
     with col4:
         st.metric(
-            label="IAM Users",
-            value=iam_users_count,
-            help="Active IAM users and service accounts in the project"
+            label="IAM Accounts",
+            value="Analyze Required",
+            help="IAM analysis needed to count active principals"
         )
     
     with col5:
         st.metric(
-            label="Compliance",
-            value=compliance_score,
-            help="SOC2 compliance score based on real security policies"
+            label="Recommendations",
+            value="Generate Required",
+            help="Security recommendations available after asset scan"
         )
 
 
 def render_recent_activity_section():
-    """Render recent security-related activity using real GCP data."""
-    st.subheader("🕒 Recent Activity")
+    """Render recent asset discovery and security activity using real GCP data."""
+    st.subheader("🕒 Asset Discovery Activity")
     
     if not st.session_state.selected_project:
         st.info("Select a project to view recent activity")
         return
     
-    activities = []
-    
-    with st.spinner("Loading recent activity..."):
-        # Try to get recent activity using available methods
+    with st.spinner("Loading asset discovery activity..."):
         try:
-            # Check if we can connect to backend
-            projects_response = simple_api.get_projects()
-            if projects_response.get("success"):
-                activities.append({
-                    "time": "Current",
-                    "action": "System status check",
-                    "result": "Backend connection verified",
-                    "severity": "success"
-                })
+            # Get asset inventory summary to show real activity
+            import requests
+            backend_url = "http://localhost:8000"
+            
+            response = requests.get(
+                f"{backend_url}/api/v1/asset-inventory/summary",
+                params={"project_id": st.session_state.selected_project},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                asset_data = response.json()
+                data = asset_data.get("data", {})
+                timestamp = asset_data.get("timestamp", datetime.now().isoformat())
                 
-            # Try to get security score for activity
-            security_response = simple_api.get_security_score()
-            if security_response.get("success"):
-                score = security_response.get("score", 0)
-                activities.append({
+                # Parse timestamp
+                try:
+                    from datetime import datetime
+                    scan_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    time_ago = "Just now" if (datetime.now() - scan_time.replace(tzinfo=None)).seconds < 60 else f"{(datetime.now() - scan_time.replace(tzinfo=None)).seconds // 60} min ago"
+                except:
+                    time_ago = "Recently"
+                
+                activities = [
+                    {
+                        "time": time_ago,
+                        "action": "Asset inventory scan completed",
+                        "result": f"Discovered {data.get('total_assets', 0)} assets across {len(data.get('asset_types', {}))} categories",
+                        "severity": "success"
+                    },
+                    {
+                        "time": time_ago,
+                        "action": "Security analysis",
+                        "result": f"Found {data.get('security_findings', 0)} security findings, {data.get('high_risk_assets', 0)} high-risk assets",
+                        "severity": "warning" if data.get('high_risk_assets', 0) > 0 else "success"
+                    },
+                    {
+                        "time": time_ago,
+                        "action": "Recommendations generated",
+                        "result": f"{data.get('active_recommendations', 0)} security recommendations available",
+                        "severity": "info" if data.get('active_recommendations', 0) > 0 else "success"
+                    }
+                ]
+                
+                # Show top asset types discovered
+                asset_types = data.get('asset_types', {})
+                if asset_types:
+                    top_assets = sorted(asset_types.items(), key=lambda x: x[1], reverse=True)[:3]
+                    for asset_type, count in top_assets:
+                        activities.append({
+                            "time": time_ago,
+                            "action": f"Discovered {asset_type.lower()}",
+                            "result": f"Found {count} {asset_type.lower()}",
+                            "severity": "info"
+                        })
+                        
+            else:
+                activities = [{
                     "time": "Current",
-                    "action": "Security assessment",
-                    "result": f"Security score: {score}/100",
-                    "severity": "success" if score > 80 else "warning"
-                })
-        except:
-            pass
+                    "action": "Asset inventory unavailable", 
+                    "result": "Run asset discovery scan to view activity",
+                    "severity": "warning"
+                }]
+                
+        except Exception as e:
+            activities = [
+                {
+                    "time": "Current",
+                    "action": "Connection issue",
+                    "result": f"Unable to fetch asset data: {str(e)[:50]}...",
+                    "severity": "error"
+                },
+                {
+                    "time": "Current",
+                    "action": "Dashboard active",
+                    "result": f"Monitoring project {st.session_state.selected_project}",
+                    "severity": "info"
+                }
+            ]
     
-    # Show fallback message if no real activity data
-    if not activities:
-        activities = [
-            {
-                "time": "Current",
-                "action": "System monitoring active",
-                "result": "No recent security events detected",
-                "severity": "success"
-            },
-            {
-                "time": "Current",
-                "action": "Dashboard loaded",
-                "result": f"Monitoring project {st.session_state.selected_project}",
-                "severity": "info"
-            }
-        ]
-    
+    # Display activities with appropriate icons
     for activity in activities:
         severity_emoji = {
             "success": "✅",
-            "info": "ℹ️",
+            "info": "ℹ️", 
             "warning": "⚠️",
             "error": "❌"
         }.get(activity["severity"], "📝")
@@ -322,27 +430,27 @@ def render_quick_actions_section():
 
 
 def render_dashboard_charts():
-    """Render dashboard visualization charts using real GCP data."""
-    st.subheader("📊 Security Analytics")
+    """Render dashboard visualization charts using real GCP Asset Inventory data."""
+    st.subheader("📊 Asset Inventory Analytics")
     
     if not st.session_state.selected_project:
-        st.info("Select a project to view security analytics")
+        st.info("Select a project to view asset analytics")
         return
     
     # Create tabs for different chart types
-    tab1, tab2, tab3, tab4 = st.tabs(["Security Findings", "API Services", "System Health", "GCP Resources"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Asset Breakdown", "Security Analysis", "Recommendations", "Risk Assessment"])
     
     with tab1:
-        render_security_findings_chart()
+        render_asset_breakdown_chart()
     
     with tab2:
-        render_enabled_apis_chart()
+        render_security_analysis_chart()
     
     with tab3:
-        render_system_health_chart()
+        render_recommendations_chart()
     
     with tab4:
-        render_gcp_resources_chart()
+        render_risk_assessment_chart()
 
 
 def render_security_findings_chart():

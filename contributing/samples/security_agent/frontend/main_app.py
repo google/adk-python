@@ -149,8 +149,8 @@ def init_session_state():
             st.session_state.available_projects = []
             logger.info("Initialized available_projects in session state")
         if 'page' not in st.session_state:
-            st.session_state.page = "chat"
-            logger.info("Initialized page to chat (default) in session state")
+            st.session_state.page = "dashboard"
+            logger.info("Initialized page to dashboard (default) in session state")
         if 'chat_layout_mode' not in st.session_state:
             st.session_state.chat_layout_mode = "enhanced"
             logger.info("Initialized chat layout mode in session state")
