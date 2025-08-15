@@ -1270,3 +1270,41 @@ class EnhancedGCPAssetInventoryService:
                 "cache_enabled": False,
                 "error": str(e)
             }
+    
+    async def get_asset_inventory_async(
+        self, 
+        project_id: str, 
+        use_cache: bool = True, 
+        cache_ttl: int = 1800
+    ) -> Dict[str, Any]:
+        """Async wrapper for asset inventory with caching support (ADK pattern)."""
+        try:
+            # Use existing realtime discovery method
+            assets = await self.discover_assets_realtime(
+                intent="inventory", 
+                detailed_analysis=False,
+                intent_keywords=["assets", "inventory", "resources"]
+            )
+            
+            # Convert to standard format
+            if assets.get("success"):
+                asset_list = assets.get("processed_assets", [])
+                return {
+                    "success": True,
+                    "project_id": project_id,
+                    "assets": asset_list,
+                    "count": len(asset_list),
+                    "timestamp": time.time(),
+                    "source": "enhanced_asset_inventory",
+                    "cache_used": use_cache
+                }
+            else:
+                return assets
+                
+        except Exception as e:
+            logger.error(f"Async asset inventory failed: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "project_id": project_id
+            }

@@ -837,29 +837,72 @@ async def chat_with_llm_agent(chat_request: ChatRequest):
         
         logger.info(f"✅ [CHAT-{request_id}] Chat manager available, proceeding...")
         
-        # Create or get session
+        # ADK-compliant session management
         session_id = chat_request.session_id
         if not session_id:
-            logger.info(f"🆕 [CHAT-{request_id}] Creating new session for user: {chat_request.user_id}")
-            session_id = chat_manager.create_session(chat_request.user_id, {
+            # Create new session using ADK patterns
+            logger.info(f"🆕 [CHAT-{request_id}] Creating new ADK session for user: {chat_request.user_id}")
+            session_id = await chat_manager.create_session_async(chat_request.user_id, {
                 "project_id": chat_request.project_id,
-                "source": "api_chat",
+                "source": "adk_agent_team",
                 "adk_compliant": True,
-                "request_id": request_id
+                "request_id": request_id,
+                "client_type": "streamlit_thin_client"
             })
-            logger.info(f"✅ [CHAT-{request_id}] Created session: {session_id}")
+            logger.info(f"✅ [CHAT-{request_id}] Created ADK session: {session_id}")
         else:
+            # Ensure session exists (ADK session continuity pattern)
             logger.info(f"🔄 [CHAT-{request_id}] Using existing session: {session_id[:20]}...")
+            session_exists = await chat_manager.session_exists_async(session_id)
+            if not session_exists:
+                # Auto-create missing session (handle race conditions)
+                logger.info(f"🔄 [CHAT-{request_id}] Session not found, auto-creating: {session_id}")
+                await chat_manager.create_session_async(
+                    chat_request.user_id, 
+                    {
+                        "project_id": chat_request.project_id,
+                        "source": "adk_agent_team_restore", 
+                        "adk_compliant": True,
+                        "request_id": request_id,
+                        "client_type": "streamlit_thin_client"
+                    },
+                    session_id=session_id
+                )
+                logger.info(f"✅ [CHAT-{request_id}] Auto-created session: {session_id}")
         
-        # Add user message using enhanced manager
-        logger.info(f"💬 [CHAT-{request_id}] Adding user message to session")
-        await chat_manager.add_message(
-            session_id=session_id,
-            content=chat_request.query,
-            sender_type="user",
-            performance_data={"start_time": start_time, "request_id": request_id}
-        )
-        logger.info(f"✅ [CHAT-{request_id}] User message added successfully")
+        # Add user message using ADK session patterns
+        logger.info(f"💬 [CHAT-{request_id}] Adding user message to ADK session")
+        try:
+            await chat_manager.add_message(
+                session_id=session_id,
+                content=chat_request.query,
+                sender_type="user",
+                performance_data={"start_time": start_time, "request_id": request_id}
+            )
+            logger.info(f"✅ [CHAT-{request_id}] User message added successfully")
+        except ValueError as e:
+            if "not found" in str(e):
+                logger.warning(f"⚠️ [CHAT-{request_id}] Session lost, recreating: {session_id}")
+                # Recreate session and retry (ADK resilience pattern)
+                await chat_manager.create_session_async(
+                    chat_request.user_id,
+                    {
+                        "project_id": chat_request.project_id,
+                        "source": "adk_session_recovery",
+                        "adk_compliant": True,
+                        "request_id": request_id
+                    },
+                    session_id=session_id
+                )
+                await chat_manager.add_message(
+                    session_id=session_id,
+                    content=chat_request.query,
+                    sender_type="user",
+                    performance_data={"start_time": start_time, "request_id": request_id}
+                )
+                logger.info(f"✅ [CHAT-{request_id}] Recovered and added user message")
+            else:
+                raise
         
         # Get project ID
         project_id = chat_request.project_id or os.environ.get('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
