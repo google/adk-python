@@ -155,7 +155,7 @@ class InMemoryExporter(export_lib.SpanExporter):
     self._spans.clear()
 
 
-class AgentRunRequest(common.BaseModel):
+class RunAgentRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
@@ -822,15 +822,13 @@ class AdkWebServer:
       )
 
     @app.post("/run", response_model_exclude_none=True)
-    async def agent_run(req: AgentRunRequest) -> list[Event]:
+    async def run_agent(req: RunAgentRequest) -> list[Event]:
       session = await self.session_service.get_session(
           app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
       )
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
       runner = await self.get_runner_async(req.app_name)
-
-      events = []
       async with Aclosing(
           runner.run_async(
               user_id=req.user_id,
@@ -844,7 +842,7 @@ class AdkWebServer:
       return events
 
     @app.post("/run_sse")
-    async def agent_run_sse(req: AgentRunRequest) -> StreamingResponse:
+    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
       # SSE endpoint
       session = await self.session_service.get_session(
           app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
@@ -938,7 +936,7 @@ class AdkWebServer:
         return {}
 
     @app.websocket("/run_live")
-    async def agent_live_run(
+    async def run_agent_live(
         websocket: WebSocket,
         app_name: str,
         user_id: str,
