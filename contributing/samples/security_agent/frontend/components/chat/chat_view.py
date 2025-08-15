@@ -1,11 +1,12 @@
 """
-Direct ADK Chat View - Single Version Only
-Direct integration with Google ADK agents without fallbacks or multiple versions
+GCP Security Chat Interface - ChatGPT-like Experience
+Thin client wrapper for GCP Asset Inventory and Security Recommendations
+Provides conversational security analysis with real-time asset discovery
 """
 
 import streamlit as st
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 import os
 import sys
 import time
@@ -42,8 +43,8 @@ except ImportError as e:
     conversation_memory = None
 
 def render_chat_view():
-    """Direct ADK chat interface - single version only"""
-    st.header("💬 ADK Security Agent")
+    """GCP Security Chat Interface with Asset Inventory Integration"""
+    st.header("🔐 GCP Security Assistant")
     
     # Check ADK availability - required for operation
     if not ADK_AGENTS_AVAILABLE:
@@ -51,7 +52,11 @@ def render_chat_view():
         st.info(get_adk_setup_guidance())
         return
     
-    st.success("🎯 Connected to ADK agents - ready for security analysis")
+    st.success("🎯 Connected to GCP Asset Inventory - Ready for security analysis")
+    
+    # Show asset inventory stats
+    with st.expander("📊 Asset Inventory Overview", expanded=False):
+        render_asset_inventory_stats()
     
     # Initialize or restore session
     initialize_or_restore_session()
@@ -103,17 +108,31 @@ def render_chat_view():
                     if context.agent_routing:
                         st.write(f"**Agents Used:** {', '.join(context.agent_routing)}")
     
-    # Display chat messages
-    for message in st.session_state.chat_messages:
+    # Display chat messages with enhanced information
+    for i, message in enumerate(st.session_state.chat_messages):
         with st.chat_message(message["role"]):
             st.write(message["content"])
             
             # Show agent delegation info for assistant messages
             if message["role"] == "assistant" and message.get("agent"):
-                st.caption(f"🤖 Delegated to: {message['agent']}")
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.caption(f"🤖 Delegated to: {message['agent']}")
+                with col2:
+                    if message.get('performance_time'):
+                        st.caption(f"⏱️ {message['performance_time']}s")
+            
+            # Don't show suggestions in chat history - keep it clean like normal chat
     
-    # Chat input
-    if prompt := st.chat_input("Tell me about the buckets in the project"):
+    # Main chat input - ChatGPT-like experience for GCP security
+    chat_placeholder = "Ask about your GCP assets, security posture, or get recommendations..."
+    if st.session_state.chat_messages:
+        chat_placeholder = "Ask a follow-up question or explore a recommendation..."
+    
+    if prompt := st.chat_input(chat_placeholder):
+        # Clear any existing suggestions when new input provided
+        st.session_state.current_suggestions = []
+        
         # Add user message
         st.session_state.chat_messages.append({
             "role": "user", 
@@ -126,18 +145,35 @@ def render_chat_view():
         # Process with ADK delegation
         with st.chat_message("assistant"):
             with st.spinner("🧠 Processing with ADK agents..."):
-                response, agent = process_with_adk_coordinator(prompt)
+                response, agent, suggestions, performance_time = process_with_adk_coordinator(prompt)
                 st.write(response)
                 
-                # Add assistant response
-                st.session_state.chat_messages.append({
+                # Show agent info
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.caption(f"🤖 Delegated to: {agent}")
+                with col2:
+                    if performance_time:
+                        st.caption(f"⏱️ {performance_time:.2f}s")
+                
+                # Add assistant response with enhanced data
+                assistant_message = {
                     "role": "assistant",
                     "content": response,
-                    "agent": agent
-                })
+                    "agent": agent,
+                    "suggestions": suggestions,
+                    "performance_time": performance_time
+                }
+                st.session_state.chat_messages.append(assistant_message)
+                
+                # Don't show suggestions immediately - keep chat clean like normal interfaces
     
-    # Quick actions below chat
-    render_quick_actions()
+    # Removed persistent suggestions to keep interface seamless like normal chat
+    
+    # Optional quick actions (only show if no conversation yet to keep interface clean)
+    if not st.session_state.chat_messages:
+        with st.expander("🚀 Quick Start", expanded=False):
+            render_quick_actions()
     
     # Session management options
     col1, col2 = st.columns(2)
@@ -145,6 +181,7 @@ def render_chat_view():
         if st.session_state.chat_messages:
             if st.button("🗑️ Clear Chat"):
                 st.session_state.chat_messages = []
+                st.session_state.current_suggestions = []  # Clear suggestions too
                 # Keep the same session but clear messages
                 st.rerun()
     
@@ -152,6 +189,7 @@ def render_chat_view():
         if st.button("🔄 New Session"):
             # Clear everything and start fresh
             st.session_state.chat_messages = []
+            st.session_state.current_suggestions = []  # Clear suggestions
             if 'adk_session_id' in st.session_state:
                 del st.session_state.adk_session_id
             if 'conv_session_id' in st.session_state:
@@ -251,11 +289,61 @@ def load_session_messages():
     except Exception as e:
         logger.warning(f"Could not load session messages: {e}")
 
-def process_with_adk_coordinator(query: str) -> Tuple[str, str]:
-    """Process query using backend API with smart routing"""
+def render_asset_inventory_stats():
+    """Display real-time GCP asset inventory statistics"""
     import requests
     
     try:
+        project_id = st.session_state.get('selected_project', 'mgm-digitalconcierge')
+        
+        # Get asset summary from backend
+        response = requests.get(
+            f"http://localhost:8000/api/v1/asset-inventory/summary",
+            params={"project_id": project_id},
+            timeout=5
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            assets = data.get("data", {})
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Assets", assets.get("total_assets", 0))
+            with col2:
+                st.metric("Security Findings", assets.get("security_findings", 0))
+            with col3:
+                st.metric("High Risk", assets.get("high_risk_assets", 0))
+            with col4:
+                st.metric("Recommendations", assets.get("active_recommendations", 0))
+            
+            # Asset type breakdown
+            if assets.get("asset_types"):
+                st.markdown("**Asset Distribution:**")
+                for asset_type, count in assets.get("asset_types", {}).items():
+                    st.write(f"• {asset_type}: {count}")
+        else:
+            st.info("Asset inventory loading...")
+    except Exception as e:
+        logger.warning(f"Could not load asset inventory stats: {e}")
+        st.info("Connect to GCP to see asset inventory")
+
+def process_with_adk_coordinator(query: str) -> Tuple[str, str, List[str], float]:
+    """Process query using backend API with asset inventory and recommendations"""
+    import requests
+    
+    try:
+        # Detect if query is about assets or recommendations
+        query_lower = query.lower()
+        is_asset_query = any(keyword in query_lower for keyword in [
+            'asset', 'resource', 'bucket', 'instance', 'database', 'function',
+            'show me', 'list', 'what', 'how many', 'inventory'
+        ])
+        is_recommendation_query = any(keyword in query_lower for keyword in [
+            'recommend', 'suggestion', 'improve', 'optimize', 'security',
+            'vulnerability', 'risk', 'compliance', 'best practice'
+        ])
+        
         # Use the ADK session ID for consistency
         session_id = st.session_state.get('adk_session_id', 'default_session')
         project_id = st.session_state.get('selected_project', 'mgm-digitalconcierge')
@@ -281,6 +369,7 @@ def process_with_adk_coordinator(query: str) -> Tuple[str, str]:
         # Call backend chat endpoint with smart routing
         logger.info(f"Calling backend API with query: {enhanced_query}")
         
+        api_start_time = time.time()
         response = requests.post(
             "http://localhost:8000/api/v1/agent/chat",
             json={
@@ -292,6 +381,7 @@ def process_with_adk_coordinator(query: str) -> Tuple[str, str]:
             },
             timeout=30
         )
+        api_duration = time.time() - api_start_time
         
         if response.status_code == 200:
             data = response.json()
@@ -299,10 +389,15 @@ def process_with_adk_coordinator(query: str) -> Tuple[str, str]:
             # Extract response and agent info
             response_text = data.get("response", "No response received")
             agent_used = data.get("agent_used", "UnknownAgent")
+            suggestions = data.get("suggestions", [])
             
-            # Update suggestions if provided
-            if data.get("suggestions"):
-                st.session_state.suggestions = data["suggestions"]
+            # Debug logging
+            logger.info(f"🎯 API Response - Agent: {agent_used}, Suggestions count: {len(suggestions) if suggestions else 0}")
+            logger.info(f"🎯 Suggestions received: {suggestions}")
+            
+            # Extract performance metrics
+            performance_metrics = data.get("performance_metrics", {})
+            response_time = performance_metrics.get("response_time_ms", api_duration * 1000) / 1000
             
             # Store session ID for continuity
             if data.get("session_id") and data["session_id"] != session_id:
@@ -328,23 +423,23 @@ def process_with_adk_coordinator(query: str) -> Tuple[str, str]:
                             recommendations=['Security recommendations based on analysis']
                         )
             
-            return response_text, agent_used
+            return response_text, agent_used, suggestions, response_time
         else:
             error_msg = f"Backend API error: {response.status_code}"
             logger.error(f"{error_msg}: {response.text}")
-            return error_msg, "ErrorHandler"
+            return error_msg, "ErrorHandler", [], api_duration
         
     except requests.exceptions.Timeout:
         error_msg = "Request timed out. Backend may be processing a complex query."
         logger.error(error_msg)
-        return error_msg, "ErrorHandler"
+        return error_msg, "ErrorHandler", [], 30.0
     except requests.exceptions.ConnectionError:
         error_msg = "Cannot connect to backend. Please ensure the backend is running on port 8000."
         logger.error(error_msg)
-        return error_msg, "ErrorHandler"
+        return error_msg, "ErrorHandler", [], 0.0
     except Exception as e:
         logger.error(f"Backend API error: {e}")
-        return f"Error processing query: {str(e)}", "ErrorHandler"
+        return f"Error processing query: {str(e)}", "ErrorHandler", [], 0.0
 
 def get_query_type(query: str) -> str:
     """Determine query type for metadata"""
@@ -401,35 +496,104 @@ See `docs/ADK_SETUP_GUIDE.md` for detailed instructions including service accoun
 **💡 Need Help?**
 The ADK is currently in preview - ensure you have access through Google Cloud."""
 
+def render_suggestions(suggestions: List[str]):
+    """Render clickable follow-up suggestion buttons for conversational flow."""
+    if not suggestions:
+        return
+    
+    # Debug logging
+    logger.info(f"🎯 render_suggestions called with {len(suggestions)} suggestions: {suggestions}")
+    
+    # Store current suggestions for persistent display
+    st.session_state.current_suggestions = suggestions
+    
+    # Display suggested follow-up questions as clickable options  
+    st.markdown("*Click any suggestion to continue:*")
+    
+    # Create columns for suggestion buttons (max 2 per row for better readability)
+    suggestions_to_show = suggestions[:5]  # Show max 5 suggestions
+    
+    # Split into rows of 2
+    for i in range(0, len(suggestions_to_show), 2):
+        row_suggestions = suggestions_to_show[i:i+2]
+        cols = st.columns(len(row_suggestions))
+        
+        for j, suggestion in enumerate(row_suggestions):
+            with cols[j]:
+                # Create a unique key for each button to avoid conflicts
+                button_key = f"suggestion_{hash(suggestion)}_{i}_{j}"
+                if st.button(f"❓ {suggestion}", key=button_key, use_container_width=True):
+                    # Add the suggestion as a user message
+                    st.session_state.chat_messages.append({
+                        "role": "user",
+                        "content": suggestion
+                    })
+                    # Clear current suggestions to avoid showing them again
+                    st.session_state.current_suggestions = []
+                    st.rerun()
+
 # Quick action buttons
 def render_quick_actions():
-    """Simple quick action buttons"""
+    """Simple quick action buttons for common tasks."""
     st.markdown("---")
-    st.subheader("💡 Quick Actions")
+    st.subheader("🚀 Quick Actions")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🪣 Check Buckets"):
+        if st.button("🪣 Check Buckets", use_container_width=True):
             st.session_state.chat_messages.append({
                 "role": "user",
                 "content": "tell me about the buckets in the project"
             })
+            st.session_state.current_suggestions = []  # Clear suggestions
             st.rerun()
     
     with col2:
-        if st.button("🔐 Review IAM"):
+        if st.button("🔐 Review IAM", use_container_width=True):
             st.session_state.chat_messages.append({
                 "role": "user", 
                 "content": "analyze my IAM permissions"
             })
+            st.session_state.current_suggestions = []  # Clear suggestions
             st.rerun()
     
     with col3:
-        if st.button("📋 Check Compliance"):
+        if st.button("📋 Check Compliance", use_container_width=True):
             st.session_state.chat_messages.append({
                 "role": "user",
                 "content": "check SOC2 compliance status" 
             })
+            st.session_state.current_suggestions = []  # Clear suggestions
+            st.rerun()
+    
+    # Second row of quick actions
+    col4, col5, col6 = st.columns(3)
+    
+    with col4:
+        if st.button("🌐 Network Security", use_container_width=True):
+            st.session_state.chat_messages.append({
+                "role": "user",
+                "content": "analyze my network security and firewall rules"
+            })
+            st.session_state.current_suggestions = []
+            st.rerun()
+    
+    with col5:
+        if st.button("💰 Cost Analysis", use_container_width=True):
+            st.session_state.chat_messages.append({
+                "role": "user",
+                "content": "analyze my costs and show optimization opportunities"
+            })
+            st.session_state.current_suggestions = []
+            st.rerun()
+    
+    with col6:
+        if st.button("💡 Get Recommendations", use_container_width=True):
+            st.session_state.chat_messages.append({
+                "role": "user",
+                "content": "what are your top security recommendations for this project?"
+            })
+            st.session_state.current_suggestions = []
             st.rerun()
     

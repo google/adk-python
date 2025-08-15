@@ -8,9 +8,123 @@ from typing import Dict, Any, List, Optional
 import logging
 import os
 import random
+import time
+import asyncio
+from google.cloud import storage
+from google.oauth2 import service_account
+import google.auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+def _get_credentials():
+    """Initialize Google Cloud credentials for real API calls"""
+    try:
+        creds_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        if creds_path and os.path.exists(creds_path):
+            logger.info(f"🔐 Using service account credentials from {creds_path}")
+            return service_account.Credentials.from_service_account_file(creds_path)
+        else:
+            logger.info("🔐 Using default Google Cloud credentials")
+            credentials, project = google.auth.default()
+            return credentials
+    except Exception as e:
+        logger.warning(f"⚠️ Authentication failed, will use mock data: {e}")
+        return None
+
+def _check_public_access(bucket):
+    """Check if bucket has public access via IAM policy"""
+    try:
+        policy = bucket.get_iam_policy(requested_policy_version=3)
+        for binding in policy.bindings:
+            if 'allUsers' in binding.get('members', []) or 'allAuthenticatedUsers' in binding.get('members', []):
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"Could not check IAM policy for {bucket.name}: {e}")
+        return False
+
+def _get_encryption_type(bucket):
+    """Get bucket encryption configuration"""
+    try:
+        if bucket.default_kms_key_name:
+            return "CUSTOMER_MANAGED"
+        elif bucket.encryption_configuration:
+            return "GOOGLE_MANAGED"
+        else:
+            return "GOOGLE_MANAGED"  # Default
+    except Exception:
+        return "UNKNOWN"
+
+def _check_logging_enabled(bucket):
+    """Check if bucket has access logging enabled"""
+    try:
+        return bucket.logging is not None
+    except Exception:
+        return False
+
+async def _get_real_buckets(project_id: str) -> Dict[str, Any]:
+    """Get real bucket data from Google Cloud Storage API"""
+    logger.info(f"📡 Making HTTP GET to https://storage.googleapis.com/storage/v1/b?project={project_id}")
+    
+    start_time = time.time()
+    try:
+        # Initialize storage client with authentication
+        credentials = _get_credentials()
+        if not credentials:
+            raise Exception("No valid credentials available")
+            
+        client = storage.Client(project=project_id, credentials=credentials)
+        
+        # Make real API call to list buckets
+        bucket_iterator = client.list_buckets()
+        buckets_data = []
+        
+        for bucket in bucket_iterator:
+            logger.info(f"📞 API Call: storage.buckets.getIamPolicy for {bucket.name}")
+            
+            # Get bucket details with real API calls
+            public_access = _check_public_access(bucket)
+            encryption_type = _get_encryption_type(bucket)
+            logging_enabled = _check_logging_enabled(bucket)
+            
+            bucket_data = {
+                "name": bucket.name,
+                "location": bucket.location,
+                "storageClass": bucket.storage_class,
+                "publicAccess": public_access,
+                "versioning": bucket.versioning_enabled,
+                "encryption": encryption_type,
+                "logging": logging_enabled,
+                "created": bucket.time_created.isoformat() if bucket.time_created else None,
+                "labels": dict(bucket.labels) if bucket.labels else {},
+                "lifecycle": bool(bucket.lifecycle_rules),
+                "cors": bool(bucket.cors),
+                "website": bool(bucket.website_main_page_suffix),
+                "requesterPays": bucket.requester_pays
+            }
+            buckets_data.append(bucket_data)
+        
+        api_duration = time.time() - start_time
+        logger.info(f"✅ Response received: 200 OK, {api_duration:.1f}s")
+        logger.info(f"📊 Found {len(buckets_data)} real buckets in project {project_id}")
+        
+        return {
+            "success": True,
+            "buckets": buckets_data,
+            "source": "real_api",
+            "api_duration": api_duration
+        }
+        
+    except Exception as e:
+        api_duration = time.time() - start_time
+        logger.error(f"❌ Storage API failed after {api_duration:.1f}s: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "source": "api_failed",
+            "api_duration": api_duration
+        }
 
 # Mock data for demonstration - in production, this would call real GCS APIs
 MOCK_BUCKETS = {
@@ -100,13 +214,22 @@ async def analyze_buckets(
 ):
     """Analyze GCS buckets for security issues and provide specific recommendations."""
     
-    # Get mock buckets for the project
-    buckets = MOCK_BUCKETS.get(project_id, [])
+    # Try to get real bucket data from Google Cloud Storage API
+    real_data = await _get_real_buckets(project_id)
     
+    if real_data["success"]:
+        buckets = real_data["buckets"]
+        logger.info(f"🎯 Using real API data: {len(buckets)} buckets from Google Cloud Storage")
+    else:
+        # Fallback to mock data if API fails
+        logger.warning(f"🔄 Falling back to mock data due to API failure: {real_data.get('error')}")
+        buckets = MOCK_BUCKETS.get(project_id, [])
+        
     if not buckets:
         return {
             "success": False,
-            "error": f"No buckets found in project {project_id}"
+            "error": f"No buckets found in project {project_id}",
+            "source": real_data.get("source", "unknown")
         }
     
     # Analyze each bucket for security issues
@@ -206,9 +329,11 @@ async def analyze_buckets(
     response = {
         "success": True,
         "project_id": project_id,
+        "data_source": real_data.get("source", "mock_data"),
+        "api_duration": real_data.get("api_duration", 0),
         "summary": {
             "total_buckets": len(buckets),
-            "total_storage": "2.7 TB",
+            "total_storage": "2.7 TB",  # TODO: Calculate real storage size from API
             "critical_issues": len(critical_issues),
             "high_issues": len(high_issues),
             "medium_issues": len(medium_issues),

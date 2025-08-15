@@ -8,6 +8,7 @@ google-cloud-secret-manager
 google-cloud-aiplatform
 vertexai
 google-cloud-resource-manager
+google-cloud-iam
 google-cloud-service-usage
 google-auth
 google-auth-oauthlib
@@ -16,6 +17,15 @@ google-cloud-asset
 google-cloud-compute
 google-cloud-storage
 google-cloud-monitoring
+google-cloud-recommender
+google-cloud-securitycenter
+google-cloud-sql-connector
+google-cloud-functions
+google-cloud-bigquery
+google-cloud-pubsub
+google-cloud-container
+google-cloud-run
+google-cloud-appengine-admin
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-exporter-gcp-trace
@@ -29,4 +39,4 @@ python-dateutil
 aiofiles
 numpy
 litellm
-pydantic
+python-dotenv

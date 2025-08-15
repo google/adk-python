@@ -253,6 +253,15 @@ try:
 except ImportError as e:
     logger.warning(f"Cost router not available: {e}")
 
+# Asset Inventory router for unified GCP resource access
+try:
+    from backend.api.asset_inventory import router as asset_inventory_router
+    app.include_router(asset_inventory_router, prefix="/api/v1/asset-inventory")
+    logger.info("✅ Asset Inventory router included at /api/v1/asset-inventory")
+except ImportError as e:
+    logger.warning(f"Asset Inventory router not available: {e}")
+
+
 @app.get("/")
 async def root():
     """Root endpoint."""
@@ -277,7 +286,10 @@ async def health_check():
             "websocket": "/api/v1/agent/ws",  # Available in agent_llm.py
             "chat": "/api/v1/agent/chat",
             "performance": "/api/v1/performance" if performance_monitor_available else None,
-            "context": None  # Context handled through sessions API
+            "context": None,  # Context handled through sessions API
+            "asset_inventory": "/api/v1/assets",
+            "asset_discovery": "/api/v1/assets/discover",
+            "security_analysis": "/api/v1/assets/security/analyze"
         }
     }
 

@@ -25,6 +25,7 @@ try:
     from agents.network_agent import NetworkSecurityAgent
     from agents.compliance_agent import ComplianceAgent
     from agents.cost_agent import CostOptimizationAgent
+    from agents.search_enabled_agent import create_search_enabled_agent
     AGENTS_AVAILABLE = True
     logger.info("✅ LLM Agents available for intelligent steering")
 except ImportError as e:
@@ -98,6 +99,15 @@ except ImportError as e:
     
     # Enhanced chat manager not available - this should be installed
     chat_manager = None
+
+# Import search service for web search integration
+try:
+    from backend.api.search import SearchService, get_search_service
+    SEARCH_SERVICE_AVAILABLE = True
+    logger.info("✅ Search service loaded for web search capabilities")
+except ImportError as e:
+    SEARCH_SERVICE_AVAILABLE = False
+    logger.warning(f"⚠️ Search service not available: {e}")
     logger.error("Enhanced chat manager is required for ADK session management")
     logger.error("Please ensure the chat_manager module is properly installed")
 
@@ -107,7 +117,17 @@ def create_llm_agent(agent_type: str, project_id: str):
         return None
         
     try:
-        if agent_type == "coordinator":
+        if agent_type == "recommendation":
+            # Create recommendation agent - use coordinator with special context
+            agent = create_coordinator_agent(project_id)
+            if agent:
+                agent.agent_type = "recommendation"
+                agent.description = f"Recommendation specialist for project {project_id}"
+            return agent
+        elif agent_type == "search":
+            # Create search-enabled agent with Google Search grounding
+            return create_search_enabled_agent(project_id, agent_type="conversational")
+        elif agent_type == "coordinator":
             return create_coordinator_agent(project_id)
         elif agent_type == "storage":
             return StorageSecurityAgent(project_id)
@@ -119,6 +139,10 @@ def create_llm_agent(agent_type: str, project_id: str):
             return ComplianceAgent(project_id)
         elif agent_type == "cost":
             return CostOptimizationAgent(project_id)
+        elif agent_type == "asset_discovery":
+            # Create asset discovery agent for comprehensive GCP resource queries
+            from agents.asset_discovery_agent import create_asset_discovery_agent
+            return create_asset_discovery_agent(project_id)
         else:
             return create_coordinator_agent(project_id)
     except Exception as e:
@@ -132,10 +156,26 @@ async def process_with_llm_agent(query: str, project_id: str, context: Dict = No
     query_lower = query.lower()
     
     logger.info(f"🎯 [AGENT-{request_id}] Starting agent routing analysis...")
-    logger.info(f"   🔍 Query keywords: {[word for word in ['bucket', 'storage', 'iam', 'user', 'network', 'firewall', 'compliance', 'cost'] if word in query_lower]}")
+    logger.info(f"   🔍 Query keywords: {[word for word in ['bucket', 'storage', 'iam', 'user', 'network', 'firewall', 'compliance', 'cost', 'search', 'find', 'lookup', 'research'] if word in query_lower]}")
     
+    # Check for recommendation intent first (enhanced recommendation routing)
+    recommendation_indicators = ["recommend", "suggestion", "advice", "should i", "what to do", "best practice", "optimize", "improve", "fix"]
+    if any(indicator in query_lower for indicator in recommendation_indicators):
+        agent_type = "recommendation"
+        agent_name = "RecommendationAgent"
+        routing_reason = f"Recommendation keywords detected: {[word for word in recommendation_indicators if word in query_lower]}"
+    # Check for search intent (new search routing)
+    elif any(indicator in query_lower for indicator in ["search", "find", "lookup", "research", "google", "web search", "what is", "how to", "latest", "recent", "news", "documentation", "examples"]):
+        agent_type = "search"
+        agent_name = "SearchAgent"
+        routing_reason = f"Search keywords detected: {[word for word in ['search', 'find', 'lookup', 'research', 'google', 'web search', 'what is', 'how to', 'latest', 'recent', 'news', 'documentation', 'examples'] if word in query_lower]}"
+    # Check for comprehensive GCP resource discovery (HIGHEST PRIORITY for asset queries)
+    elif any(word in query_lower for word in ["resources", "inventory", "assets", "all", "everything", "project", "summary", "overview", "compute instances", "virtual machines", "databases", "cloud functions", "kubernetes clusters", "gke", "what do i have", "show me", "list", "instances", "vms", "functions", "clusters"]):
+        agent_type = "asset_discovery"
+        agent_name = "AssetDiscoveryAgent"
+        routing_reason = f"Asset discovery keywords detected: {[word for word in ['resources', 'inventory', 'assets', 'all', 'everything', 'project', 'summary', 'overview', 'compute instances', 'virtual machines', 'databases', 'cloud functions', 'kubernetes clusters', 'gke', 'what do i have', 'show me', 'list', 'instances', 'vms', 'functions', 'clusters'] if word in query_lower]}"
     # Determine which specialist agent to use
-    if any(word in query_lower for word in ["bucket", "storage", "backup", "archive"]):
+    elif any(word in query_lower for word in ["bucket", "storage", "backup", "archive"]):
         agent_type = "storage"
         agent_name = "StorageSecurityAgent"
         routing_reason = "Storage keywords detected: bucket, storage, backup, archive"
@@ -174,7 +214,23 @@ async def process_with_llm_agent(query: str, project_id: str, context: Dict = No
             try:
                 # Send query to agent for intelligent processing
                 logger.info(f"🚀 [AGENT-{request_id}] Calling {agent_name} with query processing...")
-                response = await agent.process_query(query, context)
+                
+                # Handle search agent specially with its async method
+                if agent_type == "search":
+                    response_dict = await agent.search_with_context(query, session_id=request_id)
+                    if response_dict.get("success"):
+                        response = response_dict["response"]
+                        # Add citations if available
+                        if response_dict.get("citations"):
+                            response += "\n\n📚 **Sources:**\n"
+                            for citation in response_dict["citations"]:
+                                response += f"• {citation}\n"
+                    else:
+                        response = response_dict.get("response", "Search failed")
+                else:
+                    # Other agents use the standard process_query method
+                    response = await agent.process_query(query, context)
+                
                 logger.info(f"✅ [AGENT-{request_id}] {agent_name} processed successfully")
                 return str(response), agent_name
             except Exception as e:
@@ -192,11 +248,182 @@ async def process_with_llm_agent(query: str, project_id: str, context: Dict = No
     return response, agent_name
 
 async def generate_response_with_real_data(query: str, project_id: str, agent_type: str, request_id: str = "unknown") -> str:
-    """Generate response using real data from our APIs."""
+    """Generate response using real data from our APIs with GCP thin client integration."""
     
     logger.info(f"🔍 [API-{request_id}] Fetching real data for {agent_type} query")
     
-    if agent_type == "storage":
+    # Try to use thin client service for asset and security queries
+    if agent_type in ["asset_discovery", "storage", "iam", "network", "compliance"]:
+        try:
+            from backend.services.gcp_thin_client_service import GCPThinClientService
+            
+            logger.info(f"🌐 [API-{request_id}] Using GCP Thin Client Service")
+            thin_client = GCPThinClientService(project_id)
+            
+            # Get asset inventory snapshot
+            snapshot = await thin_client.get_asset_inventory_snapshot()
+            
+            # Analyze security based on query
+            security_analysis = await thin_client.analyze_asset_security(query)
+            
+            # Generate insights
+            insights = await thin_client.generate_security_insights([])
+            
+            # Build comprehensive response
+            response = f"🔍 **GCP Security Analysis**\n\n"
+            response += f"**Project:** {project_id}\n\n"
+            
+            if snapshot.total_assets > 0:
+                response += f"📊 **Asset Overview:**\n"
+                response += f"• Total Assets: {snapshot.total_assets}\n"
+                for asset_type, count in snapshot.asset_breakdown.items():
+                    if count > 0:
+                        response += f"• {asset_type}: {count}\n"
+                response += "\n"
+            
+            if security_analysis:
+                response += f"🎯 **Security Focus:** {security_analysis.get('focus', 'General').title()}\n\n"
+                
+                if security_analysis.get('findings'):
+                    response += "⚠️ **Key Findings:**\n"
+                    for finding in security_analysis['findings']:
+                        response += f"• {finding}\n"
+                    response += "\n"
+                
+                if security_analysis.get('recommendations'):
+                    response += "💡 **Recommendations:**\n"
+                    for rec in security_analysis['recommendations']:
+                        response += f"• {rec}\n"
+                    response += "\n"
+                
+                risk_level = security_analysis.get('risk_level', 'unknown')
+                risk_emoji = {"critical": "🚨", "high": "🔴", "medium": "🟡", "low": "🟢"}.get(risk_level, "⚪")
+                response += f"{risk_emoji} **Risk Level:** {risk_level.title()}\n\n"
+            
+            if snapshot.high_risk_assets:
+                response += "🚨 **High-Risk Assets:**\n"
+                for asset in snapshot.high_risk_assets[:5]:
+                    response += f"• {asset}\n"
+                response += "\n"
+            
+            if insights.get('summary'):
+                response += f"📝 **Summary:** {insights['summary']}\n\n"
+            
+            response += f"⏱️ Scan completed in {snapshot.scan_duration_ms:.0f}ms"
+            
+            logger.info(f"✅ [API-{request_id}] Thin client response generated")
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ [API-{request_id}] Thin client service failed: {e}")
+            # Fall back to existing logic
+    
+    logger.info(f"🔍 [API-{request_id}] Using standard API for {agent_type} query")
+    
+    if agent_type == "search":
+        # For search queries, we should use the Gemini agent with Google Search grounding
+        # If agents are not available, provide a helpful message
+        logger.info(f"🔍 [API-{request_id}] Search query detected")
+        
+        if not AGENTS_AVAILABLE:
+            return f"""🔍 **Google Search with Gemini**
+
+To enable web search, the system needs to use Gemini's built-in Google Search grounding.
+
+**How it works:**
+• Gemini API has native Google Search integration
+• No separate API keys needed (uses Vertex AI)
+• Automatic source citations
+• Real-time information retrieval
+
+**Your query:** {query}
+
+Currently, I'll help based on my training knowledge. To enable real-time search:
+1. Ensure Vertex AI is configured
+2. The search-enabled agent will automatically use Google Search
+3. Results will include sources and citations"""
+        else:
+            # The agent should handle this with Google Search grounding
+            return f"Search functionality requires the Gemini search-enabled agent. Please ensure agents are properly configured."
+    
+    elif agent_type == "recommendation":
+        try:
+            logger.info(f"💡 [API-{request_id}] RECOMMENDATION API CALLS STARTING:")
+            logger.info(f"   🔄 Importing recommendation service...")
+            
+            # Import recommendation service
+            from backend.services.chat_recommendation_service import ChatRecommendationService
+            from backend.services.recommender_service import RecommenderService
+            
+            logger.info(f"   📞 API Call: Google Cloud Recommender API")
+            logger.info(f"   🎯 Query: {query}")
+            logger.info(f"   🎯 Project: {project_id}")
+            
+            api_start_time = time.time()
+            
+            # Initialize services
+            recommender_service = RecommenderService()
+            chat_service = ChatRecommendationService(recommender_service)
+            
+            # Process the query through chat service
+            response_data = await chat_service.process_natural_language_query(
+                query=query,
+                project_id=project_id,
+                user_id=request_id,
+                session_id=request_id
+            )
+            
+            api_duration = time.time() - api_start_time
+            
+            if response_data.get("success"):
+                recommendations = response_data.get("recommendations", [])
+                summary = response_data.get("summary", "")
+                follow_up = response_data.get("follow_up_questions", [])
+                
+                logger.info(f"✅ [API-{request_id}] Recommendation API SUCCESS:")
+                logger.info(f"   📊 Recommendations found: {len(recommendations)}")
+                logger.info(f"   💡 Response generated: {len(summary)} chars")
+                
+                response = f"💡 **Recommendations for: {query}**\n\n"
+                
+                if summary:
+                    response += f"{summary}\n\n"
+                
+                if recommendations:
+                    response += "🎯 **Key Recommendations:**\n"
+                    for i, rec in enumerate(recommendations[:5], 1):
+                        priority_emoji = {"critical": "🚨", "high": "🔴", "medium": "🟡", "low": "🔵"}.get(rec.get("priority", "medium").lower(), "💡")
+                        response += f"{priority_emoji} **{rec.get('title', 'Recommendation')}**\n"
+                        response += f"   📋 {rec.get('description', 'No description')}\n"
+                        if rec.get('estimated_impact'):
+                            response += f"   💰 Impact: {rec['estimated_impact']}\n"
+                        if rec.get('implementation_effort'):
+                            response += f"   ⏱️ Effort: {rec['implementation_effort']}\n"
+                        response += "\n"
+                
+                # Add follow-up questions
+                if follow_up:
+                    response += "🤔 **You might also ask:**\n"
+                    for question in follow_up[:3]:
+                        response += f"• {question}\n"
+                    response += "\n"
+                
+                response += f"🕒 Analysis completed in {api_duration:.2f}s"
+                
+                logger.info(f"✅ [API-{request_id}] Recommendation response generated: {len(response)} chars")
+                return response
+            else:
+                error_msg = response_data.get('error', 'No recommendations found')
+                logger.error(f"❌ [API-{request_id}] Recommendation API failed: {error_msg}")
+                return f"💡 **Recommendation Service**\n\nI encountered an issue getting recommendations for '{query}': {error_msg}\n\nTry asking about:\n• Security recommendations\n• Cost optimization suggestions\n• Performance improvements\n• Compliance requirements"
+                
+        except Exception as e:
+            logger.error(f"❌ [API-{request_id}] Recommendation API exception: {e}")
+            import traceback
+            logger.error(f"   📋 Stack trace: {traceback.format_exc()}")
+            return f"💡 **Recommendation Service Error**\n\nI encountered an error while getting recommendations for '{query}': {str(e)}\n\nThe recommendation service may need to be configured with proper GCP credentials."
+    
+    elif agent_type == "storage":
         try:
             logger.info(f"📦 [API-{request_id}] STORAGE API CALLS STARTING:")
             logger.info(f"   🔄 Importing storage API module...")
@@ -308,6 +535,37 @@ async def generate_response_with_real_data(query: str, project_id: str, agent_ty
                 return response
         except Exception as e:
             logger.error(f"Error getting real network data: {e}")
+    
+    elif agent_type == "asset_discovery":
+        try:
+            logger.info(f"🔍 [API-{request_id}] ASSET DISCOVERY API CALLS STARTING:")
+            logger.info(f"   🔄 Importing asset discovery agent...")
+            
+            # Import and use the asset discovery agent
+            from agents.asset_discovery_agent import create_asset_discovery_agent
+            
+            logger.info(f"📡 Making HTTP POST to https://cloudasset.googleapis.com/v1/projects/{project_id}:searchAllResources")
+            logger.info(f"   🎯 Query: {query}")
+            logger.info(f"   🔍 Using Asset Inventory API for comprehensive resource discovery")
+            
+            # Create and use asset discovery agent
+            asset_agent = create_asset_discovery_agent(project_id)
+            result = await asset_agent.process_query(query, request_id)
+            
+            if result.get("success"):
+                logger.info(f"✅ [API-{request_id}] Asset Discovery SUCCESS:")
+                logger.info(f"   📊 Resources found: {result.get('resource_count', 0)}")
+                logger.info(f"   🌐 Data source: {result.get('data_source', 'unknown')}")
+                logger.info(f"   ⏱️  API duration: {result.get('api_duration', 0):.2f}s")
+                return result["response"]
+            else:
+                error_msg = result.get("error", "Asset discovery failed")
+                logger.error(f"❌ [API-{request_id}] Asset Discovery failed: {error_msg}")
+                return f"🔍 **Asset Discovery**\n\nI encountered an issue discovering GCP resources for '{query}': {error_msg}\n\nTry asking about:\n• Show me a project summary\n• What compute instances do I have?\n• List my databases\n• Show me all storage resources"
+                
+        except Exception as e:
+            logger.error(f"❌ [API-{request_id}] Asset Discovery exception: {e}")
+            return f"🔍 **Asset Discovery Error**\n\nI encountered an error discovering resources for '{query}': {str(e)}"
     
     elif agent_type == "cost":
         try:
@@ -575,9 +833,87 @@ async def chat_with_llm_agent(chat_request: ChatRequest):
         )
 
 def generate_suggestions(query: str, agent_used: str) -> List[str]:
-    """Generate contextual suggestions based on the query and agent used."""
+    """Generate context-aware security suggestions based on the query and agent used."""
+    
+    # Base suggestions for security context
+    security_suggestions = [
+        "What are my highest priority security risks?",
+        "Show me resources with public access",
+        "Which compliance standards should I focus on?",
+        "How can I improve my security posture?"
+    ]
+    
+    # Agent-specific suggestions
+    if agent_used == "AssetDiscoveryAgent":
+        return [
+            "Which assets have security vulnerabilities?",
+            "Show me assets created in the last 30 days",
+            "What resources are consuming the most cost?",
+            "Are there any unused or orphaned resources?",
+            "Which assets need encryption enabled?"
+        ]
+    elif agent_used == "StorageSecurityAgent":
+        return [
+            "Which buckets have public access?",
+            "Show me buckets without encryption",
+            "What's my storage compliance status?",
+            "How can I optimize storage costs?",
+            "Which buckets have retention policies?"
+        ]
+    elif agent_used == "IAMSecurityAgent":
+        return [
+            "Who has admin access to this project?",
+            "Show me service accounts with excessive permissions",
+            "Which users haven't logged in recently?",
+            "What are the most risky IAM policies?",
+            "How can I implement least privilege?"
+        ]
+    elif agent_used == "NetworkSecurityAgent":
+        return [
+            "Which firewall rules allow public access?",
+            "Show me resources with external IPs",
+            "What VPCs have the weakest security?",
+            "Are there any open ports I should close?",
+            "How can I improve network segmentation?"
+        ]
+    elif agent_used == "ComplianceAgent":
+        return [
+            "What are my SOC2 compliance gaps?",
+            "Show me GDPR compliance issues",
+            "Which resources need audit logging?",
+            "What security controls am I missing?",
+            "How can I improve my compliance score?"
+        ]
+    elif agent_used == "RecommendationAgent":
+        return [
+            "What's the easiest recommendation to implement?",
+            "Which recommendations have the highest impact?",
+            "Show me cost-saving recommendations",
+            "What security quick wins can I implement today?",
+            "How do I apply these recommendations?"
+        ]
+    elif agent_used == "CostOptimizationAgent":
+        return [
+            "Which resources are the most expensive?",
+            "Show me unused resources I can delete",
+            "What are my cost optimization opportunities?",
+            "How can I reduce my monthly spend?",
+            "Which services are growing in cost?"
+        ]
     
     suggestions_map = {
+        "RecommendationAgent": [
+            "Show me highest priority recommendations",
+            "What are my biggest cost savings opportunities?",
+            "How do I implement security recommendations?",
+            "Prioritize recommendations by impact"
+        ],
+        "SearchAgent": [
+            "Search for latest security vulnerabilities",
+            "Find GCP security best practices",
+            "Research recent security incidents",
+            "Look up compliance documentation"
+        ],
         "StorageSecurityAgent": [
             "How do I fix public access issues?",
             "Show me bucket encryption status",
@@ -701,6 +1037,8 @@ async def get_agent_info():
                 "thin_client_optimized"
             ],
             "available_agents": [
+                "RecommendationAgent",
+                "SearchAgent",
                 "StorageSecurityAgent",
                 "IAMSecurityAgent",
                 "NetworkSecurityAgent",

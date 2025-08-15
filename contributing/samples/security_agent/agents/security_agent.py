@@ -14,7 +14,7 @@ from google.genai import types
 from .base_agent import initialize_vertex_ai, collect_tools_from_modules
 
 # Import tool modules
-from ..tools.gcp_tools import project_tools, storage_tools
+from ..tools.gcp_tools import project_tools, storage_tools, asset_inventory_tools
 from ..tools.api_tools import google_api_tools
 from ..tools.security_tools import knowledge_base_tools
 from ..tools.analysis_tools import dependency_analysis
@@ -32,7 +32,7 @@ def create_security_agent() -> Agent:
     # Initialize Vertex AI
     initialize_vertex_ai()
     
-    # Collect base security tools
+    # Collect base security tools including comprehensive Asset Inventory
     base_tools = [
         project_tools.get_gcp_projects,
         project_tools.get_project_info,
@@ -42,7 +42,17 @@ def create_security_agent() -> Agent:
         knowledge_base_tools.evaluate_api_security,
         knowledge_base_tools.scrape_api_documentation,
         dependency_analysis.get_api_dependency_graph,
-        dependency_analysis.propagate_risk
+        dependency_analysis.propagate_risk,
+        # Comprehensive Asset Inventory tools
+        asset_inventory_tools.discover_gcp_resources,
+        asset_inventory_tools.get_compute_instances,
+        asset_inventory_tools.get_storage_buckets,
+        asset_inventory_tools.get_cloud_functions,
+        asset_inventory_tools.get_databases,
+        asset_inventory_tools.get_kubernetes_clusters,
+        asset_inventory_tools.analyze_security_assets,
+        asset_inventory_tools.search_assets_by_name,
+        asset_inventory_tools.get_asset_inventory_summary
     ]
     
     # Dynamically load API Hub toolset if configured
@@ -74,33 +84,52 @@ def create_security_agent() -> Agent:
             'and risk propagation.'
         ),
         instruction="""
-            You are a comprehensive security evaluation agent for GCP APIs and projects. 
+            You are a comprehensive security evaluation agent for GCP APIs and projects with unified 
+            Asset Inventory access to ALL GCP services and resources.
             
-            Your primary functions:
-            - Use get_gcp_projects to list the user's accessible GCP projects
-            - Use get_project_info to get detailed information about specific projects
-            - Use get_project_services to list enabled services in a project
-            - Use evaluate_api_security to assess GCP API security using the knowledge base
-            - Use scrape_api_documentation to extract security information from documentation URLs
-            - Use get_api_dependency_graph to visualize API dependencies
-            - Use propagate_risk to identify at-risk services due to dependencies
-            - When asked about GCS buckets, use the `analyze_gcs_bucket_security` tool to provide actionable recommendations.
-            - For any other Google Cloud API interactions, use the generic `call_google_api` tool.
-            - Always provide actionable recommendations and reference official documentation
+            Your enhanced capabilities include:
             
-            When a user asks about their GCP environment:
-            1. First use get_gcp_projects to see what projects they have access to
-            2. Use get_project_services to see what services are enabled
-            3. Use get_project_info for detailed project information when needed
-            4. Use evaluate_api_security for knowledge base security assessments
-            5. Provide comprehensive security recommendations based on actual project data
+            UNIFIED RESOURCE DISCOVERY:
+            - Use discover_gcp_resources for natural language queries like "show me my compute instances"
+            - Use get_compute_instances for all VM instances and their security analysis
+            - Use get_storage_buckets for all storage buckets with security recommendations
+            - Use get_cloud_functions for all serverless functions 
+            - Use get_databases for all databases (Cloud SQL, Spanner, BigQuery, etc.)
+            - Use get_kubernetes_clusters for all GKE clusters
+            - Use analyze_security_assets for comprehensive security posture analysis
+            - Use search_assets_by_name to find resources by name patterns
+            - Use get_asset_inventory_summary for complete project overview
             
-            You have access to LIVE GCP data through proper authentication, so you can analyze
-            the user's actual projects, services, and configurations. Always use real data
-            when available rather than generic responses.
+            TRADITIONAL PROJECT TOOLS:
+            - Use get_gcp_projects to list accessible GCP projects
+            - Use get_project_info for detailed project information
+            - Use get_project_services for enabled services
             
-            If an API is not found in your knowledge base, inform the user and suggest updating it.
-            Always prioritize security best practices and compliance requirements.
+            SECURITY ANALYSIS:
+            - Use evaluate_api_security for knowledge base security assessments
+            - Use scrape_api_documentation for documentation analysis
+            - Use get_api_dependency_graph for dependency visualization
+            - Use propagate_risk for risk propagation analysis
+            
+            INTELLIGENT QUERY PROCESSING:
+            When users ask questions like:
+            - "What compute instances do I have?" → Use get_compute_instances
+            - "Show me my databases" → Use get_databases  
+            - "Tell me about my cloud functions" → Use get_cloud_functions
+            - "Analyze my security" → Use analyze_security_assets
+            - "What resources are in my project?" → Use get_asset_inventory_summary
+            - Any natural language query → Use discover_gcp_resources
+            
+            You have REAL-TIME access to the user's complete GCP infrastructure through the 
+            Asset Inventory API. Always use these tools to provide accurate, current information
+            about their actual resources rather than generic responses.
+            
+            RESPONSE PATTERN:
+            1. Use the appropriate asset discovery tool based on the user's query
+            2. Analyze the real data returned from the Asset Inventory API
+            3. Provide specific security recommendations based on actual findings
+            4. Reference the API calls made (logged to cloudasset.googleapis.com)
+            5. Always prioritize actionable insights over generic advice
         """,
         tools=base_tools,
         generate_content_config=types.GenerateContentConfig(
@@ -114,7 +143,8 @@ def create_security_agent() -> Agent:
     )
     
     print(f"🔑 Using Vertex AI with Application Default Credentials")
-    print(f"🤖 Security agent created with {len(base_tools)} tools")
+    print(f"🤖 Security agent created with {len(base_tools)} tools including comprehensive Asset Inventory")
+    print(f"📊 Asset Inventory tools: 9 specialized functions for unified GCP resource discovery")
     
     return agent
 
