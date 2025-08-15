@@ -14,14 +14,106 @@ import logging
 import httpx
 import json
 
-# Import models
-from backend.models.search_models import (
-    SearchRequest, SearchResponse, SearchResult,
-    SearchContextRequest, SearchContextResponse,
-    SearchHistoryEntry, SearchHistoryRequest, SearchHistoryResponse,
-    SearchAnalyticsRequest, SearchAnalyticsResponse,
-    SearchConfigRequest, SearchConfigResponse
-)
+# Safe imports with fallbacks for search functionality
+try:
+    from backend.models.search_models import (
+        SearchRequest, SearchResponse, SearchResult,
+        SearchContextRequest, SearchContextResponse,
+        SearchHistoryEntry, SearchHistoryRequest, SearchHistoryResponse,
+        SearchAnalyticsRequest, SearchAnalyticsResponse,
+        SearchConfigRequest, SearchConfigResponse
+    )
+    SEARCH_MODELS_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Search models not available: {e}")
+    SEARCH_MODELS_AVAILABLE = False
+    
+    # Create mock models
+    from pydantic import BaseModel
+    
+    class SearchRequest(BaseModel):
+        query: str
+        max_results: int = 10
+        safe_search: bool = True
+        user_id: Optional[str] = None
+        session_id: Optional[str] = None
+    
+    class SearchResult(BaseModel):
+        title: str
+        url: str
+        snippet: str
+        display_url: str
+        relevance_score: Optional[float] = None
+    
+    class SearchResponse(BaseModel):
+        success: bool
+        query: str
+        results: List[SearchResult]
+        total_results: int
+        search_time_ms: int
+        session_id: Optional[str] = None
+        llm_summary: Optional[str] = None
+        suggested_refinements: Optional[List[str]] = None
+        security_context: Optional[Dict[str, Any]] = None
+        error: Optional[str] = None
+    
+    class SearchContextRequest(BaseModel):
+        query: str
+        session_id: str
+        context_window: int = 5
+        analyze_security: bool = False
+    
+    class SearchContextResponse(BaseModel):
+        success: bool
+        context: Dict[str, Any]
+        suggested_queries: List[str]
+        conversation_summary: str
+        security_recommendations: Optional[List[str]] = None
+        topic_analysis: Dict[str, float]
+    
+    class SearchHistoryEntry(BaseModel):
+        timestamp: datetime
+        query: str
+        results_count: int
+        session_id: str
+        user_feedback: Optional[str] = None
+        clicked_urls: List[str] = []
+    
+    class SearchHistoryRequest(BaseModel):
+        session_id: str
+        limit: int = 20
+        offset: int = 0
+    
+    class SearchHistoryResponse(BaseModel):
+        success: bool
+        history: List[SearchHistoryEntry]
+        total_count: int
+        has_more: bool
+    
+    class SearchAnalyticsRequest(BaseModel):
+        user_id: Optional[str] = None
+        session_id: Optional[str] = None
+        time_range_hours: int = 24
+        group_by: str = "hour"
+    
+    class SearchAnalyticsResponse(BaseModel):
+        success: bool
+        total_searches: int
+        unique_queries: int
+        avg_results_per_search: float
+        popular_queries: List[Dict[str, Any]]
+        search_timeline: List[Dict[str, Any]]
+        rate_limit_status: Dict[str, Any]
+    
+    class SearchConfigRequest(BaseModel):
+        pass
+    
+    class SearchConfigResponse(BaseModel):
+        success: bool
+        config: Dict[str, Any]
+        api_configured: bool
+        cache_enabled: bool
+        rate_limiting_enabled: bool
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/search", tags=["search"])

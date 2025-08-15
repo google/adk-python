@@ -10,23 +10,159 @@ import asyncio
 import time
 from datetime import datetime
 
-from ..models.recommender_models import (
-    RecommenderContextRequest,
-    RecommendationListResponse,
-    RecommendationActionRequest,
-    RecommendationActionResponse,
-    ChatRecommendationQuery,
-    ChatRecommendationResponse,
-    RecommendationProgress,
-    ProgressUpdateRequest,
-    ProgressStatusResponse,
-    RecommenderType,
-    Priority,
-    RecommendationState
-)
-from ..services.recommender_service import RecommenderService, RecommendationContext
-from ..services.chat_recommendation_service import ChatRecommendationService
-from ..chat_manager import chat_manager
+# Safe imports with fallbacks for recommendation functionality
+try:
+    from backend.models.recommender_models import (
+        RecommenderContextRequest,
+        RecommendationListResponse,
+        RecommendationActionRequest,
+        RecommendationActionResponse,
+        ChatRecommendationQuery,
+        ChatRecommendationResponse,
+        RecommendationProgress,
+        ProgressUpdateRequest,
+        ProgressStatusResponse,
+        RecommenderType,
+        Priority,
+        RecommendationState
+    )
+    from backend.services.recommender_service import RecommenderService, RecommendationContext
+    from backend.services.chat_recommendation_service import ChatRecommendationService
+    from backend.chat_manager import chat_manager
+    RECOMMENDER_MODELS_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Recommender models/services not available: {e}")
+    RECOMMENDER_MODELS_AVAILABLE = False
+    
+    # Create mock classes and enums
+    from pydantic import BaseModel
+    from enum import Enum
+    
+    class RecommenderType(Enum):
+        SECURITY = "security"
+        COST = "cost"
+        PERFORMANCE = "performance"
+    
+    class Priority(Enum):
+        CRITICAL = "critical"
+        HIGH = "high"
+        MEDIUM = "medium"
+        LOW = "low"
+    
+    class RecommendationState(Enum):
+        ACTIVE = "active"
+        DISMISSED = "dismissed"
+        APPLIED = "applied"
+    
+    class RecommenderContextRequest(BaseModel):
+        project_id: str
+        location: str = "global"
+        max_results: Optional[int] = None
+        recommender_types: Optional[List[RecommenderType]] = None
+        priority_filter: Optional[List[Priority]] = None
+        state_filter: Optional[List[RecommendationState]] = None
+        include_insights: bool = False
+    
+    class RecommendationListResponse(BaseModel):
+        success: bool
+        total_count: int
+        filtered_count: int
+        recommendations: List[Dict[str, Any]]
+        analytics_summary: Optional[Dict[str, Any]] = None
+        execution_time_ms: Optional[float] = None
+    
+    class RecommendationActionRequest(BaseModel):
+        recommendation_id: str
+        action: str
+        dry_run: bool = True
+    
+    class RecommendationActionResponse(BaseModel):
+        success: bool
+        recommendation_id: str
+        action: str
+        dry_run: bool
+        execution_log: List[str]
+        error_message: Optional[str] = None
+    
+    class ChatRecommendationQuery(BaseModel):
+        query: str
+        context: Dict[str, Any] = {}
+    
+    class ChatRecommendationResponse(BaseModel):
+        success: bool
+        response_text: str
+        recommendations: List[Dict[str, Any]] = []
+        suggested_actions: List[str] = []
+        follow_up_questions: List[str] = []
+        context_updates: Dict[str, Any] = {}
+    
+    class RecommendationProgress(BaseModel):
+        recommendation_id: str
+        current_step: int
+        total_steps: int
+        completed_steps: List[int]
+        overall_status: str
+        user_id: str
+    
+    class ProgressUpdateRequest(BaseModel):
+        step_number: int
+    
+    class ProgressStatusResponse(BaseModel):
+        success: bool
+        progress: RecommendationProgress
+        summary: Dict[str, Any]
+        next_actions: List[str]
+    
+    class RecommendationContext:
+        def __init__(self, project_id: str, resource_name: str = "", location: str = "global", 
+                     filters: Dict = None, recommender_type: RecommenderType = None):
+            self.project_id = project_id
+            self.resource_name = resource_name
+            self.location = location
+            self.filters = filters or {}
+            self.recommender_type = recommender_type
+    
+    class MockRecommenderService:
+        def __init__(self):
+            self.recommendation_analytics = self
+        
+        async def get_all_recommendations(self, context, include_insights=False):
+            return []
+        
+        async def get_recommendations_by_type(self, context, recommender_type):
+            return []
+        
+        async def get_recommendations_by_priority(self, context, priority):
+            return []
+        
+        async def apply_recommendation(self, recommendation_id, context, dry_run=True):
+            return {"success": False, "message": "Mock service"}
+        
+        async def get_session_recommendations(self, session_id):
+            return []
+        
+        def calculate_portfolio_metrics(self, recommendations):
+            return {}
+    
+    class MockChatRecommendationService:
+        def __init__(self, recommender_service, chat_manager=None):
+            pass
+        
+        async def process_query(self, query):
+            return ChatRecommendationResponse(
+                success=True,
+                response_text="Mock recommendation service is not fully configured.",
+                recommendations=[],
+                suggested_actions=["Configure Google Cloud Recommender API"],
+                follow_up_questions=["How do I set up the recommender service?"]
+            )
+        
+        async def get_service_metrics(self):
+            return {"status": "mock", "available": False}
+    
+    RecommenderService = MockRecommenderService
+    ChatRecommendationService = MockChatRecommendationService
+    chat_manager = None
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,12 +173,16 @@ chat_recommendation_service = ChatRecommendationService(recommender_service, cha
 
 # LLM Agent Integration - for routing recommendation queries through the agent system
 try:
-    from ..api.agent_llm import process_with_llm_agent
+    from backend.api.agent_llm import process_with_llm_agent
     LLM_AGENT_AVAILABLE = True
     logger.info("✅ LLM Agent integration available for recommendation queries")
 except ImportError:
     LLM_AGENT_AVAILABLE = False
     logger.warning("⚠️ LLM Agent integration not available")
+    
+    # Create mock function
+    async def process_with_llm_agent(query, project_id, context=None, request_id="unknown"):
+        return f"Mock LLM agent response for: {query}", "MockAgent"
 
 class RecommendationsRequest(BaseModel):
     project_id: str

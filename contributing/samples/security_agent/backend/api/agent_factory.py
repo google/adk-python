@@ -8,21 +8,15 @@ from typing import Optional, Any
 
 logger = logging.getLogger(__name__)
 
-# Try to import actual agents
+# Try to import actual agents from api modules
 try:
-    from agents.coordinator_agent import create_coordinator_agent
-    from agents.storage_agent import StorageSecurityAgent
-    from agents.iam_agent import IAMAgent
-    from agents.network_agent import NetworkSecurityAgent
-    from agents.compliance_agent import ComplianceAgent
-    from agents.cost_agent import CostOptimizationAgent
-    from agents.search_enabled_agent import create_search_enabled_agent
-    from agents.asset_discovery_agent import create_asset_discovery_agent
+    # Import from api directory instead of non-existent agents directory
+    from . import storage, iam, network, compliance, cost, recommendations, asset_inventory
     AGENTS_AVAILABLE = True
-    logger.info("✅ LLM Agents loaded successfully")
+    logger.info("✅ API modules loaded successfully")
 except ImportError as e:
     AGENTS_AVAILABLE = False
-    logger.warning(f"⚠️ LLM Agents not available: {e}")
+    logger.warning(f"⚠️ API modules not available: {e}")
 
 class AgentFactory:
     """Factory for creating specialized LLM agents"""
@@ -53,41 +47,48 @@ class AgentFactory:
             return self._agent_cache[cache_key]
         
         try:
-            agent = None
+            # Return a simple agent configuration instead of trying to instantiate non-existent classes
+            agent_config = {
+                "agent_type": agent_type,
+                "project_id": project_id,
+                "description": f"{agent_type.title()} agent for project {project_id}",
+                "available_apis": []
+            }
             
+            # Set available APIs based on agent type
             if agent_type == "recommendation":
-                agent = create_coordinator_agent(project_id)
-                if agent:
-                    agent.agent_type = "recommendation"
-                    agent.description = f"Recommendation specialist for project {project_id}"
+                agent_config["available_apis"] = ["recommendations"]
+                agent_config["description"] = f"Recommendation specialist for project {project_id}"
                     
             elif agent_type == "search":
-                agent = create_search_enabled_agent(project_id, agent_type="conversational")
+                agent_config["available_apis"] = ["search", "asset_inventory"]
                 
             elif agent_type == "coordinator":
-                agent = create_coordinator_agent(project_id)
+                agent_config["available_apis"] = ["recommendations", "asset_inventory", "iam"]
                 
             elif agent_type == "storage":
-                agent = StorageSecurityAgent(project_id)
+                agent_config["available_apis"] = ["storage", "asset_inventory"]
                 
             elif agent_type == "iam":
-                agent = IAMAgent(project_id)
+                agent_config["available_apis"] = ["iam", "asset_inventory"]
                 
             elif agent_type == "network":
-                agent = NetworkSecurityAgent(project_id)
+                agent_config["available_apis"] = ["network", "asset_inventory"]
                 
             elif agent_type == "compliance":
-                agent = ComplianceAgent(project_id)
+                agent_config["available_apis"] = ["compliance", "asset_inventory"]
                 
             elif agent_type == "cost":
-                agent = CostOptimizationAgent(project_id)
+                agent_config["available_apis"] = ["cost", "asset_inventory"]
                 
             elif agent_type == "asset_discovery":
-                agent = create_asset_discovery_agent(project_id)
+                agent_config["available_apis"] = ["asset_inventory", "storage", "iam"]
                 
             else:
                 logger.warning(f"Unknown agent type: {agent_type}, falling back to coordinator")
-                agent = create_coordinator_agent(project_id)
+                agent_config["available_apis"] = ["recommendations", "asset_inventory"]
+            
+            agent = agent_config
             
             if agent:
                 # Cache the agent for reuse

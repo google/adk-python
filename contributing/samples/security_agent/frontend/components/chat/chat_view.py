@@ -43,7 +43,29 @@ except ImportError as e:
     conversation_memory = None
 
 def render_chat_view():
-    """GCP Security Chat Interface with Asset Inventory Integration"""
+    """GCP Security Chat Interface with Asset Inventory Integration - ChatGPT-style Experience"""
+    
+    # Custom CSS for better chat experience
+    st.markdown("""
+    <style>
+    .main .block-container {
+        padding-bottom: 2rem;
+    }
+    .stChatMessage {
+        margin-bottom: 1rem;
+    }
+    .stSpinner > div {
+        text-align: center;
+        margin: 1rem 0;
+    }
+    /* Auto-scroll helper */
+    .chat-container {
+        height: 70vh;
+        overflow-y: auto;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     st.header("🔐 GCP Security Assistant")
     
     # Check ADK availability - required for operation
@@ -61,12 +83,9 @@ def render_chat_view():
     # Initialize or restore session
     initialize_or_restore_session()
     
-    # Initialize chat state from session if needed
-    if 'chat_messages' not in st.session_state:
-        st.session_state.chat_messages = []
-        # Try to load existing messages from session
-        if st.session_state.get('adk_session_id'):
-            load_session_messages()
+    # Initialize chat history (following Streamlit docs pattern)
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
     
     # Display session info and context
     with st.expander("🎯 ADK Session Info", expanded=False):
@@ -76,7 +95,7 @@ def render_chat_view():
             st.write(f"**User:** {st.session_state.get('user_id', 'streamlit_user')}")
         with col2:
             st.write(f"**Project:** {st.session_state.get('selected_project', 'mgm-digitalconcierge')}")
-            st.write(f"**Messages:** {len(st.session_state.chat_messages)}")
+            st.write(f"**Messages:** {len(st.session_state.messages)}")
         with col3:
             if st.session_state.get('adk_session_id'):
                 # Get actual session status from backend
@@ -108,88 +127,71 @@ def render_chat_view():
                     if context.agent_routing:
                         st.write(f"**Agents Used:** {', '.join(context.agent_routing)}")
     
-    # Display chat messages with enhanced information
-    for i, message in enumerate(st.session_state.chat_messages):
+    # Display chat messages from history on app rerun (following Streamlit docs)
+    for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            st.write(message["content"])
-            
-            # Show agent delegation info for assistant messages
-            if message["role"] == "assistant" and message.get("agent"):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.caption(f"🤖 Delegated to: {message['agent']}")
-                with col2:
-                    if message.get('performance_time'):
-                        st.caption(f"⏱️ {message['performance_time']}s")
-            
-            # Don't show suggestions in chat history - keep it clean like normal chat
+            st.markdown(message["content"])
     
-    # Main chat input - ChatGPT-like experience for GCP security
-    chat_placeholder = "Ask about your GCP assets, security posture, or get recommendations..."
-    if st.session_state.chat_messages:
-        chat_placeholder = "Ask a follow-up question or explore a recommendation..."
-    
-    if prompt := st.chat_input(chat_placeholder):
-        # Clear any existing suggestions when new input provided
-        st.session_state.current_suggestions = []
+    # Accept user input (following Streamlit docs pattern)
+    if prompt := st.chat_input("Ask about your GCP security, assets, or get recommendations..."):
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
         
-        # Add user message
-        st.session_state.chat_messages.append({
-            "role": "user", 
-            "content": prompt
-        })
-        
+        # Display user message in chat message container
         with st.chat_message("user"):
-            st.write(prompt)
+            st.markdown(prompt)
         
-        # Process with ADK delegation
+        # Generate assistant response
         with st.chat_message("assistant"):
-            with st.spinner("🧠 Processing with ADK agents..."):
+            # Process with ADK delegation
+            with st.spinner("Processing your security query..."):
                 response, agent, suggestions, performance_time = process_with_adk_coordinator(prompt)
-                st.write(response)
+            
+            # Stream the response
+            def response_generator():
+                for word in response.split():
+                    yield word + " "
+                    import time
+                    time.sleep(0.02)
+            
+            # Display streaming response
+            try:
+                full_response = st.write_stream(response_generator())
+            except:
+                full_response = st.markdown(response)
                 
-                # Show agent info
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.caption(f"🤖 Delegated to: {agent}")
-                with col2:
-                    if performance_time:
-                        st.caption(f"⏱️ {performance_time:.2f}s")
-                
-                # Add assistant response with enhanced data
-                assistant_message = {
-                    "role": "assistant",
-                    "content": response,
-                    "agent": agent,
-                    "suggestions": suggestions,
-                    "performance_time": performance_time
-                }
-                st.session_state.chat_messages.append(assistant_message)
-                
-                # Don't show suggestions immediately - keep chat clean like normal interfaces
+            # Add agent info
+            st.caption(f"🤖 {agent} • ⏱️ {performance_time:.2f}s")
+        
+        # Add assistant response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        
+        # Store suggestions for display after the chat
+        if suggestions:
+            st.session_state.current_suggestions = suggestions
     
-    # Removed persistent suggestions to keep interface seamless like normal chat
+    # Display follow-up suggestions after the conversation (not above)
+    if st.session_state.get('current_suggestions'):
+        st.markdown("---")
+        render_suggestions(st.session_state.current_suggestions)
     
     # Optional quick actions (only show if no conversation yet to keep interface clean)
-    if not st.session_state.chat_messages:
+    if not st.session_state.messages:
         with st.expander("🚀 Quick Start", expanded=False):
             render_quick_actions()
     
     # Session management options
     col1, col2 = st.columns(2)
     with col1:
-        if st.session_state.chat_messages:
+        if st.session_state.messages:
             if st.button("🗑️ Clear Chat"):
-                st.session_state.chat_messages = []
-                st.session_state.current_suggestions = []  # Clear suggestions too
-                # Keep the same session but clear messages
+                st.session_state.messages = []
                 st.rerun()
     
     with col2:
         if st.button("🔄 New Session"):
             # Clear everything and start fresh
-            st.session_state.chat_messages = []
-            st.session_state.current_suggestions = []  # Clear suggestions
+            st.session_state.messages = []
             if 'adk_session_id' in st.session_state:
                 del st.session_state.adk_session_id
             if 'conv_session_id' in st.session_state:
@@ -245,7 +247,7 @@ def get_session_status(session_id: str) -> str:
     import requests
     try:
         response = requests.get(
-            f"http://localhost:8000/api/v1/sessions/{session_id}/status",
+            f"http://localhost:8000/api/v1/agent/sessions/{session_id}/status",
             timeout=3
         )
         if response.status_code == 200:
@@ -280,48 +282,50 @@ def load_session_messages():
             messages = data.get("messages", [])
             # Convert backend messages to chat format
             for msg in messages:
-                st.session_state.chat_messages.append({
+                st.session_state.messages.append({
                     "role": msg.get("sender_type", "user") if msg.get("sender_type") != "assistant" else "assistant",
-                    "content": msg.get("content", ""),
-                    "agent": msg.get("agent_used")
+                    "content": msg.get("content", "")
                 })
             logger.info(f"Loaded {len(messages)} messages from session")
     except Exception as e:
         logger.warning(f"Could not load session messages: {e}")
 
 def render_asset_inventory_stats():
-    """Display real-time GCP asset inventory statistics"""
-    import requests
+    """Display real-time GCP asset inventory statistics using centralized service."""
+    # Use centralized asset data service (DRY principle)
+    from services.asset_data_service import AssetDataService
+    asset_data_service = AssetDataService()
     
     try:
         project_id = st.session_state.get('selected_project', 'mgm-digitalconcierge')
         
-        # Get asset summary from backend
-        response = requests.get(
-            f"http://localhost:8000/api/v1/asset-inventory/summary",
-            params={"project_id": project_id},
-            timeout=5
-        )
+        # Get asset data from unified service
+        metrics = asset_data_service.get_metrics_for_dashboard(project_id)
         
-        if response.status_code == 200:
-            data = response.json()
-            assets = data.get("data", {})
-            
+        if metrics and metrics.get("total_assets", 0) > 0:
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Assets", assets.get("total_assets", 0))
+                st.metric("Total Assets", metrics.get("total_assets", 0))
             with col2:
-                st.metric("Security Findings", assets.get("security_findings", 0))
+                st.metric("Security Findings", metrics.get("security_findings", 0))
             with col3:
-                st.metric("High Risk", assets.get("high_risk_assets", 0))
+                st.metric("High Risk", metrics.get("high_risk_assets", 0))
             with col4:
-                st.metric("Recommendations", assets.get("active_recommendations", 0))
+                st.metric("Recommendations", metrics.get("active_recommendations", 0))
             
-            # Asset type breakdown
-            if assets.get("asset_types"):
+            # Get full asset data for breakdown
+            asset_data = asset_data_service.get_asset_summary(project_id)
+            asset_types = asset_data.get("asset_types", {})
+            
+            if asset_types:
                 st.markdown("**Asset Distribution:**")
-                for asset_type, count in assets.get("asset_types", {}).items():
+                for asset_type, count in asset_types.items():
                     st.write(f"• {asset_type}: {count}")
+                    
+            # Show chat integration summary
+            with st.expander("📊 Asset Summary for Chat", expanded=False):
+                chat_summary = asset_data_service.get_chat_summary(project_id)
+                st.info(chat_summary)
         else:
             st.info("Asset inventory loading...")
     except Exception as e:
@@ -524,7 +528,7 @@ def render_suggestions(suggestions: List[str]):
                 button_key = f"suggestion_{hash(suggestion)}_{i}_{j}"
                 if st.button(f"❓ {suggestion}", key=button_key, use_container_width=True):
                     # Add the suggestion as a user message
-                    st.session_state.chat_messages.append({
+                    st.session_state.messages.append({
                         "role": "user",
                         "content": suggestion
                     })
@@ -542,7 +546,7 @@ def render_quick_actions():
     
     with col1:
         if st.button("🪣 Check Buckets", use_container_width=True):
-            st.session_state.chat_messages.append({
+            st.session_state.messages.append({
                 "role": "user",
                 "content": "tell me about the buckets in the project"
             })
@@ -551,7 +555,7 @@ def render_quick_actions():
     
     with col2:
         if st.button("🔐 Review IAM", use_container_width=True):
-            st.session_state.chat_messages.append({
+            st.session_state.messages.append({
                 "role": "user", 
                 "content": "analyze my IAM permissions"
             })
@@ -560,7 +564,7 @@ def render_quick_actions():
     
     with col3:
         if st.button("📋 Check Compliance", use_container_width=True):
-            st.session_state.chat_messages.append({
+            st.session_state.messages.append({
                 "role": "user",
                 "content": "check SOC2 compliance status" 
             })
@@ -572,7 +576,7 @@ def render_quick_actions():
     
     with col4:
         if st.button("🌐 Network Security", use_container_width=True):
-            st.session_state.chat_messages.append({
+            st.session_state.messages.append({
                 "role": "user",
                 "content": "analyze my network security and firewall rules"
             })
@@ -581,7 +585,7 @@ def render_quick_actions():
     
     with col5:
         if st.button("💰 Cost Analysis", use_container_width=True):
-            st.session_state.chat_messages.append({
+            st.session_state.messages.append({
                 "role": "user",
                 "content": "analyze my costs and show optimization opportunities"
             })
@@ -590,7 +594,7 @@ def render_quick_actions():
     
     with col6:
         if st.button("💡 Get Recommendations", use_container_width=True):
-            st.session_state.chat_messages.append({
+            st.session_state.messages.append({
                 "role": "user",
                 "content": "what are your top security recommendations for this project?"
             })

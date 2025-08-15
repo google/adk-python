@@ -19,34 +19,32 @@ import logging
 logger = logging.getLogger(__name__)
 
 def render_asset_breakdown_chart():
-    """Render asset type breakdown chart using real GCP Asset Inventory data."""
+    """Render asset type breakdown chart using centralized asset data service (DRY principle)."""
     st.subheader("🏗️ Asset Type Breakdown")
     
     if not st.session_state.selected_project:
         st.info("Select a project to view asset breakdown")
         return
     
+    # Use centralized asset data service
+    from services.asset_data_service import AssetDataService
+    asset_data_service = AssetDataService()
+    
     with st.spinner("Loading asset breakdown..."):
         try:
-            # Get asset inventory data
-            backend_url = "http://localhost:8000"
-            response = requests.get(
-                f"{backend_url}/api/v1/asset-inventory/summary",
-                params={"project_id": st.session_state.selected_project},
-                timeout=10
-            )
+            # Get charts data from unified service
+            charts_data = asset_data_service.get_charts_data(st.session_state.selected_project)
+            asset_breakdown = charts_data.get("asset_breakdown", {})
             
-            if response.status_code == 200:
-                asset_data = response.json()
-                data = asset_data.get("data", {})
-                asset_types = data.get("asset_types", {})
+            if asset_breakdown and asset_breakdown.get("total", 0) > 0:
+                asset_types = dict(zip(asset_breakdown["labels"], asset_breakdown["values"]))
                 
                 if asset_types:
                     # Create pie chart for asset types
                     fig = px.pie(
                         values=list(asset_types.values()),
                         names=list(asset_types.keys()),
-                        title=f"Asset Distribution - {data.get('total_assets', 0)} Total Assets",
+                        title=f"Asset Distribution - {asset_breakdown['total']} Total Assets",
                         color_discrete_sequence=px.colors.qualitative.Set3
                     )
                     
@@ -85,7 +83,7 @@ def render_asset_breakdown_chart():
                     st.info("No assets found in the selected project")
                     
             else:
-                st.error("Failed to load asset data")
+                st.info("No assets found in the selected project")
                 
         except Exception as e:
             logger.error(f"Error rendering asset breakdown chart: {e}")

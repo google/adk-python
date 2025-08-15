@@ -31,34 +31,82 @@ def run_local():
     print(f"Port: {os.getenv('PORT', '8000')}")
     print("")
     
+    # Kill any existing backend processes
+    port = os.getenv('PORT', '8000')
+    print(f"🔄 Checking for existing processes on port {port}...")
+    try:
+        # Find and kill processes using the port
+        if sys.platform == "darwin" or sys.platform == "linux":
+            # macOS/Linux
+            result = subprocess.run(
+                f"lsof -ti:{port}", 
+                shell=True, 
+                capture_output=True, 
+                text=True
+            )
+            if result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                for pid in pids:
+                    print(f"  Killing existing process: {pid}")
+                    subprocess.run(f"kill -9 {pid}", shell=True)
+                print("  ✅ Existing processes terminated")
+                # Wait a moment for port to be released
+                import time
+                time.sleep(2)
+            else:
+                print("  ✅ No existing processes found")
+        elif sys.platform == "win32":
+            # Windows
+            subprocess.run(
+                f"netstat -ano | findstr :{port}", 
+                shell=True
+            )
+            # Note: Windows requires different approach
+            print("  ⚠️  Please manually close any process using port {port}")
+    except Exception as e:
+        print(f"  ⚠️  Could not check for existing processes: {e}")
+    
     # Check for virtual environment
     if not os.path.exists("venv"):
         print("📦 Creating virtual environment...")
         subprocess.run([sys.executable, "-m", "venv", "venv"], check=True)
     
-    # Install dependencies
-    print("📦 Installing dependencies...")
-    pip_cmd = "venv/bin/pip" if os.path.exists("venv/bin/pip") else "pip"
-    subprocess.run([pip_cmd, "install", "-q", "-r", "backend/requirements.txt"], check=False)
+    # Use virtual environment Python
+    venv_python = "venv/bin/python" if os.path.exists("venv/bin/python") else sys.executable
     
-    # Test GCP connectivity
-    print("🔧 Testing GCP connectivity...")
+    # Install dependencies
+    print("📦 Checking dependencies...")
+    pip_cmd = "venv/bin/pip" if os.path.exists("venv/bin/pip") else "pip"
+    # Install quietly, suppress output unless there's an error
+    result = subprocess.run([pip_cmd, "install", "-q", "-r", "backend/requirements.txt"], 
+                          capture_output=True, text=True)
+    if result.returncode != 0 and "already satisfied" not in result.stdout:
+        print("Installing missing dependencies...")
+        subprocess.run([pip_cmd, "install", "-q", "-r", "backend/requirements.txt"])
+    
+    # Test GCP connectivity (optional - don't fail if not available)
+    print("🔧 Checking GCP connectivity...")
     test_cmd = f"""
 import os
-from google.cloud import storage
-project = os.getenv('GOOGLE_CLOUD_PROJECT')
-print(f'✅ Connected to GCP project: {{project}}')
+try:
+    from google.cloud import storage
+    project = os.getenv('GOOGLE_CLOUD_PROJECT')
+    print(f'✅ Connected to GCP project: {{project}}')
+except ImportError:
+    print('⚠️  Some GCP libraries not available - will use available services only')
 """
-    subprocess.run([sys.executable, "-c", test_cmd], check=False)
+    # Use venv Python for the test
+    subprocess.run([venv_python, "-c", test_cmd], check=False)
     
     print("\n🚀 Starting backend server...")
-    print("Access the API at: http://localhost:8000")
-    print("API Documentation: http://localhost:8000/docs")
+    port = os.getenv('PORT', '8000')
+    print(f"Access the API at: http://localhost:{port}")
+    print(f"API Documentation: http://localhost:{port}/docs")
     print("\nPress Ctrl+C to stop the server\n")
     
-    # Run the server
+    # Run the server using virtual environment
     subprocess.run([
-        sys.executable, "-m", "uvicorn",
+        venv_python, "-m", "uvicorn",
         "backend.main:app",
         "--host", "0.0.0.0",
         "--port", os.getenv("PORT", "8000"),

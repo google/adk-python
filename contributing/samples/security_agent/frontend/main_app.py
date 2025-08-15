@@ -149,8 +149,8 @@ def init_session_state():
             st.session_state.available_projects = []
             logger.info("Initialized available_projects in session state")
         if 'page' not in st.session_state:
-            st.session_state.page = "dashboard"
-            logger.info("Initialized page to dashboard (default) in session state")
+            st.session_state.page = "chat"  # Chat-centric: Start with chat as default
+            logger.info("Initialized page to chat (chat-centric default) in session state")
         if 'chat_layout_mode' not in st.session_state:
             st.session_state.chat_layout_mode = "enhanced"
             logger.info("Initialized chat layout mode in session state")
@@ -286,12 +286,12 @@ def get_available_pages():
     """Get available pages based on service status - chat-centric ordering."""
     # Chat-centric ADK pages - chat is primary and always available
     pages = {
-        "chat": {"name": "💬 ADK Security Assistant", "service": None, "priority": 1, "description": "Interactive AI chat for security analysis"},
-        "dashboard": {"name": "🏠 Overview", "service": None, "priority": 2, "description": "Security posture overview"},
+        "chat": {"name": "💬 ADK Security Assistant", "service": None, "priority": 1, "description": "Primary ADK chat interface - conversational security analysis"},
+        "dashboard": {"name": "📊 Asset Overview", "service": None, "priority": 2, "description": "Complementary asset dashboard - data visualization"},
         "roadmap": {"name": "🚀 Implementation Roadmap", "service": None, "priority": 3, "description": "Chat-centric architecture roadmap"},
-        "security": {"name": "🛡️ Security Analysis", "service": "security", "priority": 4, "description": "Comprehensive security scanning"},
-        "iam": {"name": "🔐 IAM Analysis", "service": "iam", "priority": 5, "description": "Identity and access management"},
-        "compliance": {"name": "📋 Compliance", "service": "compliance", "priority": 6, "description": "Regulatory compliance checking"}
+        "security": {"name": "🛡️ Security Analysis", "service": "security", "priority": 4, "description": "Detailed security scanning (accessible via chat)"},
+        "iam": {"name": "🔐 IAM Analysis", "service": "iam", "priority": 5, "description": "IAM analysis (accessible via chat)"},
+        "compliance": {"name": "📋 Compliance", "service": "compliance", "priority": 6, "description": "Compliance checking (accessible via chat)"}
     }
     
     return pages
@@ -413,14 +413,14 @@ def render_main_content():
         available_pages = get_available_pages()
         logger.info(f"Available pages: {list(available_pages.keys())}")
         
-        # If current page is not available, redirect to dashboard
+        # If current page is not available, redirect to chat (chat-centric)
         if page not in available_pages:
-            logger.warning(f"Page '{page}' not in available pages, redirecting to dashboard")
-            if page != "dashboard":  # Avoid infinite redirect loop
-                st.warning(f"The {page} feature is not available in simplified mode.")
-                st.session_state.page = "dashboard"
+            logger.warning(f"Page '{page}' not in available pages, redirecting to chat")
+            if page != "chat":  # Avoid infinite redirect loop
+                st.warning(f"The {page} feature is not available. Redirecting to ADK chat interface.")
+                st.session_state.page = "chat"
                 st.rerun()
-            page = "dashboard"
+            page = "chat"
         
         logger.info(f"Attempting to render page: {page}")
         
@@ -430,10 +430,13 @@ def render_main_content():
         st.error(f"Error setting up main content: {e}")
         return
     
-    # Render the appropriate page with error handling
+    # Render the appropriate page with error handling - chat-centric order
     try:
-        if page == "dashboard":
-            logger.info("Rendering dashboard view...")
+        if page == "chat":
+            logger.info("Rendering ADK chat view (primary interface)...")
+            render_chat_view()
+        elif page == "dashboard":
+            logger.info("Rendering dashboard view (complementary to chat)...")
             render_dashboard_view()
         elif page == "security":
             logger.info("Rendering security evaluation view...")
@@ -447,9 +450,6 @@ def render_main_content():
         elif page == "compliance":
             logger.info("Rendering compliance view...")
             render_compliance_view()
-        elif page == "chat":
-            logger.info("Rendering simplified chat view...")
-            render_chat_view()
         elif page == "roadmap":
             logger.info("Rendering implementation roadmap view...")
             render_roadmap_view()
@@ -477,8 +477,8 @@ def render_main_content():
             render_multi_agent_graph_view()
         else:
             logger.error(f"Unknown page requested: {page}")
-            st.error(f"Unknown page: {page}")
-            st.session_state.page = "dashboard"
+            st.error(f"Unknown page: {page}. Redirecting to ADK chat interface.")
+            st.session_state.page = "chat"
             st.rerun()
             
         logger.info(f"Successfully rendered page: {page}")
@@ -547,8 +547,8 @@ def main():
         logger.info("Setting up Streamlit page configuration...")
         sidebar_state = "collapsed" if st.session_state.get('page') == "chat" else "expanded"
         st.set_page_config(
-            page_title="ADK Security Agent - Chat-Centric",
-            page_icon="💬",
+            page_title="ADK Security Agent - Chat-First ADK Showcase",
+            page_icon="🤖",
             layout="wide",
             initial_sidebar_state=sidebar_state
         )

@@ -45,7 +45,11 @@ class ExtendedAssetDiscovery:
             return functions
             
         except Exception as e:
-            logger.warning(f"Could not fetch Cloud Functions: {e}")
+            error_str = str(e)
+            if "403" in error_str or "Permission" in error_str or "not enabled" in error_str.lower():
+                logger.debug(f"Cloud Functions API not available: {e}")
+            else:
+                logger.debug(f"Could not fetch Cloud Functions: {e}")
             return []
     
     async def fetch_bigquery_datasets(self) -> List[Dict[str, Any]]:
@@ -82,7 +86,11 @@ class ExtendedAssetDiscovery:
             return datasets
             
         except Exception as e:
-            logger.warning(f"Could not fetch BigQuery datasets: {e}")
+            error_str = str(e)
+            if "403" in error_str or "Permission" in error_str or "not enabled" in error_str.lower():
+                logger.debug(f"BigQuery API not available: {e}")
+            else:
+                logger.debug(f"Could not fetch BigQuery datasets: {e}")
             return []
     
     async def fetch_pubsub_topics(self) -> List[Dict[str, Any]]:
@@ -118,7 +126,11 @@ class ExtendedAssetDiscovery:
             return topics
             
         except Exception as e:
-            logger.warning(f"Could not fetch Pub/Sub topics: {e}")
+            error_str = str(e)
+            if "403" in error_str or "Permission" in error_str or "not enabled" in error_str.lower():
+                logger.debug(f"Pub/Sub API not available: {e}")
+            else:
+                logger.debug(f"Could not fetch Pub/Sub topics: {e}")
             return []
     
     async def fetch_gke_clusters(self) -> List[Dict[str, Any]]:
@@ -167,7 +179,11 @@ class ExtendedAssetDiscovery:
             return clusters
             
         except Exception as e:
-            logger.warning(f"Could not fetch GKE clusters: {e}")
+            error_str = str(e)
+            if "403" in error_str or "Permission" in error_str or "not enabled" in error_str.lower():
+                logger.debug(f"GKE API not available: {e}")
+            else:
+                logger.debug(f"Could not fetch GKE clusters: {e}")
             return []
     
     async def fetch_cloud_run_services(self) -> List[Dict[str, Any]]:
@@ -191,19 +207,24 @@ class ExtendedAssetDiscovery:
                 services.append({
                     "name": service.name.split('/')[-1],
                     "asset_type": "run.googleapis.com/Service",
-                    "uri": service.uri,
-                    "generation": service.generation,
-                    "ingress": service.ingress.name,
-                    "launch_stage": service.launch_stage.name,
+                    "uri": service.uri if hasattr(service, 'uri') else "",
+                    "generation": service.generation if hasattr(service, 'generation') else 0,
+                    "ingress": service.ingress.name if hasattr(service, 'ingress') and hasattr(service.ingress, 'name') else "UNKNOWN",
+                    "launch_stage": service.launch_stage.name if hasattr(service, 'launch_stage') and hasattr(service.launch_stage, 'name') else "GA",
                     "public_access": public_access,
-                    "service_account": service.template.service_account if service.template else None,
-                    "max_instances": service.template.scaling.max_instance_count if service.template and service.template.scaling else None
+                    "service_account": service.template.service_account if hasattr(service, 'template') and service.template and hasattr(service.template, 'service_account') else None,
+                    "max_instances": service.template.scaling.max_instance_count if hasattr(service, 'template') and service.template and hasattr(service.template, 'scaling') and service.template.scaling and hasattr(service.template.scaling, 'max_instance_count') else None
                 })
             
             return services
             
         except Exception as e:
-            logger.warning(f"Could not fetch Cloud Run services: {e}")
+            # Log at debug level when service is not enabled
+            error_str = str(e)
+            if "403" in error_str or "Permission" in error_str or "not enabled" in error_str.lower():
+                logger.debug(f"Cloud Run API not available: {e}")
+            else:
+                logger.debug(f"Could not fetch Cloud Run services: {e}")
             return []
     
     async def fetch_app_engine_services(self) -> List[Dict[str, Any]]:

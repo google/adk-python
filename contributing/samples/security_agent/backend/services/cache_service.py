@@ -11,13 +11,14 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Callable
 from functools import wraps
 import pickle
+from .asset_cache_manager import AssetCacheManager, get_asset_cache_manager
 
 logger = logging.getLogger(__name__)
 
 class CacheService:
     """
-    In-memory cache service with TTL support
-    Can be extended to use Redis for production
+    Enhanced cache service with both in-memory and persistent JSON snapshot support
+    Integrates with AssetCacheManager for file-based persistence
     """
     
     def __init__(self, default_ttl: int = 300):
@@ -32,6 +33,7 @@ class CacheService:
         self.hit_count = 0
         self.miss_count = 0
         self.pending_requests: Dict[str, asyncio.Future] = {}
+        self._asset_cache_manager: Optional[AssetCacheManager] = None
         
     def _generate_key(self, namespace: str, *args, **kwargs) -> str:
         """Generate cache key from namespace and arguments"""
@@ -115,18 +117,37 @@ class CacheService:
         logger.info(f"Cleared {count} cache entries")
         return count
     
-    def get_stats(self) -> Dict[str, Any]:
-        """Get cache statistics"""
+    async def get_asset_cache_manager(self) -> AssetCacheManager:
+        """Get or initialize asset cache manager."""
+        if self._asset_cache_manager is None:
+            self._asset_cache_manager = await get_asset_cache_manager()
+        return self._asset_cache_manager
+
+    async def get_stats(self) -> Dict[str, Any]:
+        """Get comprehensive cache statistics including persistent cache."""
         total_requests = self.hit_count + self.miss_count
         hit_rate = (self.hit_count / total_requests * 100) if total_requests > 0 else 0
         
-        return {
-            "entries": len(self.cache),
-            "hits": self.hit_count,
-            "misses": self.miss_count,
-            "hit_rate": f"{hit_rate:.2f}%",
-            "total_requests": total_requests
+        stats = {
+            "memory_cache": {
+                "entries": len(self.cache),
+                "hits": self.hit_count,
+                "misses": self.miss_count,
+                "hit_rate": f"{hit_rate:.2f}%",
+                "total_requests": total_requests
+            }
         }
+        
+        # Add persistent cache stats if available
+        try:
+            asset_cache = await self.get_asset_cache_manager()
+            persistent_stats = await asset_cache.get_cache_stats()
+            stats["persistent_cache"] = persistent_stats
+        except Exception as e:
+            logger.warning(f"Could not get persistent cache stats: {e}")
+            stats["persistent_cache"] = {"error": str(e)}
+        
+        return stats
     
     async def get_or_set(
         self,
@@ -186,6 +207,90 @@ class CacheService:
             # Clean up pending request
             if deduplicate and key in self.pending_requests:
                 del self.pending_requests[key]
+
+    async def set_asset_cache(
+        self,
+        project_id: str,
+        query_type: str,
+        data: Any,
+        ttl: Optional[int] = None,
+        **kwargs
+    ) -> str:
+        """
+        Store asset data in persistent JSON snapshot cache.
+        
+        Args:
+            project_id: GCP project ID
+            query_type: Type of query (e.g., 'compute_instances', 'storage_buckets')
+            data: Data to cache
+            ttl: Time to live in seconds
+            **kwargs: Additional parameters for cache key generation
+            
+        Returns:
+            Cache key for the stored data
+        """
+        asset_cache = await self.get_asset_cache_manager()
+        return await asset_cache.set(project_id, query_type, data, ttl, **kwargs)
+
+    async def get_asset_cache(
+        self,
+        project_id: str,
+        query_type: str,
+        **kwargs
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve asset data from persistent JSON snapshot cache.
+        
+        Args:
+            project_id: GCP project ID
+            query_type: Type of query
+            **kwargs: Additional parameters for cache key generation
+            
+        Returns:
+            Cached data if found and valid, None otherwise
+        """
+        asset_cache = await self.get_asset_cache_manager()
+        return await asset_cache.get(project_id, query_type, **kwargs)
+
+    async def invalidate_asset_cache(
+        self,
+        project_id: str,
+        query_type: Optional[str] = None,
+        **kwargs
+    ) -> int:
+        """
+        Invalidate asset cache entries.
+        
+        Args:
+            project_id: GCP project ID
+            query_type: Specific query type to invalidate (all if None)
+            **kwargs: Additional parameters for cache key generation
+            
+        Returns:
+            Number of entries invalidated
+        """
+        asset_cache = await self.get_asset_cache_manager()
+        return await asset_cache.invalidate(project_id, query_type, **kwargs)
+
+    async def warm_asset_cache(
+        self,
+        project_id: str,
+        cache_warmers: list,
+        parallel: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Warm asset cache with frequently accessed data.
+        
+        Args:
+            project_id: GCP project ID
+            cache_warmers: List of async functions that generate cache data
+            parallel: Whether to run warmers in parallel
+            
+        Returns:
+            Results of cache warming operations
+        """
+        asset_cache = await self.get_asset_cache_manager()
+        return await asset_cache.warm_cache(project_id, cache_warmers, parallel)
 
 class CacheDecorator:
     """Decorator for caching function results"""

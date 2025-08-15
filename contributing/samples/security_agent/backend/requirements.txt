@@ -19,7 +19,7 @@ google-cloud-storage
 google-cloud-monitoring
 google-cloud-recommender
 google-cloud-securitycenter
-google-cloud-sql-connector
+# google-cloud-sql-connector  # Removed - not available in current package index
 google-cloud-functions
 google-cloud-bigquery
 google-cloud-pubsub

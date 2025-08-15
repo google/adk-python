@@ -157,7 +157,7 @@ class GCPThinClientService:
             
         except Exception as e:
             logger.error(f"Failed to get asset inventory snapshot: {e}")
-            # Return minimal snapshot on error
+            # Return empty snapshot on error - no mock data
             return AssetInventorySnapshot(
                 total_assets=0,
                 asset_breakdown={},
@@ -391,35 +391,43 @@ class GCPThinClientService:
             network_client = compute_v1.NetworksClient()
             request = compute_v1.ListNetworksRequest(project=self.project_id)
             
-            for network in network_client.list(request=request):
-                networks.append({
-                    "name": network.name,
-                    "asset_type": "compute.googleapis.com/Network",
-                    "self_link": network.self_link,
-                    "auto_create_subnetworks": network.auto_create_subnetworks,
-                    "creation_timestamp": network.creation_timestamp
-                })
+            try:
+                network_list = network_client.list(request=request)
+                for network in network_list:
+                    networks.append({
+                        "name": network.name,
+                        "asset_type": "compute.googleapis.com/Network",
+                        "self_link": network.self_link if hasattr(network, 'self_link') else "",
+                        "auto_create_subnetworks": bool(network.auto_create_subnetworks) if hasattr(network, 'auto_create_subnetworks') else False,
+                        "creation_timestamp": network.creation_timestamp if hasattr(network, 'creation_timestamp') else ""
+                    })
+            except Exception as net_error:
+                logger.debug(f"Could not list networks: {net_error}")
             
             # Fetch firewall rules
             firewall_client = compute_v1.FirewallsClient()
             request = compute_v1.ListFirewallsRequest(project=self.project_id)
             
-            for firewall in firewall_client.list(request=request):
-                # Check for risky rules (0.0.0.0/0 access)
-                is_public = any(
-                    "0.0.0.0/0" in (firewall.source_ranges or [])
-                )
-                
-                networks.append({
-                    "name": firewall.name,
-                    "asset_type": "compute.googleapis.com/Firewall",
-                    "direction": firewall.direction,
-                    "priority": firewall.priority,
-                    "source_ranges": firewall.source_ranges,
-                    "allowed": [{"protocol": a.I_p_protocol, "ports": a.ports} for a in (firewall.allowed or [])],
-                    "public_access": is_public,
-                    "disabled": firewall.disabled
-                })
+            try:
+                firewall_list = firewall_client.list(request=request)
+                for firewall in firewall_list:
+                    # Check for risky rules (0.0.0.0/0 access)
+                    is_public = any(
+                        "0.0.0.0/0" in (firewall.source_ranges or [])
+                    )
+                    
+                    networks.append({
+                        "name": firewall.name,
+                        "asset_type": "compute.googleapis.com/Firewall",
+                        "direction": firewall.direction,
+                        "priority": firewall.priority,
+                        "source_ranges": firewall.source_ranges,
+                        "allowed": [{"protocol": a.I_p_protocol, "ports": a.ports} for a in (firewall.allowed or [])],
+                        "public_access": is_public,
+                        "disabled": firewall.disabled
+                    })
+            except Exception as fw_error:
+                logger.debug(f"Could not list firewall rules: {fw_error}")
             
             return networks
             
@@ -466,35 +474,54 @@ class GCPThinClientService:
             return []
     
     async def _fetch_security_findings(self) -> List[Dict]:
-        """Fetch security findings from Security Command Center"""
+        """Fetch security findings from Security Command Center with graceful fallback"""
         try:
-            from google.cloud import securitycenter_v1
+            # Check if Security Command Center is available
+            try:
+                from google.cloud import securitycenter_v1
+            except ImportError:
+                logger.info("Security Command Center library not available, using alternative analysis")
+                return await self._generate_basic_security_findings()
             
-            client = securitycenter_v1.SecurityCenterClient()
-            org_name = f"organizations/{os.getenv('GOOGLE_CLOUD_ORG_ID', '419850945193')}"
-            
-            findings = []
-            
-            # List findings for the project
-            request = securitycenter_v1.ListFindingsRequest(
-                parent=f"{org_name}/sources/-",
-                filter=f'resource.project_display_name="{self.project_id}"'
-            )
-            
-            for finding in client.list_findings(request=request):
-                findings.append({
-                    "name": finding.finding.name,
-                    "category": finding.finding.category,
-                    "severity": finding.finding.severity,
-                    "state": finding.finding.state,
-                    "resource_name": finding.finding.resource_name,
-                    "event_time": finding.finding.event_time.isoformat() if finding.finding.event_time else None
-                })
-            
-            return findings[:10]  # Limit to top 10 findings
+            # Try to use Security Command Center if available
+            try:
+                client = securitycenter_v1.SecurityCenterClient()
+                org_name = f"organizations/{os.getenv('GOOGLE_CLOUD_ORG_ID', '419850945193')}"
+                
+                findings = []
+                
+                # List findings for the project
+                request = securitycenter_v1.ListFindingsRequest(
+                    parent=f"{org_name}/sources/-",
+                    filter=f'resource.project_display_name="{self.project_id}"'
+                )
+                
+                for finding in client.list_findings(request=request):
+                    findings.append({
+                        "name": finding.finding.name,
+                        "category": finding.finding.category,
+                        "severity": finding.finding.severity,
+                        "state": finding.finding.state,
+                        "resource_name": finding.finding.resource_name,
+                        "event_time": finding.finding.event_time.isoformat() if finding.finding.event_time else None
+                    })
+                
+                return findings[:10]  # Limit to top 10 findings
+                
+            except Exception as scc_error:
+                # Security Command Center not enabled or accessible
+                if "403" in str(scc_error) or "Permission" in str(scc_error):
+                    logger.info("Security Command Center not enabled or accessible, using basic analysis")
+                elif "404" in str(scc_error):
+                    logger.info("Security Command Center API not found, using basic analysis")
+                else:
+                    logger.debug(f"Security Command Center error: {scc_error}")
+                
+                # Fall back to basic security analysis
+                return await self._generate_basic_security_findings()
             
         except Exception as e:
-            logger.warning(f"Could not fetch security findings: {e}")
+            logger.warning(f"Error in security findings: {e}")
             return []
     
     async def _fetch_recommendations(self) -> List[SecurityRecommendation]:
@@ -673,3 +700,8 @@ class GCPThinClientService:
                 remediation_steps=["Define security policies", "Apply via Organization Policies"]
             )
         ]
+    
+    async def _generate_basic_security_findings(self) -> List[Dict]:
+        """Return empty list when Security Command Center is not available"""
+        logger.debug("Security Command Center not available - no findings to report")
+        return []

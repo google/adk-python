@@ -31,14 +31,21 @@ from ..security.security_evaluation_view import render_security_summary_card
 from ..shared.recommendations_view import render_recommendations_summary_card
 from ..security.iam_analyzer_view import render_iam_summary_card
 from ..shared.gcp_api_explorer_view import render_gcp_api_explorer_summary_card
+from .asset_charts import (
+    render_asset_breakdown_chart,
+    render_security_analysis_chart, 
+    render_recommendations_chart,
+    render_risk_assessment_chart
+)
 
 
 def render_dashboard_view():
-    """Render the main security dashboard interface.
+    """Render the main security dashboard interface with chat-centric design.
     
     This function creates a comprehensive overview of the GCP project's security
     posture, including:
-    - Project information and status
+    - Prominent chat interface access (chat-centric design)
+    - Project information and status  
     - Key security metrics in a summary row
     - Summary cards for security, recommendations, and IAM
     - Recent activity feed
@@ -46,17 +53,57 @@ def render_dashboard_view():
     - Charts and visualizations showing security trends
     
     The dashboard automatically refreshes data from the backend and provides
-    navigation to detailed analysis views.
+    navigation to detailed analysis views. All features route back to chat.
     
     Note:
         This function uses Streamlit session state to maintain user selections
         and cache data across interactions.
     """
-    st.header("🏠 Security Dashboard")
-    st.write("Welcome to your GCP Security Analysis Dashboard")
+    # Get real asset data first for prominent display
+    from services.asset_data_service import AssetDataService
+    asset_data_service = AssetDataService()
+    asset_data = asset_data_service.get_asset_summary(st.session_state.get('selected_project', 'mgm-digitalconcierge'))
+    
+    # Chat-centric header with prominent asset count
+    col1, col2, col3 = st.columns([3, 1, 1])
+    with col1:
+        total_assets = asset_data.get('total_assets', 0) if asset_data.get('success') else 0
+        if total_assets > 0:
+            st.header(f"📊 GCP Security Dashboard - {total_assets} Assets")
+            data_source = asset_data.get('data_source', 'cache')
+            st.write(f"Real-time monitoring | Data: {data_source}")
+        else:
+            st.header("📊 GCP Security Dashboard")
+            st.write("Interactive dashboard with real-time GCP data")
+    with col2:
+        if st.button("🔄 Refresh Data", key="refresh_data", use_container_width=True):
+            # Clear cache and force refresh
+            if "asset_summary_mgm-digitalconcierge" in st.session_state:
+                del st.session_state["asset_summary_mgm-digitalconcierge"]
+            if "asset_summary_mgm-digitalconcierge_timestamp" in st.session_state:
+                del st.session_state["asset_summary_mgm-digitalconcierge_timestamp"]
+            st.success("Refreshing data from GCP...")
+            st.rerun()
+    with col3:
+        if st.button("💬 Ask AI Assistant", key="dashboard_to_chat", type="primary", use_container_width=True):
+            st.session_state.page = "chat"
+            st.session_state.chat_layout_mode = "enhanced"
+            st.session_state.suggested_query = "show me insights from my dashboard data"
+            st.rerun()
+    
+    # Chat suggestion prompt
+    with st.expander("💡 Ask AI About Your Data", expanded=False):
+        st.info("Try asking: 'What security issues need immediate attention?' or 'Show me my highest risk assets'")
+        if st.button("🚀 Start AI Analysis", key="start_ai_analysis"):
+            st.session_state.page = "chat"
+            st.session_state.suggested_query = "analyze my security dashboard and prioritize recommendations"
+            st.rerun()
     
     # Project info section
     render_project_info_section()
+    
+    # Prominent Asset Summary Card at the top
+    render_prominent_asset_summary(asset_data)
     
     # Key metrics row
     render_key_metrics_row()
@@ -78,6 +125,11 @@ def render_dashboard_view():
         
     with col4:
         render_gcp_api_explorer_summary_card()
+    
+    # Security Recommendations Section (prominent display)
+    st.markdown("---")
+    st.subheader("🎯 Priority Security Recommendations")
+    render_priority_recommendations_section()
     
     # Recent activity and quick actions
     st.markdown("---")
@@ -158,47 +210,30 @@ def render_service_status_section():
 
 
 def render_key_metrics_row():
-    """Render key security metrics in a row using real GCP Asset Inventory API data."""
+    """Render key security metrics using centralized asset data service (DRY principle)."""
     st.subheader("📈 Key Security Metrics")
     
     if not st.session_state.selected_project:
         st.warning("Please select a project to view metrics")
         return
     
-    # Fetch real data from asset inventory API
+    # Use centralized asset data service (Single Source of Truth)
+    from services.asset_data_service import AssetDataService
+    asset_data_service = AssetDataService()
+    
     with st.spinner("Loading asset inventory metrics..."):
         try:
-            # Get asset inventory summary - this calls the real GCP Asset Inventory API
-            import requests
-            backend_url = "http://localhost:8000"
+            # Get metrics from unified service
+            metrics = asset_data_service.get_metrics_for_dashboard(st.session_state.selected_project)
             
-            response = requests.get(
-                f"{backend_url}/api/v1/asset-inventory/summary",
-                params={"project_id": st.session_state.selected_project},
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                asset_data = response.json()
-                data = asset_data.get("data", {})
-                
-                total_assets = data.get("total_assets", 0)
-                security_findings = data.get("security_findings", 0)
-                high_risk_assets = data.get("high_risk_assets", 0)
-                active_recommendations = data.get("active_recommendations", 0)
-                asset_types = data.get("asset_types", {})
-                
-                # Calculate security score based on findings ratio
-                if total_assets > 0:
-                    risk_ratio = (high_risk_assets + security_findings) / total_assets
-                    security_score = max(0, 100 - int(risk_ratio * 100))
-                else:
-                    security_score = 100
-                
-                # Display real metrics
+            if metrics and metrics.get("total_assets", 0) > 0:
+                # Display real metrics using standardized data
                 col1, col2, col3, col4, col5 = st.columns(5)
                 
                 with col1:
+                    security_score = metrics.get("security_score", 0)
+                    total_assets = metrics.get("total_assets", 0)
+                    
                     delta_color = "normal"
                     if security_score >= 80:
                         delta_color = "normal"
@@ -216,6 +251,7 @@ def render_key_metrics_row():
                     )
                 
                 with col2:
+                    high_risk_assets = metrics.get("high_risk_assets", 0)
                     st.metric(
                         label="High Risk Assets",
                         value=high_risk_assets,
@@ -225,6 +261,7 @@ def render_key_metrics_row():
                     )
                 
                 with col3:
+                    security_findings = metrics.get("security_findings", 0)
                     st.metric(
                         label="Security Findings",
                         value=security_findings,
@@ -234,7 +271,7 @@ def render_key_metrics_row():
                     )
                 
                 with col4:
-                    iam_count = asset_types.get("IAM Accounts", 0)
+                    iam_count = metrics.get("iam_accounts", 0)
                     st.metric(
                         label="IAM Accounts",
                         value=iam_count,
@@ -243,6 +280,7 @@ def render_key_metrics_row():
                     )
                 
                 with col5:
+                    active_recommendations = metrics.get("active_recommendations", 0)
                     st.metric(
                         label="Recommendations",
                         value=active_recommendations,
@@ -252,7 +290,7 @@ def render_key_metrics_row():
                     )
                     
             else:
-                # Fallback metrics when API is not available
+                # Fallback metrics when data is not available
                 render_fallback_metrics()
                 
         except Exception as e:
@@ -300,33 +338,27 @@ def render_fallback_metrics():
 
 
 def render_recent_activity_section():
-    """Render recent asset discovery and security activity using real GCP data."""
+    """Render recent asset discovery and security activity using unified asset data service."""
     st.subheader("🕒 Asset Discovery Activity")
     
     if not st.session_state.selected_project:
         st.info("Select a project to view recent activity")
         return
     
+    # Use centralized asset data service (DRY principle)
+    from services.asset_data_service import AssetDataService
+    asset_data_service = AssetDataService()
+    
     with st.spinner("Loading asset discovery activity..."):
         try:
-            # Get asset inventory summary to show real activity
-            import requests
-            backend_url = "http://localhost:8000"
+            # Get asset data from unified service
+            asset_data = asset_data_service.get_asset_summary(st.session_state.selected_project)
             
-            response = requests.get(
-                f"{backend_url}/api/v1/asset-inventory/summary",
-                params={"project_id": st.session_state.selected_project},
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                asset_data = response.json()
-                data = asset_data.get("data", {})
+            if asset_data.get("success", False):
                 timestamp = asset_data.get("timestamp", datetime.now().isoformat())
                 
                 # Parse timestamp
                 try:
-                    from datetime import datetime
                     scan_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
                     time_ago = "Just now" if (datetime.now() - scan_time.replace(tzinfo=None)).seconds < 60 else f"{(datetime.now() - scan_time.replace(tzinfo=None)).seconds // 60} min ago"
                 except:
@@ -336,25 +368,25 @@ def render_recent_activity_section():
                     {
                         "time": time_ago,
                         "action": "Asset inventory scan completed",
-                        "result": f"Discovered {data.get('total_assets', 0)} assets across {len(data.get('asset_types', {}))} categories",
+                        "result": f"Discovered {asset_data.get('total_assets', 0)} assets across {len(asset_data.get('asset_types', {}))} categories",
                         "severity": "success"
                     },
                     {
                         "time": time_ago,
                         "action": "Security analysis",
-                        "result": f"Found {data.get('security_findings', 0)} security findings, {data.get('high_risk_assets', 0)} high-risk assets",
-                        "severity": "warning" if data.get('high_risk_assets', 0) > 0 else "success"
+                        "result": f"Found {asset_data.get('security_findings', 0)} security findings, {asset_data.get('high_risk_assets', 0)} high-risk assets",
+                        "severity": "warning" if asset_data.get('high_risk_assets', 0) > 0 else "success"
                     },
                     {
                         "time": time_ago,
                         "action": "Recommendations generated",
-                        "result": f"{data.get('active_recommendations', 0)} security recommendations available",
-                        "severity": "info" if data.get('active_recommendations', 0) > 0 else "success"
+                        "result": f"{asset_data.get('active_recommendations', 0)} security recommendations available",
+                        "severity": "info" if asset_data.get('active_recommendations', 0) > 0 else "success"
                     }
                 ]
                 
                 # Show top asset types discovered
-                asset_types = data.get('asset_types', {})
+                asset_types = asset_data.get('asset_types', {})
                 if asset_types:
                     top_assets = sorted(asset_types.items(), key=lambda x: x[1], reverse=True)[:3]
                     for asset_type, count in top_assets:
@@ -405,27 +437,45 @@ def render_recent_activity_section():
 
 
 def render_quick_actions_section():
-    """Render quick action buttons."""
+    """Render chat-centric quick action buttons that route through AI assistant."""
     st.subheader("⚡ Quick Actions")
+    st.write("Start conversations with your AI assistant about:")
     
-    if st.button("🔍 Run Security Scan", use_container_width=True):
-        st.session_state.page = "security"
+    if st.button("🔍 Security Analysis", use_container_width=True):
+        st.session_state.page = "chat"
+        st.session_state.chat_layout_mode = "enhanced"
+        st.session_state.suggested_query = "run a security scan and analyze my project"
         st.rerun()
     
-    if st.button("🎯 View Recommendations", use_container_width=True):
-        st.session_state.page = "recommendations"
+    if st.button("🎯 Get Recommendations", use_container_width=True):
+        st.session_state.page = "chat"
+        st.session_state.chat_layout_mode = "enhanced"
+        st.session_state.suggested_query = "show me security recommendations prioritized by impact"
         st.rerun()
     
-    if st.button("🔐 Analyze IAM", use_container_width=True):
-        st.session_state.page = "iam"
+    if st.button("🔐 IAM Review", use_container_width=True):
+        st.session_state.page = "chat"
+        st.session_state.chat_layout_mode = "enhanced"
+        st.session_state.suggested_query = "analyze my IAM permissions and identify risks"
         st.rerun()
     
-    if st.button("📊 Check Compliance", use_container_width=True):
-        st.session_state.page = "compliance"
+    if st.button("📊 Compliance Check", use_container_width=True):
+        st.session_state.page = "chat"
+        st.session_state.chat_layout_mode = "enhanced"
+        st.session_state.suggested_query = "check my compliance status for SOC2 and other frameworks"
         st.rerun()
     
-    if st.button("🚨 View Incidents", use_container_width=True):
-        st.session_state.page = "incidents"
+    if st.button("🚨 Incident Response", use_container_width=True):
+        st.session_state.page = "chat"
+        st.session_state.chat_layout_mode = "enhanced"
+        st.session_state.suggested_query = "show me any security incidents and response plans"
+        st.rerun()
+        
+    # Always available direct chat access
+    st.markdown("---")
+    if st.button("💬 Open AI Assistant", use_container_width=True, type="primary"):
+        st.session_state.page = "chat"
+        st.session_state.chat_layout_mode = "enhanced"
         st.rerun()
 
 
@@ -451,6 +501,72 @@ def render_dashboard_charts():
     
     with tab4:
         render_risk_assessment_chart()
+
+
+def render_priority_recommendations_section():
+    """Render a prominent section showing priority security recommendations."""
+    try:
+        # Get real recommendations from the API
+        response = simple_api.get_recommendations(st.session_state.get('selected_project', 'mgm-digitalconcierge'))
+        
+        if response.get('success') and response.get('data'):
+            recommendations = response['data'].get('recommendations', [])[:5]  # Top 5
+            
+            if recommendations:
+                # Display in a nice grid
+                for i, rec in enumerate(recommendations, 1):
+                    with st.container():
+                        col1, col2, col3 = st.columns([1, 6, 2])
+                        
+                        with col1:
+                            # Priority indicator
+                            priority = rec.get('priority', 'medium').lower()
+                            if priority == 'critical':
+                                st.error("🚨 CRITICAL")
+                            elif priority == 'high':
+                                st.warning("⚠️ HIGH")
+                            elif priority == 'medium':
+                                st.info("📋 MEDIUM")
+                            else:
+                                st.success("📝 LOW")
+                        
+                        with col2:
+                            st.write(f"**{rec.get('name', 'Recommendation')}**")
+                            st.caption(rec.get('description', '')[:150] + "..." if len(rec.get('description', '')) > 150 else rec.get('description', ''))
+                        
+                        with col3:
+                            if st.button(f"View Details", key=f"rec_{i}"):
+                                st.session_state.page = "chat"
+                                st.session_state.suggested_query = f"tell me more about this recommendation: {rec.get('name', '')}"
+                                st.rerun()
+                        
+                        if i < len(recommendations):
+                            st.divider()
+                
+                # Add link to chat for more
+                st.markdown("---")
+                col1, col2 = st.columns([3, 1])
+                with col2:
+                    if st.button("💬 Get AI Analysis", type="primary"):
+                        st.session_state.page = "chat"
+                        st.session_state.suggested_query = "analyze my security recommendations and prioritize them"
+                        st.rerun()
+            else:
+                st.success("🎉 No critical recommendations found - your security posture looks good!")
+        else:
+            # Fallback display
+            st.info("💬 Ask the AI assistant to analyze your security recommendations")
+            if st.button("🤖 Get Recommendations"):
+                st.session_state.page = "chat"
+                st.session_state.suggested_query = "show me my priority security recommendations"
+                st.rerun()
+                
+    except Exception as e:
+        st.error(f"Unable to load recommendations: {e}")
+        if st.button("💬 Chat with AI About Security"):
+            st.session_state.page = "chat"
+            st.session_state.suggested_query = "what security recommendations do you have for my GCP project?"
+            st.rerun()
 
 
 def render_security_findings_chart():
@@ -618,6 +734,87 @@ def render_gcp_resources_chart():
         else:
             st.error("Failed to load project information")
 
+
+def render_prominent_asset_summary(asset_data):
+    """Render prominent asset summary cards at the top of the dashboard."""
+    if asset_data.get('success') and asset_data.get('total_assets', 0) > 0:
+        # Create prominent asset cards
+        st.markdown("### 🎯 Asset Inventory Summary")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.info("**Total Assets**")
+            st.metric(
+                label="",
+                value=asset_data.get('total_assets', 0),
+                delta="Live from GCP",
+                help="Total number of resources discovered in your GCP project"
+            )
+        
+        with col2:
+            asset_categories = asset_data.get('asset_categories', {})
+            if asset_categories:
+                top_category = max(asset_categories.items(), key=lambda x: x[1])
+                st.success(f"**Top: {top_category[0]}**")
+                st.metric(
+                    label="",
+                    value=top_category[1],
+                    delta=f"{(top_category[1]/asset_data.get('total_assets', 1)*100):.0f}% of total"
+                )
+            else:
+                st.success("**Categories**")
+                st.metric(label="", value="Analyzing...")
+        
+        with col3:
+            high_risk = asset_data.get('high_risk_count', 0)
+            if high_risk > 0:
+                st.error("**High Risk Assets**")
+                st.metric(
+                    label="",
+                    value=high_risk,
+                    delta="Need attention",
+                    delta_color="inverse"
+                )
+            else:
+                st.success("**Risk Status**")
+                st.metric(label="", value="✅ Secure")
+        
+        with col4:
+            locations = asset_data.get('locations', {})
+            if locations:
+                st.info(f"**{len(locations)} Regions**")
+                top_location = max(locations.items(), key=lambda x: x[1]) if locations else ("global", 0)
+                st.metric(
+                    label="",
+                    value=f"{top_location[0]}",
+                    delta=f"{top_location[1]} resources"
+                )
+            else:
+                st.info("**Locations**")
+                st.metric(label="", value="Multi-region")
+        
+        # Show asset type breakdown
+        if asset_data.get('asset_categories'):
+            with st.expander("📋 View Asset Breakdown", expanded=False):
+                for category, count in sorted(asset_data['asset_categories'].items(), key=lambda x: x[1], reverse=True):
+                    st.write(f"• **{category}**: {count} resources")
+        
+        st.markdown("---")
+    else:
+        # No data yet - show call to action
+        st.info("🔍 **No asset data available yet**")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🚀 Run Asset Discovery", use_container_width=True):
+                st.session_state.page = "chat"
+                st.session_state.suggested_query = "discover all assets in my GCP project"
+                st.rerun()
+        with col2:
+            if st.button("🔄 Refresh Data", use_container_width=True):
+                asset_data_service.clear_cache(st.session_state.get('selected_project'))
+                st.rerun()
+        st.markdown("---")
 
 def render_system_status_card():
     """Render system status information."""

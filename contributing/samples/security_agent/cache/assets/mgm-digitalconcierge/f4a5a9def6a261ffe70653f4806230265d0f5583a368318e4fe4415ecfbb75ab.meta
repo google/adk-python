@@ -1,0 +1,12 @@
+{
+  "created_at": "2025-08-15T15:55:44.203360+00:00",
+  "expires_at": "2025-08-15T16:00:44.203360+00:00",
+  "version": "1.0.0",
+  "ttl_seconds": 300,
+  "project_id": "mgm-digitalconcierge",
+  "cache_key": "f4a5a9def6a261ffe70653f4806230265d0f5583a368318e4fe4415ecfbb75ab",
+  "data_hash": "ad2cb011a0c3de326b03fc4a4d1059ed",
+  "file_size": 264307,
+  "access_count": 2,
+  "last_accessed": "2025-08-15T15:59:52.755638+00:00"
+}

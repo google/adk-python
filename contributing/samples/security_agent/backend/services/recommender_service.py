@@ -116,6 +116,16 @@ class RecommenderService:
         self.credentials_path = credentials_path
         self.client = None
         self.asset_client = None
+        
+        # Performance metrics - MUST be initialized before _initialize_clients()
+        self.performance_metrics = {
+            "total_requests": 0,
+            "avg_response_time": 0.0,
+            "error_count": 0,
+            "last_health_check": datetime.now()
+        }
+        
+        # Initialize clients after performance_metrics
         self._initialize_clients()
         
         # Enhanced caching with TTL and performance tracking
@@ -126,14 +136,6 @@ class RecommenderService:
         # State tracking
         self.session_recommendations: Dict[str, List[RecommendationInsight]] = {}
         self.recommendation_analytics = RecommendationAnalytics()
-        
-        # Performance metrics
-        self.performance_metrics = {
-            "total_requests": 0,
-            "avg_response_time": 0.0,
-            "error_count": 0,
-            "last_health_check": datetime.now()
-        }
         
         # Configuration with extended mappings
         self.supported_recommenders = list(RecommenderType)
@@ -206,7 +208,12 @@ class RecommenderService:
                 all_recommendations.extend(recommendations)
                 
             except Exception as e:
-                logger.warning(f"Failed to get {recommender_type.value} recommendations: {e}")
+                # Use debug level for expected errors (services not enabled)
+                error_str = str(e)
+                if "403" in error_str or "Permission" in error_str or "not enabled" in error_str.lower():
+                    logger.debug(f"Skipping {recommender_type.value}: Service not available")
+                else:
+                    logger.debug(f"Failed to get {recommender_type.value} recommendations: {e}")
                 continue
         
         # Sort by priority and impact
@@ -247,16 +254,30 @@ class RecommenderService:
                     filter=self._build_filter(context.filters)
                 )
                 
-                page_result = self.client.list_recommendations(request=request)
-                
-                for recommendation in page_result:
-                    insight = await self._process_recommendation(
-                        recommendation, 
-                        recommender_type,
-                        include_insights
-                    )
-                    if insight:
-                        recommendations.append(insight)
+                try:
+                    page_result = self.client.list_recommendations(request=request)
+                    
+                    for recommendation in page_result:
+                        insight = await self._process_recommendation(
+                            recommendation, 
+                            recommender_type,
+                            include_insights
+                        )
+                        if insight:
+                            recommendations.append(insight)
+                except Exception as api_error:
+                    # Handle specific API errors gracefully
+                    error_str = str(api_error)
+                    if "403" in error_str or "Permission" in error_str:
+                        logger.debug(f"Recommender API not accessible for {recommender_type.value}: Permission denied")
+                    elif "404" in error_str:
+                        logger.debug(f"Recommender API not found for {recommender_type.value}")
+                    elif "not enabled" in error_str.lower():
+                        logger.debug(f"Recommender API not enabled for {recommender_type.value}")
+                    else:
+                        logger.debug(f"Recommender API error for {recommender_type.value}: {api_error}")
+                    # Continue to next location instead of failing entirely
+                    continue
             
             # Cache results
             self.cache[cache_key] = {
@@ -265,7 +286,8 @@ class RecommenderService:
             }
             
         except Exception as e:
-            logger.error(f"Error getting recommendations for {recommender_type.value}: {e}")
+            # Log at debug level to avoid cluttering logs when services aren't enabled
+            logger.debug(f"Could not get recommendations for {recommender_type.value}: {e}")
         
         return recommendations
 
