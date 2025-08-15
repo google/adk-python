@@ -184,7 +184,7 @@ class TestBuildA2ARequestLog:
     assert "Part 0:" in result
     assert "Part 1:" in result
     assert '"blocking": true' in result
-    assert '"historyLength": 10' in result
+    assert '"history_length": 10' in result
     assert '"key1": "value1"' in result
 
   def test_request_without_parts(self):

@@ -30,7 +30,7 @@ def ask_data_insights(
     user_query_with_context: str,
     table_references: List[Dict[str, str]],
     credentials: Credentials,
-    config: BigQueryToolConfig,
+    settings: BigQueryToolConfig,
 ) -> Dict[str, Any]:
   """Answers questions about structured data in BigQuery tables using natural language.
 
@@ -53,7 +53,7 @@ def ask_data_insights(
       table_references (List[Dict[str, str]]): A list of dictionaries, each
         specifying a BigQuery table to be used as context for the question.
       credentials (Credentials): The credentials to use for the request.
-      config (BigQueryToolConfig): The configuration for the tool.
+      settings (BigQueryToolConfig): The settings for the tool.
 
   Returns:
       A dictionary with two keys:
@@ -135,7 +135,7 @@ def ask_data_insights(
     }
 
     resp = _get_stream(
-        ca_url, ca_payload, headers, config.max_query_result_rows
+        ca_url, ca_payload, headers, settings.max_query_result_rows
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {

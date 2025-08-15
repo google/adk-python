@@ -47,6 +47,9 @@ class MockAsyncIterator:
     except StopIteration as exc:
       raise StopAsyncIteration from exc
 
+  async def aclose(self):
+    pass
+
 
 @pytest.fixture
 def generate_content_response():
@@ -1505,7 +1508,6 @@ async def test_computer_use_with_no_config():
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
-      config=None,
   )
 
   # Should not raise an exception

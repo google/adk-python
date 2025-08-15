@@ -27,7 +27,7 @@ from typing_extensions import override
 from . import envs
 from ...agents import config_agent_utils
 from ...agents.base_agent import BaseAgent
-from ...utils.feature_decorator import working_in_progress
+from ...utils.feature_decorator import experimental
 from .base_agent_loader import BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -138,7 +138,7 @@ class AgentLoader(BaseAgentLoader):
 
     return None
 
-  @working_in_progress("_load_from_yaml_config is not ready for use.")
+  @experimental
   def _load_from_yaml_config(self, agent_name: str) -> Optional[BaseAgent]:
     # Load from the config file at agents_dir/{agent_name}/root_agent.yaml
     config_path = os.path.join(self.agents_dir, agent_name, "root_agent.yaml")

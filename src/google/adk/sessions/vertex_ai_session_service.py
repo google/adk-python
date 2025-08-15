@@ -280,24 +280,28 @@ class VertexAiSessionService(BaseSessionService):
       parsed_user_id = urllib.parse.quote(f'''"{user_id}"''', safe='')
       path = path + f'?filter=user_id={parsed_user_id}'
 
-    api_response = await api_client.async_request(
+    list_sessions_api_response = await api_client.async_request(
         http_method='GET',
         path=path,
         request_dict={},
     )
-    api_response = _convert_api_response(api_response)
+    list_sessions_api_response = _convert_api_response(
+        list_sessions_api_response
+    )
 
     # Handles empty response case
-    if not api_response or api_response.get('httpHeaders', None):
+    if not list_sessions_api_response or list_sessions_api_response.get(
+        'httpHeaders', None
+    ):
       return ListSessionsResponse()
 
     sessions = []
-    for api_session in api_response['sessions']:
+    for api_session in list_sessions_api_response['sessions']:
       session = Session(
           app_name=app_name,
           user_id=user_id,
           id=api_session['name'].split('/')[-1],
-          state={},
+          state=api_session.get('sessionState', {}),
           last_update_time=isoparse(api_session['updateTime']).timestamp(),
       )
       sessions.append(session)

@@ -848,9 +848,9 @@ class LiteLlm(BaseLlm):
       response = await self.llm_client.acompletion(**completion_args)
       yield _model_response_to_generate_content_response(response)
 
-  @staticmethod
+  @classmethod
   @override
-  def supported_models() -> list[str]:
+  def supported_models(cls) -> list[str]:
     """Provides the list of supported models.
 
     LiteLlm supports all models supported by litellm. We do not keep track of

@@ -566,7 +566,6 @@ def test_to_gke_happy_path(
       trace_to_cloud=False,
       with_ui=True,
       log_level="debug",
-      verbosity="debug",
       adk_version="1.2.0",
       allow_origins=["http://localhost:3000", "https://my-app.com"],
       session_service_uri="sqlite:///",

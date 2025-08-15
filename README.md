@@ -1,6 +1,7 @@
 # Agent Development Kit (ADK)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/google-adk)](https://pypi.org/project/google-adk/)
 [![Python Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/google/adk-python)
@@ -14,7 +15,7 @@
     </h3>
     <h3 align="center">
       Important Links:
-      <a href="https://google.github.io/adk-docs/">Docs</a>, 
+      <a href="https://google.github.io/adk-docs/">Docs</a>,
       <a href="https://github.com/google/adk-samples">Samples</a>,
       <a href="https://github.com/google/adk-java">Java ADK</a> &
       <a href="https://github.com/google/adk-web">ADK Web</a>.

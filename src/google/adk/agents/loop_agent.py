@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import AsyncGenerator
+from typing import ClassVar
+from typing import Dict
 from typing import Optional
 from typing import Type
 
@@ -24,8 +27,10 @@ from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
-from ..utils.feature_decorator import working_in_progress
+from ..utils.context_utils import Aclosing
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
+from .base_agent_config import BaseAgentConfig
 from .loop_agent_config import LoopAgentConfig
 
 
@@ -35,6 +40,9 @@ class LoopAgent(BaseAgent):
   When sub-agent generates an event with escalate or max_iterations are
   reached, the loop agent will stop.
   """
+
+  config_type: ClassVar[type[BaseAgentConfig]] = LoopAgentConfig
+  """The config type for this agent."""
 
   max_iterations: Optional[int] = None
   """The maximum number of iterations to run the loop agent.
@@ -51,10 +59,11 @@ class LoopAgent(BaseAgent):
     while not self.max_iterations or times_looped < self.max_iterations:
       for sub_agent in self.sub_agents:
         should_exit = False
-        async for event in sub_agent.run_async(ctx):
-          yield event
-          if event.actions.escalate:
-            should_exit = True
+        async with Aclosing(sub_agent.run_async(ctx)) as agen:
+          async for event in agen:
+            yield event
+            if event.actions.escalate:
+              should_exit = True
 
         if should_exit:
           return
@@ -69,15 +78,15 @@ class LoopAgent(BaseAgent):
     raise NotImplementedError('This is not supported yet for LoopAgent.')
     yield  # AsyncGenerator requires having at least one yield statement
 
-  @classmethod
   @override
-  @working_in_progress('LoopAgent.from_config is not ready for use.')
-  def from_config(
-      cls: Type[LoopAgent],
+  @classmethod
+  @experimental
+  def _parse_config(
+      cls: type[LoopAgent],
       config: LoopAgentConfig,
       config_abs_path: str,
-  ) -> LoopAgent:
-    agent = super().from_config(config, config_abs_path)
+      kwargs: Dict[str, Any],
+  ) -> Dict[str, Any]:
     if config.max_iterations:
-      agent.max_iterations = config.max_iterations
-    return agent
+      kwargs['max_iterations'] = config.max_iterations
+    return kwargs

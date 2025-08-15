@@ -107,15 +107,47 @@ You can extend this sample by:
 - Adding persistent state management
 - Integrating with external APIs or databases
 
+## Deployment to Other Environments
+
+When deploying the remote A2A agent to different environments (e.g., Cloud Run, different hosts/ports), you **must** update the `url` field in the agent card JSON file:
+
+### Local Development
+```json
+{
+  "url": "http://localhost:8001/a2a/check_prime_agent",
+  ...
+}
+```
+
+### Cloud Run Example
+```json
+{
+  "url": "https://your-service-abc123-uc.a.run.app/a2a/check_prime_agent",
+  ...
+}
+```
+
+### Custom Host/Port Example
+```json
+{
+  "url": "https://your-domain.com:9000/a2a/check_prime_agent",
+  ...
+}
+```
+
+**Important:** The `url` field in `remote_a2a/check_prime_agent/agent.json` must point to the actual RPC endpoint where your remote A2A agent is deployed and accessible.
+
 ## Troubleshooting
 
 **Connection Issues:**
 - Ensure the local ADK web server is running on port 8000
 - Ensure the remote A2A server is running on port 8001
 - Check that no firewall is blocking localhost connections
+- **Verify the `url` field in `remote_a2a/check_prime_agent/agent.json` matches the actual deployed location of your remote A2A server**
 - Verify the agent card URL passed to RemoteA2AAgent constructor matches the running A2A server
 
 
 **Agent Not Responding:**
 - Check the logs for both the local ADK web server on port 8000 and remote A2A server on port 8001
 - Verify the agent instructions are clear and unambiguous
+- **Double-check that the RPC URL in the agent.json file is correct and accessible**

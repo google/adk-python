@@ -19,9 +19,12 @@ import subprocess
 from typing import Optional
 
 import click
+from packaging.version import parse
+
+BASE_BUILD_IMAGE = 'python:3.11-slim'
 
 _DOCKERFILE_TEMPLATE = """
-FROM python:3.11-slim
+FROM {build_image}
 WORKDIR /app
 
 # Create a non-root user
@@ -91,7 +94,8 @@ def _get_service_option_by_adk_version(
     memory_uri: Optional[str],
 ) -> str:
   """Returns service option string based on adk_version."""
-  if adk_version >= '1.3.0':
+  parsed_version = parse(adk_version)
+  if parsed_version >= parse('1.3.0'):
     session_option = (
         f'--session_service_uri={session_uri}' if session_uri else ''
     )
@@ -100,7 +104,7 @@ def _get_service_option_by_adk_version(
     )
     memory_option = f'--memory_service_uri={memory_uri}' if memory_uri else ''
     return f'{session_option} {artifact_option} {memory_option}'
-  elif adk_version >= '1.2.0':
+  elif parsed_version >= parse('1.2.0'):
     session_option = f'--session_db_url={session_uri}' if session_uri else ''
     artifact_option = (
         f'--artifact_storage_uri={artifact_uri}' if artifact_uri else ''
@@ -128,6 +132,7 @@ def to_cloud_run(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    build_image: Optional[str] = BASE_BUILD_IMAGE,
     a2a: bool = False,
 ):
   """Deploys an agent to Google Cloud Run.
@@ -161,6 +166,7 @@ def to_cloud_run(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    build_image: The image to use for building the Dockerfile.
   """
   app_name = app_name or os.path.basename(agent_folder)
 
@@ -209,6 +215,7 @@ def to_cloud_run(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
+        build_image=build_image,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -433,6 +440,7 @@ def to_agent_engine(
             'stream': ['stream_query', 'streaming_agent_run_with_events'],
         },
         sys_paths=[temp_folder[1:]],
+        agent_framework='google-adk',
     )
     agent_config = dict(
         agent_engine=agent_engine,
@@ -466,12 +474,12 @@ def to_gke(
     trace_to_cloud: bool,
     with_ui: bool,
     log_level: str,
-    verbosity: str,
     adk_version: str,
     allow_origins: Optional[list[str]] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    build_image: Optional[str] = BASE_BUILD_IMAGE,
     a2a: bool = False,
 ):
   """Deploys an agent to Google Kubernetes Engine(GKE).
@@ -487,12 +495,13 @@ def to_gke(
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
     with_ui: Whether to deploy with UI.
-    verbosity: The verbosity level of the CLI.
+    log_level: The logging level.
     adk_version: The ADK version to use in GKE.
     allow_origins: The list of allowed origins for the ADK api server.
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    build_image: The image to use for building the Dockerfile.
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -554,6 +563,7 @@ def to_gke(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',
+        build_image=build_image,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -581,7 +591,7 @@ def to_gke(
             '--tag',
             image_name,
             '--verbosity',
-            log_level.lower() if log_level else verbosity,
+            log_level.lower(),
             temp_folder,
         ],
         check=True,

@@ -22,7 +22,6 @@ from typing import Any
 from typing import Optional
 import uuid
 
-from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
@@ -132,9 +131,11 @@ class StorageSession(Base):
       MutableDict.as_mutable(DynamicJSON), default={}
   )
 
-  create_time: Mapped[DateTime] = mapped_column(DateTime(), default=func.now())
-  update_time: Mapped[DateTime] = mapped_column(
-      DateTime(), default=func.now(), onupdate=func.now()
+  create_time: Mapped[datetime] = mapped_column(
+      PreciseTimestamp, default=func.now()
+  )
+  update_time: Mapped[datetime] = mapped_column(
+      PreciseTimestamp, default=func.now(), onupdate=func.now()
   )
 
   storage_events: Mapped[list[StorageEvent]] = relationship(
@@ -313,8 +314,8 @@ class StorageAppState(Base):
   state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default={}
   )
-  update_time: Mapped[DateTime] = mapped_column(
-      DateTime(), default=func.now(), onupdate=func.now()
+  update_time: Mapped[datetime] = mapped_column(
+      PreciseTimestamp, default=func.now(), onupdate=func.now()
   )
 
 
@@ -332,8 +333,8 @@ class StorageUserState(Base):
   state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default={}
   )
-  update_time: Mapped[DateTime] = mapped_column(
-      DateTime(), default=func.now(), onupdate=func.now()
+  update_time: Mapped[datetime] = mapped_column(
+      PreciseTimestamp, default=func.now(), onupdate=func.now()
   )
 
 
@@ -515,9 +516,22 @@ class DatabaseSessionService(BaseSessionService):
           .filter(StorageSession.user_id == user_id)
           .all()
       )
+
+      # Fetch states from storage
+      storage_app_state = sql_session.get(StorageAppState, (app_name))
+      storage_user_state = sql_session.get(
+          StorageUserState, (app_name, user_id)
+      )
+
+      app_state = storage_app_state.state if storage_app_state else {}
+      user_state = storage_user_state.state if storage_user_state else {}
+
       sessions = []
       for storage_session in results:
-        sessions.append(storage_session.to_session())
+        session_state = storage_session.state
+        merged_state = _merge_state(app_state, user_state, session_state)
+
+        sessions.append(storage_session.to_session(state=merged_state))
       return ListSessionsResponse(sessions=sessions)
 
   @override
@@ -535,8 +549,6 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    logger.info(f"Append event: {event} to session {session.id}")
-
     if event.partial:
       return event
 
