@@ -32,10 +32,21 @@ from .settings import Capabilities
 from .settings import SpannerToolSettings
 from .spanner_credentials import SpannerCredentialsConfig
 
+DEFAULT_SPANNER_TOOL_NAME_PREFIX = "spanner"
+
 
 @experimental
 class SpannerToolset(BaseToolset):
-  """Spanner Toolset contains tools for interacting with Spanner data, database and table information."""
+  """Spanner Toolset contains tools for interacting with Spanner data, database and table information.
+
+  The tool names are:
+    - spanner_list_table_names
+    - spanner_list_table_indexes
+    - spanner_list_table_index_columns
+    - spanner_list_named_schemas
+    - spanner_get_table_schema
+    - spanner_execute_sql
+  """
 
   def __init__(
       self,
@@ -44,7 +55,10 @@ class SpannerToolset(BaseToolset):
       credentials_config: Optional[SpannerCredentialsConfig] = None,
       spanner_tool_settings: Optional[SpannerToolSettings] = None,
   ):
-    super().__init__(tool_filter=tool_filter)
+    super().__init__(
+        tool_filter=tool_filter,
+        tool_name_prefix=DEFAULT_SPANNER_TOOL_NAME_PREFIX,
+    )
     self._credentials_config = credentials_config
     self._tool_settings = (
         spanner_tool_settings
