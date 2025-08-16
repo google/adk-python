@@ -1,23 +1,26 @@
 """
-ADK-compliant agent implementations following Google ADK patterns.
+RADAR Agent System for Cloud Operations
 
-This module provides specialized agents with tools for GCP security analysis.
-Each agent follows the ADK architecture:
-- Agent: AI brain with specific instructions
-- Tools: Python functions that grant capabilities
-- Runner: Orchestrates agent execution
-- SessionService: Manages conversation state
+Clean, simple architecture:
+- One LLM Coordinator (radar_coordinator.py) 
+- Five specialized worker agents (not LLMs)
+- Direct API calls, no unnecessary abstraction
 """
 
-from typing import List, Dict, Any
+# Import the coordinator (includes FastAPI router)
+from backend.agents.radar_coordinator import (
+    RADARCoordinator,
+    create_radar_pipeline,
+    router  # FastAPI router for endpoints
+)
 
-# Import all agents for easy access
 __all__ = [
-    'SecurityCoordinatorAgent',
-    'StorageSecurityAgent', 
-    'IAMSecurityAgent',
-    'NetworkSecurityAgent',
-    'ComplianceAgent',
-    'CostOptimizationAgent',
-    'create_agent_with_tools'
+    # Convenience functions
+    'create_radar_pipeline',
+    
+    # Coordinator
+    'RADARCoordinator',
+    
+    # FastAPI router
+    'router'
 ]

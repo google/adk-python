@@ -135,7 +135,7 @@ class SessionFlowTester:
             content="I found 5 storage buckets in your project. 2 have public access enabled.",
             sender_type="assistant",
             agent_used="StorageSecurityAgent",
-            delegation_path=["CoordinatorAgent", "StorageSecurityAgent"],
+
             performance_data={"response_time_ms": 250}
         )
         print_test("Added assistant message with agent metadata", "pass")
@@ -229,7 +229,7 @@ class SessionFlowTester:
         
         conversations = [
             ("user", "What are the main security issues in my GCP project?", None),
-            ("assistant", "I've identified several security concerns: 1) Public storage buckets, 2) Overprivileged IAM roles, 3) Open firewall rules", "CoordinatorAgent"),
+
             ("user", "Tell me more about the storage bucket issues", None),
             ("assistant", "You have 3 buckets with public access: analytics-data, user-uploads, and backup-2023. These expose 450GB of data.", "StorageSecurityAgent"),
             ("user", "How do I fix this?", None),

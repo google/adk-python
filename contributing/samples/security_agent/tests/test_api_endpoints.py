@@ -8,6 +8,7 @@ import pytest
 import asyncio
 import json
 import time
+from datetime import datetime
 from typing import Dict, Any
 from unittest.mock import Mock, patch, AsyncMock
 import sys
@@ -31,6 +32,7 @@ from backend.api.sessions import (
 def mock_chat_manager():
     """Mock chat manager for testing."""
     manager = Mock()
+    manager.create_session_async = AsyncMock(return_value="test_session_123")
     manager.create_session = Mock(return_value="test_session_123")
     manager.get_session = Mock(return_value=Mock(conversations={"main": []}))
     manager.add_message = AsyncMock()
@@ -46,7 +48,7 @@ def chat_request():
         query="Show me the storage buckets in my project",
         user_id="test_user",
         project_id="test-project",
-        session_id=None
+        session_id="test_session_123"
     )
 
 @pytest.fixture
@@ -75,7 +77,7 @@ class TestChatEndpoint:
                     assert response.session_id == "test_session_123"
                     assert response.response == "Test response"
                     assert response.agent_used == "TestAgent"
-                    mock_chat_manager.create_session.assert_called_once()
+                    mock_chat_manager.create_session_async.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_chat_uses_existing_session(self, mock_chat_manager, chat_request):

@@ -1,683 +1,872 @@
-# ADK Security Agent - Architecture Documentation
+# GCP Security Agent - Architecture Documentation
 
-## 📚 Table of Contents
-1. [System Overview](#system-overview)
-2. [Architecture Diagrams](#architecture-diagrams)
-3. [Core Components](#core-components)
-4. [API Architecture](#api-architecture)
-5. [Data Flow](#data-flow)
-6. [API Design](#api-design)
-7. [Security Model](#security-model)
-8. [Deployment Architecture](#deployment-architecture)
+## 1. System Architecture Overview
 
-## 🎯 System Overview
+### 1.1 Architectural Principles
+The GCP Security Agent follows modern cloud-native architectural patterns:
 
-The ADK Security Agent is an enterprise-ready security evaluation platform for Google Cloud Platform (GCP) built with a simplified, direct API architecture. It provides comprehensive security analysis, AI-powered recommendations, and real-time monitoring capabilities.
+- **Microservices Architecture**: Modular, loosely-coupled components
+- **API-First Design**: REST and WebSocket APIs for all interactions
+- **Event-Driven Communication**: Asynchronous processing for better performance
+- **Scalable and Stateless**: Horizontal scaling with minimal state dependency
+- **Security by Design**: Zero-trust security model with comprehensive monitoring
 
-### Key Architectural Principles
-- **Simplified API Architecture**: Direct FastAPI endpoints without service layer complexity
-- **Direct ADK Integration**: Seamless AI agent communication without middleware
-- **Clean Separation**: Clear separation between API endpoints, UI components, and agents
-- **Asynchronous Operations**: Built on FastAPI with async/await patterns
-- **Cloud-Native Design**: Ready for containerization and cloud deployment
-- **Component Isolation**: Each API endpoint handles specific domain logic
-
-## 🏗️ Architecture Diagrams
-
-### High-Level System Architecture
+### 1.2 High-Level Architecture Diagram
 
 ```mermaid
 graph TB
     subgraph "Frontend Layer"
         UI[Streamlit UI]
-        ADK[ADK Web Interface]
+        WS[WebSocket Client]
     end
-
-    subgraph "API Gateway"
-        APIGW[FastAPI Backend<br/>Port 8000]
-    end
-
-    subgraph "API Endpoints"
-        SEC[Security API]
-        IAM[IAM API]
-        GCP[GCP API]
-        AGENT[Agent API]
-        MON[Monitoring API]
-        INC[Incidents API]
-    end
-
-    subgraph "External Services"
-        GCP_EXT[Google Cloud Platform]
-        ADK_EXT[ADK Agent Framework]
-    end
-
-    UI --> APIGW
-    ADK --> APIGW
     
-    APIGW --> SEC
-    APIGW --> IAM
-    APIGW --> GCP
-    APIGW --> AGENT
-    APIGW --> MON
-    APIGW --> INC
+    subgraph "API Gateway Layer"
+        LB[Load Balancer]
+        GW[API Gateway]
+    end
     
-    SEC --> GCP_EXT
-    IAM --> GCP_EXT
-    GCP --> GCP_EXT
-    MON --> GCP_EXT
+    subgraph "Application Layer"
+        MAIN[FastAPI Main App]
+        ROUTER[API Routers]
+        MW[Middleware Stack]
+    end
     
-    AGENT --> ADK_EXT
-
-    classDef frontend fill:#e1f5e1,stroke:#4caf50,stroke-width:2px
-    classDef gateway fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
-    classDef registry fill:#fff3e0,stroke:#ff9800,stroke-width:2px
-    classDef core fill:#ffebee,stroke:#f44336,stroke-width:2px
-    classDef security fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
-    classDef monitoring fill:#e0f2f1,stroke:#009688,stroke-width:2px
-    classDef integration fill:#fce4ec,stroke:#e91e63,stroke-width:2px
-    classDef gcp fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
-
-    class UI,ADK frontend
-    class APIGW gateway
-    class SR,SC,SM registry
-    class GCP,SEC,AGENT core
-    class IAM,COMP,THREAT,INC security
-    class LOG,TRACE,MON,PERF monitoring
-    class APIH,KNOW,ANAL,DOC integration
-    class RM,IAM_API,SC_API,LOG_API,TRACE_API,VA gcp
+    subgraph "Agent Layer"
+        COORD[Coordinator Agent]
+        SEC[Security Agent]
+        ASSET[Asset Discovery Agent]
+        SEARCH[Search Enabled Agent]
+    end
+    
+    subgraph "Service Layer"
+        ASVC[Asset Inventory Service]
+        RSVC[Recommender Service]
+        CSVC[Chat Service]
+        MSVC[Memory Service]
+    end
+    
+    subgraph "Data Layer"
+        CACHE[Redis Cache]
+        SESS[Session Store]
+        MEM[Memory Store]
+    end
+    
+    subgraph "External APIs"
+        GAPI[GCP Asset Inventory]
+        VAI[Vertex AI]
+        REC[Recommender API]
+        MON[Cloud Monitoring]
+    end
+    
+    UI --> LB
+    WS --> LB
+    LB --> GW
+    GW --> MAIN
+    MAIN --> ROUTER
+    ROUTER --> MW
+    MW --> COORD
+    MW --> SEC
+    MW --> ASSET
+    MW --> SEARCH
+    
+    COORD --> ASVC
+    SEC --> RSVC
+    ASSET --> ASVC
+    SEARCH --> CSVC
+    
+    ASVC --> CACHE
+    RSVC --> SESS
+    CSVC --> MEM
+    
+    ASVC --> GAPI
+    SEC --> VAI
+    RSVC --> REC
+    MW --> MON
 ```
 
-### Service Lifecycle Management
-
-```mermaid
-stateDiagram-v2
-    [*] --> NOT_CONFIGURED: Service Defined
-    NOT_CONFIGURED --> STARTING: Enable Service
-    STARTING --> RUNNING: Initialization Success
-    STARTING --> ERROR: Initialization Failed
-    RUNNING --> STOPPING: Disable Service
-    STOPPING --> DISABLED: Shutdown Success
-    STOPPING --> ERROR: Shutdown Failed
-    ERROR --> STARTING: Retry/Restart
-    DISABLED --> STARTING: Re-enable Service
-    RUNNING --> ERROR: Health Check Failed
-    ERROR --> RUNNING: Auto-Recovery
-
-    note right of RUNNING
-        - Health checks active
-        - Handling requests
-        - Metrics collection
-    end note
-
-    note right of ERROR
-        - Error logged
-        - Dependencies notified
-        - Recovery attempted
-    end note
-```
-
-### Service Dependency Graph
-
-```mermaid
-graph LR
-    subgraph "Core Layer (Required)"
-        GCP[GCP Service]
-        SEC[Security Service]
-        AGENT[Agent Service]
-    end
-
-    subgraph "Security Layer"
-        IAM[IAM Analysis]
-        COMP[Compliance]
-        THREAT[Threat Intelligence]
-        INC[Incident Response]
-    end
-
-    subgraph "Monitoring Layer"
-        LOG[Cloud Logging]
-        TRACE[OpenTelemetry]
-        MON[Monitoring]
-    end
-
-    subgraph "Integration Layer"
-        APIH[API Hub]
-        KNOW[Knowledge Base]
-        ANAL[Analytics]
-        REC[Recommendations]
-    end
-
-    IAM --> GCP
-    COMP --> GCP
-    LOG --> GCP
-    TRACE --> GCP
-    APIH --> GCP
-    KNOW --> GCP
-    ANAL --> GCP
-    REC --> SEC
-    INC --> SEC
-    THREAT --> SEC
-
-    classDef required fill:#ffcdd2,stroke:#d32f2f,stroke-width:3px
-    classDef optional fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
-
-    class GCP,SEC,AGENT required
-    class IAM,COMP,THREAT,INC,LOG,TRACE,MON,APIH,KNOW,ANAL,REC optional
-```
-
-## 🔧 Core Components
-
-### Service Registry
-The heart of the modular architecture, managing service lifecycle and dependencies.
-
-```python
-class ServiceRegistry:
-    """Central registry for all services."""
-    
-    def __init__(self, config: ServiceConfig, credentials=None, project_id=None):
-        self.config = config
-        self.credentials = credentials
-        self.project_id = project_id
-        self.services: Dict[str, BaseService] = {}
-        self.routers: Dict[str, Any] = {}
-```
-
-**Key Responsibilities:**
-- Service instantiation and lifecycle management
-- Dependency resolution and topological sorting
-- Health check coordination
-- Dynamic router registration
-- Service status tracking
-
-### Base Service Architecture
-
-```mermaid
-classDiagram
-    class BaseService {
-        <<abstract>>
-        #service_name: str
-        #credentials: Any
-        #project_id: str
-        #status: ServiceStatus
-        #health_status: Dict
-        +initialize()* bool
-        +shutdown()* bool
-        +health_check()* Dict
-        +start() bool
-        +stop() bool
-        +restart() bool
-        +check_health() Dict
-        +get_status() Dict
-        +is_healthy() bool
-        +is_available() bool
-    }
-
-    class GCPService {
-        -resource_manager_client
-        -service_usage_client
-        +initialize() bool
-        +list_projects() List
-        +get_project_info() Dict
-        +list_enabled_services() List
-    }
-
-    class SecurityService {
-        -security_client
-        -findings_cache
-        +initialize() bool
-        +evaluate_security() Dict
-        +get_findings() List
-        +calculate_risk_score() float
-    }
-
-    class IAMPolicyAnalyzer {
-        -iam_client
-        -policy_analyzer
-        +initialize() bool
-        +analyze_permissions() Dict
-        +test_scenarios() List
-        +get_overprivileged_users() List
-    }
-
-    BaseService <|-- GCPService
-    BaseService <|-- SecurityService
-    BaseService <|-- IAMPolicyAnalyzer
-```
-
-### Service Configuration Management
-
-```mermaid
-flowchart TD
-    A[Service Definition] --> B{Load Config}
-    B -->|Default| C[Default Services]
-    B -->|Custom| D[services.json]
-    
-    C --> E[Service Registry]
-    D --> E
-    
-    E --> F{Check Dependencies}
-    F -->|Met| G[Initialize Service]
-    F -->|Not Met| H[Mark as Error]
-    
-    G --> I{Health Check}
-    I -->|Healthy| J[Register Router]
-    I -->|Unhealthy| K[Retry/Error]
-    
-    J --> L[Service Running]
-    
-    subgraph "Runtime Management"
-        L --> M{Admin Action}
-        M -->|Disable| N[Shutdown Service]
-        M -->|Restart| O[Restart Service]
-        M -->|Health Check| P[Check Status]
-    end
-```
-
-## 📦 API Architecture
-
-### API Endpoint Categories
-
-1. **Core API Endpoints**
-   - Direct FastAPI routes
-   - No intermediate service layer
-   - Examples: `/api/security/`, `/api/gcp/`, `/api/agent/`
-
-2. **Security Endpoints**
-   - IAM Analysis: `/api/iam/`
-   - Security Evaluation: `/api/security/`
-   - Incident Response: `/api/incidents/`
-
-3. **Monitoring Endpoints**
-   - Performance Monitoring: `/api/monitoring/`
-   - Health Checks: `/health`
-
-4. **Integration Endpoints**
-   - ADK Agent Communication: `/api/agent/`
-   - GCP API Access: `/api/gcp/`
-
-### Service Communication Pattern
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API Gateway
-    participant Service Registry
-    participant Service
-    participant GCP API
-
-    Client->>API Gateway: HTTP Request
-    API Gateway->>Service Registry: Get Service
-    Service Registry->>Service Registry: Check Availability
-    
-    alt Service Available
-        Service Registry->>Service: Forward Request
-        Service->>GCP API: API Call (if needed)
-        GCP API-->>Service: Response
-        Service-->>API Gateway: Process & Return
-        API Gateway-->>Client: HTTP Response
-    else Service Unavailable
-        Service Registry-->>API Gateway: Service Error
-        API Gateway-->>Client: 503 Service Unavailable
-    end
-```
-
-## 🔄 Data Flow
-
-### Request Processing Flow
-
-```mermaid
-flowchart LR
-    subgraph "Request Flow"
-        A[Client Request] --> B[CORS Middleware]
-        B --> C[FastAPI Router]
-        C --> D{Service Check}
-        D -->|Enabled| E[Service Handler]
-        D -->|Disabled| F[Error Response]
-        
-        E --> G{Auth Required?}
-        G -->|Yes| H[Validate Credentials]
-        G -->|No| I[Process Request]
-        H -->|Valid| I
-        H -->|Invalid| J[401 Unauthorized]
-        
-        I --> K{External API?}
-        K -->|Yes| L[GCP API Call]
-        K -->|No| M[Local Processing]
-        
-        L --> N[Transform Response]
-        M --> N
-        N --> O[Return Response]
-    end
-```
-
-### Security Evaluation Flow
-
-```mermaid
-flowchart TD
-    A[Start Evaluation] --> B[Get Project Info]
-    B --> C[Security Service]
-    
-    C --> D[IAM Analysis]
-    C --> E[Resource Scan]
-    C --> F[Compliance Check]
-    C --> G[Threat Analysis]
-    
-    D --> H[Permission Matrix]
-    E --> I[Resource Inventory]
-    F --> J[Compliance Report]
-    G --> K[Threat Findings]
-    
-    H --> L[Risk Scoring]
-    I --> L
-    J --> L
-    K --> L
-    
-    L --> M[Generate Recommendations]
-    M --> N[AI Enhancement]
-    N --> O[Final Report]
-```
-
-## 🔌 API Design
-
-### RESTful API Structure
-
-```mermaid
-graph TD
-    subgraph "API Endpoints"
-        A[/api/v1] --> B[/services]
-        A --> C[/gcp]
-        A --> D[/security]
-        A --> E[/iam]
-        A --> F[/compliance]
-        A --> G[/agent]
-        
-        B --> B1[GET /status]
-        B --> B2[POST /{name}/enable]
-        B --> B3[POST /{name}/disable]
-        B --> B4[GET /{name}/health]
-        
-        C --> C1[GET /projects]
-        C --> C2[GET /project/{id}/info]
-        C --> C3[GET /project/{id}/services]
-        
-        D --> D1[POST /evaluate]
-        D --> D2[GET /score]
-        D --> D3[GET /recommendations]
-        
-        E --> E1[GET /analyze-user/{email}]
-        E --> E2[GET /testing/scenarios]
-        E --> E3[POST /testing/run-scenario]
-    end
-```
-
-### API Response Structure
-
-```json
-{
-  "success": true,
-  "data": {
-    // Response data
-  },
-  "metadata": {
-    "timestamp": "2025-01-08T10:30:00Z",
-    "service": "security",
-    "version": "1.0.0"
-  },
-  "error": null
-}
-```
-
-## 🔒 Security Model
-
-### Authentication & Authorization Flow
+### 1.3 Component Interaction Flow
 
 ```mermaid
 sequenceDiagram
     participant User
     participant Frontend
-    participant Backend
-    participant Google Auth
-    participant GCP APIs
-
-    User->>Frontend: Access Application
-    Frontend->>Backend: Request with Credentials
-    Backend->>Google Auth: Validate Credentials
-    Google Auth-->>Backend: Token + Project ID
-    Backend->>Backend: Check Permissions
-    Backend->>GCP APIs: API Call with Token
-    GCP APIs-->>Backend: Response
-    Backend-->>Frontend: Processed Data
+    participant API
+    participant Agent
+    participant Service
+    participant GCP
+    
+    User->>Frontend: Submit Query
+    Frontend->>API: POST /api/v1/agent/chat
+    API->>Agent: Route to Optimal Agent
+    Agent->>Service: Request Asset Data
+    Service->>GCP: Call Asset Inventory API
+    GCP-->>Service: Return Asset Data
+    Service-->>Agent: Processed Results
+    Agent-->>API: Analysis Response
+    API-->>Frontend: JSON Response
     Frontend-->>User: Display Results
 ```
 
-### Security Layers
+## 2. Component Architecture
+
+### 2.1 Frontend Architecture
+
+#### 2.1.1 Streamlit Application Structure
+```
+frontend/
+├── main_app.py              # Main application entry point
+├── components/
+│   ├── chat/
+│   │   ├── chat_view.py     # Chat interface component
+│   │   └── chat_commands.py # Command processing
+│   ├── dashboard/
+│   │   ├── dashboard_view.py      # Main dashboard
+│   │   ├── security_posture_widget.py
+│   │   └── asset_charts.py
+│   └── shared/
+│       ├── api_explorer_view.py
+│       └── recommendations_view.py
+├── api/
+│   └── asset_inventory_client.py  # API client
+└── config.py                # Configuration management
+```
+
+#### 2.1.2 Frontend Technology Stack
+- **Framework**: Streamlit 1.28+
+- **HTTP Client**: requests library with connection pooling
+- **WebSocket**: streamlit-ws-localstorage for real-time communication
+- **State Management**: Streamlit session state
+- **Visualization**: Plotly, Altair for charts and graphs
+
+#### 2.1.3 Frontend-Backend Communication Pattern
+```python
+# Thin Client Architecture Pattern
+class SecurityAgentClient:
+    def __init__(self, base_url: str, project_id: str):
+        self.base_url = base_url
+        self.project_id = project_id
+        self.session = requests.Session()
+    
+    async def chat(self, query: str, session_id: str) -> ChatResponse:
+        """Send chat query to backend with session management"""
+        response = await self.session.post(
+            f"{self.base_url}/api/v1/agent/chat",
+            json={
+                "query": query,
+                "session_id": session_id,
+                "project_id": self.project_id
+            }
+        )
+        return ChatResponse.parse_obj(response.json())
+```
+
+### 2.2 Backend API Architecture
+
+#### 2.2.1 FastAPI Application Structure
+```
+backend/
+├── main.py                   # Application entry point
+├── api/                      # API routers
+│   ├── agent_llm.py         # Chat and agent endpoints
+│   ├── asset_inventory.py   # Asset discovery endpoints
+│   ├── recommendations.py   # Recommendation endpoints
+│   ├── sessions.py          # Session management
+│   ├── security.py          # Security analysis
+│   ├── monitoring.py        # Performance monitoring
+│   └── ...
+├── services/                 # Business logic services
+│   ├── enhanced_asset_inventory_service.py
+│   ├── chat_recommendation_service.py
+│   ├── conversation_memory.py
+│   └── ...
+├── models/                   # Data models
+│   ├── api_models.py
+│   ├── recommender_models.py
+│   └── search_models.py
+└── config/
+    └── timeout_config.py
+```
+
+#### 2.2.2 API Router Architecture Pattern
+```python
+# Modular Router Pattern with Dependency Injection
+from fastapi import APIRouter, Depends
+from typing import Optional
+
+router = APIRouter(prefix="/api/v1/asset-inventory", tags=["assets"])
+
+@router.post("/discover")
+async def discover_resources(
+    request: AssetDiscoveryRequest,
+    service: AssetInventoryService = Depends(get_asset_service)
+) -> AssetInventoryResponse:
+    """Discover resources using natural language queries"""
+    result = await service.process_natural_language_query(request.query)
+    return AssetInventoryResponse(success=True, data=result)
+
+def get_asset_service(project_id: Optional[str] = None) -> AssetInventoryService:
+    """Dependency injection for asset inventory service"""
+    return AssetInventoryService(project_id or get_default_project())
+```
+
+#### 2.2.3 Middleware Stack Architecture
+```python
+# Middleware Stack for Cross-Cutting Concerns
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+
+app = FastAPI()
+
+# Security Middleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Performance Middleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(CacheMiddleware, cache_ttl=300)
+
+# Monitoring Middleware
+app.add_middleware(PrometheusMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
+
+# CORS Middleware (last)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+```
+
+### 2.3 Agent Architecture
+
+#### 2.3.1 ADK Agent Framework Integration
+```python
+# Google ADK Agent Pattern
+from google.adk import Agent
+from google.genai import types
+
+class SecurityAgentFactory:
+    @staticmethod
+    def create_security_agent() -> Agent:
+        """Factory method for creating security agents with tools"""
+        return Agent(
+            model='gemini-2.5-flash',
+            name='security_agent',
+            description='Comprehensive security evaluation agent',
+            instruction=SecurityAgentInstructions.get_instructions(),
+            tools=SecurityAgentTools.get_all_tools(),
+            generate_content_config=SecurityConfig.get_safety_settings()
+        )
+
+class SecurityAgentTools:
+    @staticmethod
+    def get_all_tools():
+        """Aggregate all security analysis tools"""
+        return [
+            # Asset Inventory Tools
+            asset_inventory_tools.discover_gcp_resources,
+            asset_inventory_tools.get_compute_instances,
+            asset_inventory_tools.get_storage_buckets,
+            
+            # Security Analysis Tools
+            security_tools.evaluate_api_security,
+            security_tools.analyze_iam_policies,
+            
+            # Recommendation Tools
+            recommendation_tools.generate_security_recommendations
+        ]
+```
+
+#### 2.3.2 Agent Coordination Pattern
+```python
+# Multi-Agent Coordination Architecture
+class CoordinatorAgent:
+    def __init__(self):
+        self.agent_registry = {
+            'security': SecurityAgent(),
+            'asset_discovery': AssetDiscoveryAgent(),
+            'search': SearchEnabledAgent()
+        }
+        self.routing_engine = AgentRoutingEngine()
+    
+    async def coordinate_query(self, query: str, context: dict) -> AgentResponse:
+        """Coordinate multi-agent query processing"""
+        # 1. Analyze query complexity
+        complexity = self.analyze_query_complexity(query)
+        
+        if complexity == "SIMPLE":
+            # Single agent routing
+            agent_type = self.routing_engine.select_optimal_agent(query, context)
+            agent = self.agent_registry[agent_type]
+            return await agent.process_query(query, context)
+        else:
+            # Multi-agent coordination
+            return await self.orchestrate_multi_agent_workflow(query, context)
+```
+
+### 2.4 Service Layer Architecture
+
+#### 2.4.1 Enhanced Asset Inventory Service
+```python
+# Service Layer Pattern with Async Processing
+class EnhancedGCPAssetInventoryService:
+    def __init__(self, project_id: str):
+        self.project_id = project_id
+        self.asset_client = asset.AssetServiceAsyncClient()
+        self.cache = CacheManager()
+        self.asset_type_mappings = AssetTypeMappings()
+    
+    async def process_natural_language_query(self, query: str) -> dict:
+        """Process natural language queries with intelligent routing"""
+        # 1. Parse query intent
+        intent = self.parse_query_intent(query)
+        
+        # 2. Route to appropriate method
+        if intent.resource_type:
+            return await self.get_resources_by_type(intent.resource_type)
+        elif intent.security_focus:
+            return await self.get_security_assets()
+        else:
+            return await self.get_comprehensive_overview()
+    
+    async def get_resources_by_type(self, resource_type: str) -> dict:
+        """Get resources filtered by type with caching"""
+        cache_key = f"resources:{self.project_id}:{resource_type}"
+        
+        # Check cache first
+        cached_result = await self.cache.get(cache_key)
+        if cached_result:
+            return cached_result
+        
+        # Call GCP API
+        result = await self._fetch_assets_from_gcp(resource_type)
+        
+        # Cache result
+        await self.cache.set(cache_key, result, ttl=300)
+        
+        return result
+```
+
+#### 2.4.2 Recommendation Service Architecture
+```python
+# Recommendation Engine with ML Integration
+class RecommendationService:
+    def __init__(self):
+        self.recommender_client = recommender.RecommenderAsyncClient()
+        self.ml_models = MLModelRegistry()
+        self.priority_engine = RecommendationPriorityEngine()
+    
+    async def generate_recommendations(
+        self, 
+        assets: List[Asset], 
+        context: SecurityContext
+    ) -> List[Recommendation]:
+        """Generate prioritized security recommendations"""
+        
+        # 1. Get GCP Recommender API recommendations
+        gcp_recommendations = await self._get_gcp_recommendations()
+        
+        # 2. Generate ML-based recommendations
+        ml_recommendations = await self._generate_ml_recommendations(assets)
+        
+        # 3. Combine and prioritize
+        all_recommendations = gcp_recommendations + ml_recommendations
+        prioritized = self.priority_engine.prioritize(all_recommendations, context)
+        
+        return prioritized
+```
+
+## 3. Data Flow Architecture
+
+### 3.1 Request Processing Flow
+
+```mermaid
+graph LR
+    subgraph "Request Flow"
+        A[User Query] --> B[Frontend Processing]
+        B --> C[API Gateway]
+        C --> D[Authentication]
+        D --> E[Rate Limiting]
+        E --> F[Request Routing]
+        F --> G[Agent Selection]
+        G --> H[Service Processing]
+        H --> I[GCP API Calls]
+        I --> J[Response Synthesis]
+        J --> K[Caching]
+        K --> L[Response Return]
+    end
+```
+
+### 3.2 Asset Discovery Data Flow
 
 ```mermaid
 graph TB
-    subgraph "Security Layers"
-        A[Network Security<br/>- TLS 1.2+<br/>- Firewall Rules] --> B[Application Security<br/>- CORS<br/>- Input Validation]
-        B --> C[Authentication<br/>- Service Account<br/>- ADC]
-        C --> D[Authorization<br/>- IAM Roles<br/>- Least Privilege]
-        D --> E[Data Security<br/>- Encryption at Rest<br/>- No PII Storage]
-        E --> F[Audit & Monitoring<br/>- Cloud Logging<br/>- Trace]
+    subgraph "Asset Discovery Flow"
+        Q[Natural Language Query]
+        Q --> P[Query Parser]
+        P --> I[Intent Analysis]
+        I --> R[Resource Type Mapping]
+        R --> F[Filter Construction]
+        F --> A[Asset Inventory API]
+        A --> E[Asset Enrichment]
+        E --> S[Security Analysis]
+        S --> C[Result Caching]
+        C --> F[Response Formatting]
     end
 ```
 
-## 🚀 Deployment Architecture
-
-### Container Architecture
+### 3.3 Security Analysis Pipeline
 
 ```mermaid
-graph TD
-    subgraph "Docker Container"
-        A[Base Image<br/>Python 3.11-slim] --> B[System Dependencies]
-        B --> C[Python Dependencies]
-        C --> D[Application Code]
-        D --> E[Configuration]
-        
-        subgraph "Services"
-            F[Backend API<br/>Port 8000]
-            G[Frontend UI<br/>Port 8501]
-            H[ADK Web<br/>Port 8080]
-        end
-        
-        E --> F
-        E --> G
-        E --> H
-    end
-    
-    subgraph "Volume Mounts"
-        I[Service Account Key]
-        J[Configuration Files]
-        K[Logs Directory]
-    end
-    
-    I -.-> E
-    J -.-> E
-    K -.-> F
-    K -.-> G
-```
-
-### Cloud Run Deployment
-
-```mermaid
-flowchart LR
-    subgraph "Cloud Run"
-        A[Load Balancer] --> B[Service Instances]
-        B --> C[Container 1]
-        B --> D[Container 2]
-        B --> E[Container N]
-        
-        subgraph "Auto-scaling"
-            F[Min: 1]
-            G[Max: 10]
-            H[CPU: 70%]
-        end
-    end
-    
-    subgraph "Google Cloud Services"
-        I[Cloud IAM]
-        J[Secret Manager]
-        K[Cloud Storage]
-        L[Cloud Logging]
-    end
-    
-    C --> I
-    C --> J
-    C --> K
-    C --> L
-```
-
-### Kubernetes Architecture
-
-```mermaid
-graph TD
-    subgraph "Kubernetes Cluster"
-        subgraph "Namespace: security-agent"
-            A[Deployment] --> B[ReplicaSet]
-            B --> C[Pod 1]
-            B --> D[Pod 2]
-            B --> E[Pod 3]
-            
-            F[Service] --> C
-            F --> D
-            F --> E
-            
-            G[Ingress] --> F
-            
-            H[ConfigMap] -.-> C
-            H -.-> D
-            H -.-> E
-            
-            I[Secret] -.-> C
-            I -.-> D
-            I -.-> E
-        end
-        
-        subgraph "Monitoring"
-            J[HPA] --> B
-            K[Prometheus] --> C
-            K --> D
-            K --> E
-        end
+graph LR
+    subgraph "Security Analysis Pipeline"
+        AS[Asset Data] --> SC[Security Checks]
+        SC --> SF[Security Findings]
+        SF --> RA[Risk Assessment]
+        RA --> RG[Recommendation Generation]
+        RG --> PR[Priority Ranking]
+        PR --> CF[Compliance Framework Mapping]
+        CF --> FR[Final Report]
     end
 ```
 
-## 📊 Performance Architecture
+## 4. Database and Storage Architecture
 
-### Caching Strategy
+### 4.1 Storage Strategy
 
-```mermaid
-flowchart TD
-    A[Request] --> B{Cache Check}
-    B -->|Hit| C[Return Cached]
-    B -->|Miss| D[Service Processing]
+#### 4.1.1 Data Storage Layers
+```yaml
+storage_architecture:
+  cache_layer:
+    technology: Redis
+    purpose: "Fast access to frequently requested data"
+    ttl_strategy: "Graduated TTL based on data type"
     
-    D --> E{Cacheable?}
-    E -->|Yes| F[Store in Cache]
-    E -->|No| G[Return Direct]
+  session_storage:
+    technology: "In-memory + Redis backup"
+    purpose: "User session and conversation state"
+    persistence: "Cross-request state management"
     
-    F --> H[Set TTL]
-    H --> G
+  configuration_storage:
+    technology: "Environment variables + Secret Manager"
+    purpose: "Application configuration and secrets"
+    security: "Encrypted at rest"
     
-    subgraph "Cache Layers"
-        I[Service-Level Cache<br/>- IAM: 5 min<br/>- Projects: 10 min]
-        J[API Response Cache<br/>- Health: 30s<br/>- Status: 60s]
-        K[Frontend Cache<br/>- Session Storage<br/>- Component State]
-    end
+  log_storage:
+    technology: "Cloud Logging + BigQuery"
+    purpose: "Application logs and analytics"
+    retention: "30 days operational, 1 year analytics"
 ```
 
-### Monitoring & Observability
+#### 4.1.2 Cache Architecture Strategy
+```python
+# Multi-Level Caching Strategy
+class CacheManager:
+    def __init__(self):
+        self.l1_cache = InMemoryCache(max_size=1000)  # Fast local cache
+        self.l2_cache = RedisCache(url=redis_url)     # Distributed cache
+        self.l3_cache = DatabaseCache(db=database)    # Persistent cache
+    
+    async def get(self, key: str) -> Optional[Any]:
+        """Multi-level cache retrieval with fallback"""
+        # L1: In-memory cache
+        value = self.l1_cache.get(key)
+        if value:
+            return value
+        
+        # L2: Redis cache
+        value = await self.l2_cache.get(key)
+        if value:
+            self.l1_cache.set(key, value, ttl=60)  # Populate L1
+            return value
+        
+        # L3: Database cache
+        value = await self.l3_cache.get(key)
+        if value:
+            await self.l2_cache.set(key, value, ttl=300)  # Populate L2
+            self.l1_cache.set(key, value, ttl=60)         # Populate L1
+            return value
+        
+        return None
+```
+
+### 4.2 Session Management Architecture
+
+```python
+# Session Management with Persistence
+class SessionManager:
+    def __init__(self):
+        self.memory_store = InMemorySessionStore()
+        self.persistent_store = RedisSessionStore()
+        self.conversation_memory = ConversationMemoryService()
+    
+    async def create_session(self, user_id: str, project_id: str) -> str:
+        """Create new session with distributed storage"""
+        session_id = self.generate_session_id()
+        
+        session_data = {
+            "session_id": session_id,
+            "user_id": user_id,
+            "project_id": project_id,
+            "created_at": datetime.utcnow(),
+            "status": "active",
+            "context": {}
+        }
+        
+        # Store in both memory and persistent storage
+        await self.memory_store.create(session_id, session_data)
+        await self.persistent_store.create(session_id, session_data, ttl=3600)
+        
+        # Initialize conversation memory
+        await self.conversation_memory.create_session(session_id, user_id)
+        
+        return session_id
+```
+
+## 5. Security Architecture
+
+### 5.1 Security Layers
 
 ```mermaid
 graph TB
-    subgraph "Application"
-        A[Service Metrics] --> B[OpenTelemetry]
-        C[Logs] --> D[Structured Logging]
-        E[Traces] --> B
-    end
-    
-    subgraph "Google Cloud"
-        B --> F[Cloud Trace]
-        D --> G[Cloud Logging]
-        A --> H[Cloud Monitoring]
+    subgraph "Security Architecture"
+        subgraph "Network Security"
+            TLS[TLS 1.3 Encryption]
+            FW[Cloud Firewall]
+            LB[Load Balancer]
+        end
         
-        F --> I[Trace Explorer]
-        G --> J[Logs Explorer]
-        H --> K[Metrics Explorer]
+        subgraph "Application Security"
+            AUTH[IAM Authentication]
+            AUTHZ[Role-Based Authorization]
+            RATE[Rate Limiting]
+            VALID[Input Validation]
+        end
         
-        I --> L[Dashboards]
-        J --> L
-        K --> L
+        subgraph "Data Security"
+            ENCRYPT[Encryption at Rest]
+            MASK[Data Masking]
+            AUDIT[Audit Logging]
+        end
+        
+        subgraph "Infrastructure Security"
+            SA[Service Account]
+            SECRETS[Secret Manager]
+            VPC[VPC Security]
+        end
     end
 ```
 
-## 🔧 Development Architecture
+### 5.2 Authentication and Authorization Flow
 
-### Local Development Setup
+```python
+# Security Architecture Implementation
+class SecurityMiddleware:
+    async def __call__(self, request: Request, call_next):
+        """Security middleware with comprehensive checks"""
+        
+        # 1. Rate limiting check
+        if not await self.rate_limiter.check_rate_limit(request):
+            raise HTTPException(429, "Rate limit exceeded")
+        
+        # 2. Authentication
+        user = await self.authenticate_request(request)
+        if not user:
+            raise HTTPException(401, "Authentication required")
+        
+        # 3. Authorization
+        if not await self.authorize_request(request, user):
+            raise HTTPException(403, "Insufficient permissions")
+        
+        # 4. Input validation
+        await self.validate_request(request)
+        
+        # 5. Process request
+        response = await call_next(request)
+        
+        # 6. Audit logging
+        await self.audit_request(request, response, user)
+        
+        return response
 
-```mermaid
-flowchart TD
-    A[Developer Machine] --> B[Virtual Environment]
-    B --> C[Python Dependencies]
+class GCPAuthenticator:
+    def __init__(self):
+        self.credentials = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE,
+            scopes=REQUIRED_SCOPES
+        )
     
-    C --> D[Backend Server<br/>uvicorn - Port 8000]
-    C --> E[Frontend Server<br/>streamlit - Port 8501]
-    C --> F[ADK Interface<br/>Port 8080]
-    
-    D --> G[Service Registry]
-    G --> H[Mock Services]
-    G --> I[Real GCP Services]
-    
-    subgraph "Development Tools"
-        J[Hot Reload]
-        K[Debug Mode]
-        L[Test Suite]
-    end
-    
-    J --> D
-    J --> E
-    K --> D
-    L --> H
+    async def authenticate_request(self, request: Request) -> Optional[User]:
+        """Authenticate using Google Cloud IAM"""
+        auth_header = request.headers.get("Authorization")
+        if not auth_header:
+            return None
+        
+        try:
+            # Verify token with Google
+            token = auth_header.replace("Bearer ", "")
+            user_info = await self.verify_token(token)
+            return User.from_token_info(user_info)
+        except Exception as e:
+            logger.warning(f"Authentication failed: {e}")
+            return None
 ```
 
-### CI/CD Pipeline
+## 6. Performance Architecture
 
-```mermaid
-flowchart LR
-    A[Code Push] --> B[GitHub Actions]
-    
-    B --> C[Lint & Format]
-    B --> D[Type Check]
-    B --> E[Unit Tests]
-    B --> F[Integration Tests]
-    
-    C --> G{All Pass?}
-    D --> G
-    E --> G
-    F --> G
-    
-    G -->|Yes| H[Build Container]
-    G -->|No| I[Fail Build]
-    
-    H --> J[Push to Registry]
-    J --> K[Deploy to Staging]
-    K --> L[Run E2E Tests]
-    L --> M{Tests Pass?}
-    
-    M -->|Yes| N[Deploy to Production]
-    M -->|No| O[Rollback]
+### 6.1 Performance Optimization Strategy
+
+```yaml
+performance_architecture:
+  response_time_targets:
+    asset_queries: "< 2 seconds"
+    security_analysis: "< 5 seconds"
+    chat_responses: "< 3 seconds"
+    api_endpoints: "< 1 second"
+  
+  scalability_patterns:
+    horizontal_scaling: "Auto-scaling based on CPU/memory"
+    caching_strategy: "Multi-level caching with TTL"
+    async_processing: "Non-blocking I/O operations"
+    connection_pooling: "Persistent connections to GCP APIs"
+  
+  optimization_techniques:
+    - "Response compression (gzip)"
+    - "HTTP/2 multiplexing"
+    - "Query result caching"
+    - "Batch API requests"
+    - "Lazy loading of components"
 ```
 
-## 📚 Additional Resources
+### 6.2 Async Processing Architecture
 
-- [API Documentation](http://localhost:8000/docs)
-- [Service Management Guide](./SERVICE_MANAGEMENT.md)
-- [Security Best Practices](./SECURITY.md)
-- [Deployment Guide](./DEPLOYMENT.md)
-- [Contributing Guidelines](./CONTRIBUTING.md)
+```python
+# Async Processing with Background Tasks
+from fastapi import BackgroundTasks
+import asyncio
 
----
+class AsyncProcessingManager:
+    def __init__(self):
+        self.task_queue = asyncio.Queue()
+        self.worker_pool = WorkerPool(size=10)
+        self.result_store = ResultStore()
+    
+    async def process_large_query(self, query: str, session_id: str) -> str:
+        """Process large queries asynchronously"""
+        task_id = self.generate_task_id()
+        
+        # Submit task to background processing
+        await self.task_queue.put({
+            "task_id": task_id,
+            "query": query,
+            "session_id": session_id,
+            "submitted_at": datetime.utcnow()
+        })
+        
+        # Return task ID for status tracking
+        return task_id
+    
+    async def get_task_result(self, task_id: str) -> Optional[dict]:
+        """Get result of async task"""
+        return await self.result_store.get(task_id)
 
-**Last Updated:** January 2025  
-**Version:** 4.0.0  
-**Maintainers:** ADK Security Team
+@app.post("/api/v1/agent/chat-async")
+async def chat_async(
+    request: ChatRequest,
+    background_tasks: BackgroundTasks
+):
+    """Async chat endpoint for complex queries"""
+    if request.complexity == "HIGH":
+        task_id = await async_manager.process_large_query(
+            request.query, 
+            request.session_id
+        )
+        return {"task_id": task_id, "status": "processing"}
+    else:
+        # Process synchronously for simple queries
+        result = await chat_service.process_query(request)
+        return {"result": result, "status": "completed"}
+```
+
+## 7. Monitoring and Observability Architecture
+
+### 7.1 Monitoring Stack
+
+```yaml
+monitoring_architecture:
+  metrics:
+    application_metrics:
+      - "Request rate and response time"
+      - "Error rate and success rate"
+      - "Agent routing decisions"
+      - "Cache hit/miss ratios"
+    
+    business_metrics:
+      - "Asset discovery count"
+      - "Security findings detected"
+      - "Recommendations generated"
+      - "User engagement metrics"
+    
+    infrastructure_metrics:
+      - "CPU and memory utilization"
+      - "Network latency"
+      - "Database performance"
+      - "External API response times"
+  
+  logging:
+    structured_logging: "JSON format with correlation IDs"
+    log_levels: "ERROR, WARN, INFO, DEBUG"
+    retention: "30 days operational, 90 days compliance"
+    
+  tracing:
+    distributed_tracing: "OpenTelemetry with Cloud Trace"
+    trace_sampling: "10% for production, 100% for development"
+```
+
+### 7.2 Health Check Architecture
+
+```python
+# Comprehensive Health Check System
+class HealthCheckManager:
+    def __init__(self):
+        self.checks = [
+            DatabaseHealthCheck(),
+            GCPAPIHealthCheck(),
+            CacheHealthCheck(),
+            AgentHealthCheck()
+        ]
+    
+    async def perform_health_check(self) -> HealthCheckResult:
+        """Perform comprehensive health check"""
+        results = {}
+        overall_status = "healthy"
+        
+        for check in self.checks:
+            try:
+                result = await check.check()
+                results[check.name] = result
+                
+                if result.status != "healthy":
+                    overall_status = "degraded"
+            except Exception as e:
+                results[check.name] = {"status": "unhealthy", "error": str(e)}
+                overall_status = "unhealthy"
+        
+        return HealthCheckResult(
+            status=overall_status,
+            checks=results,
+            timestamp=datetime.utcnow()
+        )
+
+class GCPAPIHealthCheck:
+    async def check(self) -> dict:
+        """Check GCP API connectivity"""
+        try:
+            # Test Asset Inventory API
+            client = asset.AssetServiceAsyncClient()
+            request = asset.ListAssetsRequest(
+                parent=f"projects/{PROJECT_ID}",
+                page_size=1
+            )
+            response = await client.list_assets(request=request, timeout=5.0)
+            
+            return {
+                "status": "healthy",
+                "response_time_ms": response.response_time,
+                "last_check": datetime.utcnow().isoformat()
+            }
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "error": str(e),
+                "last_check": datetime.utcnow().isoformat()
+            }
+```
+
+## 8. Deployment Architecture
+
+### 8.1 Cloud Run Deployment Architecture
+
+```yaml
+deployment_architecture:
+  platform: "Google Cloud Run"
+  scaling:
+    min_instances: 1
+    max_instances: 10
+    cpu_threshold: 70%
+    memory_threshold: 80%
+    concurrency: 100
+  
+  networking:
+    vpc_connector: "security-agent-connector"
+    egress: "private-ranges-only"
+    ingress: "all"
+  
+  security:
+    service_account: "gcp-security-agent-sa"
+    iam_roles:
+      - "roles/cloudasset.viewer"
+      - "roles/compute.viewer"
+      - "roles/storage.objectViewer"
+    
+  monitoring:
+    cloud_monitoring: "enabled"
+    cloud_logging: "enabled"
+    error_reporting: "enabled"
+    cloud_trace: "enabled"
+```
+
+### 8.2 Container Architecture
+
+```dockerfile
+# Multi-stage container build for optimal security and performance
+FROM python:3.11-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    gcc g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Production stage
+FROM python:3.11-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy virtual environment
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash app
+USER app
+WORKDIR /home/app
+
+# Copy application
+COPY --chown=app:app . .
+
+# Set environment
+ENV PYTHONPATH=/home/app
+ENV PORT=8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:$PORT/health || exit 1
+
+# Start application
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+This architecture documentation provides a comprehensive view of the GCP Security Agent system's design, covering all major architectural components, patterns, and decisions that enable scalable, secure, and performant operation in both development and production environments.

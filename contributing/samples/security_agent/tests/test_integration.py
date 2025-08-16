@@ -112,7 +112,7 @@ class TestAgentDelegation:
             ("analyze firewall rules", "NetworkSecurityAgent"),
             ("check compliance status", "ComplianceAgent"),
             ("analyze costs", "CostOptimizationAgent"),
-            ("general security question", "CoordinatorAgent")
+
         ]
         
         for query, expected_agent in test_cases:

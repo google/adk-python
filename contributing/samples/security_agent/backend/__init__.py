@@ -1,1 +1,1 @@
-"""ADK Security Agent Backend Module."""
+# Marks backend as a Python package

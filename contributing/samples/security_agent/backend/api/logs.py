@@ -1,304 +1,708 @@
-"""Log analysis API endpoints for Day Two SRE operations."""
+"""
+Google Cloud Logging API thin client wrapper.
 
-import os
-import json
+This module provides a clean interface to Cloud Logging for Day 2 operations.
+Focuses on log retrieval, analysis, and alerting capabilities.
+"""
+
+import logging
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
-import re
-from collections import defaultdict, Counter
+from pydantic import BaseModel, Field
+import json
 
-router = APIRouter(prefix="/api/v1/logs", tags=["logs"])
+try:
+    from google.cloud import logging as cloud_logging
+    from google.cloud.logging_v2 import Client as LoggingClient
+    from google.cloud.logging_v2.entries import StructEntry, TextEntry
+    LOGGING_AVAILABLE = True
+except ImportError:
+    LOGGING_AVAILABLE = False
+    LoggingClient = None
 
-class LogAnalysisRequest(BaseModel):
-    log_path: str
-    lines: Optional[int] = 100
-    search_pattern: Optional[str] = None
-    log_level: Optional[str] = None
+logger = logging.getLogger(__name__)
+
+# ============================================
+# Pydantic Models for Type Safety
+# ============================================
+
+class LogQueryRequest(BaseModel):
+    """Request model for querying logs."""
+    project_id: str
+    filter: Optional[str] = Field(
+        None,
+        description="Advanced filter using Logging query language"
+    )
+    resource_type: Optional[str] = Field(
+        None,
+        description="Resource type (e.g., gce_instance, k8s_cluster)"
+    )
+    severity: Optional[str] = Field(
+        None,
+        description="Minimum severity (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
+    )
+    time_range: Optional[str] = Field(
+        "24h",
+        description="Time range (e.g., 1h, 24h, 7d)"
+    )
+    limit: Optional[int] = Field(100, ge=1, le=1000)
+    order_by: Optional[str] = Field("timestamp desc")
 
 class LogEntry(BaseModel):
-    timestamp: Optional[str] = None
-    level: Optional[str] = None
+    """Model for a log entry."""
+    timestamp: str
+    severity: str
     message: str
-    line_number: int
+    resource: Dict[str, Any]
+    labels: Optional[Dict[str, str]] = {}
+    source_location: Optional[Dict[str, Any]] = None
+    http_request: Optional[Dict[str, Any]] = None
+    trace: Optional[str] = None
+    span_id: Optional[str] = None
+    insert_id: Optional[str] = None
 
-class LogAnalysisResponse(BaseModel):
-    success: bool
-    log_entries: List[LogEntry]
-    summary: Dict
-    error: Optional[str] = None
-
-def parse_log_line(line: str, line_number: int) -> LogEntry:
-    """Parse a log line to extract timestamp, level, and message."""
-    # Common log patterns
-    patterns = [
-        # ISO timestamp with level: 2025-08-03 07:36:51,927 - module - INFO - message
-        r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[,\.]\d+).*?-.*?- (\w+) - (.+)',
-        # Simple level: INFO: message
-        r'^(\w+):\s*(.+)',
-        # HTTP logs: method path status
-        r'(\w+)\s+("[^"]*"|\S+)\s+(\d{3})',
-    ]
-    
-    timestamp = None
-    level = None
-    message = line.strip()
-    
-    for pattern in patterns:
-        match = re.search(pattern, line)
-        if match:
-            if len(match.groups()) == 3 and '-' in match.group(1):
-                # Full timestamp pattern
-                timestamp = match.group(1)
-                level = match.group(2)
-                message = match.group(3)
-            elif len(match.groups()) == 2:
-                # Simple level pattern
-                level = match.group(1)
-                message = match.group(2)
-            break
-    
-    # Detect level from keywords if not found
-    if not level:
-        level_keywords = ['ERROR', 'WARN', 'INFO', 'DEBUG', 'CRITICAL', 'FATAL']
-        for keyword in level_keywords:
-            if keyword in line.upper():
-                level = keyword
-                break
-        level = level or 'INFO'
-    
-    return LogEntry(
-        timestamp=timestamp,
-        level=level.upper(),
-        message=message,
-        line_number=line_number
+class LogMetricsRequest(BaseModel):
+    """Request model for log-based metrics."""
+    project_id: str
+    metric_name: str
+    description: Optional[str] = None
+    filter: str
+    value_extractor: Optional[str] = None
+    metric_kind: Optional[str] = Field(
+        "DELTA",
+        description="DELTA, GAUGE, or CUMULATIVE"
+    )
+    value_type: Optional[str] = Field(
+        "INT64",
+        description="BOOL, INT64, DOUBLE, STRING, DISTRIBUTION"
     )
 
-def analyze_log_entries(entries: List[LogEntry]) -> Dict:
-    """Analyze log entries and provide summary statistics."""
-    if not entries:
-        return {"total_lines": 0}
-    
-    level_counts = Counter(entry.level for entry in entries)
-    
-    # Error analysis
-    error_entries = [e for e in entries if e.level in ['ERROR', 'CRITICAL', 'FATAL']]
-    warning_entries = [e for e in entries if e.level == 'WARN']
-    
-    # Pattern analysis
-    common_errors = Counter()
-    for entry in error_entries:
-        # Extract common error patterns
-        if 'timeout' in entry.message.lower():
-            common_errors['timeout_errors'] += 1
-        elif 'connection' in entry.message.lower():
-            common_errors['connection_errors'] += 1
-        elif 'authentication' in entry.message.lower():
-            common_errors['auth_errors'] += 1
-        elif 'permission' in entry.message.lower():
-            common_errors['permission_errors'] += 1
-        else:
-            common_errors['other_errors'] += 1
-    
-    # Time analysis
-    timestamps = [e.timestamp for e in entries if e.timestamp]
-    time_range = None
-    if timestamps:
-        try:
-            parsed_times = []
-            for ts in timestamps:
-                # Try to parse different timestamp formats
-                for fmt in ["%Y-%m-%d %H:%M:%S,%f", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"]:
-                    try:
-                        parsed_times.append(datetime.strptime(ts[:19], fmt[:19]))
-                        break
-                    except ValueError:
-                        continue
-            
-            if parsed_times:
-                time_range = {
-                    "start": min(parsed_times).isoformat(),
-                    "end": max(parsed_times).isoformat(),
-                    "duration_minutes": (max(parsed_times) - min(parsed_times)).total_seconds() / 60
-                }
-        except Exception:
-            pass
-    
-    return {
-        "total_lines": len(entries),
-        "level_distribution": dict(level_counts),
-        "error_count": len(error_entries),
-        "warning_count": len(warning_entries),
-        "error_patterns": dict(common_errors),
-        "time_range": time_range,
-        "health_score": max(0, 100 - (len(error_entries) * 10) - (len(warning_entries) * 2))
-    }
+class LogSinkRequest(BaseModel):
+    """Request model for creating log sinks."""
+    project_id: str
+    sink_name: str
+    destination: str  # e.g., storage.googleapis.com/my-bucket
+    filter: Optional[str] = None
+    description: Optional[str] = None
+    include_children: Optional[bool] = True
 
-@router.post("/analyze", response_model=LogAnalysisResponse)
-async def analyze_logs(request: LogAnalysisRequest):
-    """Analyze log file and return structured data with summary."""
+class LogAlertRequest(BaseModel):
+    """Request model for log-based alerts."""
+    project_id: str
+    alert_name: str
+    filter: str
+    notification_channels: List[str]
+    documentation: Optional[str] = None
+    threshold_value: Optional[float] = 1
+    duration: Optional[str] = "60s"
+
+# ============================================
+# Core Logging Functions
+# ============================================
+
+async def list_logs(request: LogQueryRequest) -> Dict[str, Any]:
+    """
+    Query and retrieve logs from Cloud Logging.
+    
+    This is the primary function for log retrieval in Day 2 operations.
+    """
+    if not LOGGING_AVAILABLE:
+        return {
+            "success": False,
+            "error": "Google Cloud Logging library not available"
+        }
+    
     try:
-        if not os.path.exists(request.log_path):
-            raise HTTPException(status_code=404, detail=f"Log file not found: {request.log_path}")
+        client = cloud_logging.Client(project=request.project_id)
         
-        log_entries = []
+        # Build the filter
+        filter_parts = []
         
-        with open(request.log_path, 'r', encoding='utf-8', errors='ignore') as file:
-            lines = file.readlines()
-            
-            # Get the last N lines if specified
-            if request.lines and request.lines < len(lines):
-                lines = lines[-request.lines:]
-            
-            for i, line in enumerate(lines, 1):
-                if line.strip():  # Skip empty lines
-                    # Apply search pattern filter if specified
-                    if request.search_pattern and request.search_pattern.lower() not in line.lower():
-                        continue
-                    
-                    entry = parse_log_line(line, i)
-                    
-                    # Apply log level filter if specified
-                    if request.log_level and entry.level != request.log_level.upper():
-                        continue
-                    
-                    log_entries.append(entry)
+        # Add resource type filter
+        if request.resource_type:
+            filter_parts.append(f'resource.type="{request.resource_type}"')
         
-        summary = analyze_log_entries(log_entries)
+        # Add severity filter
+        if request.severity:
+            filter_parts.append(f'severity>={request.severity}')
         
-        return LogAnalysisResponse(
-            success=True,
-            log_entries=log_entries,
-            summary=summary
+        # Add time range filter
+        if request.time_range:
+            time_filter = _build_time_filter(request.time_range)
+            filter_parts.append(time_filter)
+        
+        # Add custom filter
+        if request.filter:
+            filter_parts.append(f'({request.filter})')
+        
+        # Combine filters
+        final_filter = " AND ".join(filter_parts) if filter_parts else None
+        
+        # Query logs
+        entries = client.list_entries(
+            filter_=final_filter,
+            order_by=request.order_by,
+            max_results=request.limit
         )
+        
+        # Process entries
+        log_entries = []
+        for entry in entries:
+            log_entries.append(_process_log_entry(entry))
+        
+        # Analyze logs for insights
+        analysis = _analyze_log_patterns(log_entries)
+        
+        return {
+            "success": True,
+            "project_id": request.project_id,
+            "filter": final_filter,
+            "count": len(log_entries),
+            "entries": log_entries,
+            "analysis": analysis
+        }
         
     except Exception as e:
-        return LogAnalysisResponse(
-            success=False,
-            log_entries=[],
-            summary={},
-            error=str(e)
-        )
+        logger.error(f"Failed to list logs: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
-@router.get("/health")
-async def logs_health():
-    """Health check for log analysis service."""
-    log_dir = "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/logs"
+async def get_log_metrics(request: LogQueryRequest) -> Dict[str, Any]:
+    """
+    Get aggregated metrics from logs.
     
-    status = {
-        "status": "healthy",
-        "log_directory_exists": os.path.exists(log_dir),
-        "available_logs": []
-    }
-    
-    if os.path.exists(log_dir):
-        try:
-            log_files = [f for f in os.listdir(log_dir) if f.endswith('.log')]
-            status["available_logs"] = log_files
-        except Exception as e:
-            status["error"] = str(e)
-    
-    return status
-
-@router.get("/list")
-async def list_log_files():
-    """List available log files."""
-    log_dir = "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/logs"
-    
-    if not os.path.exists(log_dir):
-        return {"success": False, "error": "Log directory not found"}
+    Useful for understanding error rates, request patterns, etc.
+    """
+    if not LOGGING_AVAILABLE:
+        return {
+            "success": False,
+            "error": "Google Cloud Logging library not available"
+        }
     
     try:
-        log_files = []
-        for filename in os.listdir(log_dir):
-            if filename.endswith('.log'):
-                file_path = os.path.join(log_dir, filename)
-                stat = os.stat(file_path)
-                log_files.append({
-                    "name": filename,
-                    "path": file_path,
-                    "size_bytes": stat.st_size,
-                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        # First get the logs
+        logs_result = await list_logs(request)
+        
+        if not logs_result.get("success"):
+            return logs_result
+        
+        entries = logs_result.get("entries", [])
+        
+        # Calculate metrics
+        metrics = {
+            "total_logs": len(entries),
+            "severity_distribution": {},
+            "resource_distribution": {},
+            "error_rate": 0,
+            "top_errors": [],
+            "time_series": []
+        }
+        
+        # Severity distribution
+        severity_counts = {}
+        error_messages = []
+        
+        for entry in entries:
+            severity = entry.get("severity", "DEFAULT")
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+            
+            if severity in ["ERROR", "CRITICAL", "ALERT", "EMERGENCY"]:
+                error_messages.append(entry.get("message", ""))
+        
+        metrics["severity_distribution"] = severity_counts
+        
+        # Calculate error rate
+        total = len(entries)
+        errors = sum(
+            severity_counts.get(sev, 0) 
+            for sev in ["ERROR", "CRITICAL", "ALERT", "EMERGENCY"]
+        )
+        metrics["error_rate"] = (errors / total * 100) if total > 0 else 0
+        
+        # Top error patterns
+        if error_messages:
+            error_patterns = _extract_error_patterns(error_messages)
+            metrics["top_errors"] = error_patterns[:10]
+        
+        return {
+            "success": True,
+            "project_id": request.project_id,
+            "metrics": metrics
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get log metrics: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+async def create_log_sink(request: LogSinkRequest) -> Dict[str, Any]:
+    """
+    Create a log sink to export logs to another destination.
+    
+    Useful for long-term storage, analysis, or compliance.
+    """
+    if not LOGGING_AVAILABLE:
+        return {
+            "success": False,
+            "error": "Google Cloud Logging library not available"
+        }
+    
+    try:
+        client = cloud_logging.Client(project=request.project_id)
+        
+        # Create the sink
+        sink = client.sink(
+            name=request.sink_name,
+            filter_=request.filter,
+            destination=request.destination
+        )
+        
+        # Create or update
+        if sink.exists():
+            sink.reload()
+            sink.filter_ = request.filter
+            sink.destination = request.destination
+            sink.update()
+            operation = "updated"
+        else:
+            sink.create()
+            operation = "created"
+        
+        return {
+            "success": True,
+            "operation": operation,
+            "sink": {
+                "name": sink.name,
+                "destination": sink.destination,
+                "filter": sink.filter_,
+                "writer_identity": sink.writer_identity
+            },
+            "message": f"Log sink {operation} successfully. Grant {sink.writer_identity} write access to the destination."
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to create log sink: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+async def list_log_sinks(project_id: str) -> Dict[str, Any]:
+    """List all log sinks in the project."""
+    if not LOGGING_AVAILABLE:
+        return {
+            "success": False,
+            "error": "Google Cloud Logging library not available"
+        }
+    
+    try:
+        client = cloud_logging.Client(project=project_id)
+        
+        sinks = []
+        for sink in client.list_sinks():
+            sinks.append({
+                "name": sink.name,
+                "destination": sink.destination,
+                "filter": sink.filter_,
+                "writer_identity": sink.writer_identity,
+                "include_children": getattr(sink, 'include_children', False)
+            })
+        
+        return {
+            "success": True,
+            "project_id": project_id,
+            "count": len(sinks),
+            "sinks": sinks
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to list log sinks: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+async def create_log_metric(request: LogMetricsRequest) -> Dict[str, Any]:
+    """
+    Create a log-based metric for monitoring.
+    
+    Converts log entries into time series metrics.
+    """
+    if not LOGGING_AVAILABLE:
+        return {
+            "success": False,
+            "error": "Google Cloud Logging library not available"
+        }
+    
+    try:
+        client = cloud_logging.Client(project=request.project_id)
+        
+        # Create metric descriptor
+        metric = client.metric(
+            name=request.metric_name,
+            filter_=request.filter,
+            description=request.description
+        )
+        
+        # Set metric properties
+        if request.value_extractor:
+            metric.value_extractor = request.value_extractor
+        
+        # Create or update
+        if metric.exists():
+            metric.reload()
+            metric.filter_ = request.filter
+            metric.update()
+            operation = "updated"
+        else:
+            metric.create()
+            operation = "created"
+        
+        return {
+            "success": True,
+            "operation": operation,
+            "metric": {
+                "name": metric.name,
+                "filter": metric.filter_,
+                "description": metric.description,
+                "value_extractor": getattr(metric, 'value_extractor', None)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to create log metric: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+async def get_error_reporting(project_id: str, time_range: str = "24h") -> Dict[str, Any]:
+    """
+    Get error reporting summary from logs.
+    
+    Provides insights into application errors and issues.
+    """
+    try:
+        # Query error logs
+        request = LogQueryRequest(
+            project_id=project_id,
+            severity="ERROR",
+            time_range=time_range,
+            limit=500
+        )
+        
+        result = await list_logs(request)
+        
+        if not result.get("success"):
+            return result
+        
+        entries = result.get("entries", [])
+        
+        # Group errors by type/service
+        error_groups = {}
+        for entry in entries:
+            # Extract service/resource
+            resource = entry.get("resource", {})
+            resource_type = resource.get("type", "unknown")
+            
+            if resource_type not in error_groups:
+                error_groups[resource_type] = {
+                    "count": 0,
+                    "errors": [],
+                    "first_seen": entry.get("timestamp"),
+                    "last_seen": entry.get("timestamp")
+                }
+            
+            group = error_groups[resource_type]
+            group["count"] += 1
+            group["last_seen"] = entry.get("timestamp")
+            
+            # Add unique error messages (limit to prevent memory issues)
+            message = entry.get("message", "")
+            if message and len(group["errors"]) < 10:
+                # Simple deduplication
+                if not any(msg == message for msg in group["errors"]):
+                    group["errors"].append(message)
+        
+        # Calculate error trends
+        total_errors = sum(g["count"] for g in error_groups.values())
+        
+        return {
+            "success": True,
+            "project_id": project_id,
+            "time_range": time_range,
+            "summary": {
+                "total_errors": total_errors,
+                "affected_services": len(error_groups),
+                "critical_services": [
+                    name for name, group in error_groups.items() 
+                    if group["count"] > 10
+                ]
+            },
+            "error_groups": error_groups,
+            "recommendations": _generate_error_recommendations(error_groups)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get error reporting: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+async def get_audit_logs(project_id: str, resource: Optional[str] = None, 
+                        user: Optional[str] = None, time_range: str = "24h") -> Dict[str, Any]:
+    """
+    Retrieve audit logs for security and compliance.
+    
+    Focuses on admin activity, data access, and system events.
+    """
+    try:
+        # Build audit log filter
+        filter_parts = [
+            'log_name:"cloudaudit.googleapis.com"'
+        ]
+        
+        if resource:
+            filter_parts.append(f'resource.type="{resource}"')
+        
+        if user:
+            filter_parts.append(f'protoPayload.authenticationInfo.principalEmail="{user}"')
+        
+        request = LogQueryRequest(
+            project_id=project_id,
+            filter=" AND ".join(filter_parts),
+            time_range=time_range,
+            limit=200
+        )
+        
+        result = await list_logs(request)
+        
+        if not result.get("success"):
+            return result
+        
+        entries = result.get("entries", [])
+        
+        # Process audit entries
+        audit_summary = {
+            "total_activities": len(entries),
+            "users": set(),
+            "resources_modified": set(),
+            "sensitive_actions": [],
+            "failed_actions": []
+        }
+        
+        for entry in entries:
+            # Extract audit-specific information
+            message = entry.get("message", "")
+            
+            # Track users
+            if "principalEmail" in message:
+                # Simple extraction - in production use proper parsing
+                audit_summary["users"].add("extracted_user")
+            
+            # Track sensitive actions
+            sensitive_keywords = ["delete", "remove", "grant", "revoke", "create", "update"]
+            if any(keyword in message.lower() for keyword in sensitive_keywords):
+                audit_summary["sensitive_actions"].append({
+                    "timestamp": entry.get("timestamp"),
+                    "action": message[:200]
                 })
         
-        return {
-            "success": True,
-            "log_files": sorted(log_files, key=lambda x: x["modified"], reverse=True)
-        }
-        
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-@router.get("/tail/{filename}")
-async def tail_log_file(filename: str, lines: int = Query(50, ge=1, le=1000)):
-    """Get the last N lines from a log file."""
-    log_dir = "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/logs"
-    file_path = os.path.join(log_dir, filename)
-    
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"Log file not found: {filename}")
-    
-    try:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
-            all_lines = file.readlines()
-            tail_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
-            
-            entries = []
-            for i, line in enumerate(tail_lines, len(all_lines) - len(tail_lines) + 1):
-                if line.strip():
-                    entries.append(parse_log_line(line, i))
-            
-            summary = analyze_log_entries(entries)
-            
-            return {
-                "success": True,
-                "filename": filename,
-                "total_lines_in_file": len(all_lines),
-                "returned_lines": len(entries),
-                "entries": [entry.dict() for entry in entries],
-                "summary": summary
-            }
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/search/{filename}")
-async def search_log_file(
-    filename: str, 
-    pattern: str = Query(..., description="Search pattern"),
-    case_sensitive: bool = Query(False),
-    max_results: int = Query(100, ge=1, le=1000)
-):
-    """Search for patterns in a log file."""
-    log_dir = "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/logs"
-    file_path = os.path.join(log_dir, filename)
-    
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"Log file not found: {filename}")
-    
-    try:
-        matches = []
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
-            for line_num, line in enumerate(file, 1):
-                search_line = line if case_sensitive else line.lower()
-                search_pattern = pattern if case_sensitive else pattern.lower()
-                
-                if search_pattern in search_line:
-                    entry = parse_log_line(line, line_num)
-                    matches.append(entry.dict())
-                    
-                    if len(matches) >= max_results:
-                        break
+        audit_summary["users"] = list(audit_summary["users"])
+        audit_summary["resources_modified"] = list(audit_summary["resources_modified"])
         
         return {
             "success": True,
-            "filename": filename,
-            "pattern": pattern,
-            "case_sensitive": case_sensitive,
-            "matches_found": len(matches),
-            "matches": matches
+            "project_id": project_id,
+            "audit_summary": audit_summary,
+            "recent_activities": entries[:20]  # Most recent 20
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to get audit logs: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+# ============================================
+# Helper Functions
+# ============================================
+
+def _build_time_filter(time_range: str) -> str:
+    """Build a time filter for log queries."""
+    # Parse time range (e.g., "1h", "24h", "7d")
+    import re
+    match = re.match(r'(\d+)([hdm])', time_range)
+    if not match:
+        return ""
+    
+    value, unit = match.groups()
+    value = int(value)
+    
+    if unit == 'h':
+        delta = timedelta(hours=value)
+    elif unit == 'd':
+        delta = timedelta(days=value)
+    elif unit == 'm':
+        delta = timedelta(minutes=value)
+    else:
+        delta = timedelta(hours=24)
+    
+    start_time = datetime.utcnow() - delta
+    return f'timestamp>="{start_time.isoformat()}Z"'
+
+def _process_log_entry(entry) -> Dict[str, Any]:
+    """Process a log entry into a standardized format."""
+    processed = {
+        "timestamp": entry.timestamp.isoformat() if entry.timestamp else None,
+        "severity": entry.severity if hasattr(entry, 'severity') else "DEFAULT",
+        "message": "",
+        "resource": {},
+        "labels": {}
+    }
+    
+    # Extract message based on entry type
+    if isinstance(entry, TextEntry):
+        processed["message"] = entry.payload
+    elif isinstance(entry, StructEntry):
+        processed["message"] = json.dumps(entry.payload)
+    else:
+        processed["message"] = str(entry.payload) if hasattr(entry, 'payload') else ""
+    
+    # Extract resource information
+    if hasattr(entry, 'resource'):
+        processed["resource"] = {
+            "type": entry.resource.type if entry.resource else "unknown",
+            "labels": dict(entry.resource.labels) if entry.resource and entry.resource.labels else {}
+        }
+    
+    # Extract labels
+    if hasattr(entry, 'labels'):
+        processed["labels"] = dict(entry.labels) if entry.labels else {}
+    
+    # Extract trace information
+    if hasattr(entry, 'trace'):
+        processed["trace"] = entry.trace
+    
+    if hasattr(entry, 'span_id'):
+        processed["span_id"] = entry.span_id
+    
+    return processed
+
+def _analyze_log_patterns(entries: List[Dict]) -> Dict[str, Any]:
+    """Analyze log entries for patterns and insights."""
+    if not entries:
+        return {}
+    
+    analysis = {
+        "patterns": {},
+        "anomalies": [],
+        "performance_indicators": {}
+    }
+    
+    # Analyze severity patterns
+    severity_counts = {}
+    for entry in entries:
+        severity = entry.get("severity", "DEFAULT")
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+    
+    analysis["patterns"]["severity_distribution"] = severity_counts
+    
+    # Detect anomalies (spike in errors)
+    error_count = sum(
+        severity_counts.get(sev, 0) 
+        for sev in ["ERROR", "CRITICAL", "ALERT", "EMERGENCY"]
+    )
+    
+    if error_count > len(entries) * 0.1:  # More than 10% errors
+        analysis["anomalies"].append({
+            "type": "high_error_rate",
+            "severity": "HIGH",
+            "description": f"Error rate is {error_count/len(entries)*100:.1f}%"
+        })
+    
+    # Performance indicators
+    latency_values = []
+    for entry in entries:
+        message = entry.get("message", "")
+        # Simple latency extraction (would be more sophisticated in production)
+        import re
+        latency_match = re.search(r'latency[:\s]+(\d+)', message.lower())
+        if latency_match:
+            latency_values.append(int(latency_match.group(1)))
+    
+    if latency_values:
+        analysis["performance_indicators"]["avg_latency"] = sum(latency_values) / len(latency_values)
+        analysis["performance_indicators"]["max_latency"] = max(latency_values)
+    
+    return analysis
+
+def _extract_error_patterns(messages: List[str]) -> List[Dict[str, Any]]:
+    """Extract common error patterns from messages."""
+    patterns = {}
+    
+    # Common error patterns to look for
+    pattern_rules = [
+        ("timeout", r"timeout|timed out"),
+        ("connection", r"connection|connect"),
+        ("permission", r"permission|denied|unauthorized"),
+        ("not_found", r"not found|404|missing"),
+        ("rate_limit", r"rate limit|quota|throttl"),
+        ("memory", r"memory|oom|heap"),
+        ("database", r"database|sql|query")
+    ]
+    
+    for message in messages:
+        msg_lower = message.lower()
+        for pattern_name, pattern_regex in pattern_rules:
+            import re
+            if re.search(pattern_regex, msg_lower):
+                if pattern_name not in patterns:
+                    patterns[pattern_name] = {
+                        "type": pattern_name,
+                        "count": 0,
+                        "examples": []
+                    }
+                patterns[pattern_name]["count"] += 1
+                if len(patterns[pattern_name]["examples"]) < 3:
+                    patterns[pattern_name]["examples"].append(message[:200])
+    
+    # Sort by frequency
+    return sorted(patterns.values(), key=lambda x: x["count"], reverse=True)
+
+def _generate_error_recommendations(error_groups: Dict) -> List[str]:
+    """Generate recommendations based on error patterns."""
+    recommendations = []
+    
+    for resource_type, group in error_groups.items():
+        if group["count"] > 50:
+            recommendations.append(
+                f"High error rate in {resource_type}: Investigate root cause immediately"
+            )
+        
+        # Check for specific error patterns
+        for error in group.get("errors", []):
+            error_lower = error.lower()
+            if "timeout" in error_lower:
+                recommendations.append(
+                    f"Timeout errors in {resource_type}: Consider increasing timeout values or optimizing performance"
+                )
+                break
+            elif "permission" in error_lower or "denied" in error_lower:
+                recommendations.append(
+                    f"Permission errors in {resource_type}: Review IAM policies and service account permissions"
+                )
+                break
+            elif "quota" in error_lower or "rate limit" in error_lower:
+                recommendations.append(
+                    f"Rate limiting in {resource_type}: Consider requesting quota increase or implementing retry logic"
+                )
+                break
+    
+    return recommendations[:5]  # Top 5 recommendations

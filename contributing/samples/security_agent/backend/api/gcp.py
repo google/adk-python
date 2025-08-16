@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import logging
 import os
+from google.cloud import iam
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -175,6 +176,7 @@ async def get_project_info(
     """Get information about a specific project."""
     try:
         # Get project details via Resource Manager API
+        # cspell:ignore cloudresourcemanager
         result = await service.call_google_api(
             service="cloudresourcemanager",
             version="v3",
@@ -470,6 +472,7 @@ async def check_gcp_service_health(
 # ==========================================
 # LEGACY ENDPOINTS (DEPRECATED)
 # ==========================================
+
 
 @router.get("/projects/list", deprecated=True)
 async def legacy_list_projects():

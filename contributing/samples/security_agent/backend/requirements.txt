@@ -40,3 +40,5 @@ aiofiles
 numpy
 litellm
 python-dotenv
+google-cloud-api-keys
+google-cloud-advisorynotifications

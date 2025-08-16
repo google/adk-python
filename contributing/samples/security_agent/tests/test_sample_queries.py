@@ -6,6 +6,15 @@ Test sample queries to demonstrate the system working with real data
 import requests
 import json
 
+import pytest
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "what are the iam policies for the staging environment?",
+        "are there any publicly exposed storage buckets?",
+    ],
+)
 def test_query(query):
     """Send a query and display the response"""
     print(f"\n{'='*80}")

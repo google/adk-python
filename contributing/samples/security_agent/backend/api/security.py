@@ -1,384 +1,418 @@
 """
-Security API endpoints
+Google Cloud Security Command Center API - Thin client for security operations.
+
+This module provides a thin client wrapper around the Google Cloud Security Command Center API
+for security findings, assets, and threat detection.
+
+Docs: https://cloud.google.com/python/docs/reference/securitycenter/latest
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 import logging
 import os
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Simple security service
-class SecurityService:
-    """Simple security service for basic operations."""
+# Try to import the Security Command Center client
+try:
+    from google.cloud import securitycenter_v1
+    from google.api_core import exceptions as gcp_exceptions
+    SCC_CLIENT_AVAILABLE = True
+    logger.info("✅ Google Cloud Security Command Center client available")
+except ImportError:
+    SCC_CLIENT_AVAILABLE = False
+    logger.warning("⚠️ Security Command Center client not available. Install with: pip install google-cloud-securitycenter")
+
+# Configuration
+PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'default-project')
+ORGANIZATION_ID = os.getenv('GOOGLE_CLOUD_ORGANIZATION', '')
+
+# Request/Response models
+class FindingsListRequest(BaseModel):
+    """Request model for listing security findings."""
+    parent: Optional[str] = Field(None, description="Parent resource (e.g., 'organizations/123/sources/-')")
+    filter: Optional[str] = Field(None, description="Filter expression for findings")
+    order_by: Optional[str] = Field(None, description="Fields to order results by")
+    page_size: Optional[int] = Field(100, description="Number of results per page")
+    severity: Optional[str] = Field(None, description="Filter by severity: CRITICAL, HIGH, MEDIUM, LOW")
+    category: Optional[str] = Field(None, description="Filter by category")
+    state: Optional[str] = Field("ACTIVE", description="Finding state: ACTIVE, INACTIVE")
+
+class FindingCreateRequest(BaseModel):
+    """Request model for creating a security finding."""
+    source: str = Field(..., description="Source name (e.g., 'organizations/123/sources/456')")
+    finding_id: str = Field(..., description="Unique finding identifier")
+    category: str = Field(..., description="Finding category")
+    resource_name: str = Field(..., description="Resource name the finding applies to")
+    severity: str = Field("MEDIUM", description="Severity: CRITICAL, HIGH, MEDIUM, LOW")
+    description: Optional[str] = Field(None, description="Finding description")
+    recommendation: Optional[str] = Field(None, description="Remediation recommendation")
+
+class AssetListRequest(BaseModel):
+    """Request model for listing assets from Security Command Center."""
+    parent: Optional[str] = Field(None, description="Parent resource")
+    filter: Optional[str] = Field(None, description="Filter expression")
+    order_by: Optional[str] = Field(None, description="Fields to order by")
+    page_size: Optional[int] = Field(100, description="Number of results per page")
+
+class SourceCreateRequest(BaseModel):
+    """Request model for creating a security source."""
+    display_name: str = Field(..., description="Display name for the source")
+    description: Optional[str] = Field(None, description="Source description")
+
+def get_scc_client():
+    """Get or create Security Command Center client."""
+    if not SCC_CLIENT_AVAILABLE:
+        return None
     
-    def __init__(self):
-        self.project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'default-project')
-        logger.info(f"Security Service initialized for project: {self.project_id}")
+    try:
+        client = securitycenter_v1.SecurityCenterClient()
+        return client
+    except Exception as e:
+        logger.error(f"Failed to create Security Command Center client: {e}")
+        return None
+
+def get_parent_resource():
+    """Get parent resource string for Security Command Center."""
+    if ORGANIZATION_ID:
+        return f"organizations/{ORGANIZATION_ID}"
+    # Fallback to project-level if no org ID
+    return f"projects/{PROJECT_ID}"
+
+@router.post("/findings/list")
+async def list_findings(request: FindingsListRequest):
+    """
+    List security findings from Security Command Center.
     
-    async def evaluate_vulnerability(self, text: str):
-        """Evaluate vulnerability in text."""
-        return {"vulnerability_score": 0.1, "issues": [], "recommendations": []}
-    
-    async def get_security_analytics(self, project_id: str):
-        """Get security analytics for project."""
-        return {"project_id": project_id, "status": "secure", "alerts": []}
-
-# Global service instance
-_service_instance = None
-
-def get_security_service() -> SecurityService:
-    """Get security service instance."""
-    global _service_instance
-    if _service_instance is None:
-        _service_instance = SecurityService()
-        logger.info("Security Service initialized")
-    return _service_instance
-
-# ==========================================
-# REQUEST/RESPONSE MODELS
-# ==========================================
-
-class VulnerabilityEvaluationRequest(BaseModel):
-    text: str
-
-class SecurityEvaluationRequest(BaseModel):
-    project_id: str
-    api_name: str = None
-    user_email: str = None
-
-class SecurityAnalyticsRequest(BaseModel):
-    project_id: str
-    analysis_type: str = "comprehensive"  # comprehensive, events, anomalies, compliance, trends
-    time_range: str = "24h"  # 1h, 24h, 7d, 30d
-    include_details: bool = True
-
-class SecurityKnowledgeRequest(BaseModel):
-    query: str
-    knowledge_type: str = "all"  # all, vulnerabilities, policies, playbooks, compliance
-    max_results: int = 10
-
-class VulnerabilityKnowledgeRequest(BaseModel):
-    cve_id: str = None
-    vulnerability_type: str = None
-
-# ==========================================
-# SECURITY CENTER ENDPOINTS
-# ==========================================
-
-@router.post("/evaluate-vulnerability")
-async def evaluate_vulnerability(
-    request: VulnerabilityEvaluationRequest,
-    service: SecurityService = Depends(get_security_service)
-):
-    """Evaluate vulnerability in provided text using AI analysis."""
-    try:
-        result = await service.evaluate_vulnerability(request.text)
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-        return result
-    except Exception as e:
-        logger.error(f"Vulnerability evaluation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/evaluate")
-async def evaluate_security(
-    request: SecurityEvaluationRequest,
-    service: SecurityService = Depends(get_security_service)
-):
-    """Evaluate security posture for a project and user."""
-    try:
-        result = await service.evaluate_security(
-            project_id=request.project_id,
-            api_name=request.api_name,
-            user_email=request.user_email
-        )
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-        return result
-    except Exception as e:
-        logger.error(f"Security evaluation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==========================================
-# SECURITY ANALYTICS ENDPOINTS
-# ==========================================
-
-@router.post("/analytics/analyze")
-async def run_security_analytics(
-    request: SecurityAnalyticsRequest,
-    service: SecurityService = Depends(get_security_service)
-):
-    """Run comprehensive security analytics on project data."""
-    try:
-        if not service.analytics_enabled:
-            raise HTTPException(status_code=503, detail="Security analytics service disabled")
-        
-        result = await service.run_security_analytics(
-            project_id=request.project_id,
-            analysis_type=request.analysis_type
-        )
-        
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Security analytics failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/analytics/dashboard/{project_id}")
-async def get_security_dashboard(
-    project_id: str,
-    time_range: str = Query(default="24h", description="Time range: 1h, 24h, 7d, 30d"),
-    service: SecurityService = Depends(get_security_service)
-):
-    """Get security analytics dashboard data."""
-    try:
-        if not service.analytics_enabled:
-            raise HTTPException(status_code=503, detail="Security analytics service disabled")
-        
-        # Run comprehensive analytics for dashboard
-        result = await service.run_security_analytics(
-            project_id=project_id,
-            analysis_type="comprehensive"
-        )
-        
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-        
-        # Transform for dashboard format
-        dashboard_data = {
-            "project_id": project_id,
-            "time_range": time_range,
-            "last_updated": result["timestamp"],
-            "summary": {
-                "total_events": len(result["results"].get("recent_events", [])),
-                "anomalies_detected": len(result["results"].get("anomalies", [])),
-                "compliance_violations": len(result["results"].get("compliance", [])),
-                "overall_risk_score": result["results"].get("trends", {}).get("risk_score_change", 0)
-            },
-            "details": result["results"]
+    This is a thin client that directly calls the Security Command Center API.
+    """
+    client = get_scc_client()
+    if not client:
+        # Return sample data when client is not available
+        return {
+            "success": True,
+            "source": "sample_data",
+            "message": "Install google-cloud-securitycenter for live data",
+            "findings": [
+                {
+                    "name": "organizations/123/sources/456/findings/sample-001",
+                    "category": "PUBLIC_BUCKET",
+                    "resource_name": "//storage.googleapis.com/public-bucket",
+                    "state": "ACTIVE",
+                    "severity": "HIGH",
+                    "event_time": datetime.now().isoformat(),
+                    "finding_class": "VULNERABILITY",
+                    "description": "Storage bucket is publicly accessible",
+                    "recommendation": "Remove public access or add authentication"
+                },
+                {
+                    "name": "organizations/123/sources/456/findings/sample-002",
+                    "category": "WEAK_CREDENTIALS",
+                    "resource_name": "//iam.googleapis.com/projects/sample/serviceAccounts/test@sample.iam",
+                    "state": "ACTIVE",
+                    "severity": "CRITICAL",
+                    "event_time": datetime.now().isoformat(),
+                    "finding_class": "VULNERABILITY",
+                    "description": "Service account key is older than 90 days",
+                    "recommendation": "Rotate service account keys regularly"
+                }
+            ],
+            "total_count": 2
         }
-        
-        return {"success": True, "dashboard": dashboard_data}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Security dashboard failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/analytics/events/{project_id}")
-async def get_security_events(
-    project_id: str,
-    limit: int = Query(default=100, le=1000),
-    severity: str = Query(default=None, description="Filter by severity: LOW, MEDIUM, HIGH, CRITICAL"),
-    service: SecurityService = Depends(get_security_service)
-):
-    """Get recent security events for a project."""
+    
     try:
-        if not service.analytics_enabled:
-            raise HTTPException(status_code=503, detail="Security analytics service disabled")
+        # Prepare parent (use provided or default)
+        parent = request.parent or f"{get_parent_resource()}/sources/-"
         
-        result = await service.run_security_analytics(
-            project_id=project_id,
-            analysis_type="events"
+        # Build filter
+        filters = []
+        if request.severity:
+            filters.append(f'severity="{request.severity}"')
+        if request.category:
+            filters.append(f'category="{request.category}"')
+        if request.state:
+            filters.append(f'state="{request.state}"')
+        
+        filter_str = request.filter or " AND ".join(filters) if filters else ""
+        
+        # Create list findings request
+        list_request = securitycenter_v1.ListFindingsRequest(
+            parent=parent,
+            filter=filter_str,
+            order_by=request.order_by or "event_time desc",
+            page_size=request.page_size
         )
         
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
+        # Call the API
+        page_result = client.list_findings(request=list_request)
         
-        events = result["results"].get("recent_events", [])
-        
-        # Apply severity filter if specified
-        if severity:
-            events = [event for event in events if event.get("severity") == severity]
-        
-        # Apply limit
-        events = events[:limit]
+        # Process results
+        findings = []
+        for finding_result in page_result:
+            finding = finding_result.finding
+            findings.append({
+                "name": finding.name,
+                "category": finding.category,
+                "resource_name": finding.resource_name,
+                "state": finding.state.name if finding.state else "UNKNOWN",
+                "severity": finding.severity.name if finding.severity else "UNSPECIFIED",
+                "event_time": finding.event_time.isoformat() if finding.event_time else None,
+                "create_time": finding.create_time.isoformat() if finding.create_time else None,
+                "finding_class": finding.finding_class.name if finding.finding_class else None,
+                "indicator": finding.indicator if finding.indicator else None,
+                "vulnerability": finding.vulnerability if finding.vulnerability else None,
+                "source_properties": dict(finding.source_properties) if finding.source_properties else {},
+                "description": finding.description if finding.description else None,
+                "recommendation": finding.recommendation if finding.recommendation else None
+            })
         
         return {
             "success": True,
-            "project_id": project_id,
-            "events": events,
-            "total_count": len(events),
-            "filtered_by_severity": severity
+            "source": "security_command_center",
+            "parent": parent,
+            "findings": findings,
+            "total_count": len(findings)
         }
-    except HTTPException:
-        raise
+        
+    except gcp_exceptions.PermissionDenied as e:
+        logger.error(f"Permission denied: {e}")
+        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
     except Exception as e:
-        logger.error(f"Security events query failed: {e}")
+        logger.error(f"Error listing findings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================================
-# SECURITY KNOWLEDGE ENDPOINTS
-# ==========================================
-
-@router.post("/knowledge/search")
-async def search_security_knowledge(
-    request: SecurityKnowledgeRequest,
-    service: SecurityService = Depends(get_security_service)
-):
-    """Search the security knowledge base."""
+@router.post("/findings/create")
+async def create_finding(request: FindingCreateRequest):
+    """
+    Create a new security finding in Security Command Center.
+    """
+    client = get_scc_client()
+    if not client:
+        return {
+            "success": False,
+            "message": "Security Command Center client not available"
+        }
+    
     try:
-        if not service.knowledge_enabled:
-            raise HTTPException(status_code=503, detail="Security knowledge service disabled")
-        
-        result = await service.search_knowledge(
-            query=request.query,
-            knowledge_type=request.knowledge_type,
-            max_results=request.max_results
+        # Create finding object
+        finding = securitycenter_v1.Finding(
+            category=request.category,
+            resource_name=request.resource_name,
+            state=securitycenter_v1.Finding.State.ACTIVE,
+            severity=getattr(securitycenter_v1.Finding.Severity, request.severity, securitycenter_v1.Finding.Severity.MEDIUM),
+            event_time=datetime.now(),
+            description=request.description,
+            recommendation=request.recommendation
         )
         
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Knowledge search failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/knowledge/vulnerability")
-async def get_vulnerability_knowledge(
-    cve_id: str = Query(default=None, description="Specific CVE ID to lookup"),
-    vulnerability_type: str = Query(default=None, description="Type of vulnerability"),
-    service: SecurityService = Depends(get_security_service)
-):
-    """Get vulnerability-specific knowledge."""
-    try:
-        if not service.knowledge_enabled:
-            raise HTTPException(status_code=503, detail="Security knowledge service disabled")
-        
-        result = await service.get_vulnerability_knowledge(
-            cve_id=cve_id,
-            vulnerability_type=vulnerability_type
+        # Create the finding
+        created_finding = client.create_finding(
+            parent=request.source,
+            finding_id=request.finding_id,
+            finding=finding
         )
         
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-        return result
-    except HTTPException:
-        raise
+        return {
+            "success": True,
+            "finding_name": created_finding.name,
+            "finding_id": request.finding_id,
+            "created_at": datetime.now().isoformat()
+        }
+        
     except Exception as e:
-        logger.error(f"Vulnerability knowledge retrieval failed: {e}")
+        logger.error(f"Error creating finding: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/knowledge/playbooks")
-async def get_incident_playbooks(
-    incident_type: str = Query(default=None, description="Type of security incident"),
-    severity: str = Query(default=None, description="Incident severity level"),
-    service: SecurityService = Depends(get_security_service)
-):
-    """Get incident response playbooks."""
+@router.post("/assets/list")
+async def list_assets(request: AssetListRequest):
+    """
+    List assets from Security Command Center.
+    
+    This provides security-enriched asset information.
+    """
+    client = get_scc_client()
+    if not client:
+        return {
+            "success": True,
+            "source": "sample_data",
+            "message": "Install google-cloud-securitycenter for live data",
+            "assets": []
+        }
+    
     try:
-        if not service.knowledge_enabled:
-            raise HTTPException(status_code=503, detail="Security knowledge service disabled")
+        # Prepare parent
+        parent = request.parent or get_parent_resource()
         
-        # Build query based on parameters
-        query_parts = ["incident response playbook"]
-        if incident_type:
-            query_parts.append(incident_type)
-        if severity:
-            query_parts.append(f"{severity} severity")
-        
-        query = " ".join(query_parts)
-        
-        result = await service.search_knowledge(
-            query=query,
-            knowledge_type="playbooks",
-            max_results=20
+        # Create list assets request
+        list_request = securitycenter_v1.ListAssetsRequest(
+            parent=parent,
+            filter=request.filter or "",
+            order_by=request.order_by or "",
+            page_size=request.page_size
         )
         
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-        return result
-    except HTTPException:
-        raise
+        # Call the API
+        page_result = client.list_assets(request=list_request)
+        
+        # Process results
+        assets = []
+        for asset_result in page_result:
+            asset = asset_result.asset
+            assets.append({
+                "name": asset.name,
+                "resource_name": asset.resource_name,
+                "resource_type": asset.resource_type,
+                "resource_parent": asset.resource_parent,
+                "resource_project": asset.resource_project,
+                "resource_owners": list(asset.resource_owners) if asset.resource_owners else [],
+                "create_time": asset.create_time.isoformat() if asset.create_time else None,
+                "update_time": asset.update_time.isoformat() if asset.update_time else None,
+                "state": asset_result.state.name if asset_result.state else None,
+                "security_marks": dict(asset.security_marks.marks) if asset.security_marks else {}
+            })
+        
+        return {
+            "success": True,
+            "source": "security_command_center",
+            "parent": parent,
+            "assets": assets,
+            "total_count": len(assets)
+        }
+        
     except Exception as e:
-        logger.error(f"Playbook retrieval failed: {e}")
+        logger.error(f"Error listing assets: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/knowledge/compliance")
-async def get_compliance_guidance(
-    framework: str = Query(default=None, description="Compliance framework (SOC2, ISO27001, etc.)"),
-    topic: str = Query(default=None, description="Specific compliance topic"),
-    service: SecurityService = Depends(get_security_service)
-):
-    """Get compliance guidance and requirements."""
+@router.post("/sources/create")
+async def create_source(request: SourceCreateRequest):
+    """
+    Create a new source in Security Command Center.
+    
+    Sources are used to group findings.
+    """
+    client = get_scc_client()
+    if not client:
+        return {
+            "success": False,
+            "message": "Security Command Center client not available"
+        }
+    
     try:
-        if not service.knowledge_enabled:
-            raise HTTPException(status_code=503, detail="Security knowledge service disabled")
-        
-        # Build query based on parameters
-        query_parts = ["compliance"]
-        if framework:
-            query_parts.append(framework)
-        if topic:
-            query_parts.append(topic)
-        
-        query = " ".join(query_parts)
-        
-        result = await service.search_knowledge(
-            query=query,
-            knowledge_type="compliance",
-            max_results=15
+        # Create source object
+        source = securitycenter_v1.Source(
+            display_name=request.display_name,
+            description=request.description
         )
         
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-        return result
-    except HTTPException:
-        raise
+        # Create the source
+        parent = get_parent_resource()
+        created_source = client.create_source(
+            parent=parent,
+            source=source
+        )
+        
+        return {
+            "success": True,
+            "source_name": created_source.name,
+            "display_name": created_source.display_name,
+            "created": True
+        }
+        
     except Exception as e:
-        logger.error(f"Compliance guidance retrieval failed: {e}")
+        logger.error(f"Error creating source: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================================
-# HEALTH CHECK ENDPOINT
-# ==========================================
+@router.get("/findings/stats")
+async def get_findings_statistics():
+    """
+    Get statistics about security findings.
+    """
+    client = get_scc_client()
+    if not client:
+        return {
+            "success": True,
+            "source": "sample_data",
+            "stats": {
+                "total_findings": 42,
+                "by_severity": {
+                    "CRITICAL": 5,
+                    "HIGH": 12,
+                    "MEDIUM": 18,
+                    "LOW": 7
+                },
+                "by_category": {
+                    "PUBLIC_BUCKET": 8,
+                    "WEAK_CREDENTIALS": 6,
+                    "FIREWALL_MISCONFIGURATION": 10,
+                    "IAM_POLICY": 18
+                },
+                "by_state": {
+                    "ACTIVE": 35,
+                    "INACTIVE": 7
+                }
+            }
+        }
+    
+    try:
+        parent = f"{get_parent_resource()}/sources/-"
+        
+        # Get counts for different severities
+        stats = {
+            "by_severity": {},
+            "by_state": {},
+            "total_findings": 0
+        }
+        
+        # Count by severity
+        for severity in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
+            list_request = securitycenter_v1.ListFindingsRequest(
+                parent=parent,
+                filter=f'severity="{severity}" AND state="ACTIVE"',
+                page_size=1
+            )
+            result = client.list_findings(request=list_request)
+            # Note: In production, you'd get the total count from the response
+            count = sum(1 for _ in result)
+            stats["by_severity"][severity] = count
+            stats["total_findings"] += count
+        
+        # Count active vs inactive
+        for state in ["ACTIVE", "INACTIVE"]:
+            list_request = securitycenter_v1.ListFindingsRequest(
+                parent=parent,
+                filter=f'state="{state}"',
+                page_size=1
+            )
+            result = client.list_findings(request=list_request)
+            stats["by_state"][state] = sum(1 for _ in result)
+        
+        return {
+            "success": True,
+            "source": "security_command_center",
+            "stats": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting findings statistics: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "stats": {}
+        }
 
 @router.get("/health")
-async def check_security_service_health(
-    service: SecurityService = Depends(get_security_service)
-):
-    """Check the health of the consolidated security service."""
-    try:
-        health_status = await service.check_health()
-        
-        # Determine HTTP status code based on health
-        if health_status["status"] == "healthy":
-            status_code = 200
-        elif health_status["status"] == "degraded":
-            status_code = 206  # Partial Content
-        else:
-            status_code = 503  # Service Unavailable
-        
-        return health_status
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==========================================
-# DEPRECATED ENDPOINTS (FOR COMPATIBILITY)
-# ==========================================
-
-@router.get("/health", deprecated=True)
-async def legacy_health_check():
-    """Legacy health check endpoint - use /health instead."""
-    return await check_security_service_health()
-
-# Legacy endpoint mappings for backward compatibility
-@router.post("/vulnerability/evaluate", deprecated=True)
-async def legacy_evaluate_vulnerability(request: VulnerabilityEvaluationRequest):
-    """Legacy endpoint - use /evaluate-vulnerability instead."""
-    return await evaluate_vulnerability(request)
-
-@router.post("/security/evaluate", deprecated=True)  
-async def legacy_evaluate_security(request: SecurityEvaluationRequest):
-    """Legacy endpoint - use /evaluate instead."""
-    return await evaluate_security(request)
+async def health_check():
+    """Health check for Security Command Center service."""
+    return {
+        "status": "healthy",
+        "service": "security_command_center",
+        "client_available": SCC_CLIENT_AVAILABLE,
+        "project_id": PROJECT_ID,
+        "organization_id": ORGANIZATION_ID or "not_configured",
+        "timestamp": datetime.now().isoformat()
+    }

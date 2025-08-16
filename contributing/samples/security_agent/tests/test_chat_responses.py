@@ -6,6 +6,17 @@ Test that chat endpoint returns real, detailed data for all query types
 import requests
 import json
 
+import pytest
+
+@pytest.mark.parametrize(
+    "query_type, query, expected_keywords",
+    [
+        ("storage", "Tell me about my buckets", ["bucket"]),
+        ("iam", "Who has access to my project?", ["iam", "access"]),
+        ("network", "Analyze my firewall rules", ["firewall", "network"]),
+        ("general", "What's my security score?", ["security"]),
+    ],
+)
 def test_chat_query(query_type, query, expected_keywords):
     """Test a single chat query"""
     print(f"\n🧪 Testing {query_type}...")

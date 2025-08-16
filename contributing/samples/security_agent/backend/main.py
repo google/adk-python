@@ -3,7 +3,7 @@
 Clean, unified FastAPI application with all available features.
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.websockets import WebSocket
@@ -17,14 +17,48 @@ import tempfile
 import json
 import time
 from datetime import datetime
+from pathlib import Path
 
-# Add current directory to Python path for module imports
+# Load environment variables from .env file
+from dotenv import load_dotenv
+
+# Try multiple locations for .env file
+env_locations = [
+    Path(__file__).parent.parent / "deploy" / ".env",  # deploy/.env
+    Path(__file__).parent.parent / ".env",  # security_agent/.env
+    Path(__file__).parent / ".env",  # backend/.env
+]
+
+for env_path in env_locations:
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"✅ Loaded environment from: {env_path}")
+        break
+else:
+    print("⚠️ No .env file found, using system environment variables")
+
+# Set up Google Application Credentials if not already set
+if not os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
+    service_account_path = Path(__file__).parent / "config" / "secrets" / "mgm-digitalconcierge-52fed2a2dac3.json"
+    if service_account_path.exists():
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(service_account_path)
+        print(f"✅ Set GOOGLE_APPLICATION_CREDENTIALS to: {service_account_path}")
+    else:
+        print("⚠️ Service account key not found, will use default credentials")
+
+# Add backend's parent directory to sys.path to make 'backend' importable.
 current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+backend_parent_dir = os.path.dirname(current_dir)
+if backend_parent_dir not in sys.path:
+    sys.path.insert(0, backend_parent_dir)
+
+# Add project root to sys.path for absolute imports (e.g., 'contributing')
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(backend_parent_dir)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Import Secret Manager for runtime credential loading
@@ -35,46 +69,15 @@ except ImportError:
     SECRETMANAGER_AVAILABLE = False
     logger.warning("Google Cloud Secret Manager not available")
 
-# Import required components for ADK
-try:
-    from chat_manager import chat_manager, EnhancedChatManager
-    logger.info("✅ Enhanced chat manager loaded for ADK session management")
-except ImportError as e:
-    logger.error(f"❌ Enhanced chat manager is REQUIRED for ADK functionality: {e}")
-    logger.error("Please ensure chat_manager.py is properly installed")
+# Backend doesn't need ADK - it just processes requests
+# The frontend is the thin client that displays UI
+# The backend provides the intelligence via API endpoints
+logger.info("✅ Backend configured as API service (no local ADK needed)")
 
-# WebSocket manager removed - using ConnectionManager in agent_llm.py instead
-
-try:
-    from api.performance_monitor import performance_monitor, PerformanceMonitor
-    performance_monitor_available = True
-    logger.info("✅ Performance monitor loaded successfully")
-except ImportError as e:
-    performance_monitor_available = False
-    logger.warning(f"⚠️ Performance monitor not available: {e}")
-    
-    # Create mock performance monitor for fallback
-    class MockPerformanceMonitor:
-        def __init__(self):
-            self.monitoring_active = False
-        
-        def record_response_time(self, *args, **kwargs):
-            pass
-        
-        def get_current_system_metrics(self):
-            return None
-        
-        async def start_monitoring(self):
-            self.monitoring_active = True
-    
-    performance_monitor = MockPerformanceMonitor()
-    PerformanceMonitor = MockPerformanceMonitor
-
-# Context manager removed - using chat_manager for context instead
+# Context management is handled by ADK natively
 context_manager_available = False
 
-# Add the services directory to Python path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'services'))
+# Services directory removed - using APIs directly
 
 def setup_service_account_from_secret():
     """Setup service account credentials from Google Secret Manager."""
@@ -167,64 +170,24 @@ app.add_middleware(
 # /api/v1/gcp/* - Google Cloud Platform endpoints
 # /api/v1/security/* - Security analysis endpoints
 # /api/v1/iam/* - IAM analysis endpoints
-# /api/v1/compliance/* - Compliance evaluation endpoints
 # /api/v1/monitoring/* - Monitoring and logs endpoints
 # /api/v1/recommendations/* - Recommendations endpoints
-# /api/v1/msa/* - Master Service Agreement endpoints
-# /api/v1/performance/* - Performance monitoring endpoints
 # /api/v1/context/* - Context management endpoints
 
-# Agent router with ADK session management
+# RADAR Coordinator router - The main agent system
 try:
-    from api.agent_llm import router as agent_router
-    app.include_router(agent_router, prefix="/api/v1/agent")
-    logger.info("✅ ADK Agent router included at /api/v1/agent (with intelligent steering and session management)")
+    from backend.agents.radar_coordinator import router as radar_router
+    app.include_router(radar_router, prefix="/api/v1/agent")
+    logger.info("✅ RADAR Coordinator router included at /api/v1/agent (LLM-driven orchestration)")
 except ImportError as e:
-    logger.warning(f"⚠️ ADK Agent router not available: {e}")
-    logger.warning("Creating fallback agent router...")
-    
-    # Create a basic fallback agent router
-    from fastapi import APIRouter
-    fallback_agent_router = APIRouter()
-    
-    @fallback_agent_router.post("/chat")
-    async def fallback_chat(request: dict):
-        return {
-            "success": False,
-            "response": "Agent system not fully configured. Please install required dependencies.",
-            "error": "ADK Agent router not available"
-        }
-    
-    app.include_router(fallback_agent_router, prefix="/api/v1/agent")
-    logger.info("⚠️ Fallback agent router included at /api/v1/agent")
+    logger.warning(f"⚠️ RADAR Coordinator not available: {e}")
 
-# Sessions router for ADK session management
-try:
-    from api.sessions import router as sessions_router
-    app.include_router(sessions_router, prefix="/api/v1/sessions")
-    logger.info("✅ Sessions router included at /api/v1/sessions (ADK thin client support)")
-except ImportError as e:
-    logger.warning(f"⚠️ Sessions router not available: {e}")
-    logger.warning("Creating fallback sessions router...")
-    
-    # Create a basic fallback sessions router
-    fallback_sessions_router = APIRouter()
-    
-    @fallback_sessions_router.post("/create")
-    async def fallback_create_session(request: dict):
-        import uuid
-        return {
-            "success": True,
-            "session_id": str(uuid.uuid4()),
-            "message": "Mock session created - full session management not available"
-        }
-    
-    app.include_router(fallback_sessions_router, prefix="/api/v1/sessions")
-    logger.info("⚠️ Fallback sessions router included at /api/v1/sessions")
+# Sessions are handled natively by ADK - no custom router needed
+logger.info("✅ Using ADK's built-in session management")
 
 # GCP router
 try:
-    from api.gcp import router as gcp_router
+    from backend.api.gcp import router as gcp_router
     app.include_router(gcp_router, prefix="/api/v1/gcp")
     logger.info("✅ GCP router included at /api/v1/gcp")
 except ImportError as e:
@@ -232,7 +195,7 @@ except ImportError as e:
 
 # Security router
 try:
-    from api.security import router as security_router
+    from backend.api.security import router as security_router
     app.include_router(security_router, prefix="/api/v1/security")
     logger.info("✅ Security router included at /api/v1/security")
 except ImportError as e:
@@ -240,92 +203,196 @@ except ImportError as e:
 
 # Monitoring router
 try:
-    from api.monitoring import router as monitoring_router
+    from backend.api.monitoring import router as monitoring_router
     app.include_router(monitoring_router, prefix="/api/v1/monitoring")
     logger.info("✅ Monitoring router included at /api/v1/monitoring")
 except ImportError as e:
     logger.warning(f"Monitoring router not available: {e}")
 
-# Performance monitor router (if available)
-if performance_monitor_available:
-    try:
-        from api.performance_monitor import router as performance_router
-        app.include_router(performance_router, prefix="/api/v1/performance")
-        logger.info("✅ Performance router included at /api/v1/performance")
-    except ImportError as e:
-        logger.warning(f"Performance router not available: {e}")
-
-# Context manager removed - context handled through chat_manager in agent_llm.py
-
 # IAM router
 try:
-    from api.iam import router as iam_router
+    from backend.api.iam import router as iam_router
     app.include_router(iam_router, prefix="/api/v1/iam")
     logger.info("✅ IAM router included at /api/v1/iam")
 except ImportError as e:
     logger.warning(f"⚠️ IAM router not available: {e}")
-    logger.info("IAM analysis will use fallback implementations in API endpoints")
 
-# Compliance router
+# Recommendations router for Google Cloud Recommender API
 try:
-    from api.compliance import router as compliance_router
-    app.include_router(compliance_router, prefix="/api/v1/compliance")
-    logger.info("✅ Compliance router included at /api/v1/compliance")
-except ImportError as e:
-    logger.warning(f"⚠️ Compliance router not available: {e}")
-    logger.info("Compliance analysis will use fallback implementations")
-
-# Recommendations router
-try:
-    from api.recommendations import router as recommendations_router
-    app.include_router(recommendations_router, prefix="/api/v1/recommendations")
-    logger.info("✅ Recommendations router included at /api/v1/recommendations")
+    from backend.api.recommendations import router as recommendations_router
+    app.include_router(recommendations_router)
+    logger.info("✅ Recommendations router included (Google Cloud Recommender API)")
 except ImportError as e:
     logger.warning(f"⚠️ Recommendations router not available: {e}")
-    logger.info("Recommendation service will use fallback implementations")
 
-# MSA router removed - unused functionality
+# Search is handled natively by ADK tools - no custom router needed
+logger.info("✅ Using ADK's built-in search tools")
 
 # Storage router
 try:
-    from api.storage import router as storage_router
+    from backend.api.storage import router as storage_router
     app.include_router(storage_router, prefix="/api/v1/storage")
     logger.info("✅ Storage router included at /api/v1/storage")
 except ImportError as e:
     logger.warning(f"Storage router not available: {e}")
 
-# Network router
-try:
-    from api.network import router as network_router
-    app.include_router(network_router, prefix="/api/v1/network")
-    logger.info("✅ Network router included at /api/v1/network")
-except ImportError as e:
-    logger.warning(f"Network router not available: {e}")
-
-# Cost/FinOps router
-try:
-    from api.cost import router as cost_router
-    app.include_router(cost_router, prefix="/api/v1/cost")
-    logger.info("✅ Cost router included at /api/v1/cost")
-except ImportError as e:
-    logger.warning(f"Cost router not available: {e}")
-
 # Asset Inventory router for unified GCP resource access
 try:
-    from api.asset_inventory import router as asset_inventory_router
+    from backend.api.asset_inventory import router as asset_inventory_router
     app.include_router(asset_inventory_router, prefix="/api/v1/assets")
     logger.info("✅ Asset Inventory router included at /api/v1/assets")
 except ImportError as e:
     logger.warning(f"Asset Inventory router not available: {e}")
 
-# Cache Management router for cache control and monitoring
+# API Keys router for API key management
 try:
-    from api.cache_management import router as cache_router
-    app.include_router(cache_router, prefix="/api/v1/cache")
-    logger.info("✅ Cache Management router included at /api/v1/cache")
+    from backend.api.keys import router as keys_router
+    app.include_router(keys_router, prefix="/api/v1/keys")
+    logger.info("✅ API Keys router included at /api/v1/keys")
 except ImportError as e:
-    logger.warning(f"Cache Management router not available: {e}")
+    logger.warning(f"API Keys router not available: {e}")
 
+# Advisory Notifications router for security bulletins and alerts
+try:
+    from backend.api.advisory_notifications import router as advisory_router
+    app.include_router(advisory_router, prefix="/api/v1/advisory")
+    logger.info("✅ Advisory Notifications router included at /api/v1/advisory")
+except ImportError as e:
+    logger.warning(f"Advisory Notifications router not available: {e}")
+
+# RADAR Coordinator router for ADK agent orchestration
+try:
+    from backend.agents.radar_coordinator import router as radar_router
+    app.include_router(radar_router, prefix="/api/v1/radar")
+    logger.info("✅ RADAR Coordinator router included at /api/v1/radar")
+except ImportError as e:
+    logger.warning(f"⚠️ RADAR Coordinator router not available: {e}")
+
+
+# Chat endpoint for frontend communication
+@app.post("/api/v1/chat/message")
+async def chat_message(request: Dict[str, Any]):
+    """
+    Handle chat messages - backend processes the query and returns intelligent responses.
+    
+    In a thin client architecture:
+    - Frontend: Just displays UI
+    - Backend: Provides the intelligence (this endpoint)
+    """
+    query = request.get("query", "")
+    session_id = request.get("session_id", "default")
+    user_id = request.get("user_id", "default_user")
+    
+    logger.info(f"Received chat request - User: {user_id}, Session: {session_id}, Query: {query[:50]}...")
+    
+    try:
+        # Import conversation context manager
+        from backend.api.conversation_context import conversation_manager
+        
+        # Get or create session
+        session = conversation_manager.get_or_create_session(session_id, user_id)
+        
+        # Get conversation context
+        context = conversation_manager.get_context(session_id)
+        
+        # Add context to query if there's history
+        enhanced_query = query
+        if context:
+            enhanced_query = f"{context}\n\nCurrent query: {query}"
+            logger.info(f"Using conversation context for session {session_id}")
+        
+        # Use direct GCP API implementation (no multi-agent complexity)
+        from backend.api.gcp_direct import process_gcp_query
+        
+        # Get project ID from environment or gcloud config
+        project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+        if not project_id:
+            # Try to get from gcloud config
+            try:
+                import subprocess
+                result = subprocess.run(['gcloud', 'config', 'get-value', 'project'], 
+                                      capture_output=True, text=True)
+                if result.returncode == 0:
+                    project_id = result.stdout.strip()
+            except:
+                pass
+        
+        if not project_id:
+            project_id = 'mgm-digitalconcierge'  # Your actual project
+        
+        logger.info(f"Processing query for GCP project: {project_id}")
+        
+        # Process with direct GCP API calls (use enhanced query with context)
+        response_text = await process_gcp_query(project_id, enhanced_query)
+        
+        # Store in conversation history
+        conversation_manager.add_to_history(session_id, query, response_text)
+            
+    except Exception as e:
+        logger.error(f"Error processing query: {e}")
+        response_text = f"Error: {str(e)}\n\nPlease ensure:\n1. Backend is running\n2. GCP credentials are configured\n3. Required APIs are enabled"
+    
+    # Always return a properly formatted response
+    return {
+        "response": response_text,
+        "session_id": session_id,
+        "user_id": user_id,
+        "success": True
+    }
+
+
+def _generate_fallback_response(query_lower: str) -> str:
+    """Generate an intelligent fallback response based on query keywords."""
+    
+    if "resource" in query_lower or "asset" in query_lower or "inventory" in query_lower:
+        return (
+            "To discover your GCP resources, I would need to:\n"
+            "1. Query the Cloud Asset Inventory API\n"
+            "2. List resources by type (compute, storage, network)\n"
+            "3. Check resource metadata and configurations\n\n"
+            "Currently running in demo mode. Connect your GCP project to see real data."
+        )
+    
+    elif "security" in query_lower or "vulnerabilit" in query_lower:
+        return (
+            "For security analysis, I can help with:\n"
+            "• Vulnerability scanning\n"
+            "• IAM permission analysis\n"
+            "• Security best practices review\n"
+            "• Compliance checking\n\n"
+            "Please specify what aspect of security you'd like to examine."
+        )
+    
+    elif "iam" in query_lower or "permission" in query_lower or "access" in query_lower:
+        return (
+            "IAM analysis includes:\n"
+            "• User and service account permissions\n"
+            "• Role assignments and custom roles\n"
+            "• Policy bindings at project/resource level\n"
+            "• Least privilege recommendations\n\n"
+            "What specific IAM aspect would you like to review?"
+        )
+    
+    elif "recommend" in query_lower or "suggest" in query_lower or "improve" in query_lower:
+        return (
+            "I can provide recommendations for:\n"
+            "• Security hardening\n"
+            "• Cost optimization\n"
+            "• Performance improvements\n"
+            "• Compliance alignment\n\n"
+            "Which area would you like recommendations for?"
+        )
+    
+    else:
+        return (
+            "I'm your GCP Security Assistant. I can help with:\n\n"
+            "🔍 **Resource Discovery**: Find and inventory all GCP assets\n"
+            "🛡️ **Security Analysis**: Identify vulnerabilities and risks\n"
+            "🔐 **IAM Review**: Analyze permissions and access controls\n"
+            "📊 **Recommendations**: Get actionable security improvements\n"
+            "✅ **Compliance**: Check alignment with standards\n\n"
+            "What would you like to explore?"
+        )
 
 @app.get("/")
 async def root():
@@ -341,19 +408,19 @@ async def health_check():
     
     # Test critical components
     try:
-        from api.agent_llm import router as agent_router
+        from backend.api.agent_llm import router as agent_router
         components_status["agent_llm"] = "available"
     except ImportError:
         components_status["agent_llm"] = "fallback"
     
     try:
-        from api.iam import router as iam_router
+        from backend.api.iam import router as iam_router
         components_status["iam_analysis"] = "available"
     except ImportError:
         components_status["iam_analysis"] = "fallback"
     
     try:
-        from api.recommendations import router as recommendations_router
+        from backend.api.recommendations import router as recommendations_router
         components_status["recommendations"] = "available"
     except ImportError:
         components_status["recommendations"] = "fallback"
@@ -365,26 +432,23 @@ async def health_check():
         "components": components_status,
         "features": {
             "secret_manager": SECRETMANAGER_AVAILABLE,
-            "adk_session_management": True,  # Always enabled with fallbacks
-            "websockets": True,  # Using ConnectionManager in agent_llm.py
-            "performance_monitoring": performance_monitor_available,
-            "context_awareness": True,  # Handled through chat_manager with fallbacks
-            "robust_fallbacks": True  # System designed to handle missing dependencies
+            "adk_session_management": True,
+            "websockets": True,
+            "context_awareness": True,
+            "robust_fallbacks": True
         },
         "endpoints": {
             "health": "/health",
             "docs": "/docs",
-            "websocket": "/api/v1/agent/ws",  # Available in agent_llm.py or fallback
-            "chat": "/api/v1/agent/chat",  # Always available with fallbacks
-            "sessions": "/api/v1/sessions",  # Always available with fallbacks
-            "performance": "/api/v1/performance" if performance_monitor_available else None,
-            "iam_analysis": "/api/v1/iam",  # Available with fallbacks
-            "recommendations": "/api/v1/recommendations",  # Available with fallbacks
+            "websocket": "/api/v1/agent/ws",
+            "chat": "/api/v1/agent/chat",
+            "radar_chat": "/api/v1/radar/chat",
+            "sessions": "/api/v1/sessions",
+            "iam_analysis": "/api/v1/iam",
+            "recommendations": "/api/v1/recommendations",
             "asset_inventory": "/api/v1/assets",
             "asset_discovery": "/api/v1/assets/discover",
             "security_analysis": "/api/v1/assets/security/analyze",
-            "cache_status": "/api/v1/cache/status",
-            "cache_management": "/api/v1/cache"
         },
         "notes": [
             "System designed with robust fallbacks for all dependencies",
@@ -401,8 +465,7 @@ async def startup_event():
     """Application startup with robust dependency handling."""
     logger.info("🚀 Security Agent Backend starting up")
     logger.info("🛡️ Robust fallback system enabled")
-    logger.info("✅ ADK-compliant session management enabled (with fallbacks)")
-    logger.info(f"📊 Performance monitoring: {'✅ available' if performance_monitor_available else '⚠️ fallback mode'}")
+    logger.info("✅ ADK-compliant session management enabled")
     logger.info(f"🔐 Secret Manager: {'✅ available' if SECRETMANAGER_AVAILABLE else '⚠️ not configured'}")
     logger.info("🔄 All API endpoints operational with intelligent fallbacks")
     logger.info("🎯 System ready to handle requests even with missing dependencies")

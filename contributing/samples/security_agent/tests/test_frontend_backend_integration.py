@@ -8,7 +8,25 @@ import requests
 import json
 import sys
 
-def test_endpoint(name, method, url, payload=None):
+import pytest
+
+@pytest.mark.parametrize(
+    "name, method, url, payload",
+    [
+        ("Health Check", "GET", "http://localhost:8000/health", None),
+        (
+            "Chat - Storage Query",
+            "POST",
+            "http://localhost:8000/api/v1/agent/chat",
+            {
+                "query": "analyze my bucket security",
+                "user_id": "test_user",
+                "project_id": "mgm-digitalconcierge",
+            },
+        ),
+    ],
+)
+def test_endpoint(name, method, url, payload):
     """Test a single endpoint"""
     print(f"\n🧪 Testing {name}...")
     print(f"   {method} {url}")

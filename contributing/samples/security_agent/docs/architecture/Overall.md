@@ -2,56 +2,39 @@
 
 ## 🏗️ System Architecture Overview
 
-The ADK Security Agent follows Google ADK best practices, implementing a **multi-agent system** with clear separation between **Agents** (intelligent coordinators) and **Tools** (specialized functions).
+The ADK Security Agent implements a **multi-agent system** centered around an intelligent **Router Agent**. This agent uses an LLM to understand user intent and delegate tasks to the appropriate specialist agents, aligning with ADK best practices for semantic routing and orchestration.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    FRONTEND (Thin Client)                      │
-│  ┌─────────────────┐                                           │
-│  │ Streamlit UI    │  - Chat interface                         │
-│  │                 │  - Session display                        │
-│  │                 │  - Quick actions                          │
-│  └─────────────────┘                                           │
-└─────────────────┬───────────────────────────────────────────────┘
-                  │ HTTP/WebSocket
-┌─────────────────▼───────────────────────────────────────────────┐
-│                   BACKEND (ADK Platform)                       │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                    AGENT LAYER                              ││
-│  │  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐││
-│  │  │ Coordinator     │  │ Specialist      │  │ Session      │││
-│  │  │ Agent           │  │ Agents          │  │ Manager      │││
-│  │  │                 │  │                 │  │              │││
-│  │  │ • Query routing │  │ • Storage       │  │ • ADK        │││
-│  │  │ • Delegation    │  │ • IAM           │  │   Sessions   │││
-│  │  │ • Orchestration │  │ • Network       │  │ • Context    │││
-│  │  │                 │  │ • Compliance    │  │ • Analytics  │││
-│  │  └─────────────────┘  └─────────────────┘  └──────────────┘││
-│  └─────────────────────────────────────────────────────────────┘│
-│                              │                                  │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                     TOOL LAYER                              ││
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  ││
-│  │  │ GCP Tools    │  │ Security     │  │ Analysis Tools   │  ││
-│  │  │              │  │ Tools        │  │                  │  ││
-│  │  │ • Storage    │  │ • Knowledge  │  │ • Dependency     │  ││
-│  │  │ • Project    │  │   Base       │  │   Analysis       │  ││
-│  │  │ • API calls  │  │ • Scanning   │  │ • Reporting      │  ││
-│  │  └──────────────┘  └──────────────┘  └──────────────────┘  ││
-│  └─────────────────────────────────────────────────────────────┘│
-│                              │                                  │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                  INTEGRATION LAYER                          ││
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  ││
-│  │  │ Google Cloud │  │ ADK Platform │  │ External APIs    │  ││
-│  │  │ Platform     │  │              │  │                  │  ││
-│  │  │ • GCS        │  │ • Vertex AI  │  │ • Security       │  ││
-│  │  │ • IAM        │  │ • Gemini     │  │   Sources        │  ││
-│  │  │ • Compute    │  │ • Tools API  │  │ • Compliance     │  ││
-│  │  └──────────────┘  └──────────────┘  └──────────────────┘  ││
-│  └─────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Frontend
+        A[Streamlit UI]
+    end
+
+    subgraph Backend (ADK Platform)
+        B(API Endpoint)
+        C{Router Agent}
+        D[Storage Agent]
+        E[IAM Agent]
+        F[Network Agent]
+        G[Compliance Agent]
+        H[GCP Tools]
+    end
+
+    subgraph Google Cloud
+        I[GCP APIs]
+    end
+
+    A -- HTTP/WebSocket --> B;
+    B -- Forwards Query --> C;
+    C -- Analyzes Intent & Routes --> D;
+    C -- Analyzes Intent & Routes --> E;
+    C -- Analyzes Intent & Routes --> F;
+    C -- Analyzes Intent & Routes --> G;
+    D -- Uses --> H;
+    E -- Uses --> H;
+    F -- Uses --> H;
+    G -- Uses --> H;
+    H -- Calls --> I;
 ```
 
 ## 🤖 AGENTS vs 🔧 TOOLS: Key Differences
@@ -61,7 +44,7 @@ The ADK Security Agent follows Google ADK best practices, implementing a **multi
 
 | Characteristic | Description | Example |
 |---------------|-------------|---------|
-| **Intelligence** | Use LLMs for reasoning and decision-making | Coordinator Agent uses Gemini to analyze queries and decide which specialist to delegate to |
+| **Intelligence** | Use LLMs for reasoning and decision-making | Router Agent uses Gemini to analyze queries and decide which specialist to delegate to |
 | **State Management** | Maintain conversation context and session state | Remember that user asked about storage, then follow up with specific bucket recommendations |
 | **Orchestration** | Coordinate multiple tools and other agents | Coordinate between storage analysis and IAM review for comprehensive security assessment |
 | **Natural Language** | Process and generate human-readable responses | Convert technical findings into actionable business recommendations |
@@ -84,101 +67,78 @@ The ADK Security Agent follows Google ADK best practices, implementing a **multi
 
 ### **Agent Architecture**
 
-#### **1. Coordinator Agent** (`agents/coordinator_agent.py`)
-```python
-class SecurityCoordinatorAgent:
-    def __init__(self, project_id: str, model_name: str = "gemini-2.0-flash-exp"):
-        # Uses Vertex AI Gemini model for intelligent reasoning
-        
-    def send_message(self, query: str) -> str:
-        # Analyzes user intent and delegates to appropriate specialists
-        # Returns synthesized response from multiple sources
-```
+#### **1. Router Agent** (`agents/router_agent.py`)
+The **Router Agent** is the core of the system. It is the single entry point for all user queries and is responsible for delegating tasks to the appropriate specialist agent based on semantic intent.
 
 **Responsibilities**:
-- 🧠 **Query Analysis**: Understanding user intent from natural language
-- 🎯 **Smart Routing**: Deciding which specialist agents to engage
-- 🔄 **Response Synthesis**: Combining results from multiple specialists
-- 💬 **Conversation Management**: Maintaining context across interactions
+- 🧠 **Query Analysis**: Understanding user intent from natural language using an LLM.
+- 🎯 **Smart Routing**: Deciding which specialist agents to engage based on the query's meaning.
+- 🔄 **Response Synthesis**: Combining results from multiple specialists for complex queries.
+- 💬 **Orchestration**: Managing the flow of information between specialist agents and tools.
 
-#### **2. Specialist Agents** (`backend/api/agent_llm.py`)
-```python
-# Routing logic in process_with_llm_agent()
-if "bucket" in query_lower:
-    agent_type = "storage"
-    agent_name = "StorageSecurityAgent"
-elif "iam" in query_lower:
-    agent_type = "iam" 
-    agent_name = "IAMSecurityAgent"
-```
+#### **2. Specialist Agents**
+Specialist agents (`StorageAgent`, `IAMAgent`, etc.) remain focused on their domain and are invoked by the `RouterAgent`. They execute specific tasks using their assigned tools.
 
 **Current Specialists**:
 - **StorageSecurityAgent**: GCS bucket security analysis
-- **IAMSecurityAgent**: Identity and access management review  
+- **IAMSecurityAgent**: Identity and access management review
 - **NetworkSecurityAgent**: Firewall and network security
 - **ComplianceAgent**: SOC2, GDPR, ISO compliance checks
 - **CostOptimizationAgent**: Security-focused cost analysis
 
 ### **Tool Architecture**
 
-#### **1. GCP Tools** (`tools/gcp_tools/`)
-```python
-def analyze_gcs_bucket_security(project_id: str, tool_context: ToolContext) -> str:
-    # Direct GCS API calls
-    storage_client = storage.Client(project=project_id)
-    buckets = storage_client.list_buckets()
-    
-    # Analyze configurations
-    # Return structured findings
-```
+Tools are deterministic functions that interact with GCP APIs or other services. They are called by agents to perform specific actions.
 
-**Available Tools**:
+#### **1. GCP Tools** (`tools/gcp_tools/`)
 - `storage_tools.py`: Bucket analysis, IAM policies, encryption
 - `project_tools.py`: Project metadata, service enablement
 
 #### **2. Security Tools** (`tools/security_tools/`)
-```python
-def query_security_knowledge_base(query: str, tool_context: ToolContext) -> str:
-    # Access security best practices database
-    # Return relevant recommendations
-```
+- `knowledge_base.py`: Queries for security best practices.
 
 #### **3. Analysis Tools** (`tools/analysis_tools/`)
-```python
-def analyze_dependency_graph(project_id: str, tool_context: ToolContext) -> str:
-    # Build resource dependency graphs
-    # Identify security impact propagation
-```
+- `dependency_graph.py`: Builds resource dependency graphs to identify security impacts.
 
 ## 🔄 Agent-Tool Interaction Flow
 
-### **Example: "Tell me about storage buckets in my project"**
+### **Example: "Do any of my public storage buckets have IAM users with excessive permissions?"**
+
+This sequence diagram details the step-by-step interaction for a complex query that requires orchestration between multiple specialist agents.
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant CoordinatorAgent
-    participant StorageAgent
-    participant StorageTools
-    participant GCP_API
+    participant API_Endpoint as API Endpoint
+    participant RouterAgent as Router Agent
+    participant StorageAgent as Storage Agent
+    participant IAMAgent as IAM Agent
+    participant GCP_Tools as GCP Tools
 
-    User->>CoordinatorAgent: "Tell me about buckets"
-    
-    CoordinatorAgent->>CoordinatorAgent: Analyze query intent
-    Note over CoordinatorAgent: Uses Gemini to understand<br/>this is a storage security request
-    
-    CoordinatorAgent->>StorageAgent: Delegate storage analysis
-    
-    StorageAgent->>StorageTools: Call analyze_gcs_bucket_security()
-    StorageTools->>GCP_API: List buckets, get IAM policies
-    GCP_API-->>StorageTools: Raw bucket data
-    StorageTools-->>StorageAgent: Structured findings
-    
-    StorageAgent->>StorageAgent: Generate recommendations
-    Note over StorageAgent: Uses LLM to create<br/>actionable security advice
-    
-    StorageAgent-->>CoordinatorAgent: Security analysis + recommendations
-    CoordinatorAgent-->>User: "Found 5 buckets, 2 have public access..."
+    User->>API_Endpoint: "Check public buckets for risky IAM roles"
+
+    API_Endpoint->>RouterAgent: Forward query
+
+    RouterAgent->>RouterAgent: Analyze query intent (LLM)
+    Note over RouterAgent: Intent: Find public buckets AND analyze their IAM policies.
+
+    RouterAgent->>StorageAgent: 1. Find public buckets
+    StorageAgent->>GCP_Tools: list_buckets(public=True)
+    GCP_Tools-->>StorageAgent: [bucket_A, bucket_C]
+
+    StorageAgent-->>RouterAgent: Public buckets: [bucket_A, bucket_C]
+
+    RouterAgent->>IAMAgent: 2. Analyze IAM for [bucket_A, bucket_C]
+    IAMAgent->>GCP_Tools: get_iam_policy(bucket_A), get_iam_policy(bucket_C)
+    GCP_Tools-->>IAMAgent: IAM policies
+
+    IAMAgent->>IAMAgent: Analyze policies for risky roles (e.g., editor, owner)
+    IAMAgent-->>RouterAgent: Findings: bucket_C has 'allUsers' with 'objectViewer'
+
+    RouterAgent->>RouterAgent: Synthesize findings into a final response
+    RouterAgent-->>API_Endpoint: "Bucket 'bucket_C' is public and allows all users to view objects. This is a high-risk configuration."
+
+    API_Endpoint-->>User: Return synthesized response
 ```
 
 ## 📊 Comparison Matrix
@@ -202,45 +162,20 @@ sequenceDiagram
 - **Tools**: Focus on reliable, specific functionality
 - **Clear Boundaries**: Agents never directly access APIs; Tools never make decisions
 
-### **2. Composability**  
+### **2. Composability**
 - **Tool Reuse**: Multiple agents can use the same tools
-- **Agent Delegation**: Coordinator can orchestrate multiple specialists
+- **Agent Delegation**: Router Agent can orchestrate multiple specialists
 - **Layered Architecture**: Clean separation enables independent scaling
 
 ### **3. Testability**
 - **Tool Testing**: Unit tests for deterministic functions
-- **Agent Testing**: Integration tests for conversation flows  
+- **Agent Testing**: Integration tests for conversation flows
 - **Isolation**: Components can be tested independently
 
 ### **4. Maintainability**
 - **Single Responsibility**: Each component has one clear purpose
 - **Interface Contracts**: Clear APIs between layers
-- **Documentation**: Self-documenting code with clear naming
-
-## 🚀 Future Extension Points
-
-### **Adding New Agents**
-```python
-class DataSecurityAgent:
-    def __init__(self, project_id: str):
-        # Specialist in data classification and protection
-        
-    async def process_query(self, query: str, context: dict) -> str:
-        # Use existing tools: storage_tools, analysis_tools
-        # Add new reasoning for data security patterns
-```
-
-### **Adding New Tools**  
-```python
-def analyze_cloud_sql_security(project_id: str, tool_context: ToolContext) -> str:
-    # New tool for Cloud SQL security analysis
-    # Can be used by multiple agents: StorageAgent, ComplianceAgent
-```
-
-### **Adding New Capabilities**
-- **Agents**: Add new reasoning patterns, conversation abilities
-- **Tools**: Add new GCP service integrations, external API connections
-- **Both**: Extend without affecting existing functionality
+- **Centralized Routing**: Logic is centralized in the Router Agent, not scattered in API endpoints.
 
 ---
 

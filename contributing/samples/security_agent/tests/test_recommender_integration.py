@@ -66,13 +66,13 @@ class TestRecommenderService:
     @pytest.fixture
     def mock_asset_client(self):
         """Create a mock Google Cloud Asset client."""
-        client = Mock(spec=recommender_v1.AssetServiceClient)
+        client = Mock(spec=recommender_v1.RecommenderClient)
         return client
     
     @pytest.fixture
     def recommender_service(self, mock_recommender_client, mock_asset_client):
         """Create RecommenderService with mocked clients."""
-        service = RecommenderService()
+        service = RecommenderService(project_id="test-project")
         service.client = mock_recommender_client
         service.asset_client = mock_asset_client
         return service
@@ -131,7 +131,7 @@ class TestRecommenderService:
                 mock_creds.return_value = Mock()
                 mock_client.return_value = Mock()
                 
-                service = RecommenderService(credentials_path="/path/to/creds.json")
+                service = RecommenderService(project_id="test-project", credentials_path="/path/to/creds.json")
                 
                 mock_creds.assert_called_once_with("/path/to/creds.json")
                 mock_client.assert_called_once()
@@ -143,7 +143,7 @@ class TestRecommenderService:
                 mock_auth.return_value = (Mock(), "test-project")
                 mock_client.return_value = Mock()
                 
-                service = RecommenderService()
+                service = RecommenderService(project_id="test-project")
                 
                 mock_auth.assert_called_once()
                 mock_client.assert_called()
@@ -157,7 +157,7 @@ class TestRecommenderService:
                     mock_client.side_effect = [Exception("Connection failed"), Exception("Still failing"), Mock()]
                     mock_creds.return_value = Mock()
                     
-                    service = RecommenderService(credentials_path="/path/to/creds.json")
+                    service = RecommenderService(project_id="test-project", credentials_path="/path/to/creds.json")
                     
                     assert mock_client.call_count == 3
                     assert mock_sleep.call_count == 2
@@ -923,7 +923,7 @@ class TestResponseGenerator:
                 security_impact_score=0.9,
                 implementation_effort="high",
                 estimated_time_hours=2.0,
-                compliance_impacts=[]
+                compliance_impact=[]
             ),
             RecommendationInsight(
                 recommendation_id="rec-2",
@@ -940,7 +940,7 @@ class TestResponseGenerator:
                 security_impact_score=0.2,
                 implementation_effort="low",
                 estimated_time_hours=0.5,
-                compliance_impacts=[]
+                compliance_impact=[]
             )
         ]
     
@@ -1273,7 +1273,7 @@ class TestPerformanceAndIntegration:
         # Create multiple services
         services = []
         for i in range(5):
-            service = RecommenderService()
+            service = RecommenderService(project_id=f"test-project-{i}")
             service.client = Mock()
             service.asset_client = Mock()
             services.append(service)
@@ -1352,7 +1352,7 @@ class TestPerformanceAndIntegration:
     
     def test_memory_usage_optimization(self):
         """Test memory usage stays reasonable with large datasets."""
-        service = RecommenderService()
+        service = RecommenderService(project_id="test-project")
         service.client = Mock()
         service.asset_client = Mock()
         
@@ -1375,7 +1375,7 @@ class TestPerformanceAndIntegration:
     @pytest.mark.asyncio
     async def test_error_recovery_and_resilience(self):
         """Test error recovery and system resilience."""
-        service = RecommenderService()
+        service = RecommenderService(project_id="test-project")
         service.client = Mock()
         service.asset_client = Mock()
         
@@ -1406,7 +1406,7 @@ class TestPerformanceAndIntegration:
     async def test_end_to_end_recommendation_flow(self):
         """Test complete end-to-end recommendation flow."""
         # Create services
-        recommender_service = RecommenderService()
+        recommender_service = RecommenderService(project_id="test-project")
         recommender_service.client = Mock()
         recommender_service.asset_client = Mock()
         
@@ -1478,7 +1478,7 @@ class TestErrorHandlingAndEdgeCases:
     @pytest.mark.asyncio
     async def test_malformed_recommendation_data(self):
         """Test handling of malformed recommendation data from API."""
-        service = RecommenderService()
+        service = RecommenderService(project_id="test-project")
         service.client = Mock()
         service.asset_client = Mock()
         
@@ -1505,7 +1505,7 @@ class TestErrorHandlingAndEdgeCases:
     @pytest.mark.asyncio
     async def test_rate_limiting_simulation(self):
         """Test behavior under rate limiting conditions."""
-        service = RecommenderService()
+        service = RecommenderService(project_id="test-project")
         service.client = Mock()
         service.asset_client = Mock()
         
@@ -1526,7 +1526,7 @@ class TestErrorHandlingAndEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_response_handling(self):
         """Test handling of empty responses from API."""
-        service = RecommenderService()
+        service = RecommenderService(project_id="test-project")
         service.client = Mock()
         service.asset_client = Mock()
         
