@@ -70,10 +70,13 @@ def trace_tool_call(
     function_response_event: The event with the function response details.
   """
   span = trace.get_current_span()
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
+
+  # Standard OpenTelemetry GenAI attributes as of OTel SemConv v1.36.0 for Agents and Frameworks
+  span.set_attribute('gen_ai.system', 'gcp.vertex_ai')
   span.set_attribute('gen_ai.operation.name', 'execute_tool')
   span.set_attribute('gen_ai.tool.name', tool.name)
   span.set_attribute('gen_ai.tool.description', tool.description)
+
   tool_call_id = '<not specified>'
   tool_response = '<not specified>'
   if function_response_event.content.parts:
@@ -86,6 +89,7 @@ def trace_tool_call(
 
   span.set_attribute('gen_ai.tool.call.id', tool_call_id)
 
+  # Vendor-specific attributes (moved from gen_ai.* to gcp.vertex.agent.*)
   if not isinstance(tool_response, dict):
     tool_response = {'result': tool_response}
   span.set_attribute(
@@ -121,12 +125,15 @@ def trace_merged_tool_calls(
   """
 
   span = trace.get_current_span()
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
+
+  # Standard OpenTelemetry GenAI attributes
+  span.set_attribute('gen_ai.system', 'gcp.vertex_ai')
   span.set_attribute('gen_ai.operation.name', 'execute_tool')
   span.set_attribute('gen_ai.tool.name', '(merged tools)')
   span.set_attribute('gen_ai.tool.description', '(merged tools)')
   span.set_attribute('gen_ai.tool.call.id', response_event_id)
 
+  # Vendor-specific attributes
   span.set_attribute('gcp.vertex.agent.tool_call_args', 'N/A')
   span.set_attribute('gcp.vertex.agent.event_id', response_event_id)
   try:
@@ -167,10 +174,23 @@ def trace_call_llm(
     llm_response: The LLM response object.
   """
   span = trace.get_current_span()
-  # Special standard Open Telemetry GenaI attributes that indicate
-  # that this is a span related to a Generative AI system.
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
+
+  # Standard OpenTelemetry GenAI attributes
+  span.set_attribute('gen_ai.system', 'gcp.vertex_ai')
+  span.set_attribute('gen_ai.operation.name', 'chat')
   span.set_attribute('gen_ai.request.model', llm_request.model)
+
+  if hasattr(llm_response, 'id') and llm_response.id:
+    span.set_attribute('gen_ai.response.id', llm_response.id)
+
+  # Set response model if different from request model
+  if (
+      hasattr(llm_response, 'model')
+      and llm_response.model
+      and llm_response.model != llm_request.model
+  ):
+    span.set_attribute('gen_ai.response.model', llm_response.model)
+
   span.set_attribute(
       'gcp.vertex.agent.invocation_id', invocation_context.invocation_id
   )
@@ -178,12 +198,14 @@ def trace_call_llm(
       'gcp.vertex.agent.session_id', invocation_context.session.id
   )
   span.set_attribute('gcp.vertex.agent.event_id', event_id)
+
   # Consider removing once GenAI SDK provides a way to record this info.
   span.set_attribute(
       'gcp.vertex.agent.llm_request',
       _safe_json_serialize(_build_llm_request_for_trace(llm_request)),
   )
-  # Consider removing once GenAI SDK provides a way to record this info.
+
+  # Standard GenAI request attributes
   if llm_request.config:
     if llm_request.config.top_p:
       span.set_attribute(
@@ -194,6 +216,14 @@ def trace_call_llm(
       span.set_attribute(
           'gen_ai.request.max_tokens',
           llm_request.config.max_output_tokens,
+      )
+    if (
+        hasattr(llm_request.config, 'temperature')
+        and llm_request.config.temperature is not None
+    ):
+      span.set_attribute(
+          'gen_ai.request.temperature',
+          llm_request.config.temperature,
       )
 
   try:
@@ -206,6 +236,7 @@ def trace_call_llm(
       llm_response_json,
   )
 
+  # Standard GenAI usage and response attributes
   if llm_response.usage_metadata is not None:
     span.set_attribute(
         'gen_ai.usage.input_tokens',
@@ -286,3 +317,41 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
         )
     )
   return result
+
+
+def _create_span_name(operation_name: str, model_name: str) -> str:
+  """Creates a span name following OpenTelemetry GenAI conventions.
+
+  Args:
+    operation_name: The GenAI operation name (e.g., 'generate_content', 'execute_tool').
+    model_name: The model name being used.
+
+  Returns:
+    A span name in the format '{operation_name} {model_name}'.
+  """
+  return f'{operation_name} {model_name}'
+
+
+def add_genai_prompt_event(span: trace.Span, prompt_content: str):
+  """Adds a GenAI prompt event to the span following OpenTelemetry conventions.
+
+  Args:
+    span: The OpenTelemetry span to add the event to.
+    prompt_content: The prompt content as a JSON string.
+  """
+  span.add_event(
+      name='gen_ai.content.prompt', attributes={'gen_ai.prompt': prompt_content}
+  )
+
+
+def add_genai_completion_event(span: trace.Span, completion_content: str):
+  """Adds a GenAI completion event to the span following OpenTelemetry conventions.
+
+  Args:
+    span: The OpenTelemetry span to add the event to.
+    completion_content: The completion content as a JSON string.
+  """
+  span.add_event(
+      name='gen_ai.content.completion',
+      attributes={'gen_ai.completion': completion_content},
+  )

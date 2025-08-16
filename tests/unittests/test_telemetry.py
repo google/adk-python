@@ -114,14 +114,15 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
 
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
+      mock.call('gen_ai.system', 'gcp.vertex_ai'),
+      mock.call('gen_ai.operation.name', 'chat'),
       mock.call('gen_ai.request.top_p', 0.95),
       mock.call('gen_ai.request.max_tokens', 1024),
       mock.call('gen_ai.usage.input_tokens', 50),
       mock.call('gen_ai.usage.output_tokens', 50),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
   ]
-  assert mock_span_fixture.set_attribute.call_count == 12
+  assert mock_span_fixture.set_attribute.call_count == 13
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -173,9 +174,9 @@ async def test_trace_call_llm_with_binary_content(
 
   # Verify basic telemetry attributes are set
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
+      mock.call('gen_ai.system', 'gcp.vertex_ai'),
   ]
-  assert mock_span_fixture.set_attribute.call_count == 7
+  assert mock_span_fixture.set_attribute.call_count == 8
   mock_span_fixture.set_attribute.assert_has_calls(expected_calls)
 
   # Verify binary content is replaced with '<not serializable>' in JSON
@@ -230,7 +231,7 @@ def test_trace_tool_call_with_scalar_response(
   # Assert
   assert mock_span_fixture.set_attribute.call_count == 10
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
+      mock.call('gen_ai.system', 'gcp.vertex_ai'),
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
@@ -289,7 +290,7 @@ def test_trace_tool_call_with_dict_response(
 
   # Assert
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
+      mock.call('gen_ai.system', 'gcp.vertex_ai'),
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
@@ -328,7 +329,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
   )
 
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
+      mock.call('gen_ai.system', 'gcp.vertex_ai'),
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', '(merged tools)'),
       mock.call('gen_ai.tool.description', '(merged tools)'),

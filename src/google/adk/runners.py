@@ -203,7 +203,8 @@ class Runner:
     async def _run_with_trace(
         new_message: types.Content,
     ) -> AsyncGenerator[Event, None]:
-      with tracer.start_as_current_span('invocation'):
+      with tracer.start_as_current_span('invocation') as span:
+        span.set_attribute('gen_ai.operation.name', 'invoke_agent')
         session = await self.session_service.get_session(
             app_name=self.app_name, user_id=user_id, session_id=session_id
         )
