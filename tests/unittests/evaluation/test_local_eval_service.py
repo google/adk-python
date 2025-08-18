@@ -126,7 +126,7 @@ async def test_perform_inference_success(
   mock_eval_sets_manager.get_eval_set.return_value = eval_set
 
   mock_inference_result = mock.MagicMock()
-  eval_service._perform_inference_sigle_eval_item = mock.AsyncMock(
+  eval_service._perform_inference_single_eval_item = mock.AsyncMock(
       return_value=mock_inference_result
   )
 
@@ -146,7 +146,7 @@ async def test_perform_inference_success(
   mock_eval_sets_manager.get_eval_set.assert_called_once_with(
       app_name="test_app", eval_set_id="test_eval_set"
   )
-  assert eval_service._perform_inference_sigle_eval_item.call_count == 2
+  assert eval_service._perform_inference_single_eval_item.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -166,7 +166,7 @@ async def test_perform_inference_with_case_ids(
   mock_eval_sets_manager.get_eval_set.return_value = eval_set
 
   mock_inference_result = mock.MagicMock()
-  eval_service._perform_inference_sigle_eval_item = mock.AsyncMock(
+  eval_service._perform_inference_single_eval_item = mock.AsyncMock(
       return_value=mock_inference_result
   )
 
@@ -182,13 +182,13 @@ async def test_perform_inference_with_case_ids(
     results.append(result)
 
   assert len(results) == 2
-  eval_service._perform_inference_sigle_eval_item.assert_any_call(
+  eval_service._perform_inference_single_eval_item.assert_any_call(
       app_name="test_app",
       eval_set_id="test_eval_set",
       eval_case=eval_set.eval_cases[0],
       root_agent=dummy_agent,
   )
-  eval_service._perform_inference_sigle_eval_item.assert_any_call(
+  eval_service._perform_inference_single_eval_item.assert_any_call(
       app_name="test_app",
       eval_set_id="test_eval_set",
       eval_case=eval_set.eval_cases[2],
