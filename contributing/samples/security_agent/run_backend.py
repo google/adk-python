@@ -15,8 +15,16 @@ def main():
     # Set environment variables
     os.environ['GOOGLE_CLOUD_PROJECT'] = 'mgm-digitalconcierge'
     
-    # Change to backend directory
+    # Set Google Application Credentials if file exists
     backend_dir = os.path.join(os.path.dirname(__file__), "backend")
+    service_account_path = os.path.join(backend_dir, "config", "secrets", "mgm-digitalconcierge-52fed2a2dac3.json")
+    if os.path.exists(service_account_path):
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = service_account_path
+        print(f"✅ Set GOOGLE_APPLICATION_CREDENTIALS to: {service_account_path}")
+    else:
+        print("⚠️ Service account key not found, will use default credentials")
+    
+    # Change to backend directory
     os.chdir(backend_dir)
     
     # Run uvicorn
