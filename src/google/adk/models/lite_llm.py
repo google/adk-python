@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import importlib.metadata as im
 import json
 import logging
 from typing import Any
@@ -50,6 +51,7 @@ from litellm import Function
 from litellm import Message
 from litellm import ModelResponse
 from litellm import OpenAIMessageContent
+from packaging.version import Version
 from pydantic import BaseModel
 from pydantic import Field
 from typing_extensions import override
@@ -65,6 +67,37 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
+
+
+def _assert_litellm_openai_compat() -> None:
+  """Fail fast if installed litellm/openai versions are incompatible.
+
+  Policy:
+    - litellm < 2.0.0
+    - openai <= 1.99.9
+  """
+
+  try:
+    litellm_version = im.version("litellm")
+  except Exception:
+    # If not installed, defer to import-time errors elsewhere
+    return
+
+  try:
+    openai_version = im.version("openai")
+  except Exception:
+    # If openai is not installed but user still tries to use LiteLLM with providers
+    # that require it, they will hit an import/runtime error later. No-op here.
+    return
+
+  if Version(litellm_version) >= Version("2.0.0"):
+    raise RuntimeError(
+        f"Unsupported litellm {litellm_version}; require < 2.0.0"
+    )
+  if Version(openai_version) > Version("1.99.9"):
+    raise RuntimeError(
+        f"Unsupported openai {openai_version}; require <= 1.99.9"
+    )
 
 
 class FunctionChunk(BaseModel):
@@ -704,6 +737,7 @@ class LiteLlm(BaseLlm):
       **kwargs: Additional arguments to pass to the litellm completion api.
     """
     super().__init__(model=model, **kwargs)
+    _assert_litellm_openai_compat()
     self._additional_args = kwargs
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
