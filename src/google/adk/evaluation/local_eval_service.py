@@ -120,7 +120,7 @@ class LocalEvalService(BaseEvalService):
 
     async def run_inference(eval_case):
       async with semaphore:
-        return await self._perform_inference_sigle_eval_item(
+        return await self._perform_inference_single_eval_item(
             app_name=inference_request.app_name,
             eval_set_id=inference_request.eval_set_id,
             eval_case=eval_case,
@@ -342,7 +342,7 @@ class LocalEvalService(BaseEvalService):
 
     return final_eval_status
 
-  async def _perform_inference_sigle_eval_item(
+  async def _perform_inference_single_eval_item(
       self,
       app_name: str,
       eval_set_id: str,
