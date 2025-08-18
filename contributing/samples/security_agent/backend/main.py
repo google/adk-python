@@ -39,12 +39,19 @@ else:
 
 # Set up Google Application Credentials if not already set
 if not os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
-    service_account_path = Path(__file__).parent / "config" / "secrets" / "mgm-digitalconcierge-52fed2a2dac3.json"
-    if service_account_path.exists():
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(service_account_path)
-        print(f"✅ Set GOOGLE_APPLICATION_CREDENTIALS to: {service_account_path}")
+    # Try to find any service account JSON file in the secrets directory
+    secrets_dir = Path(__file__).parent / "config" / "secrets"
+    if secrets_dir.exists():
+        json_files = list(secrets_dir.glob("*.json"))
+        if json_files:
+            # Use the first JSON file found
+            service_account_path = json_files[0]
+            os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(service_account_path)
+            print(f"✅ Set GOOGLE_APPLICATION_CREDENTIALS to: {service_account_path}")
+        else:
+            print("⚠️ No service account JSON files found in config/secrets/")
     else:
-        print("⚠️ Service account key not found, will use default credentials")
+        print("⚠️ Service account directory not found, will use default credentials")
 
 # Add backend's parent directory to sys.path to make 'backend' importable.
 current_dir = os.path.dirname(os.path.abspath(__file__))

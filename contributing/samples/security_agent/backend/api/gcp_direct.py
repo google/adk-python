@@ -32,11 +32,19 @@ class GCPDirectClient:
             from pathlib import Path
             
             # Check multiple possible locations for service account key
-            possible_paths = [
-                Path(__file__).parent.parent / "config" / "secrets" / "mgm-digitalconcierge-52fed2a2dac3.json",
-                Path(__file__).parent.parent / "config" / "secrets" / "service-account-key.json",
-                Path(os.path.expanduser("~/.config/gcloud/application_default_credentials.json")),
-            ]
+            secrets_dir = Path(__file__).parent.parent / "config" / "secrets"
+            possible_paths = []
+            
+            # First check if GOOGLE_APPLICATION_CREDENTIALS is set
+            if os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
+                possible_paths.append(Path(os.getenv('GOOGLE_APPLICATION_CREDENTIALS')))
+            
+            # Then check for any JSON files in secrets directory
+            if secrets_dir.exists():
+                possible_paths.extend(secrets_dir.glob("*.json"))
+            
+            # Finally check for default gcloud credentials
+            possible_paths.append(Path(os.path.expanduser("~/.config/gcloud/application_default_credentials.json")))
             
             service_account_file = None
             for path in possible_paths:
