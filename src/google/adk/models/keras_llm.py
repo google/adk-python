@@ -35,12 +35,19 @@ class KerasLlm(BaseLlm):
   """Wrapper around KerasHub for local model inference.
 
   This wrapper can be used with any of the models supported by KerasHub. The
-  models run locally without requiring external API calls.
+  models run locally without requiring external API calls. Generation parameters
+  are passed directly to the model's generate() method.
 
   Example usage:
   ```
   agent = Agent(
-      model=KerasLlm(model="gpt2_base_en"),
+      model=KerasLlm(
+          model="gpt2_base_en",
+          max_length=100,
+          temperature=0.7,
+          top_k=50,
+          top_p=0.9
+      ),
       ...
   )
   ```
@@ -48,15 +55,11 @@ class KerasLlm(BaseLlm):
   Attributes:
       model: The name of the KerasHub model preset.
       _keras_model: The loaded KerasHub model instance.
-      _preprocessor: The preprocessor/tokenizer for the model.
-      _additional_args: Additional generation parameters.
+      _additional_args: Additional generation parameters passed to generate().
   """
 
   _keras_model: Optional[Any] = None
   """The loaded KerasHub model instance."""
-
-  _preprocessor: Optional[Any] = None
-  """The preprocessor/tokenizer for the model."""
 
   _additional_args: Dict[str, Any] = None
   """Additional generation parameters."""
@@ -72,7 +75,6 @@ class KerasLlm(BaseLlm):
     self._additional_args = kwargs
     # Remove internal fields from kwargs
     self._additional_args.pop("_keras_model", None)
-    self._additional_args.pop("_preprocessor", None)
     self._additional_args.pop("_additional_args", None)
 
   def _load_model(self):
@@ -104,80 +106,6 @@ class KerasLlm(BaseLlm):
           "This might be due to an unsupported preset or network issues. "
           f"Error: {e}"
       )
-
-    # Configure the sampler using KerasHub's official sampler classes
-    sampler_choice = str(self._additional_args.get("sampler", "greedy")).lower()
-
-    # Import official samplers from KerasHub
-    try:
-      from keras_hub.samplers import (
-          GreedySampler,
-          TopKSampler,
-          TopPSampler,
-          BeamSampler,
-          RandomSampler,
-          ContrastiveSampler,
-      )
-    except Exception as e:
-      raise ImportError(
-          "Failed to import keras_hub.samplers. Please ensure keras-hub is up to date."
-      )
-
-    # Get sampler parameters
-    top_k = self._additional_args.get("top_k", None)
-    top_p = self._additional_args.get("top_p", None)
-    num_beams = self._additional_args.get("num_beams", None)
-    beam_size = self._additional_args.get("beam_size", None)  # Alias for num_beams
-    contrastive_k = self._additional_args.get("contrastive_k", None)
-    contrastive_alpha = self._additional_args.get("contrastive_alpha", None)
-    seed = self._additional_args.get("seed", None)
-
-    sampler_instance = None
-    if sampler_choice == "greedy":
-      sampler_instance = GreedySampler()
-    elif sampler_choice == "top_k":
-      kwargs: Dict[str, Any] = {}
-      if isinstance(top_k, int):
-        kwargs["k"] = top_k
-      if isinstance(seed, int):
-        kwargs["seed"] = seed
-      sampler_instance = TopKSampler(**kwargs)
-    elif sampler_choice == "top_p":
-      kwargs: Dict[str, Any] = {}
-      if isinstance(top_p, (int, float)):
-        kwargs["p"] = top_p
-      if isinstance(top_k, int):
-        kwargs["k"] = top_k
-      if isinstance(seed, int):
-        kwargs["seed"] = seed
-      sampler_instance = TopPSampler(**kwargs)
-    elif sampler_choice == "beam":
-      kwargs: Dict[str, Any] = {}
-      # Support both num_beams and beam_size
-      if isinstance(num_beams, int):
-        kwargs["num_beams"] = num_beams
-      elif isinstance(beam_size, int):
-        kwargs["num_beams"] = beam_size
-      if isinstance(seed, int):
-        kwargs["seed"] = seed
-      sampler_instance = BeamSampler(**kwargs)
-    elif sampler_choice == "random":
-      kwargs: Dict[str, Any] = {}
-      if isinstance(seed, int):
-        kwargs["seed"] = seed
-      sampler_instance = RandomSampler(**kwargs)
-    elif sampler_choice == "contrastive":
-      kwargs: Dict[str, Any] = {}
-      if isinstance(contrastive_k, int):
-        kwargs["k"] = contrastive_k
-      if isinstance(contrastive_alpha, (int, float)):
-        kwargs["alpha"] = contrastive_alpha
-      sampler_instance = ContrastiveSampler(**kwargs)
-    else:
-      # Default to greedy sampling for safety
-      sampler_instance = GreedySampler()
-
-    self._keras_model.compile(sampler=sampler_instance)
 
   def _flatten_conversation_to_prompt(self, llm_request: LlmRequest) -> str:
     """Flattens the conversation into a single text prompt.
@@ -222,16 +150,46 @@ class KerasLlm(BaseLlm):
       self._load_model()
 
     prompt = self._flatten_conversation_to_prompt(llm_request)
-    max_length = self._additional_args.get("max_length", 100)
+    
+    # Extract generation parameters from additional_args
+    generation_params = {}
+    
+    # Basic parameters that most models support
+    if "max_length" in self._additional_args:
+      generation_params["max_length"] = self._additional_args["max_length"]
+    else:
+      generation_params["max_length"] = 100  # Default
+    
+    # Only pass parameters that the model actually supports
+    # Different models support different parameters, so we'll be conservative
+    supported_params = ["max_length", "temperature", "top_k", "top_p"]
+    
+    for param in supported_params:
+      if param in self._additional_args:
+        generation_params[param] = self._additional_args[param]
 
     def generate_text():
-      return self._keras_model.generate(prompt, max_length=max_length)
+      return self._keras_model.generate(prompt, **generation_params)
 
     try:
       generated_text = await asyncio.to_thread(generate_text)
     except Exception as e:
       logger.error(f"Error generating text with KerasHub: {e}")
       raise RuntimeError(f"Failed to generate text with KerasHub model: {e}")
+
+    # Process the generated text
+    if self._additional_args.get("strip_prompt", False):
+      # Remove the original prompt from the response
+      if prompt in generated_text:
+        generated_text = generated_text[len(prompt):].strip()
+      # Also try to remove common prefixes that might be left
+      common_prefixes = ["Assistant:", "User:", "System:"]
+      for prefix in common_prefixes:
+        if generated_text.startswith(prefix):
+          generated_text = generated_text[len(prefix):].strip()
+    
+    # Clean up repetitive patterns
+    generated_text = self._clean_repetitive_text(generated_text)
 
     # Create response content
     response_content = types.Content(
@@ -240,6 +198,37 @@ class KerasLlm(BaseLlm):
 
     response = LlmResponse(content=response_content)
     yield response
+
+  def _clean_repetitive_text(self, text: str) -> str:
+    """Clean up repetitive patterns in generated text."""
+    if not text:
+      return text
+    
+    # Split into words and detect repetitive patterns
+    words = text.split()
+    if len(words) < 3:
+      return text
+    
+    # Look for immediate repetitions (same word repeated 3+ times)
+    cleaned_words = []
+    i = 0
+    while i < len(words):
+      word = words[i]
+      count = 1
+      j = i + 1
+      while j < len(words) and words[j] == word:
+        count += 1
+        j += 1
+      
+      if count >= 3:
+        # Keep only 2 instances of repeated words
+        cleaned_words.extend([word, word])
+        i = j
+      else:
+        cleaned_words.append(word)
+        i += 1
+    
+    return " ".join(cleaned_words)
 
   @classmethod
   @override

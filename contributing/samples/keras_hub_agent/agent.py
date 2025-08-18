@@ -64,7 +64,6 @@ keras_hub_agent = Agent(
         model="gpt2_base_en",
         max_length=100,
         temperature=0.8,
-        sampler="top_k",
         top_k=50,
     ),
     name="keras_hub_agent",
