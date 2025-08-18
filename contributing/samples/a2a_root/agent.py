@@ -20,5 +20,5 @@ root_agent = RemoteA2aAgent(
     description=(
         "Helpful assistant that can roll dice and check if numbers are prime."
     ),
-    agent_card=f"http://localhost:8001{AGENT_CARD_WELL_KNOWN_PATH}",
+    agent_card=f"http://localhost:8001/{AGENT_CARD_WELL_KNOWN_PATH}",
 )
