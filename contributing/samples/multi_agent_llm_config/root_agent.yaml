@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+agent_class: LlmAgent
+model: gemini-2.5-flash
+name: root_agent
+description: Iterative writing pipeline agent.
+# global_instruction: You are DicePrimeBot, ready to roll dice and check prime numbers.
+instruction: |
+  You are a helpful assistant that can roll dice and check if numbers are prime.
+
+  You delegate rolling dice tasks to the roll_agent and prime checking tasks to the prime_agent.
+
+  Follow these steps:
+  1. If the user asks to roll a die, delegate to the roll_agent.
+  2. If the user asks to check primes, delegate to the prime_agent.
+  3. If the user asks to roll a die and then check if the result is prime, call roll_agent first, then pass the result to prime_agent.
+
+  Always clarify the results before proceeding.
+sub_agents:
+  - config_path: roll_agent.yaml
+  - config_path: prime_agent.yaml
+tools:
+  - name: multi_agent_llm_config.example_tool
+generate_content_config:
+  safety_settings:
+    - category: HARM_CATEGORY_DANGEROUS_CONTENT
+      threshold: 'OFF'

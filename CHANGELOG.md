@@ -1,5 +1,55 @@
 # Changelog
 
+## [1.11.0](https://github.com/google/adk-python/compare/v1.10.0...v1.11.0) (2025-08-14)
+
+### Features
+
+* [Tools] Support adding prefix to tool names returned by toolset ([ebd726f](https://github.com/google/adk-python/commit/ebd726f1f5e0a76f383192cace4a80a83204325b))
+* [Eval] Expose `print_detailed_results` param to `AgentEvaluator.evaluate` ([7e08808](https://github.com/google/adk-python/commit/7e0880869b340e9a5e0d68d6936219e64ab41212))
+* [Tools] Add Spanner toolset (breaking change to BigQueryTool, consolidating into generic GoogleTool) ([1fc8d20](https://github.com/google/adk-python/commit/1fc8d20ae88451b7ed764aa86c17c3cdfaffa1cf))
+* [Core] Support both output_schema and tools at the same time in LlmAgent([sample](https://github.com/google/adk-python/tree/main/contributing/samples/output_schema_with_tools)) ([af63567](https://github.com/google/adk-python/commit/af635674b5d3c128cf21737056e091646283aeb7))
+
+### Bug Fixes
+
+* A2A RPC URL got overriden by host and port param of adk api server ([52284b1](https://github.com/google/adk-python/commit/52284b1bae561e0d6c93c9d3240a09f210551b97))
+* Aclose all async generators to fix OTel tracing context ([a30c63c](https://github.com/google/adk-python/commit/a30c63c5933a770b960b08a6e2f8bf13eece8a22))
+* Use PreciseTimestamp for create and update time in database session service to improve precision ([585141e](https://github.com/google/adk-python/commit/585141e0b7dda20abb024c7164073862c8eea7ae))
+* Ignore AsyncGenerator return types in function declarations ([e2518dc](https://github.com/google/adk-python/commit/e2518dc371fe77d7b30328d8d6f5f864176edeac))
+* Make all subclass of BaseToolset to call parent constructor ([8c65967](https://github.com/google/adk-python/commit/8c65967cdc2dc79fa925ff49a2a8d67c2a248fa9))
+* Path parameter extraction for complex Google API endpoints ([54680ed](https://github.com/google/adk-python/commit/54680edf3cac7477c281680ec988c0a207c0915d))
+* Docstring concatenation in 3.13 ([88f759a](https://github.com/google/adk-python/commit/88f759a941c95beef0571f36f8e7a34f27971ba8))
+* Lazy load retrieval tools and prompt users to install extensions if import failed ([9478a31](https://github.com/google/adk-python/commit/9478a31bf2257f0b668ae7eb91a10863e87c7bed))
+* Incorrect logic in LlmRequest.append_tools and make BaseTool to call it ([b4ce3b1](https://github.com/google/adk-python/commit/b4ce3b12d109dd0386f4985fc4b27d5b93787532))
+* Creates an InMemoryMemoryService within the EvaluationGenerator ([e4d54b6](https://github.com/google/adk-python/commit/e4d54b66b38ed334ca92c3bb1a83aca01b19e490))
+* Uncomment OTel tracing in base_llm_flow.py ([9cfe433](https://github.com/google/adk-python/commit/9cfe43334ae50f814fed663cca7cbe330e663b8c))
+
+### Improvements
+
+* Added upper version bounds to dependencies in "pyproject.toml" ([a74d334](https://github.com/google/adk-python/commit/a74d3344bc19e587c5e9f55f3c90fa9d22c478d8))
+* Update python-version in .github/workflows/python-unit-tests.yml to \["3.9", "3.10", "3.11", "3.12", "3.13"] ([ddf2e21](https://github.com/google/adk-python/commit/ddf2e2194b49667c8e91b4a6afde694474674250))
+* Update comment to reference "Streamable HTTP Client" ([c52f956](https://github.com/google/adk-python/commit/c52f9564330f0c00d82338cc58df28cb22400b6f))
+* Remove logging that contains full event data from DatabaseSessionService ([bb3735c](https://github.com/google/adk-python/commit/bb3735c9cab1baa1af2cc22981af3b3984ddfe15))
+* Add the missing env variables in discussion_answering.yml ([a09a5e6](https://github.com/google/adk-python/commit/a09a5e67aa95cf71b51732ab445232dc4815d83d))
+* Add Gemini API docs as a new datastore for the ADK Answering Agent ([5fba196](https://github.com/google/adk-python/commit/5fba1963c31eec512558325c480812ccb919a7bb))
+* Add the missing license header for some sample agents' files ([7d2cb65](https://github.com/google/adk-python/commit/7d2cb654f0d64728741b5de733e572c44c8a5b04))
+* Add docstring to clarify the behavior of preload memory tool ([88114d7](https://github.com/google/adk-python/commit/88114d7c739ca6a1b9bd19d40ed7160e53054a89))
+* Add experimental messages for a2a related API ([d0b3b5d](https://github.com/google/adk-python/commit/d0b3b5d857d8105c689bd64204e367102a67eded))
+* Fixes generate_image sample ([d674178](https://github.com/google/adk-python/commit/d674178a0535be3769edbf6af5a3d8cd3d47fcd2))
+* Make all FastAPI endpoints async ([7f12387](https://github.com/google/adk-python/commit/7f12387eb19b9335a64b80df00609c3c765480e7))
+* Group FastAPI endpoints with tags ([c323de5](https://github.com/google/adk-python/commit/c323de5c692223e55372c3797e62d4752835774d))
+* Allow implementations to skip defining a close method on Toolset ([944e39e](https://github.com/google/adk-python/commit/944e39ec2a7c9ad7f20c08fd66bf544de94a23d7))
+* Add sample agent to test support of output_schema and tools at the same time for gemini model ([f2005a2](https://github.com/google/adk-python/commit/f2005a20267e1ee8581cb79c37aa55dc8e18c0ea))
+* Add Github workflow config for uploading ADK docs to knowledge store ([5900273](https://github.com/google/adk-python/commit/59002734559d49a46940db9822b9c5f490220a8c))
+* Update ADK Answering agent to reference doc site instead of adk-docs repo ([b5a8bad](https://github.com/google/adk-python/commit/b5a8bad170e271b475385dac440c7983ed207df8))
+
+### Documentation
+
+* Fixes tool_functions, which is a config-based sample for using tools ([c5af44c](https://github.com/google/adk-python/commit/c5af44cfc0224e2f07ddc7a649a8561e7141fcdc))
+* Add workflow_triage sample for multi-agent request orchestration ([e295feb](https://github.com/google/adk-python/commit/e295feb4c67cbe8ac4425d9ae230210840378b2e))
+* Add examples for config agents ([d87feb8](https://github.com/google/adk-python/commit/d87feb8ddb6a5e402c63bd3c35625160eb94e132))
+* Adds pypi badge to README.md ([dc26aad](https://github.com/google/adk-python/commit/dc26aad663b6ae72223cfec9b91eaf73a636402d))
+* Update StreamableHTTPConnectionParams docstring to remove SSE references ([8f937b5](https://github.com/google/adk-python/commit/8f937b517548a1ce0569f9698ea55c0a130ef221))
+
 ## [1.10.0](https://github.com/google/adk-python/compare/v1.9.0...v1.10.0) (2025-08-07)
 
 ### Features

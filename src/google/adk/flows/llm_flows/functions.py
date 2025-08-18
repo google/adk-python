@@ -40,6 +40,7 @@ from ...telemetry import trace_tool_call
 from ...telemetry import tracer
 from ...tools.base_tool import BaseTool
 from ...tools.tool_context import ToolContext
+from ...utils.context_utils import Aclosing
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -510,21 +511,24 @@ async def _process_function_live_helper(
     # we require the function to be a async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
       try:
-        async for result in __call_tool_live(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            invocation_context=invocation_context,
-        ):
-          updated_content = types.Content(
-              role='user',
-              parts=[
-                  types.Part.from_text(
-                      text=f'Function {tool.name} returned: {result}'
-                  )
-              ],
-          )
-          invocation_context.live_request_queue.send_content(updated_content)
+        async with Aclosing(
+            __call_tool_live(
+                tool=tool,
+                args=function_args,
+                tool_context=tool_context,
+                invocation_context=invocation_context,
+            )
+        ) as agen:
+          async for result in agen:
+            updated_content = types.Content(
+                role='user',
+                parts=[
+                    types.Part.from_text(
+                        text=f'Function {tool.name} returned: {result}'
+                    )
+                ],
+            )
+            invocation_context.live_request_queue.send_content(updated_content)
       except asyncio.CancelledError:
         raise  # Re-raise to properly propagate the cancellation
 
@@ -586,12 +590,15 @@ async def __call_tool_live(
     invocation_context: InvocationContext,
 ) -> AsyncGenerator[Event, None]:
   """Calls the tool asynchronously (awaiting the coroutine)."""
-  async for item in tool._call_live(
-      args=args,
-      tool_context=tool_context,
-      invocation_context=invocation_context,
-  ):
-    yield item
+  async with Aclosing(
+      tool._call_live(
+          args=args,
+          tool_context=tool_context,
+          invocation_context=invocation_context,
+      )
+  ) as agen:
+    async for item in agen:
+      yield item
 
 
 async def __call_tool_async(
@@ -675,7 +682,7 @@ def merge_parallel_function_response_events(
 
   # Create the new merged event
   merged_event = Event(
-      invocation_id=Event.new_id(),
+      invocation_id=base_event.invocation_id,
       author=base_event.author,
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),

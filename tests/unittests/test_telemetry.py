@@ -81,9 +81,57 @@ async def _create_invocation_context(
 
 
 @pytest.mark.asyncio
-async def test_trace_call_llm_function_response_includes_part_from_bytes(
+async def test_trace_call_llm(monkeypatch, mock_span_fixture):
+  """Test trace_call_llm sets all telemetry attributes correctly with normal content."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[types.Part(text='Hello, how are you?')],
+          ),
+      ],
+      config=types.GenerateContentConfig(
+          system_instruction='You are a helpful assistant.',
+          top_p=0.95,
+          max_output_tokens=1024,
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          total_token_count=100,
+          prompt_token_count=50,
+          candidates_token_count=50,
+      ),
+  )
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  expected_calls = [
+      mock.call('gen_ai.system', 'gcp.vertex.agent'),
+      mock.call('gen_ai.request.top_p', 0.95),
+      mock.call('gen_ai.request.max_tokens', 1024),
+      mock.call('gen_ai.usage.input_tokens', 50),
+      mock.call('gen_ai.usage.output_tokens', 50),
+      mock.call('gen_ai.response.finish_reasons', ['stop']),
+  ]
+  assert mock_span_fixture.set_attribute.call_count == 12
+  mock_span_fixture.set_attribute.assert_has_calls(
+      expected_calls, any_order=True
+  )
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_with_binary_content(
     monkeypatch, mock_span_fixture
 ):
+  """Test trace_call_llm handles binary content serialization correctly."""
   monkeypatch.setattr(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
@@ -123,11 +171,14 @@ async def test_trace_call_llm_function_response_includes_part_from_bytes(
   llm_response = LlmResponse(turn_complete=True)
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
 
+  # Verify basic telemetry attributes are set
   expected_calls = [
       mock.call('gen_ai.system', 'gcp.vertex.agent'),
   ]
   assert mock_span_fixture.set_attribute.call_count == 7
   mock_span_fixture.set_attribute.assert_has_calls(expected_calls)
+
+  # Verify binary content is replaced with '<not serializable>' in JSON
   llm_request_json_str = None
   for call_obj in mock_span_fixture.set_attribute.call_args_list:
     if call_obj.args[0] == 'gcp.vertex.agent.llm_request':
@@ -139,38 +190,6 @@ async def test_trace_call_llm_function_response_includes_part_from_bytes(
   ), "Attribute 'gcp.vertex.agent.llm_request' was not set on the span."
 
   assert llm_request_json_str.count('<not serializable>') == 2
-
-
-@pytest.mark.asyncio
-async def test_trace_call_llm_usage_metadata(monkeypatch, mock_span_fixture):
-  monkeypatch.setattr(
-      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
-  )
-
-  agent = LlmAgent(name='test_agent')
-  invocation_context = await _create_invocation_context(agent)
-  llm_request = LlmRequest(
-      config=types.GenerateContentConfig(system_instruction=''),
-  )
-  llm_response = LlmResponse(
-      turn_complete=True,
-      usage_metadata=types.GenerateContentResponseUsageMetadata(
-          total_token_count=100,
-          prompt_token_count=50,
-          candidates_token_count=50,
-      ),
-  )
-  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
-
-  expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
-      mock.call('gen_ai.usage.input_tokens', 50),
-      mock.call('gen_ai.usage.output_tokens', 50),
-  ]
-  assert mock_span_fixture.set_attribute.call_count == 9
-  mock_span_fixture.set_attribute.assert_has_calls(
-      expected_calls, any_order=True
-  )
 
 
 def test_trace_tool_call_with_scalar_response(
