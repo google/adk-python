@@ -101,8 +101,9 @@ test = [
   "langchain-community>=0.3.17",
   # langgraph 0.5 removed langgraph.graph.graph which we depend on
   "langgraph>=0.2.60, <= 0.4.10",    # For LangGraphAgent
-  "litellm>=1.71.2",                 # For LiteLLM tests
+  "litellm>=1.75.5, <2.0.0",                 # For LiteLLM tests
   "llama-index-readers-file>=0.4.0", # For retrieval tests
+  "openai<=1.99.9", # For LiteLLM
   "pytest-asyncio>=0.25.0",
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
@@ -127,7 +128,7 @@ extensions = [
   "crewai[tools];python_version>='3.10'", # For CrewaiTool
   "docker>=7.0.0",                        # For ContainerCodeExecutor
   "langgraph>=0.2.60",                    # For LangGraphAgent
-  "litellm>=1.63.11",                     # For LiteLLM support
+  "litellm>=1.75.5",                      # For LiteLlm class. Currently has OpenAI limitations. TODO: once LiteLlm fix it
   "llama-index-readers-file>=0.4.0",      # For retrieval using LlamaIndex.
   "lxml>=5.3.0",                          # For load_web_page tool.
   "toolbox-core>=0.1.0",                  # For tools.toolbox_toolset.ToolboxToolset
