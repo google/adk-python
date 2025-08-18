@@ -343,6 +343,15 @@ ORGANIZATION_SUMMARY.md
 CLEANUP_*.md
 TODO_INTERNAL.md
 NOTES_*.md
+CONSOLIDATION_*.md
+DOCUMENTATION_INDEX.md
+*_SUMMARY.md
+*_GUIDE.md
+AGENT_*.md
+TEAM_*.md
+RADAR_*.md
+ADK_*.md
+API_MAPPING.md
 
 # Personal assistant agent (if created outside samples)
 /personal-assistant-agent
@@ -401,10 +410,20 @@ evalset*.json
 # Model caches
 .model_cache/
 model_cache/
+cache/
 
 # ADK runtime files
 .adk/
 adk.log
+
+# Agent enhanced files
+agent_enhanced.py
+*_enhanced.py
+
+# Backend logs
+backend.log
+backend/*.log
+**/backend.log
 
 # =============================================================================
 # Customer Example Exclusions
@@ -438,6 +457,10 @@ internal_tools/
 # =============================================================================
 # Claude/AI Assistant Files - DO NOT COMMIT
 # =============================================================================
+# BMAD Core (agent framework)
+.bmad-core/
+.bmad_core/
+
 # Claude Flow files
 .claude-flow/
 claude-flow/
@@ -474,12 +497,22 @@ GRAPH_TD_INTEGRATION_GUIDE.md
 *_generated.md
 *_assistant.md
 ai_generated/
+CLAUDE.md
+claude.md
 
 # Swarm/orchestration artifacts
 swarm_*
 orchestration_*
 *_swarm*
 *_orchestration*
+**/swarm_integration_example.py
+SWARM_*.md
+
+# Memory stores
+memory/
+memory-store.json
+claude-flow-data.json
+**/memory/*.json
 
 # Graph TD system files
 graph_td_*

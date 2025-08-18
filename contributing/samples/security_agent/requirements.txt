@@ -1,0 +1,23 @@
+# ADK Core
+google-adk
+
+# Google Cloud APIs
+google-cloud-asset
+google-cloud-storage
+google-cloud-securitycenter
+google-cloud-monitoring
+google-cloud-logging
+google-cloud-iam
+google-auth
+
+# Backend API Integration
+httpx>=0.24.0
+asyncio
+
+# FastAPI Backend (optional, for running backend locally)
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+
+# Development
+python-dotenv
