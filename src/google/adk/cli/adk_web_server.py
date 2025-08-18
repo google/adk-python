@@ -73,6 +73,7 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils.context_utils import Aclosing
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .cli_eval import EvalStatus
 from .utils import cleanup
@@ -86,6 +87,9 @@ from .utils.state import create_empty_state
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+
+TAG_DEBUG = "Debug"
+TAG_EVALUATION = "Evaluation"
 
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
@@ -151,7 +155,7 @@ class InMemoryExporter(export_lib.SpanExporter):
     self._spans.clear()
 
 
-class AgentRunRequest(common.BaseModel):
+class RunAgentRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
@@ -349,18 +353,18 @@ class AdkWebServer:
       )
 
     @app.get("/list-apps")
-    def list_apps() -> list[str]:
+    async def list_apps() -> list[str]:
       return self.agent_loader.list_agents()
 
-    @app.get("/debug/trace/{event_id}")
-    def get_trace_dict(event_id: str) -> Any:
+    @app.get("/debug/trace/{event_id}", tags=[TAG_DEBUG])
+    async def get_trace_dict(event_id: str) -> Any:
       event_dict = trace_dict.get(event_id, None)
       if event_dict is None:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
 
-    @app.get("/debug/trace/session/{session_id}")
-    def get_session_trace(session_id: str) -> Any:
+    @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
+    async def get_session_trace(session_id: str) -> Any:
       spans = memory_exporter.get_finished_spans(session_id)
       if not spans:
         return []
@@ -453,11 +457,20 @@ class AdkWebServer:
       logger.info("New session created")
       return session
 
+    @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
+    async def delete_session(
+        app_name: str, user_id: str, session_id: str
+    ) -> None:
+      await self.session_service.delete_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def create_eval_set(
+    async def create_eval_set(
         app_name: str,
         eval_set_id: str,
     ):
@@ -473,8 +486,9 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_sets",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def list_eval_sets(app_name: str) -> list[str]:
+    async def list_eval_sets(app_name: str) -> list[str]:
       """Lists all eval sets for the given app."""
       try:
         return self.eval_sets_manager.list_eval_sets(app_name)
@@ -485,6 +499,7 @@ class AdkWebServer:
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     async def add_session_to_eval_set(
         app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
@@ -524,8 +539,9 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def list_evals_in_eval_set(
+    async def list_evals_in_eval_set(
         app_name: str,
         eval_set_id: str,
     ) -> list[str]:
@@ -542,8 +558,9 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def get_eval(
+    async def get_eval(
         app_name: str, eval_set_id: str, eval_case_id: str
     ) -> EvalCase:
       """Gets an eval case in an eval set."""
@@ -564,8 +581,9 @@ class AdkWebServer:
     @app.put(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def update_eval(
+    async def update_eval(
         app_name: str,
         eval_set_id: str,
         eval_case_id: str,
@@ -592,8 +610,13 @@ class AdkWebServer:
       except NotFoundError as nfe:
         raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
-    @app.delete("/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}")
-    def delete_eval(app_name: str, eval_set_id: str, eval_case_id: str):
+    @app.delete(
+        "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+        tags=[TAG_EVALUATION],
+    )
+    async def delete_eval(
+        app_name: str, eval_set_id: str, eval_case_id: str
+    ) -> None:
       try:
         self.eval_sets_manager.delete_eval_case(
             app_name, eval_set_id, eval_case_id
@@ -604,6 +627,7 @@ class AdkWebServer:
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     async def run_eval(
         app_name: str, eval_set_id: str, req: RunEvalRequest
@@ -675,8 +699,9 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_results/{eval_result_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def get_eval_result(
+    async def get_eval_result(
         app_name: str,
         eval_result_id: str,
     ) -> EvalSetResult:
@@ -693,16 +718,18 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_results",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def list_eval_results(app_name: str) -> list[str]:
+    async def list_eval_results(app_name: str) -> list[str]:
       """Lists all eval results for the given app."""
       return self.eval_set_results_manager.list_eval_set_results(app_name)
 
     @app.get(
         "/apps/{app_name}/eval_metrics",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def list_eval_metrics(app_name: str) -> list[MetricInfo]:
+    async def list_eval_metrics(app_name: str) -> list[MetricInfo]:
       """Lists all eval metrics for the given app."""
       try:
         from ..evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
@@ -715,12 +742,6 @@ class AdkWebServer:
         raise HTTPException(
             status_code=400, detail=MISSING_EVAL_DEPENDENCIES_MESSAGE
         ) from e
-
-    @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
-    async def delete_session(app_name: str, user_id: str, session_id: str):
-      await self.session_service.delete_session(
-          app_name=app_name, user_id=user_id, session_id=session_id
-      )
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
@@ -796,7 +817,7 @@ class AdkWebServer:
     )
     async def delete_artifact(
         app_name: str, user_id: str, session_id: str, artifact_name: str
-    ):
+    ) -> None:
       await self.artifact_service.delete_artifact(
           app_name=app_name,
           user_id=user_id,
@@ -805,27 +826,27 @@ class AdkWebServer:
       )
 
     @app.post("/run", response_model_exclude_none=True)
-    async def agent_run(req: AgentRunRequest) -> list[Event]:
+    async def run_agent(req: RunAgentRequest) -> list[Event]:
       session = await self.session_service.get_session(
           app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
       )
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
       runner = await self.get_runner_async(req.app_name)
-      events = [
-          event
-          async for event in runner.run_async(
+      async with Aclosing(
+          runner.run_async(
               user_id=req.user_id,
               session_id=req.session_id,
               new_message=req.new_message,
           )
-      ]
+      ) as agen:
+        events = [event async for event in agen]
       logger.info("Generated %s events in agent run", len(events))
       logger.debug("Events generated: %s", events)
       return events
 
     @app.post("/run_sse")
-    async def agent_run_sse(req: AgentRunRequest) -> StreamingResponse:
+    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
       # SSE endpoint
       session = await self.session_service.get_session(
           app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
@@ -840,19 +861,24 @@ class AdkWebServer:
               StreamingMode.SSE if req.streaming else StreamingMode.NONE
           )
           runner = await self.get_runner_async(req.app_name)
-          async for event in runner.run_async(
-              user_id=req.user_id,
-              session_id=req.session_id,
-              new_message=req.new_message,
-              state_delta=req.state_delta,
-              run_config=RunConfig(streaming_mode=stream_mode),
-          ):
-            # Format as SSE data
-            sse_event = event.model_dump_json(exclude_none=True, by_alias=True)
-            logger.debug(
-                "Generated event in agent run streaming: %s", sse_event
-            )
-            yield f"data: {sse_event}\n\n"
+          async with Aclosing(
+              runner.run_async(
+                  user_id=req.user_id,
+                  session_id=req.session_id,
+                  new_message=req.new_message,
+                  state_delta=req.state_delta,
+                  run_config=RunConfig(streaming_mode=stream_mode),
+              )
+          ) as agen:
+            async for event in agen:
+              # Format as SSE data
+              sse_event = event.model_dump_json(
+                  exclude_none=True, by_alias=True
+              )
+              logger.debug(
+                  "Generated event in agent run streaming: %s", sse_event
+              )
+              yield f"data: {sse_event}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
           # You might want to yield an error event here
@@ -867,6 +893,7 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/events/{event_id}/graph",
         response_model_exclude_none=True,
+        tags=[TAG_DEBUG],
     )
     async def get_event_graph(
         app_name: str, user_id: str, session_id: str, event_id: str
@@ -913,7 +940,7 @@ class AdkWebServer:
         return {}
 
     @app.websocket("/run_live")
-    async def agent_live_run(
+    async def run_agent_live(
         websocket: WebSocket,
         app_name: str,
         user_id: str,
@@ -937,12 +964,15 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
-        async for event in runner.run_live(
-            session=session, live_request_queue=live_request_queue
-        ):
-          await websocket.send_text(
-              event.model_dump_json(exclude_none=True, by_alias=True)
-          )
+        async with Aclosing(
+            runner.run_live(
+                session=session, live_request_queue=live_request_queue
+            )
+        ) as agen:
+          async for event in agen:
+            await websocket.send_text(
+                event.model_dump_json(exclude_none=True, by_alias=True)
+            )
 
       async def process_messages():
         try:

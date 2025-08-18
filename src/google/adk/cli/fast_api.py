@@ -352,8 +352,6 @@ def get_fast_api_app(
         logger.info("Setting up A2A agent: %s", app_name)
 
         try:
-          a2a_rpc_path = f"http://{host}:{port}/a2a/{app_name}"
-
           agent_executor = A2aAgentExecutor(
               runner=create_a2a_runner_loader(app_name),
           )
@@ -365,7 +363,6 @@ def get_fast_api_app(
           with (p / "agent.json").open("r", encoding="utf-8") as f:
             data = json.load(f)
             agent_card = AgentCard(**data)
-            agent_card.url = a2a_rpc_path
 
           a2a_app = A2AStarletteApplication(
               agent_card=agent_card,

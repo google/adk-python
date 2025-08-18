@@ -749,7 +749,7 @@ def cli_web(
 +-----------------------------------------------------------------------------+
 | ADK Web Server started                                                      |
 |                                                                             |
-| For local testing, access at http://localhost:{port}.{" "*(29 - len(str(port)))}|
+| For local testing, access at http://{host}:{port}.{" "*(29 - len(str(port)))}|
 +-----------------------------------------------------------------------------+
 """,
         fg="green",

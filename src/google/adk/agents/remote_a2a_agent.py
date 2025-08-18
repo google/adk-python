@@ -58,6 +58,7 @@ from ..a2a.converters.event_converter import convert_a2a_message_to_event
 from ..a2a.converters.event_converter import convert_a2a_task_to_event
 from ..a2a.converters.event_converter import convert_event_to_a2a_message
 from ..a2a.converters.part_converter import convert_genai_part_to_a2a_part
+from ..a2a.experimental import a2a_experimental
 from ..a2a.logs.log_utils import build_a2a_request_log
 from ..a2a.logs.log_utils import build_a2a_response_log
 from ..agents.invocation_context import InvocationContext
@@ -65,7 +66,6 @@ from ..events.event import Event
 from ..flows.llm_flows.contents import _convert_foreign_event
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.functions import find_matching_function_call
-from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 
 __all__ = [
@@ -83,21 +83,21 @@ DEFAULT_TIMEOUT = 600.0
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental
+@a2a_experimental
 class AgentCardResolutionError(Exception):
   """Raised when agent card resolution fails."""
 
   pass
 
 
-@experimental
+@a2a_experimental
 class A2AClientError(Exception):
   """Raised when A2A client operations fail."""
 
   pass
 
 
-@experimental
+@a2a_experimental
 class RemoteA2aAgent(BaseAgent):
   """Agent that communicates with a remote A2A agent via A2A client.
 

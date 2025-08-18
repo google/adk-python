@@ -39,7 +39,7 @@ def ask_for_approval(
 
 
 root_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='reimbursement_agent',
     instruction="""
       You are an agent whose job is to handle the reimbursement process for

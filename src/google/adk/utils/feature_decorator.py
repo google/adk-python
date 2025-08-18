@@ -23,8 +23,6 @@ from typing import TypeVar
 from typing import Union
 import warnings
 
-from dotenv import load_dotenv
-
 T = TypeVar("T", bound=Union[Callable, type])
 
 
@@ -67,9 +65,6 @@ def _create_decorator(
 
       @functools.wraps(orig_init)
       def new_init(self, *args, **kwargs):
-        # Load .env file if dotenv is available
-        load_dotenv()
-
         # Check if usage should be bypassed via environment variable at call time
         should_bypass = (
             bypass_env_var is not None
@@ -92,9 +87,6 @@ def _create_decorator(
 
       @functools.wraps(obj)
       def wrapper(*args, **kwargs):
-        # Load .env file if dotenv is available
-        load_dotenv()
-
         # Check if usage should be bypassed via environment variable at call time
         should_bypass = (
             bypass_env_var is not None
