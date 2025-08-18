@@ -22,6 +22,14 @@ from pathlib import Path
 # Load environment variables from .env file
 from dotenv import load_dotenv
 
+# Import rate limiting middleware
+try:
+    from backend.middleware.rate_limiter import RateLimitMiddleware
+    RATE_LIMITER_AVAILABLE = True
+except ImportError as e:
+    RATE_LIMITER_AVAILABLE = False
+    logger.warning(f"⚠️ Rate limiting not available: {e}")
+
 # Try multiple locations for .env file
 env_locations = [
     Path(__file__).parent.parent / "deploy" / ".env",  # deploy/.env
@@ -169,6 +177,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add Rate Limiting Middleware
+if RATE_LIMITER_AVAILABLE:
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        app.add_middleware(RateLimitMiddleware, redis_url=redis_url)
+        logger.info(f"✅ Rate limiting enabled")
+    except Exception as e:
+        logger.warning(f"⚠️ Rate limiting failed to initialize: {e}")
+else:
+    logger.info("⚠️ Rate limiting disabled")
+
 # ===========================================
 # API ROUTER REGISTRATION
 # ===========================================
@@ -267,13 +286,6 @@ try:
 except ImportError as e:
     logger.warning(f"Advisory Notifications router not available: {e}")
 
-# RADAR Coordinator router for ADK agent orchestration
-try:
-    from backend.agents.radar_coordinator import router as radar_router
-    app.include_router(radar_router, prefix="/api/v1/radar")
-    logger.info("✅ RADAR Coordinator router included at /api/v1/radar")
-except ImportError as e:
-    logger.warning(f"⚠️ RADAR Coordinator router not available: {e}")
 
 
 # Chat endpoint for frontend communication
@@ -406,6 +418,22 @@ async def root():
     """Root endpoint."""
     return {"message": "ADK Security Agent Backend", "status": "running"}
 
+@app.get("/api/v1/rate-limit/status")
+async def rate_limit_status():
+    """Check rate limiting status."""
+    if not RATE_LIMITER_AVAILABLE:
+        return {"rate_limiting": "disabled", "reason": "middleware not available"}
+    
+    return {
+        "rate_limiting": "enabled",
+        "limits": {
+            "heavy_operations": "5/minute",
+            "chat": "30/minute", 
+            "default": "100/minute"
+        },
+        "window": "60 seconds"
+    }
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint with robust system status."""
@@ -439,6 +467,7 @@ async def health_check():
         "components": components_status,
         "features": {
             "secret_manager": SECRETMANAGER_AVAILABLE,
+            "rate_limiting": RATE_LIMITER_AVAILABLE,
             "adk_session_management": True,
             "websockets": True,
             "context_awareness": True,
@@ -449,13 +478,14 @@ async def health_check():
             "docs": "/docs",
             "websocket": "/api/v1/agent/ws",
             "chat": "/api/v1/agent/chat",
-            "radar_chat": "/api/v1/radar/chat",
+            "agent_chat": "/api/v1/agent/chat",
             "sessions": "/api/v1/sessions",
             "iam_analysis": "/api/v1/iam",
             "recommendations": "/api/v1/recommendations",
             "asset_inventory": "/api/v1/assets",
             "asset_discovery": "/api/v1/assets/discover",
             "security_analysis": "/api/v1/assets/security/analyze",
+            "rate_limit_status": "/api/v1/rate-limit/status",
         },
         "notes": [
             "System designed with robust fallbacks for all dependencies",
@@ -474,6 +504,7 @@ async def startup_event():
     logger.info("🛡️ Robust fallback system enabled")
     logger.info("✅ ADK-compliant session management enabled")
     logger.info(f"🔐 Secret Manager: {'✅ available' if SECRETMANAGER_AVAILABLE else '⚠️ not configured'}")
+    logger.info(f"🚫 Rate Limiting: {'✅ enabled' if RATE_LIMITER_AVAILABLE else '⚠️ disabled'}")
     logger.info("🔄 All API endpoints operational with intelligent fallbacks")
     logger.info("🎯 System ready to handle requests even with missing dependencies")
     

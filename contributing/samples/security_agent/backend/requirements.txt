@@ -42,3 +42,5 @@ litellm
 python-dotenv
 google-cloud-api-keys
 google-cloud-advisorynotifications
+redis
+aioredis

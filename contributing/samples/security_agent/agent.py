@@ -56,33 +56,64 @@ api_client = BackendAPIClient()
 # ============================================================================
 
 def discover_assets() -> str:
-    """Discover and list GCP assets in the project"""
-    result = api_client.call_api("/api/v1/assets/list", "POST", {"project_id": PROJECT_ID})
+    """Discover and list GCP assets in the project with enhanced security analysis"""
+    result = api_client.call_api("/api/v1/assets/list", "POST", {
+        "project_id": PROJECT_ID,
+        "include_security_context": True,
+        "page_size": 200
+    })
     
     if "error" in result:
         return f"Error discovering assets: {result['error']}"
     
-    output = f"=== Asset Discovery for {PROJECT_ID} ===\n\n"
+    output = f"=== Enhanced Asset Discovery for {PROJECT_ID} ===\n\n"
     
+    # Display summary statistics
+    if result.get('summary'):
+        summary = result['summary']
+        output += f"Total Assets: {summary.get('total_assets', 0)}\n"
+        
+        if summary.get('by_risk_level'):
+            output += "\nRisk Distribution:\n"
+            risk_levels = summary['by_risk_level']
+            for level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'MINIMAL']:
+                count = risk_levels.get(level, 0)
+                if count > 0:
+                    emoji = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🔵', 'MINIMAL': '🟢'}.get(level, '⚪')
+                    output += f"  {emoji} {level}: {count}\n"
+        
+        if summary.get('security_issues', 0) > 0:
+            output += f"\n⚠️ Security Issues Found: {summary['security_issues']}\n"
+        
+        output += "\nAssets by Type:\n"
+        for asset_type, count in list(summary.get('by_type', {}).items())[:10]:
+            output += f"  {asset_type}: {count}\n"
+        
+        if summary.get('by_region'):
+            output += "\nAssets by Region:\n"
+            for region, count in list(summary.get('by_region', {}).items())[:5]:
+                output += f"  {region}: {count}\n"
+    
+    # Show high-risk assets if any
     if result.get('assets'):
-        output += f"Total Assets: {result.get('total', len(result['assets']))}\n\n"
+        high_risk_assets = [asset for asset in result['assets'] 
+                           if asset.get('security_context', {}).get('risk_score', 0) >= 61]
         
-        # Group by type
-        asset_types = {}
-        for asset in result['assets']:
-            asset_type = asset.get('type', 'unknown')
-            if asset_type not in asset_types:
-                asset_types[asset_type] = []
-            asset_types[asset_type].append(asset.get('name', 'unnamed'))
-        
-        for atype, names in asset_types.items():
-            output += f"{atype}: {len(names)}\n"
-            for name in names[:3]:  # Show first 3
-                output += f"  - {name}\n"
-            if len(names) > 3:
-                output += f"  ... and {len(names) - 3} more\n"
-    else:
-        output += "No assets found or backend unavailable.\n"
+        if high_risk_assets:
+            output += f"\n🚨 HIGH-RISK ASSETS ({len(high_risk_assets)}):\n"
+            for asset in high_risk_assets[:5]:
+                sec_ctx = asset.get('security_context', {})
+                cat = asset.get('categorization', {})
+                output += f"  • {cat.get('friendly_type', 'Unknown')} in {cat.get('region', 'unknown')}\n"
+                output += f"    Risk Score: {sec_ctx.get('risk_score', 0)}/100 ({sec_ctx.get('risk_level', 'UNKNOWN')})\n"
+                if sec_ctx.get('risk_factors'):
+                    output += f"    Issues: {', '.join(sec_ctx['risk_factors'][:3])}\n"
+            
+            if len(high_risk_assets) > 5:
+                output += f"    ... and {len(high_risk_assets) - 5} more high-risk assets\n"
+    
+    if result.get('enhanced_features', {}).get('security_analysis'):
+        output += "\n✅ Enhanced security analysis enabled\n"
     
     return output
 
@@ -336,16 +367,88 @@ def get_security_recommendations() -> str:
     return output
 
 
+def run_security_focused_scan() -> str:
+    """Run a security-focused scan to identify high-risk assets"""
+    result = api_client.call_api("/api/v1/assets/security-scan", "POST", {
+        "project_id": PROJECT_ID,
+        "page_size": 500,
+        "include_security_context": True
+    })
+    
+    if "error" in result:
+        return f"Error running security scan: {result['error']}"
+    
+    output = f"=== SECURITY-FOCUSED ASSET SCAN for {PROJECT_ID} ===\n\n"
+    
+    # Security Summary
+    if result.get('security_summary'):
+        summary = result['security_summary']
+        output += f"Assets Scanned: {summary.get('total_assets_scanned', 0)}\n"
+        
+        risk_dist = summary.get('risk_distribution', {})
+        output += f"🔴 Critical Risk: {risk_dist.get('CRITICAL', 0)}\n"
+        output += f"🟠 High Risk: {risk_dist.get('HIGH', 0)}\n"
+        output += f"🟡 Medium Risk: {risk_dist.get('MEDIUM', 0)}\n"
+        output += f"🔵 Low Risk: {risk_dist.get('LOW', 0)}\n"
+        output += f"🟢 Minimal Risk: {risk_dist.get('MINIMAL', 0)}\n"
+        
+        if summary.get('most_common_issues'):
+            output += f"\nMost Common Security Issues:\n"
+            for i, issue in enumerate(summary['most_common_issues'][:5], 1):
+                output += f"  {i}. {issue}\n"
+    
+    # High-Risk Assets
+    high_risk_assets = result.get('high_risk_assets', [])
+    if high_risk_assets:
+        output += f"\n🚨 HIGH-RISK ASSETS REQUIRING IMMEDIATE ATTENTION ({len(high_risk_assets)}):\n"
+        output += "=" * 60 + "\n"
+        
+        for asset in high_risk_assets[:10]:  # Show top 10 highest risk
+            output += f"\n• {asset.get('friendly_name', 'Unknown')} ({asset.get('region', 'unknown')})\n"
+            output += f"  Risk Score: {asset.get('risk_score', 0)}/100 ({asset.get('risk_level', 'UNKNOWN')})\n"
+            
+            if asset.get('security_issues'):
+                output += f"  Issues: {', '.join(asset['security_issues'][:3])}\n"
+            
+            if asset.get('recommendations'):
+                output += f"  Priority Action: {asset['recommendations'][0]}\n"
+            
+            if asset.get('is_public'):
+                output += "  ⚠️ PUBLICLY ACCESSIBLE\n"
+            if not asset.get('is_encrypted'):
+                output += "  ⚠️ UNENCRYPTED\n"
+        
+        if len(high_risk_assets) > 10:
+            output += f"\n... and {len(high_risk_assets) - 10} more high-risk assets\n"
+    
+    # Recommendations
+    if result.get('recommendations'):
+        rec = result['recommendations']
+        output += f"\n📋 IMMEDIATE ACTIONS REQUIRED:\n"
+        if rec.get('immediate_action_required', 0) > 0:
+            output += f"🔴 {rec['immediate_action_required']} assets need IMMEDIATE attention\n"
+        if rec.get('review_within_24h', 0) > 0:
+            output += f"🟠 {rec['review_within_24h']} assets should be reviewed within 24 hours\n"
+        if rec.get('schedule_review', 0) > 0:
+            output += f"🟡 {rec['schedule_review']} assets should be scheduled for review\n"
+    
+    output += f"\nScan completed at: {result.get('scan_timestamp', 'unknown')}\n"
+    
+    return output
+
+
 def run_comprehensive_security_scan() -> str:
     """Run a comprehensive security scan using all available tools"""
     output = "=== COMPREHENSIVE SECURITY SCAN ===\n"
     output += f"Project: {PROJECT_ID}\n"
     output += "=" * 50 + "\n\n"
     
-    # Run all security checks
+    # Start with security-focused scan
+    output += run_security_focused_scan() + "\n\n"
+    
+    # Run additional security checks
     checks = [
-        ("Asset Discovery", discover_assets),
-        ("Security Findings", analyze_security),
+        ("Security Command Center", analyze_security),
         ("IAM Analysis", analyze_iam),
         ("Storage Security", analyze_storage),
         ("Monitoring Status", analyze_monitoring),
@@ -379,10 +482,11 @@ agent_instruction = f"""You are a GCP Security Agent for project {PROJECT_ID}.
 You have access to comprehensive security analysis tools that connect to backend APIs:
 
 DISCOVERY & INVENTORY:
-- discover_assets: Get complete inventory of GCP resources
+- discover_assets: Get enhanced inventory of GCP resources with security context and risk scoring
 - analyze_service_usage: Check enabled APIs and services
 
 SECURITY ANALYSIS:
+- run_security_focused_scan: Perform comprehensive security scan identifying high-risk assets
 - analyze_security: Get Security Command Center findings
 - analyze_iam: Review IAM policies and permissions
 - analyze_storage: Check storage bucket security
@@ -396,7 +500,7 @@ COMPLIANCE & MONITORING:
 
 RECOMMENDATIONS:
 - get_security_recommendations: Get prioritized action items
-- run_comprehensive_security_scan: Execute full security assessment
+- run_comprehensive_security_scan: Execute full security assessment with all tools
 
 When users ask about their GCP security:
 1. Use the appropriate tool(s) to gather real data
@@ -414,6 +518,7 @@ agent = Agent(
     instruction=agent_instruction,
     tools=[
         FunctionTool(discover_assets),
+        FunctionTool(run_security_focused_scan),
         FunctionTool(analyze_security),
         FunctionTool(analyze_iam),
         FunctionTool(analyze_storage),
@@ -432,8 +537,9 @@ if __name__ == "__main__":
     print(f"GCP Security Agent configured for project: {PROJECT_ID}")
     print(f"Backend API URL: {BACKEND_API_URL}")
     print("\nAvailable Tools:")
-    print("  • discover_assets - Asset inventory")
-    print("  • analyze_security - Security findings")
+    print("  • discover_assets - Enhanced asset inventory with risk scoring")
+    print("  • run_security_focused_scan - Security-focused scan for high-risk assets")
+    print("  • analyze_security - Security Command Center findings")
     print("  • analyze_iam - IAM analysis")
     print("  • analyze_storage - Storage security")
     print("  • analyze_monitoring - Monitoring config")
@@ -443,7 +549,7 @@ if __name__ == "__main__":
     print("  • check_advisory_notifications - Security advisories")
     print("  • manage_api_keys - API key security")
     print("  • get_security_recommendations - Get recommendations")
-    print("  • run_comprehensive_security_scan - Full scan")
+    print("  • run_comprehensive_security_scan - Full security assessment")
     print("\nDeploy to Cloud Run:")
     print(f"gcloud run deploy gcp-security-agent \\")
     print(f"  --source . \\")
