@@ -1,15 +1,21 @@
 """
-Google Cloud Logging API thin client wrapper.
+Google Cloud Logging API thin client wrapper with optimized analysis.
 
 This module provides a clean interface to Cloud Logging for Day 2 operations.
 Focuses on log retrieval, analysis, and alerting capabilities.
+
+Enhanced with TASK-005: Optimized log analysis performance through:
+- Batch processing for large volumes
+- Caching for frequently accessed patterns
+- Parallel processing for multi-resource analysis
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, AsyncIterator
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
 import json
+import asyncio
 
 try:
     from google.cloud import logging as cloud_logging
@@ -21,6 +27,16 @@ except ImportError:
     LoggingClient = None
 
 logger = logging.getLogger(__name__)
+
+# Import optimized analyzer
+try:
+    from ..services.optimized_log_analyzer import get_optimized_analyzer, AnalysisResult
+    OPTIMIZED_ANALYZER_AVAILABLE = True
+    logger.info("✅ Optimized log analyzer loaded (TASK-005)")
+except ImportError as e:
+    OPTIMIZED_ANALYZER_AVAILABLE = False
+    logger.warning(f"⚠️ Optimized analyzer not available: {e}")
+    AnalysisResult = None
 
 # ============================================
 # Pydantic Models for Type Safety
@@ -150,8 +166,23 @@ async def list_logs(request: LogQueryRequest) -> Dict[str, Any]:
         for entry in entries:
             log_entries.append(_process_log_entry(entry))
         
-        # Analyze logs for insights
-        analysis = _analyze_log_patterns(log_entries)
+        # Use optimized analyzer if available, fallback to basic analysis
+        if OPTIMIZED_ANALYZER_AVAILABLE and len(log_entries) > 10:
+            # Use optimized batch processing for better performance
+            analyzer = get_optimized_analyzer()
+            optimized_result = await analyzer.analyze_logs_batch(log_entries)
+            analysis = {
+                "patterns": optimized_result.patterns,
+                "anomalies": optimized_result.anomalies,
+                "performance_indicators": optimized_result.performance_metrics,
+                "error_summary": optimized_result.error_summary,
+                "processing_time_ms": optimized_result.processing_time_ms,
+                "optimization": "enabled"
+            }
+        else:
+            # Fallback to original analysis
+            analysis = _analyze_log_patterns(log_entries)
+            analysis["optimization"] = "disabled"
         
         return {
             "success": True,
@@ -706,3 +737,167 @@ def _generate_error_recommendations(error_groups: Dict) -> List[str]:
                 break
     
     return recommendations[:5]  # Top 5 recommendations
+
+
+# ============================================
+# OPTIMIZED HIGH-PERFORMANCE ENDPOINTS (TASK-005)
+# ============================================
+
+async def analyze_logs_optimized(
+    request: LogQueryRequest,
+    use_cache: bool = True
+) -> Dict[str, Any]:
+    """
+    High-performance log analysis endpoint using optimized analyzer.
+    
+    Features:
+    - Batch processing for large volumes
+    - Caching for repeated patterns
+    - Parallel processing for faster results
+    - Memory-efficient streaming
+    
+    Part of TASK-005: Optimize Log Analysis Performance
+    """
+    if not OPTIMIZED_ANALYZER_AVAILABLE:
+        # Fallback to standard analysis
+        return await list_logs(request)
+    
+    try:
+        # Get logs first
+        logs_result = await list_logs(request)
+        if not logs_result.get("success"):
+            return logs_result
+        
+        entries = logs_result.get("entries", [])
+        
+        # Use optimized analyzer
+        analyzer = get_optimized_analyzer()
+        
+        # Check cache first if enabled
+        if use_cache and len(entries) > 0:
+            # Create cache signature from first few entries
+            import hashlib
+            cache_sig = hashlib.md5(
+                json.dumps(entries[:5]).encode()
+            ).hexdigest()[:16]
+            
+            cached_result = analyzer.get_cached_analysis(cache_sig)
+            if cached_result:
+                return {
+                    "success": True,
+                    "project_id": request.project_id,
+                    "analysis": {
+                        "patterns": cached_result.patterns,
+                        "anomalies": cached_result.anomalies,
+                        "performance_metrics": cached_result.performance_metrics,
+                        "error_summary": cached_result.error_summary,
+                        "cache_hit": True,
+                        "optimization": "cached"
+                    },
+                    "count": len(entries)
+                }
+        
+        # Perform optimized analysis
+        analysis_result = await analyzer.analyze_logs_batch(
+            entries,
+            batch_size=100  # Optimal batch size
+        )
+        
+        return {
+            "success": True,
+            "project_id": request.project_id,
+            "analysis": {
+                "patterns": analysis_result.patterns,
+                "anomalies": analysis_result.anomalies,
+                "performance_metrics": analysis_result.performance_metrics,
+                "error_summary": analysis_result.error_summary,
+                "processing_time_ms": analysis_result.processing_time_ms,
+                "entries_processed": analysis_result.entries_processed,
+                "cache_hit": False,
+                "optimization": "batch_processing"
+            },
+            "count": len(entries),
+            "performance": {
+                "processing_time_ms": analysis_result.processing_time_ms,
+                "entries_per_second": (
+                    analysis_result.entries_processed / 
+                    (analysis_result.processing_time_ms / 1000)
+                    if analysis_result.processing_time_ms > 0 else 0
+                )
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Optimized analysis failed: {e}")
+        # Fallback to standard analysis
+        return await list_logs(request)
+
+
+async def stream_log_analysis(
+    project_id: str,
+    resource_type: Optional[str] = None,
+    window_size: int = 100
+) -> AsyncIterator[Dict[str, Any]]:
+    """
+    Stream real-time log analysis for continuous monitoring.
+    
+    Processes logs in sliding windows for minimal memory usage
+    and real-time insights.
+    
+    Part of TASK-005: Optimize Log Analysis Performance
+    """
+    if not OPTIMIZED_ANALYZER_AVAILABLE:
+        yield {
+            "error": "Optimized analyzer not available",
+            "fallback": "Use standard list_logs endpoint"
+        }
+        return
+    
+    analyzer = get_optimized_analyzer()
+    
+    # Create log stream (mock for now, would connect to real stream)
+    async def log_stream():
+        """Mock log stream generator."""
+        # In production, this would connect to Cloud Logging streaming API
+        request = LogQueryRequest(
+            project_id=project_id,
+            resource_type=resource_type,
+            time_range="1h",
+            limit=window_size
+        )
+        
+        result = await list_logs(request)
+        if result.get("success"):
+            for entry in result.get("entries", []):
+                yield entry
+                await asyncio.sleep(0.01)  # Simulate streaming delay
+    
+    # Process stream with optimized analyzer
+    async for analysis in analyzer.stream_analyze_logs(
+        log_stream(),
+        window_size=window_size
+    ):
+        yield {
+            "timestamp": datetime.now().isoformat(),
+            "window_size": window_size,
+            "analysis": {
+                "patterns": analysis.patterns,
+                "anomalies": analysis.anomalies,
+                "performance_metrics": analysis.performance_metrics,
+                "error_summary": analysis.error_summary
+            }
+        }
+
+
+# Export optimized endpoints
+__all__ = [
+    "list_logs",
+    "get_log_metrics", 
+    "create_log_sink",
+    "list_log_sinks",
+    "create_log_metric",
+    "get_error_reporting",
+    "get_audit_logs",
+    "analyze_logs_optimized",  # New optimized endpoint
+    "stream_log_analysis",  # New streaming endpoint
+]
