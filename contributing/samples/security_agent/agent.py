@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
-BACKEND_API_URL = os.getenv('BACKEND_API_URL', 'http://localhost:8000')
+BACKEND_API_URL = os.getenv('BACKEND_API_URL', 'http://localhost:8002')
 API_TIMEOUT = int(os.getenv('API_TIMEOUT', '30'))
 
 # Backend API Client
@@ -1550,8 +1550,9 @@ Always maintain conversation context, provide clear next steps, and leverage the
 
 # Create the enhanced security agent with all tools and capabilities
 agent = Agent(
+    name="gcp_security_agent",
     model="gemini-2.0-flash-exp",
-    instructions=enhanced_agent_instruction,
+    instruction=enhanced_agent_instruction,
     tools=[
         discover_assets,
         run_security_focused_scan,
@@ -1565,17 +1566,11 @@ agent = Agent(
         check_advisory_notifications,
         manage_api_keys,
         get_security_recommendations,
+        get_priority_recommendations,
+        get_automation_scripts,
         run_comprehensive_security_scan,
         explain_security_context,
         provide_contextual_guidance,
-        # Session management tools
-        create_session,
-        get_session,
-        list_sessions,
-        delete_session,
-        add_session_message,
-        get_session_history,
-        update_session_context,
-        search_session_messages
+        summarize_conversation_context
     ]
 )
