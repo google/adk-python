@@ -35,12 +35,11 @@ except ImportError as e:
     INPUT_VALIDATION_AVAILABLE = False
     logger.warning(f"⚠️ Input validation not available: {e}")
 
-# Import rate limiting middleware (disable due to aioredis compatibility issue)
+# Import rate limiting middleware
 try:
-    # Temporarily disabled due to aioredis compatibility issue with Python 3.13
-    # from backend.middleware.rate_limiter import RateLimitMiddleware
-    RATE_LIMITER_AVAILABLE = False
-    logger.info("⚠️ Rate limiting temporarily disabled (aioredis compatibility)")
+    from backend.middleware.rate_limiter import RateLimitMiddleware
+    RATE_LIMITER_AVAILABLE = True
+    logger.info("✅ Rate limiting middleware loaded")
 except ImportError as e:
     RATE_LIMITER_AVAILABLE = False
     logger.warning(f"⚠️ Rate limiting not available: {e}")
@@ -210,9 +209,9 @@ else:
 # Add Rate Limiting Middleware
 if RATE_LIMITER_AVAILABLE:
     try:
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-        # app.add_middleware(RateLimitMiddleware, redis_url=redis_url)  # Disabled
-        logger.info(f"✅ Rate limiting enabled")
+        # Use in-memory rate limiter (no Redis dependency)
+        app.add_middleware(RateLimitMiddleware, storage_backend="memory")
+        logger.info(f"✅ Rate limiting enabled (in-memory)")
     except Exception as e:
         logger.warning(f"⚠️ Rate limiting failed to initialize: {e}")
 else:
