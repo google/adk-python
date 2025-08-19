@@ -1012,47 +1012,7 @@ When users ask about their GCP security:
 Always be specific and reference actual findings from the tools.
 """
 
-# Create the agent with all tools
-agent = Agent(
-    name="gcp_security_agent",
-    model="gemini-2.0-flash",
-    instruction=enhanced_agent_instruction,
-    tools=[
-        FunctionTool(discover_assets),
-        FunctionTool(run_security_focused_scan),
-        FunctionTool(analyze_security),
-        FunctionTool(analyze_iam),
-        FunctionTool(analyze_storage),
-        FunctionTool(analyze_monitoring),
-        FunctionTool(analyze_logs),
-        FunctionTool(check_org_policies),
-        FunctionTool(analyze_service_usage),
-        FunctionTool(check_advisory_notifications),
-        FunctionTool(manage_api_keys),
-        FunctionTool(get_security_recommendations),
-        # Enhanced recommendation tools (STORY-007)
-        FunctionTool(get_priority_recommendations),
-        FunctionTool(get_automation_scripts),
-        FunctionTool(run_comprehensive_security_scan),
-        FunctionTool(run_vulnerability_focused_scan),
-        # Remediation tools (STORY-210)
-        FunctionTool(execute_remediation),
-        FunctionTool(list_remediation_templates),
-        FunctionTool(get_remediation_status),
-        FunctionTool(rollback_remediation),
-        FunctionTool(get_remediation_metrics),
-        # Session management tools (STORY-013)
-        FunctionTool(create_session),
-        FunctionTool(get_session_history),
-        FunctionTool(save_to_session),
-        FunctionTool(get_user_sessions),
-        FunctionTool(search_sessions),
-        # Enhanced conversational interface tools (STORY-008)
-        FunctionTool(explain_security_context),
-        FunctionTool(provide_contextual_guidance),
-        FunctionTool(summarize_conversation_context),
-    ]
-)
+# Agent definition will be created after enhanced_agent_instruction is defined below
 
 if __name__ == "__main__":
     print(f"GCP Security Agent configured for project: {PROJECT_ID}")
@@ -1583,3 +1543,39 @@ User: "What else is wrong?"
 ✅ Enhanced: "Besides the storage issue, I found 2 IAM accounts with excessive permissions (risk score: 80/100) and 1 unencrypted database (risk score: 70/100). The IAM issues affect your admin service accounts - these could allow privilege escalation if compromised. Would you like me to prioritize these by business impact?"
 
 Always maintain conversation context, provide clear next steps, and leverage the enhanced capabilities for comprehensive security insights."""
+
+# ============================================================================
+# AGENT DEFINITION (Created after instruction definition)
+# ============================================================================
+
+# Create the enhanced security agent with all tools and capabilities
+agent = Agent(
+    model="gemini-2.0-flash-exp",
+    instructions=enhanced_agent_instruction,
+    tools=[
+        discover_assets,
+        run_security_focused_scan,
+        analyze_security,
+        analyze_iam,
+        analyze_storage,
+        analyze_monitoring,
+        analyze_logs,
+        check_org_policies,
+        analyze_service_usage,
+        check_advisory_notifications,
+        manage_api_keys,
+        get_security_recommendations,
+        run_comprehensive_security_scan,
+        explain_security_context,
+        provide_contextual_guidance,
+        # Session management tools
+        create_session,
+        get_session,
+        list_sessions,
+        delete_session,
+        add_session_message,
+        get_session_history,
+        update_session_context,
+        search_session_messages
+    ]
+)
