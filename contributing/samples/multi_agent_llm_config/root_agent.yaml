@@ -19,7 +19,7 @@ sub_agents:
   - config_path: roll_agent.yaml
   - config_path: prime_agent.yaml
 tools:
-  - name: ma_llm.example_tool
+  - name: multi_agent_llm_config.example_tool
 generate_content_config:
   safety_settings:
     - category: HARM_CATEGORY_DANGEROUS_CONTENT

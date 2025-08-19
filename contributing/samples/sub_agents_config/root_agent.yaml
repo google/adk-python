@@ -8,4 +8,4 @@ instruction: |
   If the user query is about anything else, you should answer it yourself.
 sub_agents:
   - config_path: ./work_agent.yaml
-  - code: sub_agents.life_agent.agent
+  - code: sub_agents_config.life_agent.agent

@@ -155,7 +155,7 @@ class InMemoryExporter(export_lib.SpanExporter):
     self._spans.clear()
 
 
-class AgentRunRequest(common.BaseModel):
+class RunAgentRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
@@ -457,6 +457,14 @@ class AdkWebServer:
       logger.info("New session created")
       return session
 
+    @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
+    async def delete_session(
+        app_name: str, user_id: str, session_id: str
+    ) -> None:
+      await self.session_service.delete_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}",
         response_model_exclude_none=True,
@@ -606,7 +614,9 @@ class AdkWebServer:
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         tags=[TAG_EVALUATION],
     )
-    async def delete_eval(app_name: str, eval_set_id: str, eval_case_id: str):
+    async def delete_eval(
+        app_name: str, eval_set_id: str, eval_case_id: str
+    ) -> None:
       try:
         self.eval_sets_manager.delete_eval_case(
             app_name, eval_set_id, eval_case_id
@@ -733,12 +743,6 @@ class AdkWebServer:
             status_code=400, detail=MISSING_EVAL_DEPENDENCIES_MESSAGE
         ) from e
 
-    @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
-    async def delete_session(app_name: str, user_id: str, session_id: str):
-      await self.session_service.delete_session(
-          app_name=app_name, user_id=user_id, session_id=session_id
-      )
-
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
         response_model_exclude_none=True,
@@ -813,7 +817,7 @@ class AdkWebServer:
     )
     async def delete_artifact(
         app_name: str, user_id: str, session_id: str, artifact_name: str
-    ):
+    ) -> None:
       await self.artifact_service.delete_artifact(
           app_name=app_name,
           user_id=user_id,
@@ -822,15 +826,13 @@ class AdkWebServer:
       )
 
     @app.post("/run", response_model_exclude_none=True)
-    async def agent_run(req: AgentRunRequest) -> list[Event]:
+    async def run_agent(req: RunAgentRequest) -> list[Event]:
       session = await self.session_service.get_session(
           app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
       )
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
       runner = await self.get_runner_async(req.app_name)
-
-      events = []
       async with Aclosing(
           runner.run_async(
               user_id=req.user_id,
@@ -844,7 +846,7 @@ class AdkWebServer:
       return events
 
     @app.post("/run_sse")
-    async def agent_run_sse(req: AgentRunRequest) -> StreamingResponse:
+    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
       # SSE endpoint
       session = await self.session_service.get_session(
           app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
@@ -938,7 +940,7 @@ class AdkWebServer:
         return {}
 
     @app.websocket("/run_live")
-    async def agent_live_run(
+    async def run_agent_live(
         websocket: WebSocket,
         app_name: str,
         user_id: str,
