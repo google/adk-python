@@ -26,10 +26,21 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import rate limiting middleware
+# Import validation middleware  
 try:
-    from backend.middleware.rate_limiter import RateLimitMiddleware
-    RATE_LIMITER_AVAILABLE = True
+    from backend.middleware.validation import InputValidationMiddleware
+    INPUT_VALIDATION_AVAILABLE = True
+    logger.info("✅ Input validation middleware loaded")
+except ImportError as e:
+    INPUT_VALIDATION_AVAILABLE = False
+    logger.warning(f"⚠️ Input validation not available: {e}")
+
+# Import rate limiting middleware (disable due to aioredis compatibility issue)
+try:
+    # Temporarily disabled due to aioredis compatibility issue with Python 3.13
+    # from backend.middleware.rate_limiter import RateLimitMiddleware
+    RATE_LIMITER_AVAILABLE = False
+    logger.info("⚠️ Rate limiting temporarily disabled (aioredis compatibility)")
 except ImportError as e:
     RATE_LIMITER_AVAILABLE = False
     logger.warning(f"⚠️ Rate limiting not available: {e}")
@@ -162,6 +173,9 @@ def create_adk_chat_service(project_id):
     
     return ADKService(project_id)
 
+# Temporarily disable monitoring due to dependency issues
+# from backend.monitoring import setup_monitoring
+
 # Setup service account credentials first
 setup_service_account_from_secret()
 
@@ -172,6 +186,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Setup monitoring - temporarily disabled
+# setup_monitoring(app)
+logger.info("⚠️ Monitoring temporarily disabled")
+
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -181,11 +200,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add Input Validation Middleware
+if INPUT_VALIDATION_AVAILABLE:
+    app.add_middleware(InputValidationMiddleware)
+    logger.info(f"✅ Input validation enabled")
+else:
+    logger.info("⚠️ Input validation disabled")
+
 # Add Rate Limiting Middleware
 if RATE_LIMITER_AVAILABLE:
     try:
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-        app.add_middleware(RateLimitMiddleware, redis_url=redis_url)
+        # app.add_middleware(RateLimitMiddleware, redis_url=redis_url)  # Disabled
         logger.info(f"✅ Rate limiting enabled")
     except Exception as e:
         logger.warning(f"⚠️ Rate limiting failed to initialize: {e}")
@@ -204,18 +230,14 @@ else:
 # /api/v1/recommendations/* - Recommendations endpoints
 # /api/v1/context/* - Context management endpoints
 
-# RADAR Coordinator router - The main agent system
-try:
-    from backend.agents.radar_coordinator import router as radar_router
-    app.include_router(radar_router, prefix="/api/v1/agent")
-    logger.info("✅ RADAR Coordinator router included at /api/v1/agent (LLM-driven orchestration)")
-except ImportError as e:
-    logger.warning(f"⚠️ RADAR Coordinator not available: {e}")
+# Note: RADAR/multi-agent code removed per single-agent architecture requirements
+# Agent functionality is handled through direct tools in /api/v1/chat/message endpoint
 
 # Sessions router for persistent conversation management (STORY-013)
 try:
     from backend.api.sessions import router as sessions_router
     app.include_router(sessions_router, prefix="/api/v1/sessions")
+    print("Sessions router included")
     logger.info("✅ Sessions router included at /api/v1/sessions (STORY-013: SQLite persistence)")
 except ImportError as e:
     logger.warning(f"⚠️ Sessions router not available: {e}")
