@@ -12,15 +12,57 @@ import os
 import logging
 import httpx
 from typing import Dict, Optional, Any
+from pathlib import Path
+from dotenv import load_dotenv
+
+# ============================================================================
+# CONFIGURATION DETECTION AND LOADING
+# ============================================================================
+
+def find_and_load_env():
+    """Find and load .env file from various possible locations"""
+    possible_paths = [
+        Path.cwd() / '.env',  # Current directory
+        Path(__file__).parent / '.env',  # Script directory
+        Path.cwd().parent / '.env',  # Parent directory
+        Path('/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/.env'),  # Known path
+    ]
+    
+    for env_path in possible_paths:
+        if env_path.exists():
+            load_dotenv(env_path, override=True)
+            logger.info(f"✅ Loaded environment from: {env_path}")
+            return str(env_path)
+    
+    logger.warning("⚠️ No .env file found in standard locations")
+    return None
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Configuration
+# Load environment configuration
+ENV_PATH = find_and_load_env()
+
+# Configuration with validation
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
 BACKEND_API_URL = os.getenv('BACKEND_API_URL', 'http://localhost:8002')
 API_TIMEOUT = int(os.getenv('API_TIMEOUT', '30'))
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+
+# Log configuration status
+logger.info("=" * 60)
+logger.info("🚀 Security Agent Configuration Status")
+logger.info("=" * 60)
+logger.info(f"📁 Environment File: {ENV_PATH or 'Not found (using defaults)'}")
+logger.info(f"🎯 Project ID: {PROJECT_ID}")
+logger.info(f"🔗 Backend URL: {BACKEND_API_URL}")
+logger.info(f"⏱️ API Timeout: {API_TIMEOUT}s")
+logger.info(f"🔑 Service Account: {'✅ Configured' if GOOGLE_APPLICATION_CREDENTIALS else '⚠️ Not configured (using fallback data)'}")
+logger.info("=" * 60)
 
 # Backend API Client
 class BackendAPIClient:
@@ -54,6 +96,107 @@ api_client = BackendAPIClient()
 # ============================================================================
 # TOOL WRAPPERS - Each maps directly to a backend API endpoint
 # ============================================================================
+
+def test_configuration() -> str:
+    """Test and validate agent configuration"""
+    results = []
+    results.append("=" * 60)
+    results.append("🧪 CONFIGURATION TEST RESULTS")
+    results.append("=" * 60)
+    
+    # Test 1: Environment file detection
+    if ENV_PATH:
+        results.append(f"✅ Environment file found: {ENV_PATH}")
+    else:
+        results.append("⚠️ No .env file found - using default configuration")
+    
+    # Test 2: Project ID validation
+    if PROJECT_ID and PROJECT_ID != "your-project-id":
+        results.append(f"✅ Project ID configured: {PROJECT_ID}")
+    else:
+        results.append("❌ Project ID not properly configured")
+    
+    # Test 3: Backend connectivity
+    try:
+        client = BackendAPIClient()
+        health = client.call_api('/health')
+        if health.get('status') == 'healthy':
+            results.append(f"✅ Backend API healthy at {BACKEND_API_URL}")
+            results.append(f"   - Service: {health.get('service', 'unknown')}")
+            results.append(f"   - Version: {health.get('version', 'unknown')}")
+        else:
+            results.append(f"⚠️ Backend API unhealthy: {health}")
+    except Exception as e:
+        results.append(f"❌ Backend API unreachable: {e}")
+    
+    # Test 4: Service account credentials
+    if GOOGLE_APPLICATION_CREDENTIALS:
+        cred_path = Path(GOOGLE_APPLICATION_CREDENTIALS)
+        if cred_path.exists():
+            results.append(f"✅ Service account key found: {GOOGLE_APPLICATION_CREDENTIALS}")
+        else:
+            results.append(f"⚠️ Service account key configured but file not found: {GOOGLE_APPLICATION_CREDENTIALS}")
+    else:
+        results.append("⚠️ No service account configured - will use fallback data")
+    
+    # Test 5: Test each API endpoint
+    results.append("\n📡 API Endpoint Tests:")
+    endpoints = [
+        ('/api/v1/iam/analyze', 'IAM Analysis'),
+        ('/api/v1/storage/analyze/mgm-digitalconcierge', 'Storage Analysis'),
+        ('/api/v1/sessions/api/v1/sessions/cleanup', 'Session Management'),
+    ]
+    
+    for endpoint, name in endpoints:
+        try:
+            client = BackendAPIClient()
+            if 'cleanup' in endpoint:
+                response = client.call_api(endpoint, method='POST')
+            else:
+                response = client.call_api(endpoint)
+            if 'error' not in str(response).lower() or response.get('success'):
+                results.append(f"  ✅ {name}: Working")
+            else:
+                results.append(f"  ⚠️ {name}: Degraded - {response.get('error', 'Unknown error')}")
+        except Exception as e:
+            results.append(f"  ❌ {name}: Failed - {str(e)[:50]}")
+    
+    # Test 6: Log file access
+    log_dir = Path('logs')
+    if log_dir.exists():
+        log_files = list(log_dir.glob('*.log'))
+        if log_files:
+            results.append(f"\n✅ Log files available: {', '.join(f.name for f in log_files)}")
+        else:
+            results.append("\n⚠️ Log directory exists but no log files found")
+    else:
+        results.append("\n⚠️ Log directory not found")
+    
+    results.append("\n" + "=" * 60)
+    results.append("📋 SUMMARY")
+    results.append("=" * 60)
+    
+    # Count status
+    output = '\n'.join(results)
+    success_count = output.count('✅')
+    warning_count = output.count('⚠️')
+    error_count = output.count('❌')
+    
+    results.append(f"✅ Passed: {success_count}")
+    results.append(f"⚠️ Warnings: {warning_count}")
+    results.append(f"❌ Errors: {error_count}")
+    
+    if error_count == 0:
+        results.append("\n🎉 Agent is ready for use!")
+    elif warning_count > 0 and error_count == 0:
+        results.append("\n⚠️ Agent is functional with limited capabilities")
+    else:
+        results.append("\n❌ Agent has configuration issues - check errors above")
+    
+    results.append("=" * 60)
+    
+    return '\n'.join(results)
+
 
 def discover_assets() -> str:
     """Discover and list GCP assets in the project with enhanced security analysis"""
@@ -1554,6 +1697,7 @@ agent = Agent(
     model="gemini-2.0-flash-exp",
     instruction=enhanced_agent_instruction,
     tools=[
+        test_configuration,  # Configuration testing and validation
         discover_assets,
         run_security_focused_scan,
         analyze_security,
