@@ -325,6 +325,14 @@ try:
 except ImportError as e:
     logger.warning(f"⚠️ Remediation API not available: {e}")
 
+# Health monitoring API (TASK-007)
+try:
+    from backend.api.health import router as health_router
+    app.include_router(health_router, prefix="/api/v1/health")
+    logger.info("✅ Comprehensive health monitoring loaded (TASK-007)")
+except ImportError as e:
+    logger.warning(f"⚠️ Health monitoring API not available: {e}")
+
 
 
 # Chat endpoint for frontend communication
@@ -495,9 +503,32 @@ async def rate_limit_status():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint with robust system status."""
+    """Enhanced health check endpoint with comprehensive monitoring."""
     
-    # Check component availability
+    # Try to use comprehensive health monitoring first
+    try:
+        from backend.health import health_monitor
+        health_result = await health_monitor.get_quick_status()
+        
+        # Use comprehensive monitoring result
+        status = health_result.get("status", "unknown")
+        is_healthy = status in ["healthy", "degraded"]
+        
+        # Map internal status to public response
+        if status == "healthy":
+            public_status = "healthy"
+        elif status == "degraded":
+            public_status = "degraded"
+        else:
+            public_status = "unhealthy"
+            
+    except Exception as e:
+        logger.warning(f"Comprehensive health monitoring failed: {e}, using fallback")
+        is_healthy = True
+        public_status = "healthy"
+        health_result = {"message": "Fallback health check", "summary": {}}
+    
+    # Check component availability (fallback method)
     components_status = {}
     
     # Test critical components
@@ -520,20 +551,33 @@ async def health_check():
         components_status["recommendations"] = "fallback"
     
     return {
-        "status": "healthy",
+        "status": public_status,
+        "message": health_result.get("message", "System operational"),
         "timestamp": datetime.now().isoformat(),
         "system_mode": "robust_fallback_enabled",
         "components": components_status,
         "features": {
+            "comprehensive_monitoring": True,
             "secret_manager": SECRETMANAGER_AVAILABLE,
             "rate_limiting": RATE_LIMITER_AVAILABLE,
+            "input_validation": INPUT_VALIDATION_AVAILABLE,
             "adk_session_management": True,
             "websockets": True,
             "context_awareness": True,
             "robust_fallbacks": True
         },
+        "health_summary": health_result.get("summary", {}),
         "endpoints": {
             "health": "/health",
+            "health_comprehensive": "/api/v1/health",
+            "health_quick": "/api/v1/health/quick",
+            "health_status": "/api/v1/health/status",
+            "health_history": "/api/v1/health/history",
+            "health_components": "/api/v1/health/components",
+            "health_resources": "/api/v1/health/resources",
+            "health_performance": "/api/v1/health/performance",
+            "health_database": "/api/v1/health/database",
+            "health_gcp": "/api/v1/health/gcp",
             "docs": "/docs",
             "websocket": "/api/v1/agent/ws",
             "chat": "/api/v1/agent/chat",
@@ -547,9 +591,11 @@ async def health_check():
             "rate_limit_status": "/api/v1/rate-limit/status",
         },
         "notes": [
+            "Enhanced with comprehensive health monitoring (TASK-007)",
             "System designed with robust fallbacks for all dependencies",
             "Fallback implementations provide basic functionality when modules are missing",
             "All critical API endpoints remain available in degraded mode",
+            "Comprehensive health monitoring provides detailed diagnostics at /api/v1/health/*",
             "Check component status for details on availability vs fallback mode"
         ]
     }
