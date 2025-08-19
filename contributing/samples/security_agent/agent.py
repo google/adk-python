@@ -49,7 +49,7 @@ ENV_PATH = find_and_load_env()
 
 # Configuration with validation
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
-BACKEND_API_URL = os.getenv('BACKEND_API_URL', 'http://localhost:8002')
+BACKEND_API_URL = os.getenv('BACKEND_API_URL', 'http://localhost:8000')
 API_TIMEOUT = int(os.getenv('API_TIMEOUT', '30'))
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 

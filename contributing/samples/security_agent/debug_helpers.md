@@ -75,15 +75,13 @@ lsof -i :8503
 > logs/frontend.log
 ```
 
-### Restart Services
+### Start/Restart Services (Standard Method)
 ```bash
-# Backend
-source venv/bin/activate && cd backend && \
-  nohup python -m uvicorn main:app --host 0.0.0.0 --port 8002 --log-level info > ../logs/backend.log 2>&1 &
+# Backend (port 8000)
+python run_backend.py
 
-# Frontend  
-source venv/bin/activate && cd frontend && export BACKEND_API_URL=http://localhost:8002 && \
-  nohup streamlit run main_app.py --server.port 8503 > ../logs/frontend.log 2>&1 &
+# Frontend (port 8501)  
+python run_frontend.py
 ```
 
 ## Log Patterns to Watch For
