@@ -107,7 +107,7 @@ class InMemorySessionService(BaseSessionService):
       self.sessions[app_name][user_id] = {}
     self.sessions[app_name][user_id][session_id] = session
 
-    copied_session = copy.deepcopy(session)
+    copied_session = session
     return self._merge_state(app_name, user_id, copied_session)
 
   @override
