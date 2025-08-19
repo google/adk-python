@@ -9,10 +9,14 @@ Docs: https://cloud.google.com/python/docs/reference/securitycenter/latest
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 import logging
 import os
+import asyncio
+import json
 from datetime import datetime, timedelta
+from dataclasses import dataclass
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,6 +35,20 @@ except ImportError:
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'default-project')
 ORGANIZATION_ID = os.getenv('GOOGLE_CLOUD_ORGANIZATION', '')
 
+# Vulnerability severity mapping
+class VulnerabilitySeverity(str, Enum):
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    INFO = "INFO"
+
+class FindingState(str, Enum):
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+    MITIGATED = "MITIGATED"
+    FALSE_POSITIVE = "FALSE_POSITIVE"
+
 # Request/Response models
 class FindingsListRequest(BaseModel):
     """Request model for listing security findings."""
@@ -42,6 +60,25 @@ class FindingsListRequest(BaseModel):
     category: Optional[str] = Field(None, description="Filter by category")
     state: Optional[str] = Field("ACTIVE", description="Finding state: ACTIVE, INACTIVE")
 
+class VulnerabilityFinding(BaseModel):
+    """Enhanced vulnerability finding model."""
+    id: str
+    resource_name: str
+    resource_type: str
+    vulnerability_type: str
+    severity: VulnerabilitySeverity
+    cvss_score: Optional[float] = None
+    risk_score: int = Field(..., ge=0, le=100)
+    description: str
+    recommendation: str
+    remediation_steps: List[str] = []
+    compliance_frameworks: List[str] = []
+    first_detected: datetime
+    last_updated: datetime
+    status: FindingState = FindingState.ACTIVE
+    
+# Models are imported from vulnerability_analyzer.py
+
 class FindingCreateRequest(BaseModel):
     """Request model for creating a security finding."""
     source: str = Field(..., description="Source name (e.g., 'organizations/123/sources/456')")
@@ -51,6 +88,8 @@ class FindingCreateRequest(BaseModel):
     severity: str = Field("MEDIUM", description="Severity: CRITICAL, HIGH, MEDIUM, LOW")
     description: Optional[str] = Field(None, description="Finding description")
     recommendation: Optional[str] = Field(None, description="Remediation recommendation")
+    cvss_score: Optional[float] = Field(None, ge=0.0, le=10.0, description="CVSS score")
+    risk_score: Optional[int] = Field(None, ge=0, le=100, description="Risk score")
 
 class AssetListRequest(BaseModel):
     """Request model for listing assets from Security Command Center."""
@@ -416,3 +455,115 @@ async def health_check():
         "organization_id": ORGANIZATION_ID or "not_configured",
         "timestamp": datetime.now().isoformat()
     }
+# ============================================================================
+# ENHANCED SECURITY ANALYSIS ENDPOINTS (STORY-002)
+# ============================================================================
+
+# Import enhanced vulnerability analysis components
+try:
+    from ..services.vulnerability_analyzer import (
+        SecurityAnalyzer, VulnerabilityRiskScorer, CustomVulnerabilityRules,
+        VulnerabilityFinding, SecurityAnalysisResult, SecurityAnalysisRequest,
+        VulnerabilitySeverity, FindingState
+    )
+    ENHANCED_ANALYSIS_AVAILABLE = True
+    logger.info("✅ Enhanced vulnerability analysis components loaded")
+except ImportError as e:
+    ENHANCED_ANALYSIS_AVAILABLE = False
+    logger.warning(f"⚠️ Enhanced analysis not available: {e}")
+
+@router.post("/analyze")
+async def comprehensive_security_analysis(request: SecurityAnalysisRequest):
+    """
+    Run comprehensive security analysis with custom rules and enhanced risk scoring.
+    
+    This combines Security Command Center findings with custom vulnerability detection
+    and provides detailed risk assessment.
+    """
+    if not ENHANCED_ANALYSIS_AVAILABLE:
+        return {
+            "error": "Enhanced analysis not available",
+            "message": "Install vulnerability analyzer components"
+        }
+    
+    try:
+        analyzer = SecurityAnalyzer(request.project_id)
+        
+        # Get asset inventory from asset_inventory service
+        import httpx
+        async with httpx.AsyncClient() as client:
+            # Fetch assets from asset inventory API
+            asset_response = await client.post(
+                f"http://localhost:8000/api/v1/assets/list",
+                json={
+                    "project_id": request.project_id,
+                    "include_security_context": True,
+                    "page_size": 1000
+                }
+            )
+            assets = asset_response.json().get('assets', []) if asset_response.status_code == 200 else []
+        
+        # Get SCC findings if client is available
+        scc_findings = []
+        if SCC_CLIENT_AVAILABLE:
+            findings_result = await list_findings(FindingsListRequest(
+                severity=request.severity_filter[0].value if request.severity_filter else None,
+                state="ACTIVE",
+                page_size=request.max_findings
+            ))
+            if isinstance(findings_result, dict) and findings_result.get('success'):
+                scc_findings = findings_result.get('findings', [])
+        
+        # Run comprehensive analysis
+        analysis_result = await analyzer.comprehensive_analysis(assets, scc_findings)
+        
+        # Convert to dict for JSON response
+        return {
+            "success": True,
+            "analysis": analysis_result.dict(),
+            "enhanced_features_enabled": True,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in comprehensive security analysis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/vulnerabilities")
+async def vulnerability_focused_scan(project_id: str = "default"):
+    """
+    Run vulnerability-focused scan with enhanced risk scoring.
+    """
+    if not ENHANCED_ANALYSIS_AVAILABLE:
+        return {"error": "Enhanced analysis not available"}
+    
+    try:
+        # Get assets (simplified for this endpoint)
+        import httpx
+        async with httpx.AsyncClient() as client:
+            asset_response = await client.post(
+                f"http://localhost:8000/api/v1/assets/list",
+                json={"project_id": project_id, "include_security_context": True}
+            )
+            assets = asset_response.json().get('assets', []) if asset_response.status_code == 200 else []
+        
+        # Get custom vulnerability findings
+        custom_rules = CustomVulnerabilityRules(VulnerabilityRiskScorer())
+        findings = await custom_rules.scan_misconfigurations(assets)
+        
+        # Sort by risk score
+        findings_sorted = sorted(findings, key=lambda x: x.risk_score, reverse=True)
+        
+        return {
+            "success": True,
+            "project_id": project_id,
+            "total_vulnerabilities": len(findings_sorted),
+            "high_risk_count": len([f for f in findings_sorted if f.risk_score >= 70]),
+            "vulnerabilities": [f.dict() for f in findings_sorted[:50]],  # Limit to top 50
+            "scan_type": "custom_vulnerability_rules",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in vulnerability scan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

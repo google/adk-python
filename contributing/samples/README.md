@@ -7,11 +7,11 @@ The ADK Security Agent is an intelligent security management system for Google C
 ## 🎯 Key Features
 
 ### RADAR Methodology
-- **Recognition**: Automated discovery of all GCP resources
-- **Assessment**: Comprehensive security vulnerability scanning
-- **Decision**: AI-driven prioritization of security issues
-- **Action**: Step-by-step remediation guidance
-- **Review**: Continuous monitoring and verification
+- **Recognition**: Automated discovery of all GCP resources with risk scoring
+- **Assessment**: Comprehensive security vulnerability scanning with CVSS scores
+- **Decision**: AI-driven prioritization based on risk and business impact
+- **Action**: Automated remediation with rollback capabilities
+- **Review**: Continuous monitoring and verification with metrics
 
 ### Multi-Agent Architecture
 - **Coordinator Agent**: Intelligent query routing and orchestration
@@ -89,6 +89,34 @@ python run_frontend.py
    - Open browser to http://localhost:8501
    - Start chatting with the security agent
 
+### Testing ADK Agent Chat
+
+1. **Direct Agent Testing**
+```bash
+# Run agent with ADK CLI
+adk chat --agent-file agent.py
+
+# Sample queries to test:
+"What are my security vulnerabilities?"
+"Show me high-risk assets in my GCP project"
+"Analyze security findings and provide recommendations"
+"Run a comprehensive security scan"
+```
+
+2. **Verify Agent Tools**
+```python
+# Test individual tools
+from agent import analyze_security, discover_assets
+
+# Test enhanced security analysis (STORY-002)
+result = analyze_security()
+print(result)  # Should show risk scores, CVSS scores, compliance %
+
+# Test asset discovery with risk scoring
+assets = discover_assets()
+print(assets)  # Should show assets with security context
+```
+
 ## 📚 Documentation
 
 ### Core Documentation (BMad Method)
@@ -142,6 +170,7 @@ python run_frontend.py
 
 ## 🧪 Testing
 
+### Unit & Integration Tests
 ```bash
 # Run all tests
 pytest tests/
@@ -151,7 +180,40 @@ pytest tests/ --cov=backend --cov=frontend
 
 # Run specific test suite
 pytest tests/test_security.py
+
+# Run security analysis tests (STORY-002)
+pytest tests/test_security_analysis_enhanced.py -v
 ```
+
+### ADK Agent Testing
+```bash
+# Test ADK agent directly
+python agent.py
+
+# Interactive agent chat testing
+adk chat --agent-file agent.py
+
+# Test specific agent tools
+python -c "from agent import analyze_security; print(analyze_security())"
+```
+
+### Acceptance Testing Checklist
+- [ ] **ADK Agent Chat**: Verify natural language interaction works correctly
+  - [ ] Agent responds to security queries appropriately
+  - [ ] Tool delegation functions as expected
+  - [ ] Streaming responses display properly
+- [ ] **Security Analysis**: Test enhanced vulnerability detection
+  - [ ] CVSS scoring accuracy (±0.5 points)
+  - [ ] Risk assessment scores (0-100 scale)
+  - [ ] Custom vulnerability rules trigger correctly
+- [ ] **API Endpoints**: Validate all backend services
+  - [ ] Asset discovery returns complete inventory
+  - [ ] Security findings include risk scores
+  - [ ] Recommendations are actionable
+- [ ] **Frontend Integration**: Verify UI functionality
+  - [ ] Chat interface processes queries
+  - [ ] Results display with proper formatting
+  - [ ] Session persistence works across interactions
 
 ## 🚢 Deployment
 
@@ -207,16 +269,52 @@ We welcome contributions! Please see our contributing guidelines for details.
 
 ## 📊 Project Status
 
-### Current Version: 4.0
+### Current Version: 5.1
 - ✅ Core RADAR implementation
 - ✅ Multi-agent architecture
 - ✅ GCP integration
 - ✅ Thin client architecture
+- ✅ Enhanced security analysis with CVSS scoring (STORY-002)
+- ✅ Automated remediation with rollback (STORY-210)
+- ✅ Persistent session management with SQLite (STORY-013)
+
+### Story Implementation Acceptance Criteria
+
+#### For Each Story Implementation:
+1. **ADK Agent Integration**
+   - [ ] Agent tool wrapper implemented and functional
+   - [ ] Natural language processing handles relevant queries
+   - [ ] Chat interface provides appropriate responses
+   - [ ] Tool delegation works correctly
+
+2. **Backend API Development**
+   - [ ] All API endpoints implemented and documented
+   - [ ] Error handling covers edge cases
+   - [ ] Performance meets requirements (<2s response time)
+   - [ ] Security best practices followed
+
+3. **Testing Requirements**
+   - [ ] Unit tests achieve >80% code coverage
+   - [ ] Integration tests validate API contracts
+   - [ ] ADK agent chat tested interactively
+   - [ ] Acceptance tests pass all criteria
+
+4. **Documentation**
+   - [ ] Story file includes acceptance criteria
+   - [ ] API documentation updated
+   - [ ] Agent instructions reflect new capabilities
+   - [ ] README updated with testing procedures
 
 ### Roadmap
-- 🔄 Enhanced vulnerability detection (Q1 2025)
-- 🔄 Automated remediation (Q2 2025)
+- ✅ Enhanced vulnerability detection (STORY-002 Complete)
+- ✅ Automated remediation (STORY-210 Complete)
+- ✅ Session management service (STORY-013 Complete)
+- 📝 New Google service evaluation metrics (STORY-014 Specified)
+- 📝 Advisory notifications system (STORY-012 Specified)
+- 🔄 IAM overprivilege detection (In Progress)
+- 🔄 Storage security validation (In Progress)
 - 🔄 Multi-cloud support (Q3 2025)
+- 🔄 Executive dashboard (Q3 2025)
 
 ## 📝 License
 

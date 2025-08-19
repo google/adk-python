@@ -436,11 +436,67 @@ async def test_permissions(
 @router.get("/analyze")
 async def analyze_iam_security(project_id: Optional[str] = None):
     """
-    Analyze IAM security posture for the project.
+    Enhanced IAM security analysis with overprivileged account detection (STORY-003)
     """
     project = project_id or PROJECT_ID
     
-    # Initialize results
+    # Import the enhanced analyzer
+    try:
+        from backend.services.iam_security_analyzer import IAMSecurityAnalyzer
+        
+        analyzer = IAMSecurityAnalyzer(project)
+        posture = analyzer.analyze_iam_security()
+        
+        # Convert findings to API response format
+        findings_data = []
+        for finding in posture.findings:
+            findings_data.append({
+                "type": finding.finding_type.value,
+                "risk_level": finding.risk_level.value,
+                "risk_score": finding.risk_score,
+                "title": finding.title,
+                "description": finding.description,
+                "resource_name": finding.resource_name,
+                "affected_principal": finding.affected_principal,
+                "remediation_steps": finding.remediation_steps,
+                "metadata": finding.metadata,
+                "detected_at": finding.detected_at.isoformat()
+            })
+        
+        return {
+            "success": True,
+            "source": "enhanced_iam_analyzer",
+            "analysis": {
+                "project_id": posture.project_id,
+                "posture_score": posture.posture_score,
+                "risk_distribution": posture.risk_distribution,
+                "total_findings": posture.total_findings,
+                "critical_findings": posture.critical_findings,
+                "high_findings": posture.high_findings,
+                "statistics": {
+                    "service_account_count": posture.service_account_count,
+                    "overprivileged_accounts": posture.overprivileged_accounts,
+                    "stale_keys": posture.stale_keys,
+                    "cross_project_bindings": posture.cross_project_bindings,
+                    "external_users": posture.external_users
+                },
+                "recommendations": posture.recommendations,
+                "findings": findings_data,
+                "analyzed_at": posture.analyzed_at.isoformat()
+            }
+        }
+        
+    except ImportError as e:
+        logger.error(f"Enhanced IAM analyzer not available: {e}")
+        # Fallback to basic analysis
+        return await _basic_iam_analysis(project)
+    except Exception as e:
+        logger.error(f"Error in enhanced IAM analysis: {e}")
+        return await _basic_iam_analysis(project)
+
+
+async def _basic_iam_analysis(project: str):
+    """Fallback basic IAM analysis"""
     analysis = {
         "project_id": project,
         "timestamp": datetime.now().isoformat(),
@@ -459,6 +515,11 @@ async def analyze_iam_security(project_id: Optional[str] = None):
             "source": "sample_analysis",
             "analysis": {
                 **analysis,
+                "posture_score": 70,
+                "risk_distribution": {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 1, "MINIMAL": 0},
+                "total_findings": 4,
+                "critical_findings": 0,
+                "high_findings": 1,
                 "risks": [
                     {"level": "HIGH", "description": "Service account with owner role detected"},
                     {"level": "MEDIUM", "description": "5 service accounts have keys older than 90 days"}
@@ -470,16 +531,17 @@ async def analyze_iam_security(project_id: Optional[str] = None):
                     "Enable IAM conditions for fine-grained access"
                 ],
                 "statistics": {
-                    "total_service_accounts": 12,
-                    "total_users": 8,
-                    "high_privilege_accounts": 3,
-                    "unused_service_accounts": 2
+                    "service_account_count": 12,
+                    "overprivileged_accounts": 3,
+                    "stale_keys": 5,
+                    "cross_project_bindings": 1,
+                    "external_users": 2
                 }
             }
         }
     
     try:
-        # Analyze service accounts
+        # Basic analysis logic (existing implementation)
         sa_request = iam_admin_v1.ListServiceAccountsRequest(
             name=f"projects/{project}",
             page_size=100
@@ -508,10 +570,21 @@ async def analyze_iam_security(project_id: Optional[str] = None):
         
         # Statistics
         analysis["statistics"] = {
-            "total_service_accounts": len(service_accounts),
+            "service_account_count": len(service_accounts),
             "total_bindings": len(policy.bindings),
-            "high_privilege_service_accounts": sa_with_high_privilege
+            "overprivileged_accounts": sa_with_high_privilege,
+            "stale_keys": 0,  # Would need key analysis
+            "cross_project_bindings": 0,
+            "external_users": 0
         }
+        
+        # Calculate basic posture score
+        penalty = sa_with_high_privilege * 15
+        posture_score = max(0, 100 - penalty)
+        
+        analysis["posture_score"] = posture_score
+        analysis["total_findings"] = len(analysis["risks"])
+        analysis["high_findings"] = len([r for r in analysis["risks"] if r["level"] == "HIGH"])
         
         # Recommendations
         if sa_with_high_privilege > 0:
@@ -527,7 +600,7 @@ async def analyze_iam_security(project_id: Optional[str] = None):
         
         return {
             "success": True,
-            "source": "live_analysis",
+            "source": "basic_analysis",
             "analysis": analysis
         }
         

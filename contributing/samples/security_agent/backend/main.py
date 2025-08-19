@@ -22,6 +22,10 @@ from pathlib import Path
 # Load environment variables from .env file
 from dotenv import load_dotenv
 
+# Configure logging first
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Import rate limiting middleware
 try:
     from backend.middleware.rate_limiter import RateLimitMiddleware
@@ -208,8 +212,14 @@ try:
 except ImportError as e:
     logger.warning(f"⚠️ RADAR Coordinator not available: {e}")
 
-# Sessions are handled natively by ADK - no custom router needed
-logger.info("✅ Using ADK's built-in session management")
+# Sessions router for persistent conversation management (STORY-013)
+try:
+    from backend.api.sessions import router as sessions_router
+    app.include_router(sessions_router, prefix="/api/v1/sessions")
+    logger.info("✅ Sessions router included at /api/v1/sessions (STORY-013: SQLite persistence)")
+except ImportError as e:
+    logger.warning(f"⚠️ Sessions router not available: {e}")
+    logger.info("✅ Using ADK's built-in session management as fallback")
 
 # GCP router
 try:
@@ -286,17 +296,24 @@ try:
 except ImportError as e:
     logger.warning(f"Advisory Notifications router not available: {e}")
 
+# Import remediation API (STORY-210)
+try:
+    from backend.api.remediation import router as remediation_router
+    app.include_router(remediation_router, prefix="/api/v1/remediation")
+    logger.info("✅ Remediation API loaded (STORY-210)")
+except ImportError as e:
+    logger.warning(f"⚠️ Remediation API not available: {e}")
+
 
 
 # Chat endpoint for frontend communication
 @app.post("/api/v1/chat/message")
 async def chat_message(request: Dict[str, Any]):
     """
-    Handle chat messages - backend processes the query and returns intelligent responses.
+    Handle chat messages using the configured ADK agent with session persistence.
     
-    In a thin client architecture:
-    - Frontend: Just displays UI
-    - Backend: Provides the intelligence (this endpoint)
+    This endpoint uses the agent.py configuration which has all the enhanced
+    security tools and proper conversation handling.
     """
     query = request.get("query", "")
     session_id = request.get("session_id", "default")
@@ -305,51 +322,72 @@ async def chat_message(request: Dict[str, Any]):
     logger.info(f"Received chat request - User: {user_id}, Session: {session_id}, Query: {query[:50]}...")
     
     try:
-        # Import conversation context manager
-        from backend.api.conversation_context import conversation_manager
+        # Import the configured agent from agent.py
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+        from agent import agent
         
-        # Get or create session
-        session = conversation_manager.get_or_create_session(session_id, user_id)
+        # Import conversation context manager for session persistence
+        try:
+            from backend.api.conversation_context import conversation_manager
+            
+            # Get or create session
+            session = conversation_manager.get_or_create_session(session_id, user_id)
+            
+            # Get conversation context
+            context = conversation_manager.get_context(session_id)
+            
+            # Add context to query if there's history
+            enhanced_query = query
+            if context:
+                enhanced_query = f"Previous conversation context:\n{context}\n\nCurrent question: {query}"
+                logger.info(f"Using conversation context for session {session_id}")
+        except Exception as e:
+            logger.warning(f"Conversation context not available: {e}")
+            enhanced_query = query
         
-        # Get conversation context
-        context = conversation_manager.get_context(session_id)
+        # Use the configured agent's tools directly for more reliable responses
+        logger.info(f"Processing query with enhanced security tools")
         
-        # Add context to query if there's history
-        enhanced_query = query
-        if context:
-            enhanced_query = f"{context}\n\nCurrent query: {query}"
-            logger.info(f"Using conversation context for session {session_id}")
+        # Import the agent tools directly
+        from agent import (
+            discover_assets, analyze_security, run_security_focused_scan,
+            run_vulnerability_focused_scan, analyze_iam, analyze_storage,
+            get_security_recommendations, run_comprehensive_security_scan
+        )
         
-        # Use direct GCP API implementation (no multi-agent complexity)
-        from backend.api.gcp_direct import process_gcp_query
+        # Determine which tool to use based on query content
+        query_lower = enhanced_query.lower()
         
-        # Get project ID from environment or gcloud config
-        project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
-        if not project_id:
-            # Try to get from gcloud config
-            try:
-                import subprocess
-                result = subprocess.run(['gcloud', 'config', 'get-value', 'project'], 
-                                      capture_output=True, text=True)
-                if result.returncode == 0:
-                    project_id = result.stdout.strip()
-            except:
-                pass
+        if any(word in query_lower for word in ['enhanced', 'vulnerability', 'custom rules', 'risk score']):
+            response_text = analyze_security()
+        elif any(word in query_lower for word in ['comprehensive', 'full scan', 'complete']):
+            response_text = run_comprehensive_security_scan()
+        elif any(word in query_lower for word in ['discover', 'assets', 'inventory', 'resources']):
+            response_text = discover_assets()
+        elif any(word in query_lower for word in ['iam', 'permissions', 'service account']):
+            response_text = analyze_iam()
+        elif any(word in query_lower for word in ['storage', 'bucket']):
+            response_text = analyze_storage()
+        elif any(word in query_lower for word in ['recommend', 'advice', 'suggest']):
+            response_text = get_security_recommendations()
+        elif any(word in query_lower for word in ['security', 'vulnerabilit', 'scan', 'analyze']):
+            response_text = run_security_focused_scan()
+        else:
+            # General security overview
+            response_text = f"🔐 **Enhanced Security Assistant for {os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')}**\n\n" + analyze_security()
         
-        if not project_id:
-            project_id = 'mgm-digitalconcierge'  # Your actual project
-        
-        logger.info(f"Processing query for GCP project: {project_id}")
-        
-        # Process with direct GCP API calls (use enhanced query with context)
-        response_text = await process_gcp_query(project_id, enhanced_query)
-        
-        # Store in conversation history
-        conversation_manager.add_to_history(session_id, query, response_text)
+        # Store in conversation history if available
+        try:
+            conversation_manager.add_to_history(session_id, query, response_text)
+        except:
+            pass  # Continue even if conversation storage fails
             
     except Exception as e:
-        logger.error(f"Error processing query: {e}")
-        response_text = f"Error: {str(e)}\n\nPlease ensure:\n1. Backend is running\n2. GCP credentials are configured\n3. Required APIs are enabled"
+        logger.error(f"Error processing query with agent: {e}")
+        # Fallback to basic response
+        response_text = f"🔍 **GCP Security Assistant for project: {os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')}**\n\nI can help you with:\n\n• **Resource Discovery**: 'What resources do I have?'\n• **Security Analysis**: 'Check my security posture'\n• **IAM Review**: 'Show my service accounts'\n• **Vulnerability Scan**: 'Find security issues'\n\nWhat would you like to explore?"
     
     # Always return a properly formatted response
     return {

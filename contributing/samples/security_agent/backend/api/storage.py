@@ -207,8 +207,69 @@ MOCK_BUCKETS = {
     ]
 }
 
+@router.get("/analyze/{project_id}")
+async def analyze_storage_security_enhanced(
+    project_id: str,
+    detailed: bool = Query(True, description="Include detailed analysis")
+):
+    """
+    Enhanced storage security analysis with comprehensive security checks (STORY-004)
+    """
+    # Import the enhanced analyzer
+    try:
+        from backend.services.storage_security_analyzer import StorageSecurityAnalyzer
+        
+        analyzer = StorageSecurityAnalyzer(project_id)
+        posture = analyzer.analyze_storage_security()
+        
+        # Convert findings to API response format
+        findings_data = []
+        for finding in posture.findings:
+            findings_data.append({
+                "type": finding.finding_type.value,
+                "risk_level": finding.risk_level.value,
+                "risk_score": finding.risk_score,
+                "title": finding.title,
+                "description": finding.description,
+                "bucket_name": finding.bucket_name,
+                "object_name": finding.object_name,
+                "remediation_steps": finding.remediation_steps,
+                "compliance_frameworks": finding.compliance_frameworks,
+                "metadata": finding.metadata,
+                "detected_at": finding.detected_at.isoformat()
+            })
+        
+        return {
+            "success": True,
+            "source": "enhanced_storage_analyzer",
+            "analysis": {
+                "project_id": posture.project_id,
+                "posture_score": posture.posture_score,
+                "risk_distribution": posture.risk_distribution,
+                "statistics": {
+                    "total_buckets": posture.total_buckets,
+                    "public_buckets": posture.public_buckets,
+                    "encrypted_buckets": posture.encrypted_buckets,
+                    "compliant_buckets": posture.compliant_buckets
+                },
+                "compliance_status": posture.compliance_status,
+                "recommendations": posture.recommendations,
+                "findings": findings_data,
+                "analyzed_at": posture.analyzed_at.isoformat()
+            }
+        }
+        
+    except ImportError as e:
+        logger.error(f"Enhanced storage analyzer not available: {e}")
+        # Fallback to basic analysis
+        return await analyze_buckets_basic(project_id, detailed)
+    except Exception as e:
+        logger.error(f"Error in enhanced storage analysis: {e}")
+        return await analyze_buckets_basic(project_id, detailed)
+
+
 @router.get("/buckets/{project_id}")
-async def analyze_buckets(
+async def analyze_buckets_basic(
     project_id: str,
     detailed: bool = Query(False, description="Include detailed analysis")
 ):
