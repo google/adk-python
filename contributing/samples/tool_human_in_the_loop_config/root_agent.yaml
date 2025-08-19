@@ -11,7 +11,7 @@ instruction: |
       call reimburse() to reimburse the amount to the employee. If the manager
       rejects, you will inform the employee of the rejection.
 tools:
-  - name: tool_human_in_the_loop.tools.reimburse
+  - name: tool_human_in_the_loop_config.tools.reimburse
   - name: LongRunningFunctionTool
     args:
-      func: tool_human_in_the_loop.tools.ask_for_approval
+      func: tool_human_in_the_loop_config.tools.ask_for_approval

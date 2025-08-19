@@ -46,7 +46,8 @@ calendar_toolset = CalendarToolset(
     # google calendar tool by adding `calendar_events_list` in the filter list
     client_id=oauth_client_id,
     client_secret=oauth_client_secret,
-    tool_filter=["calendar_events_get"],
+    tool_filter=["calendar_events_get", "calendar_events_update"],
+    tool_name_prefix="google",
 )
 
 
@@ -125,7 +126,7 @@ root_agent = Agent(
 
       Scenario2:
       User want to know the details of one of the listed calendar events.
-      Use get_calendar_event to get the details of a calendar event.
+      Use google_calendar_events_get to get the details of a calendar event.
 
 
       Current user:

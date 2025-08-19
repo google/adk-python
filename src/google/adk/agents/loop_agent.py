@@ -27,6 +27,7 @@ from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
+from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
@@ -58,10 +59,11 @@ class LoopAgent(BaseAgent):
     while not self.max_iterations or times_looped < self.max_iterations:
       for sub_agent in self.sub_agents:
         should_exit = False
-        async for event in sub_agent.run_async(ctx):
-          yield event
-          if event.actions.escalate:
-            should_exit = True
+        async with Aclosing(sub_agent.run_async(ctx)) as agen:
+          async for event in agen:
+            yield event
+            if event.actions.escalate:
+              should_exit = True
 
         if should_exit:
           return

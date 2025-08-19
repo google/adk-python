@@ -67,6 +67,9 @@ class LlmResponse(BaseModel):
   Only used for streaming mode.
   """
 
+  finish_reason: Optional[types.FinishReason] = None
+  """The finish reason of the response."""
+
   error_code: Optional[str] = None
   """Error code if the response is an error. Code varies by model."""
 
@@ -97,7 +100,7 @@ class LlmResponse(BaseModel):
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
-  ) -> 'LlmResponse':
+  ) -> LlmResponse:
     """Creates an LlmResponse from a GenerateContentResponse.
 
     Args:
@@ -115,12 +118,14 @@ class LlmResponse(BaseModel):
             content=candidate.content,
             grounding_metadata=candidate.grounding_metadata,
             usage_metadata=usage_metadata,
+            finish_reason=candidate.finish_reason,
         )
       else:
         return LlmResponse(
             error_code=candidate.finish_reason,
             error_message=candidate.finish_message,
             usage_metadata=usage_metadata,
+            finish_reason=candidate.finish_reason,
         )
     else:
       if generate_content_response.prompt_feedback:

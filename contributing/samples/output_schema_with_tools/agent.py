@@ -82,7 +82,7 @@ def get_current_year() -> str:
 # Create the agent with both output_schema and tools
 root_agent = LlmAgent(
     name="person_info_agent",
-    model="gemini-1.5-pro",
+    model="gemini-2.5-pro",
     instruction="""
 You are a helpful assistant that gathers information about famous people.
 

@@ -19,6 +19,7 @@ import subprocess
 from typing import Optional
 
 import click
+from packaging.version import parse
 
 _DOCKERFILE_TEMPLATE = """
 FROM python:3.11-slim
@@ -59,8 +60,18 @@ CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_o
 """
 
 _AGENT_ENGINE_APP_TEMPLATE = """
-from {app_name}.agent import root_agent
 from vertexai.preview.reasoning_engines import AdkApp
+
+if {is_config_agent}:
+  from google.adk.agents import config_agent_utils
+  try:
+    # This path is for local loading.
+    root_agent = config_agent_utils.from_config("{agent_folder}/root_agent.yaml")
+  except FileNotFoundError:
+    # This path is used to support the file structure in Agent Engine.
+    root_agent = config_agent_utils.from_config("./{temp_folder}/{app_name}/root_agent.yaml")
+else:
+  from {app_name}.agent import root_agent
 
 adk_app = AdkApp(
   agent=root_agent,
@@ -91,7 +102,8 @@ def _get_service_option_by_adk_version(
     memory_uri: Optional[str],
 ) -> str:
   """Returns service option string based on adk_version."""
-  if adk_version >= '1.3.0':
+  parsed_version = parse(adk_version)
+  if parsed_version >= parse('1.3.0'):
     session_option = (
         f'--session_service_uri={session_uri}' if session_uri else ''
     )
@@ -100,7 +112,7 @@ def _get_service_option_by_adk_version(
     )
     memory_option = f'--memory_service_uri={memory_uri}' if memory_uri else ''
     return f'{session_option} {artifact_option} {memory_option}'
-  elif adk_version >= '1.2.0':
+  elif parsed_version >= parse('1.2.0'):
     session_option = f'--session_db_url={session_uri}' if session_uri else ''
     artifact_option = (
         f'--artifact_storage_uri={artifact_uri}' if artifact_uri else ''
@@ -291,21 +303,26 @@ def to_agent_engine(
       code.
     temp_folder (str): The temp folder for the generated Agent Engine source
       files. It will be replaced with the generated files if it already exists.
-    project (str): Google Cloud project id.
-    region (str): Google Cloud region.
+    adk_app (str): The name of the file (without .py) containing the AdkApp
+      instance.
     staging_bucket (str): The GCS bucket for staging the deployment artifacts.
     trace_to_cloud (bool): Whether to enable Cloud Trace.
-    agent_engine_id (str): The ID of the Agent Engine instance to update. If not
-      specified, a new Agent Engine instance will be created.
-    absolutize_imports (bool): Whether to absolutize imports. If True, all relative
-      imports will be converted to absolute import statements. Default is True.
-    requirements_file (str): The filepath to the `requirements.txt` file to use.
-      If not specified, the `requirements.txt` file in the `agent_folder` will
-      be used.
-    env_file (str): The filepath to the `.env` file for environment variables.
-      If not specified, the `.env` file in the `agent_folder` will be used. The
-      values of `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` will be
-      overridden by `project` and `region` if they are specified.
+    agent_engine_id (str): Optional. The ID of the Agent Engine instance to
+      update. If not specified, a new Agent Engine instance will be created.
+    absolutize_imports (bool): Optional. Default is True. Whether to absolutize
+      imports. If True, all relative imports will be converted to absolute
+      import statements.
+    project (str): Optional. Google Cloud project id.
+    region (str): Optional. Google Cloud region.
+    display_name (str): Optional. The display name of the Agent Engine.
+    description (str): Optional. The description of the Agent Engine.
+    requirements_file (str): Optional. The filepath to the `requirements.txt`
+      file to use. If not specified, the `requirements.txt` file in the
+      `agent_folder` will be used.
+    env_file (str): Optional. The filepath to the `.env` file for environment
+      variables. If not specified, the `.env` file in the `agent_folder` will be
+      used. The values of `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`
+      will be overridden by `project` and `region` if they are specified.
   """
   app_name = os.path.basename(agent_folder)
   agent_src_path = os.path.join(temp_folder, app_name)
@@ -386,12 +403,21 @@ def to_agent_engine(
     )
     click.echo('Vertex AI initialized.')
 
+    is_config_agent = False
+    config_root_agent_file = os.path.join(agent_src_path, 'root_agent.yaml')
+    if os.path.exists(config_root_agent_file):
+      click.echo('Config agent detected.')
+      is_config_agent = True
+
     adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
     with open(adk_app_file, 'w', encoding='utf-8') as f:
       f.write(
           _AGENT_ENGINE_APP_TEMPLATE.format(
               app_name=app_name,
               trace_to_cloud_option=trace_to_cloud,
+              is_config_agent=is_config_agent,
+              temp_folder=temp_folder,
+              agent_folder=agent_folder,
           )
       )
     click.echo(f'Created {adk_app_file}')
@@ -447,8 +473,8 @@ def to_agent_engine(
     if not agent_engine_id:
       agent_engines.create(**agent_config)
     else:
-      name = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
-      agent_engines.update(resource_name=name, **agent_config)
+      resource_name = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
+      agent_engines.update(resource_name=resource_name, **agent_config)
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(temp_folder)
@@ -483,7 +509,10 @@ def to_gke(
     cluster_name: The name of the GKE cluster.
     service_name: The service name in GKE.
     app_name: The name of the app, by default, it's basename of `agent_folder`.
-    temp_folder: The local directory to use as a temporary workspace for preparing deployment artifacts. The tool populates this folder with a copy of the agent's source code and auto-generates necessary files like a Dockerfile and deployment.yaml.
+    temp_folder: The local directory to use as a temporary workspace for
+      preparing deployment artifacts. The tool populates this folder with a copy
+      of the agent's source code and auto-generates necessary files like a
+      Dockerfile and deployment.yaml.
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
     with_ui: Whether to deploy with UI.

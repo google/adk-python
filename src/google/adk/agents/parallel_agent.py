@@ -26,6 +26,7 @@ from typing import Type
 from typing_extensions import override
 
 from ..events.event import Event
+from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
@@ -111,8 +112,10 @@ class ParallelAgent(BaseAgent):
         )
         for sub_agent in self.sub_agents
     ]
-    async for event in _merge_agent_run(agent_runs):
-      yield event
+
+    async with Aclosing(_merge_agent_run(agent_runs)) as agen:
+      async for event in agen:
+        yield event
 
   @override
   async def _run_live_impl(

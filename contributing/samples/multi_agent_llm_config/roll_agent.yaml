@@ -8,4 +8,4 @@ instruction: |
 
   When asked to roll a die, you must call the roll_die tool with the number of sides as an integer.
 tools:
-  - name: ma_llm.roll_die
+  - name: multi_agent_llm_config.roll_die

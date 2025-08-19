@@ -9,4 +9,4 @@ instruction: |
   Never attempt to determine prime numbers manually.
   Return the prime number results to the root agent.
 tools:
-  - name: ma_llm.check_prime
+  - name: multi_agent_llm_config.check_prime
