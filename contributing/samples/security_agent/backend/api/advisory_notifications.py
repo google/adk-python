@@ -68,9 +68,7 @@ def get_advisory_client():
 
 def get_parent_resource():
     """Get parent resource string for Advisory Notifications."""
-    if ORGANIZATION_ID:
-        return f"organizations/{ORGANIZATION_ID}/locations/global"
-    # Fallback to project-level if no org ID
+    # Always use project-level access (org-level not needed)
     return f"projects/{PROJECT_ID}/locations/global"
 
 @router.post("/list")
@@ -89,7 +87,7 @@ async def list_notifications(request: NotificationListRequest):
             "message": "Install google-cloud-advisorynotifications for live data",
             "notifications": [
                 {
-                    "name": f"organizations/{ORGANIZATION_ID or '123'}/locations/global/notifications/sample-001",
+                    "name": f"projects/{PROJECT_ID}/locations/global/notifications/sample-001",
                     "subject": {
                         "text": "Security Bulletin: Critical vulnerability in Cloud Service",
                         "localized_text": {
@@ -114,7 +112,7 @@ async def list_notifications(request: NotificationListRequest):
                     "notification_type": "NOTIFICATION_TYPE_SECURITY_BULLETIN"
                 },
                 {
-                    "name": f"organizations/{ORGANIZATION_ID or '123'}/locations/global/notifications/sample-002",
+                    "name": f"projects/{PROJECT_ID}/locations/global/notifications/sample-002",
                     "subject": {
                         "text": "Product Update: New features available",
                         "localized_text": {

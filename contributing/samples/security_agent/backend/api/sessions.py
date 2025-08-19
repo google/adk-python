@@ -6,15 +6,19 @@ Provides RESTful API for managing conversation sessions.
 
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, HTTPException, Query, Path
+from fastapi import APIRouter, HTTPException, Query, Path as FastApiPath
 from pydantic import BaseModel, Field
+from pathlib import Path
 
+from backend.cache import cached
 from backend.services.session_manager import SessionManager, Session, Message
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
-# Initialize session manager (singleton pattern)
-session_manager = SessionManager(db_path="data/sessions.db", session_ttl_hours=24)
+from pathlib import Path
+db_path = Path(__file__).parent.parent / "data" / "sessions.db"
+db_path.parent.mkdir(parents=True, exist_ok=True)
+session_manager = SessionManager(db_path=str(db_path), session_ttl_hours=24)
 
 
 class CreateSessionRequest(BaseModel):
@@ -60,6 +64,7 @@ class MessageResponse(BaseModel):
 
 @router.post("/create", response_model=SessionResponse)
 async def create_session(request: CreateSessionRequest):
+    print("Creating session")
     """
     Create a new conversation session
     
@@ -86,7 +91,8 @@ async def create_session(request: CreateSessionRequest):
 
 
 @router.get("/{session_id}", response_model=SessionResponse)
-async def get_session(session_id: str = Path(..., description="Session ID")):
+@cached
+async def get_session(session_id: str = FastApiPath(..., description="Session ID")):
     """
     Get session details by ID
     
@@ -265,28 +271,6 @@ async def get_session_summary(session_id: str):
     return summary
 
 
-@router.post("/search")
-async def search_messages(
-    query: str = Query(..., description="Search query"),
-    session_id: Optional[str] = Query(None, description="Limit to specific session"),
-    user_id: Optional[str] = Query(None, description="Limit to specific user")
-):
-    """
-    Search messages across sessions
-    
-    - **query**: Search query string
-    - **session_id**: Optional session ID to limit search
-    - **user_id**: Optional user ID to limit search
-    """
-    results = session_manager.search_messages(
-        query=query,
-        session_id=session_id,
-        user_id=user_id
-    )
-    
-    return {
-        "success": True,
-        "query": query,
-        "results": results,
-        "count": len(results)
-    }
+@router.get("/test")
+async def test_endpoint():
+    return {"message": "hello"}

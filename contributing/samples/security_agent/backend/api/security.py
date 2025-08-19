@@ -21,15 +21,10 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Try to import the Security Command Center client
-try:
-    from google.cloud import securitycenter_v1
-    from google.api_core import exceptions as gcp_exceptions
-    SCC_CLIENT_AVAILABLE = True
-    logger.info("✅ Google Cloud Security Command Center client available")
-except ImportError:
-    SCC_CLIENT_AVAILABLE = False
-    logger.warning("⚠️ Security Command Center client not available. Install with: pip install google-cloud-securitycenter")
+# Security Command Center disabled - using mock data only
+# (Security Command Center requires organization-level access which is not available)
+SCC_CLIENT_AVAILABLE = False
+logger.info("ℹ️ Security Command Center disabled - using sample data for security features")
 
 # Configuration
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'default-project')
@@ -104,345 +99,221 @@ class SourceCreateRequest(BaseModel):
     description: Optional[str] = Field(None, description="Source description")
 
 def get_scc_client():
-    """Get or create Security Command Center client."""
-    if not SCC_CLIENT_AVAILABLE:
-        return None
-    
-    try:
-        client = securitycenter_v1.SecurityCenterClient()
-        return client
-    except Exception as e:
-        logger.error(f"Failed to create Security Command Center client: {e}")
-        return None
+    """Security Command Center client disabled - returns None."""
+    # Security Command Center requires organization-level access
+    # Using mock data instead for project-level deployments
+    return None
 
 def get_parent_resource():
     """Get parent resource string for Security Command Center."""
     if ORGANIZATION_ID:
         return f"organizations/{ORGANIZATION_ID}"
-    # Fallback to project-level if no org ID
+    # For v2, we need to use a different format for projects
+    # Note: Security Command Center v2 primarily works with organizations
+    # For projects, you may need to use the organization that contains the project
+    # This is a fallback that will likely need organization ID to work properly
     return f"projects/{PROJECT_ID}"
+
+def get_findings_parent():
+    """Get parent resource for findings listing (v1 vs v2 compatibility)."""
+    # For v1, use sources/-
+    # For v2, use locations/-/sources/-
+    if ORGANIZATION_ID:
+        # Organization level (works for both v1 and v2)
+        return f"organizations/{ORGANIZATION_ID}/sources/-"
+    else:
+        # Project level - v2 requires different format
+        # Try v2 format first: projects/{project}/locations/{location}/sources/-
+        return f"projects/{PROJECT_ID}/locations/-/sources/-"
 
 @router.post("/findings/list")
 async def list_findings(request: FindingsListRequest):
     """
-    List security findings from Security Command Center.
+    List security findings - returns sample data.
     
-    This is a thin client that directly calls the Security Command Center API.
+    Security Command Center requires organization-level access which is not available
+    for project-only deployments. Returns representative sample data instead.
     """
-    client = get_scc_client()
-    if not client:
-        # Return sample data when client is not available
-        return {
-            "success": True,
-            "source": "sample_data",
-            "message": "Install google-cloud-securitycenter for live data",
-            "findings": [
-                {
-                    "name": "organizations/123/sources/456/findings/sample-001",
-                    "category": "PUBLIC_BUCKET",
-                    "resource_name": "//storage.googleapis.com/public-bucket",
-                    "state": "ACTIVE",
-                    "severity": "HIGH",
-                    "event_time": datetime.now().isoformat(),
-                    "finding_class": "VULNERABILITY",
-                    "description": "Storage bucket is publicly accessible",
-                    "recommendation": "Remove public access or add authentication"
-                },
-                {
-                    "name": "organizations/123/sources/456/findings/sample-002",
-                    "category": "WEAK_CREDENTIALS",
-                    "resource_name": "//iam.googleapis.com/projects/sample/serviceAccounts/test@sample.iam",
-                    "state": "ACTIVE",
-                    "severity": "CRITICAL",
-                    "event_time": datetime.now().isoformat(),
-                    "finding_class": "VULNERABILITY",
-                    "description": "Service account key is older than 90 days",
-                    "recommendation": "Rotate service account keys regularly"
-                }
-            ],
-            "total_count": 2
+    # Generate sample findings based on request filters
+    sample_findings = [
+        {
+            "name": f"projects/{PROJECT_ID}/findings/sample-001",
+            "category": "PUBLIC_BUCKET",
+            "resource_name": f"//storage.googleapis.com/{PROJECT_ID}-public-bucket",
+            "state": "ACTIVE",
+            "severity": "HIGH",
+            "event_time": datetime.now().isoformat(),
+            "finding_class": "VULNERABILITY",
+            "description": "Storage bucket is publicly accessible",
+            "recommendation": "Remove public access or add authentication"
+        },
+        {
+            "name": f"projects/{PROJECT_ID}/findings/sample-002",
+            "category": "WEAK_CREDENTIALS",
+            "resource_name": f"//iam.googleapis.com/projects/{PROJECT_ID}/serviceAccounts/test@{PROJECT_ID}.iam",
+            "state": "ACTIVE",
+            "severity": "CRITICAL",
+            "event_time": datetime.now().isoformat(),
+            "finding_class": "VULNERABILITY",
+            "description": "Service account key is older than 90 days",
+            "recommendation": "Rotate service account keys regularly"
+        },
+        {
+            "name": f"projects/{PROJECT_ID}/findings/sample-003",
+            "category": "FIREWALL_MISCONFIGURATION",
+            "resource_name": f"//compute.googleapis.com/projects/{PROJECT_ID}/global/firewalls/allow-all",
+            "state": "ACTIVE", 
+            "severity": "MEDIUM",
+            "event_time": datetime.now().isoformat(),
+            "finding_class": "MISCONFIGURATION",
+            "description": "Firewall rule allows unrestricted access",
+            "recommendation": "Restrict firewall rules to specific IP ranges"
+        },
+        {
+            "name": f"projects/{PROJECT_ID}/findings/sample-004",
+            "category": "IAM_POLICY",
+            "resource_name": f"//cloudresourcemanager.googleapis.com/projects/{PROJECT_ID}",
+            "state": "ACTIVE",
+            "severity": "LOW",
+            "event_time": datetime.now().isoformat(),
+            "finding_class": "VULNERABILITY",
+            "description": "Overly permissive IAM policy detected",
+            "recommendation": "Apply principle of least privilege"
         }
+    ]
     
-    try:
-        # Prepare parent (use provided or default)
-        parent = request.parent or f"{get_parent_resource()}/sources/-"
-        
-        # Build filter
-        filters = []
-        if request.severity:
-            filters.append(f'severity="{request.severity}"')
-        if request.category:
-            filters.append(f'category="{request.category}"')
-        if request.state:
-            filters.append(f'state="{request.state}"')
-        
-        filter_str = request.filter or " AND ".join(filters) if filters else ""
-        
-        # Create list findings request
-        list_request = securitycenter_v1.ListFindingsRequest(
-            parent=parent,
-            filter=filter_str,
-            order_by=request.order_by or "event_time desc",
-            page_size=request.page_size
-        )
-        
-        # Call the API
-        page_result = client.list_findings(request=list_request)
-        
-        # Process results
-        findings = []
-        for finding_result in page_result:
-            finding = finding_result.finding
-            findings.append({
-                "name": finding.name,
-                "category": finding.category,
-                "resource_name": finding.resource_name,
-                "state": finding.state.name if finding.state else "UNKNOWN",
-                "severity": finding.severity.name if finding.severity else "UNSPECIFIED",
-                "event_time": finding.event_time.isoformat() if finding.event_time else None,
-                "create_time": finding.create_time.isoformat() if finding.create_time else None,
-                "finding_class": finding.finding_class.name if finding.finding_class else None,
-                "indicator": finding.indicator if finding.indicator else None,
-                "vulnerability": finding.vulnerability if finding.vulnerability else None,
-                "source_properties": dict(finding.source_properties) if finding.source_properties else {},
-                "description": finding.description if finding.description else None,
-                "recommendation": finding.recommendation if finding.recommendation else None
-            })
-        
-        return {
-            "success": True,
-            "source": "security_command_center",
-            "parent": parent,
-            "findings": findings,
-            "total_count": len(findings)
-        }
-        
-    except gcp_exceptions.PermissionDenied as e:
-        logger.error(f"Permission denied: {e}")
-        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
-    except Exception as e:
-        logger.error(f"Error listing findings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Filter based on request parameters
+    filtered_findings = sample_findings
+    if request.severity:
+        filtered_findings = [f for f in filtered_findings if f["severity"] == request.severity]
+    if request.state:
+        filtered_findings = [f for f in filtered_findings if f["state"] == request.state]
+    if request.category:
+        filtered_findings = [f for f in filtered_findings if f["category"] == request.category]
+    
+    return {
+        "success": True,
+        "source": "sample_data",
+        "message": "Using sample security findings (Security Command Center requires organization-level access)",
+        "project_id": PROJECT_ID,
+        "findings": filtered_findings[:request.page_size] if request.page_size else filtered_findings,
+        "total_count": len(filtered_findings)
+    }
 
 @router.post("/findings/create")
 async def create_finding(request: FindingCreateRequest):
     """
-    Create a new security finding in Security Command Center.
-    """
-    client = get_scc_client()
-    if not client:
-        return {
-            "success": False,
-            "message": "Security Command Center client not available"
-        }
+    Create a new security finding - returns mock response.
     
-    try:
-        # Create finding object
-        finding = securitycenter_v1.Finding(
-            category=request.category,
-            resource_name=request.resource_name,
-            state=securitycenter_v1.Finding.State.ACTIVE,
-            severity=getattr(securitycenter_v1.Finding.Severity, request.severity, securitycenter_v1.Finding.Severity.MEDIUM),
-            event_time=datetime.now(),
-            description=request.description,
-            recommendation=request.recommendation
-        )
-        
-        # Create the finding
-        created_finding = client.create_finding(
-            parent=request.source,
-            finding_id=request.finding_id,
-            finding=finding
-        )
-        
-        return {
-            "success": True,
-            "finding_name": created_finding.name,
-            "finding_id": request.finding_id,
-            "created_at": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Error creating finding: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    Security Command Center requires organization-level access.
+    Returns a simulated successful creation response.
+    """
+    # Return mock successful creation
+    return {
+        "success": True,
+        "message": "Mock finding created (Security Command Center requires organization-level access)",
+        "finding_name": f"projects/{PROJECT_ID}/findings/{request.finding_id}",
+        "finding_id": request.finding_id,
+        "created_at": datetime.now().isoformat()
+    }
 
 @router.post("/assets/list")
 async def list_assets(request: AssetListRequest):
     """
-    List assets from Security Command Center.
+    List assets - returns sample data.
     
-    This provides security-enriched asset information.
+    Security Command Center requires organization-level access.
+    Returns representative sample assets instead.
     """
-    client = get_scc_client()
-    if not client:
-        return {
-            "success": True,
-            "source": "sample_data",
-            "message": "Install google-cloud-securitycenter for live data",
-            "assets": []
+    # Return sample asset data
+    sample_assets = [
+        {
+            "name": f"projects/{PROJECT_ID}/assets/compute-instance-1",
+            "resource_name": f"//compute.googleapis.com/projects/{PROJECT_ID}/zones/us-central1-a/instances/web-server-1",
+            "resource_type": "compute.googleapis.com/Instance",
+            "resource_parent": f"//cloudresourcemanager.googleapis.com/projects/{PROJECT_ID}",
+            "resource_project": f"projects/{PROJECT_ID}",
+            "resource_owners": ["user:admin@example.com"],
+            "create_time": datetime.now().isoformat(),
+            "update_time": datetime.now().isoformat(),
+            "state": "ACTIVE",
+            "security_marks": {"environment": "production", "criticality": "high"}
+        },
+        {
+            "name": f"projects/{PROJECT_ID}/assets/storage-bucket-1",
+            "resource_name": f"//storage.googleapis.com/{PROJECT_ID}-data-bucket",
+            "resource_type": "storage.googleapis.com/Bucket",
+            "resource_parent": f"//cloudresourcemanager.googleapis.com/projects/{PROJECT_ID}",
+            "resource_project": f"projects/{PROJECT_ID}",
+            "resource_owners": ["serviceAccount:storage-admin@{PROJECT_ID}.iam"],
+            "create_time": datetime.now().isoformat(),
+            "update_time": datetime.now().isoformat(),
+            "state": "ACTIVE",
+            "security_marks": {"data_classification": "sensitive"}
         }
+    ]
     
-    try:
-        # Prepare parent
-        parent = request.parent or get_parent_resource()
-        
-        # Create list assets request
-        list_request = securitycenter_v1.ListAssetsRequest(
-            parent=parent,
-            filter=request.filter or "",
-            order_by=request.order_by or "",
-            page_size=request.page_size
-        )
-        
-        # Call the API
-        page_result = client.list_assets(request=list_request)
-        
-        # Process results
-        assets = []
-        for asset_result in page_result:
-            asset = asset_result.asset
-            assets.append({
-                "name": asset.name,
-                "resource_name": asset.resource_name,
-                "resource_type": asset.resource_type,
-                "resource_parent": asset.resource_parent,
-                "resource_project": asset.resource_project,
-                "resource_owners": list(asset.resource_owners) if asset.resource_owners else [],
-                "create_time": asset.create_time.isoformat() if asset.create_time else None,
-                "update_time": asset.update_time.isoformat() if asset.update_time else None,
-                "state": asset_result.state.name if asset_result.state else None,
-                "security_marks": dict(asset.security_marks.marks) if asset.security_marks else {}
-            })
-        
-        return {
-            "success": True,
-            "source": "security_command_center",
-            "parent": parent,
-            "assets": assets,
-            "total_count": len(assets)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error listing assets: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "success": True,
+        "source": "sample_data",
+        "message": "Using sample asset data (Security Command Center requires organization-level access)",
+        "project_id": PROJECT_ID,
+        "assets": sample_assets,
+        "total_count": len(sample_assets)
+    }
 
 @router.post("/sources/create")
 async def create_source(request: SourceCreateRequest):
     """
-    Create a new source in Security Command Center.
+    Create a new source - returns mock response.
     
-    Sources are used to group findings.
+    Security Command Center requires organization-level access.
+    Returns a simulated successful creation response.
     """
-    client = get_scc_client()
-    if not client:
-        return {
-            "success": False,
-            "message": "Security Command Center client not available"
-        }
-    
-    try:
-        # Create source object
-        source = securitycenter_v1.Source(
-            display_name=request.display_name,
-            description=request.description
-        )
-        
-        # Create the source
-        parent = get_parent_resource()
-        created_source = client.create_source(
-            parent=parent,
-            source=source
-        )
-        
-        return {
-            "success": True,
-            "source_name": created_source.name,
-            "display_name": created_source.display_name,
-            "created": True
-        }
-        
-    except Exception as e:
-        logger.error(f"Error creating source: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Return mock successful creation
+    return {
+        "success": True,
+        "message": "Mock source created (Security Command Center requires organization-level access)",
+        "source_name": f"projects/{PROJECT_ID}/sources/mock-source-{datetime.now().timestamp()}",
+        "display_name": request.display_name,
+        "created": True
+    }
 
 @router.get("/findings/stats")
 async def get_findings_statistics():
     """
-    Get statistics about security findings.
-    """
-    client = get_scc_client()
-    if not client:
-        return {
-            "success": True,
-            "source": "sample_data",
-            "stats": {
-                "total_findings": 42,
-                "by_severity": {
-                    "CRITICAL": 5,
-                    "HIGH": 12,
-                    "MEDIUM": 18,
-                    "LOW": 7
-                },
-                "by_category": {
-                    "PUBLIC_BUCKET": 8,
-                    "WEAK_CREDENTIALS": 6,
-                    "FIREWALL_MISCONFIGURATION": 10,
-                    "IAM_POLICY": 18
-                },
-                "by_state": {
-                    "ACTIVE": 35,
-                    "INACTIVE": 7
-                }
-            }
-        }
+    Get statistics about security findings - returns sample data.
     
-    try:
-        parent = f"{get_parent_resource()}/sources/-"
-        
-        # Get counts for different severities
-        stats = {
-            "by_severity": {},
-            "by_state": {},
-            "total_findings": 0
-        }
-        
-        # Count by severity
-        for severity in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
-            list_request = securitycenter_v1.ListFindingsRequest(
-                parent=parent,
-                filter=f'severity="{severity}" AND state="ACTIVE"',
-                page_size=1
-            )
-            result = client.list_findings(request=list_request)
-            # Note: In production, you'd get the total count from the response
-            count = sum(1 for _ in result)
-            stats["by_severity"][severity] = count
-            stats["total_findings"] += count
-        
-        # Count active vs inactive
-        for state in ["ACTIVE", "INACTIVE"]:
-            list_request = securitycenter_v1.ListFindingsRequest(
-                parent=parent,
-                filter=f'state="{state}"',
-                page_size=1
-            )
-            result = client.list_findings(request=list_request)
-            stats["by_state"][state] = sum(1 for _ in result)
-        
-        return {
-            "success": True,
-            "source": "security_command_center",
-            "stats": stats,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting findings statistics: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "stats": {}
-        }
+    Security Command Center requires organization-level access.
+    Returns representative sample statistics.
+    """
+    # Always return sample statistics
+    return {
+        "success": True,
+        "source": "sample_data",
+        "message": "Using sample statistics (Security Command Center requires organization-level access)",
+        "project_id": PROJECT_ID,
+        "stats": {
+            "total_findings": 42,
+            "by_severity": {
+                "CRITICAL": 5,
+                "HIGH": 12,
+                "MEDIUM": 18,
+                "LOW": 7
+            },
+            "by_category": {
+                "PUBLIC_BUCKET": 8,
+                "WEAK_CREDENTIALS": 6,
+                "FIREWALL_MISCONFIGURATION": 10,
+                "IAM_POLICY": 18
+            },
+            "by_state": {
+                "ACTIVE": 35,
+                "INACTIVE": 7
+            }
+        },
+        "timestamp": datetime.now().isoformat()
+    }
 
 @router.get("/health")
 async def health_check():
@@ -471,6 +342,12 @@ try:
 except ImportError as e:
     ENHANCED_ANALYSIS_AVAILABLE = False
     logger.warning(f"⚠️ Enhanced analysis not available: {e}")
+    # Define fallback models when imports fail
+    class SecurityAnalysisRequest(BaseModel):
+        """Fallback model for security analysis request."""
+        project_id: str = Field(..., description="GCP Project ID")
+        severity_filter: Optional[List[str]] = Field(None, description="Filter by severity")
+        max_findings: Optional[int] = Field(100, description="Maximum findings to return")
 
 @router.post("/analyze")
 async def comprehensive_security_analysis(request: SecurityAnalysisRequest):
