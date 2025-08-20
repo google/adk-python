@@ -558,7 +558,7 @@ function_declaration_test_cases = [
                             "nested_key1": types.Schema(type=types.Type.STRING),
                             "nested_key2": types.Schema(type=types.Type.STRING),
                         },
-                        required=["nested_key1"]
+                        required=["nested_key1"],
                     ),
                 },
                 required=["nested_arg"],
