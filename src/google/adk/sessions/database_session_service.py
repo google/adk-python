@@ -18,6 +18,7 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
+import pickle
 from typing import Any
 from typing import Optional
 import uuid
@@ -102,6 +103,33 @@ class PreciseTimestamp(TypeDecorator):
     if dialect.name == "mysql":
       return dialect.type_descriptor(mysql.DATETIME(fsp=6))
     return self.impl
+
+
+class DynamicPickleType(TypeDecorator):
+  """Represents a type that can be pickled."""
+
+  impl = PickleType
+
+  def load_dialect_impl(self, dialect):
+    if dialect.name == "spanner+spanner":
+      from google.cloud.sqlalchemy_spanner.sqlalchemy_spanner import SpannerPickleType
+
+      return dialect.type_descriptor(SpannerPickleType)
+    return self.impl
+
+  def process_bind_param(self, value, dialect):
+    """Ensures the pickled value is a bytes object before passing it to the database dialect."""
+    if value is not None:
+      if dialect.name == "spanner+spanner":
+        return pickle.dumps(value)
+    return value
+
+  def process_result_value(self, value, dialect):
+    """Ensures the raw bytes from the database are unpickled back into a Python object."""
+    if value is not None:
+      if dialect.name == "spanner+spanner":
+        return pickle.loads(value)
+    return value
 
 
 class Base(DeclarativeBase):
@@ -209,7 +237,7 @@ class StorageEvent(Base):
       PreciseTimestamp, default=func.now()
   )
   content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
-  actions: Mapped[MutableDict[str, Any]] = mapped_column(PickleType)
+  actions: Mapped[MutableDict[str, Any]] = mapped_column(DynamicPickleType)
 
   long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
       Text, nullable=True
