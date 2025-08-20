@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
 from pathlib import Path
 import shutil
 from typing import Any
+from typing import List
 from typing import Mapping
 from typing import Optional
 
@@ -40,6 +42,7 @@ from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManag
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
+from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.vertex_ai_session_service import VertexAiSessionService
@@ -51,6 +54,19 @@ from .utils.agent_change_handler import AgentChangeEventHandler
 from .utils.agent_loader import AgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _load_plugin_class(path: str) -> type[BasePlugin]:
+  """Dynamically imports and returns a class from a string path."""
+  try:
+    module_path, class_name = path.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    plugin_class = getattr(module, class_name)
+    if not issubclass(plugin_class, BasePlugin):
+      raise TypeError(f"Class at '{path}' is not a subclass of BasePlugin.")
+    return plugin_class
+  except (ImportError, AttributeError, ValueError, TypeError) as e:
+    raise click.ClickException(f"Failed to load plugin '{path}': {e}") from e
 
 
 def get_fast_api_app(
@@ -69,6 +85,7 @@ def get_fast_api_app(
     trace_to_cloud: bool = False,
     reload_agents: bool = False,
     lifespan: Optional[Lifespan[FastAPI]] = None,
+    plugins: Optional[tuple[str]] = None,
 ) -> FastAPI:
   # Set up eval managers.
   if eval_storage_uri:
@@ -177,6 +194,13 @@ def get_fast_api_app(
   # initialize Agent Loader
   agent_loader = AgentLoader(agents_dir)
 
+  # Instantiate the plugins from their string paths
+  plugin_instances: List[BasePlugin] = []
+  if plugins:
+    for plugin_path in plugins:
+      plugin_class = _load_plugin_class(plugin_path)
+      plugin_instances.append(plugin_class())
+
   adk_web_server = AdkWebServer(
       agent_loader=agent_loader,
       session_service=session_service,
@@ -186,6 +210,7 @@ def get_fast_api_app(
       eval_sets_manager=eval_sets_manager,
       eval_set_results_manager=eval_set_results_manager,
       agents_dir=agents_dir,
+      plugins=plugin_instances,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance

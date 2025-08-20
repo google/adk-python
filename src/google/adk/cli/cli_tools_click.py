@@ -22,6 +22,8 @@ import functools
 import logging
 import os
 import tempfile
+from typing import Any
+from typing import Callable
 from typing import Optional
 
 import click
@@ -804,6 +806,16 @@ def cli_web(
 )
 @fast_api_common_options()
 @adk_services_options()
+# The --plugin option is currently ONLY for api_server
+@click.option(
+    "--plugin",
+    "plugins",
+    multiple=True,
+    help=(
+        "Optional. The fully qualified path to a BasePlugin class to register, "
+        "e.g., 'my_agent.my_plugin.MyPlugin'. Can be specified multiple times."
+    ),
+)
 @deprecated_adk_services_options()
 def cli_api_server(
     agents_dir: str,
@@ -821,6 +833,7 @@ def cli_api_server(
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
+    plugins: Optional[tuple[str]] = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -849,6 +862,7 @@ def cli_api_server(
           host=host,
           port=port,
           reload_agents=reload_agents,
+          plugins=plugins,
       ),
       host=host,
       port=port,

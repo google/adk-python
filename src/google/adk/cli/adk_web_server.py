@@ -72,6 +72,7 @@ from ..evaluation.eval_set_results_manager import EvalSetResultsManager
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
+from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -250,6 +251,7 @@ class AdkWebServer:
       eval_sets_manager: EvalSetsManager,
       eval_set_results_manager: EvalSetResultsManager,
       agents_dir: str,
+      plugins: Optional[list[BasePlugin]] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -259,6 +261,7 @@ class AdkWebServer:
     self.eval_sets_manager = eval_sets_manager
     self.eval_set_results_manager = eval_set_results_manager
     self.agents_dir = agents_dir
+    self.plugins = plugins or []
     # Internal propeties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
@@ -282,6 +285,7 @@ class AdkWebServer:
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
+        plugins=self.plugins,
     )
     self.runner_dict[app_name] = runner
     return runner

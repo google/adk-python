@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -26,14 +27,15 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.run_config import RunConfig
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_result import EvalSetResult
-from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from google.adk.events.event import Event
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.genai import types
@@ -55,8 +57,32 @@ class DummyAgent(BaseAgent):
     super().__init__(name=name)
     self.sub_agents = []
 
+  async def _run_async_impl(self, ctx: InvocationContext):
+    if False:
+      yield
+
+  async def _run_live_impl(self, ctx: InvocationContext):
+    if False:
+      yield
+
 
 root_agent = DummyAgent(name="dummy_agent")
+
+
+class MockPlugin(BasePlugin):
+  """A dummy plugin that injects metadata into events."""
+
+  def __init__(self, name="mock_plugin"):
+    super().__init__(name=name)
+
+  async def on_event_callback(
+      self, *, invocation_context: InvocationContext, event: Event
+  ) -> Event:
+    """Adds a custom metadata field to every event."""
+    if not event.custom_metadata:
+      event.custom_metadata = {}
+    event.custom_metadata["injected_by_plugin"] = True
+    return event
 
 
 # Create sample events that our mocked runner will return
@@ -107,18 +133,31 @@ async def dummy_run_live(self, session, live_request_queue):
 
 async def dummy_run_async(
     self,
-    user_id,
-    session_id,
-    new_message,
+    user_id: str,
+    session_id: str,
+    new_message: types.Content,
+    state_delta: Any = None,
     run_config: RunConfig = RunConfig(),
 ):
-  yield _event_1()
+  # Simulate the plugin's on_event_callback
+  async def apply_plugin_on_event(event, plugin_manager):
+    if plugin_manager:
+      for plugin in plugin_manager.plugins:
+        if isinstance(plugin, MockPlugin):
+          # Create a mock InvocationContext for the callback
+          mock_invocation_context = MagicMock(spec=InvocationContext)
+          event = await plugin.on_event_callback(
+              invocation_context=mock_invocation_context, event=event
+          )
+    return event
+
+  yield await apply_plugin_on_event(_event_1(), self.plugin_manager)
   await asyncio.sleep(0)
 
-  yield _event_2()
+  yield await apply_plugin_on_event(_event_2(), self.plugin_manager)
   await asyncio.sleep(0)
 
-  yield _event_3()
+  yield await apply_plugin_on_event(_event_3(), self.plugin_manager)
 
 
 # Define a local mock for EvalCaseResult specific to fast_api tests
@@ -129,9 +168,9 @@ class _MockEvalCaseResult(BaseModel):
   user_id: str
   session_id: str
   eval_set_file: str
-  eval_metric_results: list = {}
-  overall_eval_metric_results: list = ({},)
-  eval_metric_result_per_invocation: list = {}
+  eval_metric_results: list = []
+  overall_eval_metric_results: list = [{}]
+  eval_metric_result_per_invocation: list = []
 
 
 # Mock for the run_evals function, tailored for test_run_eval
@@ -256,7 +295,7 @@ def mock_session_service():
     async def list_sessions(self, app_name, user_id):
       """List all sessions for a user."""
       if app_name not in session_data or user_id not in session_data[app_name]:
-        return {"sessions": []}
+        return ListSessionsResponse(sessions=[])
 
       return ListSessionsResponse(
           sessions=list(session_data[app_name][user_id].values())
@@ -270,6 +309,10 @@ def mock_session_service():
           and session_id in session_data[app_name][user_id]
       ):
         del session_data[app_name][user_id][session_id]
+
+    async def append_event(self, session, event):
+      session["events"].append(event)
+      return event
 
   # Return an instance of our mock service
   return MockSessionService()
@@ -380,8 +423,8 @@ def mock_eval_set_results_manager():
   return MockEvalSetResultsManager()
 
 
-@pytest.fixture
-def test_app(
+@contextmanager
+def patch_services(
     mock_session_service,
     mock_artifact_service,
     mock_memory_service,
@@ -389,9 +432,7 @@ def test_app(
     mock_eval_sets_manager,
     mock_eval_set_results_manager,
 ):
-  """Create a TestClient for the FastAPI app without starting a server."""
-
-  # Patch multiple services and signal handlers
+  """Context manager to patch all necessary services for get_fast_api_app."""
   with (
       patch("signal.signal", return_value=None),
       patch(
@@ -407,8 +448,7 @@ def test_app(
           return_value=mock_memory_service,
       ),
       patch(
-          "google.adk.cli.fast_api.AgentLoader",
-          return_value=mock_agent_loader,
+          "google.adk.cli.fast_api.AgentLoader", return_value=mock_agent_loader
       ),
       patch(
           "google.adk.cli.fast_api.LocalEvalSetsManager",
@@ -419,11 +459,30 @@ def test_app(
           return_value=mock_eval_set_results_manager,
       ),
       patch(
-          "google.adk.cli.cli_eval.run_evals",  # Patch where it's imported in fast_api.py
-          new=mock_run_evals_for_fast_api,
+          "google.adk.cli.cli_eval.run_evals", new=mock_run_evals_for_fast_api
       ),
   ):
-    # Get the FastAPI app, but don't actually run it
+    yield
+
+
+@pytest.fixture
+def test_app(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Create a TestClient for the FastAPI app without starting a server."""
+  with patch_services(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  ):
     app = get_fast_api_app(
         agents_dir=".",
         web=True,
@@ -436,10 +495,10 @@ def test_app(
         port=8000,
     )
 
-    # Create a TestClient that doesn't start a real server
-    client = TestClient(app)
+  # Create a TestClient that doesn't start a real server
+  client = TestClient(app)
 
-    return client
+  return client
 
 
 @pytest.fixture
@@ -515,10 +574,15 @@ def temp_agents_dir_with_a2a():
     # Create a simple agent.py file
     agent_py_content = """
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
 
 class TestA2AAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="test_a2a_agent")
+    async def _run_async_impl(self, ctx: InvocationContext):
+        if False: yield
+    async def _run_live_impl(self, ctx: InvocationContext):
+        if False: yield
 """
 
     with open(agent_dir / "agent.py", "w") as f:
@@ -742,6 +806,68 @@ def test_agent_run(test_app, create_test_session):
   assert data[2]["interrupted"] == True
 
   logger.info("Agent run test completed successfully")
+
+
+def test_agent_run_with_plugin(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    create_test_session,
+):
+  """Test running an agent with a plugin that modifies the event."""
+  info = create_test_session
+
+  with patch_services(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  ):
+    # Patch _load_plugin_class specifically for this test
+    with patch(
+        "google.adk.cli.fast_api._load_plugin_class", return_value=MockPlugin
+    ) as mocked_load:
+      app = get_fast_api_app(
+          agents_dir=".",
+          web=True,
+          session_service_uri="",
+          artifact_service_uri="",
+          memory_service_uri="",
+          allow_origins=["*"],
+          a2a=False,
+          host="127.0.0.1",
+          port=8000,
+          # This path is now handled by the patch
+          plugins=("path.to.mock.Plugin",),
+      )
+      client = TestClient(app)
+
+      url = "/run"
+      payload = {
+          "app_name": info["app_name"],
+          "user_id": info["user_id"],
+          "session_id": info["session_id"],
+          "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+          "streaming": False,
+      }
+      response = client.post(url, json=payload)
+
+      assert response.status_code == 200
+      data = response.json()
+      assert isinstance(data, list)
+      assert len(data) == 3
+
+      for event in data:
+        assert "customMetadata" in event
+        assert event["customMetadata"]["injected_by_plugin"] is True
+
+      mocked_load.assert_called_once_with("path.to.mock.Plugin")
+    logger.info("Agent run with plugin test completed successfully")
 
 
 def test_list_artifact_names(test_app, create_test_session):
