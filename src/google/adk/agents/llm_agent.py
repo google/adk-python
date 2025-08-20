@@ -17,11 +17,12 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
-import os
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import ClassVar
+from typing import Dict
 from typing import Literal
 from typing import Optional
 from typing import Type
@@ -37,8 +38,6 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
-from ..examples.base_example_provider import BaseExampleProvider
-from ..examples.example import Example
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
 from ..flows.llm_flows.single_flow import SingleFlow
@@ -47,16 +46,16 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..planners.base_planner import BasePlanner
-from ..tools.agent_tool import AgentTool
 from ..tools.base_tool import BaseTool
-from ..tools.base_tool import ToolConfig
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
+from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
-from ..utils.feature_decorator import working_in_progress
+from ..utils.context_utils import Aclosing
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
+from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
-from .common_configs import CodeConfig
 from .invocation_context import InvocationContext
 from .llm_agent_config import LlmAgentConfig
 from .readonly_context import ReadonlyContext
@@ -108,7 +107,6 @@ InstructionProvider: TypeAlias = Callable[
 ]
 
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
-ExamplesUnion = Union[list[Example], BaseExampleProvider]
 
 
 async def _convert_tool_union_to_tools(
@@ -116,10 +114,11 @@ async def _convert_tool_union_to_tools(
 ) -> list[BaseTool]:
   if isinstance(tool_union, BaseTool):
     return [tool_union]
-  if isinstance(tool_union, Callable):
+  if callable(tool_union):
     return [FunctionTool(func=tool_union)]
 
-  return await tool_union.get_tools(ctx)
+  # At this point, tool_union must be a BaseToolset
+  return await tool_union.get_tools_with_prefix(ctx)
 
 
 class LlmAgent(BaseAgent):
@@ -130,6 +129,9 @@ class LlmAgent(BaseAgent):
 
   When not set, the agent will inherit the model from its ancestor.
   """
+
+  config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
+  """The config type for this agent."""
 
   instruction: Union[str, InstructionProvider] = ''
   """Instructions for the LLM model, guiding the agent's behavior."""
@@ -282,19 +284,21 @@ class LlmAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    async for event in self._llm_flow.run_async(ctx):
-      self.__maybe_save_output_to_state(event)
-      yield event
+    async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
+      async for event in agen:
+        self.__maybe_save_output_to_state(event)
+        yield event
 
   @override
   async def _run_live_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    async for event in self._llm_flow.run_live(ctx):
-      self.__maybe_save_output_to_state(event)
-      yield event
-    if ctx.end_invocation:
-      return
+    async with Aclosing(self._llm_flow.run_live(ctx)) as agen:
+      async for event in agen:
+        self.__maybe_save_output_to_state(event)
+        yield event
+      if ctx.end_invocation:
+        return
 
   @property
   def canonical_model(self) -> BaseLlm:
@@ -499,12 +503,6 @@ class LlmAgent(BaseAgent):
           ' sub_agents must be empty to disable agent transfer.'
       )
 
-    if self.tools:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' tools must be empty'
-      )
-
   @field_validator('generate_content_config', mode='after')
   @classmethod
   def __validate_generate_content_config(
@@ -527,7 +525,7 @@ class LlmAgent(BaseAgent):
     return generate_content_config
 
   @classmethod
-  @working_in_progress('LlmAgent._resolve_tools is not ready for use.')
+  @experimental
   def _resolve_tools(
       cls, tool_configs: list[ToolConfig], config_abs_path: str
   ) -> list[Any]:
@@ -584,51 +582,56 @@ class LlmAgent(BaseAgent):
 
     return resolved_tools
 
-  @classmethod
   @override
-  @working_in_progress('LlmAgent.from_config is not ready for use.')
-  def from_config(
+  @classmethod
+  @experimental
+  def _parse_config(
       cls: Type[LlmAgent],
       config: LlmAgentConfig,
       config_abs_path: str,
-  ) -> LlmAgent:
+      kwargs: Dict[str, Any],
+  ) -> Dict[str, Any]:
     from .config_agent_utils import resolve_callbacks
     from .config_agent_utils import resolve_code_reference
 
-    agent = super().from_config(config, config_abs_path)
     if config.model:
-      agent.model = config.model
+      kwargs['model'] = config.model
     if config.instruction:
-      agent.instruction = config.instruction
+      kwargs['instruction'] = config.instruction
     if config.disallow_transfer_to_parent:
-      agent.disallow_transfer_to_parent = config.disallow_transfer_to_parent
+      kwargs['disallow_transfer_to_parent'] = config.disallow_transfer_to_parent
     if config.disallow_transfer_to_peers:
-      agent.disallow_transfer_to_peers = config.disallow_transfer_to_peers
+      kwargs['disallow_transfer_to_peers'] = config.disallow_transfer_to_peers
     if config.include_contents != 'default':
-      agent.include_contents = config.include_contents
+      kwargs['include_contents'] = config.include_contents
     if config.input_schema:
-      agent.input_schema = resolve_code_reference(config.input_schema)
+      kwargs['input_schema'] = resolve_code_reference(config.input_schema)
     if config.output_schema:
-      agent.output_schema = resolve_code_reference(config.output_schema)
+      kwargs['output_schema'] = resolve_code_reference(config.output_schema)
     if config.output_key:
-      agent.output_key = config.output_key
+      kwargs['output_key'] = config.output_key
     if config.tools:
-      agent.tools = cls._resolve_tools(config.tools, config_abs_path)
+      kwargs['tools'] = cls._resolve_tools(config.tools, config_abs_path)
     if config.before_model_callbacks:
-      agent.before_model_callback = resolve_callbacks(
+      kwargs['before_model_callback'] = resolve_callbacks(
           config.before_model_callbacks
       )
     if config.after_model_callbacks:
-      agent.after_model_callback = resolve_callbacks(
+      kwargs['after_model_callback'] = resolve_callbacks(
           config.after_model_callbacks
       )
     if config.before_tool_callbacks:
-      agent.before_tool_callback = resolve_callbacks(
+      kwargs['before_tool_callback'] = resolve_callbacks(
           config.before_tool_callbacks
       )
     if config.after_tool_callbacks:
-      agent.after_tool_callback = resolve_callbacks(config.after_tool_callbacks)
-    return agent
+      kwargs['after_tool_callback'] = resolve_callbacks(
+          config.after_tool_callbacks
+      )
+    if config.generate_content_config:
+      kwargs['generate_content_config'] = config.generate_content_config
+
+    return kwargs
 
 
 Agent: TypeAlias = LlmAgent

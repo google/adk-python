@@ -22,14 +22,15 @@ from google.genai import types
 from pydantic import BaseModel
 
 from ..agents.llm_agent import LlmAgent
-from ..artifacts import BaseArtifactService
-from ..artifacts import InMemoryArtifactService
+from ..artifacts.base_artifact_service import BaseArtifactService
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
+from ..utils.context_utils import Aclosing
 from .utils import envs
 from .utils.agent_loader import AgentLoader
 
@@ -65,12 +66,15 @@ async def run_input_file(
   for query in input_file.queries:
     click.echo(f'[user]: {query}')
     content = types.Content(role='user', parts=[types.Part(text=query)])
-    async for event in runner.run_async(
-        user_id=session.user_id, session_id=session.id, new_message=content
-    ):
-      if event.content and event.content.parts:
-        if text := ''.join(part.text or '' for part in event.content.parts):
-          click.echo(f'[{event.author}]: {text}')
+    async with Aclosing(
+        runner.run_async(
+            user_id=session.user_id, session_id=session.id, new_message=content
+        )
+    ) as agen:
+      async for event in agen:
+        if event.content and event.content.parts:
+          if text := ''.join(part.text or '' for part in event.content.parts):
+            click.echo(f'[{event.author}]: {text}')
   return session
 
 
@@ -94,14 +98,19 @@ async def run_interactively(
       continue
     if query == 'exit':
       break
-    async for event in runner.run_async(
-        user_id=session.user_id,
-        session_id=session.id,
-        new_message=types.Content(role='user', parts=[types.Part(text=query)]),
-    ):
-      if event.content and event.content.parts:
-        if text := ''.join(part.text or '' for part in event.content.parts):
-          click.echo(f'[{event.author}]: {text}')
+    async with Aclosing(
+        runner.run_async(
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=types.Content(
+                role='user', parts=[types.Part(text=query)]
+            ),
+        )
+    ) as agen:
+      async for event in agen:
+        if event.content and event.content.parts:
+          if text := ''.join(part.text or '' for part in event.content.parts):
+            click.echo(f'[{event.author}]: {text}')
   await runner.close()
 
 

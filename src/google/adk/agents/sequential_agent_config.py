@@ -20,11 +20,11 @@ from typing import Literal
 
 from pydantic import ConfigDict
 
-from ..agents.base_agent import working_in_progress
+from ..agents.base_agent import experimental
 from ..agents.base_agent_config import BaseAgentConfig
 
 
-@working_in_progress('SequentialAgentConfig is not ready for use.')
+@experimental
 class SequentialAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a SequentialAgent."""
 

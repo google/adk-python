@@ -403,6 +403,17 @@ class TestHelperFunctions:
     # Assert
     assert result == "youth, yourself, yourname"  # No changes
 
+  def test_replace_pronouns_phrases(self):
+    """Test _replace_pronouns with phrases that should be replaced."""
+    # Arrange
+    text = "You are a helpful chatbot"
+
+    # Act
+    result = _replace_pronouns(text)
+
+    # Assert
+    assert result == "I am a helpful chatbot"
+
   def test_get_default_description_llm_agent(self):
     """Test _get_default_description for LlmAgent."""
     # Arrange

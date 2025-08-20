@@ -32,6 +32,7 @@ from google.genai.types import FinishReason
 from typing_extensions import override
 
 from .. import version
+from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
@@ -75,9 +76,9 @@ class Gemini(BaseLlm):
   ```
   """
 
-  @staticmethod
+  @classmethod
   @override
-  def supported_models() -> list[str]:
+  def supported_models(cls) -> list[str]:
     """Provides the list of supported models.
 
     Returns:
@@ -116,12 +117,15 @@ class Gemini(BaseLlm):
     )
     logger.debug(_build_request_log(llm_request))
 
-    # add tracking headers to custom headers given it will override the headers
-    # set in the api client constructor
-    if llm_request.config and llm_request.config.http_options:
-      if not llm_request.config.http_options.headers:
-        llm_request.config.http_options.headers = {}
-      llm_request.config.http_options.headers.update(self._tracking_headers)
+    # Always add tracking headers to custom headers given it will override
+    # the headers set in the api client constructor to avoid tracking headers
+    # being dropped if user provides custom headers or overrides the api client.
+    if llm_request.config:
+      if not llm_request.config.http_options:
+        llm_request.config.http_options = types.HttpOptions()
+      llm_request.config.http_options.headers = self._merge_tracking_headers(
+          llm_request.config.http_options.headers
+      )
 
     if stream:
       responses = await self.api_client.aio.models.generate_content_stream(
@@ -138,39 +142,40 @@ class Gemini(BaseLlm):
       # contents are sent, we send an accumulated event which contains all the
       # previous partial content. The only difference is bidi rely on
       # complete_turn flag to detect end while sse depends on finish_reason.
-      async for response in responses:
-        logger.debug(_build_response_log(response))
-        llm_response = LlmResponse.create(response)
-        usage_metadata = llm_response.usage_metadata
-        if (
-            llm_response.content
-            and llm_response.content.parts
-            and llm_response.content.parts[0].text
-        ):
-          part0 = llm_response.content.parts[0]
-          if part0.thought:
-            thought_text += part0.text
-          else:
-            text += part0.text
-          llm_response.partial = True
-        elif (thought_text or text) and (
-            not llm_response.content
-            or not llm_response.content.parts
-            # don't yield the merged text event when receiving audio data
-            or not llm_response.content.parts[0].inline_data
-        ):
-          parts = []
-          if thought_text:
-            parts.append(types.Part(text=thought_text, thought=True))
-          if text:
-            parts.append(types.Part.from_text(text=text))
-          yield LlmResponse(
-              content=types.ModelContent(parts=parts),
-              usage_metadata=llm_response.usage_metadata,
-          )
-          thought_text = ''
-          text = ''
-        yield llm_response
+      async with Aclosing(responses) as agen:
+        async for response in agen:
+          logger.debug(_build_response_log(response))
+          llm_response = LlmResponse.create(response)
+          usage_metadata = llm_response.usage_metadata
+          if (
+              llm_response.content
+              and llm_response.content.parts
+              and llm_response.content.parts[0].text
+          ):
+            part0 = llm_response.content.parts[0]
+            if part0.thought:
+              thought_text += part0.text
+            else:
+              text += part0.text
+            llm_response.partial = True
+          elif (thought_text or text) and (
+              not llm_response.content
+              or not llm_response.content.parts
+              # don't yield the merged text event when receiving audio data
+              or not llm_response.content.parts[0].inline_data
+          ):
+            parts = []
+            if thought_text:
+              parts.append(types.Part(text=thought_text, thought=True))
+            if text:
+              parts.append(types.Part.from_text(text=text))
+            yield LlmResponse(
+                content=types.ModelContent(parts=parts),
+                usage_metadata=llm_response.usage_metadata,
+            )
+            thought_text = ''
+            text = ''
+          yield llm_response
 
       # generate an aggregated content at the end regardless the
       # response.candidates[0].finish_reason
@@ -286,6 +291,7 @@ class Gemini(BaseLlm):
         ],
     )
     llm_request.live_connect_config.tools = llm_request.config.tools
+    logger.info('Connecting to live with llm_request:%s', llm_request)
     async with self._live_api_client.aio.live.connect(
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
@@ -332,6 +338,23 @@ class Gemini(BaseLlm):
         ):
           llm_request.config.system_instruction = None
           await self._adapt_computer_use_tool(llm_request)
+
+  def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
+    """Merge tracking headers to the given headers."""
+    headers = headers or {}
+    for key, tracking_header_value in self._tracking_headers.items():
+      custom_value = headers.get(key, None)
+      if not custom_value:
+        headers[key] = tracking_header_value
+        continue
+
+      # Merge tracking headers with existing headers and avoid duplicates.
+      value_parts = tracking_header_value.split(' ')
+      for custom_value_part in custom_value.split(' '):
+        if custom_value_part not in value_parts:
+          value_parts.append(custom_value_part)
+      headers[key] = ' '.join(value_parts)
+    return headers
 
 
 def _build_function_declaration_log(

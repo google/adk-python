@@ -24,7 +24,7 @@ import uuid
 
 from typing_extensions import override
 
-from ..agents import BaseAgent
+from ..agents.base_agent import BaseAgent
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..errors.not_found_error import NotFoundError

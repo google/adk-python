@@ -282,8 +282,9 @@ class MockModel(BaseLlm):
 
       return cls(responses=responses)
 
-  @staticmethod
-  def supported_models() -> list[str]:
+  @classmethod
+  @override
+  def supported_models(cls) -> list[str]:
     return ['mock']
 
   def generate_content(

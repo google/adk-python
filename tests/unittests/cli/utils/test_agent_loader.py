@@ -31,8 +31,6 @@ class TestAgentLoader:
     """Ensure sys.path is restored after each test."""
     original_path = sys.path.copy()
     original_env = os.environ.copy()
-    # Enable WIP features for YAML agent loading tests
-    os.environ["ADK_ALLOW_WIP_FEATURES"] = "true"
     yield
     sys.path[:] = original_path
     # Restore environment variables

@@ -277,20 +277,32 @@ def get_fast_api_app(
       response_model_exclude_none=True,
       response_class=PlainTextResponse,
   )
-  async def get_agent_builder(app_name: str):
+  async def get_agent_builder(app_name: str, file_path: Optional[str] = None):
     base_path = Path.cwd() / agents_dir
     agent_dir = base_path / app_name
-    file_name = "root_agent.yaml"
-    file_path = agent_dir / file_name
-    if not file_path.is_file():
-      return ""
+    if not file_path:
+      file_name = "root_agent.yaml"
+      root_file_path = agent_dir / file_name
+      if not root_file_path.is_file():
+        return ""
+      else:
+        return FileResponse(
+            path=root_file_path,
+            media_type="application/x-yaml",
+            filename="${app_name}.yaml",
+            headers={"Cache-Control": "no-store"},
+        )
     else:
-      return FileResponse(
-          path=file_path,
-          media_type="application/x-yaml",
-          filename="${app_name}.yaml",
-          headers={"Cache-Control": "no-store"},
-      )
+      agent_file_path = agent_dir / file_path
+      if not agent_file_path.is_file():
+        return ""
+      else:
+        return FileResponse(
+            path=agent_file_path,
+            media_type="application/x-yaml",
+            filename=file_path,
+            headers={"Cache-Control": "no-store"},
+        )
 
   if a2a:
     try:
@@ -340,8 +352,6 @@ def get_fast_api_app(
         logger.info("Setting up A2A agent: %s", app_name)
 
         try:
-          a2a_rpc_path = f"http://{host}:{port}/a2a/{app_name}"
-
           agent_executor = A2aAgentExecutor(
               runner=create_a2a_runner_loader(app_name),
           )
@@ -353,7 +363,6 @@ def get_fast_api_app(
           with (p / "agent.json").open("r", encoding="utf-8") as f:
             data = json.load(f)
             agent_card = AgentCard(**data)
-            agent_card.url = a2a_rpc_path
 
           a2a_app = A2AStarletteApplication(
               agent_card=agent_card,

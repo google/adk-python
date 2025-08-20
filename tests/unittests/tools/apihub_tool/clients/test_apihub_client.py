@@ -297,6 +297,10 @@ class TestAPIHubClient:
     client = APIHubClient()
     token = client._get_access_token()
     assert token == "default_token"
+    # Verify default_service_credential is called with the correct scopes parameter
+    mock_default_service_credential.assert_called_once_with(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
     mock_credential.refresh.assert_called_once()
     assert client.credential_cache == mock_credential
 

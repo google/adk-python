@@ -106,7 +106,10 @@ async def test_create_and_list_sessions(service_type):
   session_ids = ['session' + str(i) for i in range(5)]
   for session_id in session_ids:
     await session_service.create_session(
-        app_name=app_name, user_id=user_id, session_id=session_id
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state={'key': 'value' + session_id},
     )
 
   list_sessions_response = await session_service.list_sessions(
@@ -115,6 +118,7 @@ async def test_create_and_list_sessions(service_type):
   sessions = list_sessions_response.sessions
   for i in range(len(sessions)):
     assert sessions[i].id == session_ids[i]
+    assert sessions[i].state == {'key': 'value' + session_ids[i]}
 
 
 @pytest.mark.asyncio

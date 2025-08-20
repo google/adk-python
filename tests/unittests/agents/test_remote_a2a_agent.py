@@ -20,7 +20,10 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
-# Try to import a2a library - will fail on Python < 3.10
+import pytest
+
+# Check if A2A dependencies are available
+A2A_AVAILABLE = True
 try:
   from a2a.types import AgentCapabilities
   from a2a.types import AgentCard
@@ -32,32 +35,34 @@ try:
   from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
   from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
   from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
-
-  A2A_AVAILABLE = True
 except ImportError:
   A2A_AVAILABLE = False
+
   # Create dummy classes to prevent NameError during test collection
-  AgentCapabilities = type("AgentCapabilities", (), {})
-  AgentCard = type("AgentCard", (), {})
-  AgentSkill = type("AgentSkill", (), {})
-  A2AMessage = type("A2AMessage", (), {})
-  SendMessageSuccessResponse = type("SendMessageSuccessResponse", (), {})
-  A2ATask = type("A2ATask", (), {})
+  class DummyTypes:
+    pass
+
+  AgentCapabilities = DummyTypes()
+  AgentCard = DummyTypes()
+  AgentSkill = DummyTypes()
+  A2AMessage = DummyTypes()
+  SendMessageSuccessResponse = DummyTypes()
+  A2ATask = DummyTypes()
+  InvocationContext = DummyTypes()
+  RemoteA2aAgent = DummyTypes()
+  AgentCardResolutionError = Exception
+  A2A_METADATA_PREFIX = ""
+
+# Skip all tests in this module if Python < 3.10 or A2A dependencies are not available
+pytestmark = pytest.mark.skipif(
+    sys.version_info < (3, 10) or not A2A_AVAILABLE,
+    reason="A2A requires Python 3.10+ and A2A dependencies must be available",
+)
 
 
 from google.adk.events.event import Event
 from google.adk.sessions.session import Session
 import httpx
-import pytest
-
-# Skip all tests in this module if Python < 3.10 or a2a library is not available
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10) or not A2A_AVAILABLE,
-    reason=(
-        "a2a library requires Python 3.10+ and is not available, skipping"
-        " RemoteA2aAgent tests"
-    ),
-)
 
 
 # Helper function to create a proper AgentCard for testing

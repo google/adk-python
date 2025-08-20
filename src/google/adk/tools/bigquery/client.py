@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import google.api_core.client_info
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
@@ -24,7 +26,7 @@ USER_AGENT = f"adk-bigquery-tool google-adk/{version.__version__}"
 
 
 def get_bigquery_client(
-    *, project: str, credentials: Credentials
+    *, project: Optional[str], credentials: Credentials
 ) -> bigquery.Client:
   """Get a BigQuery client."""
 

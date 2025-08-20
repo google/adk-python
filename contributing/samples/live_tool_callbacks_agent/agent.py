@@ -217,8 +217,9 @@ import asyncio
 
 # Create the agent with tool callbacks
 root_agent = Agent(
+    # find supported models here: https://google.github.io/adk-docs/get-started/streaming/quickstart-streaming/
     model="gemini-2.0-flash-live-preview-04-09",  # for Vertex project
-    # model="gemini-2.0-flash-live-001",  # for AI studio key
+    # model="gemini-live-2.5-flash-preview",  # for AI studio key
     name="tool_callbacks_agent",
     description=(
         "Live streaming agent that demonstrates tool callbacks functionality. "

@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+name: research_assistant_agent
+model: gemini-2.0-flash
+description: 'research assistant agent that can perform web search and summarize the results.'
+instruction: |
+  You can perform web search and summarize the results.
+  You should always use the web_search_agent to get the latest information.
+  You should always use the summarizer_agent to summarize the results.
+tools:
+  - name: AgentTool
+    args:
+      agent:
+        config_path: ./web_search_agent.yaml
+      skip_summarization: False
+  - name: AgentTool
+    args:
+      agent:
+        config_path: ./summarizer_agent.yaml
+      skip_summarization: False

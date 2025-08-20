@@ -19,12 +19,14 @@ from typing import Union
 
 from google.genai import types
 from langchain.agents import Tool
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool as LangchainBaseTool
 from langchain_core.tools.structured import StructuredTool
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from .function_tool import FunctionTool
+from .tool_configs import BaseToolConfig
+from .tool_configs import ToolArgsConfig
 
 
 class LangchainTool(FunctionTool):
@@ -50,12 +52,12 @@ class LangchainTool(FunctionTool):
       wrapped_tool = LangchainTool(search_tool)
   """
 
-  _langchain_tool: Union[BaseTool, object]
+  _langchain_tool: Union[LangchainBaseTool, object]
   """The wrapped langchain tool."""
 
   def __init__(
       self,
-      tool: Union[BaseTool, object],
+      tool: Union[LangchainBaseTool, object],
       name: Optional[str] = None,
       description: Optional[str] = None,
   ):
@@ -114,7 +116,7 @@ class LangchainTool(FunctionTool):
       # 2. Other tools: the tool doesn't inherit any class but follow some
       #    conventions, like having a "run" method.
       # Handle BaseTool type (preferred Langchain approach)
-      if isinstance(self._langchain_tool, BaseTool):
+      if isinstance(self._langchain_tool, LangchainBaseTool):
         tool_wrapper = Tool(
             name=self.name,
             func=self.func,
@@ -148,3 +150,31 @@ class LangchainTool(FunctionTool):
       raise ValueError(
           f'Failed to build function declaration for Langchain tool: {e}'
       ) from e
+
+  @override
+  @classmethod
+  def from_config(
+      cls: type[LangchainTool], config: ToolArgsConfig, config_abs_path: str
+  ) -> LangchainTool:
+    from ..agents import config_agent_utils
+
+    langchain_tool_config = LangchainToolConfig.model_validate(
+        config.model_dump()
+    )
+    tool = config_agent_utils.resolve_fully_qualified_name(
+        langchain_tool_config.tool
+    )
+    name = langchain_tool_config.name
+    description = langchain_tool_config.description
+    return cls(tool, name=name, description=description)
+
+
+class LangchainToolConfig(BaseToolConfig):
+  tool: str
+  """The fully qualified path of the Langchain tool instance."""
+
+  name: str = ''
+  """The name of the tool."""
+
+  description: str = ''
+  """The description of the tool."""
