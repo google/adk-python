@@ -104,7 +104,7 @@ test = [
   "langgraph>=0.2.60, <= 0.4.10",    # For LangGraphAgent
   "litellm>=1.75.5, <2.0.0",                 # For LiteLLM tests
   "llama-index-readers-file>=0.4.0", # For retrieval tests
-  "openai<=1.99.9", # For LiteLLM
+  "openai>=1.100.2", # For LiteLLM
   "pytest-asyncio>=0.25.0",
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
