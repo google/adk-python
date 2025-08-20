@@ -18,6 +18,13 @@ import plotly.graph_objects as go
 import pandas as pd
 from datetime import datetime
 from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+
+# Import the new dashboard module
+from dashboard import SecurityDashboard, render_dashboard
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +39,8 @@ st.set_page_config(
 )
 
 # Backend configuration
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8001")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "your-project-id")
 
 
 def init_session():
@@ -42,7 +50,40 @@ def init_session():
         st.session_state.messages = []
         st.session_state.user_id = "streamlit_user"
         st.session_state.last_metrics_update = None
+        st.session_state.data_stats = None
         logger.info(f"New enhanced session: {st.session_state.session_id}")
+
+
+def get_data_stats(project_id: str = None) -> Dict[str, Any]:
+    """Get data import statistics and last refresh time."""
+    if not project_id:
+        project_id = PROJECT_ID
+    try:
+        response = requests.get(f"{BACKEND_URL}/api/v1/data/stats/{project_id}", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"Failed to get stats: {response.status_code}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def trigger_data_refresh(project_id: str = None) -> Dict[str, Any]:
+    """Trigger manual data refresh."""
+    if not project_id:
+        project_id = PROJECT_ID
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/api/v1/data/refresh",
+            json={"project_id": project_id, "force_refresh": True},
+            timeout=10
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"Failed to trigger refresh: {response.status_code}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def send_to_backend(query: str) -> Optional[str]:
@@ -117,6 +158,371 @@ def get_vulnerability_scan_results() -> Optional[Dict[str, Any]]:
         return None
     except:
         return None
+
+
+def get_database_metrics() -> Optional[Dict[str, Any]]:
+    """Fetch database metrics and statistics."""
+    try:
+        response = requests.get(f"{BACKEND_URL}/api/v1/data/stats/{PROJECT_ID}", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except:
+        return None
+
+
+def get_security_findings() -> Optional[Dict[str, Any]]:
+    """Fetch security findings from the cached database."""
+    try:
+        response = requests.get(f"{BACKEND_URL}/api/v1/data/findings/{PROJECT_ID}", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except:
+        return None
+
+
+def display_executive_findings():
+    """Display executive summary of security findings on homepage."""
+    st.header("🚨 Executive Security Summary")
+    
+    # Get security findings
+    with st.spinner("Loading security findings..."):
+        findings_data = get_security_findings()
+    
+    if not findings_data or not findings_data.get("success"):
+        st.warning("⚠️ No security findings available")
+        st.info("💡 Trigger a data refresh to load security findings")
+        return
+    
+    findings = findings_data.get("findings", [])
+    
+    if not findings:
+        st.success("✅ No security findings detected!")
+        st.balloons()
+        return
+    
+    # Categorize findings by severity
+    major_issues = [f for f in findings if f.get("severity", "").upper() in ["CRITICAL", "HIGH"]]
+    medium_issues = [f for f in findings if f.get("severity", "").upper() == "MEDIUM"]
+    minor_issues = [f for f in findings if f.get("severity", "").upper() in ["LOW", "INFO"]]
+    
+    # Executive KPIs
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            label="🔴 Critical/High Issues",
+            value=len(major_issues),
+            delta=f"-{len(major_issues)//2}" if len(major_issues) > 0 else "0",
+            delta_color="inverse" if len(major_issues) > 0 else "normal"
+        )
+    
+    with col2:
+        st.metric(
+            label="🟠 Medium Issues", 
+            value=len(medium_issues),
+            delta=f"-{len(medium_issues)//3}" if len(medium_issues) > 0 else "0",
+            delta_color="inverse" if len(medium_issues) > 0 else "normal"
+        )
+    
+    with col3:
+        st.metric(
+            label="🟡 Low/Info Issues",
+            value=len(minor_issues),
+            delta=f"-{len(minor_issues)//4}" if len(minor_issues) > 0 else "0", 
+            delta_color="inverse" if len(minor_issues) > 0 else "normal"
+        )
+    
+    with col4:
+        total_issues = len(findings)
+        risk_score = min(100, (len(major_issues) * 10 + len(medium_issues) * 5 + len(minor_issues) * 1))
+        st.metric(
+            label="📊 Risk Score",
+            value=f"{risk_score}/100",
+            delta=f"{risk_score - 50}" if risk_score != 50 else "0",
+            delta_color="inverse" if risk_score > 50 else "normal"
+        )
+    
+    # Executive findings breakdown
+    st.subheader("🎯 Priority Issues Requiring Attention")
+    
+    # Major Issues Section
+    if major_issues:
+        with st.container(border=True):
+            st.markdown("### 🔴 **Critical & High Priority Issues**")
+            st.markdown(f"**{len(major_issues)} issues require immediate attention**")
+            
+            for i, finding in enumerate(major_issues[:3]):  # Show top 3
+                severity = finding.get("severity", "UNKNOWN").upper()
+                category = finding.get("category", "Unknown Category")
+                resource = finding.get("resource_name", "Unknown Resource")
+                description = finding.get("description", "No description available")
+                
+                # Severity emoji and color
+                severity_emoji = "🔴" if severity == "CRITICAL" else "🟠"
+                
+                col_desc, col_meta = st.columns([3, 1])
+                
+                with col_desc:
+                    st.markdown(f"**{severity_emoji} {category}**")
+                    st.markdown(f"📍 **Resource:** `{resource}`")
+                    st.markdown(f"💬 {description[:200]}{'...' if len(description) > 200 else ''}")
+                
+                with col_meta:
+                    st.markdown(f"**Severity:** `{severity}`")
+                    if finding.get("recommendation"):
+                        st.markdown(f"🎯 **Action:** {finding['recommendation'][:100]}...")
+                
+                if i < min(2, len(major_issues) - 1):
+                    st.divider()
+            
+            if len(major_issues) > 3:
+                st.info(f"📋 **+{len(major_issues) - 3} more critical issues** - View in Security Dashboard")
+    
+    # Medium Issues Section  
+    if medium_issues:
+        with st.container(border=True):
+            st.markdown("### 🟠 **Medium Priority Issues**")
+            st.markdown(f"**{len(medium_issues)} issues for planned remediation**")
+            
+            # Group by category for better executive summary
+            medium_by_category = {}
+            for finding in medium_issues:
+                category = finding.get("category", "Other")
+                if category not in medium_by_category:
+                    medium_by_category[category] = []
+                medium_by_category[category].append(finding)
+            
+            for category, category_findings in list(medium_by_category.items())[:3]:
+                st.markdown(f"• **{category}**: {len(category_findings)} issues")
+                if category_findings:
+                    example = category_findings[0]
+                    st.markdown(f"  📍 Example: `{example.get('resource_name', 'Unknown')}`")
+            
+            if len(medium_by_category) > 3:
+                remaining = sum(len(findings) for cat, findings in list(medium_by_category.items())[3:])
+                st.markdown(f"• **Other categories**: {remaining} additional issues")
+    
+    # Minor Issues Summary
+    if minor_issues:
+        with st.expander(f"🟡 Low Priority Issues ({len(minor_issues)} total)", expanded=False):
+            minor_by_category = {}
+            for finding in minor_issues:
+                category = finding.get("category", "Other")
+                if category not in minor_by_category:
+                    minor_by_category[category] = 0
+                minor_by_category[category] += 1
+            
+            for category, count in minor_by_category.items():
+                st.markdown(f"• **{category}**: {count} issues")
+    
+    # Quick Actions
+    st.subheader("⚡ Recommended Actions")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🚨 Address Critical Issues", use_container_width=True, type="primary"):
+            st.session_state['quick_action'] = "Show me detailed steps to fix all critical and high severity security issues"
+    
+    with col2:
+        if st.button("📊 Full Security Report", use_container_width=True):
+            st.session_state['quick_action'] = "Generate a comprehensive security report with all findings and recommendations"
+    
+    with col3:
+        if st.button("🎯 Remediation Plan", use_container_width=True):
+            st.session_state['quick_action'] = "Create a prioritized remediation plan for all security findings"
+
+
+def display_database_metrics():
+    """Display database metrics and cache statistics."""
+    st.header("📊 Database Metrics")
+    
+    # Get database stats
+    with st.spinner("Loading database metrics..."):
+        db_metrics = get_database_metrics()
+    
+    if not db_metrics or db_metrics.get("error"):
+        st.warning("⚠️ Unable to load database metrics")
+        return
+    
+    stats = db_metrics.get("stats", {})
+    
+    # Top-level database statistics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_compute = stats.get("compute_instances", 0)
+        st.metric("Compute Instances", f"{total_compute:,}")
+    
+    with col2:
+        total_storage = stats.get("storage_buckets", 0) 
+        st.metric("Storage Buckets", f"{total_storage:,}")
+    
+    with col3:
+        total_security = stats.get("security_findings", 0)
+        st.metric("Security Findings", f"{total_security:,}")
+    
+    with col4:
+        total_iam = stats.get("iam_accounts", 0)
+        st.metric("IAM Accounts", f"{total_iam:,}")
+    
+    # Resource breakdown visualization
+    st.subheader("📈 Resource Distribution")
+    
+    # Create DataFrame for visualization
+    resource_data = []
+    resource_mapping = {
+        "compute_instances": "Compute Instances",
+        "storage_buckets": "Storage Buckets", 
+        "networks": "Networks",
+        "firewall_rules": "Firewall Rules",
+        "iam_accounts": "IAM Accounts",
+        "databases": "Databases",
+        "security_findings": "Security Findings",
+        "secrets": "Secrets",
+        "monitoring_metrics": "Monitoring Metrics"
+    }
+    
+    for key, label in resource_mapping.items():
+        count = stats.get(key, 0)
+        if count > 0:
+            resource_data.append({"Resource Type": label, "Count": count})
+    
+    if resource_data:
+        df = pd.DataFrame(resource_data)
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Bar chart
+            fig_bar = px.bar(df, x="Count", y="Resource Type", orientation="h",
+                           title="Cached Resource Counts",
+                           color="Count", color_continuous_scale="Blues")
+            fig_bar.update_layout(yaxis={'categoryorder': 'total ascending'})
+            st.plotly_chart(fig_bar, use_container_width=True)
+        
+        with col2:
+            # Pie chart for proportions
+            fig_pie = px.pie(df, values="Count", names="Resource Type",
+                           title="Resource Distribution")
+            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_pie, use_container_width=True)
+    
+    # Cache status and performance
+    st.subheader("⚡ Cache Performance")
+    
+    last_fetch = stats.get("last_fetch")
+    if last_fetch:
+        try:
+            from datetime import datetime
+            last_time = datetime.fromisoformat(last_fetch.replace('Z', '+00:00'))
+            time_ago = datetime.now() - last_time.replace(tzinfo=None)
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if time_ago.days > 0:
+                    time_str = f"{time_ago.days} days ago"
+                    color = "red" if time_ago.days > 1 else "orange"
+                elif time_ago.seconds > 3600:
+                    hours = time_ago.seconds // 3600
+                    time_str = f"{hours} hours ago"
+                    color = "orange" if hours > 6 else "green"
+                elif time_ago.seconds > 60:
+                    minutes = time_ago.seconds // 60
+                    time_str = f"{minutes} minutes ago"
+                    color = "green"
+                else:
+                    time_str = "Just now"
+                    color = "green"
+                
+                st.metric("Last Data Refresh", time_str)
+            
+            with col2:
+                total_resources = sum([v for k, v in stats.items() if k != 'last_fetch' and isinstance(v, int)])
+                st.metric("Total Cached Resources", f"{total_resources:,}")
+            
+            with col3:
+                # Calculate cache "health" based on data freshness and completeness
+                cache_health = 100
+                if time_ago.days > 0:
+                    cache_health -= min(time_ago.days * 10, 50)  # Reduce by 10 per day, max 50
+                if total_resources < 10:
+                    cache_health -= 30  # Reduce if very few resources
+                
+                cache_health = max(0, cache_health)
+                st.metric("Cache Health", f"{cache_health}%", 
+                         delta=f"+{cache_health-75}" if cache_health > 75 else f"{cache_health-75}")
+                
+        except Exception as e:
+            st.error(f"Error parsing cache timing: {e}")
+    else:
+        st.warning("⚠️ No cache data available - trigger a data refresh")
+    
+    # Detailed breakdown table
+    with st.expander("📋 Detailed Resource Breakdown", expanded=False):
+        if resource_data:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # Show raw statistics
+        st.json(stats)
+
+
+def display_executive_dashboard():
+    """Display the comprehensive executive dashboard with metrics and visualizations."""
+    database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
+    
+    if not os.path.exists(database_path):
+        st.error(f"Database not found at {database_path}. Please run data population first.")
+        return
+    
+    # Initialize dashboard
+    dashboard = SecurityDashboard(database_path)
+    
+    # Sidebar navigation for dashboard sections
+    st.subheader("📊 Executive Dashboard Navigation")
+    
+    dashboard_sections = {
+        "🎯 Overview": "overview",
+        "🔍 Security Findings": "findings", 
+        "🗄️ Storage Security": "storage",
+        "🌐 Network Security": "network",
+        "📈 Asset Analytics": "analytics"
+    }
+    
+    selected_section = st.selectbox(
+        "Select Dashboard Section",
+        list(dashboard_sections.keys()),
+        key="exec_dashboard_section"
+    )
+    
+    # Refresh button
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 Refresh Dashboard Data", key="refresh_exec_dashboard"):
+            st.success("Dashboard data refreshed")
+            st.rerun()
+    
+    # Render selected section
+    section_key = dashboard_sections[selected_section]
+    
+    if section_key == "overview":
+        from dashboard import render_overview_metrics
+        render_overview_metrics(dashboard)
+    elif section_key == "findings":
+        from dashboard import render_security_findings_dashboard
+        render_security_findings_dashboard(dashboard)
+    elif section_key == "storage":
+        from dashboard import render_storage_security_dashboard
+        render_storage_security_dashboard(dashboard)
+    elif section_key == "network":
+        from dashboard import render_network_security_dashboard
+        render_network_security_dashboard(dashboard)
+    elif section_key == "analytics":
+        from dashboard import render_asset_analytics_dashboard
+        render_asset_analytics_dashboard(dashboard)
 
 
 def display_security_dashboard():
@@ -411,6 +817,73 @@ def display_sidebar():
         
         st.divider()
         
+        # Data Import Status with enhanced metrics
+        st.subheader("📥 Database Status")
+        
+        # Get data stats
+        data_stats = get_data_stats()
+        if data_stats and not data_stats.get("error"):
+            stats = data_stats.get("stats", {})
+            last_fetch = stats.get("last_fetch")
+            
+            if last_fetch:
+                # Parse and format the timestamp
+                try:
+                    from datetime import datetime
+                    last_time = datetime.fromisoformat(last_fetch.replace('Z', '+00:00'))
+                    time_ago = datetime.now() - last_time.replace(tzinfo=None)
+                    
+                    if time_ago.days > 0:
+                        time_str = f"{time_ago.days} days ago"
+                        status_color = "🔴" if time_ago.days > 1 else "🟠"
+                    elif time_ago.seconds > 3600:
+                        hours = time_ago.seconds // 3600
+                        time_str = f"{hours} hours ago"
+                        status_color = "🟠" if hours > 6 else "🟢"
+                    elif time_ago.seconds > 60:
+                        minutes = time_ago.seconds // 60
+                        time_str = f"{minutes} minutes ago"
+                        status_color = "🟢"
+                    else:
+                        time_str = "Just now"
+                        status_color = "🟢"
+                    
+                    st.success(f"{status_color} Last Import: {time_str}")
+                    st.caption(f"📅 {last_time.strftime('%Y-%m-%d %H:%M')}")
+                    
+                    # Show key resource counts
+                    total_records = sum([v for k, v in stats.items() if k != 'last_fetch' and isinstance(v, int)])
+                    st.metric("Total Resources", f"{total_records:,}")
+                    
+                    # Key metrics in compact format
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.metric("Compute", f"{stats.get('compute_instances', 0)}")
+                        st.metric("Storage", f"{stats.get('storage_buckets', 0)}")
+                    with col_b:
+                        st.metric("Security", f"{stats.get('security_findings', 0)}")
+                        st.metric("IAM", f"{stats.get('iam_accounts', 0)}")
+                    
+                except Exception as e:
+                    st.warning(f"⚠️ Last Import: {last_fetch}")
+            else:
+                st.warning("⚠️ No import data available")
+        else:
+            st.error("❌ Could not fetch database status")
+        
+        # Manual refresh button
+        if st.button("🔄 Refresh Data Now", use_container_width=True, type="secondary"):
+            with st.spinner("🔄 Triggering data refresh..."):
+                refresh_result = trigger_data_refresh()
+                if refresh_result and not refresh_result.get("error"):
+                    st.success("✅ Data refresh started!")
+                    st.info("📊 This will update all GCP data in ~60 seconds")
+                    st.balloons()
+                else:
+                    st.error(f"❌ Refresh failed: {refresh_result.get('error', 'Unknown error')}")
+        
+        st.divider()
+        
         # Quick metrics
         st.subheader("⚡ Quick Metrics")
         with st.spinner("Loading..."):
@@ -468,13 +941,25 @@ def main():
     # Display sidebar
     display_sidebar()
     
-    # Create tabs for dashboard and chat
-    tab1, tab2 = st.tabs(["📊 Security Dashboard", "💬 Enhanced Chat"])
+    # Executive Findings Overview on Homepage
+    display_executive_findings()
+    
+    st.divider()
+    
+    # Create tabs for dashboard, database metrics, and chat
+    tab1, tab2, tab3, tab4 = st.tabs(["🛡️ Security Dashboard", "📊 Executive Dashboard", "💾 Database Metrics", "💬 Enhanced Chat"])
     
     with tab1:
         display_security_dashboard()
     
     with tab2:
+        # Add the new comprehensive executive dashboard
+        display_executive_dashboard()
+    
+    with tab3:
+        display_database_metrics()
+    
+    with tab4:
         display_chat_interface()
     
     # Footer
