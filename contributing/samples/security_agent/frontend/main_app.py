@@ -930,10 +930,239 @@ def display_sidebar():
         """)
 
 
+def display_front_page_dashboard():
+    """Display integrated dashboard metrics directly on the front page."""
+    database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
+    
+    if not os.path.exists(database_path):
+        st.warning("⚠️ Database not found. Please run data population first.")
+        return
+    
+    # Initialize dashboard
+    dashboard = SecurityDashboard(database_path)
+    
+    # Get overview metrics
+    metrics = dashboard.get_overview_metrics()
+    
+    # Executive KPIs Section
+    st.header("📊 Security Posture Overview")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "Total Assets", 
+            f"{metrics.get('total_assets', 0):,}",
+            help="Total GCP resources discovered"
+        )
+        
+    with col2:
+        critical_findings = metrics.get('findings_by_severity', {}).get('CRITICAL', 0)
+        high_findings = metrics.get('findings_by_severity', {}).get('HIGH', 0)
+        total_critical_high = critical_findings + high_findings
+        st.metric(
+            "Critical/High Findings", 
+            total_critical_high,
+            delta=f"Critical: {critical_findings}, High: {high_findings}",
+            delta_color="inverse" if total_critical_high > 0 else "normal"
+        )
+        
+    with col3:
+        st.metric(
+            "Public Storage Buckets", 
+            metrics.get('public_buckets', 0),
+            delta="Security Risk" if metrics.get('public_buckets', 0) > 0 else "Secure",
+            delta_color="inverse" if metrics.get('public_buckets', 0) > 0 else "normal"
+        )
+        
+    with col4:
+        st.metric(
+            "Risky Firewall Rules", 
+            metrics.get('risky_firewall_rules', 0),
+            delta="Open to Internet" if metrics.get('risky_firewall_rules', 0) > 0 else "Secure",
+            delta_color="inverse" if metrics.get('risky_firewall_rules', 0) > 0 else "normal"
+        )
+    
+    # Data freshness indicator
+    if metrics.get('last_refresh'):
+        try:
+            last_refresh = datetime.fromisoformat(metrics['last_refresh'].replace('Z', '+00:00'))
+            time_ago = datetime.now() - last_refresh.replace(tzinfo=None)
+            if time_ago.days > 0:
+                refresh_text = f"{time_ago.days} days ago"
+                color = "🔴" if time_ago.days > 1 else "🟠"
+            elif time_ago.seconds > 3600:
+                hours = time_ago.seconds // 3600
+                refresh_text = f"{hours} hours ago"
+                color = "🟠" if hours > 6 else "🟢"
+            else:
+                minutes = time_ago.seconds // 60
+                refresh_text = f"{minutes} minutes ago"
+                color = "🟢"
+            st.info(f"{color} Last data refresh: {refresh_text}")
+        except:
+            st.info("📊 Data refresh status unknown")
+    
+    # Key visualizations row
+    st.subheader("🔍 Security Analytics")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Security findings severity chart
+        findings_by_severity = metrics.get('findings_by_severity', {})
+        if findings_by_severity and sum(findings_by_severity.values()) > 0:
+            fig_severity = px.pie(
+                values=list(findings_by_severity.values()),
+                names=list(findings_by_severity.keys()),
+                title="Security Findings by Severity",
+                color_discrete_map={
+                    'CRITICAL': '#FF0000',
+                    'HIGH': '#FF8C00', 
+                    'MEDIUM': '#FFD700',
+                    'LOW': '#90EE90'
+                }
+            )
+            fig_severity.update_layout(height=350)
+            st.plotly_chart(fig_severity, use_container_width=True)
+        else:
+            st.success("✅ No security findings detected!")
+    
+    with col2:
+        # Asset distribution chart
+        assets_by_type = metrics.get('assets_by_type', {})
+        if assets_by_type:
+            # Take top 8 asset types for readability
+            top_assets = dict(list(assets_by_type.items())[:8])
+            fig_assets = px.bar(
+                x=list(top_assets.values()),
+                y=list(top_assets.keys()),
+                orientation='h',
+                title="Top Asset Types Distribution"
+            )
+            fig_assets.update_layout(
+                height=350,
+                yaxis={'categoryorder': 'total ascending'}
+            )
+            st.plotly_chart(fig_assets, use_container_width=True)
+        else:
+            st.info("No asset data available")
+    
+    # Additional security insights row
+    st.subheader("🛡️ Security Risk Assessment")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        # Storage security summary
+        st.markdown("**🗄️ Storage Security**")
+        total_buckets = metrics.get('total_storage_buckets', 0)
+        public_buckets = metrics.get('public_buckets', 0)
+        if total_buckets > 0:
+            secure_buckets = total_buckets - public_buckets
+            security_percentage = (secure_buckets / total_buckets) * 100
+            
+            if security_percentage >= 90:
+                color = "🟢"
+                status = "Excellent"
+            elif security_percentage >= 70:
+                color = "🟡" 
+                status = "Good"
+            else:
+                color = "🔴"
+                status = "Needs Attention"
+                
+            st.metric(
+                "Storage Security",
+                f"{security_percentage:.0f}%",
+                f"{secure_buckets}/{total_buckets} secure"
+            )
+            st.caption(f"{color} Status: {status}")
+        else:
+            st.info("No storage buckets found")
+    
+    with col2:
+        # Network security summary
+        st.markdown("**🌐 Network Security**")
+        total_firewall = metrics.get('total_firewall_rules', 0)
+        risky_firewall = metrics.get('risky_firewall_rules', 0)
+        if total_firewall > 0:
+            secure_rules = total_firewall - risky_firewall
+            network_security = (secure_rules / total_firewall) * 100
+            
+            if network_security >= 95:
+                color = "🟢"
+                status = "Secure"
+            elif network_security >= 80:
+                color = "🟡"
+                status = "Moderate"
+            else:
+                color = "🔴"
+                status = "High Risk"
+                
+            st.metric(
+                "Network Security",
+                f"{network_security:.0f}%",
+                f"{risky_firewall} risky rules"
+            )
+            st.caption(f"{color} Status: {status}")
+        else:
+            st.info("No firewall rules found")
+    
+    with col3:
+        # IAM security summary
+        st.markdown("**👥 IAM Security**")
+        total_iam = metrics.get('total_iam_accounts', 0)
+        if total_iam > 0:
+            # Calculate a basic IAM health score
+            iam_health = min(100, max(0, 100 - (total_iam * 2)))  # Basic scoring
+            
+            if iam_health >= 80:
+                color = "🟢"
+                status = "Well Managed"
+            elif iam_health >= 60:
+                color = "🟡"
+                status = "Review Needed"
+            else:
+                color = "🔴"
+                status = "Complex Setup"
+                
+            st.metric(
+                "IAM Accounts",
+                total_iam,
+                f"Health: {iam_health}%"
+            )
+            st.caption(f"{color} Status: {status}")
+        else:
+            st.info("No IAM accounts found")
+    
+    # Quick actions for immediate access
+    st.subheader("⚡ Quick Actions")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if st.button("🔍 Detailed Analysis", use_container_width=True, type="primary"):
+            st.session_state['dashboard_tab'] = 0  # Switch to detailed analytics tab
+            st.rerun()
+    
+    with col2:
+        if st.button("🚨 Security Findings", use_container_width=True):
+            st.session_state['quick_action'] = "Show me all critical and high severity security findings with remediation steps"
+    
+    with col3:
+        if st.button("🗄️ Storage Review", use_container_width=True):
+            st.session_state['quick_action'] = "Analyze storage bucket security and show any public buckets or misconfigurations"
+    
+    with col4:
+        if st.button("🌐 Network Analysis", use_container_width=True):
+            st.session_state['quick_action'] = "Review firewall rules and identify any security risks or overly permissive rules"
+
+
 def main():
-    """Main application with enhanced dashboard and chat."""
-    st.title("🔐 ADK Security Agent - Enhanced")
-    st.caption("🚀 STORY-002: Enhanced Security Analysis with Dashboard & Advanced Chat")
+    """Main application with integrated front page dashboard."""
+    st.title("🔐 GCP Security Executive Dashboard")
+    st.caption("🚀 Real-time Security Analytics & Risk Assessment")
     
     # Initialize session
     init_session()
@@ -941,26 +1170,35 @@ def main():
     # Display sidebar
     display_sidebar()
     
-    # Executive Findings Overview on Homepage
+    # Front page integrated dashboard
+    display_front_page_dashboard()
+    
+    st.divider()
+    
+    # Executive Findings Overview
     display_executive_findings()
     
     st.divider()
     
-    # Create tabs for dashboard, database metrics, and chat
-    tab1, tab2, tab3, tab4 = st.tabs(["🛡️ Security Dashboard", "📊 Executive Dashboard", "💾 Database Metrics", "💬 Enhanced Chat"])
+    # Simplified tabs focusing on key functionality
+    tab1, tab2, tab3 = st.tabs(["🔍 Detailed Analytics", "💾 Data Management", "💬 Security Chat"])
+    
+    # Handle dashboard tab switching from quick actions
+    selected_tab = st.session_state.get('dashboard_tab', 0)
     
     with tab1:
-        display_security_dashboard()
-    
-    with tab2:
-        # Add the new comprehensive executive dashboard
+        # Comprehensive dashboard sections
         display_executive_dashboard()
     
-    with tab3:
+    with tab2:
         display_database_metrics()
     
-    with tab4:
+    with tab3:
         display_chat_interface()
+    
+    # Reset dashboard tab selection
+    if 'dashboard_tab' in st.session_state:
+        del st.session_state['dashboard_tab']
     
     # Footer
     st.divider()
