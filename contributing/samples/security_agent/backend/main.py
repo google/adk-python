@@ -294,6 +294,22 @@ try:
 except ImportError as e:
     logger.warning(f"Storage router not available: {e}")
 
+# Knowledge Base router for enterprise policies and standards
+try:
+    from api.knowledge_base import router as knowledge_base_router
+    app.include_router(knowledge_base_router, prefix="/api/v1/knowledge")
+    logger.info("✅ Knowledge Base router included at /api/v1/knowledge")
+except ImportError as e:
+    logger.warning(f"⚠️ Knowledge Base router not available: {e}")
+
+# Custom Roles Analyzer router for IAM role optimization (STORY-002)
+try:
+    from api.custom_roles import router as custom_roles_router
+    app.include_router(custom_roles_router, prefix="/api/v1/custom-roles")
+    logger.info("✅ Custom Roles Analyzer router included at /api/v1/custom-roles (STORY-002)")
+except ImportError as e:
+    logger.warning(f"⚠️ Custom Roles Analyzer router not available: {e}")
+
 # Asset Inventory router for unified GCP resource access
 try:
     from api.asset_inventory import router as asset_inventory_router
