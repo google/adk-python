@@ -1,33 +1,29 @@
-# Spanner Tools Sample
+# Bigtable Tools Sample
 
 ## Introduction
 
-This sample agent demonstrates the Spanner first-party tools in ADK,
-distributed via the `google.adk.tools.spanner` module. These tools include:
+This sample agent demonstrates the Bigtable first-party tools in ADK,
+distributed via the `google.adk.tools.bigtable` module. These tools include:
 
-1. `list_table_names`
+1. `bigtable_list_instances`
 
-  Fetches Spanner table names present in a GCP Spanner database.
+  Fetches Bigtable instance ids in a Google Cloud project.
 
-1. `list_table_indexes`
+1. `bigtable_get_instance_info`
 
-  Fetches Spanner table indexes present in a GCP Spanner database.
+  Fetches metadata information about a Bigtable instance.
 
-1. `list_table_index_columns`
+1. `bigtable_list_tables`
 
-  Fetches Spanner table index columns present in a GCP Spanner database.
+  Fetches table ids in a Bigtable instance.
 
-1. `list_named_schemas`
+1. `bigtable_get_table_info`
 
-  Fetches named schema for a Spanner database.
+  Fetches metadata information about a Bigtable table.
 
-1. `get_table_schema`
+1. `bigtable_execute_sql`
 
-  Fetches Spanner database table schema and metadata information.
-
-1. `execute_sql`
-
-  Runs a SQL query in Spanner database.
+  Runs a DQL SQL query in Bigtable database.
 
 ## How to use
 
@@ -75,8 +71,8 @@ to get your client id and client secret. Be sure to choose "web" as your client
 type.
 
 1.  Follow https://developers.google.com/workspace/guides/configure-oauth-consent
-    to add scope "https://www.googleapis.com/auth/spanner.data" and
-    "https://www.googleapis.com/auth/spanner.admin" as declaration, this is used
+    to add scope "https://www.googleapis.com/auth/bigtable.admin" and
+    "https://www.googleapis.com/auth/bigtable.data" as declaration, this is used
     for review purpose.
 
 1.  Follow
@@ -102,8 +98,7 @@ type.
 
 ## Sample prompts
 
-* Show me all tables in the product_db Spanner database.
-* Describe the schema of the product_table table.
-* List all indexes on the product_table table.
-* Show me the first 10 rows of data from the product_table table.
-* Write a query to find the most popular product by joining the product_table and sales_table tables.
+* Show me all instances in the my-project.
+* Show me all tables in the my-instance instance in my-project.
+* Describe the schema of the my-table table in the my-instance instance in my-project.
+* Show me the first 10 rows of data from the my-table table in the my-instance instance in my-project.
