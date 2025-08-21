@@ -22,7 +22,10 @@ import uuid
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+import httpx
+import asyncio
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -140,7 +143,7 @@ def display_executive_dashboard():
     
     # Main title
     st.title("🔐 GCP Security Executive Dashboard")
-    st.caption("Real-time Security Analytics & Intelligent Chat Assistant")
+    st.caption("Real-time Security Analytics, MSA Impact Analysis & Intelligent Chat Assistant")
     
     # Executive KPIs - More compact and consolidated
     st.header("📊 Security Posture at a Glance")
@@ -352,6 +355,207 @@ def stream_agent_response(query: str):
         yield "Please check if the database is accessible and ADK is configured correctly."
 
 
+def display_msa_analyzer():
+    """Display MSA (Monthly Service Announcement) analyzer interface."""
+    st.header("📧 MSA Impact Analyzer")
+    st.caption("Analyze Google Cloud service announcements for impact on your environment")
+    
+    # Create two columns for the interface
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.subheader("📝 MSA Email Content")
+        
+        # Text area for MSA email content
+        msa_content = st.text_area(
+            "Paste your MSA email here:",
+            height=400,
+            placeholder="""Subject: [Action Required] Google Cloud Platform - Monthly Service Announcement
+
+Dear Google Cloud Customer,
+
+This email contains important updates about changes to Google Cloud Platform services...
+
+[Paste the full MSA email content here]""",
+            key="msa_input"
+        )
+        
+        # Project ID for impact analysis
+        project_id = st.text_input(
+            "Project ID for Impact Analysis:",
+            value=os.getenv("GOOGLE_CLOUD_PROJECT", ""),
+            help="Enter your GCP project ID to analyze specific impact on your resources"
+        )
+        
+        # Analyze button
+        analyze_clicked = st.button("🔍 Analyze MSA Impact", type="primary", use_container_width=True)
+        
+        # Sample MSA button
+        if st.button("📋 Load Sample MSA", use_container_width=True):
+            # Call backend to get sample MSA
+            try:
+                backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+                response = httpx.get(f"{backend_url}/api/v1/msa/sample", timeout=10.0)
+                if response.status_code == 200:
+                    sample_data = response.json()
+                    st.session_state.msa_input = sample_data.get("sample_msa", "")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Failed to load sample: {e}")
+    
+    with col2:
+        st.subheader("📊 Impact Analysis Results")
+        
+        # Analysis results container
+        if analyze_clicked and msa_content:
+            with st.spinner("🤖 Analyzing MSA with Gemini..."):
+                try:
+                    # Call backend MSA analyzer
+                    backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+                    
+                    payload = {
+                        "email_content": msa_content,
+                        "project_id": project_id if project_id else None
+                    }
+                    
+                    response = httpx.post(
+                        f"{backend_url}/api/v1/msa/analyze",
+                        json=payload,
+                        timeout=30.0
+                    )
+                    
+                    if response.status_code == 200:
+                        results = response.json()
+                        
+                        # Display summary metrics
+                        st.success("✅ Analysis Complete!")
+                        
+                        summary = results.get("summary", {})
+                        
+                        # Key metrics
+                        metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+                        with metrics_col1:
+                            st.metric("Total Changes", summary.get("total_changes", 0))
+                        with metrics_col2:
+                            st.metric("Critical Changes", summary.get("critical_changes", 0))
+                        with metrics_col3:
+                            st.metric("Resources Affected", summary.get("total_resources_affected", 0))
+                        
+                        # Create impact visualization
+                        if results.get("extracted_changes"):
+                            # Impact level distribution
+                            impact_counts = {}
+                            for change in results["extracted_changes"]:
+                                level = change.get("impact_level", "unknown")
+                                impact_counts[level] = impact_counts.get(level, 0) + 1
+                            
+                            if impact_counts:
+                                fig_impact = px.pie(
+                                    values=list(impact_counts.values()),
+                                    names=list(impact_counts.keys()),
+                                    title="Impact Level Distribution",
+                                    color_discrete_map={
+                                        'critical': '#FF0000',
+                                        'high': '#FF8C00',
+                                        'medium': '#FFD700',
+                                        'low': '#90EE90',
+                                        'unknown': '#CCCCCC'
+                                    },
+                                    height=250
+                                )
+                                st.plotly_chart(fig_impact, use_container_width=True)
+                            
+                            # Services affected chart
+                            service_counts = {}
+                            for change in results["extracted_changes"]:
+                                service = change.get("service", "Unknown")
+                                service_counts[service] = service_counts.get(service, 0) + 1
+                            
+                            if service_counts:
+                                fig_services = px.bar(
+                                    x=list(service_counts.keys()),
+                                    y=list(service_counts.values()),
+                                    title="Changes by Service",
+                                    labels={'x': 'Service', 'y': 'Number of Changes'},
+                                    height=250,
+                                    color_discrete_sequence=['#667eea']
+                                )
+                                st.plotly_chart(fig_services, use_container_width=True)
+                        
+                        # Overall recommendations
+                        if results.get("recommendations"):
+                            st.info("**Overall Recommendations:**")
+                            for rec in results["recommendations"]:
+                                st.write(f"• {rec}")
+                        
+                        # Extracted changes
+                        st.divider()
+                        st.subheader("🔄 Extracted Changes")
+                        
+                        for change in results.get("extracted_changes", []):
+                            # Color code by impact level
+                            if change["impact_level"] == "critical":
+                                alert_type = "error"
+                                icon = "🔴"
+                            elif change["impact_level"] == "high":
+                                alert_type = "warning"
+                                icon = "🟠"
+                            elif change["impact_level"] == "medium":
+                                alert_type = "info"
+                                icon = "🟡"
+                            else:
+                                alert_type = "success"
+                                icon = "🟢"
+                            
+                            with st.expander(f"{icon} {change['service']} - {change['change_type']}", expanded=True):
+                                st.write(f"**Description:** {change['description']}")
+                                if change.get('effective_date'):
+                                    st.write(f"**Effective Date:** {change['effective_date']}")
+                                if change.get('required_action'):
+                                    st.write(f"**Required Action:** {change['required_action']}")
+                                st.write(f"**Impact Level:** {change['impact_level'].upper()}")
+                                
+                                if change.get('affected_resources'):
+                                    st.write("**Affected Resource Types:**")
+                                    for resource in change['affected_resources']:
+                                        st.write(f"  • {resource}")
+                        
+                        # Impact assessments for specific project
+                        if results.get("impact_assessments") and project_id:
+                            st.divider()
+                            st.subheader(f"🎯 Impact on Project: {project_id}")
+                            
+                            for assessment in results["impact_assessments"]:
+                                st.write(f"**{assessment['resource_type']}**")
+                                st.write(f"• {assessment['resource_count']} resources affected")
+                                st.write(f"• Impact level: {assessment['impact_level'].upper()}")
+                                
+                                if assessment.get('recommended_actions'):
+                                    st.write("**Recommended Actions:**")
+                                    for action in assessment['recommended_actions']:
+                                        st.write(f"  - {action}")
+                                
+                                if assessment.get('affected_resources'):
+                                    with st.expander("Show affected resources"):
+                                        for resource in assessment['affected_resources'][:5]:  # Show first 5
+                                            st.write(f"• {resource.get('name', 'Unknown')}")
+                        
+                        # Store results in session state for reference
+                        st.session_state.msa_results = results
+                        
+                    else:
+                        st.error(f"Analysis failed: {response.text}")
+                        
+                except Exception as e:
+                    st.error(f"Error analyzing MSA: {str(e)}")
+                    logger.error(f"MSA analysis error: {e}")
+        
+        elif 'msa_results' in st.session_state:
+            # Show previous results if available
+            st.info("📊 Showing previous analysis results. Enter new MSA content and click Analyze to refresh.")
+            # Could re-display stored results here
+
+
 def display_chat_interface():
     """Display the streaming chat interface."""
     st.header("💬 Security Intelligence Chat")
@@ -476,15 +680,42 @@ def main():
     
     st.divider()
     
-    # Display chat interface below
-    display_chat_interface()
+    # Create tabs for different features
+    tab1, tab2, tab3 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "📊 Deep Analytics"])
+    
+    with tab1:
+        # Display chat interface
+        display_chat_interface()
+    
+    with tab2:
+        # Display MSA analyzer
+        display_msa_analyzer()
+    
+    with tab3:
+        # Placeholder for future deep analytics
+        st.header("📊 Deep Security Analytics")
+        st.info("Advanced analytics and reporting features coming soon...")
+        
+        # Could add more detailed charts here
+        database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
+        if os.path.exists(database_path):
+            dashboard = SecurityDashboard(database_path)
+            
+            # Show additional metrics
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("📈 Trend Analysis")
+                st.write("Historical security posture trends will be displayed here")
+            with col2:
+                st.subheader("🎯 Compliance Score")
+                st.write("Compliance with security best practices will be shown here")
     
     # Footer
     st.divider()
     st.markdown("""
     <div style='text-align: center'>
     <small>🔐 GCP Security Executive Dashboard | Powered by Vertex AI & ADK | 
-    Real-time streaming with SQLite integration</small>
+    Real-time streaming with SQLite integration | MSA Impact Analysis</small>
     </div>
     """, unsafe_allow_html=True)
 

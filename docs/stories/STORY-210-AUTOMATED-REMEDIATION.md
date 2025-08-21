@@ -195,6 +195,14 @@ class ExcessiveIAMRemediation(RemediationTemplate):
         ))
 ```
 
+### Database Schema
+A SQLite database will be used to store all remediation-related data.
+
+- **RemediationTemplates**: Stores the remediation templates.
+- **ApprovalWorkflows**: Stores the approval workflows.
+- **RollbackSnapshots**: Stores the rollback snapshots.
+- **RemediationLogs**: Stores the logs of all remediation actions.
+
 ### API Endpoints
 
 #### `/api/v1/remediation/execute`

@@ -88,6 +88,7 @@ class FindingCreateRequest(BaseModel):
 
 class AssetListRequest(BaseModel):
     """Request model for listing assets from Security Command Center."""
+    project_id: Optional[str] = Field(None, description="GCP project ID")
     parent: Optional[str] = Field(None, description="Parent resource")
     filter: Optional[str] = Field(None, description="Filter expression")
     order_by: Optional[str] = Field(None, description="Fields to order by")
@@ -366,19 +367,28 @@ async def comprehensive_security_analysis(request: SecurityAnalysisRequest):
     try:
         analyzer = SecurityAnalyzer(request.project_id)
         
-        # Get asset inventory from asset_inventory service
-        import httpx
-        async with httpx.AsyncClient() as client:
-            # Fetch assets from asset inventory API
-            asset_response = await client.post(
-                f"http://localhost:8000/api/v1/assets/list",
-                json={
-                    "project_id": request.project_id,
-                    "include_security_context": True,
-                    "page_size": 1000
-                }
+        # Get asset inventory from cached wrapper for better performance
+        try:
+            from .cached_wrapper import get_cached_assets
+            asset_result = await get_cached_assets(
+                project_id=request.project_id,
+                limit=1000
             )
-            assets = asset_response.json().get('assets', []) if asset_response.status_code == 200 else []
+            assets = asset_result.get('assets', []) if asset_result.get('success') else []
+        except Exception as e:
+            logger.warning(f"Failed to get assets from cache, using direct API: {e}")
+            # Fallback to direct API call with correct parameters
+            import httpx
+            async with httpx.AsyncClient() as client:
+                asset_response = await client.post(
+                    f"http://localhost:8000/api/v1/assets/list",
+                    json={
+                        "project_id": request.project_id,
+                        "page_size": 1000
+                        # Removed include_security_context as it's not in the model
+                    }
+                )
+                assets = asset_response.json().get('assets', []) if asset_response.status_code == 200 else []
         
         # Get SCC findings if client is available
         scc_findings = []

@@ -12,6 +12,9 @@ import subprocess
 import sys
 import os
 import argparse
+import signal
+import time
+import socket
 
 def deploy_to_cloud(project_id):
     """Deploy backend to Cloud Run using Cloud Build."""
@@ -42,13 +45,69 @@ def deploy_to_cloud(project_id):
         print(f"❌ Deployment failed: {e}")
         sys.exit(1)
 
+def kill_existing_backend(port='8000'):
+    """Kill any existing processes on the specified port."""
+    print(f"🔍 Checking for existing processes on port {port}...")
+    
+    try:
+        # Check if port is in use
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(('localhost', int(port)))
+        sock.close()
+        
+        if result == 0:
+            print(f"⚠️ Port {port} is already in use")
+            
+            # Find and kill processes using lsof
+            try:
+                # Get PIDs using the port
+                result = subprocess.run(
+                    ['lsof', '-ti', f':{port}'],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.stdout:
+                    pids = result.stdout.strip().split('\n')
+                    for pid in pids:
+                        if pid:
+                            print(f"🛑 Killing process {pid} on port {port}")
+                            try:
+                                os.kill(int(pid), signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                    
+                    # Wait for processes to die
+                    time.sleep(2)
+                    print(f"✅ Cleared port {port}")
+                    
+            except Exception as e:
+                print(f"⚠️ Could not kill processes: {e}")
+                print("You may need to manually kill the process or use a different port")
+                
+        else:
+            print(f"✅ Port {port} is free")
+            
+    except Exception as e:
+        print(f"⚠️ Error checking port: {e}")
+
 def run_local():
     """Start the FastAPI backend server locally."""
     # Detect if running in Cloud Run
     is_cloud_run = os.environ.get('K_SERVICE') is not None
     port = os.environ.get('PORT', '8000')
     
-    print("🚀 Starting Security Agent Backend...")
+    # Kill any existing backend processes if running locally
+    if not is_cloud_run:
+        kill_existing_backend(port)
+    
+    print("🚀 Starting GCP Security Agent Backend (FastAPI)")
+    print("=" * 50)
+    print("📋 Backend Services:")
+    print("  • Data refresh from GCP APIs")
+    print("  • SQLite cache management")
+    print("  • Security analysis endpoints")
+    print("  • Tool implementations for agent")
     print("=" * 50)
     
     if is_cloud_run:
@@ -91,9 +150,14 @@ def run_local():
         else:
             print("⚠️ Service account directory not found, will use default credentials")
     
-    # Change to backend directory
+    # Change to backend directory - IMPORTANT for correct imports
     backend_dir = os.path.join(os.path.dirname(__file__), "backend")
-    os.chdir(backend_dir)
+    if os.path.exists(backend_dir):
+        os.chdir(backend_dir)
+        print(f"📂 Changed to backend directory: {os.getcwd()}")
+    else:
+        print(f"⚠️ Backend directory not found at {backend_dir}")
+        print(f"📂 Current directory: {os.getcwd()}")
     
     # Configure uvicorn based on environment
     if is_cloud_run:

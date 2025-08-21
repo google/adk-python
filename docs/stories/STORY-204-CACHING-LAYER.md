@@ -32,8 +32,7 @@
 
 ## Technical Details
 
-*   **In-Memory Cache**: `cachetools` library.
-*   **Distributed Cache**: Redis.
+*   **Cache Backend**: SQLite database.
 *   **Cache Decorator**: A decorator is created to easily cache the results of functions.
 
 ## Test Plan

@@ -8,6 +8,7 @@ google-cloud-securitycenter
 google-cloud-monitoring
 google-cloud-logging
 google-cloud-iam
+google-cloud-service-usage
 google-auth
 
 # Backend API Integration

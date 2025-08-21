@@ -440,6 +440,51 @@ async def get_business_impact_analysis(
             "project_id": project_id
         }
 
+@router.get("/list")
+async def list_recommendations(
+    project_id: str = Query(..., description="GCP Project ID"),
+    category: Optional[str] = Query(None, description="Filter by category")
+):
+    """
+    List recommendations - compatible with agent expectations.
+    This is the endpoint the Vertex AI agent calls.
+    """
+    try:
+        # Create request object for the live endpoint
+        request = RecommendationsRequest(
+            project_id=project_id,
+            categories=[category] if category else None,
+            max_results=20
+        )
+        
+        # Get recommendations from the live endpoint
+        response = await get_cloud_recommendations(request)
+        
+        if response.get("success"):
+            return {
+                "recommendations": response["recommendations"],
+                "total_count": response["total_recommendations"], 
+                "total_savings": response["total_monthly_savings"],
+                "project_id": project_id,
+                "source": "gcp_recommender"
+            }
+        else:
+            return {
+                "recommendations": [],
+                "total_count": 0,
+                "error": response.get("error", "Unknown error"),
+                "project_id": project_id
+            }
+            
+    except Exception as e:
+        logger.error(f"Error listing recommendations: {e}")
+        return {
+            "recommendations": [],
+            "total_count": 0,
+            "error": str(e),
+            "project_id": project_id
+        }
+
 @router.get("/health")
 async def health_check():
     """Health check for recommendations service."""

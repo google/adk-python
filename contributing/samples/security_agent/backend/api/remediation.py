@@ -15,7 +15,7 @@ import logging
 from datetime import datetime
 import asyncio
 
-from ..services.remediation_engine import (
+from services.remediation_engine import (
     RemediationEngine,
     RemediationRequest,
     RemediationResult,

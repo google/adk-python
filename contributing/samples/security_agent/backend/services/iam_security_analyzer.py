@@ -246,15 +246,17 @@ class IAMSecurityAnalyzer:
             )
             
             keys = []
-            for key in self.iam_client.list_service_account_keys(request=request):
+            response = self.iam_client.list_service_account_keys(request=request)
+            # Access the keys property of the response
+            for key in response.keys:
                 keys.append({
                     "name": key.name,
                     "key_algorithm": key.key_algorithm.name if key.key_algorithm else None,
                     "key_origin": key.key_origin.name if key.key_origin else None,
                     "key_type": key.key_type.name if key.key_type else None,
-                    "valid_after_time": key.valid_after_time,
-                    "valid_before_time": key.valid_before_time,
-                    "disabled": key.disabled
+                    "valid_after_time": str(key.valid_after_time) if key.valid_after_time else None,
+                    "valid_before_time": str(key.valid_before_time) if key.valid_before_time else None,
+                    "disabled": getattr(key, 'disabled', False)
                 })
             
             return keys
@@ -266,9 +268,17 @@ class IAMSecurityAnalyzer:
     def _get_project_iam_policy(self) -> Optional[Any]:
         """Get IAM policy for the project"""
         try:
-            request = resourcemanager_v3.GetIamPolicyRequest(
+            # Use the correct API method for getting IAM policy
+            from google.iam.v1 import iam_policy_pb2
+            
+            # Use GetPolicyOptions from the correct location
+            options = iam_policy_pb2.GetPolicyOptions(
+                requested_policy_version=3
+            )
+            
+            request = iam_policy_pb2.GetIamPolicyRequest(
                 resource=f"projects/{self.project_id}",
-                options={"requested_policy_version": 3}
+                options=options
             )
             
             return self.rm_client.get_iam_policy(request=request)
@@ -300,9 +310,29 @@ class IAMSecurityAnalyzer:
         # Calculate oldest key age
         oldest_key_age = None
         if sa["keys"]:
-            oldest_key = min(sa["keys"], key=lambda k: k.get("valid_after_time", datetime.now()))
-            if oldest_key.get("valid_after_time"):
-                oldest_key_age = (datetime.now() - oldest_key["valid_after_time"]).days
+            # Handle string timestamps properly
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            valid_keys = []
+            
+            for k in sa["keys"]:
+                valid_after = k.get("valid_after_time")
+                if valid_after:
+                    # Convert string to datetime if needed
+                    if isinstance(valid_after, str):
+                        try:
+                            # Parse ISO format timestamp
+                            valid_after = datetime.fromisoformat(valid_after.replace('Z', '+00:00'))
+                        except:
+                            continue
+                    # Make sure datetime is timezone-aware
+                    if valid_after.tzinfo is None:
+                        valid_after = valid_after.replace(tzinfo=timezone.utc)
+                    valid_keys.append((k, valid_after))
+            
+            if valid_keys:
+                oldest_key, oldest_time = min(valid_keys, key=lambda x: x[1])
+                oldest_key_age = (now - oldest_time).days
         
         # Calculate risk score based on findings
         risk_score = sum(f.risk_score for f in findings)
@@ -413,15 +443,31 @@ class IAMSecurityAnalyzer:
         stale_keys = []
         
         # Keys older than 90 days are considered stale
-        stale_threshold = datetime.now() - timedelta(days=90)
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        stale_threshold = now - timedelta(days=90)
         
         for key in sa["keys"]:
-            if key.get("valid_after_time") and key["valid_after_time"] < stale_threshold:
-                age_days = (datetime.now() - key["valid_after_time"]).days
-                stale_keys.append({
-                    "key_id": key["name"].split("/")[-1],
-                    "age_days": age_days
-                })
+            valid_after = key.get("valid_after_time")
+            if valid_after:
+                # Handle string timestamps properly
+                if isinstance(valid_after, str):
+                    try:
+                        # Parse ISO format timestamp
+                        valid_after = datetime.fromisoformat(valid_after.replace('Z', '+00:00'))
+                    except:
+                        continue
+                
+                # Make sure datetime is timezone-aware
+                if valid_after.tzinfo is None:
+                    valid_after = valid_after.replace(tzinfo=timezone.utc)
+                
+                if valid_after < stale_threshold:
+                    age_days = (now - valid_after).days
+                    stale_keys.append({
+                        "key_id": key["name"].split("/")[-1],
+                        "age_days": age_days
+                    })
         
         if stale_keys:
             risk_score = min(50 + len(stale_keys) * 10, 100)

@@ -13,6 +13,7 @@ We have successfully created a **unified, production-ready GCP Security Executiv
 - **Executive Dashboard**: Prominent front-page display of security metrics
 - **Token Streaming**: Real-time, token-by-token response display
 - **No Duplicates**: Consolidated all redundant sections and metrics
+- **MSA Analyzer**: Integrated Monthly Service Announcement impact analyzer
 
 ### 2. **Executive Dashboard Features**
 - **5 Key KPIs**: Total Assets, Critical/High Findings, Storage Security %, Network Security %, Overall Health Score
@@ -27,7 +28,14 @@ We have successfully created a **unified, production-ready GCP Security Executiv
 - **Quick Queries**: Sidebar with common security questions
 - **Session Management**: Persistent conversation history
 
-### 4. **Cloud Deployment Ready**
+### 4. **MSA Impact Analyzer** (NEW!)
+- **Gemini-Powered Analysis**: Uses Gemini 1.5 Pro to extract structured changes from MSA emails
+- **Impact Assessment**: Analyzes how changes affect your specific GCP environment
+- **Visual Impact Reports**: Charts showing impact distribution and affected services
+- **Actionable Recommendations**: Personalized action items based on your resources
+- **Project-Specific Analysis**: Shows exactly which resources are affected
+
+### 5. **Cloud Deployment Ready**
 - **Docker Support**: Dockerfiles for both backend and frontend
 - **Cloud Build**: Automated CI/CD with cloudbuild.yaml files
 - **Cloud Run**: Fully configured for Google Cloud Run deployment

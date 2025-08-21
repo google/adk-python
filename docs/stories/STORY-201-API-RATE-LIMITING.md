@@ -182,14 +182,9 @@ class RateLimiter:
 ## Dependencies
 
 ### Technical Dependencies
-- Redis instance for distributed state
+- SQLite database for distributed state
 - FastAPI middleware support
 - Environment configuration system
-
-### Team Dependencies
-- DevOps: Redis cluster setup
-- Security: Review rate limit thresholds
-- Frontend: Handle 429 responses gracefully
 
 ## Definition of Done
 

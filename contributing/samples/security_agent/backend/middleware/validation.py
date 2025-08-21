@@ -22,6 +22,7 @@ from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
+
 # ============================================================================
 # VALIDATION MODELS
 # ============================================================================
@@ -166,7 +167,7 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
             "/api/v1/chat/message": ("POST", ChatMessage),
             "/api/v1/assets/discover": ("POST", AssetQueryRequest),
             "/api/v1/security/analyze": ("POST", SecurityAnalysisRequest),
-            "/api/v1/sessions/create": ("POST", SessionRequest),
+            "/api/v1/sessions/create": ("POST", CreateSessionRequest), # Corrected line
             "/api/v1/sessions/{session_id}/messages": ("GET", PaginationRequest),
         }
     

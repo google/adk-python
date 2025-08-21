@@ -63,6 +63,65 @@ def _check_logging_enabled(bucket):
     except Exception:
         return False
 
+def format_storage_size(num_bytes: int) -> str:
+    """Formats bytes into a human-readable string (TB, GB, MB)."""
+    if num_bytes is None or num_bytes == 0:
+        return "0 B"
+    power = 1024
+    n = 0
+    power_labels = {0: 'B', 1: 'KB', 2: 'MB', 3: 'GB', 4: 'TB'}
+    while num_bytes >= power and n < len(power_labels) -1 :
+        num_bytes /= power
+        n += 1
+    return f"{num_bytes:.2f} {power_labels[n]}"
+
+async def _get_real_bucket(project_id: str, bucket_name: str) -> Dict[str, Any]:
+    """Get real data for a single bucket from GCS API."""
+    logger.info(f"📡 Making HTTP GET to https://storage.googleapis.com/storage/v1/b/{bucket_name}")
+    start_time = time.time()
+    try:
+        credentials = _get_credentials()
+        if not credentials:
+            raise Exception("No valid credentials available")
+            
+        client = storage.Client(project=project_id, credentials=credentials)
+        
+        bucket = client.get_bucket(bucket_name)
+
+        public_access = _check_public_access(bucket)
+        encryption_type = _get_encryption_type(bucket)
+        logging_enabled = _check_logging_enabled(bucket)
+        
+        # Note: Calculating bucket size can be slow for very large buckets
+        logger.info(f"Calculating size for bucket {bucket_name}...")
+        bucket_size_bytes = sum(blob.size for blob in bucket.list_blobs())
+        logger.info(f"Size calculation for {bucket_name} complete.")
+
+        bucket_data = {
+            "name": bucket.name,
+            "location": bucket.location,
+            "storageClass": bucket.storage_class,
+            "publicAccess": public_access,
+            "versioning": bucket.versioning_enabled,
+            "encryption": encryption_type,
+            "logging": logging_enabled,
+            "created": bucket.time_created.isoformat() if bucket.time_created else None,
+            "labels": dict(bucket.labels) if bucket.labels else {},
+            "lifecycle": bool(bucket.lifecycle_rules),
+            "cors": bool(bucket.cors),
+            "website": bool(bucket.website_main_page_suffix),
+            "requesterPays": bucket.requester_pays,
+            "size_bytes": bucket_size_bytes,
+            "retentionPolicy": {"retentionPeriod": bucket.retention_period} if bucket.retention_period else None,
+        }
+        api_duration = time.time() - start_time
+        logger.info(f"✅ Response for {bucket_name} received: 200 OK, {api_duration:.1f}s")
+        return {"success": True, "bucket": bucket_data, "api_duration": api_duration}
+    except Exception as e:
+        api_duration = time.time() - start_time
+        logger.error(f"❌ Failed to get bucket {bucket_name} after {api_duration:.1f}s: {e}")
+        return {"success": False, "error": str(e), "api_duration": api_duration}
+
 async def _get_real_buckets(project_id: str) -> Dict[str, Any]:
     """Get real bucket data from Google Cloud Storage API"""
     logger.info(f"📡 Making HTTP GET to https://storage.googleapis.com/storage/v1/b?project={project_id}")
@@ -79,14 +138,21 @@ async def _get_real_buckets(project_id: str) -> Dict[str, Any]:
         # Make real API call to list buckets
         bucket_iterator = client.list_buckets()
         buckets_data = []
+        total_storage_bytes = 0
         
         for bucket in bucket_iterator:
-            logger.info(f"📞 API Call: storage.buckets.getIamPolicy for {bucket.name}")
+            logger.info(f"📞 API Call: storage.buckets.get for {bucket.name}")
             
             # Get bucket details with real API calls
             public_access = _check_public_access(bucket)
             encryption_type = _get_encryption_type(bucket)
             logging_enabled = _check_logging_enabled(bucket)
+            
+            # Note: Calculating bucket size can be slow for very large buckets
+            logger.info(f"Calculating size for bucket {bucket.name}...")
+            bucket_size_bytes = sum(blob.size for blob in bucket.list_blobs())
+            total_storage_bytes += bucket_size_bytes
+            logger.info(f"Size calculation for {bucket.name} complete.")
             
             bucket_data = {
                 "name": bucket.name,
@@ -101,7 +167,9 @@ async def _get_real_buckets(project_id: str) -> Dict[str, Any]:
                 "lifecycle": bool(bucket.lifecycle_rules),
                 "cors": bool(bucket.cors),
                 "website": bool(bucket.website_main_page_suffix),
-                "requesterPays": bucket.requester_pays
+                "requesterPays": bucket.requester_pays,
+                "size_bytes": bucket_size_bytes,
+                "retentionPolicy": {"retentionPeriod": bucket.retention_period} if bucket.retention_period else None,
             }
             buckets_data.append(bucket_data)
         
@@ -113,7 +181,8 @@ async def _get_real_buckets(project_id: str) -> Dict[str, Any]:
             "success": True,
             "buckets": buckets_data,
             "source": "real_api",
-            "api_duration": api_duration
+            "api_duration": api_duration,
+            "total_storage_bytes": total_storage_bytes
         }
         
     except Exception as e:
@@ -126,148 +195,6 @@ async def _get_real_buckets(project_id: str) -> Dict[str, Any]:
             "api_duration": api_duration
         }
 
-# Mock data for demonstration - in production, this would call real GCS APIs
-MOCK_BUCKETS = {
-    "mgm-digitalconcierge": [
-        {
-            "name": "mgm-digitalconcierge-backups",
-            "location": "US-CENTRAL1",
-            "storageClass": "STANDARD",
-            "publicAccess": False,
-            "versioning": False,  # ISSUE: No versioning
-            "encryption": "Google-managed",
-            "logging": False,  # ISSUE: No access logging
-            "retentionPolicy": None,  # ISSUE: No retention policy
-            "lifecycle": None,
-            "created": "2023-01-15T10:30:00Z",
-            "size": "125.3 GB",
-            "objectCount": 15420,
-            "lastModified": "2024-01-14T08:45:00Z"
-        },
-        {
-            "name": "mgm-digitalconcierge-public-assets",
-            "location": "US",
-            "storageClass": "STANDARD",
-            "publicAccess": True,  # CRITICAL: Public access enabled
-            "versioning": False,
-            "encryption": "Google-managed",
-            "logging": False,  # ISSUE: No logging
-            "retentionPolicy": None,
-            "lifecycle": None,
-            "created": "2023-03-20T14:15:00Z",
-            "size": "8.7 GB",
-            "objectCount": 3241,
-            "lastModified": "2024-01-13T16:20:00Z"
-        },
-        {
-            "name": "mgm-digitalconcierge-data-lake",
-            "location": "US-CENTRAL1",
-            "storageClass": "NEARLINE",
-            "publicAccess": False,
-            "versioning": True,
-            "encryption": "Google-managed",  # ISSUE: Should use CMEK for sensitive data
-            "logging": True,
-            "retentionPolicy": {"retentionPeriod": 90},
-            "lifecycle": {"deleteAfter": 365},
-            "created": "2023-02-10T09:00:00Z",
-            "size": "2.1 TB",
-            "objectCount": 842156,
-            "lastModified": "2024-01-15T03:30:00Z"
-        },
-        {
-            "name": "mgm-digitalconcierge-temp-processing",
-            "location": "US",
-            "storageClass": "STANDARD",
-            "publicAccess": False,
-            "versioning": False,
-            "encryption": "Google-managed",
-            "logging": False,
-            "retentionPolicy": None,
-            "lifecycle": None,  # ISSUE: No lifecycle rules for temp data
-            "created": "2023-06-01T11:45:00Z",
-            "size": "456.2 GB",
-            "objectCount": 52341,
-            "lastModified": "2024-01-15T10:15:00Z"
-        },
-        {
-            "name": "mgm-digitalconcierge-ml-models",
-            "location": "US-CENTRAL1",
-            "storageClass": "STANDARD",
-            "publicAccess": False,
-            "versioning": True,
-            "encryption": "CMEK",  # Good: Using CMEK
-            "logging": True,
-            "retentionPolicy": {"retentionPeriod": 180},
-            "lifecycle": None,
-            "created": "2023-04-12T13:20:00Z",
-            "size": "67.8 GB",
-            "objectCount": 234,
-            "lastModified": "2024-01-12T14:55:00Z"
-        }
-    ]
-}
-
-@router.get("/analyze/{project_id}")
-async def analyze_storage_security_enhanced(
-    project_id: str,
-    detailed: bool = Query(True, description="Include detailed analysis")
-):
-    """
-    Enhanced storage security analysis with comprehensive security checks (STORY-004)
-    """
-    # Import the enhanced analyzer
-    try:
-        from backend.services.storage_security_analyzer import StorageSecurityAnalyzer
-        
-        analyzer = StorageSecurityAnalyzer(project_id)
-        posture = analyzer.analyze_storage_security()
-        
-        # Convert findings to API response format
-        findings_data = []
-        for finding in posture.findings:
-            findings_data.append({
-                "type": finding.finding_type.value,
-                "risk_level": finding.risk_level.value,
-                "risk_score": finding.risk_score,
-                "title": finding.title,
-                "description": finding.description,
-                "bucket_name": finding.bucket_name,
-                "object_name": finding.object_name,
-                "remediation_steps": finding.remediation_steps,
-                "compliance_frameworks": finding.compliance_frameworks,
-                "metadata": finding.metadata,
-                "detected_at": finding.detected_at.isoformat()
-            })
-        
-        return {
-            "success": True,
-            "source": "enhanced_storage_analyzer",
-            "analysis": {
-                "project_id": posture.project_id,
-                "posture_score": posture.posture_score,
-                "risk_distribution": posture.risk_distribution,
-                "statistics": {
-                    "total_buckets": posture.total_buckets,
-                    "public_buckets": posture.public_buckets,
-                    "encrypted_buckets": posture.encrypted_buckets,
-                    "compliant_buckets": posture.compliant_buckets
-                },
-                "compliance_status": posture.compliance_status,
-                "recommendations": posture.recommendations,
-                "findings": findings_data,
-                "analyzed_at": posture.analyzed_at.isoformat()
-            }
-        }
-        
-    except ImportError as e:
-        logger.error(f"Enhanced storage analyzer not available: {e}")
-        # Fallback to basic analysis
-        return await analyze_buckets_basic(project_id, detailed)
-    except Exception as e:
-        logger.error(f"Error in enhanced storage analysis: {e}")
-        return await analyze_buckets_basic(project_id, detailed)
-
-
 @router.get("/buckets/{project_id}")
 async def analyze_buckets_basic(
     project_id: str,
@@ -275,22 +202,24 @@ async def analyze_buckets_basic(
 ):
     """Analyze GCS buckets for security issues and provide specific recommendations."""
     
-    # Try to get real bucket data from Google Cloud Storage API
     real_data = await _get_real_buckets(project_id)
     
-    if real_data["success"]:
-        buckets = real_data["buckets"]
-        logger.info(f"🎯 Using real API data: {len(buckets)} buckets from Google Cloud Storage")
-    else:
-        # Fallback to mock data if API fails
-        logger.warning(f"🔄 Falling back to mock data due to API failure: {real_data.get('error')}")
-        buckets = MOCK_BUCKETS.get(project_id, [])
+    if not real_data["success"]:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch storage data from GCP: {real_data.get('error')}"
+        )
+
+    buckets = real_data["buckets"]
+    total_storage_bytes = real_data.get("total_storage_bytes", 0)
+    logger.info(f"🎯 Using real API data: {len(buckets)} buckets from Google Cloud Storage")
         
     if not buckets:
         return {
-            "success": False,
-            "error": f"No buckets found in project {project_id}",
-            "source": real_data.get("source", "unknown")
+            "success": True,
+            "project_id": project_id,
+            "summary": {"total_buckets": 0, "message": "No buckets found in project"},
+            "buckets": [],
         }
     
     # Analyze each bucket for security issues
@@ -345,7 +274,7 @@ async def analyze_buckets_basic(
             })
         
         # MEDIUM: No retention policy on backups
-        if "backup" in bucket_name.lower() and not bucket["retentionPolicy"]:
+        if "backup" in bucket_name.lower() and not bucket.get("retentionPolicy"):
             medium_issues.append({
                 "bucket": bucket_name,
                 "issue": "NO RETENTION POLICY",
@@ -377,7 +306,7 @@ async def analyze_buckets_basic(
             })
         
         # MEDIUM: Sensitive data without CMEK
-        if ("data" in bucket_name.lower() or "backup" in bucket_name.lower()) and bucket["encryption"] != "CMEK":
+        if ("data" in bucket_name.lower() or "backup" in bucket_name.lower()) and bucket["encryption"] != "CUSTOMER_MANAGED":
             medium_issues.append({
                 "bucket": bucket_name,
                 "issue": "NO CUSTOMER-MANAGED ENCRYPTION",
@@ -385,16 +314,45 @@ async def analyze_buckets_basic(
                 "description": f"Sensitive data bucket '{bucket_name}' uses default encryption instead of CMEK.",
                 "remediation": "Configure CMEK encryption for enhanced security"
             })
+            
+    # Dynamically generate immediate actions from top recommendations
+    priority_map = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    recommendations.sort(key=lambda x: priority_map.get(x.get("priority", "LOW"), 4))
     
+    immediate_actions = []
+    for rec in recommendations[:3]:
+        if rec["priority"] == "CRITICAL":
+            action_prefix = "URGENT:"
+            impact = "Prevents unauthorized data exposure or critical misconfiguration."
+        elif rec["priority"] == "HIGH":
+            action_prefix = ""
+            impact = "Protects against data loss or security auditing gaps."
+        else:
+            continue
+
+        immediate_actions.append({
+            "action": f"{action_prefix} {rec['action']} on {rec['bucket']}".strip(),
+            "command": rec['command'],
+            "impact": impact
+        })
+
+    # Add a generic logging action if space allows
+    if len(immediate_actions) < 3 and not any("logging" in issue["issue"].lower() for issue in high_issues):
+        immediate_actions.append({
+            "action": "Enable access logging on all buckets",
+            "command": "for bucket in $(gsutil ls); do gsutil logging set on -b gs://logs-bucket $bucket; done",
+            "impact": "Enables security auditing"
+        })
+
     # Build the response
     response = {
         "success": True,
         "project_id": project_id,
-        "data_source": real_data.get("source", "mock_data"),
+        "data_source": real_data.get("source", "real_api"),
         "api_duration": real_data.get("api_duration", 0),
         "summary": {
             "total_buckets": len(buckets),
-            "total_storage": "2.7 TB",  # TODO: Calculate real storage size from API
+            "total_storage": format_storage_size(total_storage_bytes),
             "critical_issues": len(critical_issues),
             "high_issues": len(high_issues),
             "medium_issues": len(medium_issues),
@@ -407,36 +365,26 @@ async def analyze_buckets_basic(
             "medium": medium_issues
         },
         "specific_recommendations": recommendations,
-        "immediate_actions": [
-            {
-                "action": "URGENT: Disable public access on mgm-digitalconcierge-public-assets",
-                "command": "gsutil iam ch -d allUsers gs://mgm-digitalconcierge-public-assets",
-                "impact": "Prevents unauthorized data exposure"
-            },
-            {
-                "action": "Enable versioning on backup bucket",
-                "command": "gsutil versioning set on gs://mgm-digitalconcierge-backups",
-                "impact": "Protects against accidental deletion"
-            },
-            {
-                "action": "Enable access logging on all buckets",
-                "command": "for bucket in $(gsutil ls); do gsutil logging set on -b gs://logs-bucket $bucket; done",
-                "impact": "Enables security auditing"
-            }
-        ]
+        "immediate_actions": immediate_actions
     }
     
     if detailed:
+        cost_optimization_recommendations = ["Consider ARCHIVE class for old backups"]
+        temp_bucket_without_lifecycle = next((b for b in buckets if "temp" in b["name"].lower() and not b["lifecycle"]), None)
+        if temp_bucket_without_lifecycle:
+            size_gb = temp_bucket_without_lifecycle.get("size_bytes", 0) / (1024**3)
+            potential_savings = size_gb * 0.020  # Approx. standard storage cost
+            cost_optimization_recommendations.insert(0,
+                f"Temp bucket '{temp_bucket_without_lifecycle['name']}' has {size_gb:.1f}GB without lifecycle rules - potential monthly savings: ${potential_savings:.2f}"
+            )
+
         response["detailed_analysis"] = {
             "compliance_gaps": [
                 "No bucket-level Public Access Prevention enforced",
                 "Missing access logs for audit compliance",
                 "No retention policies for compliance data"
             ],
-            "cost_optimization": [
-                f"Temp bucket '{buckets[3]['name']}' has 456GB without lifecycle rules - potential monthly savings: $9.12",
-                "Consider ARCHIVE class for old backups"
-            ],
+            "cost_optimization": cost_optimization_recommendations,
             "best_practices_missing": [
                 "No uniform naming convention",
                 "Mixed encryption strategies",
@@ -453,23 +401,26 @@ async def get_bucket_details(
 ):
     """Get detailed information about a specific bucket."""
     
-    buckets = MOCK_BUCKETS.get(project_id, [])
-    bucket = next((b for b in buckets if b["name"] == bucket_name), None)
+    result = await _get_real_bucket(project_id, bucket_name)
     
-    if not bucket:
-        raise HTTPException(status_code=404, detail=f"Bucket {bucket_name} not found")
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result.get("error", f"Bucket {bucket_name} not found or access denied"))
+    
+    bucket = result["bucket"]
     
     # Add more detailed analysis for individual bucket
     return {
         "success": True,
         "bucket": bucket,
-        "risk_score": 7 if bucket["publicAccess"] else 4,
+        "risk_score": 9 if bucket["publicAccess"] else (6 if not bucket["logging"] else 4),
         "compliance_status": "Non-compliant" if bucket["publicAccess"] or not bucket["logging"] else "Partial",
         "recommendations": [
-            "Enable versioning" if not bucket["versioning"] else None,
-            "Enable logging" if not bucket["logging"] else None,
-            "Disable public access" if bucket["publicAccess"] else None,
-            "Set retention policy" if not bucket["retentionPolicy"] else None
+            rec for rec in [
+                "Enable versioning" if not bucket["versioning"] else None,
+                "Enable logging" if not bucket["logging"] else None,
+                "Disable public access" if bucket["publicAccess"] else None,
+                "Set retention policy" if not bucket.get("retentionPolicy") else None
+            ] if rec is not None
         ]
     }
 

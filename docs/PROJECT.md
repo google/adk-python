@@ -79,7 +79,7 @@ To create an intelligent, automated security companion that continuously monitor
 ### Technical Constraints
 - Must use Google ADK for agent development
 - Limited to GCP API rate limits
-- Backend must be stateless for scaling
+- Backend must be stateful with a SQLite database for persistence
 - Frontend must be lightweight (Streamlit)
 - Python 3.11+ requirement
 
@@ -132,7 +132,7 @@ To create an intelligent, automated security companion that continuously monitor
 - DevOps teams for testing
 
 ## Architecture Overview
-
+The backend is a stateful FastAPI application that uses a SQLite database for persistence.
 ```
 ┌─────────────────┐
 │   User Input    │
@@ -151,6 +151,10 @@ To create an intelligent, automated security companion that continuously monitor
 │  FastAPI Backend│
 │   (12 API       │
 │   Endpoints)    │
+└────────┬────────┘
+         │
+┌────────▼────────┐
+│   SQLite DB     │
 └────────┬────────┘
          │
 ┌────────▼────────┐

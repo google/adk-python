@@ -78,13 +78,6 @@ def mock_iam_policy():
     policy.bindings = [binding1, binding2]
     return policy
 
-@pytest.fixture
-def mock_credentials():
-    """Mock GCP credentials."""
-    with patch('backend.api.iam._get_credentials') as mock_creds:
-        mock_creds.return_value = Mock()
-        yield mock_creds
-
 # ============================================================================
 # IAM ANALYSIS ENDPOINT TESTS
 # ============================================================================
@@ -92,7 +85,7 @@ def mock_credentials():
 class TestIAMAnalysisEndpoints:
     """Test IAM analysis endpoints."""
 
-    def test_analyze_iam_success(self, mock_credentials, mock_iam_client, mock_service_account):
+    def test_analyze_iam_success(self, mock_iam_client, mock_service_account):
         """Test successful IAM analysis."""
         # Setup mocks
         mock_client_instance = Mock()
@@ -117,7 +110,7 @@ class TestIAMAnalysisEndpoints:
         assert "security_findings" in data
         assert "summary" in data
 
-    def test_analyze_iam_with_filters(self, mock_credentials, mock_iam_client):
+    def test_analyze_iam_with_filters(self, mock_iam_client):
         """Test IAM analysis with filters."""
         response = client.get("/api/v1/iam/analyze/test-project?include_keys=true&check_overprivileged=true")
         
@@ -126,9 +119,8 @@ class TestIAMAnalysisEndpoints:
         assert data["success"] is True
         assert "detailed_analysis" in data
 
-    def test_analyze_iam_no_credentials(self, mock_credentials):
+    def test_analyze_iam_no_credentials(self):
         """Test IAM analysis without credentials."""
-        mock_credentials.return_value = None
         
         response = client.get("/api/v1/iam/analyze/test-project")
         
@@ -163,7 +155,7 @@ class TestIAMAnalysisEndpoints:
 class TestServiceAccountManagement:
     """Test service account management operations."""
 
-    def test_list_service_accounts(self, mock_credentials):
+    def test_list_service_accounts(self):
         """Test listing service accounts."""
         response = client.get("/api/v1/iam/service-accounts/test-project")
         
@@ -204,7 +196,7 @@ class TestServiceAccountManagement:
 class TestIAMSecurityAnalysis:
     """Test IAM security analysis functionality."""
 
-    def test_overprivileged_account_detection(self, mock_credentials, mock_iam_policy):
+    def test_overprivileged_account_detection(self, mock_iam_policy):
         """Test detection of overprivileged accounts."""
         with patch('backend.api.iam._check_overprivileged_accounts') as mock_check:
             # Mock overprivileged detection
@@ -229,7 +221,7 @@ class TestIAMSecurityAnalysis:
             # Should have high-risk findings
             assert any(finding["risk_score"] > 80 for finding in findings.get("critical", []))
 
-    def test_stale_key_detection(self, mock_credentials, mock_service_account_key):
+    def test_stale_key_detection(self, mock_service_account_key):
         """Test detection of stale service account keys."""
         # Create old key (91 days old)
         old_key = mock_service_account_key
@@ -310,7 +302,7 @@ class TestIAMSecurityAnalysis:
 class TestServiceAccountKeyManagement:
     """Test service account key management."""
 
-    def test_list_service_account_keys(self, mock_credentials, mock_service_account_key):
+    def test_list_service_account_keys(self, mock_service_account_key):
         """Test listing service account keys."""
         with patch('backend.api.iam._get_service_account_keys') as mock_keys:
             mock_keys.return_value = [mock_service_account_key]
@@ -438,7 +430,7 @@ class TestIAMErrorHandling:
         
         assert response.status_code == 404
 
-    def test_api_permission_denied(self, mock_credentials):
+    def test_api_permission_denied(self):
         """Test handling of permission denied errors."""
         with patch('backend.api.iam.service_account.ServiceAccountServiceClient') as mock_client:
             mock_client.side_effect = Exception("Permission denied")
@@ -464,7 +456,7 @@ class TestIAMErrorHandling:
 class TestIAMIntegration:
     """Test IAM integration scenarios."""
 
-    def test_full_iam_security_assessment(self, mock_credentials):
+    def test_full_iam_security_assessment(self):
         """Test complete IAM security assessment workflow."""
         response = client.get("/api/v1/iam/analyze/test-project?detailed=true&include_keys=true&check_overprivileged=true")
         
@@ -517,7 +509,7 @@ class TestIAMIntegration:
 class TestIAMPerformance:
     """Test IAM API performance."""
 
-    def test_large_project_analysis_performance(self, mock_credentials):
+    def test_large_project_analysis_performance(self):
         """Test performance with large project (many service accounts)."""
         import time
         
@@ -529,7 +521,7 @@ class TestIAMPerformance:
         assert (end_time - start_time) < 5.0  # 5 seconds max
         assert response.status_code == 200
 
-    def test_concurrent_requests_handling(self, mock_credentials):
+    def test_concurrent_requests_handling(self):
         """Test handling of concurrent IAM analysis requests."""
         import threading
         import time

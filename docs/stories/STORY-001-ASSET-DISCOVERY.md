@@ -133,6 +133,12 @@ def discover_gcp_assets(project_id: str = None, asset_types: List[str] = None):
     return response.json()
 ```
 
+### Database Schema
+A SQLite database will be used to store all discovered assets.
+
+- **DiscoveredAssets**: Stores the discovered assets.
+- **AssetSnapshots**: Stores snapshots of the asset inventory for incremental discovery.
+
 ### Data Models
 
 ```python

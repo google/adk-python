@@ -1,0 +1,1022 @@
+"""
+SQLite Query Tool for Vertex AI Agent
+=====================================
+
+Single tool that can query all cached GCP security data from SQLite.
+This works around Vertex AI's single-tool limitation by providing
+comprehensive data access through SQL queries.
+"""
+
+import sqlite3
+import json
+import os
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Database configuration
+# Get the database path relative to the security_agent directory
+import os
+from pathlib import Path
+
+# Find the security_agent root directory
+current_file = Path(__file__)
+security_agent_dir = current_file.parent.parent.parent  # Up to security_agent/
+DB_PATH = os.getenv('DATABASE_PATH', str(security_agent_dir / 'backend' / 'cache' / 'gcp_data.db'))
+
+def query_security_data(query_type: str, parameters: Optional[str] = None) -> str:
+    """
+    Query GCP security data from SQLite cache.
+    
+    This is the single tool that provides access to all cached security data.
+    The agent can request different types of data by specifying the query_type.
+    
+    Args:
+        query_type: Type of query to execute. Options include:
+            - 'assets': List all GCP assets
+            - 'security_findings': Get security findings
+            - 'iam_analysis': Analyze IAM permissions
+            - 'storage_buckets': List and analyze storage buckets
+            - 'api_keys': List API keys
+            - 'recommendations': Get security recommendations
+            - 'org_policies': Check organization policies
+            - 'service_usage': Analyze service usage
+            - 'monitoring': Get monitoring data
+            - 'logs': Get audit logs
+            - 'cache_status': Show cache statistics
+            - 'custom': Execute a custom SQL query (be careful!)
+            
+        parameters: Optional JSON string with query parameters.
+            Examples:
+            - For 'assets': '{"asset_type": "compute.googleapis.com/Instance"}'
+            - For 'security_findings': '{"severity": "HIGH"}'
+            - For 'iam_analysis': '{"principal": "user@example.com"}'
+            - For 'storage_buckets': '{"bucket_name": "my-bucket"}'
+            - For 'custom': '{"sql": "SELECT * FROM assets LIMIT 10"}'
+    
+    Returns:
+        String with query results formatted as readable text
+    
+    Examples:
+        >>> query_security_data("assets")
+        "Found 25 assets in project..."
+        
+        >>> query_security_data("security_findings", '{"severity": "HIGH"}')
+        "Found 3 HIGH severity findings..."
+    """
+    
+    # Parse parameters
+    params = {}
+    if parameters:
+        try:
+            params = json.loads(parameters) if isinstance(parameters, str) else parameters
+        except json.JSONDecodeError:
+            params = {'value': parameters}
+    
+    # Ensure database exists
+    db_path = Path(DB_PATH)
+    if not db_path.exists():
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return "❌ Database not found. Please run data refresh first to populate the cache."
+    
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Route to appropriate query based on type
+        if query_type == 'assets':
+            return _query_assets(cursor, params)
+        elif query_type == 'security_findings':
+            return _query_security_findings(cursor, params)
+        elif query_type == 'iam_analysis':
+            return _query_iam(cursor, params)
+        elif query_type == 'storage_buckets':
+            return _query_storage(cursor, params)
+        elif query_type == 'api_keys':
+            return _query_api_keys(cursor, params)
+        elif query_type == 'recommendations':
+            return _query_recommendations(cursor, params)
+        elif query_type == 'org_policies':
+            return _query_org_policies(cursor, params)
+        elif query_type == 'service_usage':
+            return _query_service_usage(cursor, params)
+        elif query_type == 'monitoring':
+            return _query_monitoring(cursor, params)
+        elif query_type == 'logs':
+            return _query_logs(cursor, params)
+        elif query_type == 'cache_status':
+            return _get_cache_status(cursor)
+        elif query_type == 'security_summary':
+            return _get_security_summary(cursor, params)
+        elif query_type == 'firewall_rules':
+            return _query_firewall_rules(cursor, params)
+        elif query_type == 'networks':
+            return _query_networks(cursor, params)
+        elif query_type == 'compute_instances':
+            return _query_compute_instances(cursor, params)
+        elif query_type == 'databases':
+            return _query_databases(cursor, params)
+        elif query_type == 'iam_accounts':
+            return _query_iam_accounts(cursor, params)
+        elif query_type == 'secrets':
+            return _query_secrets(cursor, params)
+        elif query_type == 'custom':
+            return _execute_custom_query(cursor, params)
+        else:
+            return f"❌ Unknown query type: {query_type}\n\nAvailable types: security_summary, assets, security_findings, iam_analysis, storage_buckets, api_keys, recommendations, org_policies, service_usage, monitoring, logs, firewall_rules, networks, compute_instances, databases, iam_accounts, secrets, cache_status, custom"
+            
+    except Exception as e:
+        logger.error(f"Database query error: {str(e)}")
+        return f"❌ Database error: {str(e)}"
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+def _query_assets(cursor, params: Dict) -> str:
+    """Query GCP assets"""
+    asset_type = params.get('asset_type', '')
+    
+    if asset_type:
+        cursor.execute("""
+            SELECT name, asset_type, location, labels, create_time
+            FROM assets 
+            WHERE asset_type = ?
+            ORDER BY create_time DESC
+        """, (asset_type,))
+    else:
+        cursor.execute("""
+            SELECT asset_type, COUNT(*) as count
+            FROM assets
+            GROUP BY asset_type
+            ORDER BY count DESC
+        """)
+    
+    results = cursor.fetchall()
+    
+    if not results:
+        return "No assets found in cache."
+    
+    if asset_type:
+        output = f"📦 Assets of type {asset_type}:\n\n"
+        for row in results:
+            output += f"• {row['name']}\n"
+            output += f"  Location: {row['location']}\n"
+            output += f"  Created: {row['create_time']}\n"
+            if row['labels']:
+                output += f"  Labels: {row['labels']}\n"
+            output += "\n"
+    else:
+        output = "📊 Asset Summary:\n\n"
+        total = sum(row['count'] for row in results)
+        output += f"Total assets: {total}\n\n"
+        for row in results:
+            output += f"• {row['asset_type']}: {row['count']}\n"
+    
+    return output
+
+def _query_security_findings(cursor, params: Dict) -> str:
+    """Query security findings"""
+    severity = params.get('severity', '')
+    category = params.get('category', '')
+    
+    query = "SELECT * FROM security_findings WHERE 1=1"
+    query_params = []
+    
+    if severity:
+        query += " AND severity = ?"
+        query_params.append(severity)
+    if category:
+        query += " AND category = ?"
+        query_params.append(category)
+    
+    query += " ORDER BY severity_score DESC, finding_time DESC LIMIT 20"
+    
+    cursor.execute(query, query_params)
+    results = cursor.fetchall()
+    
+    if not results:
+        return "No security findings found."
+    
+    output = f"🔍 Security Findings ({len(results)} found):\n\n"
+    
+    # Group by severity
+    by_severity = {}
+    for row in results:
+        sev = row['severity']
+        if sev not in by_severity:
+            by_severity[sev] = []
+        by_severity[sev].append(row)
+    
+    severity_order = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
+    for sev in severity_order:
+        if sev in by_severity:
+            output += f"\n🔴 {sev} Severity ({len(by_severity[sev])}):\n"
+            for finding in by_severity[sev][:5]:  # Show top 5 per severity
+                output += f"  • {finding['category']}: {finding['resource_name']}\n"
+                output += f"    {finding['description'][:100]}...\n"
+    
+    return output
+
+def _query_iam(cursor, params: Dict) -> str:
+    """Query IAM data"""
+    principal = params.get('principal', '')
+    
+    if principal:
+        cursor.execute("""
+            SELECT resource, role, condition
+            FROM iam_policies
+            WHERE members LIKE ?
+            ORDER BY resource
+        """, (f'%{principal}%',))
+    else:
+        cursor.execute("""
+            SELECT role, COUNT(DISTINCT resource) as resource_count
+            FROM iam_policies
+            GROUP BY role
+            ORDER BY resource_count DESC
+            LIMIT 20
+        """)
+    
+    results = cursor.fetchall()
+    
+    if not results:
+        return "No IAM data found."
+    
+    if principal:
+        output = f"👤 IAM Analysis for {principal}:\n\n"
+        for row in results:
+            output += f"• Resource: {row['resource']}\n"
+            output += f"  Role: {row['role']}\n"
+            if row['condition']:
+                output += f"  Condition: {row['condition']}\n"
+            output += "\n"
+    else:
+        output = "🔐 IAM Role Summary:\n\n"
+        for row in results:
+            output += f"• {row['role']}: {row['resource_count']} resources\n"
+    
+    return output
+
+def _query_storage(cursor, params: Dict) -> str:
+    """Query storage bucket data"""
+    bucket_name = params.get('bucket_name', '')
+    
+    if bucket_name:
+        cursor.execute("""
+            SELECT * FROM storage_buckets
+            WHERE name = ?
+        """, (bucket_name,))
+        result = cursor.fetchone()
+        
+        if not result:
+            return f"Bucket {bucket_name} not found."
+        
+        output = f"🪣 Storage Bucket: {bucket_name}\n\n"
+        output += f"Location: {result['location']}\n"
+        output += f"Storage Class: {result['storage_class']}\n"
+        output += f"Versioning: {'Enabled' if result['versioning_enabled'] else 'Disabled'}\n"
+        output += f"Public Access: {result['public_access']}\n"
+        output += f"Uniform Bucket Level Access: {'Enabled' if result['uniform_bucket_level_access'] else 'Disabled'}\n"
+        output += f"Encryption: {result['encryption']}\n"
+        if result['labels']:
+            output += f"Labels: {result['labels']}\n"
+        output += f"Fetched: {result['fetched_at']}\n"
+        
+    else:
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN versioning_enabled = 0 THEN 1 ELSE 0 END) as no_versioning,
+                SUM(CASE WHEN uniform_bucket_level_access = 0 THEN 1 ELSE 0 END) as no_uniform_access
+            FROM storage_buckets
+        """)
+        result = cursor.fetchone()
+        
+        output = "🪣 Storage Buckets Summary:\n\n"
+        output += f"Total buckets: {result['total']}\n\n"
+        output += "⚠️ Potential Issues:\n"
+        output += f"  • Buckets without versioning: {result['no_versioning']}\n"
+        output += f"  • Buckets without uniform bucket-level access: {result['no_uniform_access']}\n"
+        
+        # Show individual buckets
+        cursor.execute("""
+            SELECT name, location, storage_class, public_access, versioning_enabled
+            FROM storage_buckets
+            ORDER BY name
+        """)
+        buckets = cursor.fetchall()
+        
+        if buckets:
+            output += f"\n📋 All Buckets ({len(buckets)}):\n"
+            for bucket in buckets:
+                security_status = "🔒 Private" if bucket['public_access'] != 'public' else "⚠️ Public"
+                versioning_status = "✅" if bucket['versioning_enabled'] else "❌"
+                output += f"  • {bucket['name']} ({bucket['location']}) - {security_status}, Versioning: {versioning_status}\n"
+    
+    return output
+
+def _query_api_keys(cursor, params: Dict) -> str:
+    """Query API keys"""
+    cursor.execute("""
+        SELECT name, display_name, create_time, update_time, restrictions
+        FROM api_keys
+        ORDER BY create_time DESC
+    """)
+    results = cursor.fetchall()
+    
+    if not results:
+        return "No API keys found."
+    
+    output = f"🔑 API Keys ({len(results)} found):\n\n"
+    for row in results:
+        output += f"• {row['display_name'] or row['name']}\n"
+        output += f"  Created: {row['create_time']}\n"
+        if row['restrictions']:
+            output += f"  Restrictions: {row['restrictions']}\n"
+        output += "\n"
+    
+    return output
+
+def _query_recommendations(cursor, params: Dict) -> str:
+    """Query security recommendations"""
+    cursor.execute("""
+        SELECT recommender, priority, description, state
+        FROM recommendations
+        WHERE state = 'ACTIVE'
+        ORDER BY 
+            CASE priority 
+                WHEN 'P1' THEN 1 
+                WHEN 'P2' THEN 2 
+                WHEN 'P3' THEN 3 
+                ELSE 4 
+            END
+        LIMIT 10
+    """)
+    results = cursor.fetchall()
+    
+    if not results:
+        return "No active recommendations found."
+    
+    output = "💡 Security Recommendations:\n\n"
+    for row in results:
+        priority_emoji = {'P1': '🔴', 'P2': '🟡', 'P3': '🟢'}.get(row['priority'], '⚪')
+        output += f"{priority_emoji} [{row['priority']}] {row['recommender']}\n"
+        output += f"   {row['description'][:150]}...\n\n"
+    
+    return output
+
+def _query_org_policies(cursor, params: Dict) -> str:
+    """Query organization policies"""
+    cursor.execute("""
+        SELECT constraint_name, list_policy, boolean_policy, update_time
+        FROM org_policies
+        ORDER BY constraint_name
+    """)
+    results = cursor.fetchall()
+    
+    if not results:
+        return "No organization policies found."
+    
+    output = f"📋 Organization Policies ({len(results)} configured):\n\n"
+    for row in results:
+        output += f"• {row['constraint_name']}\n"
+        if row['boolean_policy']:
+            output += f"  Boolean: {row['boolean_policy']}\n"
+        if row['list_policy']:
+            output += f"  List: {row['list_policy'][:100]}...\n"
+        output += "\n"
+    
+    return output
+
+def _query_service_usage(cursor, params: Dict) -> str:
+    """Query service usage"""
+    cursor.execute("""
+        SELECT name, state
+        FROM services
+        WHERE state = 'ENABLED'
+        ORDER BY name
+    """)
+    results = cursor.fetchall()
+    
+    if not results:
+        return "No enabled services found."
+    
+    output = f"⚙️ Enabled Services ({len(results)} total):\n\n"
+    
+    # Group by service type
+    security_services = []
+    compute_services = []
+    storage_services = []
+    other_services = []
+    
+    for row in results:
+        name = row['name']
+        if 'security' in name or 'iam' in name or 'access' in name:
+            security_services.append(name)
+        elif 'compute' in name or 'container' in name or 'run' in name:
+            compute_services.append(name)
+        elif 'storage' in name or 'sql' in name or 'database' in name:
+            storage_services.append(name)
+        else:
+            other_services.append(name)
+    
+    if security_services:
+        output += f"🔒 Security Services ({len(security_services)}):\n"
+        for svc in security_services[:5]:
+            output += f"  • {svc}\n"
+    
+    if compute_services:
+        output += f"\n💻 Compute Services ({len(compute_services)}):\n"
+        for svc in compute_services[:5]:
+            output += f"  • {svc}\n"
+    
+    if storage_services:
+        output += f"\n💾 Storage Services ({len(storage_services)}):\n"
+        for svc in storage_services[:5]:
+            output += f"  • {svc}\n"
+    
+    return output
+
+def _query_monitoring(cursor, params: Dict) -> str:
+    """Query monitoring data"""
+    cursor.execute("""
+        SELECT name, description, enabled, notification_channels
+        FROM alert_policies
+        WHERE enabled = 1
+    """)
+    results = cursor.fetchall()
+    
+    output = "📊 Monitoring Configuration:\n\n"
+    
+    if results:
+        output += f"Active Alert Policies: {len(results)}\n\n"
+        for row in results[:5]:
+            output += f"• {row['name']}\n"
+            output += f"  {row['description'][:100] if row['description'] else 'No description'}\n"
+            if row['notification_channels']:
+                output += f"  Channels: {row['notification_channels']}\n"
+            output += "\n"
+    else:
+        output += "⚠️ No active alert policies found.\n"
+    
+    return output
+
+def _query_logs(cursor, params: Dict) -> str:
+    """Query audit logs summary"""
+    cursor.execute("""
+        SELECT severity, resource_type, COUNT(*) as count
+        FROM logs
+        WHERE timestamp > datetime('now', '-7 days')
+        GROUP BY severity, resource_type
+        ORDER BY count DESC
+        LIMIT 10
+    """)
+    results = cursor.fetchall()
+    
+    if not results:
+        return "No recent audit logs found."
+    
+    output = "📝 Audit Logs (Last 7 Days):\n\n"
+    for row in results:
+        output += f"• {row['severity']} - {row['resource_type']}: {row['count']} events\n"
+    
+    return output
+
+def _get_security_summary(cursor, params: Dict) -> str:
+    """Get a comprehensive security summary highlighting the most critical issues"""
+    output = "🚨 **SECURITY SUMMARY - MOST GLARING ISSUES** 🚨\n\n"
+    
+    critical_issues = []
+    high_issues = []
+    medium_issues = []
+    
+    # 1. Check for overly permissive firewall rules (CRITICAL)
+    try:
+        cursor.execute("""
+            SELECT name, direction, source_ranges, allowed
+            FROM firewall_rules
+            WHERE source_ranges LIKE '%0.0.0.0/0%' 
+            AND direction = 'INGRESS'
+            AND disabled = 0
+        """)
+        open_rules = cursor.fetchall()
+        if open_rules:
+            for rule in open_rules:
+                critical_issues.append({
+                    'type': 'FIREWALL',
+                    'title': f"🔥 Open Firewall Rule: {rule['name']}",
+                    'detail': f"Allows traffic from 0.0.0.0/0 (entire internet) - {rule['allowed']}",
+                    'remediation': "Restrict source_ranges to specific IPs or CIDR blocks"
+                })
+    except:
+        pass
+    
+    # 2. Check for public storage buckets (CRITICAL)
+    try:
+        cursor.execute("""
+            SELECT name, public_access, versioning_enabled, uniform_bucket_level_access
+            FROM storage_buckets
+            WHERE public_access != 'private' OR public_access IS NULL
+        """)
+        public_buckets = cursor.fetchall()
+        if public_buckets:
+            for bucket in public_buckets:
+                severity = 'CRITICAL' if not bucket['versioning_enabled'] else 'HIGH'
+                issue = {
+                    'type': 'STORAGE',
+                    'title': f"🪣 Public Storage Bucket: {bucket['name']}",
+                    'detail': f"Bucket is publicly accessible. Versioning: {bucket['versioning_enabled']}, Uniform Access: {bucket['uniform_bucket_level_access']}",
+                    'remediation': "Enable uniform bucket-level access, remove public access, enable versioning"
+                }
+                if severity == 'CRITICAL':
+                    critical_issues.append(issue)
+                else:
+                    high_issues.append(issue)
+    except:
+        pass
+    
+    # 3. Check for critical security findings (CRITICAL/HIGH)
+    try:
+        cursor.execute("""
+            SELECT category, severity, resource_name, description
+            FROM security_findings
+            WHERE severity IN ('CRITICAL', 'HIGH')
+            ORDER BY severity_score DESC
+            LIMIT 5
+        """)
+        findings = cursor.fetchall()
+        for finding in findings:
+            issue = {
+                'type': 'FINDING',
+                'title': f"🔍 {finding['severity']} Security Finding: {finding['category']}",
+                'detail': f"Resource: {finding['resource_name']} - {finding['description'][:100]}...",
+                'remediation': "Address immediately based on finding type"
+            }
+            if finding['severity'] == 'CRITICAL':
+                critical_issues.append(issue)
+            else:
+                high_issues.append(issue)
+    except:
+        pass
+    
+    # 4. Check for service accounts with potential issues (HIGH)
+    try:
+        cursor.execute("""
+            SELECT email, display_name
+            FROM iam_accounts
+            WHERE email LIKE '%iam.gserviceaccount.com%'
+        """)
+        service_accounts = cursor.fetchall()
+        if len(service_accounts) > 5:
+            high_issues.append({
+                'type': 'IAM',
+                'title': f"👤 Excessive Service Accounts: {len(service_accounts)} found",
+                'detail': "Large number of service accounts increases attack surface",
+                'remediation': "Audit and remove unused service accounts, use Workload Identity"
+            })
+    except:
+        pass
+    
+    # 5. Check for missing monitoring (MEDIUM)
+    try:
+        cursor.execute("SELECT COUNT(*) as count FROM alert_policies WHERE enabled = 1")
+        result = cursor.fetchone()
+        if result['count'] == 0:
+            medium_issues.append({
+                'type': 'MONITORING',
+                'title': "📊 No Active Alert Policies",
+                'detail': "No monitoring alerts configured for security events",
+                'remediation': "Set up alerts for failed logins, privilege escalation, unusual API usage"
+            })
+    except:
+        pass
+    
+    # 6. Check for secrets without proper management (HIGH)
+    try:
+        cursor.execute("SELECT COUNT(*) as count FROM secrets")
+        result = cursor.fetchone()
+        if result['count'] > 0:
+            cursor.execute("SELECT name FROM secrets")
+            secrets = cursor.fetchall()
+            for secret in secrets:
+                high_issues.append({
+                    'type': 'SECRETS',
+                    'title': f"🔐 Secret Requires Review: {secret['name']}",
+                    'detail': "Ensure proper access controls and rotation policies",
+                    'remediation': "Enable automatic rotation, use IAM bindings for access control"
+                })
+    except:
+        pass
+    
+    # Format output with priority
+    if critical_issues:
+        output += "🔴 **CRITICAL ISSUES (Fix Immediately)**\n"
+        output += f"Found {len(critical_issues)} critical security issues requiring immediate attention:\n\n"
+        for i, issue in enumerate(critical_issues, 1):
+            output += f"{i}. {issue['title']}\n"
+            output += f"   ➤ {issue['detail']}\n"
+            output += f"   ✅ FIX: {issue['remediation']}\n\n"
+    
+    if high_issues:
+        output += "🟡 **HIGH PRIORITY ISSUES (Fix Within 48 Hours)**\n"
+        output += f"Found {len(high_issues)} high-priority issues:\n\n"
+        for i, issue in enumerate(high_issues, 1):
+            output += f"{i}. {issue['title']}\n"
+            output += f"   ➤ {issue['detail']}\n"
+            output += f"   ✅ FIX: {issue['remediation']}\n\n"
+    
+    if medium_issues:
+        output += "🟢 **MEDIUM PRIORITY ISSUES (Schedule for This Week)**\n"
+        output += f"Found {len(medium_issues)} medium-priority issues:\n\n"
+        for i, issue in enumerate(medium_issues, 1):
+            output += f"{i}. {issue['title']}\n"
+            output += f"   ➤ {issue['detail']}\n"
+            output += f"   ✅ FIX: {issue['remediation']}\n\n"
+    
+    # Summary statistics
+    total_issues = len(critical_issues) + len(high_issues) + len(medium_issues)
+    output += f"\n📈 **SUMMARY**\n"
+    output += f"Total Security Issues: {total_issues}\n"
+    output += f"• Critical: {len(critical_issues)}\n"
+    output += f"• High: {len(high_issues)}\n"
+    output += f"• Medium: {len(medium_issues)}\n\n"
+    
+    if total_issues == 0:
+        output = "✅ **No Critical Security Issues Found!**\n\n"
+        output += "Your GCP environment appears to be well-secured based on cached data.\n"
+        output += "Continue with regular security audits and monitoring.\n"
+    else:
+        output += "⚡ **RECOMMENDED ACTION PLAN:**\n"
+        output += "1. Address all CRITICAL issues immediately\n"
+        output += "2. Schedule HIGH priority fixes within 48 hours\n"
+        output += "3. Plan MEDIUM priority improvements for this week\n"
+        output += "4. Enable continuous monitoring and alerting\n"
+        output += "5. Implement regular security audits\n"
+    
+    return output
+
+def _get_cache_status(cursor) -> str:
+    """Get cache statistics"""
+    tables = [
+        'assets', 'security_findings', 'iam_policies', 'storage_buckets',
+        'api_keys', 'recommendations', 'org_policies', 'services',
+        'alert_policies', 'logs', 'firewall_rules', 'networks', 
+        'compute_instances', 'databases', 'iam_accounts', 'secrets',
+        'fetch_status', 'monitoring_metrics'
+    ]
+    
+    output = "📊 Cache Status:\n\n"
+    total_records = 0
+    
+    for table in tables:
+        try:
+            cursor.execute(f"SELECT COUNT(*) as count FROM {table}")
+            count = cursor.fetchone()['count']
+            total_records += count
+            if count > 0:
+                output += f"• {table}: {count} records\n"
+        except:
+            pass
+    
+    output += f"\n📈 Total cached records: {total_records}\n"
+    
+    # Get last update time - check if cache_metadata exists first
+    try:
+        cursor.execute("""
+            SELECT MAX(last_updated) as last_update
+            FROM cache_metadata
+        """)
+        result = cursor.fetchone()
+        if result and result['last_update']:
+            output += f"🕐 Last refresh: {result['last_update']}\n"
+    except:
+        # Try fetch_status table as alternative
+        try:
+            cursor.execute("""
+                SELECT MAX(fetched_at) as last_update
+                FROM fetch_status
+            """)
+            result = cursor.fetchone()
+            if result and result['last_update']:
+                output += f"🕐 Last refresh: {result['last_update']}\n"
+        except:
+            pass  # No timestamp available
+    
+    return output
+
+def _execute_custom_query(cursor, params: Dict) -> str:
+    """Execute custom SQL query (with safety checks)"""
+    sql = params.get('sql', '')
+    
+    if not sql:
+        return "❌ No SQL query provided. Use {'sql': 'YOUR QUERY'}"
+    
+    # Basic safety checks
+    dangerous_keywords = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'CREATE']
+    sql_upper = sql.upper()
+    for keyword in dangerous_keywords:
+        if keyword in sql_upper:
+            return f"❌ Unsafe query detected. Only SELECT queries are allowed."
+    
+    try:
+        cursor.execute(sql)
+        results = cursor.fetchall()
+        
+        if not results:
+            return "Query executed successfully but returned no results."
+        
+        # Format results as table
+        columns = [description[0] for description in cursor.description]
+        output = f"Query Results ({len(results)} rows):\n\n"
+        
+        # Show column headers
+        output += " | ".join(columns) + "\n"
+        output += "-" * (len(columns) * 15) + "\n"
+        
+        # Show first 10 rows
+        for row in results[:10]:
+            row_values = [str(row[col])[:30] for col in columns]
+            output += " | ".join(row_values) + "\n"
+        
+        if len(results) > 10:
+            output += f"\n... and {len(results) - 10} more rows"
+        
+        return output
+        
+    except Exception as e:
+        return f"❌ Query error: {str(e)}"
+
+def _query_firewall_rules(cursor, params: Dict) -> str:
+    """Query firewall rules"""
+    rule_name = params.get('rule_name', '')
+    
+    if rule_name:
+        cursor.execute("""
+            SELECT * FROM firewall_rules
+            WHERE name = ?
+        """, (rule_name,))
+        result = cursor.fetchone()
+        
+        if not result:
+            return f"Firewall rule {rule_name} not found."
+        
+        output = f"🔥 Firewall Rule: {rule_name}\n\n"
+        output += f"Direction: {result['direction']}\n"
+        output += f"Priority: {result['priority']}\n"
+        output += f"Network: {result['network']}\n"
+        output += f"Source Ranges: {result['source_ranges']}\n"
+        if result['destination_ranges']:
+            output += f"Destination Ranges: {result['destination_ranges']}\n"
+        output += f"Allowed: {result['allowed']}\n"
+        if result['denied']:
+            output += f"Denied: {result['denied']}\n"
+        output += f"Disabled: {'Yes' if result['disabled'] else 'No'}\n"
+    else:
+        cursor.execute("""
+            SELECT name, direction, source_ranges, allowed, disabled
+            FROM firewall_rules
+            ORDER BY priority
+        """)
+        results = cursor.fetchall()
+        
+        if not results:
+            return "No firewall rules found."
+        
+        output = f"🔥 Firewall Rules ({len(results)} total):\n\n"
+        
+        # Identify potential issues
+        overly_permissive = []
+        disabled_rules = []
+        
+        for rule in results:
+            if '0.0.0.0/0' in str(rule['source_ranges']) and rule['direction'] == 'INGRESS':
+                overly_permissive.append(rule)
+            if rule['disabled']:
+                disabled_rules.append(rule)
+        
+        if overly_permissive:
+            output += f"⚠️ Overly Permissive Rules ({len(overly_permissive)}):\n"
+            for rule in overly_permissive:
+                output += f"  • {rule['name']}: Allows from 0.0.0.0/0 - {rule['allowed']}\n"
+            output += "\n"
+        
+        if disabled_rules:
+            output += f"🔒 Disabled Rules ({len(disabled_rules)}):\n"
+            for rule in disabled_rules:
+                output += f"  • {rule['name']}\n"
+            output += "\n"
+        
+        output += "📋 All Rules:\n"
+        for rule in results[:10]:  # Show first 10
+            status = "🔓 OPEN" if '0.0.0.0/0' in str(rule['source_ranges']) else "✅"
+            output += f"  {status} {rule['name']} ({rule['direction']}): {rule['source_ranges']}\n"
+        
+        if len(results) > 10:
+            output += f"\n... and {len(results) - 10} more rules"
+    
+    return output
+
+def _query_networks(cursor, params: Dict) -> str:
+    """Query VPC networks"""
+    cursor.execute("""
+        SELECT * FROM networks
+    """)
+    results = cursor.fetchall()
+    
+    if not results:
+        return "No VPC networks found."
+    
+    output = f"🌐 VPC Networks ({len(results)} total):\n\n"
+    for row in results:
+        output += f"• {row['name']}\n"
+        if 'auto_create_subnetworks' in row:
+            output += f"  Auto-create subnets: {row['auto_create_subnetworks']}\n"
+        if 'description' in row and row['description']:
+            output += f"  Description: {row['description']}\n"
+        output += "\n"
+    
+    return output
+
+def _query_compute_instances(cursor, params: Dict) -> str:
+    """Query compute instances"""
+    instance_name = params.get('instance_name', '')
+    
+    cursor.execute("""
+        SELECT COUNT(*) as count FROM compute_instances
+    """)
+    result = cursor.fetchone()
+    
+    if result['count'] == 0:
+        # No compute instances in this table, check assets table instead
+        cursor.execute("""
+            SELECT name, location, labels, create_time
+            FROM assets
+            WHERE asset_type = 'compute.googleapis.com/Instance'
+            ORDER BY create_time DESC
+        """)
+        results = cursor.fetchall()
+        
+        if not results:
+            return "No compute instances found."
+        
+        output = f"💻 Compute Instances ({len(results)} total):\n\n"
+        for instance in results[:10]:
+            output += f"• {instance['name']}\n"
+            output += f"  Location: {instance['location']}\n"
+            if instance['labels']:
+                output += f"  Labels: {instance['labels']}\n"
+            output += "\n"
+        
+        if len(results) > 10:
+            output += f"... and {len(results) - 10} more instances"
+    else:
+        output = "Compute instances data available but needs schema check."
+    
+    return output
+
+def _query_databases(cursor, params: Dict) -> str:
+    """Query database instances"""
+    cursor.execute("""
+        SELECT COUNT(*) as count FROM databases
+    """)
+    result = cursor.fetchone()
+    
+    if result['count'] == 0:
+        # Check assets table for database instances
+        cursor.execute("""
+            SELECT name, asset_type, location
+            FROM assets
+            WHERE asset_type LIKE '%sql%' OR asset_type LIKE '%database%' OR asset_type LIKE '%spanner%'
+            ORDER BY asset_type
+        """)
+        results = cursor.fetchall()
+        
+        if not results:
+            return "No database instances found."
+        
+        output = f"🗄️ Database Instances ({len(results)} total):\n\n"
+        
+        # Group by type
+        by_type = {}
+        for db in results:
+            db_type = db['asset_type'].split('/')[-1]
+            if db_type not in by_type:
+                by_type[db_type] = []
+            by_type[db_type].append(db)
+        
+        for db_type, instances in by_type.items():
+            output += f"{db_type} ({len(instances)}):\n"
+            for instance in instances[:3]:
+                output += f"  • {instance['name']} ({instance['location']})\n"
+            if len(instances) > 3:
+                output += f"  ... and {len(instances) - 3} more\n"
+            output += "\n"
+    else:
+        output = "Database instances data available but needs schema check."
+    
+    return output
+
+def _query_iam_accounts(cursor, params: Dict) -> str:
+    """Query IAM service accounts and users"""
+    account_email = params.get('email', '')
+    
+    if account_email:
+        cursor.execute("""
+            SELECT * FROM iam_accounts
+            WHERE email = ?
+        """, (account_email,))
+        result = cursor.fetchone()
+        
+        if not result:
+            return f"IAM account {account_email} not found."
+        
+        output = f"👤 IAM Account: {account_email}\n\n"
+        for key in result.keys():
+            if result[key]:
+                output += f"{key}: {result[key]}\n"
+    else:
+        cursor.execute("""
+            SELECT * FROM iam_accounts
+        """)
+        results = cursor.fetchall()
+        
+        if not results:
+            return "No IAM accounts found in cache."
+        
+        output = f"👥 IAM Accounts ({len(results)} total):\n\n"
+        
+        # Separate service accounts and users
+        service_accounts = []
+        user_accounts = []
+        
+        for account in results:
+            if 'email' in account:
+                email = account['email']
+                if 'iam.gserviceaccount.com' in email:
+                    service_accounts.append(account)
+                else:
+                    user_accounts.append(account)
+        
+        if service_accounts:
+            output += f"🤖 Service Accounts ({len(service_accounts)}):\n"
+            for sa in service_accounts[:5]:
+                output += f"  • {sa['email']}\n"
+                if 'display_name' in sa and sa['display_name']:
+                    output += f"    Name: {sa['display_name']}\n"
+            if len(service_accounts) > 5:
+                output += f"  ... and {len(service_accounts) - 5} more\n"
+            output += "\n"
+        
+        if user_accounts:
+            output += f"👤 User Accounts ({len(user_accounts)}):\n"
+            for user in user_accounts[:5]:
+                output += f"  • {user['email']}\n"
+            if len(user_accounts) > 5:
+                output += f"  ... and {len(user_accounts) - 5} more\n"
+    
+    return output
+
+def _query_secrets(cursor, params: Dict) -> str:
+    """Query secrets from Secret Manager"""
+    secret_name = params.get('secret_name', '')
+    
+    if secret_name:
+        cursor.execute("""
+            SELECT * FROM secrets
+            WHERE name LIKE ?
+        """, (f'%{secret_name}%',))
+        results = cursor.fetchall()
+        
+        if not results:
+            return f"No secrets matching '{secret_name}' found."
+        
+        output = f"🔐 Secrets matching '{secret_name}':\n\n"
+        for secret in results:
+            output += f"• {secret['name']}\n"
+            for key in secret.keys():
+                if key != 'name' and secret[key]:
+                    output += f"  {key}: {secret[key]}\n"
+            output += "\n"
+    else:
+        cursor.execute("""
+            SELECT * FROM secrets
+        """)
+        results = cursor.fetchall()
+        
+        if not results:
+            return "No secrets found in Secret Manager."
+        
+        output = f"🔐 Secrets ({len(results)} total):\n\n"
+        
+        for secret in results:
+            output += f"• {secret['name']}\n"
+            if 'create_time' in secret:
+                output += f"  Created: {secret['create_time']}\n"
+            if 'state' in secret:
+                output += f"  State: {secret['state']}\n"
+            output += "\n"
+    
+    return output

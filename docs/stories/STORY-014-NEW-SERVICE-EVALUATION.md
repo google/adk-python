@@ -374,6 +374,13 @@ class ServiceEvaluator:
         """
 ```
 
+### Database Schema
+A SQLite database will be used to store all evaluation-related data.
+
+- **ServiceEvaluations**: Stores the results of service evaluations.
+- **AdoptionMetrics**: Stores the adoption metrics for each service.
+- **TestSuites**: Stores the test suites for each service.
+
 ### Metrics Dashboard Components
 - **Service Health Overview**: Real-time status of all evaluated services
 - **Adoption Timeline**: Visual timeline of service rollouts

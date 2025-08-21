@@ -10,7 +10,7 @@ import time
 
 class ConversationTester:
     def __init__(self):
-        self.base_url = "http://localhost:8000/api/v1/agent/chat"
+        self.base_url = "http://localhost:8000/api/v1/chat/message"
         self.session_id = None
         self.conversation_id = None
         self.user_id = "test_user"
@@ -30,7 +30,7 @@ class ConversationTester:
         if self.conversation_id:
             payload["conversation_id"] = self.conversation_id
             
-        response = requests.post(self.base_url, json=payload, timeout=10)
+        response = requests.post(self.base_url, json=payload, timeout=30)
         
         if response.status_code == 200:
             data = response.json()
@@ -159,6 +159,46 @@ def test_clarification_conversation():
     
     return tester.run_conversation(conversation)
 
+def test_agentic_storage_analysis_flow():
+    """Test the agentic flow for a storage analysis query"""
+    tester = ConversationTester()
+
+    conversation = [
+        # Initial query that should trigger the storage analysis tool
+        ("Analyze my storage security for the project",
+         ["storage", "security", "bucket", "findings"]),
+
+        # Follow-up to check for specific details in the response
+        ("Are any buckets public?",
+         ["public", "access", "bucket"]),
+
+        # Check if the agent can provide remediation advice
+        ("How do I fix the top critical issue?",
+         ["gsutil", "remediation", "command"])
+    ]
+
+    return tester.run_conversation(conversation)
+
+def test_new_service_evaluation_flow():
+    """Test the agentic flow for a new service evaluation query"""
+    tester = ConversationTester()
+
+    conversation = [
+        # Initial query that should trigger the new service evaluation tool
+        ("Evaluate the security of the new 'Cloud Run v2' service",
+         ["evaluate", "security", "service", "Cloud Run v2"]),
+
+        # Follow-up to check for specific details in the response
+        ("What is the risk score for this service?",
+         ["risk", "score"]),
+
+        # Check if the agent can provide compliance information
+        ("Is it compliant with SOC2?",
+         ["compliant", "SOC2"])
+    ]
+
+    return tester.run_conversation(conversation)
+
 def main():
     """Run all conversation tests"""
     print("\n" + "="*80)
@@ -168,7 +208,9 @@ def main():
     tests = [
         ("Deep Storage Conversation", test_deep_storage_conversation),
         ("Cross-Domain Conversation", test_cross_domain_conversation),
-        ("Clarification Conversation", test_clarification_conversation)
+        ("Clarification Conversation", test_clarification_conversation),
+        ("Agentic Storage Analysis Flow", test_agentic_storage_analysis_flow),
+        ("New Service Evaluation Flow", test_new_service_evaluation_flow)
     ]
     
     passed = 0

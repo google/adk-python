@@ -117,16 +117,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.storage_backend = storage_backend
         self.redis_url = redis_url
         
-        # Rate limit configuration
+        # Rate limit configuration - Increased for better UX
         self.rate_limits = {
-            "/api/v1/assets/discover": RateLimit(5, 60),      # Heavy GCP operations
-            "/api/v1/security/analyze": RateLimit(5, 60),     # Security analysis
-            "/api/v1/iam/analyze": RateLimit(5, 60),          # IAM analysis  
-            "/api/v1/storage/analyze": RateLimit(5, 60),      # Storage analysis
-            "/api/v1/recommendations": RateLimit(10, 60),     # Recommendations
-            "/api/v1/chat/message": RateLimit(30, 60),        # Chat interactions
-            "/api/v1/remediation": RateLimit(3, 60),          # Remediation actions
-            "default": RateLimit(100, 60)                     # Everything else
+            "/api/v1/assets/discover": RateLimit(15, 60),     # Heavy GCP operations
+            "/api/v1/security/analyze": RateLimit(30, 60),    # Security analysis - increased for dashboard
+            "/api/v1/iam/analyze": RateLimit(20, 60),         # IAM analysis  
+            "/api/v1/storage/analyze": RateLimit(20, 60),     # Storage analysis
+            "/api/v1/recommendations": RateLimit(25, 60),     # Recommendations
+            "/api/v1/chat/message": RateLimit(50, 60),        # Chat interactions
+            "/api/v1/remediation": RateLimit(10, 60),         # Remediation actions
+            "/api/v1/data/stats": RateLimit(60, 60),          # Database stats - frequent UI calls
+            "/api/v1/data/findings": RateLimit(60, 60),       # Security findings - frequent UI calls
+            "default": RateLimit(200, 60)                     # Everything else
         }
         
         # Override with custom config
