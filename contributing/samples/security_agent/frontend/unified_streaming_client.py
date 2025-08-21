@@ -723,7 +723,11 @@ def display_chat_interface():
             "Show IAM accounts with high privileges",
             "What are the top security risks?",
             "Generate a security compliance report",
-            "Show assets created in the last 30 days"
+            "Show assets created in the last 30 days",
+            "Show me MSA analysis history",
+            "What MSA changes affect BigQuery?",
+            "Show me permission changes from MSAs",
+            "What permissions are changing for bigquery.datasets.get?"
         ]
         
         for query in quick_queries:
