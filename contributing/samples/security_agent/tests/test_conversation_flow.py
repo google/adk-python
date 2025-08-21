@@ -7,14 +7,15 @@ Ensures the chat maintains context and handles deep interactions
 import requests
 import json
 import time
+import os
 
 class ConversationTester:
     def __init__(self):
-        self.base_url = "http://localhost:8000/api/v1/chat/message"
+        self.base_url = os.getenv("BACKEND_URL", "http://localhost:8000") + "/api/v1/chat/message"
         self.session_id = None
         self.conversation_id = None
         self.user_id = "test_user"
-        self.project_id = "mgm-digitalconcierge"
+        self.project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "test-project")
         
     def send_message(self, query):
         """Send a message and return the response"""

@@ -4,18 +4,27 @@
 import os
 from pathlib import Path
 
-# Set credentials
-creds_path = Path(__file__).parent / "mgm-digitalconcierge-8ba3b2f28e5f.json"
-if creds_path.exists():
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(creds_path)
+# Get credentials from environment
+creds_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+if creds_path and Path(creds_path).exists():
     print(f"✅ Credentials file found: {creds_path}")
 else:
-    print(f"❌ Credentials file not found: {creds_path}")
+    print(f"❌ GOOGLE_APPLICATION_CREDENTIALS not set or file not found")
+
+# Get project and location from environment
+project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+location = os.getenv('GOOGLE_CLOUD_LOCATION', 'us-central1')
+
+if not project_id:
+    print("❌ GOOGLE_CLOUD_PROJECT environment variable not set")
+    exit(1)
+
+print(f"Using project: {project_id}, location: {location}")
 
 # Test Vertex AI initialization
 try:
     import vertexai
-    vertexai.init(project="mgm-digitalconcierge", location="us-central1")
+    vertexai.init(project=project_id, location=location)
     print("✅ Vertex AI initialized successfully")
 except Exception as e:
     print(f"❌ Vertex AI initialization failed: {e}")
@@ -25,8 +34,8 @@ try:
     from google import genai
     client = genai.Client(
         vertexai=True,
-        project="mgm-digitalconcierge", 
-        location="us-central1"
+        project=project_id, 
+        location=location
     )
     print("✅ Google GenAI client created successfully")
 except Exception as e:
@@ -39,8 +48,8 @@ try:
         name="test",
         model="gemini-2.0-flash-exp",
         vertexai=True,
-        project="mgm-digitalconcierge",
-        location="us-central1",
+        project=project_id,
+        location=location,
         instruction="You are a test agent"
     )
     print("✅ ADK Agent created successfully")

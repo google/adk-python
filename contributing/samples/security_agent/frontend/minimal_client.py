@@ -35,7 +35,8 @@ st.set_page_config(
 )
 
 # Backend configuration
-BACKEND_URL = "http://localhost:8000"
+import os
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 
 def init_session():

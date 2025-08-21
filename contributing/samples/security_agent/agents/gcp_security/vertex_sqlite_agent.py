@@ -275,14 +275,24 @@ Always provide helpful, accurate information and suggest next steps for improvin
 
 # Ensure Vertex AI environment is set
 os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'TRUE'
-os.environ['GOOGLE_CLOUD_PROJECT'] = os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
-os.environ['GOOGLE_CLOUD_LOCATION'] = 'us-central1'
 
-# Set credentials if available
-creds_path = Path(__file__).parent.parent.parent / "mgm-digitalconcierge-8ba3b2f28e5f.json"
-if creds_path.exists():
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(creds_path)
-    logger.info(f"✅ Set credentials: {creds_path}")
+# Get project ID from environment - REQUIRED
+project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+if not project_id:
+    raise ValueError("GOOGLE_CLOUD_PROJECT environment variable is required")
+os.environ['GOOGLE_CLOUD_PROJECT'] = project_id
+
+# Get location from environment with default
+location = os.getenv('GOOGLE_CLOUD_LOCATION', 'us-central1')
+os.environ['GOOGLE_CLOUD_LOCATION'] = location
+
+# Set credentials from environment variable - REQUIRED
+credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+if credentials_path and Path(credentials_path).exists():
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
+    logger.info(f"✅ Using credentials from: {credentials_path}")
+else:
+    logger.warning("⚠️ GOOGLE_APPLICATION_CREDENTIALS not set or file not found")
 
 # Create agent with SQLite tool (single tool for Vertex AI compliance)
 vertex_sqlite_agent = Agent(

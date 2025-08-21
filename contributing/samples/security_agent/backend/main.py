@@ -427,7 +427,8 @@ async def chat_message(request: Dict[str, Any]):
     except Exception as e:
         logger.error(f"Error processing query with agent: {e}")
         # Fallback to basic response
-        response_text = f"🔍 **GCP Security Assistant for project: {os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')}**\n\nI can help you with:\n\n• **Resource Discovery**: 'What resources do I have?'\n• **Security Analysis**: 'Check my security posture'\n• **IAM Review**: 'Show my service accounts'\n• **Vulnerability Scan**: 'Find security issues'\n\nWhat would you like to explore?"
+        project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'your-project')
+        response_text = f"🔍 **GCP Security Assistant for project: {project_id}**\n\nI can help you with:\n\n• **Resource Discovery**: 'What resources do I have?'\n• **Security Analysis**: 'Check my security posture'\n• **IAM Review**: 'Show my service accounts'\n• **Vulnerability Scan**: 'Find security issues'\n\nWhat would you like to explore?"
     
     # Always return a properly formatted response
     return {
@@ -440,12 +441,15 @@ async def chat_message(request: Dict[str, Any]):
 
 async def _get_cached_assets_response() -> str:
     """Get assets from cache for faster response."""
-    project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
+    project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+    if not project_id:
+        return "⚠️ GOOGLE_CLOUD_PROJECT environment variable not configured"
     
     try:
         import httpx
+        backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(f"http://localhost:8000/api/v1/data/assets/{project_id}")
+            response = await client.get(f"{backend_url}/api/v1/data/assets/{project_id}")
             
             if response.status_code == 200:
                 data = response.json()
@@ -488,12 +492,15 @@ async def _get_cached_assets_response() -> str:
 
 async def _get_cached_findings_response() -> str:
     """Get security findings from cache for faster response."""
-    project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
+    project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+    if not project_id:
+        return "⚠️ GOOGLE_CLOUD_PROJECT environment variable not configured"
     
     try:
         import httpx
+        backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(f"http://localhost:8000/api/v1/data/findings/{project_id}")
+            response = await client.get(f"{backend_url}/api/v1/data/findings/{project_id}")
             
             if response.status_code == 200:
                 data = response.json()

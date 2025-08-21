@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 async def main():
     """Main function to populate SQLite with GCP data."""
-    project_id = "mgm-digitalconcierge"
+    project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+    if not project_id:
+        raise ValueError("GOOGLE_CLOUD_PROJECT environment variable is required")
     
     print("🚀 Starting GCP Data Population")
     print("=" * 50)
@@ -68,7 +70,7 @@ async def main():
         print("-" * 30)
         
         import sqlite3
-        db_path = "backend/cache/gcp_data.db"
+        db_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
         
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()

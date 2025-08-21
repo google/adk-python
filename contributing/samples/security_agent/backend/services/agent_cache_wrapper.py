@@ -28,7 +28,9 @@ except ImportError:
         CACHE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
+PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT')
+if not PROJECT_ID:
+    raise ValueError("GOOGLE_CLOUD_PROJECT environment variable is required")
 
 
 class AgentCacheWrapper:

@@ -31,8 +31,9 @@ router = APIRouter(prefix="/api/v1/msa", tags=["MSA Analyzer"])
 
 # Initialize Vertex AI
 project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 if project_id:
-    vertexai.init(project=project_id, location="us-central1")
+    vertexai.init(project=project_id, location=location)
 
 
 class MSAInput(BaseModel):
