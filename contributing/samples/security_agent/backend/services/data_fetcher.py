@@ -80,6 +80,21 @@ class DataFetcher:
                 )
             """)
             
+            # IAM policies table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS iam_policies (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    resource_type TEXT NOT NULL,
+                    resource_name TEXT NOT NULL,
+                    member TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    condition TEXT,
+                    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(project_id, resource_type, resource_name, member, role)
+                )
+            """)
+            
             # Security findings table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS security_findings (
@@ -252,6 +267,8 @@ class DataFetcher:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_findings_category ON security_findings(category)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_compute_status ON compute_instances(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_buckets_public ON storage_buckets(public_access)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_iam_policies_member ON iam_policies(member)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_iam_policies_role ON iam_policies(role)")
             
             conn.commit()
     
@@ -289,6 +306,7 @@ class DataFetcher:
             self._fetch_networks(),
             self._fetch_firewall_rules(),
             self._fetch_iam_accounts(),
+            self._fetch_iam_policies(),  # IAM policies for project
             self._fetch_databases(),
             self._fetch_security_findings(),
             self._fetch_all_assets(),  # General asset inventory
@@ -344,7 +362,7 @@ class DataFetcher:
                         "network_interfaces": [],
                         "disks": [],
                         "labels": dict(instance.labels) if instance.labels else {},
-                        "metadata": dict(instance.metadata.items) if instance.metadata else {},
+                        "metadata": {item.key: item.value for item in (instance.metadata.items or [])} if instance.metadata and hasattr(instance.metadata, 'items') else {},
                     }
                     
                     # Extract network info
@@ -572,6 +590,47 @@ class DataFetcher:
             
         except Exception as e:
             logger.error(f"Error fetching IAM accounts: {e}")
+            return {"count": 0, "error": str(e)}
+    
+    async def _fetch_iam_policies(self) -> Dict[str, Any]:
+        """Fetch IAM policies for the project."""
+        try:
+            from google.cloud import resourcemanager_v3
+            
+            # Get project-level IAM policies
+            projects_client = resourcemanager_v3.ProjectsClient()
+            project_name = f"projects/{self.project_id}"
+            
+            policies = []
+            
+            # Get the IAM policy for the project
+            try:
+                policy = projects_client.get_iam_policy(resource=project_name)
+                
+                # Process each binding
+                for binding in policy.bindings:
+                    role = binding.role
+                    for member in binding.members:
+                        policy_data = {
+                            "id": f"{self.project_id}_{role}_{member}",
+                            "resource_type": "project",
+                            "resource_name": self.project_id,
+                            "member": member,
+                            "role": role,
+                            "condition": str(binding.condition) if binding.condition else None
+                        }
+                        policies.append(policy_data)
+                        
+            except Exception as e:
+                logger.warning(f"Could not fetch project IAM policy: {e}")
+            
+            # Store in database
+            self._store_iam_policies(policies)
+            
+            return {"count": len(policies)}
+            
+        except Exception as e:
+            logger.error(f"Error fetching IAM policies: {e}")
             return {"count": 0, "error": str(e)}
     
     async def _fetch_databases(self) -> Dict[str, Any]:
@@ -837,6 +896,25 @@ class DataFetcher:
                     json.dumps(account["roles"]),
                     json.dumps([]),  # Permissions would be fetched separately
                     json.dumps(account)
+                ))
+            conn.commit()
+    
+    def _store_iam_policies(self, policies: List[Dict]):
+        """Store IAM policies in database."""
+        with self._get_connection() as conn:
+            for policy in policies:
+                conn.execute("""
+                    INSERT OR REPLACE INTO iam_policies
+                    (id, project_id, resource_type, resource_name, member, role, condition)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    policy["id"],
+                    self.project_id,
+                    policy["resource_type"],
+                    policy["resource_name"],
+                    policy["member"],
+                    policy["role"],
+                    policy["condition"]
                 ))
             conn.commit()
     
