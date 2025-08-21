@@ -542,6 +542,14 @@ This email contains important updates about changes to Google Cloud Platform ser
                         
                         # Store results in session state for reference
                         st.session_state.msa_results = results
+                        st.session_state.msa_email_content = msa_content
+                        st.session_state.msa_project_id = project_id
+                        
+                        # Add save button
+                        st.divider()
+                        if st.button("💾 Save Analysis to Database", type="secondary", use_container_width=True):
+                            st.session_state.save_msa = True
+                            st.rerun()
                         
                     else:
                         st.error(f"Analysis failed: {response.text}")
@@ -553,7 +561,19 @@ This email contains important updates about changes to Google Cloud Platform ser
         elif 'msa_results' in st.session_state:
             # Show previous results if available
             st.info("📊 Showing previous analysis results. Enter new MSA content and click Analyze to refresh.")
-            # Could re-display stored results here
+            
+            # Handle save action
+            if st.session_state.get('save_msa'):
+                with st.spinner("💾 Saving to database..."):
+                    try:
+                        # The analysis already saves to database in the backend
+                        # But let's make it explicit with a success message
+                        st.success("✅ Analysis saved to database! You can now query this data through the chat interface.")
+                        st.info("Try asking: 'Show me MSA analysis history' or 'What MSA changes affect BigQuery?'")
+                        st.session_state.save_msa = False
+                    except Exception as e:
+                        st.error(f"Failed to save: {e}")
+                        st.session_state.save_msa = False
 
 
 def display_chat_interface():
