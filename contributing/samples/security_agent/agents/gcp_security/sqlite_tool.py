@@ -237,37 +237,66 @@ def _query_iam(cursor, params: Dict) -> str:
     
     if principal:
         cursor.execute("""
-            SELECT resource, role, condition
+            SELECT resource_type, resource_name, role, condition
             FROM iam_policies
-            WHERE members LIKE ?
-            ORDER BY resource
+            WHERE member LIKE ?
+            ORDER BY resource_type, resource_name
         """, (f'%{principal}%',))
     else:
+        # First get risky roles
         cursor.execute("""
-            SELECT role, COUNT(DISTINCT resource) as resource_count
+            SELECT member, role, COUNT(*) as grant_count
+            FROM iam_policies
+            WHERE role IN ('roles/owner', 'roles/editor', 'roles/iam.securityAdmin', 
+                          'roles/resourcemanager.organizationAdmin', 'roles/compute.admin',
+                          'roles/storage.admin', 'roles/iam.serviceAccountAdmin',
+                          'roles/iam.serviceAccountKeyAdmin', 'roles/iam.roleAdmin')
+            GROUP BY member, role
+            ORDER BY grant_count DESC
+            LIMIT 10
+        """)
+        risky_results = cursor.fetchall()
+        
+        # Then get role summary
+        cursor.execute("""
+            SELECT role, COUNT(DISTINCT resource_name) as resource_count,
+                   COUNT(DISTINCT member) as member_count
             FROM iam_policies
             GROUP BY role
-            ORDER BY resource_count DESC
-            LIMIT 20
+            ORDER BY member_count DESC
+            LIMIT 15
         """)
     
     results = cursor.fetchall()
     
-    if not results:
+    if not results and not principal:
         return "No IAM data found."
     
     if principal:
+        if not results:
+            return f"No IAM permissions found for {principal}."
         output = f"👤 IAM Analysis for {principal}:\n\n"
         for row in results:
-            output += f"• Resource: {row['resource']}\n"
+            output += f"• Resource: {row['resource_type']}/{row['resource_name']}\n"
             output += f"  Role: {row['role']}\n"
             if row['condition']:
                 output += f"  Condition: {row['condition']}\n"
             output += "\n"
     else:
-        output = "🔐 IAM Role Summary:\n\n"
+        output = "🔐 IAM Analysis:\n\n"
+        
+        if risky_results:
+            output += "⚠️ High-Risk Permissions:\n"
+            for row in risky_results:
+                member_type = "Service Account" if "@" in row['member'] and ".iam.gserviceaccount.com" in row['member'] else "User/Group"
+                output += f"  • {row['member'][:50]}... ({member_type})\n"
+                output += f"    Role: {row['role']} ({row['grant_count']} grants)\n"
+            output += "\n"
+        
+        output += "📊 Role Distribution:\n"
         for row in results:
-            output += f"• {row['role']}: {row['resource_count']} resources\n"
+            output += f"  • {row['role']}:\n"
+            output += f"    {row['member_count']} members on {row['resource_count']} resources\n"
     
     return output
 
