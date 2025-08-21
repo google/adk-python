@@ -203,7 +203,13 @@ def _query_security_findings(cursor, params: Dict) -> str:
         query += " AND category = ?"
         query_params.append(category)
     
-    query += " ORDER BY severity_score DESC, finding_time DESC LIMIT 20"
+    query += """ ORDER BY CASE severity 
+                       WHEN 'CRITICAL' THEN 1 
+                       WHEN 'HIGH' THEN 2 
+                       WHEN 'MEDIUM' THEN 3 
+                       WHEN 'LOW' THEN 4 
+                       ELSE 5 END, 
+                   event_time DESC LIMIT 20"""
     
     cursor.execute(query, query_params)
     results = cursor.fetchall()
@@ -584,7 +590,10 @@ def _get_security_summary(cursor, params: Dict) -> str:
             SELECT category, severity, resource_name, description
             FROM security_findings
             WHERE severity IN ('CRITICAL', 'HIGH')
-            ORDER BY severity_score DESC
+            ORDER BY CASE severity 
+                     WHEN 'CRITICAL' THEN 1 
+                     WHEN 'HIGH' THEN 2 
+                     ELSE 3 END
             LIMIT 5
         """)
         findings = cursor.fetchall()
