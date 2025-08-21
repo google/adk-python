@@ -18,9 +18,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def deploy_to_cloud(project_id):
-    """Deploy frontend to Cloud Run using Cloud Build."""
-    print(f"☁️  Deploying frontend to Cloud Run (Project: {project_id})...")
+    """Deploy unified frontend to Cloud Run using Cloud Build."""
+    print(f"☁️  Deploying Unified Frontend to Cloud Run (Project: {project_id})...")
     print("=" * 50)
+    print("✨ Deploying unified streaming client with executive dashboard")
     
     # Change to deploy directory where cloudbuild.yaml is located
     deploy_dir = os.path.join(os.path.dirname(__file__), "deploy")
@@ -28,10 +29,8 @@ def deploy_to_cloud(project_id):
     # Build the Cloud Build command for frontend
     cmd = [
         "gcloud", "builds", "submit",
-        "--config", os.path.join(deploy_dir, "cloudbuild.yaml"),
+        "--config", os.path.join(deploy_dir, "cloudbuild-frontend.yaml"),
         "--project", project_id,
-        "--substitutions",
-        f"_SERVICE_NAME=security-agent-frontend,_REGION=us-central1,_IS_FRONTEND=true",
         "."
     ]
     
