@@ -82,24 +82,59 @@ def extract_structured_changes(email_content: str) -> List[MSAChange]:
         
         # Check if this is the BigQuery ACL MSA
         if "BigQuery dataset Access Control Lists" in email_content:
+            # Permission: bigquery.datasets.get
+            changes.append(MSAChange(
+                service="BigQuery",
+                change_type="permission_split",
+                description="Permission 'bigquery.datasets.get' currently allows viewing both metadata AND ACLs. After March 17, 2026, it will only allow viewing metadata. To view ACLs, you'll need the new permission 'bigquery.datasets.getIamPolicy'.",
+                effective_date="2026-03-17",
+                required_action="Add 'bigquery.datasets.getIamPolicy' permission to custom roles that need to view dataset ACLs",
+                impact_level="high",
+                affected_resources=["custom_roles", "datasets", "ACLs", "Object_Privileges_view"]
+            ))
+            
+            # Permission: bigquery.datasets.update
+            changes.append(MSAChange(
+                service="BigQuery",
+                change_type="permission_split",
+                description="Permission 'bigquery.datasets.update' currently allows updating both metadata AND ACLs. After March 17, 2026, it will only allow updating metadata. To update ACLs, you'll need the new permission 'bigquery.datasets.setIamPolicy'.",
+                effective_date="2026-03-17",
+                required_action="Add 'bigquery.datasets.setIamPolicy' permission to custom roles that need to update dataset ACLs",
+                impact_level="high",
+                affected_resources=["custom_roles", "datasets", "ACLs"]
+            ))
+            
+            # Permission: bigquery.datasets.create
             changes.append(MSAChange(
                 service="BigQuery",
                 change_type="permission_change",
-                description="BigQuery dataset ACL permissions are becoming more granular. Currently bigquery.datasets.get, .update, and .create grant broad access to both metadata and ACLs. New separate permissions bigquery.datasets.getIamPolicy and setIamPolicy will be required for ACL management.",
+                description="Permission 'bigquery.datasets.create' currently allows setting ACLs upon dataset creation. After March 17, 2026, creating datasets with custom ACLs will require 'bigquery.datasets.setIamPolicy' in addition to create permission.",
                 effective_date="2026-03-17",
-                required_action="Review and update custom roles to include bigquery.datasets.getIamPolicy and bigquery.datasets.setIamPolicy permissions if ACL access is needed",
-                impact_level="high",
-                affected_resources=["datasets", "custom_roles", "ACLs"]
+                required_action="Add 'bigquery.datasets.setIamPolicy' to roles that create datasets with custom ACLs",
+                impact_level="medium",
+                affected_resources=["custom_roles", "dataset_creation"]
             ))
             
+            # API: Dataset Get API
             changes.append(MSAChange(
                 service="BigQuery",
-                change_type="api_change",
-                description="Dataset APIs will include new parameters for independent metadata and ACL management. Dataset Get API will have dataset_view parameter (METADATA/ACL/FULL), and Patch/Update APIs will have update_mode parameter (UPDATE_METADATA/UPDATE_ACL/UPDATE_FULL).",
+                change_type="api_parameter_addition",
+                description="Dataset Get API will have new 'dataset_view' parameter with options: METADATA (view only metadata), ACL (view only ACLs), FULL (view both, default). METADATA requires bigquery.datasets.get, ACL requires bigquery.datasets.getIamPolicy, FULL requires both.",
                 effective_date="2026-03-17",
-                required_action="Update API calls to use new parameters if you want to manage metadata and ACLs separately",
+                required_action="Update API calls to use dataset_view=METADATA if you only have bigquery.datasets.get permission",
                 impact_level="medium",
-                affected_resources=["dataset_apis", "api_clients"]
+                affected_resources=["dataset_get_api", "api_clients", "automation_scripts"]
+            ))
+            
+            # API: Dataset Patch/Update APIs
+            changes.append(MSAChange(
+                service="BigQuery",
+                change_type="api_parameter_addition",
+                description="Dataset Patch and Update APIs will have new 'update_mode' parameter with options: UPDATE_METADATA (update only metadata), UPDATE_ACL (update only ACLs), UPDATE_FULL (update both, default). UPDATE_METADATA requires bigquery.datasets.update, UPDATE_ACL requires bigquery.datasets.setIamPolicy.",
+                effective_date="2026-03-17",
+                required_action="Update API calls to use update_mode=UPDATE_METADATA if you only have bigquery.datasets.update permission",
+                impact_level="medium",
+                affected_resources=["dataset_patch_api", "dataset_update_api", "api_clients"]
             ))
         else:
             # Generic fallback for other MSAs
@@ -119,35 +154,61 @@ def extract_structured_changes(email_content: str) -> List[MSAChange]:
         model = GenerativeModel("gemini-1.5-pro")
         
         prompt = f"""
-        Analyze this Google Cloud MSA (Monthly Service Announcement) email and extract structured information about each change.
+        Analyze this Google Cloud MSA (Monthly Service Announcement) email and extract DETAILED structured information.
         
-        For each change mentioned, extract:
-        1. Service name (e.g., BigQuery, Compute Engine, IAM)
-        2. Type of change (permission change, API deprecation, new feature, breaking change, etc.)
-        3. Clear description of what's changing
-        4. Effective date (if mentioned)
-        5. Required customer action (if any)
-        6. Impact level (critical/high/medium/low based on potential disruption)
-        7. Types of resources affected
+        IMPORTANT: Extract ALL of the following elements if present:
+        
+        1. **Permissions & Roles**:
+           - Current permissions being changed (e.g., bigquery.datasets.get)
+           - New permissions being introduced (e.g., bigquery.datasets.getIamPolicy)
+           - Affected roles (custom roles, predefined roles)
+           - Permission mappings (old permission -> new permissions)
+        
+        2. **API Changes**:
+           - API endpoints affected
+           - New parameters being added
+           - Parameter values and their meanings
+           - Breaking changes vs backward compatible changes
+        
+        3. **Services & Resources**:
+           - GCP service affected (BigQuery, Compute Engine, etc.)
+           - Resource types affected (datasets, instances, buckets, etc.)
+           - Scope of impact (project-level, organization-level, etc.)
+        
+        4. **Dates & Timelines**:
+           - Announcement date
+           - Implementation/enforcement date
+           - Early access or testing dates
+           - Any grace periods mentioned
+        
+        5. **Required Actions**:
+           - Specific steps customers must take
+           - What happens if no action is taken
+           - Testing recommendations
+           - Migration paths
         
         MSA Email Content:
         {email_content}
         
-        Return the information as a JSON array with the following structure:
+        Return a JSON array where each significant change is an entry. For permission changes, create separate entries for each permission mapping. Structure:
         [
             {{
-                "service": "service name",
-                "change_type": "type of change",
-                "description": "what is changing",
-                "effective_date": "date if mentioned",
-                "required_action": "what customers need to do",
-                "impact_level": "critical/high/medium/low",
-                "affected_resources": ["resource_type1", "resource_type2"]
+                "service": "BigQuery",
+                "change_type": "permission_split",
+                "description": "bigquery.datasets.get will no longer grant ACL view access",
+                "effective_date": "YYYY-MM-DD",
+                "required_action": "Add bigquery.datasets.getIamPolicy to custom roles that need ACL view access",
+                "impact_level": "high",
+                "affected_resources": ["custom_roles", "datasets", "ACLs"],
+                "old_permission": "bigquery.datasets.get",
+                "new_permissions": ["bigquery.datasets.get", "bigquery.datasets.getIamPolicy"],
+                "api_parameters": {{"dataset_view": ["METADATA", "ACL", "FULL"]}},
+                "affects_predefined_roles": false,
+                "testing_available": true
             }}
         ]
         
-        Focus on extracting actionable changes that affect customer environments.
-        If no clear changes are found, return an empty array.
+        Be VERY specific and extract ALL technical details, permission names, API parameters, and dates.
         """
         
         response = model.generate_content(prompt)

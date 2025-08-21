@@ -441,6 +441,65 @@ This email contains important updates about changes to Google Cloud Platform ser
                         with metrics_col3:
                             st.metric("Resources Affected", summary.get("total_resources_affected", 0))
                         
+                        # Show extracted structured data summary
+                        if results.get("extracted_changes"):
+                            st.divider()
+                            st.subheader("📊 Structured Data Extracted")
+                            
+                            # Create a summary table of what was parsed
+                            import pandas as pd
+                            
+                            extracted_data = []
+                            for change in results["extracted_changes"]:
+                                # Extract permission names from description
+                                import re
+                                permissions = re.findall(r'\b[a-z]+\.[a-z]+\.[a-zA-Z]+', change.get('description', ''))
+                                
+                                extracted_data.append({
+                                    "Service": change.get("service", ""),
+                                    "Type": change.get("change_type", "").replace("_", " ").title(),
+                                    "Permissions": ", ".join(permissions) if permissions else "N/A",
+                                    "Impact": change.get("impact_level", "").upper(),
+                                    "Date": change.get("effective_date", "N/A")
+                                })
+                            
+                            if extracted_data:
+                                df = pd.DataFrame(extracted_data)
+                                st.dataframe(
+                                    df,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={
+                                        "Impact": st.column_config.TextColumn(
+                                            "Impact",
+                                            help="Severity of the change"
+                                        ),
+                                        "Permissions": st.column_config.TextColumn(
+                                            "Permissions Affected",
+                                            help="GCP permissions being changed"
+                                        )
+                                    }
+                                )
+                                
+                                # Show what types of data were successfully extracted
+                                st.success("✅ **Successfully Extracted:**")
+                                cols = st.columns(4)
+                                
+                                # Count different types of extracted data
+                                permission_count = sum(1 for c in results["extracted_changes"] if "permission" in c.get("change_type", "").lower())
+                                api_count = sum(1 for c in results["extracted_changes"] if "api" in c.get("change_type", "").lower())
+                                dates_count = sum(1 for c in results["extracted_changes"] if c.get("effective_date"))
+                                actions_count = sum(1 for c in results["extracted_changes"] if c.get("required_action"))
+                                
+                                with cols[0]:
+                                    st.info(f"🔐 {permission_count} Permission Changes")
+                                with cols[1]:
+                                    st.info(f"🔧 {api_count} API Changes")
+                                with cols[2]:
+                                    st.info(f"📅 {dates_count} Dates Extracted")
+                                with cols[3]:
+                                    st.info(f"⚡ {actions_count} Actions Required")
+                        
                         # Create impact visualization
                         if results.get("extracted_changes"):
                             # Impact level distribution
@@ -488,37 +547,109 @@ This email contains important updates about changes to Google Cloud Platform ser
                             for rec in results["recommendations"]:
                                 st.write(f"• {rec}")
                         
-                        # Extracted changes
+                        # Extracted changes with structured display
                         st.divider()
                         st.subheader("🔄 Extracted Changes")
                         
+                        # Group changes by type for better organization
+                        permission_changes = []
+                        api_changes = []
+                        other_changes = []
+                        
                         for change in results.get("extracted_changes", []):
-                            # Color code by impact level
-                            if change["impact_level"] == "critical":
-                                alert_type = "error"
-                                icon = "🔴"
-                            elif change["impact_level"] == "high":
-                                alert_type = "warning"
-                                icon = "🟠"
-                            elif change["impact_level"] == "medium":
-                                alert_type = "info"
-                                icon = "🟡"
+                            if "permission" in change.get("change_type", "").lower():
+                                permission_changes.append(change)
+                            elif "api" in change.get("change_type", "").lower():
+                                api_changes.append(change)
                             else:
-                                alert_type = "success"
-                                icon = "🟢"
-                            
-                            with st.expander(f"{icon} {change['service']} - {change['change_type']}", expanded=True):
-                                st.write(f"**Description:** {change['description']}")
-                                if change.get('effective_date'):
-                                    st.write(f"**Effective Date:** {change['effective_date']}")
-                                if change.get('required_action'):
-                                    st.write(f"**Required Action:** {change['required_action']}")
-                                st.write(f"**Impact Level:** {change['impact_level'].upper()}")
+                                other_changes.append(change)
+                        
+                        # Display Permission Changes
+                        if permission_changes:
+                            st.markdown("### 🔐 Permission Changes")
+                            for change in permission_changes:
+                                # Color code by impact level
+                                if change["impact_level"] == "critical":
+                                    icon = "🔴"
+                                elif change["impact_level"] == "high":
+                                    icon = "🟠"
+                                elif change["impact_level"] == "medium":
+                                    icon = "🟡"
+                                else:
+                                    icon = "🟢"
                                 
-                                if change.get('affected_resources'):
-                                    st.write("**Affected Resource Types:**")
-                                    for resource in change['affected_resources']:
-                                        st.write(f"  • {resource}")
+                                with st.expander(f"{icon} {change['service']}: {change['change_type'].replace('_', ' ').title()}", expanded=True):
+                                    # Highlight specific permissions with code formatting
+                                    col1, col2 = st.columns(2)
+                                    
+                                    with col1:
+                                        st.markdown("**📝 Change Details:**")
+                                        # Extract and highlight permission names
+                                        desc = change['description']
+                                        # Find permission names (pattern: word.word.word)
+                                        import re
+                                        permissions = re.findall(r'\b[a-z]+\.[a-z]+\.[a-zA-Z]+', desc)
+                                        for perm in permissions:
+                                            desc = desc.replace(perm, f"`{perm}`")
+                                        st.markdown(desc)
+                                    
+                                    with col2:
+                                        st.markdown("**⚡ Required Action:**")
+                                        if change.get('required_action'):
+                                            action = change['required_action']
+                                            # Highlight permission names in actions too
+                                            permissions = re.findall(r'\b[a-z]+\.[a-z]+\.[a-zA-Z]+', action)
+                                            for perm in permissions:
+                                                action = action.replace(perm, f"`{perm}`")
+                                            st.markdown(action)
+                                    
+                                    # Show affected resources as tags
+                                    if change.get('affected_resources'):
+                                        st.markdown("**🎯 Affected Resources:**")
+                                        cols = st.columns(len(change['affected_resources'][:4]))
+                                        for i, resource in enumerate(change['affected_resources'][:4]):
+                                            with cols[i]:
+                                                st.info(resource)
+                                    
+                                    # Highlight the effective date
+                                    if change.get('effective_date'):
+                                        st.warning(f"📅 **Effective Date: {change['effective_date']}**")
+                        
+                        # Display API Changes
+                        if api_changes:
+                            st.markdown("### 🔧 API Changes")
+                            for change in api_changes:
+                                icon = "🟡" if change["impact_level"] == "medium" else "🟠"
+                                
+                                with st.expander(f"{icon} {change['service']}: {change['change_type'].replace('_', ' ').title()}", expanded=False):
+                                    st.markdown("**📝 API Update:**")
+                                    # Highlight API parameters with code formatting
+                                    desc = change['description']
+                                    # Find parameter names (pattern: word_word or WORD_WORD)
+                                    params = re.findall(r'\b[A-Z_]+(?:\s|,)|\'[a-z_]+\'', desc)
+                                    for param in params:
+                                        clean_param = param.strip("',")
+                                        if clean_param:
+                                            desc = desc.replace(clean_param, f"`{clean_param}`")
+                                    st.markdown(desc)
+                                    
+                                    if change.get('required_action'):
+                                        st.markdown("**⚡ Migration Path:**")
+                                        st.code(change['required_action'], language="text")
+                                    
+                                    if change.get('effective_date'):
+                                        st.info(f"📅 Effective: {change['effective_date']}")
+                        
+                        # Display other changes
+                        if other_changes:
+                            st.markdown("### 📋 Other Changes")
+                            for change in other_changes:
+                                with st.expander(f"{change['service']} - {change['change_type']}", expanded=False):
+                                    st.write(change['description'])
+                                    if change.get('required_action'):
+                                        st.write(f"**Action:** {change['required_action']}")
+                                    if change.get('effective_date'):
+                                        st.write(f"**Date:** {change['effective_date']}")
                         
                         # Impact assessments for specific project
                         if results.get("impact_assessments") and project_id:
