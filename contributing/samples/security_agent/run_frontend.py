@@ -49,7 +49,7 @@ def run_local():
     """Start the Streamlit frontend with token streaming."""
     # Detect if running in Cloud Run
     is_cloud_run = os.environ.get('K_SERVICE') is not None
-    port = os.environ.get('PORT', '8501')
+    port = os.environ.get('FRONTEND_PORT', os.environ.get('PORT', '8501'))
     
     print("🚀 Starting GCP Security Executive Dashboard")
     print("=" * 50)

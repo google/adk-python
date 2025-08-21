@@ -95,7 +95,7 @@ def run_local():
     """Start the FastAPI backend server locally."""
     # Detect if running in Cloud Run
     is_cloud_run = os.environ.get('K_SERVICE') is not None
-    port = os.environ.get('PORT', '8000')
+    port = os.environ.get('BACKEND_PORT', os.environ.get('PORT', '8000'))
     
     # Kill any existing backend processes if running locally
     if not is_cloud_run:
