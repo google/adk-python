@@ -727,7 +727,10 @@ def display_chat_interface():
             "Show me MSA analysis history",
             "What MSA changes affect BigQuery?",
             "Show me permission changes from MSAs",
-            "What permissions are changing for bigquery.datasets.get?"
+            "What permissions are changing for bigquery.datasets.get?",
+            "Show all evaluated GCP services",
+            "What are the security risks for Vertex AI Memory Store?",
+            "Check compliance for AI/ML services"
         ]
         
         for query in quick_queries:
@@ -825,6 +828,230 @@ def display_chat_interface():
         st.rerun()
 
 
+def display_service_evaluation():
+    """Display the service evaluation interface for new GCP services."""
+    st.header("🔍 New GCP Service Evaluation")
+    st.markdown("""
+    Evaluate new Google Cloud services for security risks, compliance requirements, 
+    and integration readiness. This framework automatically analyzes services like 
+    Vertex AI Memory Store and provides comprehensive security assessments.
+    """)
+    
+    # Two columns for input and results
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("🎯 Service Evaluation")
+        
+        # Service selection
+        service_name = st.text_input(
+            "Service Name",
+            placeholder="e.g., vertex-ai-memory-store",
+            help="Enter the name of the GCP service to evaluate"
+        )
+        
+        # Example services dropdown
+        example_services = [
+            "vertex-ai-memory-store",
+            "cloud-run",
+            "alloydb",
+            "firebase-genkit",
+            "cloud-sql",
+            "bigquery-ml",
+            "vertex-ai-workbench"
+        ]
+        
+        selected_example = st.selectbox(
+            "Or select an example service:",
+            [""] + example_services
+        )
+        
+        if selected_example:
+            service_name = selected_example
+        
+        # Project ID
+        project_id = st.text_input(
+            "Project ID",
+            value=os.getenv("GOOGLE_CLOUD_PROJECT", ""),
+            help="GCP Project ID for evaluation context"
+        )
+        
+        # Evaluation button
+        evaluate_clicked = st.button(
+            "🔍 Evaluate Service",
+            type="primary",
+            use_container_width=True,
+            disabled=not service_name
+        )
+        
+        st.divider()
+        
+        # Quick evaluation queries
+        st.subheader("⚡ Quick Queries")
+        
+        quick_queries = [
+            "Show all evaluated services",
+            "What are the security risks for Vertex AI Memory Store?",
+            "Check compliance requirements for AI services",
+            "List services with encryption concerns",
+            "Show high-risk service configurations"
+        ]
+        
+        for query in quick_queries:
+            if st.button(query, key=f"service_eval_{query[:20]}", use_container_width=True):
+                st.session_state['quick_query'] = query
+                st.session_state['switch_to_chat'] = True
+    
+    with col2:
+        st.subheader("📊 Evaluation Results")
+        
+        if evaluate_clicked and service_name:
+            with st.spinner(f"🤖 Evaluating {service_name}..."):
+                try:
+                    # Call backend service evaluation API
+                    backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+                    
+                    payload = {
+                        "service_name": service_name,
+                        "project_id": project_id if project_id else os.getenv("GOOGLE_CLOUD_PROJECT", "test-project")
+                    }
+                    
+                    response = httpx.post(
+                        f"{backend_url}/api/v1/google-services/evaluate",
+                        json=payload,
+                        timeout=30.0
+                    )
+                    
+                    if response.status_code == 200:
+                        results = response.json()
+                        
+                        # Display evaluation results
+                        st.success(f"✅ Evaluation Complete for {service_name}")
+                        
+                        # Service profile
+                        st.subheader("📋 Service Profile")
+                        st.write(f"**Description:** {results.get('description', 'N/A')}")
+                        st.write(f"**Release Stage:** {results.get('release_stage', 'N/A')}")
+                        
+                        # Use cases
+                        if results.get('use_cases'):
+                            st.write("**Use Cases:**")
+                            for use_case in results['use_cases']:
+                                st.write(f"• {use_case}")
+                        
+                        # Security assessment
+                        if results.get('security_assessment'):
+                            st.divider()
+                            st.subheader("🔐 Security Assessment")
+                            
+                            assessment = results['security_assessment']
+                            
+                            # Risk metrics
+                            col_a, col_b, col_c = st.columns(3)
+                            with col_a:
+                                risk_score = assessment.get('risk_score', 0)
+                                color = "🟢" if risk_score < 4 else "🟡" if risk_score < 7 else "🔴"
+                                st.metric("Overall Risk", f"{color} {risk_score}/10")
+                            
+                            with col_b:
+                                st.metric("Network Exposure", assessment.get('network_exposure', 'Unknown'))
+                            
+                            with col_c:
+                                st.metric("Encryption", assessment.get('data_encryption', 'Unknown'))
+                            
+                            # Risk profile breakdown
+                            if assessment.get('risk_profile'):
+                                st.divider()
+                                st.write("**Risk Profile Breakdown:**")
+                                
+                                risk_profile = assessment['risk_profile']
+                                risk_data = {
+                                    'Risk Category': [
+                                        'Data Exposure',
+                                        'Misconfiguration',
+                                        'Attack Surface',
+                                        'Compliance'
+                                    ],
+                                    'Score': [
+                                        risk_profile.get('data_exposure', 0),
+                                        risk_profile.get('misconfiguration', 0),
+                                        risk_profile.get('attack_surface', 0),
+                                        risk_profile.get('compliance_violation', 0)
+                                    ]
+                                }
+                                
+                                # Create bar chart
+                                import pandas as pd
+                                df_risk = pd.DataFrame(risk_data)
+                                
+                                fig_risk = px.bar(
+                                    df_risk,
+                                    x='Risk Category',
+                                    y='Score',
+                                    title="Risk Assessment by Category",
+                                    color='Score',
+                                    color_continuous_scale=['green', 'yellow', 'red'],
+                                    range_color=[0, 10],
+                                    height=300
+                                )
+                                st.plotly_chart(fig_risk, use_container_width=True)
+                            
+                            # IAM permissions
+                            if assessment.get('iam_permissions'):
+                                st.divider()
+                                st.write("**Required IAM Permissions:**")
+                                permissions_text = ", ".join(assessment['iam_permissions'][:5])
+                                if len(assessment['iam_permissions']) > 5:
+                                    permissions_text += f" (+{len(assessment['iam_permissions']) - 5} more)"
+                                st.code(permissions_text)
+                            
+                            # Compliance certifications
+                            if assessment.get('compliance_certifications'):
+                                st.write("**Compliance Certifications:**")
+                                for cert in assessment['compliance_certifications']:
+                                    st.write(f"✅ {cert}")
+                            
+                            # Threat model summary
+                            if assessment.get('threat_model_summary'):
+                                st.divider()
+                                st.write("**Threat Model Summary:**")
+                                st.info(assessment['threat_model_summary'])
+                        
+                        # Save to database button
+                        if st.button("💾 Save Evaluation", use_container_width=True):
+                            st.success("✅ Evaluation saved to database")
+                            st.info("You can now query this evaluation through the chat interface")
+                    
+                    else:
+                        st.error(f"Failed to evaluate service: {response.text}")
+                        
+                except Exception as e:
+                    st.error(f"Error evaluating service: {str(e)}")
+                    st.info("The service may not be available or credentials may be missing")
+        
+        else:
+            # Show example evaluation or instructions
+            st.info("""
+            👈 Enter a service name to evaluate its security posture
+            
+            **What this does:**
+            • Analyzes service security configurations
+            • Identifies potential risks and vulnerabilities
+            • Checks compliance requirements
+            • Provides remediation recommendations
+            
+            **Example Services to Try:**
+            • `vertex-ai-memory-store` - Vector database for AI
+            • `cloud-run` - Serverless container platform
+            • `alloydb` - PostgreSQL-compatible database
+            """)
+    
+    # Handle switching to chat tab for quick queries
+    if st.session_state.get('switch_to_chat'):
+        st.session_state['switch_to_chat'] = False
+        st.info("💬 Switch to the Security Chat tab to see query results")
+
+
 def main():
     """Main application with unified dashboard and streaming chat."""
     # Initialize session
@@ -836,7 +1063,7 @@ def main():
     st.divider()
     
     # Create tabs for different features
-    tab1, tab2, tab3 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "📊 Deep Analytics"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "🔍 Service Evaluation", "📊 Deep Analytics"])
     
     with tab1:
         # Display chat interface
@@ -847,6 +1074,10 @@ def main():
         display_msa_analyzer()
     
     with tab3:
+        # Display service evaluation
+        display_service_evaluation()
+    
+    with tab4:
         # Placeholder for future deep analytics
         st.header("📊 Deep Security Analytics")
         st.info("Advanced analytics and reporting features coming soon...")
@@ -870,7 +1101,7 @@ def main():
     st.markdown("""
     <div style='text-align: center'>
     <small>🔐 GCP Security Executive Dashboard | Powered by Vertex AI & ADK | 
-    Real-time streaming with SQLite integration | MSA Impact Analysis</small>
+    Real-time streaming with SQLite integration | MSA Impact Analysis | Service Evaluation Framework</small>
     </div>
     """, unsafe_allow_html=True)
 
