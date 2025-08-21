@@ -30,7 +30,7 @@ def create_msa_tables(db_path: str):
             )
         """)
         
-        # Table for storing extracted changes
+        # Table for storing extracted changes with structured fields
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS msa_changes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +42,11 @@ def create_msa_tables(db_path: str):
                 required_action TEXT,
                 impact_level TEXT,
                 affected_resources TEXT,  -- JSON array
+                old_permission TEXT,       -- Original permission being changed
+                new_permissions TEXT,      -- JSON array of new permissions
+                api_parameters TEXT,       -- JSON object of API parameters
+                affects_predefined_roles BOOLEAN,
+                testing_available BOOLEAN,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (msa_email_id) REFERENCES msa_emails(id)
             )
@@ -114,14 +119,17 @@ def store_msa_analysis(db_path: str, analysis_results: dict):
         
         msa_email_id = cursor.lastrowid
         
-        # Store extracted changes
+        # Store extracted changes with structured fields
         for change in analysis_results.get('extracted_changes', []):
+            import json
             cursor.execute("""
                 INSERT INTO msa_changes (
                     msa_email_id, service, change_type, description,
-                    effective_date, required_action, impact_level, affected_resources
+                    effective_date, required_action, impact_level, affected_resources,
+                    old_permission, new_permissions, api_parameters,
+                    affects_predefined_roles, testing_available
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 msa_email_id,
                 change.get('service'),
@@ -130,7 +138,12 @@ def store_msa_analysis(db_path: str, analysis_results: dict):
                 change.get('effective_date'),
                 change.get('required_action'),
                 change.get('impact_level'),
-                str(change.get('affected_resources', []))
+                json.dumps(change.get('affected_resources', [])),
+                change.get('old_permission'),
+                json.dumps(change.get('new_permissions', [])) if change.get('new_permissions') else None,
+                json.dumps(change.get('api_parameters', {})) if change.get('api_parameters') else None,
+                change.get('affects_predefined_roles', False),
+                change.get('testing_available', False)
             ))
             
             change_id = cursor.lastrowid

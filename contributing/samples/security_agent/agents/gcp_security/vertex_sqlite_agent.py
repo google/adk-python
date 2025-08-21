@@ -75,7 +75,19 @@ This tool can retrieve various types of information by specifying the query_type
 
 17. **cache_status** - Show cache statistics and last update time
 
-18. **custom** - Execute custom SQL queries (use carefully)
+18. **msa_analysis** - View MSA (Monthly Service Announcement) analysis history
+    - Shows previously analyzed Google Cloud service announcements
+
+19. **msa_changes** - Query specific MSA changes and their details
+    - Optional parameters: {"service": "BigQuery"}, {"impact_level": "high"}, {"permission": "bigquery.datasets.get"}
+
+20. **msa_impact** - Get MSA impact assessments for projects
+    - Optional parameters: {"project_id": "my-project"}
+
+21. **msa_permissions** - Query MSA permission changes with detailed mapping
+    - Optional parameters: {"permission": "bigquery.datasets.get"} for specific permission analysis
+
+22. **custom** - Execute custom SQL queries (use carefully)
     - Parameters: {"sql": "SELECT * FROM assets LIMIT 10"}
 
 ## How to Use:
@@ -97,6 +109,9 @@ Examples:
 - "Analyze my storage buckets" → query_security_data("storage_buckets")
 - "Show security recommendations" → query_security_data("recommendations")
 - "What should I fix first?" → query_security_data("security_summary")
+- "What MSA changes affect BigQuery?" → query_security_data("msa_changes", '{"service": "BigQuery"}')
+- "Show me permission changes from MSAs" → query_security_data("msa_permissions")
+- "What permissions are changing for bigquery.datasets.get?" → query_security_data("msa_permissions", '{"permission": "bigquery.datasets.get"}')
 
 When users ask "what should I do about it" or request best practices, provide recommendations based on Google Cloud security documentation and industry standards.
 
@@ -227,6 +242,27 @@ Always provide helpful, accurate information and suggest next steps for improvin
 - **Audit Logging**: Track all secret access and modifications
 - **Encryption**: Use CMEK for additional encryption control
 - **Expiration**: Set expiration dates for temporary secrets
+
+**For MSA (Monthly Service Announcement) Changes (msa_* tables):**
+- **Critical/High Impact Changes**: Address immediately before effective date
+- **Permission Changes**: Update custom IAM roles to include new granular permissions
+- **API Parameter Changes**: Update client code to use new API parameters correctly
+- **BigQuery ACL Changes**: Add `bigquery.datasets.getIamPolicy` and `bigquery.datasets.setIamPolicy` to custom roles that manage dataset ACLs
+- **Testing Period**: Use early testing when available to validate changes in development
+- **Documentation**: Update internal documentation and automation scripts for new APIs
+- **Monitoring**: Set up alerts for new permission-related errors after effective dates
+- **Rollback Planning**: Prepare rollback procedures for applications that might break
+- **Team Communication**: Notify development teams about upcoming changes well in advance
+- **Custom Role Audit**: Review all custom roles for permissions being split or changed
+- **Service Account Review**: Ensure service accounts have necessary new permissions
+- **Application Testing**: Test applications against new API behaviors before effective dates
+
+**MSA Change Priority Framework:**
+1. **Critical/High Impact**: Plan changes immediately, test within 1 week of announcement
+2. **Medium Impact**: Schedule implementation 2-4 weeks before effective date  
+3. **Low Impact**: Plan during regular maintenance windows
+4. **Permission Splits**: Always add new permissions before old ones are removed
+5. **API Changes**: Update client libraries and test new parameters early
 
 **Best Practice Reminders:**
 - Always test changes in development environments first

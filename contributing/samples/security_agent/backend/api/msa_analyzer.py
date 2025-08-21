@@ -50,6 +50,12 @@ class MSAChange(BaseModel):
     required_action: Optional[str] = Field(None, description="Action required by customers")
     impact_level: str = Field("low", description="Impact level: critical, high, medium, low")
     affected_resources: List[str] = Field(default_factory=list, description="Types of resources affected")
+    # New structured fields
+    old_permission: Optional[str] = Field(None, description="Original permission being changed")
+    new_permissions: Optional[List[str]] = Field(None, description="New permissions required")
+    api_parameters: Optional[Dict[str, Any]] = Field(None, description="API parameters and values")
+    affects_predefined_roles: Optional[bool] = Field(False, description="Whether predefined roles are affected")
+    testing_available: Optional[bool] = Field(False, description="Whether testing is available")
 
 
 class ImpactAssessment(BaseModel):
@@ -90,7 +96,11 @@ def extract_structured_changes(email_content: str) -> List[MSAChange]:
                 effective_date="2026-03-17",
                 required_action="Add 'bigquery.datasets.getIamPolicy' permission to custom roles that need to view dataset ACLs",
                 impact_level="high",
-                affected_resources=["custom_roles", "datasets", "ACLs", "Object_Privileges_view"]
+                affected_resources=["custom_roles", "datasets", "ACLs", "Object_Privileges_view"],
+                old_permission="bigquery.datasets.get",
+                new_permissions=["bigquery.datasets.get", "bigquery.datasets.getIamPolicy"],
+                affects_predefined_roles=False,
+                testing_available=True
             ))
             
             # Permission: bigquery.datasets.update
@@ -101,7 +111,11 @@ def extract_structured_changes(email_content: str) -> List[MSAChange]:
                 effective_date="2026-03-17",
                 required_action="Add 'bigquery.datasets.setIamPolicy' permission to custom roles that need to update dataset ACLs",
                 impact_level="high",
-                affected_resources=["custom_roles", "datasets", "ACLs"]
+                affected_resources=["custom_roles", "datasets", "ACLs"],
+                old_permission="bigquery.datasets.update",
+                new_permissions=["bigquery.datasets.update", "bigquery.datasets.setIamPolicy"],
+                affects_predefined_roles=False,
+                testing_available=True
             ))
             
             # Permission: bigquery.datasets.create
@@ -123,7 +137,18 @@ def extract_structured_changes(email_content: str) -> List[MSAChange]:
                 effective_date="2026-03-17",
                 required_action="Update API calls to use dataset_view=METADATA if you only have bigquery.datasets.get permission",
                 impact_level="medium",
-                affected_resources=["dataset_get_api", "api_clients", "automation_scripts"]
+                affected_resources=["dataset_get_api", "api_clients", "automation_scripts"],
+                api_parameters={
+                    "dataset_view": {
+                        "values": ["METADATA", "ACL", "FULL"],
+                        "default": "FULL",
+                        "permissions_required": {
+                            "METADATA": ["bigquery.datasets.get"],
+                            "ACL": ["bigquery.datasets.getIamPolicy"],
+                            "FULL": ["bigquery.datasets.get", "bigquery.datasets.getIamPolicy"]
+                        }
+                    }
+                }
             ))
             
             # API: Dataset Patch/Update APIs

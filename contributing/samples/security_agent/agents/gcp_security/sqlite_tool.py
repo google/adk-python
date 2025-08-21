@@ -132,6 +132,8 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             return _query_msa_changes(cursor, params)
         elif query_type == 'msa_impact':
             return _query_msa_impact(cursor, params)
+        elif query_type == 'msa_permissions':
+            return _query_msa_permissions(cursor, params)
         elif query_type == 'custom':
             return _execute_custom_query(cursor, params)
         else:
@@ -1081,7 +1083,7 @@ def _query_msa_analysis(cursor, params: Dict) -> str:
     return output
 
 def _query_msa_changes(cursor, params: Dict) -> str:
-    """Query specific MSA changes"""
+    """Query specific MSA changes with structured data"""
     
     # Build query based on parameters
     where_clauses = []
@@ -1098,6 +1100,11 @@ def _query_msa_changes(cursor, params: Dict) -> str:
     if params.get('msa_id'):
         where_clauses.append("msa_email_id = ?")
         query_params.append(params['msa_id'])
+    
+    if params.get('permission'):
+        # Search for specific permission in old_permission or new_permissions
+        where_clauses.append("(old_permission LIKE ? OR new_permissions LIKE ?)")
+        query_params.extend([f"%{params['permission']}%", f"%{params['permission']}%"])
     
     where_clause = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
     
@@ -1138,11 +1145,43 @@ def _query_msa_changes(cursor, params: Dict) -> str:
         output += f"{emoji} {change['service']} - {change['change_type']}\n"
         output += f"   {change['description'][:100]}...\n" if len(change['description']) > 100 else f"   {change['description']}\n"
         
+        # Show structured permission data if available
+        if change['old_permission']:
+            output += f"   🔐 Old Permission: `{change['old_permission']}`\n"
+        
+        if change['new_permissions']:
+            try:
+                import json
+                new_perms = json.loads(change['new_permissions']) if isinstance(change['new_permissions'], str) else change['new_permissions']
+                if new_perms:
+                    output += f"   🆕 New Permissions: {', '.join([f'`{p}`' for p in new_perms])}\n"
+            except:
+                pass
+        
+        # Show API parameters if available
+        if change['api_parameters']:
+            try:
+                import json
+                api_params = json.loads(change['api_parameters']) if isinstance(change['api_parameters'], str) else change['api_parameters']
+                if api_params:
+                    output += f"   🔧 API Parameters:\n"
+                    for param_name, param_info in api_params.items():
+                        if isinstance(param_info, dict) and 'values' in param_info:
+                            output += f"      • {param_name}: {', '.join(param_info['values'])}\n"
+            except:
+                pass
+        
         if change['effective_date']:
             output += f"   📅 Effective: {change['effective_date']}\n"
         
         if change['required_action']:
             output += f"   ⚡ Action: {change['required_action'][:100]}...\n" if len(change['required_action']) > 100 else f"   ⚡ Action: {change['required_action']}\n"
+        
+        if change['affects_predefined_roles'] is False:
+            output += f"   ✅ Predefined roles are NOT affected\n"
+        
+        if change['testing_available']:
+            output += f"   🧪 Testing available for early validation\n"
         
         output += "\n"
     
@@ -1223,5 +1262,124 @@ def _query_msa_impact(cursor, params: Dict) -> str:
     
     if len(assessments) > 10:
         output += f"... and {len(assessments) - 10} more assessments"
+    
+    return output
+
+def _query_msa_permissions(cursor, params: Dict) -> str:
+    """Query MSA permission changes with detailed mapping"""
+    
+    # Check for specific permission query
+    permission_name = params.get('permission', '')
+    
+    if permission_name:
+        # Search for a specific permission
+        cursor.execute("""
+            SELECT * FROM msa_changes
+            WHERE (old_permission LIKE ? OR new_permissions LIKE ?)
+            AND (old_permission IS NOT NULL OR new_permissions IS NOT NULL)
+            ORDER BY effective_date ASC
+        """, (f"%{permission_name}%", f"%{permission_name}%"))
+    else:
+        # Get all permission changes
+        cursor.execute("""
+            SELECT * FROM msa_changes
+            WHERE old_permission IS NOT NULL OR new_permissions IS NOT NULL
+            ORDER BY service, effective_date ASC
+        """)
+    
+    changes = cursor.fetchall()
+    
+    if not changes:
+        if permission_name:
+            return f"No MSA changes found for permission: {permission_name}"
+        else:
+            return "No permission-related MSA changes found. Upload an MSA with permission changes to see results."
+    
+    if permission_name:
+        output = f"🔐 MSA Permission Changes for '{permission_name}':\n\n"
+    else:
+        output = f"🔐 All MSA Permission Changes ({len(changes)} found):\n\n"
+    
+    # Group by service for better organization
+    by_service = {}
+    for change in changes:
+        service = change['service']
+        if service not in by_service:
+            by_service[service] = []
+        by_service[service].append(change)
+    
+    for service, service_changes in by_service.items():
+        output += f"📦 {service}:\n"
+        
+        for change in service_changes:
+            output += f"\n  📝 {change['change_type'].replace('_', ' ').title()}\n"
+            
+            # Show the permission mapping
+            if change['old_permission']:
+                output += f"    FROM: `{change['old_permission']}`\n"
+                
+                if change['new_permissions']:
+                    try:
+                        import json
+                        new_perms = json.loads(change['new_permissions']) if isinstance(change['new_permissions'], str) else change['new_permissions']
+                        if new_perms:
+                            output += f"    TO:   "
+                            for i, perm in enumerate(new_perms):
+                                if i == 0:
+                                    output += f"`{perm}`\n"
+                                else:
+                                    output += f"          `{perm}`\n"
+                    except:
+                        pass
+            
+            # Show what the permission change means
+            if change['description']:
+                # Extract the key information
+                desc_lines = change['description'].split('. ')
+                for line in desc_lines[:2]:  # Show first 2 sentences
+                    if 'currently' in line.lower() or 'after' in line.lower() or 'will' in line.lower():
+                        output += f"    ℹ️  {line}.\n"
+            
+            # Show effective date
+            if change['effective_date']:
+                output += f"    📅 Effective: {change['effective_date']}\n"
+            
+            # Show required action
+            if change['required_action']:
+                output += f"    ⚡ Action: {change['required_action'][:80]}...\n" if len(change['required_action']) > 80 else f"    ⚡ Action: {change['required_action']}\n"
+            
+            # Show if testing is available
+            if change['testing_available']:
+                output += f"    🧪 Early testing available\n"
+            
+            # Show API parameters if relevant
+            if change['api_parameters']:
+                try:
+                    import json
+                    api_params = json.loads(change['api_parameters']) if isinstance(change['api_parameters'], str) else change['api_parameters']
+                    if api_params:
+                        output += f"    🔧 Related API parameters:\n"
+                        for param_name, param_info in api_params.items():
+                            if isinstance(param_info, dict) and 'permissions_required' in param_info:
+                                output += f"       • {param_name}:\n"
+                                for value, perms in param_info['permissions_required'].items():
+                                    output += f"         - {value}: requires {', '.join(perms)}\n"
+                except:
+                    pass
+        
+        output += "\n"
+    
+    # Add summary
+    output += "📊 Summary:\n"
+    output += f"  • Total permission changes: {len(changes)}\n"
+    output += f"  • Services affected: {', '.join(by_service.keys())}\n"
+    
+    # Find earliest effective date
+    effective_dates = [c['effective_date'] for c in changes if c['effective_date']]
+    if effective_dates:
+        earliest = min(effective_dates)
+        output += f"  • Earliest change date: {earliest}\n"
+    
+    output += "\n💡 Tip: Query specific permissions like 'bigquery.datasets.get' to see detailed mapping."
     
     return output
