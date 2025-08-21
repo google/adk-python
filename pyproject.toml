@@ -47,10 +47,10 @@ dependencies = [
   "pydantic>=2.0, <3.0.0",                                  # For data validation/models
   "python-dateutil>=2.9.0.post0, <3.0.0",                   # For Vertext AI Session Service
   "python-dotenv>=1.0.0, <2.0.0",                           # To manage environment variables
-  "requests>=2.13.0, <3.0.0",
+  "requests>=2.25.1, <3.0.0",
   "sqlalchemy-spanner>=1.14.0",                             # Spanner database session service
   "sqlalchemy>=2.0, <3.0.0",                                # SQL database ORM
-  "starlette>=0.40.0, <1.0.0",                              # For FastAPI CLI
+  "starlette>=0.40.0, <0.47.0",                             # For FastAPI CLI - compatible with FastAPI >=0.115.0
   "tenacity>=8.0.0, <9.0.0",                                # For Retry management
   "typing-extensions>=4.5, <5",
   "tzlocal>=5.3, <6.0",                                     # Time zone utilities
