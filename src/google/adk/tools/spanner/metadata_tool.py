@@ -81,7 +81,7 @@ def get_table_schema(
     credentials: Credentials,
     named_schema: str = "",
 ) -> dict:
-  """Get schema information about a Spanner table.
+  """Get schema and metadata information about a Spanner table.
 
   Args:
       project_id (str): The Google Cloud project id.
@@ -102,7 +102,8 @@ def get_table_schema(
         "status": "SUCCESS",
         "results":
           {
-            'colA': {
+            "schema":  {
+              'colA': {
                 'SPANNER_TYPE': 'STRING(1024)',
                 'TABLE_SCHEMA': '',
                 'ORDINAL_POSITION': 1,
@@ -111,14 +112,31 @@ def get_table_schema(
                 'IS_GENERATED': 'NEVER',
                 'GENERATION_EXPRESSION': None,
                 'IS_STORED': None,
-                'KEY_COLUMN_USAGE': { # This part is added if it's a key column
-                  'CONSTRAINT_NAME': 'PK_Table1',
-                  'ORDINAL_POSITION': 1,
-                  'POSITION_IN_UNIQUE_CONSTRAINT': None
-                }
+                'KEY_COLUMN_USAGE': [
+                  # This part is added if it's a key column
+                  {
+                    'CONSTRAINT_NAME': 'PK_Table1',
+                    'ORDINAL_POSITION': 1,
+                    'POSITION_IN_UNIQUE_CONSTRAINT': None
+                  }
+                ]
+              },
+              'colB': { ... },
+              ...
             },
-            'colB': { ... },
-            ...
+            "metadata": [
+              {
+                'TABLE_SCHEMA': '',
+                'TABLE_NAME': 'MyTable',
+                'TABLE_TYPE': 'BASE TABLE',
+                'PARENT_TABLE_NAME': NULL,
+                'ON_DELETE_ACTION': NULL,
+                'SPANNER_STATE': 'COMMITTED',
+                'INTERLEAVE_TYPE': NULL,
+                'ROW_DELETION_POLICY_EXPRESSION':
+                  'OLDER_THAN(CreatedAt, INTERVAL 1 DAY)',
+              }
+            ]
           }
   """
 
@@ -160,7 +178,24 @@ def get_table_schema(
       "named_schema": spanner_param_types.STRING,
   }
 
-  schema = {}
+  table_metadata_query = """
+      SELECT
+          TABLE_SCHEMA,
+          TABLE_NAME,
+          TABLE_TYPE,
+          PARENT_TABLE_NAME,
+          ON_DELETE_ACTION,
+          SPANNER_STATE,
+          INTERLEAVE_TYPE,
+          ROW_DELETION_POLICY_EXPRESSION
+      FROM
+          INFORMATION_SCHEMA.TABLES
+      WHERE
+          TABLE_NAME = @table_name
+          AND TABLE_SCHEMA = @named_schema;
+  """
+
+  results = {"schema": {}, "metadata": []}
   try:
     spanner_client = client.get_spanner_client(
         project=project_id, credentials=credentials
@@ -200,7 +235,7 @@ def get_table_schema(
             "GENERATION_EXPRESSION": generation_expression,
             "IS_STORED": is_stored,
         }
-        schema[column_name] = column_metadata
+        results["schema"][column_name] = column_metadata
 
       key_column_result_set = snapshot.execute_sql(
           key_column_usage_query, params=params, param_types=param_types
@@ -219,15 +254,33 @@ def get_table_schema(
             "POSITION_IN_UNIQUE_CONSTRAINT": position_in_unique_constraint,
         }
         # Attach key column info to the existing column schema entry
-        if column_name in schema:
-          schema[column_name]["KEY_COLUMN_USAGE"] = key_column_properties
+        if column_name in results["schema"]:
+          results["schema"][column_name].setdefault(
+              "KEY_COLUMN_USAGE", []
+          ).append(key_column_properties)
+
+      table_metadata_result_set = snapshot.execute_sql(
+          table_metadata_query, params=params, param_types=param_types
+      )
+      for row in table_metadata_result_set:
+        metadata_result = {
+            "TABLE_SCHEMA": row[0],
+            "TABLE_NAME": row[1],
+            "TABLE_TYPE": row[2],
+            "PARENT_TABLE_NAME": row[3],
+            "ON_DELETE_ACTION": row[4],
+            "SPANNER_STATE": row[5],
+            "INTERLEAVE_TYPE": row[6],
+            "ROW_DELETION_POLICY_EXPRESSION": row[7],
+        }
+        results["metadata"].append(metadata_result)
 
     try:
-      json.dumps(schema)
+      json.dumps(results)
     except:
-      schema = str(schema)
+      results = str(results)
 
-    return {"status": "SUCCESS", "results": schema}
+    return {"status": "SUCCESS", "results": results}
   except Exception as ex:
     return {
         "status": "ERROR",
