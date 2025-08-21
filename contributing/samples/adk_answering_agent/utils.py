@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import sys
 from typing import Any
+from typing import Optional
+from urllib.parse import urljoin
 
 from adk_answering_agent.settings import GITHUB_GRAPHQL_URL
 from adk_answering_agent.settings import GITHUB_TOKEN
@@ -56,6 +59,92 @@ def parse_number_string(number_str: str | None, default_value: int = 0) -> int:
         file=sys.stderr,
     )
     return default_value
+
+
+def _check_url_exists(url: str) -> bool:
+  """Checks if a URL exists and is accessible."""
+  try:
+    # Set a timeout to prevent the program from waiting indefinitely.
+    # allow_redirects=True ensures we correctly handle valid links
+    # after redirection.
+    response = requests.head(url, timeout=5, allow_redirects=True)
+    # Status codes 2xx (Success) or 3xx (Redirection) are considered valid.
+    return response.ok
+  except requests.RequestException:
+    # Catch all possible exceptions from the requests library
+    # (e.g., connection errors, timeouts).
+    return False
+
+
+def _generate_github_url(repo_name: str, relative_path: str) -> str:
+  """Generates a standard GitHub URL for a repo file."""
+  return f"https://github.com/google/{repo_name}/blob/main/{relative_path}"
+
+
+def convert_gcs_to_https(gcs_uri: str) -> Optional[str]:
+  """Converts a GCS file link into a publicly accessible HTTPS link.
+
+  Args:
+      gcs_uri: The Google Cloud Storage link, in the format
+        'gs://bucket_name/prefix/relative_path'.
+
+  Returns:
+      The converted HTTPS link as a string, or None if the input format is
+      incorrect.
+  """
+  # Parse the GCS link
+  if not gcs_uri or not gcs_uri.startswith("gs://"):
+    print(f"Error: Invalid GCS link format: {gcs_uri}")
+    return None
+
+  try:
+    # Strip 'gs://' and split by '/', requiring at least 3 parts
+    # (bucket, prefix, path)
+    parts = gcs_uri[5:].split("/", 2)
+    if len(parts) < 3:
+      raise ValueError(
+          "GCS link must contain a bucket, prefix, and relative_path."
+      )
+
+    _, prefix, relative_path = parts
+  except (ValueError, IndexError) as e:
+    print(f"Error: Failed to parse GCS link '{gcs_uri}': {e}")
+    return None
+
+  # Replace .html with .md
+  if relative_path.endswith(".html"):
+    relative_path = relative_path.removesuffix(".html") + ".md"
+
+  # Convert the links for adk-docs
+  if prefix == "adk-docs" and relative_path.startswith("docs/"):
+    path_after_docs = relative_path[len("docs/") :]
+    if not path_after_docs.endswith(".md"):
+      # Use the regular github url
+      return _generate_github_url(prefix, relative_path)
+
+    base_url = "https://google.github.io/adk-docs/"
+    if os.path.basename(path_after_docs) == "index.md":
+      # Use the directory path if it is a index file
+      final_path_segment = os.path.dirname(path_after_docs)
+    else:
+      # Otherwise, use the file name without extention
+      final_path_segment = path_after_docs.removesuffix(".md")
+
+    if final_path_segment and not final_path_segment.endswith("/"):
+      final_path_segment += "/"
+
+    potential_url = urljoin(base_url, final_path_segment)
+
+    # Check if the generated link exists
+    if _check_url_exists(potential_url):
+      return potential_url
+    else:
+      # If it doesn't exist, fallback to the regular github url
+      return _generate_github_url(prefix, relative_path)
+
+  # Convert the links for other cases, e.g. adk-python
+  else:
+    return _generate_github_url(prefix, relative_path)
 
 
 async def call_agent_async(

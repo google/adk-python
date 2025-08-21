@@ -24,10 +24,13 @@ from pydantic import BaseModel
 from ..agents.llm_agent import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
+from ..memory.base_memory_service import BaseMemoryService
+from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
+from ..utils.context_utils import Aclosing
 from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -142,10 +145,14 @@ class EvaluationGenerator:
       session_id: Optional[str] = None,
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
+      memory_service: Optional[BaseMemoryService] = None,
   ) -> list[Invocation]:
     """Scrapes the root agent given the list of Invocations."""
     if not session_service:
       session_service = InMemorySessionService()
+
+    if not memory_service:
+      memory_service = InMemoryMemoryService()
 
     app_name = (
         initial_session.app_name if initial_session else "EvaluationGenerator"
@@ -168,6 +175,7 @@ class EvaluationGenerator:
         agent=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
+        memory_service=memory_service,
     )
 
     # Reset agent state for each query
@@ -182,18 +190,25 @@ class EvaluationGenerator:
       tool_uses = []
       invocation_id = ""
 
-      async for event in runner.run_async(
-          user_id=user_id, session_id=session_id, new_message=user_content
-      ):
-        invocation_id = (
-            event.invocation_id if not invocation_id else invocation_id
-        )
+      async with Aclosing(
+          runner.run_async(
+              user_id=user_id, session_id=session_id, new_message=user_content
+          )
+      ) as agen:
+        async for event in agen:
+          invocation_id = (
+              event.invocation_id if not invocation_id else invocation_id
+          )
 
-        if event.is_final_response() and event.content and event.content.parts:
-          final_response = event.content
-        elif event.get_function_calls():
-          for call in event.get_function_calls():
-            tool_uses.append(call)
+          if (
+              event.is_final_response()
+              and event.content
+              and event.content.parts
+          ):
+            final_response = event.content
+          elif event.get_function_calls():
+            for call in event.get_function_calls():
+              tool_uses.append(call)
 
       response_invocations.append(
           Invocation(

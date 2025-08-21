@@ -36,6 +36,15 @@ class GoogleApiToolset(BaseToolset):
   Usually one toolsets will contains tools only related to one Google API, e.g.
   Google Bigquery API toolset will contains tools only related to Google
   Bigquery API, like list dataset tool, list table tool etc.
+
+  Args:
+    api_name: The name of the Google API (e.g., "calendar", "gmail").
+    api_version: The version of the API (e.g., "v3", "v1").
+    client_id: OAuth2 client ID for authentication.
+    client_secret: OAuth2 client secret for authentication.
+    tool_filter: Optional filter to include only specific tools or use a predicate function.
+    service_account: Optional service account for authentication.
+    tool_name_prefix: Optional prefix to add to all tool names in this toolset.
   """
 
   def __init__(
@@ -46,14 +55,15 @@ class GoogleApiToolset(BaseToolset):
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
+      tool_name_prefix: Optional[str] = None,
   ):
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self.api_name = api_name
     self.api_version = api_version
     self._client_id = client_id
     self._client_secret = client_secret
     self._service_account = service_account
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
-    self.tool_filter = tool_filter
 
   @override
   async def get_tools(

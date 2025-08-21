@@ -19,12 +19,13 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import ConfigDict
+from pydantic import Field
 
-from ..agents.base_agent import working_in_progress
+from ..agents.base_agent import experimental
 from ..agents.base_agent_config import BaseAgentConfig
 
 
-@working_in_progress('SequentialAgentConfig is not ready for use.')
+@experimental
 class SequentialAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a SequentialAgent."""
 
@@ -32,4 +33,9 @@ class SequentialAgentConfig(BaseAgentConfig):
       extra='forbid',
   )
 
-  agent_class: Literal['SequentialAgent'] = 'SequentialAgent'
+  agent_class: Literal['SequentialAgent'] = Field(
+      default='SequentialAgent',
+      description=(
+          'The value is used to uniquely identify the SequentialAgent class.'
+      ),
+  )

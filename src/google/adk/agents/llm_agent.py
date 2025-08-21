@@ -51,7 +51,8 @@ from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
-from ..utils.feature_decorator import working_in_progress
+from ..utils.context_utils import Aclosing
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
@@ -113,10 +114,11 @@ async def _convert_tool_union_to_tools(
 ) -> list[BaseTool]:
   if isinstance(tool_union, BaseTool):
     return [tool_union]
-  if isinstance(tool_union, Callable):
+  if callable(tool_union):
     return [FunctionTool(func=tool_union)]
 
-  return await tool_union.get_tools(ctx)
+  # At this point, tool_union must be a BaseToolset
+  return await tool_union.get_tools_with_prefix(ctx)
 
 
 class LlmAgent(BaseAgent):
@@ -128,7 +130,7 @@ class LlmAgent(BaseAgent):
   When not set, the agent will inherit the model from its ancestor.
   """
 
-  config_type: ClassVar[type[BaseAgentConfig]] = LlmAgentConfig
+  config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent."""
 
   instruction: Union[str, InstructionProvider] = ''
@@ -282,19 +284,21 @@ class LlmAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    async for event in self._llm_flow.run_async(ctx):
-      self.__maybe_save_output_to_state(event)
-      yield event
+    async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
+      async for event in agen:
+        self.__maybe_save_output_to_state(event)
+        yield event
 
   @override
   async def _run_live_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    async for event in self._llm_flow.run_live(ctx):
-      self.__maybe_save_output_to_state(event)
-      yield event
-    if ctx.end_invocation:
-      return
+    async with Aclosing(self._llm_flow.run_live(ctx)) as agen:
+      async for event in agen:
+        self.__maybe_save_output_to_state(event)
+        yield event
+      if ctx.end_invocation:
+        return
 
   @property
   def canonical_model(self) -> BaseLlm:
@@ -499,12 +503,6 @@ class LlmAgent(BaseAgent):
           ' sub_agents must be empty to disable agent transfer.'
       )
 
-    if self.tools:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' tools must be empty'
-      )
-
   @field_validator('generate_content_config', mode='after')
   @classmethod
   def __validate_generate_content_config(
@@ -527,7 +525,7 @@ class LlmAgent(BaseAgent):
     return generate_content_config
 
   @classmethod
-  @working_in_progress('LlmAgent._resolve_tools is not ready for use.')
+  @experimental
   def _resolve_tools(
       cls, tool_configs: list[ToolConfig], config_abs_path: str
   ) -> list[Any]:
@@ -586,6 +584,7 @@ class LlmAgent(BaseAgent):
 
   @override
   @classmethod
+  @experimental
   def _parse_config(
       cls: Type[LlmAgent],
       config: LlmAgentConfig,

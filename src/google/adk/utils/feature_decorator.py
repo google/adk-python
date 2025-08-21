@@ -23,9 +23,14 @@ from typing import TypeVar
 from typing import Union
 import warnings
 
-from dotenv import load_dotenv
-
 T = TypeVar("T", bound=Union[Callable, type])
+
+
+def _is_truthy_env(var_name: str) -> bool:
+  value = os.environ.get(var_name)
+  if value is None:
+    return False
+  return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _make_feature_decorator(
@@ -67,13 +72,9 @@ def _create_decorator(
 
       @functools.wraps(orig_init)
       def new_init(self, *args, **kwargs):
-        # Load .env file if dotenv is available
-        load_dotenv()
-
         # Check if usage should be bypassed via environment variable at call time
-        should_bypass = (
-            bypass_env_var is not None
-            and os.environ.get(bypass_env_var, "").lower() == "true"
+        should_bypass = bypass_env_var is not None and _is_truthy_env(
+            bypass_env_var
         )
 
         if should_bypass:
@@ -92,13 +93,9 @@ def _create_decorator(
 
       @functools.wraps(obj)
       def wrapper(*args, **kwargs):
-        # Load .env file if dotenv is available
-        load_dotenv()
-
         # Check if usage should be bypassed via environment variable at call time
-        should_bypass = (
-            bypass_env_var is not None
-            and os.environ.get(bypass_env_var, "").lower() == "true"
+        should_bypass = bypass_env_var is not None and _is_truthy_env(
+            bypass_env_var
         )
 
         if should_bypass:
@@ -151,6 +148,7 @@ experimental = _make_feature_decorator(
         " versions without notice. It may introduce breaking changes at any"
         " time."
     ),
+    bypass_env_var="ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS",
 )
 """Mark a class or a function as an experimental feature.
 

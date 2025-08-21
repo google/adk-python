@@ -21,6 +21,7 @@ from typing import Union
 from google.genai import live
 from google.genai import types
 
+from ..utils.context_utils import Aclosing
 from .base_llm_connection import BaseLlmConnection
 from .llm_response import LlmResponse
 
@@ -142,90 +143,92 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
 
     text = ''
-    async for message in self._gemini_session.receive():
-      logger.debug('Got LLM Live message: %s', message)
-      if message.server_content:
-        content = message.server_content.model_turn
-        if content and content.parts:
-          llm_response = LlmResponse(
-              content=content, interrupted=message.server_content.interrupted
-          )
-          if content.parts[0].text:
-            text += content.parts[0].text
-            llm_response.partial = True
-          # don't yield the merged text event when receiving audio data
-          elif text and not content.parts[0].inline_data:
+    async with Aclosing(self._gemini_session.receive()) as agen:
+      async for message in agen:
+        logger.debug('Got LLM Live message: %s', message)
+        if message.server_content:
+          content = message.server_content.model_turn
+          if content and content.parts:
+            llm_response = LlmResponse(
+                content=content, interrupted=message.server_content.interrupted
+            )
+            if content.parts[0].text:
+              text += content.parts[0].text
+              llm_response.partial = True
+            # don't yield the merged text event when receiving audio data
+            elif text and not content.parts[0].inline_data:
+              yield self.__build_full_text_response(text)
+              text = ''
+            yield llm_response
+          if (
+              message.server_content.input_transcription
+              and message.server_content.input_transcription.text
+          ):
+            user_text = message.server_content.input_transcription.text
+            parts = [
+                types.Part.from_text(
+                    text=user_text,
+                )
+            ]
+            llm_response = LlmResponse(
+                content=types.Content(role='user', parts=parts)
+            )
+            yield llm_response
+          if (
+              message.server_content.output_transcription
+              and message.server_content.output_transcription.text
+          ):
+            # TODO: Right now, we just support output_transcription without
+            # changing interface and data protocol. Later, we can consider to
+            # support output_transcription as a separate field in LlmResponse.
+
+            # Transcription is always considered as partial event
+            # We rely on other control signals to determine when to yield the
+            # full text response(turn_complete, interrupted, or tool_call).
+            text += message.server_content.output_transcription.text
+            parts = [
+                types.Part.from_text(
+                    text=message.server_content.output_transcription.text
+                )
+            ]
+            llm_response = LlmResponse(
+                content=types.Content(role='model', parts=parts), partial=True
+            )
+            yield llm_response
+
+          if message.server_content.turn_complete:
+            if text:
+              yield self.__build_full_text_response(text)
+              text = ''
+            yield LlmResponse(
+                turn_complete=True,
+                interrupted=message.server_content.interrupted,
+            )
+            break
+          # in case of empty content or parts, we sill surface it
+          # in case it's an interrupted message, we merge the previous partial
+          # text. Other we don't merge. because content can be none when model
+          # safety threshold is triggered
+          if message.server_content.interrupted and text:
             yield self.__build_full_text_response(text)
             text = ''
-          yield llm_response
-        if (
-            message.server_content.input_transcription
-            and message.server_content.input_transcription.text
-        ):
-          user_text = message.server_content.input_transcription.text
-          parts = [
-              types.Part.from_text(
-                  text=user_text,
-              )
-          ]
-          llm_response = LlmResponse(
-              content=types.Content(role='user', parts=parts)
-          )
-          yield llm_response
-        if (
-            message.server_content.output_transcription
-            and message.server_content.output_transcription.text
-        ):
-          # TODO: Right now, we just support output_transcription without
-          # changing interface and data protocol. Later, we can consider to
-          # support output_transcription as a separate field in LlmResponse.
-
-          # Transcription is always considered as partial event
-          # We rely on other control signals to determine when to yield the
-          # full text response(turn_complete, interrupted, or tool_call).
-          text += message.server_content.output_transcription.text
-          parts = [
-              types.Part.from_text(
-                  text=message.server_content.output_transcription.text
-              )
-          ]
-          llm_response = LlmResponse(
-              content=types.Content(role='model', parts=parts), partial=True
-          )
-          yield llm_response
-
-        if message.server_content.turn_complete:
+          yield LlmResponse(interrupted=message.server_content.interrupted)
+        if message.tool_call:
           if text:
             yield self.__build_full_text_response(text)
             text = ''
-          yield LlmResponse(
-              turn_complete=True, interrupted=message.server_content.interrupted
+          parts = [
+              types.Part(function_call=function_call)
+              for function_call in message.tool_call.function_calls
+          ]
+          yield LlmResponse(content=types.Content(role='model', parts=parts))
+        if message.session_resumption_update:
+          logger.info('Redeived session reassumption message: %s', message)
+          yield (
+              LlmResponse(
+                  live_session_resumption_update=message.session_resumption_update
+              )
           )
-          break
-        # in case of empty content or parts, we sill surface it
-        # in case it's an interrupted message, we merge the previous partial
-        # text. Other we don't merge. because content can be none when model
-        # safety threshold is triggered
-        if message.server_content.interrupted and text:
-          yield self.__build_full_text_response(text)
-          text = ''
-        yield LlmResponse(interrupted=message.server_content.interrupted)
-      if message.tool_call:
-        if text:
-          yield self.__build_full_text_response(text)
-          text = ''
-        parts = [
-            types.Part(function_call=function_call)
-            for function_call in message.tool_call.function_calls
-        ]
-        yield LlmResponse(content=types.Content(role='model', parts=parts))
-      if message.session_resumption_update:
-        logger.info('Redeived session reassumption message: %s', message)
-        yield (
-            LlmResponse(
-                live_session_resumption_update=message.session_resumption_update
-            )
-        )
 
   async def close(self):
     """Closes the llm server connection."""

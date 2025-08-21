@@ -26,6 +26,7 @@ from typing_extensions import override
 from . import _automatic_function_calling_util
 from ..agents.common_configs import AgentRefConfig
 from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
 from .tool_configs import BaseToolConfig
@@ -141,13 +142,16 @@ class AgentTool(BaseTool):
     )
 
     last_event = None
-    async for event in runner.run_async(
-        user_id=session.user_id, session_id=session.id, new_message=content
-    ):
-      # Forward state delta to parent session.
-      if event.actions.state_delta:
-        tool_context.state.update(event.actions.state_delta)
-      last_event = event
+    async with Aclosing(
+        runner.run_async(
+            user_id=session.user_id, session_id=session.id, new_message=content
+        )
+    ) as agen:
+      async for event in agen:
+        # Forward state delta to parent session.
+        if event.actions.state_delta:
+          tool_context.state.update(event.actions.state_delta)
+        last_event = event
 
     if not last_event or not last_event.content or not last_event.content.parts:
       return ''
