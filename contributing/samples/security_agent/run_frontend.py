@@ -12,6 +12,10 @@ import subprocess
 import sys
 import os
 import argparse
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 def deploy_to_cloud(project_id):
     """Deploy frontend to Cloud Run using Cloud Build."""
@@ -43,36 +47,45 @@ def deploy_to_cloud(project_id):
         sys.exit(1)
 
 def run_local():
-    """Start the Streamlit frontend locally."""
+    """Start the Streamlit frontend with token streaming."""
     # Detect if running in Cloud Run
     is_cloud_run = os.environ.get('K_SERVICE') is not None
     port = os.environ.get('PORT', '8501')
     
-    print("🚀 Starting Security Agent Frontend (Thin Client)...")
+    print("🚀 Starting GCP Security Executive Dashboard")
     print("=" * 50)
+    print("✨ Unified Features:")
+    print("  • Executive dashboard on front page")
+    print("  • Token-by-token streaming chat")
+    print("  • Real-time security metrics")
+    print("  • SQLite database integration")
+    print("  • Consolidated security views")
+    print("=" * 50)
+    
+    # Set critical environment variables
+    os.environ['DATABASE_PATH'] = os.path.join(
+        os.path.dirname(__file__), 'backend', 'cache', 'gcp_data.db'
+    )
+    os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'TRUE'
     
     if is_cloud_run:
         print("☁️  Running in Cloud Run environment")
-        # In Cloud Run, backend URL might be set via environment variable
-        if not os.environ.get('BACKEND_URL'):
-            # Default to internal service communication
-            os.environ['BACKEND_URL'] = os.environ.get('BACKEND_SERVICE_URL', 'http://backend-service:8000')
     else:
         print("💻 Running in local development mode")
-        # Set default backend URL for local development
-        if not os.environ.get('BACKEND_URL'):
-            os.environ['BACKEND_URL'] = 'http://localhost:8000'
     
     # Change to frontend directory
     frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
     os.chdir(frontend_dir)
+    
+    # Use the unified streaming client with integrated dashboard
+    streamlit_file = "unified_streaming_client.py"
     
     # Configure Streamlit based on environment
     if is_cloud_run:
         # Cloud Run configuration - bind to 0.0.0.0 and PORT env var
         cmd = [
             sys.executable, "-m", "streamlit", "run",
-            "main_app.py",
+            streamlit_file,
             "--server.port", port,
             "--server.address", "0.0.0.0",
             "--server.headless", "true",
@@ -82,14 +95,15 @@ def run_local():
         # Local development configuration
         cmd = [
             sys.executable, "-m", "streamlit", "run",
-            "main_app.py",
+            streamlit_file,
             "--server.port", port,
             "--server.address", "localhost"
         ]
     
     print(f"📂 Working directory: {os.getcwd()}")
     print(f"🔧 Command: {' '.join(cmd)}")
-    print(f"🔗 Backend URL: {os.environ.get('BACKEND_URL')}")
+    print(f"🗄️ Database: {os.environ.get('DATABASE_PATH')}")
+    print(f"🤖 Using: vertex_sqlite agent with Gemini 2.0 Flash")
     print("=" * 50)
     
     if is_cloud_run:
