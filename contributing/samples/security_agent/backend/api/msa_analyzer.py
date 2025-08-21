@@ -14,9 +14,13 @@ import logging
 import json
 import sqlite3
 import os
-from google.genai import Client, types
-from vertexai.generative_models import GenerativeModel
-import vertexai
+try:
+    from vertexai.generative_models import GenerativeModel
+    import vertexai
+    VERTEX_AI_AVAILABLE = True
+except ImportError:
+    VERTEX_AI_AVAILABLE = False
+    print("Warning: Vertex AI not available for MSA analysis")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +75,19 @@ def extract_structured_changes(email_content: str) -> List[MSAChange]:
     """
     Use Gemini to extract structured change information from MSA email.
     """
+    if not VERTEX_AI_AVAILABLE:
+        logger.warning("Vertex AI not available, returning mock data")
+        # Return mock data for testing when Vertex AI is not available
+        return [MSAChange(
+            service="BigQuery",
+            change_type="permission_change",
+            description="Sample change: BigQuery permissions update",
+            effective_date="2025-01-15",
+            required_action="Review IAM policies",
+            impact_level="high",
+            affected_resources=["datasets", "tables"]
+        )]
+    
     try:
         model = GenerativeModel("gemini-1.5-pro")
         
@@ -283,6 +300,26 @@ async def analyze_msa(input_data: MSAInput):
         if input_data.project_id:
             impact_assessments = analyze_impact_on_environment(changes, input_data.project_id)
             logger.info(f"Generated {len(impact_assessments)} impact assessments")
+        
+        # Store analysis results in database
+        try:
+            from backend.services.msa_database_setup import store_msa_analysis
+            database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
+            
+            # Prepare results for storage
+            storage_data = {
+                'email_content': input_data.email_content,
+                'project_id': input_data.project_id,
+                'extracted_changes': [change.dict() for change in changes],
+                'impact_assessments': [assessment.dict() for assessment in impact_assessments]
+            }
+            
+            msa_id = store_msa_analysis(database_path, storage_data)
+            if msa_id:
+                logger.info(f"✅ Stored MSA analysis with ID: {msa_id}")
+        except Exception as e:
+            logger.warning(f"Could not store MSA analysis in database: {e}")
+            # Continue even if storage fails
         
         # Generate summary
         summary = {

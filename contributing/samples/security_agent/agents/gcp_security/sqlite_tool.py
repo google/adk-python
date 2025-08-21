@@ -46,6 +46,9 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             - 'monitoring': Get monitoring data
             - 'logs': Get audit logs
             - 'cache_status': Show cache statistics
+            - 'msa_analysis': View MSA (Monthly Service Announcement) analysis history
+            - 'msa_changes': Query specific MSA changes and their details
+            - 'msa_impact': Get MSA impact assessments for projects
             - 'custom': Execute a custom SQL query (be careful!)
             
         parameters: Optional JSON string with query parameters.
@@ -123,10 +126,16 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             return _query_iam_accounts(cursor, params)
         elif query_type == 'secrets':
             return _query_secrets(cursor, params)
+        elif query_type == 'msa_analysis':
+            return _query_msa_analysis(cursor, params)
+        elif query_type == 'msa_changes':
+            return _query_msa_changes(cursor, params)
+        elif query_type == 'msa_impact':
+            return _query_msa_impact(cursor, params)
         elif query_type == 'custom':
             return _execute_custom_query(cursor, params)
         else:
-            return f"❌ Unknown query type: {query_type}\n\nAvailable types: security_summary, assets, security_findings, iam_analysis, storage_buckets, api_keys, recommendations, org_policies, service_usage, monitoring, logs, firewall_rules, networks, compute_instances, databases, iam_accounts, secrets, cache_status, custom"
+            return f"❌ Unknown query type: {query_type}\n\nAvailable types: security_summary, assets, security_findings, iam_analysis, storage_buckets, api_keys, recommendations, org_policies, service_usage, monitoring, logs, firewall_rules, networks, compute_instances, databases, iam_accounts, secrets, msa_analysis, msa_changes, msa_impact, cache_status, custom"
             
     except Exception as e:
         logger.error(f"Database query error: {str(e)}")
@@ -1018,5 +1027,201 @@ def _query_secrets(cursor, params: Dict) -> str:
             if 'state' in secret:
                 output += f"  State: {secret['state']}\n"
             output += "\n"
+    
+    return output
+
+def _query_msa_analysis(cursor, params: Dict) -> str:
+    """Query MSA (Monthly Service Announcement) analysis results"""
+    
+    # Check if we have any MSA data
+    cursor.execute("SELECT COUNT(*) as count FROM msa_emails")
+    result = cursor.fetchone()
+    total_msas = result['count'] if result else 0
+    
+    if total_msas == 0:
+        return "No MSA analyses found. Upload an MSA email through the MSA Analyzer to see results."
+    
+    output = f"📧 MSA Analysis History ({total_msas} emails analyzed):\n\n"
+    
+    # Get recent MSA analyses
+    cursor.execute("""
+        SELECT 
+            id,
+            project_id,
+            analyzed_date,
+            (SELECT COUNT(*) FROM msa_changes WHERE msa_email_id = msa_emails.id) as change_count
+        FROM msa_emails
+        ORDER BY analyzed_date DESC
+        LIMIT 5
+    """)
+    
+    recent_msas = cursor.fetchall()
+    
+    for msa in recent_msas:
+        output += f"MSA #{msa['id']} - Analyzed: {msa['analyzed_date']}\n"
+        output += f"  Project: {msa['project_id'] or 'All projects'}\n"
+        output += f"  Changes detected: {msa['change_count']}\n\n"
+    
+    # Get summary statistics
+    cursor.execute("""
+        SELECT 
+            impact_level,
+            COUNT(*) as count
+        FROM msa_changes
+        GROUP BY impact_level
+    """)
+    
+    impact_stats = cursor.fetchall()
+    if impact_stats:
+        output += "📊 Overall Impact Distribution:\n"
+        for stat in impact_stats:
+            emoji = "🔴" if stat['impact_level'] == 'critical' else "🟠" if stat['impact_level'] == 'high' else "🟡" if stat['impact_level'] == 'medium' else "🟢"
+            output += f"  {emoji} {stat['impact_level'].upper()}: {stat['count']} changes\n"
+    
+    return output
+
+def _query_msa_changes(cursor, params: Dict) -> str:
+    """Query specific MSA changes"""
+    
+    # Build query based on parameters
+    where_clauses = []
+    query_params = []
+    
+    if params.get('service'):
+        where_clauses.append("service LIKE ?")
+        query_params.append(f"%{params['service']}%")
+    
+    if params.get('impact_level'):
+        where_clauses.append("impact_level = ?")
+        query_params.append(params['impact_level'])
+    
+    if params.get('msa_id'):
+        where_clauses.append("msa_email_id = ?")
+        query_params.append(params['msa_id'])
+    
+    where_clause = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    
+    query = f"""
+        SELECT * FROM msa_changes
+        {where_clause}
+        ORDER BY 
+            CASE impact_level
+                WHEN 'critical' THEN 1
+                WHEN 'high' THEN 2
+                WHEN 'medium' THEN 3
+                WHEN 'low' THEN 4
+                ELSE 5
+            END,
+            effective_date ASC
+        LIMIT 20
+    """
+    
+    cursor.execute(query, query_params)
+    changes = cursor.fetchall()
+    
+    if not changes:
+        return "No MSA changes found matching your criteria."
+    
+    output = f"🔄 MSA Changes ({len(changes)} found):\n\n"
+    
+    for change in changes:
+        # Determine emoji based on impact level
+        if change['impact_level'] == 'critical':
+            emoji = "🔴"
+        elif change['impact_level'] == 'high':
+            emoji = "🟠"
+        elif change['impact_level'] == 'medium':
+            emoji = "🟡"
+        else:
+            emoji = "🟢"
+        
+        output += f"{emoji} {change['service']} - {change['change_type']}\n"
+        output += f"   {change['description'][:100]}...\n" if len(change['description']) > 100 else f"   {change['description']}\n"
+        
+        if change['effective_date']:
+            output += f"   📅 Effective: {change['effective_date']}\n"
+        
+        if change['required_action']:
+            output += f"   ⚡ Action: {change['required_action'][:100]}...\n" if len(change['required_action']) > 100 else f"   ⚡ Action: {change['required_action']}\n"
+        
+        output += "\n"
+    
+    return output
+
+def _query_msa_impact(cursor, params: Dict) -> str:
+    """Query MSA impact assessments for specific projects"""
+    
+    project_id = params.get('project_id')
+    
+    if not project_id:
+        # Get overall impact summary
+        cursor.execute("""
+            SELECT 
+                project_id,
+                COUNT(*) as assessment_count,
+                SUM(resource_count) as total_resources
+            FROM msa_impact_assessments
+            GROUP BY project_id
+        """)
+        
+        results = cursor.fetchall()
+        
+        if not results:
+            return "No MSA impact assessments found. Analyze an MSA with a specific project ID to see impact."
+        
+        output = "🎯 MSA Impact Summary by Project:\n\n"
+        
+        for row in results:
+            output += f"Project: {row['project_id']}\n"
+            output += f"  Assessments: {row['assessment_count']}\n"
+            output += f"  Total resources affected: {row['total_resources']}\n\n"
+        
+        return output
+    
+    # Get impact for specific project
+    cursor.execute("""
+        SELECT 
+            ia.*,
+            c.service,
+            c.change_type,
+            c.description
+        FROM msa_impact_assessments ia
+        JOIN msa_changes c ON ia.msa_change_id = c.id
+        WHERE ia.project_id = ?
+        ORDER BY ia.resource_count DESC
+    """, (project_id,))
+    
+    assessments = cursor.fetchall()
+    
+    if not assessments:
+        return f"No MSA impact assessments found for project: {project_id}"
+    
+    output = f"🎯 MSA Impact Assessment for {project_id}:\n\n"
+    
+    total_resources = sum(a['resource_count'] for a in assessments)
+    output += f"📊 Total resources affected: {total_resources}\n\n"
+    
+    for assessment in assessments[:10]:  # Show top 10
+        emoji = "🔴" if assessment['impact_level'] == 'critical' else "🟠" if assessment['impact_level'] == 'high' else "🟡"
+        
+        output += f"{emoji} {assessment['service']} - {assessment['change_type']}\n"
+        output += f"   Resource type: {assessment['resource_type']}\n"
+        output += f"   Resources affected: {assessment['resource_count']}\n"
+        
+        # Parse and show recommendations if available
+        if assessment['recommended_actions']:
+            try:
+                actions = eval(assessment['recommended_actions']) if isinstance(assessment['recommended_actions'], str) else assessment['recommended_actions']
+                if actions and isinstance(actions, list):
+                    output += "   Recommended actions:\n"
+                    for action in actions[:3]:  # Show first 3
+                        output += f"     • {action}\n"
+            except:
+                pass
+        
+        output += "\n"
+    
+    if len(assessments) > 10:
+        output += f"... and {len(assessments) - 10} more assessments"
     
     return output
