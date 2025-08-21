@@ -193,6 +193,10 @@ class RunEvalResult(common.BaseModel):
   session_id: str
 
 
+class SaveArtifactRequest(common.BaseModel):
+  artifact: types.Part
+
+
 class GetEventGraphResult(common.BaseModel):
   dot_src: str
 
@@ -824,6 +828,26 @@ class AdkWebServer:
           session_id=session_id,
           filename=artifact_name,
       )
+
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
+        response_model_exclude_none=True,
+    )
+    async def save_artifact(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+        req: SaveArtifactRequest,
+    ) -> int:
+      revision_id = await self.artifact_service.save_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+          artifact=req.artifact,
+      )
+      return revision_id
 
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:

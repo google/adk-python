@@ -284,6 +284,25 @@ def mock_artifact_service():
 
   class MockArtifactService:
 
+    async def save_artifact(
+        self, app_name, user_id, session_id, filename, artifact
+    ):
+      """Save an artifact with versioning."""
+      key = f"{app_name}:{user_id}:{session_id}:{filename}"
+      
+      versions = await self.list_versions(app_name, user_id, session_id, filename)
+      version = 0 if not versions else max(versions) + 1
+      
+      if key not in artifacts:
+        artifacts[key] = []
+      
+      artifacts[key].append({
+          "version": version,
+          "artifact": artifact
+      })
+      
+      return version
+
     async def load_artifact(
         self, app_name, user_id, session_id, filename, version=None
     ):
@@ -755,6 +774,78 @@ def test_list_artifact_names(test_app, create_test_session):
   data = response.json()
   assert isinstance(data, list)
   logger.info(f"Listed {len(data)} artifacts")
+
+
+def test_save_artifact(test_app, create_test_session):
+  """Test saving an artifact."""
+  info = create_test_session
+  
+  artifact_data = {
+      "artifact": {
+          "text": "test artifact content",
+          "inlineData": None
+      }
+  }
+  
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}/artifacts/test_file.txt"
+  response = test_app.post(url, json=artifact_data)
+  
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, int)  # Should return revision ID
+  assert data == 0  # First version should be 0
+
+  # Load the artifact back
+  response = test_app.get(url)
+  assert response.status_code == 200
+  loaded_artifact = response.json()
+  assert loaded_artifact["text"] == artifact_data["artifact"]["text"]
+
+
+def test_save_artifact_multiple_versions(test_app, create_test_session):
+  """Test saving multiple versions of the same artifact."""
+  info = create_test_session
+  
+  # Test data for the first artifact
+  artifact_data_1 = {
+      "artifact": {
+          "text": "first version content",
+          "inlineData": None
+      }
+  }
+  
+  # Test data for the second artifact
+  artifact_data_2 = {
+      "artifact": {
+          "text": "second version content",
+          "inlineData": None
+      }
+  }
+  
+  # Save the first version
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}/artifacts/test_file.txt"
+  response = test_app.post(url, json=artifact_data_1)
+  assert response.status_code == 200
+  first_version = response.json()
+  assert first_version == 0
+  
+  # Save the second version
+  response = test_app.post(url, json=artifact_data_2)
+  assert response.status_code == 200
+  second_version = response.json()
+  assert second_version == 1
+  
+  # Load and verify the first version (version 0)
+  response = test_app.get(f"{url}?version=0")
+  assert response.status_code == 200
+  loaded_first_version = response.json()
+  assert loaded_first_version["text"] == artifact_data_1["artifact"]["text"]
+  
+  # Load and verify the second version (version 1)
+  response = test_app.get(f"{url}?version=1")
+  assert response.status_code == 200
+  loaded_second_version = response.json()
+  assert loaded_second_version["text"] == artifact_data_2["artifact"]["text"]
 
 
 def test_create_eval_set(test_app, test_session_info):
