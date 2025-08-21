@@ -201,6 +201,10 @@ class Runner:
       )
       if not session:
         raise ValueError(f'Session not found: {session_id}')
+      
+      # Validate new_message has a role
+      if not getattr(new_message, "role", None):
+        raise ValueError("new_message must have a role, but none was provided.")
 
       invocation_context = self._new_invocation_context(
           session,

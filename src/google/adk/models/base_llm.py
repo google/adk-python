@@ -97,12 +97,6 @@ class BaseLlm(BaseModel):
       )
       return
 
-    # Insert user role for the content where the user message exists
-    # but not the role
-    if (llm_request.contents[-1].parts):
-      llm_request.contents[-1].role = "user"
-      return
-      
     # Insert a user content to preserve user intent and to avoid empty
     # model response.
     if llm_request.contents[-1].role != 'user':
