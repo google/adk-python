@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # Import dashboard module for database functionality
 sys.path.insert(0, str(Path(__file__).parent))
 from dashboard import SecurityDashboard
+from evaluation_page import evaluation_manager
 
 # Find and import the agent
 current_file = Path(__file__).resolve()
@@ -1063,7 +1064,7 @@ def main():
     st.divider()
     
     # Create tabs for different features
-    tab1, tab2, tab3, tab4 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "🔍 Service Evaluation", "📊 Deep Analytics"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "🔍 Service Evaluation", "🧪 Agent Evaluation", "📊 Deep Analytics"])
     
     with tab1:
         # Display chat interface
@@ -1078,6 +1079,10 @@ def main():
         display_service_evaluation()
     
     with tab4:
+        # Display agent evaluation page
+        evaluation_manager.display_evaluation_page()
+    
+    with tab5:
         # Placeholder for future deep analytics
         st.header("📊 Deep Security Analytics")
         st.info("Advanced analytics and reporting features coming soon...")
@@ -1101,7 +1106,7 @@ def main():
     st.markdown("""
     <div style='text-align: center'>
     <small>🔐 GCP Security Executive Dashboard | Powered by Vertex AI & ADK | 
-    Real-time streaming with SQLite integration | MSA Impact Analysis | Service Evaluation Framework</small>
+    Real-time streaming with SQLite integration | MSA Impact Analysis | Service Evaluation Framework | Agent Quality Assurance</small>
     </div>
     """, unsafe_allow_html=True)
 
