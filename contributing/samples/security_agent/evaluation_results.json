@@ -1,0 +1,98 @@
+{
+  "summary": {
+    "total_tests": 4,
+    "passed": 4,
+    "failed": 0,
+    "pass_rate": 1.0,
+    "average_score": 0.975,
+    "status": "PASSED"
+  },
+  "results": [
+    {
+      "test_id": "security_summary",
+      "query": "Give me a security summary of the most critical issues",
+      "response": "OK. Here's a summary of the most critical security issues:\n\n**Critical Issues:**\n\n*   **Open Firewall Rules:** The following firewall rules allow traffic from the entire internet (0.0.0.0/0):\n    *   default-allow-icmp\n    *   default-allow-rdp\n    *   default-allow-ssh\n\n    **Recommendation:** Restrict the source ranges of these rules to specific IPs or CIDR blocks.\n*   **Public Storage Buckets:** The following storage buckets are publicly accessible:\n    *   419850945193\\_us\\_east1\\_import\\_content\\_with\\_faq\\_csv\n    *   419850945193\\_us\\_import\\_content\\_with\\_faq\\_csv\n    *   cloud-ai-platform-fb2ffb0b-5a91-43e5-b29b-d45d2b492fe0\n    *   gcf-v2-uploads-419850945193.us-central1.cloudfunctions.appspot.com\n    *   lanistr-mgm-digitalconcierge-data\n    *   mgm-digitaconcierge\n    *   mgm-digitalconcierge\\_cloudbuild\n    *   run-sources-mgm-digitalconcierge-us-central1\n\n    **Recommendation:** Enable uniform bucket-level access, remove public access, and enable versioning for these buckets.\n*   **Weak Credentials:** A service account key (`test`) is older than 90 days.\n\n    **Recommendation:** Address immediately based on finding type.\n\n**High Priority Issues:**\n\n*   **Public Storage Bucket:** The storage bucket `gcf-v2-sources-419850945193-us-central1` is publicly accessible.\n\n    **Recommendation:** Enable uniform bucket-level access, remove public access, and enable versioning.\n*   **Public Bucket Security Finding:** A security finding indicates that the storage bucket `mgm-digitalconcierge-public-bucket` is publicly accessible.\n\n    **Recommendation:** Address immediately based on finding type.\n*   **Secret Requires Review:** The secret `security-agent-sa-key` requires review.\n\n    **Recommendation:** Enable automatic rotation and use IAM bindings for access control.\n\n**Summary:**\n\n*   Total Security Issues: 15\n    *   Critical: 12\n    *   High: 3\n    *   Medium: 0\n\n**Recommended Action Plan:**\n\n1.  Address all CRITICAL issues immediately.\n2.  Schedule HIGH priority fixes within 48 hours.\n3.  Plan MEDIUM priority improvements for this week.\n4.  Enable continuous monitoring and alerting.\n5.  Implement regular security audits.\n\nI would recommend starting by addressing the open firewall rules and public storage buckets, as these pose the most immediate and significant risks.\n",
+      "tools_used": [
+        "query_security_data"
+      ],
+      "expected_tools": [
+        "query_security_data"
+      ],
+      "expected_keywords": [
+        "critical",
+        "security",
+        "firewall",
+        "bucket",
+        "recommendations"
+      ],
+      "passed": true,
+      "score": 0.9,
+      "issues": [
+        "Missing expected keywords: ['recommendations']"
+      ]
+    },
+    {
+      "test_id": "iam_analysis",
+      "query": "Analyze IAM permissions for security issues",
+      "response": "Okay, I've analyzed the IAM permissions and identified some potential security issues. Here's a summary:\n\n**High-Risk Permissions:**\n\nThe following service accounts and users have the `roles/editor` or `roles/owner` role, which grant broad access to your GCP resources:\n\n*   `serviceAccount:419850945193-compute@developer.gser...`\n*   `serviceAccount:419850945193@cloudservices.gservice...`\n*   `serviceAccount:mgm-digitalconcierge@appspot.gservi...`\n*   `serviceAccount:security-agent@mgm-digitalconcierge...` (also has `roles/iam.securityAdmin`)\n*   `user:admin@example.com...`\n\nAdditionally, these service accounts have admin roles:\n\n*   `serviceAccount:sa@test-project.iam.gserviceaccount...` has `roles/compute.admin` and `roles/storage.admin`\n\n**Recommendations:**\n\n1.  **Principle of Least Privilege:**  Review the permissions granted to these service accounts and users.  Grant them only the minimum permissions necessary to perform their tasks. Replace `roles/editor` and `roles/owner` with more specific roles.\n2.  **Service Account Security:** For the service accounts with overly broad permissions, consider if they can be broken down into multiple service accounts with more granular roles. Avoid using the same service account for multiple purposes. Use Workload Identity instead of downloading keys.\n3.  **User Permissions:** Avoid assigning the `roles/editor` or `roles/owner` roles directly to users. Use Google Groups to manage user permissions, making it easier to add and remove users from roles.\n4.  **IAM Conditions:**  Where possible, add IAM Conditions to limit the scope of the permissions.  For example, you can restrict access based on time of day, IP address, or resource.\n5.  **Regular Reviews:** Conduct regular IAM reviews (e.g., quarterly) to ensure that permissions are still appropriate and remove any unnecessary access.\n6.  **Monitoring:** Enable IAM audit logs to track changes to IAM policies and identify potential security issues. Set up alerts for privilege escalation.\n\nDo you want me to analyze IAM permissions for a specific user or service account?  For example, I can check the permissions for `user@example.com`.\n",
+      "tools_used": [
+        "query_security_data"
+      ],
+      "expected_tools": [
+        "query_security_data"
+      ],
+      "expected_keywords": [
+        "IAM",
+        "permissions",
+        "roles",
+        "high-risk",
+        "privilege"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "issues": []
+    },
+    {
+      "test_id": "storage_security",
+      "query": "Check storage bucket security",
+      "response": "The storage bucket analysis shows that you have 10 buckets. 9 of them do not have versioning enabled and 9 are publicly accessible.\n\nHere's what you should do to improve your storage bucket security:\n\n*   **Public Buckets**: Remove public access, enable uniform bucket-level access, use signed URLs for temporary access.\n*   **No Versioning**: Enable object versioning to protect against accidental deletion or corruption.\n\nWould you like more information on how to implement these recommendations?\n",
+      "tools_used": [
+        "query_security_data"
+      ],
+      "expected_tools": [
+        "query_security_data"
+      ],
+      "expected_keywords": [
+        "storage",
+        "bucket",
+        "public",
+        "versioning",
+        "access"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "issues": []
+    },
+    {
+      "test_id": "firewall_rules",
+      "query": "Review firewall rules for security problems",
+      "response": "The firewall rule analysis shows that there are three overly permissive rules: `default-allow-icmp`, `default-allow-rdp`, and `default-allow-ssh`. These rules allow traffic from any source (0.0.0.0/0), which is a security risk.\n\nHere's what you should do to address these issues:\n\n1.  **Restrict Source Ranges:** Modify these rules to allow traffic only from specific IP addresses or CIDR blocks that need access. For example, if you only need to access your instances from your office network, restrict the source to your office's IP range.\n2.  **Use Service Accounts:** If the traffic is internal to Google Cloud, use service accounts to allow traffic between resources instead of IP addresses.\n3.  **Enable VPC Flow Logs:** Enable VPC Flow Logs to monitor network traffic and identify any suspicious activity.\n4.  **Remove Unnecessary Rules:** If you don't need ICMP, RDP, or SSH access from the internet, remove the corresponding rules altogether.\n\nIt's also recommended to review all firewall rules regularly to ensure they are still needed and are configured with the least permissive settings.\n",
+      "tools_used": [
+        "query_security_data"
+      ],
+      "expected_tools": [
+        "query_security_data"
+      ],
+      "expected_keywords": [
+        "firewall",
+        "rules",
+        "0.0.0.0/0",
+        "permissive",
+        "restrict"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "issues": []
+    }
+  ]
+}
