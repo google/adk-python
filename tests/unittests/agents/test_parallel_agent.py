@@ -135,3 +135,54 @@ async def test_run_async_branches(request: pytest.FixtureRequest):
   # Sub-agents should have different branches.
   assert events[2].branch != events[1].branch
   assert events[2].branch != events[0].branch
+
+
+class _TestingAgentWithMultipleEvents(BaseAgent):
+  """Mock agent for testing."""
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    for _ in range(0, 3):
+      event = Event(
+          author=self.name,
+          branch=ctx.branch,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(
+              parts=[types.Part(text=f'Hello, async {self.name}!')]
+          ),
+      )
+    yield event
+    # Check that the event was processed by the consumer.
+    assert event.custom_metadata is not None
+    assert event.custom_metadata['processed']
+
+
+@pytest.mark.asyncio
+async def test_generating_one_event_per_agent_at_once(
+    request: pytest.FixtureRequest,
+):
+  # This test is to verify that the parallel agent won't generate more than one
+  # event per agent at a time.
+  agent1 = _TestingAgentWithMultipleEvents(
+      name=f'{request.function.__name__}_test_agent_1'
+  )
+  agent2 = _TestingAgentWithMultipleEvents(
+      name=f'{request.function.__name__}_test_agent_2'
+  )
+  parallel_agent = ParallelAgent(
+      name=f'{request.function.__name__}_test_parallel_agent',
+      sub_agents=[
+          agent1,
+          agent2,
+      ],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, parallel_agent
+  )
+
+  agen = parallel_agent.run_async(parent_ctx)
+  async for event in agen:
+    event.custom_metadata = {'processed': True}
+    # Asserts on event are done in _TestingAgentWithMultipleEvents.
