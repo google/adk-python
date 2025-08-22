@@ -205,8 +205,12 @@ class LocalEvalSetsManager(EvalSetsManager):
       return None
 
   @override
-  def create_eval_set(self, app_name: str, eval_set_id: str):
-    """Creates an empty EvalSet given the app_name and eval_set_id."""
+  def create_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
+    """Creates and returns an empty EvalSet given the app_name and eval_set_id.
+
+    Raises:
+      ValueError: If eval set id is not valid or an eval set already exists.
+    """
     self._validate_id(id_name="Eval Set Id", id_value=eval_set_id)
 
     # Define the file path
@@ -224,6 +228,11 @@ class LocalEvalSetsManager(EvalSetsManager):
           creation_timestamp=time.time(),
       )
       self._write_eval_set_to_path(new_eval_set_path, new_eval_set)
+      return new_eval_set
+
+    raise ValueError(
+        f"EvalSet {eval_set_id} already exists for app {app_name}."
+    )
 
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
