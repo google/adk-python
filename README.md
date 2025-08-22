@@ -2,10 +2,10 @@
 
 <div align="center">
 
-[![ADK Version](https://img.shields.io/badge/ADK-v2.0.0-blue.svg)](https://github.com/google/adk-python)
+[![ADK Version](https://img.shields.io/badge/ADK-v2.0.0-blue.svg)](https://github.com/stuagano/adk-python)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://python.org)
-[![Documentation](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://docs.adk.dev)
+[![Security Agent](https://img.shields.io/badge/Security%20Agent-Production%20Ready-green.svg)](contributing/samples/security_agent/)
 
 **A comprehensive framework for building intelligent, AI-powered agents and applications**
 
@@ -83,16 +83,17 @@ The Agent Development Kit (ADK) is a powerful framework that enables developers 
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/google/adk-python.git
+git clone https://github.com/stuagano/adk-python.git
 cd adk-python
 
 # 2. Try the flagship security agent
 cd contributing/samples/security_agent
-python run_backend.py &     # Start backend
-python run_frontend.py     # Start frontend
+cp .env.template .env  # Configure your GCP project
+python run_backend.py &     # Start FastAPI backend
+python run_frontend.py     # Start Streamlit frontend
 
 # 3. Access the applications
-# Frontend: http://localhost:8501
+# Executive Dashboard: http://localhost:8501
 # Backend API: http://localhost:8000/docs
 # Health Check: http://localhost:8000/health
 ```
@@ -108,21 +109,23 @@ python run_frontend.py     # Start frontend
 
 A sophisticated context-aware security platform for Google Cloud Platform featuring advanced MSA analysis and intelligent remediation strategies:
 
-- **🧠 Context-Aware MSA Analysis** - Intelligent Monthly Service Announcement impact analysis with custom role remediation
-- **🛡️ Multi-layered Security Analysis** - Real-time risk assessment & vulnerability scanning across 575+ assets
-- **🤖 AI-Powered Assistant** - Vertex AI integration with token-by-token streaming and embedded security intelligence
-- **🔐 Advanced IAM Analysis** - Deep permissions analysis, custom role impact assessment, and policy compliance
-- **📊 Executive Dashboard** - Real-time security posture metrics with interactive visualizations
-- **🏗️ Logic Layer Architecture** - Context-aware analysis engine bridging raw GCP data with intelligent remediation
-- **📋 Knowledge Base Integration** - Comprehensive coding standards, security policies, and compliance frameworks
-- **⚡ Real-time Streaming** - Token-by-token response streaming for immediate user feedback
-- **🗄️ Smart Caching** - SQLite-based data caching with normalized security data relationships
+- **🔄 Context-Aware Feedback Loop** - Revolutionary MSA impact analysis connecting service changes → IAM roles → asset security
+- **🛡️ Multi-Domain Security Intelligence** - Real-time analysis across 575+ assets with cross-referencing capabilities
+- **🤖 Vertex AI Streaming Assistant** - Token-by-token streaming with embedded security expertise and remediation guidance
+- **🔐 Advanced IAM & MSA Correlation** - BigQuery permission analysis, custom role impact assessment, and policy compliance
+- **📊 Executive Security Dashboard** - Real-time posture metrics, risk scoring, and actionable intelligence
+- **🏗️ Intelligent Logic Layer** - Context-aware engine bridging raw GCP data with strategic security recommendations
+- **📚 Enterprise Knowledge Integration** - 7 coding standards, compliance frameworks, and policy enforcement
+- **⚡ Production-Ready Streaming** - ChatGPT-like experience with persistent session management
+- **🗄️ Normalized Data Architecture** - SQLite-based caching with 1800-second refresh cycles and cross-table relationships
+- **🧪 100% Test Coverage** - Comprehensive evaluation framework with Playwright automation and production validation
 
-**Advanced Features:**
-- MSA permission change detection with project-specific impact analysis
-- Custom role remediation planning with actionable gcloud commands
-- Cross-referenced security data analysis (IAM ↔ MSA ↔ Assets)
-- Production-ready Docker deployment with health monitoring
+**Advanced Intelligence Features:**
+- **MSA Permission Split Analysis**: Detects BigQuery `datasets.get` → `datasets.get` + `datasets.getIamPolicy` changes
+- **Custom Role Impact Assessment**: Project-specific remediation with actionable gcloud commands
+- **Cross-Domain Security Correlation**: IAM ↔ MSA ↔ Assets ↔ Security Findings with temporal analysis
+- **Context-Aware Remediation**: Intelligent recommendations based on actual project state and enterprise policies
+- **Production Infrastructure**: Docker + Cloud Run deployment with health monitoring and auto-scaling
 
 **Quick Launch:**
 ```bash
@@ -169,39 +172,52 @@ ADK follows a modular, service-based architecture designed for enterprise scalab
 <div align="center">
 
 ```mermaid
-graph TB
-    subgraph "Agent Layer"
-        A[Agent Core]
-        B[Memory Management]
-        C[Tool Orchestrator]
+flowchart TB
+    subgraph "Frontend Layer"
+        UI["🖥️ Streamlit Dashboard<br/>Token Streaming UI"]
+        CHAT["💬 Security Chat<br/>Real-time Analysis"]
+        MSA["📧 MSA Analyzer<br/>Impact Assessment"]
     end
     
-    subgraph "Service Layer"
-        D[Model Services]
-        E[Data Services]
-        F[Integration Services]
+    subgraph "Agent Intelligence Layer"
+        AGENT["🤖 Vertex AI Agent<br/>Context-Aware Analysis"]
+        TOOLS["🔧 SQLite Tool<br/>Data Querying"]
+        KB["📚 Knowledge Base<br/>Policies & Standards"]
     end
     
-    subgraph "Infrastructure Layer"
-        G[Authentication]
-        H[Health Monitoring]  
-        I[Scaling & Deployment]
+    subgraph "Backend Services Layer"
+        API["⚡ FastAPI Backend<br/>21 API Endpoints"]
+        CACHE["🗄️ SQLite Cache<br/>GCP Data Storage"]
+        GCP["☁️ GCP Services<br/>Asset, IAM, Security"]
     end
     
-    A --> D
-    B --> E
-    C --> F
-    D --> G
-    E --> H
-    F --> I
+    subgraph "Intelligence Features"
+        CONTEXT["🔄 Context-Aware<br/>Feedback Loop"]
+        IMPACT["📊 Cross-Domain<br/>Impact Analysis"]
+        REMEDIATE["🛠️ Intelligent<br/>Remediation"]
+    end
     
-    classDef agent fill:#e1f5fe
-    classDef service fill:#f3e5f5
-    classDef infra fill:#e8f5e8
+    UI --> AGENT
+    CHAT --> AGENT
+    MSA --> API
+    AGENT --> TOOLS
+    AGENT --> KB
+    TOOLS --> CACHE
+    API --> CACHE
+    API --> GCP
+    AGENT --> CONTEXT
+    CONTEXT --> IMPACT
+    IMPACT --> REMEDIATE
     
-    class A,B,C agent
-    class D,E,F service
-    class G,H,I infra
+    classDef frontend fill:#e3f2fd
+    classDef agent fill:#f1f8e9
+    classDef backend fill:#fce4ec
+    classDef intelligence fill:#fff3e0
+    
+    class UI,CHAT,MSA frontend
+    class AGENT,TOOLS,KB agent
+    class API,CACHE,GCP backend
+    class CONTEXT,IMPACT,REMEDIATE intelligence
 ```
 
 </div>
@@ -231,11 +247,14 @@ graph TB
 git clone https://github.com/google/adk-python.git
 cd adk-python
 
-# Option 1: Try sample applications
-cd contributing/samples/security_agent && python run.py
+# Option 1: Try the production-ready security agent
+cd contributing/samples/security_agent
+cp .env.template .env  # Configure your GCP project
+python run_backend.py &     # Start backend
+python run_frontend.py     # Start frontend
 
 # Option 2: Install ADK core for development  
-pip install -e . && python -c "import adk; print('ADK installed!')"
+pip install -e . && python -c "import google.adk; print('ADK installed!')"
 ```
 
 ### Development Setup
@@ -398,28 +417,28 @@ docker run -p 8000:8000 adk-app
 ## 📖 Documentation
 
 ### 📚 Core Documentation
-- **[Project Structure](docs/PROPOSED_STRUCTURE.md)** - Project organization and structure
-- **[Architecture Guide](contributing/samples/security_agent/ARCHITECTURE.md)** - System design and principles  
-- **[Deployment Guide](deploy/README.md)** - Production deployment strategies
-- **[API Reference](contributing/samples/security_agent/API_REFERENCE.md)** - Complete API documentation
+- **[Security Agent Guide](contributing/samples/security_agent/README.md)** - Complete implementation guide with Logic Layer Architecture
+- **[Documentation Index](contributing/samples/security_agent/docs/README.md)** - Comprehensive navigation and feature overview  
+- **[Deployment Guide](contributing/samples/security_agent/docs/deployment.md)** - Local, Docker, Cloud Run deployment strategies
+- **[Troubleshooting Guide](contributing/samples/security_agent/docs/troubleshooting.md)** - Common issues and solutions
 
-### 🛠️ Component Guides
-- **[Agent Development](docs/agents/README.md)** - Creating intelligent agents
-- **[Tool Integration](docs/tools/README.md)** - Building custom tools
-- **[Service Architecture](docs/services/README.md)** - Modular service design
-- **[Testing & Evaluation](evaluation/README.md)** - Agent testing frameworks
+### 🛠️ Advanced Features
+- **[Context-Aware Analysis](contributing/samples/security_agent/agents/gcp_security/)** - Intelligent feedback loop implementation
+- **[Knowledge Base Integration](contributing/samples/security_agent/KNOWLEDGE_BASE_INTEGRATION.md)** - Enterprise policy enforcement
+- **[MSA Impact Analysis](contributing/samples/security_agent/README.md#-msa-impact-analysis)** - Google Cloud service change management
+- **[Evaluation Framework](contributing/samples/security_agent/evaluation/)** - Comprehensive testing with 100% success rate
 
-### 🎯 Use Case Examples
-- **[Security Analysis](contributing/samples/security_agent/README.md)** - GCP security evaluation
-- **[API Discovery](gcp_api_explorer/README.md)** - Cloud API exploration
-- **[Custom Agents](docs/examples/)** - Agent development tutorials
+### 🎯 Production Examples
+- **[Executive Dashboard](contributing/samples/security_agent/)** - Real-time security posture visualization
+- **[Token Streaming Chat](contributing/samples/security_agent/frontend/)** - ChatGPT-like security intelligence interface
+- **[Docker Deployment](contributing/samples/security_agent/docker-compose.yml)** - Production containerization
 
 ## 👥 Community & Support
 
 <div align="center">
 
-[![GitHub Issues](https://img.shields.io/github/issues/google/adk-python.svg)](https://github.com/google/adk-python/issues)
-[![GitHub Discussions](https://img.shields.io/github/discussions/google/adk-python.svg)](https://github.com/google/adk-python/discussions)
+[![GitHub Issues](https://img.shields.io/github/issues/stuagano/adk-python.svg)](https://github.com/stuagano/adk-python/issues)
+[![GitHub Stars](https://img.shields.io/github/stars/stuagano/adk-python.svg)](https://github.com/stuagano/adk-python/stargazers)
 [![Contributing](https://img.shields.io/badge/Contributing-Welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 </div>
@@ -428,17 +447,18 @@ docker run -p 8000:8000 adk-app
 
 We welcome contributions! Here's how to get started:
 
-1. **🐛 Report Issues**: Use [GitHub Issues](https://github.com/google/adk-python/issues) for bugs and feature requests
-2. **💬 Join Discussions**: Participate in [GitHub Discussions](https://github.com/google/adk-python/discussions)
+1. **🐛 Report Issues**: Use [GitHub Issues](https://github.com/stuagano/adk-python/issues) for bugs and feature requests
+2. **⭐ Star the Repository**: Show your support and stay updated with new features
 3. **📝 Improve Docs**: Help improve documentation and examples
 4. **🔧 Code Contributions**: Submit PRs following our [Contributing Guide](CONTRIBUTING.md)
+5. **🧪 Test & Evaluate**: Run the evaluation framework and provide feedback
 
 ### 📞 Support Channels
 
-- **📖 Documentation**: [docs.adk.dev](https://docs.adk.dev) (coming soon)
-- **💬 Discussions**: [GitHub Discussions](https://github.com/google/adk-python/discussions)
-- **🐛 Issues**: [GitHub Issues](https://github.com/google/adk-python/issues)
-- **📧 Email**: adk-support@google.com
+- **📖 Documentation**: [Security Agent Docs](contributing/samples/security_agent/docs/README.md)
+- **🧪 Evaluation Reports**: [Testing Complete Report](contributing/samples/security_agent/TESTING_COMPLETE_REPORT.md)
+- **🐛 Issues**: [GitHub Issues](https://github.com/stuagano/adk-python/issues)
+- **📊 Executive Summary**: [Development Sprint Report](contributing/samples/security_agent/EXECUTIVE_SUMMARY_REPORT.md)
 
 ## 📄 License
 
