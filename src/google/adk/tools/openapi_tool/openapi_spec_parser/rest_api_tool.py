@@ -245,7 +245,6 @@ class RestApiTool(BaseTool):
     Example:
         self._prepare_request_params({"input_id": "test-id"})
     """
-    from ....version import __version__ as adk_version
 
     method = self.endpoint.method.lower()
     if not method:
@@ -255,6 +254,8 @@ class RestApiTool(BaseTool):
     query_params: Dict[str, Any] = {}
     header_params: Dict[str, Any] = {}
     cookie_params: Dict[str, Any] = {}
+
+    from ....version import __version__ as adk_version
 
     # Set the custom User-Agent header
     user_agent = f"google-adk/{adk_version} (tool: {self.name})"
