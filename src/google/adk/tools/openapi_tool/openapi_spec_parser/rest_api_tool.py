@@ -257,7 +257,7 @@ class RestApiTool(BaseTool):
     cookie_params: Dict[str, Any] = {}
 
     # Set the custom User-Agent header
-    user_agent = f"google-adk/{adk_version}"
+    user_agent = f"google-adk/{adk_version} (tool: {self.name})"
     header_params["User-Agent"] = user_agent
 
     params_map: Dict[str, ApiParameter] = {p.py_name: p for p in parameters}
