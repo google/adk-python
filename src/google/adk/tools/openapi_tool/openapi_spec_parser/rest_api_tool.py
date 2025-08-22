@@ -245,7 +245,7 @@ class RestApiTool(BaseTool):
     Example:
         self._prepare_request_params({"input_id": "test-id"})
     """
-    from .... import __version__ as adk_version
+    from ....version import __version__ as adk_version
 
     method = self.endpoint.method.lower()
     if not method:
