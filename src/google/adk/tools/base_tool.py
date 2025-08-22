@@ -30,7 +30,6 @@ from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
-from pydantic import ConfigDict
 
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
@@ -40,6 +39,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
+  from .tool_configs import ToolArgsConfig
 
 SelfTool = TypeVar("SelfTool", bound="BaseTool")
 
@@ -125,30 +125,8 @@ class BaseTool(ABC):
       tool_context: The context of the tool.
       llm_request: The outgoing LLM request, mutable this method.
     """
-    if (function_declaration := self._get_declaration()) is None:
-      return
-
-    llm_request.tools_dict[self.name] = self
-    if tool_with_function_declarations := _find_tool_with_function_declarations(
-        llm_request
-    ):
-      if tool_with_function_declarations.function_declarations is None:
-        tool_with_function_declarations.function_declarations = []
-      tool_with_function_declarations.function_declarations.append(
-          function_declaration
-      )
-    else:
-      llm_request.config = (
-          types.GenerateContentConfig()
-          if not llm_request.config
-          else llm_request.config
-      )
-      llm_request.config.tools = (
-          [] if not llm_request.config.tools else llm_request.config.tools
-      )
-      llm_request.config.tools.append(
-          types.Tool(function_declarations=[function_declaration])
-      )
+    # Use the consolidated logic in LlmRequest.append_tools
+    llm_request.append_tools([self])
 
   @property
   def _api_variant(self) -> GoogleLLMVariant:
@@ -232,20 +210,3 @@ class BaseTool(ABC):
         else:
           logger.warning("Unsupported parsing for argument: %s.", param_name)
     return cls(**kwargs)
-
-
-def _find_tool_with_function_declarations(
-    llm_request: LlmRequest,
-) -> Optional[types.Tool]:
-  # TODO: add individual tool with declaration and merge in google_llm.py
-  if not llm_request.config or not llm_request.config.tools:
-    return None
-
-  return next(
-      (
-          tool
-          for tool in llm_request.config.tools
-          if isinstance(tool, types.Tool) and tool.function_declarations
-      ),
-      None,
-  )

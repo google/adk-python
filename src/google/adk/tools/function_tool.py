@@ -22,6 +22,7 @@ from typing import Optional
 from google.genai import types
 from typing_extensions import override
 
+from ..utils.context_utils import Aclosing
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
 from .tool_context import ToolContext
@@ -136,8 +137,9 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       ].stream
     if 'tool_context' in signature.parameters:
       args_to_call['tool_context'] = tool_context
-    async for item in self.func(**args_to_call):
-      yield item
+    async with Aclosing(self.func(**args_to_call)) as agen:
+      async for item in agen:
+        yield item
 
   def _get_mandatory_args(
       self,

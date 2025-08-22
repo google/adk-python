@@ -13,20 +13,44 @@
 # limitations under the License.
 
 from .base_retrieval_tool import BaseRetrievalTool
-from .files_retrieval import FilesRetrieval
-from .llama_index_retrieval import LlamaIndexRetrieval
 
 __all__ = [
-    'BaseRetrievalTool',
-    'FilesRetrieval',
-    'LlamaIndexRetrieval',
-    'VertexAiRagRetrieval',
+    "BaseRetrievalTool",
+    "FilesRetrieval",
+    "LlamaIndexRetrieval",
+    "VertexAiRagRetrieval",
 ]
 
 
 def __getattr__(name: str):
-  if name == 'VertexAiRagRetrieval':
-    from .vertex_ai_rag_retrieval import VertexAiRagRetrieval
+  if name == "FilesRetrieval":
+    try:
+      from .files_retrieval import FilesRetrieval
 
-    return VertexAiRagRetrieval
+      return FilesRetrieval
+    except ImportError as e:
+      raise ImportError(
+          "FilesRetrieval requires additional dependencies. "
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  elif name == "LlamaIndexRetrieval":
+    try:
+      from .llama_index_retrieval import LlamaIndexRetrieval
+
+      return LlamaIndexRetrieval
+    except ImportError as e:
+      raise ImportError(
+          "LlamaIndexRetrieval requires additional dependencies. "
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  elif name == "VertexAiRagRetrieval":
+    try:
+      from .vertex_ai_rag_retrieval import VertexAiRagRetrieval
+
+      return VertexAiRagRetrieval
+    except ImportError as e:
+      raise ImportError(
+          "VertexAiRagRetrieval requires additional dependencies. "
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
   raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

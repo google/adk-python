@@ -32,6 +32,7 @@ from google.genai.types import FinishReason
 from typing_extensions import override
 
 from .. import version
+from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
@@ -141,39 +142,40 @@ class Gemini(BaseLlm):
       # contents are sent, we send an accumulated event which contains all the
       # previous partial content. The only difference is bidi rely on
       # complete_turn flag to detect end while sse depends on finish_reason.
-      async for response in responses:
-        logger.debug(_build_response_log(response))
-        llm_response = LlmResponse.create(response)
-        usage_metadata = llm_response.usage_metadata
-        if (
-            llm_response.content
-            and llm_response.content.parts
-            and llm_response.content.parts[0].text
-        ):
-          part0 = llm_response.content.parts[0]
-          if part0.thought:
-            thought_text += part0.text
-          else:
-            text += part0.text
-          llm_response.partial = True
-        elif (thought_text or text) and (
-            not llm_response.content
-            or not llm_response.content.parts
-            # don't yield the merged text event when receiving audio data
-            or not llm_response.content.parts[0].inline_data
-        ):
-          parts = []
-          if thought_text:
-            parts.append(types.Part(text=thought_text, thought=True))
-          if text:
-            parts.append(types.Part.from_text(text=text))
-          yield LlmResponse(
-              content=types.ModelContent(parts=parts),
-              usage_metadata=llm_response.usage_metadata,
-          )
-          thought_text = ''
-          text = ''
-        yield llm_response
+      async with Aclosing(responses) as agen:
+        async for response in agen:
+          logger.debug(_build_response_log(response))
+          llm_response = LlmResponse.create(response)
+          usage_metadata = llm_response.usage_metadata
+          if (
+              llm_response.content
+              and llm_response.content.parts
+              and llm_response.content.parts[0].text
+          ):
+            part0 = llm_response.content.parts[0]
+            if part0.thought:
+              thought_text += part0.text
+            else:
+              text += part0.text
+            llm_response.partial = True
+          elif (thought_text or text) and (
+              not llm_response.content
+              or not llm_response.content.parts
+              # don't yield the merged text event when receiving audio data
+              or not llm_response.content.parts[0].inline_data
+          ):
+            parts = []
+            if thought_text:
+              parts.append(types.Part(text=thought_text, thought=True))
+            if text:
+              parts.append(types.Part.from_text(text=text))
+            yield LlmResponse(
+                content=types.ModelContent(parts=parts),
+                usage_metadata=llm_response.usage_metadata,
+            )
+            thought_text = ''
+            text = ''
+          yield llm_response
 
       # generate an aggregated content at the end regardless the
       # response.candidates[0].finish_reason

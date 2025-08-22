@@ -24,6 +24,6 @@
       "tags": ["authentication", "oauth", "security"]
     }
   ],
-  "url": "http://localhost:8000/a2a/bigquery_agent",
+  "url": "http://localhost:8001/a2a/bigquery_agent",
   "version": "1.0.0"
 }

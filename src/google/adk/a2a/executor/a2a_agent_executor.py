@@ -24,6 +24,8 @@ from typing import Callable
 from typing import Optional
 import uuid
 
+from ...utils.context_utils import Aclosing
+
 try:
   from a2a.server.agent_execution import AgentExecutor
   from a2a.server.agent_execution.context import RequestContext
@@ -50,23 +52,23 @@ from google.adk.runners import Runner
 from pydantic import BaseModel
 from typing_extensions import override
 
-from ...utils.feature_decorator import experimental
 from ..converters.event_converter import convert_event_to_a2a_events
 from ..converters.request_converter import convert_a2a_request_to_adk_run_args
 from ..converters.utils import _get_adk_metadata_key
+from ..experimental import a2a_experimental
 from .task_result_aggregator import TaskResultAggregator
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
+@a2a_experimental
 class A2aAgentExecutorConfig(BaseModel):
   """Configuration for the A2aAgentExecutor."""
 
   pass
 
 
-@experimental
+@a2a_experimental
 class A2aAgentExecutor(AgentExecutor):
   """An AgentExecutor that runs an ADK Agent against an A2A request and
   publishes updates to an event queue.
@@ -212,12 +214,13 @@ class A2aAgentExecutor(AgentExecutor):
     )
 
     task_result_aggregator = TaskResultAggregator()
-    async for adk_event in runner.run_async(**run_args):
-      for a2a_event in convert_event_to_a2a_events(
-          adk_event, invocation_context, context.task_id, context.context_id
-      ):
-        task_result_aggregator.process_event(a2a_event)
-        await event_queue.enqueue_event(a2a_event)
+    async with Aclosing(runner.run_async(**run_args)) as agen:
+      async for adk_event in agen:
+        for a2a_event in convert_event_to_a2a_events(
+            adk_event, invocation_context, context.task_id, context.context_id
+        ):
+          task_result_aggregator.process_event(a2a_event)
+          await event_queue.enqueue_event(a2a_event)
 
     # publish the task result event - this is final
     if (

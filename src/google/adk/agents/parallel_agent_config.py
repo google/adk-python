@@ -19,12 +19,13 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import ConfigDict
+from pydantic import Field
 
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_agent_config import BaseAgentConfig
 
 
-@working_in_progress('ParallelAgentConfig is not ready for use.')
+@experimental
 class ParallelAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a ParallelAgent."""
 
@@ -32,4 +33,9 @@ class ParallelAgentConfig(BaseAgentConfig):
       extra='forbid',
   )
 
-  agent_class: Literal['ParallelAgent'] = 'ParallelAgent'
+  agent_class: Literal['ParallelAgent'] = Field(
+      default='ParallelAgent',
+      description=(
+          'The value is used to uniquely identify the ParallelAgent class.'
+      ),
+  )
