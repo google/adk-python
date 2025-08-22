@@ -1,0 +1,1060 @@
+{
+  "coverage_summary": {
+    "total_functional_areas": 15,
+    "covered_areas": 0,
+    "coverage_percentage": 0.0,
+    "report_generated_at": "2025-08-21T14:34:24.611834"
+  },
+  "coverage_by_priority": {
+    "CRITICAL": {
+      "total": 6,
+      "covered": 0,
+      "percentage": 0.0
+    },
+    "HIGH": {
+      "total": 7,
+      "covered": 0,
+      "percentage": 0.0
+    },
+    "MEDIUM": {
+      "total": 2,
+      "covered": 0,
+      "percentage": 0.0
+    },
+    "LOW": {
+      "total": 0,
+      "covered": 0,
+      "percentage": 0
+    }
+  },
+  "critical_gaps": [
+    "Custom Roles Analysis",
+    "Enterprise Knowledge Base",
+    "IAM Security Analysis",
+    "Vulnerability Assessment",
+    "GCP Service Integration",
+    "Application Security"
+  ],
+  "recommendations": [
+    "Implement missing test cases for Custom Roles Analysis: recommendation_generation, bulk_analysis, basic_role_analysis",
+    "Implement missing test cases for Enterprise Knowledge Base: coding_standards_management, statistics_reporting, knowledge_search",
+    "Implement missing test cases for API Endpoint Integration: rate_limiting_compliance, authentication_authorization, error_response_handling",
+    "Implement missing test cases for IAM Security Analysis: iam_policy_analysis, principle_least_privilege, role_binding_assessment",
+    "Implement missing test cases for Storage Security Analysis: access_control_validation, public_access_detection, lifecycle_policy_review",
+    "Implement missing test cases for Network Security Analysis: network_exposure_detection, private_connectivity_validation, load_balancer_security",
+    "Implement missing test cases for Compliance Assessment: hipaa_validation, pci_dss_compliance, gdpr_assessment",
+    "Implement missing test cases for Vulnerability Assessment: misconfiguration_detection, risk_prioritization, remediation_guidance",
+    "Implement missing test cases for Error Handling & Edge Cases: data_boundary_conditions, authentication_failures, resource_exhaustion",
+    "Implement missing test cases for Performance & Scalability: resource_utilization, concurrent_user_handling, database_performance",
+    "Implement missing test cases for GCP Service Integration: cloud_monitoring_integration, logging_api_integration, recommender_api_integration",
+    "Implement missing test cases for User Interface & Experience: export_functionality, responsive_design, interactive_analysis_workflow",
+    "Implement missing test cases for Application Security: input_sanitization, authentication_security, xss_protection",
+    "Implement missing test cases for Data Management: database_operations, backup_recovery, data_consistency",
+    "Implement missing test cases for Deployment & Operations: log_management, alerting_setup, metric_collection",
+    "Coverage is below 70% - implement missing test cases as priority",
+    "Address critical coverage gaps immediately: Custom Roles Analysis, Enterprise Knowledge Base, IAM Security Analysis",
+    "Ensure all new features have corresponding test cases",
+    "Add performance regression tests for critical operations",
+    "Implement end-to-end integration tests for major workflows",
+    "Include security penetration testing scenarios",
+    "Add chaos engineering tests for failure scenarios"
+  ],
+  "detailed_area_analysis": {
+    "Custom Roles Analysis": {
+      "covered": false,
+      "coverage_ratio": 0.375,
+      "covered_test_cases": [
+        "statistics_dashboard",
+        "permission_comparison",
+        "terraform_export"
+      ],
+      "missing_test_cases": [
+        "recommendation_generation",
+        "bulk_analysis",
+        "basic_role_analysis",
+        "standard_role_mapping",
+        "risk_scoring_validation"
+      ],
+      "test_files": [
+        "custom_roles_analyzer.evalset.json"
+      ],
+      "priority": "CRITICAL"
+    },
+    "Enterprise Knowledge Base": {
+      "covered": false,
+      "coverage_ratio": 0.14285714285714285,
+      "covered_test_cases": [
+        "compliance_frameworks"
+      ],
+      "missing_test_cases": [
+        "coding_standards_management",
+        "statistics_reporting",
+        "knowledge_search",
+        "enterprise_policies_crud",
+        "import_export_functionality",
+        "best_practices_retrieval"
+      ],
+      "test_files": [
+        "knowledge_base.evalset.json"
+      ],
+      "priority": "CRITICAL"
+    },
+    "API Endpoint Integration": {
+      "covered": false,
+      "coverage_ratio": 0.5,
+      "covered_test_cases": [
+        "custom_roles_api_workflow",
+        "knowledge_base_api_workflow",
+        "core_security_apis_validation"
+      ],
+      "missing_test_cases": [
+        "rate_limiting_compliance",
+        "authentication_authorization",
+        "error_response_handling"
+      ],
+      "test_files": [
+        "api_integration.evalset.json"
+      ],
+      "priority": "HIGH"
+    },
+    "IAM Security Analysis": {
+      "covered": false,
+      "coverage_ratio": 0.2,
+      "covered_test_cases": [
+        "service_account_analysis"
+      ],
+      "missing_test_cases": [
+        "iam_policy_analysis",
+        "principle_least_privilege",
+        "role_binding_assessment",
+        "overprivileged_user_detection"
+      ],
+      "test_files": [
+        "test_iam_security_analyzer.py"
+      ],
+      "priority": "CRITICAL"
+    },
+    "Storage Security Analysis": {
+      "covered": false,
+      "coverage_ratio": 0.2,
+      "covered_test_cases": [
+        "bucket_security_analysis"
+      ],
+      "missing_test_cases": [
+        "access_control_validation",
+        "public_access_detection",
+        "lifecycle_policy_review",
+        "encryption_compliance"
+      ],
+      "test_files": [
+        "test_storage_security_analyzer.py"
+      ],
+      "priority": "HIGH"
+    },
+    "Network Security Analysis": {
+      "covered": false,
+      "coverage_ratio": 0.0,
+      "covered_test_cases": [],
+      "missing_test_cases": [
+        "network_exposure_detection",
+        "private_connectivity_validation",
+        "load_balancer_security",
+        "vpc_security_assessment",
+        "firewall_rule_analysis"
+      ],
+      "test_files": [],
+      "priority": "HIGH"
+    },
+    "Compliance Assessment": {
+      "covered": false,
+      "coverage_ratio": 0.2,
+      "covered_test_cases": [
+        "soc2_compliance_check"
+      ],
+      "missing_test_cases": [
+        "hipaa_validation",
+        "pci_dss_compliance",
+        "gdpr_assessment",
+        "compliance_reporting"
+      ],
+      "test_files": [
+        "compliance_check.evalset.json"
+      ],
+      "priority": "HIGH"
+    },
+    "Vulnerability Assessment": {
+      "covered": false,
+      "coverage_ratio": 0.0,
+      "covered_test_cases": [],
+      "missing_test_cases": [
+        "misconfiguration_detection",
+        "risk_prioritization",
+        "remediation_guidance",
+        "security_finding_analysis",
+        "vulnerability_reporting"
+      ],
+      "test_files": [],
+      "priority": "CRITICAL"
+    },
+    "Error Handling & Edge Cases": {
+      "covered": false,
+      "coverage_ratio": 0.42857142857142855,
+      "covered_test_cases": [
+        "timeout_handling",
+        "malformed_input_handling",
+        "api_failure_scenarios"
+      ],
+      "missing_test_cases": [
+        "data_boundary_conditions",
+        "authentication_failures",
+        "resource_exhaustion",
+        "network_connectivity_issues"
+      ],
+      "test_files": [
+        "edge_cases_errors.evalset.json",
+        "test_security.py"
+      ],
+      "priority": "HIGH"
+    },
+    "Performance & Scalability": {
+      "covered": false,
+      "coverage_ratio": 0.42857142857142855,
+      "covered_test_cases": [
+        "memory_usage_optimization",
+        "scalability_limits",
+        "response_time_benchmarks"
+      ],
+      "missing_test_cases": [
+        "resource_utilization",
+        "concurrent_user_handling",
+        "database_performance",
+        "large_dataset_processing"
+      ],
+      "test_files": [
+        "performance_scalability.evalset.json",
+        "test_recommender_integration.py"
+      ],
+      "priority": "HIGH"
+    },
+    "GCP Service Integration": {
+      "covered": false,
+      "coverage_ratio": 0.16666666666666666,
+      "covered_test_cases": [
+        "asset_inventory_integration"
+      ],
+      "missing_test_cases": [
+        "cloud_monitoring_integration",
+        "logging_api_integration",
+        "recommender_api_integration",
+        "security_command_center",
+        "iam_api_integration"
+      ],
+      "test_files": [
+        "test_security_chat_integration.py",
+        "test_real_time_integration.py"
+      ],
+      "priority": "CRITICAL"
+    },
+    "User Interface & Experience": {
+      "covered": false,
+      "coverage_ratio": 0.0,
+      "covered_test_cases": [],
+      "missing_test_cases": [
+        "export_functionality",
+        "responsive_design",
+        "interactive_analysis_workflow",
+        "data_visualization",
+        "real_time_updates",
+        "streamlit_dashboard_functionality"
+      ],
+      "test_files": [],
+      "priority": "MEDIUM"
+    },
+    "Application Security": {
+      "covered": false,
+      "coverage_ratio": 0.16666666666666666,
+      "covered_test_cases": [
+        "sql_injection_prevention"
+      ],
+      "missing_test_cases": [
+        "input_sanitization",
+        "authentication_security",
+        "xss_protection",
+        "data_encryption",
+        "audit_logging"
+      ],
+      "test_files": [
+        "test_security.py"
+      ],
+      "priority": "CRITICAL"
+    },
+    "Data Management": {
+      "covered": false,
+      "coverage_ratio": 0.0,
+      "covered_test_cases": [],
+      "missing_test_cases": [
+        "database_operations",
+        "backup_recovery",
+        "data_consistency",
+        "cache_management",
+        "retention_policies",
+        "data_migration"
+      ],
+      "test_files": [],
+      "priority": "HIGH"
+    },
+    "Deployment & Operations": {
+      "covered": false,
+      "coverage_ratio": 0.0,
+      "covered_test_cases": [],
+      "missing_test_cases": [
+        "log_management",
+        "alerting_setup",
+        "metric_collection",
+        "health_monitoring",
+        "environment_configuration",
+        "cloud_run_deployment"
+      ],
+      "test_files": [],
+      "priority": "MEDIUM"
+    }
+  },
+  "test_file_inventory": {
+    "total_files": 49,
+    "evalset_files": 10,
+    "python_test_files": 39,
+    "total_test_cases": 393,
+    "files": {
+      "compliance_check.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/compliance_check.evalset.json",
+        "eval_set_id": "compliance_check_evaluation",
+        "name": "Compliance Assessment",
+        "description": "Tests agent's ability to assess compliance with security frameworks",
+        "test_cases": [
+          "soc2_compliance",
+          "gdpr_compliance"
+        ]
+      },
+      "network_security.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/network_security.evalset.json",
+        "eval_set_id": "network_security_evaluation",
+        "name": "Network Security Assessment",
+        "description": "Tests agent's ability to identify and remediate network security issues",
+        "test_cases": [
+          "open_firewall_rules",
+          "network_segmentation"
+        ]
+      },
+      "storage_security.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/storage_security.evalset.json",
+        "eval_set_id": "storage_security_evaluation",
+        "name": "Storage Security Assessment",
+        "description": "Tests agent's ability to identify and remediate storage security issues",
+        "test_cases": [
+          "public_storage_buckets",
+          "storage_encryption_check"
+        ]
+      },
+      "api_integration.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/api_integration.evalset.json",
+        "eval_set_id": "api_integration_evaluation",
+        "name": "API Endpoint Integration Tests",
+        "description": "Comprehensive evaluation of all FastAPI endpoints including Custom Roles Analyzer and Knowledge Base APIs",
+        "test_cases": [
+          "custom_roles_api_workflow",
+          "knowledge_base_api_workflow",
+          "core_security_apis_validation"
+        ]
+      },
+      "custom_roles_analyzer.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/custom_roles_analyzer.evalset.json",
+        "eval_set_id": "custom_roles_analyzer_evaluation",
+        "name": "Custom Roles Permission Analyzer",
+        "description": "Comprehensive evaluation of custom IAM roles analysis, permission optimization, and security recommendations",
+        "test_cases": [
+          "custom_roles_basic_analysis",
+          "custom_roles_risk_scoring",
+          "custom_roles_standard_mapping",
+          "custom_roles_terraform_export",
+          "custom_roles_permission_comparison",
+          "custom_roles_statistics_dashboard"
+        ]
+      },
+      "knowledge_base.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/knowledge_base.evalset.json",
+        "eval_set_id": "knowledge_base_evaluation",
+        "name": "Enterprise Knowledge Base",
+        "description": "Evaluation of enterprise security policies, coding standards, compliance frameworks, and best practices knowledge base",
+        "test_cases": [
+          "enterprise_policies_query",
+          "coding_standards_query",
+          "compliance_frameworks_query",
+          "best_practices_query",
+          "knowledge_base_search",
+          "knowledge_base_statistics"
+        ]
+      },
+      "vulnerability_assessment.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/vulnerability_assessment.evalset.json",
+        "eval_set_id": "vulnerability_assessment_evaluation",
+        "name": "Vulnerability Assessment",
+        "description": "Tests agent's ability to identify and assess security vulnerabilities",
+        "test_cases": [
+          "critical_security_findings",
+          "security_recommendations"
+        ]
+      },
+      "edge_cases_errors.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/edge_cases_errors.evalset.json",
+        "eval_set_id": "edge_cases_error_handling",
+        "name": "Edge Cases and Error Handling",
+        "description": "Comprehensive testing of error scenarios, edge cases, malformed inputs, and system resilience",
+        "test_cases": [
+          "malformed_input_handling",
+          "gcp_api_failure_scenarios",
+          "data_boundary_edge_cases"
+        ]
+      },
+      "performance_scalability.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/performance_scalability.evalset.json",
+        "eval_set_id": "performance_scalability_evaluation",
+        "name": "Performance and Scalability Testing",
+        "description": "Comprehensive evaluation of system performance, scalability limits, concurrent user handling, and resource optimization",
+        "test_cases": [
+          "response_time_benchmarks",
+          "scalability_limits_testing",
+          "resource_optimization_analysis"
+        ]
+      },
+      "iam_security.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/iam_security.evalset.json",
+        "eval_set_id": "iam_security_evaluation",
+        "name": "IAM Security Assessment",
+        "description": "Tests agent's ability to identify and remediate IAM security issues",
+        "test_cases": [
+          "iam_overprivileged_users",
+          "iam_service_account_keys"
+        ]
+      },
+      "test_security.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_security.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_unauthorized_access_rejection",
+          "test_invalid_session_id_handling",
+          "test_session_timeout_handling",
+          "test_concurrent_session_limits",
+          "test_project_isolation",
+          "test_resource_access_control",
+          "test_admin_function_access_control",
+          "test_sql_injection_prevention",
+          "test_xss_prevention",
+          "test_command_injection_prevention",
+          "test_path_traversal_prevention",
+          "test_large_payload_handling",
+          "test_special_character_handling",
+          "test_api_rate_limiting",
+          "test_websocket_connection_limits",
+          "test_request_size_limits",
+          "test_sensitive_data_exposure_prevention",
+          "test_pii_data_handling",
+          "test_data_retention_compliance",
+          "test_security_headers_presence",
+          "test_cors_configuration",
+          "test_error_information_disclosure",
+          "test_404_information_disclosure",
+          "test_concurrent_session_security",
+          "test_attack_chain_prevention",
+          "test_social_engineering_prevention"
+        ]
+      },
+      "test_session_persistence.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_session_persistence.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_session_persistence"
+        ]
+      },
+      "test_asset_discovery.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_asset_discovery.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_analyze_compute_instance_security_context",
+          "test_analyze_storage_bucket_security_context",
+          "test_analyze_sql_instance_security_context",
+          "test_analyze_service_account_security_context",
+          "test_calculate_risk_score_high_risk_compute",
+          "test_calculate_risk_score_critical_storage",
+          "test_calculate_risk_score_sql_instance",
+          "test_risk_score_caps_at_100",
+          "test_get_risk_level_mapping",
+          "test_categorize_compute_instance",
+          "test_categorize_storage_bucket",
+          "test_categorize_sql_instance",
+          "test_categorize_kms_key",
+          "test_generate_recommendations_for_public_asset",
+          "test_generate_recommendations_for_compute_instance",
+          "test_generate_recommendations_for_database",
+          "test_list_assets_endpoint_without_client",
+          "test_list_assets_endpoint_with_client",
+          "test_search_assets_endpoint",
+          "test_security_scan_endpoint",
+          "test_asset_summary_endpoint",
+          "test_get_supported_asset_types_endpoint",
+          "test_health_check_endpoint",
+          "test_permission_denied_error",
+          "test_project_not_found_error",
+          "test_service_unavailable_error",
+          "test_deadline_exceeded_error",
+          "test_generic_exception_handling",
+          "test_retry_decorator_success_after_failure",
+          "test_retry_decorator_max_retries_exceeded",
+          "test_security_context_initialization",
+          "test_asset_summary_initialization",
+          "test_asset_list_request_validation",
+          "test_asset_search_request_validation",
+          "test_complete_security_analysis_flow",
+          "test_risk_filtering_functionality",
+          "test_export_assets_functionality",
+          "test_large_asset_inventory_performance",
+          "test_memory_usage_with_security_context"
+        ]
+      },
+      "test_cache_conversation_flow.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_cache_conversation_flow.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_backend_availability",
+          "test_cache_system",
+          "test_multi_turn_api_calls",
+          "test_cache_wrapper_functions",
+          "test_conversation_persistence"
+        ]
+      },
+      "test_session_flow.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_session_flow.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_imports",
+          "test_chat_manager",
+          "test_session_api",
+          "test_conversation_flow",
+          "test_session_restoration"
+        ]
+      },
+      "test_multi_turn_conversations.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_multi_turn_conversations.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_basic_multi_turn_flow",
+          "test_cache_first_behavior",
+          "test_mixed_tool_conversation",
+          "test_error_recovery_in_conversation",
+          "test_conversation_with_refresh"
+        ]
+      },
+      "test_conversation_flow.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_conversation_flow.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_deep_storage_conversation",
+          "test_cross_domain_conversation",
+          "test_clarification_conversation",
+          "test_agentic_storage_analysis_flow",
+          "test_new_service_evaluation_flow"
+        ]
+      },
+      "test_fixed_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_fixed_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_frontend_service",
+          "test_backend_endpoints"
+        ]
+      },
+      "test_endpoints.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_endpoints.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_endpoints"
+        ]
+      },
+      "test_security_chat_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_security_chat_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_asset_inventory_integration",
+          "test_security_recommendations",
+          "test_conversational_flow",
+          "test_asset_inventory_summary",
+          "test_performance_metrics"
+        ]
+      },
+      "test_search_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_search_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_search_with_mock_results",
+          "test_rate_limiting",
+          "test_search_caching",
+          "test_search_request_validation",
+          "test_search_response_model",
+          "test_search_web_tool",
+          "test_search_security_topics",
+          "test_search_agent_routing",
+          "test_search_keywords_detection",
+          "test_full_search_flow"
+        ]
+      },
+      "test_unified_api_client_logic.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_unified_api_client_logic.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_chat_with_agent_success"
+        ]
+      },
+      "test_storage_security_analyzer.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_storage_security_analyzer.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_analyzer_initialization",
+          "test_check_public_access_no_public_access",
+          "test_check_public_access_with_public_read",
+          "test_check_public_access_with_public_write",
+          "test_check_public_access_all_authenticated_users",
+          "test_check_encryption_no_cmek",
+          "test_check_encryption_with_cmek",
+          "test_check_lifecycle_policies_missing",
+          "test_check_lifecycle_policies_present",
+          "test_check_access_controls_uniform_disabled",
+          "test_check_access_controls_uniform_enabled",
+          "test_check_compliance_configurations_versioning_disabled",
+          "test_check_compliance_configurations_logging_disabled",
+          "test_check_sensitive_data_patterns",
+          "test_check_bucket_naming_generic",
+          "test_classify_data_high_sensitivity",
+          "test_classify_data_medium_sensitivity",
+          "test_classify_data_low_sensitivity",
+          "test_likely_needs_retention_backup_bucket",
+          "test_likely_needs_retention_regular_bucket",
+          "test_calculate_compliance_scores",
+          "test_generate_storage_recommendations",
+          "test_analyze_storage_security_with_real_client",
+          "test_generate_sample_analysis",
+          "test_storage_finding_dataclass",
+          "test_bucket_security_analysis_dataclass",
+          "test_storage_security_posture_dataclass",
+          "test_risk_level_values",
+          "test_finding_type_values"
+        ]
+      },
+      "test_agent_tool_routing.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_agent_tool_routing.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_route_to_asset_discovery",
+          "test_route_to_security_evaluation",
+          "test_live_gcp_asset_discovery"
+        ]
+      },
+      "test_recommendation_engine.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_recommendation_engine.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_engine_initialization",
+          "test_cvss_priority_mapping",
+          "test_due_date_calculation",
+          "test_business_impact_score_calculation",
+          "test_severity_to_business_impact",
+          "test_risk_score_to_cvss_conversion",
+          "test_effort_estimation",
+          "test_cost_impact_estimation",
+          "test_generate_security_recommendations",
+          "test_generate_iam_recommendations",
+          "test_generate_storage_recommendations",
+          "test_generate_general_recommendations",
+          "test_automation_script_generation",
+          "test_collect_findings_success",
+          "test_collect_findings_failure",
+          "test_generate_summary",
+          "test_generate_comprehensive_recommendations",
+          "test_recommendation_creation",
+          "test_recommendation_summary_creation",
+          "test_recommendation_category_enum",
+          "test_business_impact_enum",
+          "test_priority_enum"
+        ]
+      },
+      "test_seamless_chat.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_seamless_chat.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_seamless_chat"
+        ]
+      },
+      "test_dashboard_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_dashboard_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_backend_connectivity",
+          "test_asset_inventory_api",
+          "test_dashboard_components",
+          "test_asset_inventory_client",
+          "test_mock_data_functionality",
+          "test_full_integration"
+        ]
+      },
+      "test_full_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_full_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_asset_inventory_snapshot",
+          "test_storage_assets",
+          "test_iam_assets",
+          "test_network_assets",
+          "test_cloud_functions",
+          "test_bigquery_datasets",
+          "test_pubsub_topics",
+          "test_gke_clusters",
+          "test_cloud_run_services",
+          "test_security_analysis",
+          "test_recommendations"
+        ]
+      },
+      "test_asset_inventory_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_asset_inventory_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_asset_inventory_service",
+          "test_asset_inventory_tools",
+          "test_security_agent_integration",
+          "test_api_endpoints",
+          "test_chat_integration"
+        ]
+      },
+      "test_normal_chat.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_normal_chat.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_normal_chat_flow"
+        ]
+      },
+      "test_recommender_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_recommender_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_service_initialization",
+          "test_client_initialization_with_credentials",
+          "test_client_initialization_with_default_credentials",
+          "test_client_initialization_retry_logic",
+          "test_get_all_recommendations",
+          "test_get_recommendations_by_type",
+          "test_cache_functionality",
+          "test_apply_recommendation_dry_run",
+          "test_apply_recommendation_live",
+          "test_apply_recommendation_error_handling",
+          "test_priority_calculation",
+          "test_security_score_calculation",
+          "test_risk_score_calculation",
+          "test_location_mapping",
+          "test_filter_building",
+          "test_session_recommendation_tracking",
+          "test_service_initialization",
+          "test_process_query_list_intent",
+          "test_process_query_analyze_intent",
+          "test_process_query_apply_intent",
+          "test_process_query_prioritize_intent",
+          "test_process_query_security_focus",
+          "test_process_query_cost_focus",
+          "test_error_handling",
+          "test_conversation_state_management",
+          "test_session_tracking_updates",
+          "test_chat_history_addition",
+          "test_performance_metrics_tracking",
+          "test_service_metrics_retrieval",
+          "test_list_recommendations_intent",
+          "test_analyze_recommendation_intent",
+          "test_apply_recommendation_intent",
+          "test_prioritize_recommendations_intent",
+          "test_security_intent",
+          "test_cost_optimization_intent",
+          "test_context_based_classification",
+          "test_priority_extraction",
+          "test_type_extraction",
+          "test_cost_threshold_extraction",
+          "test_dry_run_detection",
+          "test_recommendation_reference_extraction",
+          "test_list_response_generation",
+          "test_list_response_with_filters",
+          "test_list_response_empty",
+          "test_analysis_response_generation",
+          "test_dry_run_response_generation",
+          "test_apply_response_generation",
+          "test_prioritization_response_generation",
+          "test_security_response_generation",
+          "test_security_response_empty",
+          "test_cost_response_generation",
+          "test_cost_response_empty",
+          "test_priority_emoji_mapping",
+          "test_iam_remediation_steps_generation",
+          "test_firewall_remediation_steps_generation",
+          "test_service_account_remediation_steps_generation",
+          "test_commands_generation",
+          "test_verification_commands_generation",
+          "test_portfolio_metrics_calculation",
+          "test_portfolio_metrics_empty",
+          "test_concurrent_recommendations_processing",
+          "test_chat_service_performance_under_load",
+          "test_memory_usage_optimization",
+          "test_error_recovery_and_resilience",
+          "test_end_to_end_recommendation_flow",
+          "test_invalid_credentials_handling",
+          "test_malformed_recommendation_data",
+          "test_rate_limiting_simulation",
+          "test_empty_response_handling",
+          "test_chat_service_with_invalid_query"
+        ]
+      },
+      "test_sample_queries.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_sample_queries.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_query"
+        ]
+      },
+      "test_asset_discovery_unit.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_asset_discovery_unit.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_compute_instance_with_public_ip",
+          "test_storage_bucket_with_public_access",
+          "test_sql_instance_security_issues",
+          "test_secure_compute_instance",
+          "test_critical_risk_score_calculation",
+          "test_medium_risk_score_calculation",
+          "test_minimal_risk_score_calculation",
+          "test_risk_level_boundaries",
+          "test_compute_instance_categorization",
+          "test_storage_bucket_categorization",
+          "test_database_categorization",
+          "test_kms_key_categorization",
+          "test_public_asset_recommendations",
+          "test_database_security_recommendations",
+          "test_legacy_system_recommendations",
+          "test_security_context_defaults",
+          "test_security_context_with_values",
+          "test_asset_summary_defaults",
+          "test_empty_asset_data",
+          "test_malformed_asset_data",
+          "test_missing_resource_data",
+          "test_risk_score_with_none_values"
+        ]
+      },
+      "test_chat_session.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_chat_session.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_backend_health",
+          "test_create_session",
+          "test_chat_interaction",
+          "test_get_messages",
+          "test_session_analytics",
+          "test_session_continuity"
+        ]
+      },
+      "test_agent_config.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_agent_config.py",
+        "type": "python_test",
+        "test_cases": []
+      },
+      "test_complete_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_complete_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_real_gcp_assets",
+          "test_cache_performance",
+          "test_chat_with_real_data",
+          "test_error_handling",
+          "test_modularization"
+        ]
+      },
+      "test_session_management.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_session_management.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_create_session",
+          "test_get_session",
+          "test_update_session_context",
+          "test_add_message",
+          "test_get_conversation_history",
+          "test_conversation_history_limit",
+          "test_get_user_sessions",
+          "test_expire_session",
+          "test_session_expiry_cleanup",
+          "test_search_messages",
+          "test_session_summary",
+          "test_message_metadata",
+          "test_concurrent_sessions",
+          "test_api_create_session",
+          "test_api_add_message"
+        ]
+      },
+      "test_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_session_creates_and_persists",
+          "test_multiple_users_isolated",
+          "test_session_analytics",
+          "test_correct_agent_selection",
+          "test_delegation_path_tracking",
+          "test_fallback_when_agent_unavailable",
+          "test_session_recovery",
+          "test_response_time_tracking",
+          "test_concurrent_session_handling"
+        ]
+      },
+      "test_real_api_transformation.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_real_api_transformation.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_storage_api_transformation",
+          "test_chat_api_integration"
+        ]
+      },
+      "test_functional_api_caching.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_functional_api_caching.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_fetch_and_cache_assets_and_recommendations"
+        ]
+      },
+      "test_smart_routing.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_smart_routing.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_route_to_storage_agent",
+          "test_route_to_iam_agent",
+          "test_process_with_llm_agent_integration"
+        ]
+      },
+      "test_frontend_backend_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_frontend_backend_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_endpoint"
+        ]
+      },
+      "test_real_time_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_real_time_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_asset_inventory_integration",
+          "test_api_endpoints"
+        ]
+      },
+      "test_ui_suggestions.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_ui_suggestions.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_suggestions_api",
+          "test_streamlit_ui_simulation"
+        ]
+      },
+      "test_iam_security_analyzer.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_iam_security_analyzer.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_overprivileged_account_detection",
+          "test_stale_key_detection",
+          "test_unused_service_account_detection",
+          "test_wildcard_binding_detection",
+          "test_external_user_detection",
+          "test_service_account_role_extraction",
+          "test_security_posture_calculation",
+          "test_risk_scoring_weights",
+          "test_recommendations_generation",
+          "test_multiple_high_privilege_roles",
+          "test_cross_project_access_detection",
+          "test_sample_analysis_fallback",
+          "test_full_analysis_workflow",
+          "test_real_gcp_analysis",
+          "test_iam_finding_creation",
+          "test_service_account_analysis_model",
+          "test_security_posture_model"
+        ]
+      },
+      "test_unified_api_client.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_unified_api_client.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_get_asset_summary_fallback",
+          "test_agent_chat",
+          "test_get_recommendations_fallback"
+        ]
+      },
+      "test_chat_responses.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_chat_responses.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_chat_query"
+        ]
+      },
+      "test_api_endpoints.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_api_endpoints.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_chat_creates_session",
+          "test_chat_uses_existing_session",
+          "test_chat_routing_storage",
+          "test_chat_routing_iam",
+          "test_create_session",
+          "test_get_session",
+          "test_get_session_messages",
+          "test_storage_keywords",
+          "test_network_keywords",
+          "test_cost_keywords",
+          "test_chat_without_manager",
+          "test_session_not_found"
+        ]
+      },
+      "test_agent_llm.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_agent_llm.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_get_agent_info",
+          "test_list_available_tools",
+          "test_create_session",
+          "test_chat_with_llm_agent",
+          "test_get_session_messages",
+          "test_get_session_status",
+          "test_get_adk_status"
+        ]
+      }
+    }
+  },
+  "coverage_matrix": {
+    "Custom Roles Analysis": [],
+    "Enterprise Knowledge Base": [],
+    "API Endpoint Integration": [],
+    "IAM Security Analysis": [],
+    "Storage Security Analysis": [],
+    "Network Security Analysis": [],
+    "Compliance Assessment": [],
+    "Vulnerability Assessment": [],
+    "Error Handling & Edge Cases": [],
+    "Performance & Scalability": [],
+    "GCP Service Integration": [],
+    "User Interface & Experience": [],
+    "Application Security": [],
+    "Data Management": [],
+    "Deployment & Operations": []
+  },
+  "quality_metrics": {
+    "coverage_score": 0.0,
+    "critical_coverage": 0.0,
+    "test_completeness": "POOR",
+    "areas_needing_attention": 6,
+    "recommendation_count": 22
+  }
+}

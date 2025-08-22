@@ -416,6 +416,14 @@ try:
 except ImportError as e:
     logger.warning(f"⚠️ Feedback System API not available: {e}")
 
+# Import Statistical Analysis router (STORY-006)
+try:
+    from api.statistics import router as statistics_router
+    app.include_router(statistics_router)  # Already has /api/v1/statistics prefix
+    logger.info("✅ Statistical Analysis router included at /api/v1/statistics (STORY-006)")
+except ImportError as e:
+    logger.warning(f"⚠️ Statistical Analysis API not available: {e}")
+
 
 # Chat endpoint for frontend communication
 @app.post("/api/v1/chat/message")

@@ -1,0 +1,26 @@
+ADK Security Agent - Comprehensive Evaluation Report
+=======================================================
+
+Execution Time: 0.0 seconds
+Total Tests: 1
+Tests Passed: 0
+Tests Failed: 1
+Success Rate: 0.0%
+Average Response Time: 1.8s
+
+Coverage Analysis:
+- Functional Coverage: 0.0%
+- Security Coverage: 0.0%
+- API Coverage: 0.0%
+- Error Scenario Coverage: 0.0%
+
+Performance Metrics:
+- Performance Score: 0.0%
+
+Test Suite Results:
+- Custom Roles Analyzer: 0.0% pass rate
+
+Recommendations:
+- Overall success rate is below 80% - investigate failing test cases
+- Performance score is below target - optimize response times and scalability
+- Address failures in Custom Roles Analyzer test suite

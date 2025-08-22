@@ -1517,6 +1517,234 @@ def display_service_evaluation():
         st.info("💬 Switch to the Security Chat tab to see query results")
 
 
+def display_statistical_analysis():
+    """Display comprehensive statistical analysis dashboard (STORY-006)."""
+    st.header("📊 Statistical Analysis Dashboard")
+    st.markdown("**Advanced analytics for security metrics with trends, anomalies, and forecasting**")
+    
+    backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+    
+    # Analysis controls
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        analysis_type = st.selectbox(
+            "Analysis Type",
+            ["Comprehensive", "Trends", "Anomalies", "Correlations", "Forecast", "Patterns"],
+            help="Select the type of statistical analysis"
+        )
+    
+    with col2:
+        days = st.slider(
+            "Analysis Period (days)",
+            min_value=7,
+            max_value=90,
+            value=30,
+            help="Number of days to analyze"
+        )
+    
+    with col3:
+        if st.button("🔍 Run Analysis", type="primary", use_container_width=True):
+            st.session_state.run_analysis = True
+    
+    # Run analysis if requested
+    if st.session_state.get('run_analysis', False):
+        with st.spinner(f"Running {analysis_type.lower()} analysis..."):
+            try:
+                if analysis_type == "Comprehensive":
+                    # Run comprehensive analysis
+                    response = httpx.post(
+                        f"{backend_url}/api/v1/statistics/comprehensive",
+                        json={"days": days},
+                        timeout=30
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        data = result.get('data', {})
+                        
+                        # Display insights
+                        insights = data.get('insights', [])
+                        if insights:
+                            st.subheader("🎯 Key Insights")
+                            for insight in insights[:5]:
+                                priority = insight.get('priority', 'medium')
+                                icon = "🔴" if priority == 'high' else "🟡" if priority == 'medium' else "🟢"
+                                
+                                with st.expander(f"{icon} {insight.get('insight', '')}", expanded=(priority == 'high')):
+                                    st.write(f"**Type:** {insight.get('type', '').title()}")
+                                    st.write(f"**Recommendation:** {insight.get('recommendation', '')}")
+                                    st.write(f"**Confidence:** {insight.get('confidence', 0):.1%}")
+                                    if 'metric' in insight:
+                                        st.write(f"**Metric:** {insight['metric']}")
+                        
+                        # Display summary metrics
+                        summary = data.get('summary', {})
+                        if summary:
+                            st.subheader("📈 Analysis Summary")
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("Metrics Analyzed", summary.get('total_metrics_analyzed', 0))
+                            with col2:
+                                st.metric("Anomalies Detected", summary.get('total_anomalies_detected', 0))
+                            with col3:
+                                st.metric("Strong Correlations", summary.get('strong_correlations_found', 0))
+                            with col4:
+                                st.metric("Insights Generated", summary.get('insights_generated', 0))
+                        
+                        # Display trends
+                        trends = data.get('trends', {})
+                        if trends:
+                            st.subheader("📊 Trend Analysis")
+                            for metric_name, trend_data in trends.items():
+                                if isinstance(trend_data, dict) and 'trend_direction' in trend_data:
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        direction = trend_data.get('trend_direction', 'stable')
+                                        arrow = "↗️" if direction == 'increasing' else "↘️" if direction == 'decreasing' else "→"
+                                        st.metric(
+                                            f"{metric_name.replace('_', ' ').title()}",
+                                            f"{trend_data.get('current_value', 0):.2f}",
+                                            f"{arrow} {trend_data.get('slope', 0):.2f}/day"
+                                        )
+                                    with col2:
+                                        st.metric("Trend Strength", trend_data.get('trend_strength', 'weak').title())
+                                    with col3:
+                                        st.metric("R-squared", f"{trend_data.get('r_squared', 0):.3f}")
+                                    
+                                    # Plot trend line if data available
+                                    if 'trend_line' in trend_data and trend_data['trend_line']:
+                                        fig = go.Figure()
+                                        fig.add_trace(go.Scatter(
+                                            y=trend_data['trend_line'],
+                                            mode='lines',
+                                            name='Trend',
+                                            line=dict(color='blue', width=2)
+                                        ))
+                                        if 'sma_7' in trend_data and trend_data['sma_7']:
+                                            fig.add_trace(go.Scatter(
+                                                y=trend_data['sma_7'],
+                                                mode='lines',
+                                                name='7-day MA',
+                                                line=dict(color='orange', dash='dash')
+                                            ))
+                                        fig.update_layout(
+                                            title=f"{metric_name.replace('_', ' ').title()} Trend",
+                                            height=300,
+                                            showlegend=True
+                                        )
+                                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Display anomalies
+                        anomalies = data.get('anomalies', {})
+                        if anomalies:
+                            st.subheader("🚨 Anomaly Detection")
+                            for metric_name, anomaly_data in anomalies.items():
+                                if isinstance(anomaly_data, dict) and 'total_anomalies' in anomaly_data:
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric(
+                                            f"{metric_name.replace('_', ' ').title()} Anomalies",
+                                            anomaly_data.get('total_anomalies', 0)
+                                        )
+                                    with col2:
+                                        st.metric(
+                                            "High Confidence",
+                                            anomaly_data.get('high_confidence_anomalies', 0)
+                                        )
+                                    with col3:
+                                        st.metric(
+                                            "Anomaly Rate",
+                                            f"{anomaly_data.get('anomaly_rate', 0):.1%}"
+                                        )
+                        
+                        # Display forecasts
+                        forecasts = data.get('forecasts', {})
+                        if forecasts:
+                            st.subheader("🔮 Forecasting")
+                            for metric_name, forecast_data in forecasts.items():
+                                if isinstance(forecast_data, dict) and 'forecast_values' in forecast_data:
+                                    # Create forecast chart
+                                    fig = go.Figure()
+                                    
+                                    # Add forecast line
+                                    fig.add_trace(go.Scatter(
+                                        y=forecast_data['forecast_values'],
+                                        mode='lines',
+                                        name='Forecast',
+                                        line=dict(color='green', width=2)
+                                    ))
+                                    
+                                    # Add confidence bands
+                                    if 'confidence_upper' in forecast_data and 'confidence_lower' in forecast_data:
+                                        fig.add_trace(go.Scatter(
+                                            y=forecast_data['confidence_upper'],
+                                            mode='lines',
+                                            name='Upper Bound',
+                                            line=dict(color='lightgreen', dash='dash'),
+                                            showlegend=False
+                                        ))
+                                        fig.add_trace(go.Scatter(
+                                            y=forecast_data['confidence_lower'],
+                                            mode='lines',
+                                            name='Lower Bound',
+                                            line=dict(color='lightgreen', dash='dash'),
+                                            fill='tonexty',
+                                            showlegend=False
+                                        ))
+                                    
+                                    fig.update_layout(
+                                        title=f"{metric_name.replace('_', ' ').title()} Forecast ({forecast_data.get('horizon_days', 7)} days)",
+                                        height=300,
+                                        showlegend=True
+                                    )
+                                    st.plotly_chart(fig, use_container_width=True)
+                                    
+                                    # Show accuracy metrics
+                                    accuracy = forecast_data.get('accuracy_metrics', {})
+                                    if accuracy.get('mape') is not None:
+                                        st.info(f"📊 Forecast Accuracy: MAPE = {accuracy['mape']:.1f}%, RMSE = {accuracy.get('rmse', 0):.2f}")
+                        
+                        st.success(f"✅ Analysis completed successfully!")
+                    else:
+                        st.error(f"Analysis failed: {response.status_code}")
+                
+                elif analysis_type == "Trends":
+                    # Specific trend analysis
+                    metric_type = st.selectbox("Select Metric", ["security_findings", "iam_policies", "storage_buckets"])
+                    metric_column = st.text_input("Metric Column", "severity_score")
+                    
+                    if st.button("Analyze Trend"):
+                        response = httpx.post(
+                            f"{backend_url}/api/v1/statistics/trends",
+                            json={
+                                "metric_type": metric_type,
+                                "metric_column": metric_column,
+                                "days": days
+                            },
+                            timeout=30
+                        )
+                        if response.status_code == 200:
+                            st.success("Trend analysis completed!")
+                            st.json(response.json().get('data', {}))
+                
+                # Similar implementations for other analysis types...
+                
+            except Exception as e:
+                st.error(f"Error running analysis: {e}")
+            finally:
+                st.session_state.run_analysis = False
+    
+    # Available metrics reference
+    with st.expander("📋 Available Metrics Reference"):
+        st.markdown("""
+        **Security Findings**: severity_score, count, risk_level
+        **IAM Policies**: member_count, permission_count, risk_score  
+        **Storage Buckets**: size_bytes, object_count, public_access_count
+        **Firewall Rules**: rule_count, open_ports, priority
+        **API Keys**: usage_count, restriction_count, age_days
+        **Recommendations**: priority_score, impact_score, count
+        """)
+
 def display_feedback_analytics():
     """Display comprehensive feedback analytics dashboard."""
     st.header("📈 Feedback Analytics & Improvement Insights")
@@ -1659,7 +1887,7 @@ def main():
     st.divider()
     
     # Create tabs for different features
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "🔍 Service Evaluation", "🧪 Agent Evaluation", "📈 Feedback Analytics", "📊 Deep Analytics"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "🔍 Service Evaluation", "🧪 Agent Evaluation", "📈 Feedback Analytics", "📊 Statistical Analysis"])
     
     with tab1:
         # Display chat interface
@@ -1682,23 +1910,8 @@ def main():
         display_feedback_analytics()
     
     with tab6:
-        # Placeholder for future deep analytics
-        st.header("📊 Deep Security Analytics")
-        st.info("Advanced analytics and reporting features coming soon...")
-        
-        # Could add more detailed charts here
-        database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
-        if os.path.exists(database_path):
-            dashboard = SecurityDashboard(database_path)
-            
-            # Show additional metrics
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("📈 Trend Analysis")
-                st.write("Historical security posture trends will be displayed here")
-            with col2:
-                st.subheader("🎯 Compliance Score")
-                st.write("Compliance with security best practices will be shown here")
+        # Display statistical analysis dashboard
+        display_statistical_analysis()
     
     # Footer
     st.divider()

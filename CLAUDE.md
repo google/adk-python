@@ -230,6 +230,37 @@ For Vertex AI's single-tool limitation, the **agent instructions** serve as the 
    - Run: `adk web`
    - This ensures "vertex_sqlite" appears in dropdown, not "agents"
 
+### 🧪 Evaluation Framework Troubleshooting:
+
+**Before Debugging ANY Issue - Validate Evaluation Framework:**
+```bash
+cd evaluation && python simple_test.py
+```
+
+**Common Evaluation Issues:**
+- **"Agent import failed"** → Check agent.py module exists with root_agent import
+- **"SQLite tool error"** → Ensure database exists and has correct permissions  
+- **"Evaluation failed"** → Verify .evalset.json files are valid JSON format
+- **"Coverage gaps"** → Run `python test_coverage_verification.py` for detailed analysis
+
+**Evaluation Framework Status Checks:**
+```bash
+# Quick validation (30 seconds)
+python simple_test.py
+
+# Full test run (5-10 minutes)  
+python comprehensive_test_runner.py --agent vertex_sqlite_agent
+
+# Coverage analysis
+python test_coverage_verification.py
+```
+
+**Expected Results:**
+- ✅ All 4 framework components passing
+- ✅ Evaluator running successfully on all datasets
+- ✅ SQLite tool returning security data
+- ✅ Agent tools functioning correctly
+
 ---
 
 ## 🧹 Project Cleanup Requirements
@@ -502,6 +533,95 @@ Always ensure these are set:
 - `GOOGLE_APPLICATION_CREDENTIALS` - Path to service account key
 - `DATABASE_PATH` - Absolute path to SQLite database
 - `GOOGLE_GENAI_USE_VERTEXAI=TRUE` - Use Vertex AI instead of GenAI
+
+## 🎯 EVALUATION FRAMEWORK STANDARD (REQUIRED)
+
+### ✅ Comprehensive ADK Evaluation Coverage
+**ALL NEW FEATURES MUST INCLUDE CORRESPONDING EVALUATION TESTS**
+
+The security agent uses a comprehensive ADK evaluation framework that ensures quality and reliability across all components. This framework is **MANDATORY** for all development work.
+
+### 📊 Required Evaluation Components
+
+**1. Core Test Suites (REQUIRED)**
+- **Custom Roles Analyzer** - 6 test cases covering analysis, statistics, export, comparison
+- **Knowledge Base** - 6 test cases covering CRUD operations, search, import/export  
+- **API Integration** - 3 test cases covering all REST endpoint workflows
+- **Edge Cases & Error Handling** - 3 test cases covering malformed input, API failures, extreme data
+- **Performance & Scalability** - 3 test cases covering benchmarks, limits, optimization
+
+**2. Security Analysis Test Suites (REQUIRED)**
+- **IAM Security Analysis** - Identity and access management testing
+- **Storage Security Analysis** - Cloud Storage security assessment
+- **Network Security Analysis** - Firewall and VPC security validation
+- **Compliance Assessment** - SOC2, GDPR, HIPAA compliance checking
+- **Vulnerability Assessment** - Security finding analysis and remediation
+
+### 🛠️ Evaluation Tools (STANDARD)
+
+**1. `evaluation/comprehensive_test_runner.py`** - Enhanced test runner supporting:
+   - Parallel and sequential execution
+   - Performance benchmarking  
+   - Comprehensive reporting
+   - Timeout management
+   - Error recovery
+
+**2. `evaluation/test_coverage_verification.py`** - Coverage analysis tool providing:
+   - 15 functional area coverage tracking
+   - Priority-based gap analysis
+   - Detailed recommendations
+   - Quality metrics calculation
+
+### 📋 Development Workflow (MANDATORY)
+
+**Before ANY Feature Implementation:**
+1. Create corresponding `.evalset.json` file in `/evaluation/datasets/`
+2. Define comprehensive test cases covering all functionality
+3. Include expected responses and tool calls
+4. Test edge cases and error scenarios
+
+**After Feature Development:**
+1. Run evaluation tests: `python comprehensive_test_runner.py`
+2. Achieve >85% test coverage using `python test_coverage_verification.py`
+3. Fix any failing tests before code review
+4. Update evaluation datasets for new functionality
+
+**Validation Commands:**
+```bash
+# Test framework is working
+cd evaluation && python simple_test.py
+
+# Run comprehensive evaluation
+python comprehensive_test_runner.py --agent vertex_sqlite_agent
+
+# Check coverage
+python test_coverage_verification.py
+```
+
+### 🚨 Quality Gates (ENFORCED)
+
+**No code merges allowed without:**
+- ✅ Corresponding evaluation test cases
+- ✅ >85% evaluation coverage  
+- ✅ All tests passing in CI/CD
+- ✅ Performance benchmarks met
+- ✅ Security validation completed
+
+### 📈 Evaluation Standards
+
+**Test Case Requirements:**
+- **Functional Coverage**: Test all user-facing features
+- **Security Coverage**: Validate all security controls
+- **API Coverage**: Test all REST endpoints  
+- **Error Coverage**: Handle all failure scenarios
+- **Performance Coverage**: Validate scalability limits
+
+**Quality Metrics:**
+- **Response Times**: <2 seconds for 95% of operations
+- **Accuracy**: >95% correct analysis results
+- **Coverage**: >85% functional area coverage
+- **Reliability**: <0.1% error rate
+- **Security**: Zero vulnerabilities in scans
 
 ## 🚨 CRITICAL: Unified Streaming Client Architecture
 
