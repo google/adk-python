@@ -12,7 +12,11 @@ import os
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
-from sqlite_tool import query_security_data
+# Handle both relative and absolute imports
+try:
+    from .sqlite_tool import query_security_data
+except ImportError:
+    from sqlite_tool import query_security_data
 
 # Load environment
 env_path = Path(__file__).parent.parent.parent / '.env'

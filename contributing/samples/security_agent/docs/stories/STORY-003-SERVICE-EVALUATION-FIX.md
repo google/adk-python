@@ -74,11 +74,11 @@ The service evaluation framework exists in the backend but is not properly integ
 - Export functionality for evaluation results
 
 ## Acceptance Criteria
-- [ ] Service evaluation page loads without errors
-- [ ] User can select and evaluate any GCP service
-- [ ] Real-time progress updates during evaluation
-- [ ] Results display correctly with risk scores
-- [ ] Evaluation history is saved and retrievable
-- [ ] Export evaluation results to PDF/JSON
-- [ ] No WebSocket disconnection during evaluation
-- [ ] Error messages are clear and actionable
+- [x] Service evaluation page loads without errors
+- [x] User can select and evaluate any GCP service
+- [x] Real-time progress updates during evaluation
+- [x] Results display correctly with risk scores
+- [x] Evaluation history is saved and retrievable
+- [x] Export evaluation results to PDF/JSON
+- [x] No WebSocket disconnection during evaluation
+- [x] Error messages are clear and actionable

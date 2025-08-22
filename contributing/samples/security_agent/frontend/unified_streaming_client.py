@@ -365,21 +365,84 @@ def display_msa_analyzer():
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.subheader("📝 MSA Email Content")
+        st.subheader("📝 MSA Document Input")
         
-        # Text area for MSA email content
-        msa_content = st.text_area(
-            "Paste your MSA email here:",
-            height=400,
-            placeholder="""Subject: [Action Required] Google Cloud Platform - Monthly Service Announcement
+        # Document upload section
+        upload_option = st.radio(
+            "Choose input method:",
+            ["📄 Upload Document", "✏️ Paste Text"],
+            horizontal=True
+        )
+        
+        msa_content = ""
+        
+        if upload_option == "📄 Upload Document":
+            uploaded_file = st.file_uploader(
+                "Upload MSA document:",
+                type=['pdf', 'docx', 'txt'],
+                help="Supports PDF, Word (DOCX), and text files up to 100 pages"
+            )
+            
+            if uploaded_file is not None:
+                with st.spinner("📖 Extracting text from document..."):
+                    try:
+                        # Extract text based on file type
+                        if uploaded_file.type == "application/pdf":
+                            import PyPDF2
+                            import io
+                            
+                            pdf_reader = PyPDF2.PdfReader(io.BytesIO(uploaded_file.read()))
+                            extracted_text = ""
+                            for page_num in range(min(len(pdf_reader.pages), 100)):  # Limit to 100 pages
+                                page = pdf_reader.pages[page_num]
+                                extracted_text += page.extract_text() + "\n"
+                            msa_content = extracted_text
+                            
+                        elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                            from docx import Document
+                            import io
+                            
+                            doc = Document(io.BytesIO(uploaded_file.read()))
+                            extracted_text = ""
+                            for paragraph in doc.paragraphs:
+                                extracted_text += paragraph.text + "\n"
+                            msa_content = extracted_text
+                            
+                        elif uploaded_file.type == "text/plain":
+                            msa_content = str(uploaded_file.read(), "utf-8")
+                        
+                        # Display preview of extracted text
+                        if msa_content:
+                            st.success(f"✅ Extracted {len(msa_content)} characters from {uploaded_file.name}")
+                            with st.expander("👀 Preview extracted text", expanded=False):
+                                st.text_area(
+                                    "Extracted content:",
+                                    value=msa_content[:2000] + "..." if len(msa_content) > 2000 else msa_content,
+                                    height=200,
+                                    disabled=True
+                                )
+                        
+                    except ImportError as e:
+                        st.error(f"Missing required library: {e}")
+                        st.info("Please install required packages: `pip install PyPDF2 python-docx`")
+                    except Exception as e:
+                        st.error(f"Error extracting text: {e}")
+                        st.info("Please try uploading a different file or use the text input option.")
+        
+        else:  # Paste Text option
+            # Text area for MSA email content
+            msa_content = st.text_area(
+                "Paste your MSA email here:",
+                height=400,
+                placeholder="""Subject: [Action Required] Google Cloud Platform - Monthly Service Announcement
 
 Dear Google Cloud Customer,
 
 This email contains important updates about changes to Google Cloud Platform services...
 
 [Paste the full MSA email content here]""",
-            key="msa_input"
-        )
+                key="msa_input"
+            )
         
         # Project ID for impact analysis
         project_id = st.text_input(
@@ -694,6 +757,154 @@ This email contains important updates about changes to Google Cloud Platform ser
             # Show previous results if available
             st.info("📊 Showing previous analysis results. Enter new MSA content and click Analyze to refresh.")
             
+            # Display the stored results
+            results = st.session_state.msa_results
+            msa_content = st.session_state.get('msa_email_content', '')
+            project_id = st.session_state.get('msa_project_id', '')
+            
+            if results.get("success"):
+                import re
+                
+                # Display Analysis Summary
+                st.subheader("📊 Analysis Summary")
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Total Changes", results["summary"]["total_changes"])
+                with col2:
+                    st.metric("Critical Changes", results["summary"]["critical_changes"])
+                with col3:
+                    st.metric("High Impact", results["summary"]["high_impact_changes"])
+                with col4:
+                    if results["summary"].get("total_resources_affected"):
+                        st.metric("Resources Affected", results["summary"]["total_resources_affected"])
+                    else:
+                        st.metric("Services Affected", len(results["summary"]["services_affected"]))
+                
+                # Key Recommendations
+                if results.get("recommendations"):
+                    st.markdown("### 🎯 Key Recommendations")
+                    for rec in results["recommendations"]:
+                        if "🚨" in rec:
+                            st.error(rec)
+                        elif "⚠️" in rec:
+                            st.warning(rec)
+                        elif "✅" in rec:
+                            st.success(rec)
+                        else:
+                            st.info(rec)
+                
+                # Categorize changes by type
+                permission_changes = []
+                api_changes = []
+                other_changes = []
+                
+                for change in results["extracted_changes"]:
+                    if "permission" in change["change_type"].lower():
+                        permission_changes.append(change)
+                    elif "api" in change["change_type"].lower():
+                        api_changes.append(change)
+                    else:
+                        other_changes.append(change)
+                
+                # Display Permission Changes
+                if permission_changes:
+                    st.markdown("### 🔐 Permission Changes")
+                    for change in permission_changes:
+                        icon = "🔴" if change["impact_level"] == "critical" else "🟠" if change["impact_level"] == "high" else "🟡"
+                        
+                        with st.expander(f"{icon} {change['service']}: {change['change_type'].replace('_', ' ').title()}", expanded=True):
+                            st.markdown("**🔄 Permission Split:**")
+                            # Highlight permission names with code formatting
+                            desc = change['description']
+                            permissions = re.findall(r'\b[a-z]+\.[a-z]+\.[a-zA-Z]+', desc)
+                            for perm in permissions:
+                                desc = desc.replace(perm, f"`{perm}`")
+                            st.markdown(desc)
+                            
+                            if change.get('required_action'):
+                                st.markdown("**⚡ Required Action:**")
+                                action = change['required_action']
+                                # Highlight permission names in actions too
+                                permissions = re.findall(r'\b[a-z]+\.[a-z]+\.[a-zA-Z]+', action)
+                                for perm in permissions:
+                                    action = action.replace(perm, f"`{perm}`")
+                                st.markdown(action)
+                            
+                            # Show affected resources as tags
+                            if change.get('affected_resources'):
+                                st.markdown("**🎯 Affected Resources:**")
+                                cols = st.columns(len(change['affected_resources'][:4]))
+                                for i, resource in enumerate(change['affected_resources'][:4]):
+                                    with cols[i]:
+                                        st.info(resource)
+                            
+                            # Highlight the effective date
+                            if change.get('effective_date'):
+                                st.warning(f"📅 **Effective Date: {change['effective_date']}**")
+                
+                # Display API Changes
+                if api_changes:
+                    st.markdown("### 🔧 API Changes")
+                    for change in api_changes:
+                        icon = "🟡" if change["impact_level"] == "medium" else "🟠"
+                        
+                        with st.expander(f"{icon} {change['service']}: {change['change_type'].replace('_', ' ').title()}", expanded=False):
+                            st.markdown("**📝 API Update:**")
+                            # Highlight API parameters with code formatting
+                            desc = change['description']
+                            # Find parameter names (pattern: word_word or WORD_WORD)
+                            params = re.findall(r'\b[A-Z_]+(?:\s|,)|\'[a-z_]+\'', desc)
+                            for param in params:
+                                clean_param = param.strip("',")
+                                if clean_param:
+                                    desc = desc.replace(clean_param, f"`{clean_param}`")
+                            st.markdown(desc)
+                            
+                            if change.get('required_action'):
+                                st.markdown("**⚡ Migration Path:**")
+                                st.code(change['required_action'], language="text")
+                            
+                            if change.get('effective_date'):
+                                st.info(f"📅 Effective: {change['effective_date']}")
+                
+                # Display other changes
+                if other_changes:
+                    st.markdown("### 📋 Other Changes")
+                    for change in other_changes:
+                        with st.expander(f"{change['service']} - {change['change_type']}", expanded=False):
+                            st.write(change['description'])
+                            if change.get('required_action'):
+                                st.write(f"**Action:** {change['required_action']}")
+                            if change.get('effective_date'):
+                                st.write(f"**Date:** {change['effective_date']}")
+                
+                # Impact assessments for specific project
+                if results.get("impact_assessments") and project_id:
+                    st.divider()
+                    st.subheader(f"🎯 Impact on Project: {project_id}")
+                    
+                    for assessment in results["impact_assessments"]:
+                        st.write(f"**{assessment['resource_type']}**")
+                        st.write(f"• {assessment['resource_count']} resources affected")
+                        st.write(f"• Impact level: {assessment['impact_level'].upper()}")
+                        
+                        if assessment.get('recommended_actions'):
+                            st.write("**Recommended Actions:**")
+                            for action in assessment['recommended_actions']:
+                                st.write(f"  - {action}")
+                        
+                        if assessment.get('affected_resources'):
+                            with st.expander("Show affected resources"):
+                                for resource in assessment['affected_resources'][:5]:  # Show first 5
+                                    st.write(f"• {resource.get('name', 'Unknown')}")
+                
+                # Add save button
+                st.divider()
+                if st.button("💾 Save Analysis to Database", type="secondary", use_container_width=True):
+                    st.session_state.save_msa = True
+                    st.rerun()
+            
             # Handle save action
             if st.session_state.get('save_msa'):
                 with st.spinner("💾 Saving to database..."):
@@ -707,6 +918,185 @@ This email contains important updates about changes to Google Cloud Platform ser
                         st.error(f"Failed to save: {e}")
                         st.session_state.save_msa = False
 
+
+def submit_feedback(feedback_data: Dict[str, Any]):
+    """Submit feedback to the backend API."""
+    try:
+        backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        response = httpx.post(
+            f"{backend_url}/api/v1/feedback/submit",
+            json=feedback_data,
+            timeout=10.0
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result
+        else:
+            logger.error(f"Feedback submission failed: {response.status_code} - {response.text}")
+            return {"success": False, "message": f"Server error: {response.status_code}"}
+    except Exception as e:
+        logger.error(f"Error submitting feedback: {e}")
+        return {"success": False, "message": f"Error: {str(e)}"}
+
+def display_feedback_widgets(message: Dict[str, str], message_index: int):
+    """Display feedback widgets for an assistant message."""
+    # Get the previous user message for context
+    user_query = ""
+    if message_index > 0 and st.session_state.messages[message_index - 1]["role"] == "user":
+        user_query = st.session_state.messages[message_index - 1]["content"]
+    
+    # Create unique keys for this message
+    message_id = f"msg_{message_index}_{hash(message['content'][:50])}"
+    
+    # Initialize feedback state for this message if not exists
+    feedback_key = f"feedback_{message_id}"
+    if feedback_key not in st.session_state:
+        st.session_state[feedback_key] = {
+            "submitted": False,
+            "thumbs_vote": None,
+            "rating": None,
+            "categories": [],
+            "correction": "",
+            "comments": "",
+            "show_details": False
+        }
+    
+    feedback_state = st.session_state[feedback_key]
+    
+    # Only show feedback widgets if not already submitted
+    if not feedback_state["submitted"]:
+        st.divider()
+        
+        # Quick feedback row
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
+        
+        with col1:
+            if st.button("👍", key=f"thumbs_up_{message_id}", help="This response was helpful"):
+                feedback_state["thumbs_vote"] = "up"
+                st.session_state[feedback_key] = feedback_state
+        
+        with col2:
+            if st.button("👎", key=f"thumbs_down_{message_id}", help="This response needs improvement"):
+                feedback_state["thumbs_vote"] = "down"
+                feedback_state["show_details"] = True
+                st.session_state[feedback_key] = feedback_state
+        
+        with col3:
+            if st.button("⭐", key=f"rate_{message_id}", help="Rate this response"):
+                feedback_state["show_details"] = True
+                st.session_state[feedback_key] = feedback_state
+        
+        with col4:
+            if st.button("📝 Provide Detailed Feedback", key=f"detailed_{message_id}", use_container_width=True):
+                feedback_state["show_details"] = True
+                st.session_state[feedback_key] = feedback_state
+        
+        # Show detailed feedback form if requested
+        if feedback_state["show_details"]:
+            with st.expander("📋 Detailed Feedback", expanded=True):
+                # Rating
+                rating = st.slider(
+                    "Rate this response:",
+                    min_value=1,
+                    max_value=5,
+                    value=feedback_state["rating"] or 3,
+                    key=f"rating_slider_{message_id}",
+                    help="1 = Poor, 5 = Excellent"
+                )
+                feedback_state["rating"] = rating
+                
+                # Categories
+                category_options = [
+                    "accurate", "helpful", "incomplete", "wrong", "unclear",
+                    "too_long", "too_short", "irrelevant", "outdated", "excellent"
+                ]
+                
+                selected_categories = st.multiselect(
+                    "Select categories that apply:",
+                    options=category_options,
+                    default=feedback_state["categories"],
+                    key=f"categories_{message_id}"
+                )
+                feedback_state["categories"] = selected_categories
+                
+                # Correction
+                corrected_response = st.text_area(
+                    "Provide a corrected response (optional):",
+                    value=feedback_state["correction"],
+                    height=100,
+                    key=f"correction_{message_id}",
+                    help="If the response was incorrect or incomplete, provide a better version"
+                )
+                feedback_state["correction"] = corrected_response
+                
+                # Additional comments
+                comments = st.text_area(
+                    "Additional comments (optional):",
+                    value=feedback_state["comments"],
+                    height=60,
+                    key=f"comments_{message_id}",
+                    help="Any other feedback or suggestions"
+                )
+                feedback_state["comments"] = comments
+                
+                # Submit button
+                if st.button("✅ Submit Feedback", key=f"submit_{message_id}", type="primary"):
+                    # Prepare feedback data
+                    feedback_data = {
+                        "session_id": st.session_state.session_id,
+                        "message_id": message_id,
+                        "user_query": user_query,
+                        "assistant_response": message["content"],
+                        "corrected_response": corrected_response if corrected_response.strip() else None,
+                        "rating": rating,
+                        "thumbs_vote": feedback_state["thumbs_vote"],
+                        "categories": selected_categories,
+                        "user_comments": comments if comments.strip() else None,
+                        "user_id": "anonymous"
+                    }
+                    
+                    # Submit feedback
+                    with st.spinner("Submitting feedback..."):
+                        result = submit_feedback(feedback_data)
+                        
+                        if result.get("success"):
+                            st.success("✅ Thank you for your feedback! This helps improve the assistant.")
+                            feedback_state["submitted"] = True
+                            st.session_state[feedback_key] = feedback_state
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Failed to submit feedback: {result.get('message', 'Unknown error')}")
+        
+        # Quick submit for thumbs vote only
+        elif feedback_state["thumbs_vote"]:
+            if st.button(f"Submit {feedback_state['thumbs_vote']} vote", key=f"quick_submit_{message_id}"):
+                feedback_data = {
+                    "session_id": st.session_state.session_id,
+                    "message_id": message_id,
+                    "user_query": user_query,
+                    "assistant_response": message["content"],
+                    "thumbs_vote": feedback_state["thumbs_vote"],
+                    "user_id": "anonymous"
+                }
+                
+                with st.spinner("Submitting feedback..."):
+                    result = submit_feedback(feedback_data)
+                    
+                    if result.get("success"):
+                        st.success("✅ Thank you for your feedback!")
+                        feedback_state["submitted"] = True
+                        st.session_state[feedback_key] = feedback_state
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Failed to submit feedback: {result.get('message', 'Unknown error')}")
+        
+        # Update session state
+        st.session_state[feedback_key] = feedback_state
+    
+    else:
+        # Show that feedback was submitted
+        st.info("✅ Feedback submitted for this response")
 
 def display_chat_interface():
     """Display the streaming chat interface."""
@@ -763,10 +1153,14 @@ def display_chat_interface():
             st.session_state.messages = []
             st.rerun()
     
-    # Display chat history
-    for message in st.session_state.messages:
+    # Display chat history with feedback widgets
+    for i, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            
+            # Add feedback widgets for assistant messages
+            if message["role"] == "assistant":
+                display_feedback_widgets(message, i)
     
     # Handle quick queries
     if 'quick_query' in st.session_state:
@@ -906,6 +1300,33 @@ def display_service_evaluation():
     with col2:
         st.subheader("📊 Evaluation Results")
         
+        # Add a button to show all previous evaluations
+        if st.button("📋 Show All Previous Evaluations", use_container_width=True):
+            with st.spinner("Loading previous evaluations..."):
+                try:
+                    backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+                    response = httpx.get(
+                        f"{backend_url}/api/v1/google-services/evaluations/list",
+                        timeout=10.0
+                    )
+                    
+                    if response.status_code == 200:
+                        evaluations = response.json()
+                        if evaluations:
+                            st.success(f"Found {len(evaluations)} previous evaluations")
+                            for eval_data in evaluations:
+                                with st.expander(f"📦 {eval_data['service_name']} - Risk Score: {eval_data['security_assessment']['risk_score']}/10"):
+                                    st.write(f"**Description:** {eval_data['description']}")
+                                    st.write(f"**Release Stage:** {eval_data.get('release_stage', 'N/A')}")
+                                    st.write(f"**Network Exposure:** {eval_data['security_assessment']['network_exposure']}")
+                                    st.write(f"**Encryption:** {eval_data['security_assessment']['data_encryption']}")
+                        else:
+                            st.info("No previous evaluations found. Evaluate a service to get started!")
+                    else:
+                        st.warning("Could not retrieve previous evaluations")
+                except Exception as e:
+                    st.error(f"Error loading evaluations: {str(e)}")
+        
         if evaluate_clicked and service_name:
             with st.spinner(f"🤖 Evaluating {service_name}..."):
                 try:
@@ -1018,10 +1439,53 @@ def display_service_evaluation():
                                 st.write("**Threat Model Summary:**")
                                 st.info(assessment['threat_model_summary'])
                         
-                        # Save to database button
-                        if st.button("💾 Save Evaluation", use_container_width=True):
-                            st.success("✅ Evaluation saved to database")
-                            st.info("You can now query this evaluation through the chat interface")
+                        # Export buttons
+                        st.divider()
+                        col_export1, col_export2, col_export3 = st.columns(3)
+                        
+                        with col_export1:
+                            if st.button("💾 Save Evaluation", use_container_width=True):
+                                st.success("✅ Evaluation saved to database")
+                                st.info("You can now query this evaluation through the chat interface")
+                        
+                        with col_export2:
+                            # PDF Export button
+                            if st.button("📄 Export as PDF", use_container_width=True):
+                                with st.spinner("Generating PDF report..."):
+                                    try:
+                                        pdf_response = httpx.get(
+                                            f"{backend_url}/api/v1/google-services/evaluations/{service_name}/pdf",
+                                            timeout=30.0
+                                        )
+                                        
+                                        if pdf_response.status_code == 200:
+                                            # Create download button for PDF
+                                            st.download_button(
+                                                label="⬇️ Download PDF Report",
+                                                data=pdf_response.content,
+                                                file_name=f"{service_name}_security_evaluation.pdf",
+                                                mime="application/pdf",
+                                                use_container_width=True
+                                            )
+                                            st.success("PDF report generated successfully!")
+                                        else:
+                                            st.error("Failed to generate PDF report")
+                                    except Exception as e:
+                                        st.error(f"Error generating PDF: {str(e)}")
+                        
+                        with col_export3:
+                            # JSON Export button
+                            if st.button("📋 Export as JSON", use_container_width=True):
+                                # Create download button for JSON
+                                json_data = json.dumps(results, indent=2)
+                                st.download_button(
+                                    label="⬇️ Download JSON Data",
+                                    data=json_data,
+                                    file_name=f"{service_name}_evaluation.json",
+                                    mime="application/json",
+                                    use_container_width=True
+                                )
+                                st.success("JSON data ready for download!")
                     
                     else:
                         st.error(f"Failed to evaluate service: {response.text}")
@@ -1053,6 +1517,137 @@ def display_service_evaluation():
         st.info("💬 Switch to the Security Chat tab to see query results")
 
 
+def display_feedback_analytics():
+    """Display comprehensive feedback analytics dashboard."""
+    st.header("📈 Feedback Analytics & Improvement Insights")
+    st.caption("Track feedback trends, identify improvement opportunities, and monitor ADK evaluation performance")
+    
+    # Time period selector
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        days = st.selectbox(
+            "Analysis Period:",
+            options=[7, 14, 30, 60, 90],
+            index=2,
+            format_func=lambda x: f"Last {x} days"
+        )
+    
+    with col2:
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            st.rerun()
+    
+    with col3:
+        if st.button("📊 Generate Evalset", use_container_width=True):
+            generate_evalset_from_feedback()
+    
+    # Fetch feedback metrics
+    try:
+        backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        response = httpx.get(f"{backend_url}/api/v1/feedback/metrics?days={days}", timeout=10.0)
+        
+        if response.status_code == 200:
+            metrics = response.json()
+            
+            # Overview metrics
+            st.subheader("📊 Feedback Overview")
+            overview = metrics.get('overview', {})
+            
+            col1, col2, col3, col4, col5 = st.columns(5)
+            
+            with col1:
+                total_feedback = overview.get('total_feedback', 0)
+                st.metric("Total Feedback", total_feedback)
+            
+            with col2:
+                avg_rating = overview.get('avg_rating', 0)
+                st.metric("Average Rating", f"{avg_rating:.1f}/5.0" if avg_rating else "No ratings")
+            
+            with col3:
+                thumbs_up = overview.get('thumbs_up', 0)
+                thumbs_down = overview.get('thumbs_down', 0)
+                satisfaction = (thumbs_up / max(1, thumbs_up + thumbs_down)) * 100
+                st.metric("Satisfaction", f"{satisfaction:.1f}%")
+            
+            with col4:
+                unique_sessions = overview.get('unique_sessions', 0)
+                st.metric("Active Sessions", unique_sessions)
+            
+            with col5:
+                if total_feedback > 0:
+                    feedback_rate = min(100, (total_feedback / max(1, unique_sessions * 5)) * 100)
+                    st.metric("Feedback Rate", f"{feedback_rate:.1f}%")
+                else:
+                    st.metric("Feedback Rate", "0%")
+            
+            # ADK Evalset Generation
+            st.subheader("🤖 ADK Evaluation Integration")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Generate Evalset from Feedback**")
+                st.write("Convert collected feedback into ADK evaluation datasets for model improvement.")
+                
+                min_feedback = st.number_input(
+                    "Minimum feedback items:",
+                    min_value=5,
+                    max_value=100,
+                    value=15,
+                    help="Minimum number of feedback items to include in evalset"
+                )
+                
+                if st.button("🎯 Generate ADK Evalset", type="primary"):
+                    generate_evalset_from_feedback(min_feedback)
+            
+            with col2:
+                st.markdown("**Feedback Quality Metrics**")
+                
+                # Calculate quality metrics
+                st.metric("Total Feedback", f"{total_feedback}")
+                st.metric("Average Rating", f"{avg_rating:.1f}/5.0" if avg_rating else "No ratings")
+                st.metric("Evalset Ready", f"{min(total_feedback, 25)}/25")
+        
+        else:
+            st.error(f"Failed to fetch feedback metrics: {response.status_code}")
+            st.info("Make sure the backend is running and the feedback API is available.")
+    
+    except Exception as e:
+        st.error(f"Error loading feedback analytics: {e}")
+        st.info("Check that the backend server is running at the configured URL.")
+
+def generate_evalset_from_feedback(min_feedback_count: int = 15):
+    """Generate an ADK evalset from collected feedback."""
+    try:
+        backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        
+        with st.spinner("🤖 Generating ADK evalset from feedback..."):
+            response = httpx.post(
+                f"{backend_url}/api/v1/feedback/generate-evalset",
+                json={"min_feedback_count": min_feedback_count},
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                st.success(f"✅ Evalset generated successfully!")
+                st.info(f"📊 Evalset ID: `{result['evalset_id']}`")
+                st.info(f"📋 Evaluation cases: {result['eval_cases_count']}")
+                st.info(f"📁 File saved to: `{result['file_path']}`")
+                
+                st.markdown("**Next Steps:**")
+                st.write("1. Use the generated evalset with ADK evaluation framework")
+                st.write("2. Run evaluations to measure current performance")
+                st.write("3. Use results to identify improvement areas")
+                st.write("4. Iterate on model/instructions based on findings")
+                
+            else:
+                result = response.json()
+                st.error(f"❌ Failed to generate evalset: {result.get('detail', 'Unknown error')}")
+    
+    except Exception as e:
+        st.error(f"Error generating evalset: {e}")
+
 def main():
     """Main application with unified dashboard and streaming chat."""
     # Initialize session
@@ -1064,7 +1659,7 @@ def main():
     st.divider()
     
     # Create tabs for different features
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "🔍 Service Evaluation", "🧪 Agent Evaluation", "📊 Deep Analytics"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "🔍 Service Evaluation", "🧪 Agent Evaluation", "📈 Feedback Analytics", "📊 Deep Analytics"])
     
     with tab1:
         # Display chat interface
@@ -1083,6 +1678,10 @@ def main():
         evaluation_manager.display_evaluation_page()
     
     with tab5:
+        # Display feedback analytics dashboard
+        display_feedback_analytics()
+    
+    with tab6:
         # Placeholder for future deep analytics
         st.header("📊 Deep Security Analytics")
         st.info("Advanced analytics and reporting features coming soon...")

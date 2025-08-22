@@ -25,6 +25,16 @@ import os
 from .vertex_sqlite_agent import root_agent
 print("✅ Using SQLite-based agent with query_security_data tool")
 
+# Create agent submodule for ADK compatibility
+# ADK expects agent_module.agent.root_agent structure
+class AgentModule:
+    """Agent submodule to satisfy ADK's expected structure"""
+    def __init__(self):
+        self.root_agent = root_agent
+
+# Create the agent submodule that ADK expects
+agent = AgentModule()
+
 # Note: Set AGENT_MODE in .env to choose:
 # - 'sqlite': Full data access via SQLite (recommended)
 # - 'simple': No tools, just conversation
