@@ -18,8 +18,6 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from pydantic import BaseModel
-from pydantic import ConfigDict
 from pydantic import model_validator
 from typing_extensions import override
 
@@ -164,8 +162,8 @@ class AgentTool(BaseTool):
       tool_result = merged_text
     return tool_result
 
-  @classmethod
   @override
+  @classmethod
   def from_config(
       cls, config: ToolArgsConfig, config_abs_path: str
   ) -> AgentTool:

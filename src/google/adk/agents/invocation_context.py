@@ -40,6 +40,25 @@ class LlmCallsLimitExceededError(Exception):
   """Error thrown when the number of LLM calls exceed the limit."""
 
 
+class RealtimeCacheEntry(BaseModel):
+  """Store audio data chunks for caching before flushing."""
+
+  model_config = ConfigDict(
+      arbitrary_types_allowed=True,
+      extra="forbid",
+  )
+  """The pydantic model config."""
+
+  role: str
+  """The role that created this audio data, typically "user" or "model"."""
+
+  data: types.Blob
+  """The audio data chunk."""
+
+  timestamp: float
+  """Timestamp when the audio chunk was received."""
+
+
 class _InvocationCostManager(BaseModel):
   """A container to keep track of the cost of invocation.
 
@@ -155,6 +174,12 @@ class InvocationContext(BaseModel):
 
   live_session_resumption_handle: Optional[str] = None
   """The handle for live session resumption."""
+
+  input_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  """Caches input audio chunks before flushing to session and artifact services."""
+
+  output_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  """Caches output audio chunks before flushing to session and artifact services."""
 
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""

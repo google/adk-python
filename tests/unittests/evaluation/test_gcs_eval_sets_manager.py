@@ -79,17 +79,21 @@ class TestGcsEvalSetsManager:
         app_name, eval_set_id
     )
 
-    gcs_eval_sets_manager.create_eval_set(app_name, eval_set_id)
+    created_eval_set = gcs_eval_sets_manager.create_eval_set(
+        app_name, eval_set_id
+    )
 
+    expected_eval_set = EvalSet(
+        eval_set_id=eval_set_id,
+        name=eval_set_id,
+        eval_cases=[],
+        creation_timestamp=mocked_time,
+    )
     mock_write_eval_set_to_blob.assert_called_once_with(
         eval_set_blob_name,
-        EvalSet(
-            eval_set_id=eval_set_id,
-            name=eval_set_id,
-            eval_cases=[],
-            creation_timestamp=mocked_time,
-        ),
+        expected_eval_set,
     )
+    assert created_eval_set == expected_eval_set
 
   def test_gcs_eval_sets_manager_create_eval_set_invalid_id(
       self, gcs_eval_sets_manager

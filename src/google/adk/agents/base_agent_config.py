@@ -79,12 +79,3 @@ Example:
       default=None,
       description='Optional. The after_agent_callbacks of the agent.',
   )
-
-  def to_agent_config(
-      self, custom_agent_config_cls: Type[TBaseAgentConfig]
-  ) -> TBaseAgentConfig:
-    """Converts this config to the concrete agent config type.
-
-    NOTE: this is for ADK framework use only.
-    """
-    return custom_agent_config_cls.model_validate(self.model_dump())

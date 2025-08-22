@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import functools
 import json
-import sys
-import textwrap
 import types
 from typing import Callable
 
@@ -79,7 +77,6 @@ def execute_sql(
             ]
           }
   """
-
   try:
     # Get BigQuery client
     bq_client = client.get_bigquery_client(
@@ -189,7 +186,47 @@ def execute_sql(
     }
 
 
-_execute_sql_write_examples = """
+def _execute_sql_write_mode(*args, **kwargs) -> dict:
+  """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      query (str): The BigQuery SQL query to be executed.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+
+  Returns:
+      dict: Dictionary representing the result of the query.
+            If the result contains the key "result_is_likely_truncated" with
+            value True, it means that there may be additional rows matching the
+            query not returned in the result.
+
+  Examples:
+      Fetch data or insights from a table:
+
+          >>> execute_sql("my_project",
+          ... "SELECT island, COUNT(*) AS population "
+          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          {
+            "status": "SUCCESS",
+            "rows": [
+                {
+                    "island": "Dream",
+                    "population": 124
+                },
+                {
+                    "island": "Biscoe",
+                    "population": 168
+                },
+                {
+                    "island": "Torgersen",
+                    "population": 52
+                }
+            ]
+          }
+
       Create a table with schema prescribed:
 
           >>> execute_sql("my_project",
@@ -328,9 +365,50 @@ _execute_sql_write_examples = """
           - Use "CREATE OR REPLACE MODEL" instead of "CREATE MODEL".
           - First run "DROP MODEL", followed by "CREATE MODEL".
   """
+  return execute_sql(*args, **kwargs)
 
 
-_execute_sql_protecetd_write_examples = """
+def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
+  """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      query (str): The BigQuery SQL query to be executed.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+
+  Returns:
+      dict: Dictionary representing the result of the query.
+            If the result contains the key "result_is_likely_truncated" with
+            value True, it means that there may be additional rows matching the
+            query not returned in the result.
+
+  Examples:
+      Fetch data or insights from a table:
+
+          >>> execute_sql("my_project",
+          ... "SELECT island, COUNT(*) AS population "
+          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          {
+            "status": "SUCCESS",
+            "rows": [
+                {
+                    "island": "Dream",
+                    "population": 124
+                },
+                {
+                    "island": "Biscoe",
+                    "population": 168
+                },
+                {
+                    "island": "Torgersen",
+                    "population": 52
+                }
+            ]
+          }
+
       Create a temporary table with schema prescribed:
 
           >>> execute_sql("my_project",
@@ -460,6 +538,7 @@ _execute_sql_protecetd_write_examples = """
       - Only temporary models can be created or deleted. Please do not try
       creating a permanent model (non-TEMP model) or deleting one.
   """
+  return execute_sql(*args, **kwargs)
 
 
 def get_execute_sql(settings: BigQueryToolConfig) -> Callable[..., dict]:
@@ -496,17 +575,8 @@ def get_execute_sql(settings: BigQueryToolConfig) -> Callable[..., dict]:
 
   # Now, set the new docstring
   if settings.write_mode == WriteMode.PROTECTED:
-    examples = _execute_sql_protecetd_write_examples
+    execute_sql_wrapper.__doc__ = _execute_sql_protected_write_mode.__doc__
   else:
-    examples = _execute_sql_write_examples
-
-  # Handle Python 3.13+ inspect.cleandoc behavior change
-  # Python 3.13 changed inspect.cleandoc from lstrip() to lstrip(' '), making it
-  # more conservative. The appended examples have inconsistent indentation that
-  # Python 3.11/3.12's aggressive cleandoc would fix, but 3.13+ needs help.
-  if sys.version_info >= (3, 13):
-    examples = textwrap.dedent(examples)
-
-  execute_sql_wrapper.__doc__ += examples
+    execute_sql_wrapper.__doc__ = _execute_sql_write_mode.__doc__
 
   return execute_sql_wrapper
