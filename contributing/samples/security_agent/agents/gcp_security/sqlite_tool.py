@@ -48,7 +48,14 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             - 'cache_status': Show cache statistics
             - 'msa_analysis': View MSA (Monthly Service Announcement) analysis history
             - 'msa_changes': Query specific MSA changes and their details
+            - 'context_aware_analysis': Full feedback loop analysis connecting MSA changes with security findings, assets, and remediation effectiveness
+            - 'cross_impact_analysis': Analyze how changes in one area affect other security domains
             - 'msa_impact': Get MSA impact assessments for projects
+            - 'knowledge_base': Query enterprise policies, coding standards, and best practices
+            - 'coding_standards': Query coding standards and test requirements
+            - 'enterprise_policies': Query security and governance policies
+            - 'best_practices': Query GCP best practices and recommendations
+            - 'compliance': Query compliance framework requirements
             - 'custom': Execute a custom SQL query (be careful!)
             
         parameters: Optional JSON string with query parameters.
@@ -130,14 +137,28 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             return _query_msa_analysis(cursor, params)
         elif query_type == 'msa_changes':
             return _query_msa_changes(cursor, params)
+        elif query_type == 'context_aware_analysis':
+            return _query_context_aware_analysis(cursor, params)
+        elif query_type == 'cross_impact_analysis':
+            return _query_cross_impact_analysis(cursor, params)
         elif query_type == 'msa_impact':
             return _query_msa_impact(cursor, params)
         elif query_type == 'msa_permissions':
             return _query_msa_permissions(cursor, params)
+        elif query_type == 'knowledge_base':
+            return _query_knowledge_base(cursor, params)
+        elif query_type == 'coding_standards':
+            return _query_coding_standards(cursor, params)
+        elif query_type == 'enterprise_policies':
+            return _query_enterprise_policies(cursor, params)
+        elif query_type == 'best_practices':
+            return _query_best_practices(cursor, params)
+        elif query_type == 'compliance':
+            return _query_compliance(cursor, params)
         elif query_type == 'custom':
             return _execute_custom_query(cursor, params)
         else:
-            return f"❌ Unknown query type: {query_type}\n\nAvailable types: security_summary, assets, security_findings, iam_analysis, storage_buckets, api_keys, recommendations, org_policies, service_usage, monitoring, logs, firewall_rules, networks, compute_instances, databases, iam_accounts, secrets, msa_analysis, msa_changes, msa_impact, cache_status, custom"
+            return f"❌ Unknown query type: {query_type}\n\nAvailable types: security_summary, assets, security_findings, iam_analysis, storage_buckets, api_keys, recommendations, org_policies, service_usage, monitoring, logs, firewall_rules, networks, compute_instances, databases, iam_accounts, secrets, msa_analysis, msa_changes, msa_impact, knowledge_base, coding_standards, enterprise_policies, best_practices, compliance, cache_status, custom"
             
     except Exception as e:
         logger.error(f"Database query error: {str(e)}")
@@ -1419,5 +1440,682 @@ def _query_msa_permissions(cursor, params: Dict) -> str:
         output += f"  • Earliest change date: {earliest}\n"
     
     output += "\n💡 Tip: Query specific permissions like 'bigquery.datasets.get' to see detailed mapping."
+    
+    return output
+
+
+def _query_knowledge_base(cursor, params: Dict) -> str:
+    """Query all knowledge base information"""
+    output = "📚 Knowledge Base Overview\n" + "=" * 40 + "\n\n"
+    
+    # Get counts from each table
+    tables = [
+        ('enterprise_policies', 'Enterprise Policies'),
+        ('coding_standards', 'Coding Standards'),
+        ('compliance_frameworks', 'Compliance Requirements'),
+        ('best_practices', 'Best Practices')
+    ]
+    
+    for table, name in tables:
+        cursor.execute(f"SELECT COUNT(*) as count FROM {table}")
+        count = cursor.fetchone()['count']
+        output += f"• {name}: {count} entries\n"
+    
+    output += "\n📋 Quick Access:\n"
+    output += "• Query 'coding_standards' for development guidelines\n"
+    output += "• Query 'enterprise_policies' for security policies\n"
+    output += "• Query 'best_practices' for GCP recommendations\n"
+    output += "• Query 'compliance' for regulatory requirements\n"
+    
+    # Show sample entries
+    output += "\n🔍 Recent Additions:\n"
+    cursor.execute("""
+        SELECT 'Policy' as type, policy_name as name, severity 
+        FROM enterprise_policies 
+        ORDER BY created_at DESC LIMIT 2
+    """)
+    for row in cursor.fetchall():
+        output += f"  [{row['severity']}] {row['name']}\n"
+    
+    cursor.execute("""
+        SELECT 'Standard' as type, standard_name as name, severity
+        FROM coding_standards
+        ORDER BY created_at DESC LIMIT 2
+    """)
+    for row in cursor.fetchall():
+        output += f"  [{row['severity']}] {row['name']}\n"
+    
+    return output
+
+
+def _query_coding_standards(cursor, params: Dict) -> str:
+    """Query coding standards and test requirements"""
+    output = "📝 Coding Standards & Test Requirements\n" + "=" * 40 + "\n\n"
+    
+    language = params.get('language', 'Python')
+    severity = params.get('severity')
+    search = params.get('search')
+    
+    # Build query
+    query = "SELECT * FROM coding_standards WHERE is_active = 1"
+    query_params = []
+    
+    if language:
+        query += " AND language = ?"
+        query_params.append(language)
+    
+    if severity:
+        query += " AND severity = ?"
+        query_params.append(severity)
+    
+    if search:
+        query += " AND (standard_name LIKE ? OR rule_description LIKE ? OR tags LIKE ?)"
+        query_params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+    
+    cursor.execute(query, query_params)
+    standards = cursor.fetchall()
+    
+    if not standards:
+        return f"No coding standards found for language='{language}'"
+    
+    # Group by severity
+    by_severity = {'ERROR': [], 'WARNING': [], 'INFO': []}
+    for standard in standards:
+        by_severity[standard['severity']].append(standard)
+    
+    # Show ERROR level first
+    if by_severity['ERROR']:
+        output += "🔴 ERROR Standards (Must Fix):\n"
+        for std in by_severity['ERROR']:
+            output += f"\n  📌 {std['standard_name']}\n"
+            output += f"     Rule: {std['rule_description']}\n"
+            if std['example_good']:
+                output += f"     ✅ Good: {std['example_good'][:100]}\n"
+            if std['example_bad']:
+                output += f"     ❌ Bad: {std['example_bad'][:100]}\n"
+            if std['linter_rule']:
+                output += f"     🔧 Linter: {std['linter_rule']}\n"
+    
+    # Show WARNING level
+    if by_severity['WARNING']:
+        output += "\n⚠️ WARNING Standards (Should Fix):\n"
+        for std in by_severity['WARNING']:
+            output += f"\n  📌 {std['standard_name']}\n"
+            output += f"     Rule: {std['rule_description']}\n"
+            if std['example_good']:
+                output += f"     ✅ Good: {std['example_good'][:100]}\n"
+    
+    # Show INFO level
+    if by_severity['INFO']:
+        output += "\n💡 INFO Standards (Best Practices):\n"
+        for std in by_severity['INFO']:
+            output += f"\n  📌 {std['standard_name']}\n"
+            output += f"     Rule: {std['rule_description']}\n"
+    
+    # Summary
+    output += f"\n📊 Total: {len(standards)} standards for {language}\n"
+    output += f"   • Errors: {len(by_severity['ERROR'])}\n"
+    output += f"   • Warnings: {len(by_severity['WARNING'])}\n"
+    output += f"   • Info: {len(by_severity['INFO'])}\n"
+    
+    # Test-specific standards
+    test_standards = [s for s in standards if 'test' in s['standard_name'].lower()]
+    if test_standards:
+        output += f"\n🧪 Test Standards: {len(test_standards)} found\n"
+        for std in test_standards:
+            output += f"   • {std['standard_name']}\n"
+    
+    return output
+
+
+def _query_enterprise_policies(cursor, params: Dict) -> str:
+    """Query enterprise security and governance policies"""
+    output = "🛡️ Enterprise Security Policies\n" + "=" * 40 + "\n\n"
+    
+    category = params.get('category')
+    severity = params.get('severity')
+    
+    # Build query
+    query = "SELECT * FROM enterprise_policies WHERE is_active = 1"
+    query_params = []
+    
+    if category:
+        query += " AND category = ?"
+        query_params.append(category)
+    
+    if severity:
+        query += " AND severity = ?"
+        query_params.append(severity)
+    
+    query += " ORDER BY severity DESC, policy_name"
+    
+    cursor.execute(query, query_params)
+    policies = cursor.fetchall()
+    
+    if not policies:
+        return "No active enterprise policies found"
+    
+    # Group by category
+    by_category = {}
+    for policy in policies:
+        cat = policy['category']
+        if cat not in by_category:
+            by_category[cat] = []
+        by_category[cat].append(policy)
+    
+    # Show policies by category
+    for category, cat_policies in by_category.items():
+        output += f"📁 {category}:\n"
+        for policy in cat_policies:
+            severity_icon = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🟢'}.get(policy['severity'], '⚪')
+            output += f"\n  {severity_icon} {policy['policy_name']}\n"
+            output += f"     {policy['description']}\n"
+            if policy['implementation_guide']:
+                guide_lines = policy['implementation_guide'].split('\\n')[:2]
+                for line in guide_lines:
+                    if line.strip():
+                        output += f"     → {line.strip()}\n"
+            if policy['exceptions']:
+                output += f"     ⚠️ Exceptions: {policy['exceptions'][:100]}\n"
+    
+    # Summary
+    output += f"\n📊 Total: {len(policies)} active policies\n"
+    severity_counts = {}
+    for policy in policies:
+        severity_counts[policy['severity']] = severity_counts.get(policy['severity'], 0) + 1
+    for sev in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']:
+        if sev in severity_counts:
+            output += f"   • {sev}: {severity_counts[sev]}\n"
+    
+    return output
+
+
+def _query_best_practices(cursor, params: Dict) -> str:
+    """Query GCP best practices and recommendations"""
+    output = "✨ GCP Best Practices\n" + "=" * 40 + "\n\n"
+    
+    service = params.get('service')
+    category = params.get('category')
+    
+    # Build query
+    query = "SELECT * FROM best_practices WHERE is_active = 1"
+    query_params = []
+    
+    if service:
+        query += " AND service = ?"
+        query_params.append(service)
+    
+    if category:
+        query += " AND category = ?"
+        query_params.append(category)
+    
+    cursor.execute(query, query_params)
+    practices = cursor.fetchall()
+    
+    if not practices:
+        return "No best practices found for the specified criteria"
+    
+    # Group by service
+    by_service = {}
+    for practice in practices:
+        svc = practice['service']
+        if svc not in by_service:
+            by_service[svc] = []
+        by_service[svc].append(practice)
+    
+    # Show practices by service
+    for service, svc_practices in by_service.items():
+        output += f"☁️ {service}:\n"
+        for practice in svc_practices:
+            output += f"\n  📌 {practice['practice_name']}\n"
+            output += f"     Category: {practice['category']}\n"
+            output += f"     Rationale: {practice['rationale']}\n"
+            
+            # Show implementation
+            if practice['gcloud_command']:
+                output += f"     🔧 Command: {practice['gcloud_command']}\n"
+            elif practice['terraform_snippet']:
+                snippet = practice['terraform_snippet'][:100]
+                output += f"     📄 Terraform: {snippet}...\n"
+            else:
+                guide = practice['implementation_guide'][:100]
+                output += f"     📝 How: {guide}...\n"
+            
+            # Show risk
+            if practice['risk_if_not_followed']:
+                output += f"     ⚠️ Risk: {practice['risk_if_not_followed']}\n"
+    
+    # Summary
+    output += f"\n📊 Total: {len(practices)} best practices\n"
+    output += f"   • Services: {', '.join(by_service.keys())}\n"
+    
+    # Categories
+    categories = set(p['category'] for p in practices)
+    output += f"   • Categories: {', '.join(categories)}\n"
+    
+    return output
+
+
+def _query_compliance(cursor, params: Dict) -> str:
+    """Query compliance framework requirements"""
+    output = "📋 Compliance Framework Requirements\n" + "=" * 40 + "\n\n"
+    
+    framework = params.get('framework')
+    status = params.get('status')
+    
+    # Build query
+    query = "SELECT * FROM compliance_frameworks WHERE 1=1"
+    query_params = []
+    
+    if framework:
+        query += " AND framework_name = ?"
+        query_params.append(framework)
+    
+    if status:
+        query += " AND compliance_status = ?"
+        query_params.append(status)
+    
+    cursor.execute(query, query_params)
+    requirements = cursor.fetchall()
+    
+    if not requirements:
+        return "No compliance requirements found"
+    
+    # Group by framework
+    by_framework = {}
+    for req in requirements:
+        fw = req['framework_name']
+        if fw not in by_framework:
+            by_framework[fw] = []
+        by_framework[fw].append(req)
+    
+    # Show requirements by framework
+    for framework, fw_reqs in by_framework.items():
+        output += f"📜 {framework}:\n"
+        for req in fw_reqs:
+            status_icon = {
+                'COMPLIANT': '✅',
+                'NON_COMPLIANT': '❌',
+                'PARTIAL': '⚠️',
+                'NOT_ASSESSED': '❓'
+            }.get(req['compliance_status'], '⚪')
+            
+            output += f"\n  {status_icon} {req['requirement_id']}: {req['requirement_text']}\n"
+            if req['description']:
+                output += f"     {req['description'][:100]}\n"
+            
+            # Show GCP mapping
+            if req['gcp_mapping']:
+                try:
+                    import json
+                    services = json.loads(req['gcp_mapping'])
+                    output += f"     🔗 GCP Services: {', '.join(services)}\n"
+                except:
+                    pass
+            
+            # Show remediation if non-compliant
+            if req['compliance_status'] == 'NON_COMPLIANT' and req['remediation_steps']:
+                output += f"     🔧 Fix: {req['remediation_steps'][:100]}\n"
+    
+    # Summary
+    output += f"\n📊 Compliance Summary:\n"
+    status_counts = {}
+    for req in requirements:
+        status_counts[req['compliance_status']] = status_counts.get(req['compliance_status'], 0) + 1
+    
+    for status, count in status_counts.items():
+        output += f"   • {status}: {count}\n"
+    
+    # Frameworks
+    frameworks = set(r['framework_name'] for r in requirements)
+    output += f"   • Frameworks: {', '.join(frameworks)}\n"
+    
+    return output
+
+
+def _query_context_aware_analysis(cursor, params: Dict) -> str:
+    """
+    Full feedback loop analysis connecting MSA changes with security findings, 
+    assets, IAM policies, and remediation effectiveness.
+    
+    This creates a comprehensive context-aware view showing how changes in one
+    area (like MSA announcements) ripple through the entire security posture.
+    """
+    
+    # Parse parameters
+    focus_area = params.get('focus', 'all') if params else 'all'
+    timeframe = params.get('timeframe', '30_days') if params else '30_days'
+    
+    output = f"🔄 **Context-Aware Security Analysis** - Full Feedback Loop\n"
+    output += f"{'=' * 60}\n\n"
+    
+    # 1. MSA Change Impact Analysis
+    output += "## 🧠 MSA Impact Propagation\n\n"
+    
+    cursor.execute("""
+        SELECT 
+            mc.service,
+            mc.change_type,
+            mc.description,
+            mc.effective_date,
+            COUNT(DISTINCT ip.role) as affected_roles,
+            COUNT(DISTINCT a.resource_name) as affected_assets
+        FROM msa_changes mc
+        LEFT JOIN iam_policies ip ON (
+            mc.old_permission IS NOT NULL AND 
+            ip.role LIKE '%' || LOWER(mc.service) || '%'
+        )
+        LEFT JOIN assets a ON a.asset_type LIKE '%' || LOWER(mc.service) || '%'
+        GROUP BY mc.id, mc.service, mc.change_type
+        ORDER BY affected_roles DESC, affected_assets DESC
+        LIMIT 5
+    """)
+    
+    msa_impacts = cursor.fetchall()
+    
+    for impact in msa_impacts:
+        output += f"### 📧 {impact['service']} - {impact['change_type']}\n"
+        output += f"**Impact Radius:**\n"
+        output += f"- 🔐 IAM Roles Affected: {impact['affected_roles']}\n"
+        output += f"- 🏗️ Assets Potentially Impacted: {impact['affected_assets']}\n"
+        output += f"- 📅 Effective Date: {impact['effective_date']}\n"
+        output += f"- 📝 Description: {impact['description'][:200]}...\n\n"
+    
+    # 2. Security Finding Correlation
+    output += "## 🛡️ Security Findings Correlation\n\n"
+    
+    cursor.execute("""
+        SELECT 
+            sf.finding_class,
+            sf.severity,
+            COUNT(*) as finding_count,
+            GROUP_CONCAT(DISTINCT sf.resource_name, ', ') as sample_resources
+        FROM security_findings sf
+        WHERE sf.state = 'ACTIVE'
+        GROUP BY sf.finding_class, sf.severity
+        ORDER BY 
+            CASE sf.severity 
+                WHEN 'CRITICAL' THEN 1 
+                WHEN 'HIGH' THEN 2 
+                WHEN 'MEDIUM' THEN 3 
+                ELSE 4 
+            END,
+            finding_count DESC
+        LIMIT 8
+    """)
+    
+    findings = cursor.fetchall()
+    
+    for finding in findings:
+        severity_icon = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🟢'}.get(finding['severity'], '⚪')
+        output += f"{severity_icon} **{finding['finding_class']}** ({finding['severity']})\n"
+        output += f"   • Count: {finding['finding_count']} active findings\n"
+        
+        # Show sample resources (truncated)
+        if finding['sample_resources']:
+            resources = finding['sample_resources'].split(', ')[:3]
+            output += f"   • Sample Resources: {', '.join(resources)}\n"
+            if len(resources) == 3:
+                output += f"   • ... and more\n"
+        output += "\n"
+    
+    # 3. Asset Vulnerability Cross-Analysis
+    output += "## 🏗️ Asset-Security Cross-Analysis\n\n"
+    
+    cursor.execute("""
+        SELECT 
+            a.asset_type,
+            COUNT(DISTINCT a.resource_name) as total_assets,
+            COUNT(DISTINCT sf.resource_name) as assets_with_findings,
+            ROUND(
+                (CAST(COUNT(DISTINCT sf.resource_name) AS FLOAT) / 
+                 CAST(COUNT(DISTINCT a.resource_name) AS FLOAT)) * 100, 1
+            ) as vulnerability_rate
+        FROM assets a
+        LEFT JOIN security_findings sf ON a.resource_name = sf.resource_name
+        GROUP BY a.asset_type
+        HAVING total_assets > 0
+        ORDER BY vulnerability_rate DESC, total_assets DESC
+        LIMIT 10
+    """)
+    
+    asset_analysis = cursor.fetchall()
+    
+    for asset in asset_analysis:
+        vuln_rate = asset['vulnerability_rate'] or 0
+        risk_icon = "🔴" if vuln_rate > 50 else "🟠" if vuln_rate > 20 else "🟡" if vuln_rate > 5 else "🟢"
+        
+        output += f"{risk_icon} **{asset['asset_type']}**\n"
+        output += f"   • Total Assets: {asset['total_assets']}\n"
+        output += f"   • With Security Findings: {asset['assets_with_findings']}\n"
+        output += f"   • Vulnerability Rate: {vuln_rate}%\n\n"
+    
+    # 4. IAM Permission Risk Analysis
+    output += "## 🔐 IAM Permission Risk Pattern\n\n"
+    
+    cursor.execute("""
+        SELECT 
+            ip.role,
+            COUNT(DISTINCT ip.member) as member_count,
+            COUNT(DISTINCT ip.resource_name) as resource_count,
+            CASE 
+                WHEN ip.role LIKE '%admin%' OR ip.role LIKE '%owner%' THEN 'HIGH_PRIVILEGE'
+                WHEN ip.role LIKE '%viewer%' OR ip.role LIKE '%browser%' THEN 'READ_ONLY'
+                WHEN ip.role LIKE 'projects/%/roles/%' THEN 'CUSTOM_ROLE'
+                ELSE 'STANDARD_ROLE'
+            END as risk_category
+        FROM iam_policies ip
+        GROUP BY ip.role
+        ORDER BY member_count DESC, resource_count DESC
+        LIMIT 12
+    """)
+    
+    iam_risks = cursor.fetchall()
+    
+    # Group by risk category
+    by_risk = {}
+    for iam in iam_risks:
+        category = iam['risk_category']
+        if category not in by_risk:
+            by_risk[category] = []
+        by_risk[category].append(iam)
+    
+    for category, roles in by_risk.items():
+        category_icon = {
+            'HIGH_PRIVILEGE': '🔴',
+            'CUSTOM_ROLE': '🟠', 
+            'STANDARD_ROLE': '🟡',
+            'READ_ONLY': '🟢'
+        }.get(category, '⚪')
+        
+        output += f"{category_icon} **{category.replace('_', ' ').title()}**\n"
+        for role in roles[:3]:  # Show top 3 in each category
+            output += f"   • {role['role']}: {role['member_count']} members, {role['resource_count']} resources\n"
+        output += "\n"
+    
+    # 5. Feedback Loop Recommendations
+    output += "## 🎯 Context-Aware Recommendations\n\n"
+    
+    output += "**Immediate Actions:**\n"
+    output += "1. 🔄 Review MSA changes affecting high-privilege roles\n"
+    output += "2. 🛡️ Prioritize critical/high security findings on high-asset-count types\n"
+    output += "3. 🔐 Audit custom roles with broad resource access\n"
+    output += "4. 📊 Implement monitoring for vulnerability rate trends\n\n"
+    
+    output += "**Feedback Loop Optimization:**\n"
+    output += "1. 📈 Establish baseline metrics for each asset type\n"
+    output += "2. 🔔 Set up alerts when vulnerability rates exceed thresholds\n"
+    output += "3. 🤖 Automate remediation for low-risk, high-volume findings\n"
+    output += "4. 📋 Create periodic reviews linking MSA changes to security posture changes\n\n"
+    
+    return output
+
+
+def _query_cross_impact_analysis(cursor, params: Dict) -> str:
+    """
+    Analyze how changes in one security domain affect other domains.
+    This implements the full feedback loop showing cascading impacts.
+    """
+    
+    # Parse parameters
+    domain = params.get('domain', 'all') if params else 'all'
+    depth = params.get('depth', 'medium') if params else 'medium'
+    
+    output = f"🌐 **Cross-Impact Analysis** - Security Domain Interactions\n"
+    output += f"{'=' * 65}\n\n"
+    
+    # 1. MSA → IAM → Asset Impact Chain
+    output += "## 🔗 Change Propagation Chain Analysis\n\n"
+    
+    cursor.execute("""
+        WITH msa_service_impact AS (
+            SELECT 
+                mc.service,
+                mc.change_type,
+                COUNT(DISTINCT ip.role) as iam_roles_affected,
+                COUNT(DISTINCT a.resource_name) as assets_potentially_affected
+            FROM msa_changes mc
+            LEFT JOIN iam_policies ip ON (
+                LOWER(ip.role) LIKE '%' || LOWER(mc.service) || '%' OR
+                LOWER(ip.resource_name) LIKE '%' || LOWER(mc.service) || '%'
+            )
+            LEFT JOIN assets a ON LOWER(a.asset_type) LIKE '%' || LOWER(mc.service) || '%'
+            GROUP BY mc.service, mc.change_type
+        )
+        SELECT * FROM msa_service_impact 
+        WHERE iam_roles_affected > 0 OR assets_potentially_affected > 0
+        ORDER BY (iam_roles_affected + assets_potentially_affected) DESC
+    """)
+    
+    impact_chains = cursor.fetchall()
+    
+    for chain in impact_chains:
+        output += f"### 📧 {chain['service']} {chain['change_type']}\n"
+        output += f"```\n"
+        output += f"MSA Change → {chain['iam_roles_affected']} IAM Roles → {chain['assets_potentially_affected']} Assets\n"
+        output += f"```\n"
+        
+        # Calculate impact score
+        impact_score = chain['iam_roles_affected'] + chain['assets_potentially_affected']
+        impact_level = "🔴 HIGH" if impact_score > 50 else "🟠 MEDIUM" if impact_score > 10 else "🟡 LOW"
+        output += f"**Impact Level:** {impact_level} (Score: {impact_score})\n\n"
+    
+    # 2. Security Finding → Asset Type → IAM Correlation
+    output += "## 🛡️ Security Finding Ripple Effects\n\n"
+    
+    cursor.execute("""
+        SELECT 
+            sf.finding_class,
+            sf.severity,
+            COUNT(DISTINCT sf.resource_name) as affected_resources,
+            COUNT(DISTINCT a.asset_type) as affected_asset_types,
+            COUNT(DISTINCT ip.role) as related_iam_roles
+        FROM security_findings sf
+        LEFT JOIN assets a ON sf.resource_name = a.resource_name
+        LEFT JOIN iam_policies ip ON sf.resource_name = ip.resource_name
+        WHERE sf.state = 'ACTIVE'
+        GROUP BY sf.finding_class, sf.severity
+        HAVING affected_resources > 0
+        ORDER BY affected_resources DESC, related_iam_roles DESC
+        LIMIT 8
+    """)
+    
+    finding_ripples = cursor.fetchall()
+    
+    for ripple in finding_ripples:
+        severity_icon = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🟢'}.get(ripple['severity'], '⚪')
+        output += f"{severity_icon} **{ripple['finding_class']}**\n"
+        output += f"   • Resources Affected: {ripple['affected_resources']}\n"
+        output += f"   • Asset Types Involved: {ripple['affected_asset_types']}\n"
+        output += f"   • IAM Roles Connected: {ripple['related_iam_roles']}\n"
+        
+        # Show connection strength
+        connection_strength = ripple['affected_asset_types'] + ripple['related_iam_roles']
+        if connection_strength > 10:
+            output += f"   • 🔗 **High interconnection** - Changes here affect multiple domains\n"
+        elif connection_strength > 5:
+            output += f"   • 🔗 Medium interconnection\n"
+        else:
+            output += f"   • 🔗 Low interconnection\n"
+        output += "\n"
+    
+    # 3. Knowledge Base → Real-World Application Tracking
+    output += "## 📚 Knowledge Base Application Tracking\n\n"
+    
+    cursor.execute("""
+        SELECT 
+            cs.standard_name,
+            cs.severity,
+            cs.language,
+            COUNT(DISTINCT sf.resource_name) as violations_found
+        FROM coding_standards cs
+        LEFT JOIN security_findings sf ON (
+            LOWER(sf.finding_class) LIKE '%' || LOWER(cs.standard_name) || '%' OR
+            LOWER(sf.finding_class) LIKE '%secret%' AND LOWER(cs.standard_name) LIKE '%secret%' OR
+            LOWER(sf.finding_class) LIKE '%test%' AND LOWER(cs.standard_name) LIKE '%test%'
+        )
+        GROUP BY cs.standard_name, cs.severity, cs.language
+        ORDER BY violations_found DESC, 
+                 CASE cs.severity WHEN 'ERROR' THEN 1 WHEN 'WARNING' THEN 2 ELSE 3 END
+    """)
+    
+    kb_applications = cursor.fetchall()
+    
+    for app in kb_applications:
+        if app['violations_found'] > 0:
+            severity_icon = {'ERROR': '🔴', 'WARNING': '🟠', 'INFO': '🟡'}.get(app['severity'], '⚪')
+            output += f"{severity_icon} **{app['standard_name']}** ({app['language']})\n"
+            output += f"   • Potential violations detected: {app['violations_found']}\n"
+            output += f"   • 🔄 **Feedback loop active** - Standard violations being tracked in real findings\n\n"
+    
+    # 4. Temporal Impact Analysis
+    output += "## ⏰ Temporal Impact Patterns\n\n"
+    
+    output += "**Recent Change Velocity:**\n"
+    
+    cursor.execute("""
+        SELECT 
+            'MSA Changes' as change_type,
+            COUNT(*) as recent_changes
+        FROM msa_changes mc
+        WHERE mc.effective_date >= date('now', '-30 days')
+        
+        UNION ALL
+        
+        SELECT 
+            'New Security Findings' as change_type,
+            COUNT(*) as recent_changes
+        FROM security_findings sf
+        WHERE sf.create_time >= datetime('now', '-30 days')
+        
+        UNION ALL
+        
+        SELECT 
+            'Asset Changes' as change_type,
+            COUNT(*) as recent_changes  
+        FROM assets a
+        WHERE a.create_time >= datetime('now', '-30 days')
+    """)
+    
+    temporal_changes = cursor.fetchall()
+    
+    for change in temporal_changes:
+        velocity_icon = "⚡" if change['recent_changes'] > 10 else "🟡" if change['recent_changes'] > 3 else "🟢"
+        output += f"{velocity_icon} {change['change_type']}: {change['recent_changes']} in last 30 days\n"
+    
+    output += "\n## 🎯 Cross-Impact Optimization Recommendations\n\n"
+    
+    output += "**Strengthen Feedback Loops:**\n"
+    output += "1. 🔄 Implement real-time MSA → IAM → Asset monitoring\n"
+    output += "2. 📊 Create dashboard showing cross-domain impact metrics\n"
+    output += "3. 🤖 Automate correlation between knowledge base violations and security findings\n"
+    output += "4. 🔔 Set up alerts for high-impact security finding patterns\n"
+    output += "5. 📈 Track remediation effectiveness across domains\n\n"
+    
+    output += "**Predictive Capabilities:**\n"
+    output += "1. 🔮 Use historical patterns to predict MSA impact radius\n"
+    output += "2. 🎯 Prioritize security findings based on cross-domain connections\n"
+    output += "3. 📋 Pre-emptively update IAM policies before MSA effective dates\n"
+    output += "4. 🛡️ Identify asset types most vulnerable to specific finding classes\n\n"
     
     return output

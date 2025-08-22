@@ -88,14 +88,16 @@ cd adk-python
 
 # 2. Try the flagship security agent
 cd contributing/samples/security_agent
-python run.py
+python run_backend.py &     # Start backend
+python run_frontend.py     # Start frontend
 
 # 3. Access the applications
 # Frontend: http://localhost:8501
 # Backend API: http://localhost:8000/docs
+# Health Check: http://localhost:8000/health
 ```
 
-> **💡 New to ADK?** Start with our [GCP Security Agent](#gcp-security-agent) - a full-featured example showcasing ADK capabilities.
+> **💡 New to ADK?** Start with our [GCP Security Agent](#gcp-security-agent) - a production-ready example showcasing advanced ADK capabilities including context-aware MSA analysis and real-time streaming.
 
 ## 🛠️ Sample Applications
 
@@ -104,21 +106,32 @@ python run.py
 
 **Location**: [`contributing/samples/security_agent/`](contributing/samples/security_agent/)
 
-A comprehensive security evaluation platform for Google Cloud Platform featuring:
+A sophisticated context-aware security platform for Google Cloud Platform featuring advanced MSA analysis and intelligent remediation strategies:
 
-- **🛡️ Multi-layered Security Analysis** - Real-time risk assessment & vulnerability scanning
-- **🤖 AI-Powered Assistant** - Intelligent security recommendations with ADK integration  
-- **🔐 Advanced IAM Analysis** - Deep permissions analysis & policy compliance
-- **📊 Live Monitoring** - Performance dashboards with health monitoring
-- **🏗️ Clean Architecture** - Well-organized codebase with clear separation of concerns
-- **📋 Compliance Frameworks** - SOC2, ISO27001, GDPR evaluation
+- **🧠 Context-Aware MSA Analysis** - Intelligent Monthly Service Announcement impact analysis with custom role remediation
+- **🛡️ Multi-layered Security Analysis** - Real-time risk assessment & vulnerability scanning across 575+ assets
+- **🤖 AI-Powered Assistant** - Vertex AI integration with token-by-token streaming and embedded security intelligence
+- **🔐 Advanced IAM Analysis** - Deep permissions analysis, custom role impact assessment, and policy compliance
+- **📊 Executive Dashboard** - Real-time security posture metrics with interactive visualizations
+- **🏗️ Logic Layer Architecture** - Context-aware analysis engine bridging raw GCP data with intelligent remediation
+- **📋 Knowledge Base Integration** - Comprehensive coding standards, security policies, and compliance frameworks
+- **⚡ Real-time Streaming** - Token-by-token response streaming for immediate user feedback
+- **🗄️ Smart Caching** - SQLite-based data caching with normalized security data relationships
+
+**Advanced Features:**
+- MSA permission change detection with project-specific impact analysis
+- Custom role remediation planning with actionable gcloud commands
+- Cross-referenced security data analysis (IAM ↔ MSA ↔ Assets)
+- Production-ready Docker deployment with health monitoring
 
 **Quick Launch:**
 ```bash
-cd contributing/samples/security_agent && python run.py
+cd contributing/samples/security_agent
+python run_backend.py &     # Start FastAPI backend
+python run_frontend.py     # Start Streamlit frontend with streaming
 ```
 
-[📖 Documentation](contributing/samples/security_agent/README.md) • [🏗️ Architecture](contributing/samples/security_agent/MODULAR_ARCHITECTURE.md) • [🔧 API Reference](contributing/samples/security_agent/API_REFERENCE.md)
+[📖 Documentation](contributing/samples/security_agent/README.md) • [🏗️ Logic Layer Architecture](contributing/samples/security_agent/README.md#-logic-layer-architecture) • [🧪 Evaluation Framework](contributing/samples/security_agent/evaluation/)
 
 ### GCP API Explorer
 [![Status](https://img.shields.io/badge/Status-Stable-blue.svg)]()

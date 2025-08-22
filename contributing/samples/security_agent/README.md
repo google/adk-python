@@ -78,19 +78,74 @@ Access the application at:
 
 ## Architecture
 
+### 🏗️ Logic Layer Architecture
+
+The security agent uses a sophisticated context-aware analysis engine that provides intelligent MSA (Monthly Service Announcement) impact analysis and remediation strategies.
+
+#### **Data Flow Pipeline**
+```
+GCP APIs → SQLite Cache → Agent Tool → Context Analysis → Remediation Engine
+```
+
+#### **Core Components**
+
+**A. Data Ingestion Layer** (`/backend/services/`)
+- **`data_fetcher.py`** - Pulls from multiple GCP APIs:
+  - Cloud Asset Inventory API (IAM policies, roles)
+  - Security Command Center API (findings)
+  - BigQuery API (dataset metadata)
+  - Resource Manager API (projects, resources)
+
+**B. Storage & Caching Layer** (`/backend/cache/`)
+- **SQLite Database** (`gcp_data.db`) with normalized tables:
+  - `iam_policies` - Current IAM bindings and roles
+  - `msa_changes` - MSA announcements and permission changes
+  - `msa_impact_assessments` - Cross-reference analysis
+  - `assets` - All GCP resources
+
+**C. Query Abstraction Layer** (`/agents/gcp_security/sqlite_tool.py`)
+- Single tool that routes to specialized query functions
+- Supports 20+ query types including MSA analysis, IAM policies, security findings
+- Context-aware cross-referencing between data sources
+
+**D. Intelligence Layer** (`vertex_sqlite_agent.py`)
+- Embedded remediation knowledge for common security scenarios
+- MSA-specific guidance for permission changes and API updates
+- Custom role impact analysis with actionable gcloud commands
+
+#### **Context-Aware MSA Analysis Logic**
+
+When analyzing MSA changes, the system:
+
+1. **Identifies Permission Changes**: Detects splits like `bigquery.datasets.get` → metadata only
+2. **Maps to Current Roles**: Cross-references with project's actual IAM policies
+3. **Generates Remediation Plans**: Provides specific steps for custom role updates
+4. **Includes Testing Strategy**: Development environment validation steps
+5. **Provides Implementation Commands**: Ready-to-use gcloud CLI examples
+
+#### **Data Relationships**
+```
+msa_changes ←→ msa_impact_assessments ←→ iam_policies
+     ↓                    ↓                    ↓
+msa_emails         asset_inventory      iam_accounts
+```
+
+#### **Project Structure**
 ```
 security_agent/
 ├── agents/               # ADK agent definitions
-│   └── gcp_security/    # Vertex AI security agent
+│   └── gcp_security/    # Vertex AI security agent with embedded intelligence
 ├── backend/             # FastAPI backend server
 │   ├── api/            # API endpoints
 │   ├── middleware/     # Security middleware
-│   ├── services/       # Business logic
-│   └── cache/          # SQLite database
-├── frontend/           # Streamlit UI
+│   ├── services/       # Business logic & data fetching
+│   └── cache/          # SQLite database with normalized security data
+├── frontend/           # Streamlit UI with token streaming
 ├── evaluation/         # Testing and evaluation tools
 └── deploy/            # Deployment configurations
 ```
+
+The logic layer bridges **raw GCP data** with **intelligent analysis** to provide context-aware MSA impact analysis that shows exactly which custom roles in your project are affected and provides specific remediation strategies.
 
 ## Required GCP Permissions
 

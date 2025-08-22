@@ -91,6 +91,78 @@ adk web
    )
    ```
 
+3. Verify streaming event handling:
+   ```python
+   # Correct streaming pattern
+   for event in runner.run(...):
+       if hasattr(event, 'content') and event.content:
+           if hasattr(event.content, 'parts'):
+               for part in event.content.parts:
+                   if hasattr(part, 'text') and part.text:  # Check for None!
+                       yield part.text
+   ```
+
+---
+
+#### Issue: Knowledge base not accessible in chat
+**Error:** Agent responds "I do not have access to your organization's coding standards"
+
+**Solution:**
+1. Restart the Streamlit frontend to pick up updated agent configuration:
+   ```bash
+   pkill -f "python.*run_frontend.py"
+   python run_frontend.py
+   ```
+
+2. Verify knowledge base integration:
+   ```bash
+   sqlite3 backend/cache/gcp_data.db "SELECT COUNT(*) FROM coding_standards;"
+   ```
+
+3. Check agent instructions include knowledge base tools:
+   ```python
+   # Agent should have access to knowledge base queries
+   query_security_data("coding_standards")
+   query_security_data("enterprise_policies") 
+   ```
+
+---
+
+#### Issue: Context-aware MSA analysis not working
+**Error:** Agent doesn't cross-reference MSA changes with custom roles
+
+**Solution:**
+1. Verify MSA data exists:
+   ```bash
+   sqlite3 backend/cache/gcp_data.db "SELECT COUNT(*) FROM msa_changes;"
+   ```
+
+2. Check IAM policy data:
+   ```bash
+   sqlite3 backend/cache/gcp_data.db "SELECT COUNT(*) FROM iam_policies;"
+   ```
+
+3. Ensure agent has embedded MSA remediation knowledge:
+   ```python
+   # Check agent instructions include MSA analysis patterns
+   # Should mention BigQuery permission changes, custom role updates
+   ```
+
+---
+
+#### Issue: Database path errors when running from different directories
+**Error:** "Database not found" when agent directory changes
+
+**Solution:**
+Use absolute paths in .env:
+```bash
+# WRONG - relative path fails
+DATABASE_PATH=backend/cache/gcp_data.db
+
+# CORRECT - absolute path works from anywhere
+DATABASE_PATH=/Users/username/path/to/security_agent/backend/cache/gcp_data.db
+```
+
 ---
 
 ### GCP Authentication Issues
