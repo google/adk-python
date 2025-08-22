@@ -45,6 +45,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
 from starlette.types import Lifespan
+from typing_extensions import deprecated
 from typing_extensions import override
 from watchdog.observers import Observer
 
@@ -66,6 +67,7 @@ from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
+from ..evaluation.eval_set import EvalSet
 from ..evaluation.eval_set_results_manager import EvalSetResultsManager
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..events.event import Event
@@ -195,6 +197,10 @@ class RunEvalResult(common.BaseModel):
 
 class GetEventGraphResult(common.BaseModel):
   dot_src: str
+
+
+class CreateEvalSetRequest(common.BaseModel):
+  eval_set: EvalSet
 
 
 class AdkWebServer:
@@ -466,22 +472,44 @@ class AdkWebServer:
       )
 
     @app.post(
-        "/apps/{app_name}/eval_sets/{eval_set_id}",
+        "/apps/{app_name}/eval-sets",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def create_eval_set(
-        app_name: str,
-        eval_set_id: str,
-    ):
-      """Creates an eval set, given the id."""
+        app_name: str, create_eval_set_request: CreateEvalSetRequest
+    ) -> EvalSet:
       try:
-        self.eval_sets_manager.create_eval_set(app_name, eval_set_id)
+        return self.eval_sets_manager.create_eval_set(
+            app_name=app_name,
+            eval_set_id=create_eval_set_request.eval_set.eval_set_id,
+        )
       except ValueError as ve:
         raise HTTPException(
             status_code=400,
             detail=str(ve),
         ) from ve
+
+    @deprecated(
+        "Please use create_eval_set instead. This will be removed in future"
+        " releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def create_eval_set_legacy(
+        app_name: str,
+        eval_set_id: str,
+    ):
+      """Creates an eval set, given the id."""
+      await create_eval_set(
+          app_name=app_name,
+          create_eval_set_request=CreateEvalSetRequest(
+              eval_set=EvalSet(eval_set_id=eval_set_id, eval_cases=[])
+          ),
+      )
 
     @app.get(
         "/apps/{app_name}/eval_sets",

@@ -99,8 +99,12 @@ class GcsEvalSetsManager(EvalSetsManager):
     return self._load_eval_set_from_blob(eval_set_blob_name)
 
   @override
-  def create_eval_set(self, app_name: str, eval_set_id: str):
-    """Creates an empty EvalSet and saves it to GCS."""
+  def create_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
+    """Creates an empty EvalSet and saves it to GCS.
+
+    Raises:
+      ValueError: If eval set id is not valid or an eval set already exists.
+    """
     self._validate_id(id_name="Eval Set Id", id_value=eval_set_id)
     new_eval_set_blob_name = self._get_eval_set_blob_name(app_name, eval_set_id)
     if self.bucket.blob(new_eval_set_blob_name).exists():
@@ -115,6 +119,7 @@ class GcsEvalSetsManager(EvalSetsManager):
         creation_timestamp=time.time(),
     )
     self._write_eval_set_to_blob(new_eval_set_blob_name, new_eval_set)
+    return new_eval_set
 
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
