@@ -48,6 +48,17 @@ class State:
     """Whether the state dict contains the given key."""
     return key in self._value or key in self._delta
 
+  def __delitem__(self, key: str):
+    """Deletes the value of the state dict for the given key."""
+    # Check if key exists in either dictionary
+    if key not in self._value and key not in self._delta:
+      raise KeyError(key)
+    # Remove from both value and delta dictionaries if present
+    if key in self._value:
+      del self._value[key]
+    if key in self._delta:
+      del self._delta[key]
+
   def setdefault(self, key: str, default: Any = None) -> Any:
     """Gets the value of a key, or sets it to a default if the key doesn't exist."""
     if key in self:
