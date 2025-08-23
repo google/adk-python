@@ -129,6 +129,7 @@ def to_cloud_run(
     region: Optional[str],
     service_name: str,
     app_name: str,
+    service_account: Optional[str] = None,
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
@@ -163,6 +164,7 @@ def to_cloud_run(
     region: Google Cloud region.
     service_name: The service name in Cloud Run.
     app_name: The name of the app, by default, it's basename of `agent_folder`.
+    service_account: The service account in Cloud Run.
     temp_folder: The temp folder for the generated Cloud Run source files.
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
@@ -233,6 +235,7 @@ def to_cloud_run(
     # Deploy to Cloud Run
     click.echo('Deploying to Cloud Run...')
     region_options = ['--region', region] if region else []
+    sa_options = ['--service-account', service_account] if service_account else []
     project = _resolve_project(project)
     subprocess.run(
         [
@@ -245,6 +248,7 @@ def to_cloud_run(
             '--project',
             project,
             *region_options,
+            *sa_options,
             '--port',
             str(port),
             '--verbosity',
