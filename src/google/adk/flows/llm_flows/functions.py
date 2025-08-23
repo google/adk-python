@@ -39,6 +39,7 @@ from ...telemetry import trace_merged_tool_calls
 from ...telemetry import trace_tool_call
 from ...telemetry import tracer
 from ...tools.base_tool import BaseTool
+from ...tools.progressive_function_tool import ProgressiveFunctionTool
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 
@@ -191,6 +192,79 @@ async def handle_function_calls_async(
           function_response_event=merged_event,
       )
   return merged_event
+
+
+async def iter_progressive_function_calls_async(
+    invocation_context: InvocationContext,
+    function_call_event: Event,
+    tools_dict: dict[str, BaseTool],
+) -> AsyncGenerator[Event, None]:
+  """Streams progress for ProgressiveFunctionTool, then yields final result.
+
+  This is async-run only and independent of LiveRequestQueue.
+  For each function call that maps to a ProgressiveFunctionTool:
+    - yield partial Events for each progress update
+    - then run the tool's run_async for the final result and yield a final Event
+  Non-progressive tools are ignored by this iterator.
+  """
+  function_calls = function_call_event.get_function_calls()
+  if not function_calls:
+    return
+
+  for function_call in function_calls:
+    name = function_call.name
+    if name not in tools_dict:
+      continue
+    tool = tools_dict[name]
+    if not isinstance(tool, ProgressiveFunctionTool):
+      continue
+
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id=function_call.id,
+    )
+    function_args = (
+        copy.deepcopy(function_call.args) if function_call.args else {}
+    )
+
+    # Progress stream
+    try:
+      async with Aclosing(
+          tool.progress_stream(args=function_args, tool_context=tool_context)
+      ) as agen:
+        async for progress in agen:
+          partial_event = __build_response_event(
+              tool, progress, tool_context, invocation_context
+          )
+          partial_event.partial = True
+          yield partial_event
+    except Exception as tool_error:
+      # Let on_tool_error callbacks decide if they want to convert error to result
+      error_response = (
+          await invocation_context.plugin_manager.run_on_tool_error_callback(
+              tool=tool,
+              tool_args=function_args,
+              tool_context=tool_context,
+              error=tool_error,
+          )
+      )
+      if error_response is None:
+        raise
+      # Treat handled error as final function response
+      final_event = __build_response_event(
+          tool, error_response, tool_context, invocation_context
+      )
+      yield final_event
+      continue
+
+    # Final result for the model
+    final_result = await __call_tool_async(
+        tool, args=function_args, tool_context=tool_context
+    )
+    final_event = __build_response_event(
+        tool, final_result, tool_context, invocation_context
+    )
+    yield final_event
 
 
 async def _execute_single_function_call_async(
