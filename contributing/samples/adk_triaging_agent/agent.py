@@ -31,6 +31,7 @@ LABEL_TO_OWNER = {
     "documentation": "polong-lin",
     "services": "DeanChensj",
     "question": "",
+    "mcp": "seanzhou1023",
     "tools": "seanzhou1023",
     "eval": "ankursharmas",
     "live": "hangfei",
@@ -182,6 +183,7 @@ root_agent = Agent(
       - If it's about tracing, label it with "tracing".
       - If it's agent orchestration, agent definition, label it with "core".
       - If it's about agent engine, label it with "agent engine".
+      - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with "mcp".
       - If you can't find a appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
 
       Call the `add_label_and_owner_to_issue` tool to label the issue, which will also assign the issue to the owner of the label.

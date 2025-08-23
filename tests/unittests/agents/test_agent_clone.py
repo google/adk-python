@@ -14,6 +14,10 @@
 
 """Testings for the clone functionality of agents."""
 
+from typing import Any
+from typing import cast
+from typing import Iterable
+
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
@@ -372,6 +376,189 @@ def test_clone_with_sub_agents_update():
   assert len(original.sub_agents) == 2
   assert original.sub_agents[0].name == "original_sub1"
   assert original.sub_agents[1].name == "original_sub2"
+
+
+def _check_lists_contain_same_contents(*lists: Iterable[list[Any]]) -> None:
+  """Assert that all provided lists contain the same elements."""
+  if lists:
+    first_list = lists[0]
+    assert all(len(lst) == len(first_list) for lst in lists)
+    for idx, elem in enumerate(first_list):
+      assert all(lst[idx] is elem for lst in lists)
+
+
+def test_clone_shallow_copies_lists():
+  """Test that cloning shallow copies fields stored as lists."""
+  # Define the list fields
+  before_agent_callback = [lambda *args, **kwargs: None]
+  after_agent_callback = [lambda *args, **kwargs: None]
+  before_model_callback = [lambda *args, **kwargs: None]
+  after_model_callback = [lambda *args, **kwargs: None]
+  before_tool_callback = [lambda *args, **kwargs: None]
+  after_tool_callback = [lambda *args, **kwargs: None]
+  tools = [lambda *args, **kwargs: None]
+
+  # Create the original agent with list fields
+  original = LlmAgent(
+      name="original_agent",
+      description="Original agent",
+      before_agent_callback=before_agent_callback,
+      after_agent_callback=after_agent_callback,
+      before_model_callback=before_model_callback,
+      after_model_callback=after_model_callback,
+      before_tool_callback=before_tool_callback,
+      after_tool_callback=after_tool_callback,
+      tools=tools,
+  )
+
+  # Clone the agent
+  cloned = original.clone()
+
+  # Verify the lists are copied
+  assert original.before_agent_callback is not cloned.before_agent_callback
+  assert original.after_agent_callback is not cloned.after_agent_callback
+  assert original.before_model_callback is not cloned.before_model_callback
+  assert original.after_model_callback is not cloned.after_model_callback
+  assert original.before_tool_callback is not cloned.before_tool_callback
+  assert original.after_tool_callback is not cloned.after_tool_callback
+  assert original.tools is not cloned.tools
+
+  # Verify the list copies are shallow
+  _check_lists_contain_same_contents(
+      before_agent_callback,
+      original.before_agent_callback,
+      cloned.before_agent_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_agent_callback,
+      original.after_agent_callback,
+      cloned.after_agent_callback,
+  )
+  _check_lists_contain_same_contents(
+      before_model_callback,
+      original.before_model_callback,
+      cloned.before_model_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_model_callback,
+      original.after_model_callback,
+      cloned.after_model_callback,
+  )
+  _check_lists_contain_same_contents(
+      before_tool_callback,
+      original.before_tool_callback,
+      cloned.before_tool_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_tool_callback,
+      original.after_tool_callback,
+      cloned.after_tool_callback,
+  )
+  _check_lists_contain_same_contents(tools, original.tools, cloned.tools)
+
+
+def test_clone_shallow_copies_lists_with_sub_agents():
+  """Test that cloning recursively shallow copies fields stored as lists."""
+  # Define the list fields for the sub-agent
+  before_agent_callback = [lambda *args, **kwargs: None]
+  after_agent_callback = [lambda *args, **kwargs: None]
+  before_model_callback = [lambda *args, **kwargs: None]
+  after_model_callback = [lambda *args, **kwargs: None]
+  before_tool_callback = [lambda *args, **kwargs: None]
+  after_tool_callback = [lambda *args, **kwargs: None]
+  tools = [lambda *args, **kwargs: None]
+
+  # Create the original sub-agent with list fields and the top-level agent
+  sub_agents = [
+      LlmAgent(
+          name="sub_agent",
+          description="Sub agent",
+          before_agent_callback=before_agent_callback,
+          after_agent_callback=after_agent_callback,
+          before_model_callback=before_model_callback,
+          after_model_callback=after_model_callback,
+          before_tool_callback=before_tool_callback,
+          after_tool_callback=after_tool_callback,
+          tools=tools,
+      )
+  ]
+  original = LlmAgent(
+      name="original_agent",
+      description="Original agent",
+      sub_agents=sub_agents,
+  )
+
+  # Clone the top-level agent
+  cloned = original.clone()
+
+  # Verify the sub_agents list is copied for the top-level agent
+  assert original.sub_agents is not cloned.sub_agents
+
+  # Retrieve the sub-agent for the original and cloned top-level agent
+  original_sub_agent = cast(LlmAgent, original.sub_agents[0])
+  cloned_sub_agent = cast(LlmAgent, cloned.sub_agents[0])
+
+  # Verify the lists are copied for the sub-agent
+  assert (
+      original_sub_agent.before_agent_callback
+      is not cloned_sub_agent.before_agent_callback
+  )
+  assert (
+      original_sub_agent.after_agent_callback
+      is not cloned_sub_agent.after_agent_callback
+  )
+  assert (
+      original_sub_agent.before_model_callback
+      is not cloned_sub_agent.before_model_callback
+  )
+  assert (
+      original_sub_agent.after_model_callback
+      is not cloned_sub_agent.after_model_callback
+  )
+  assert (
+      original_sub_agent.before_tool_callback
+      is not cloned_sub_agent.before_tool_callback
+  )
+  assert (
+      original_sub_agent.after_tool_callback
+      is not cloned_sub_agent.after_tool_callback
+  )
+  assert original_sub_agent.tools is not cloned_sub_agent.tools
+
+  # Verify the list copies are shallow for the sub-agent
+  _check_lists_contain_same_contents(
+      before_agent_callback,
+      original_sub_agent.before_agent_callback,
+      cloned_sub_agent.before_agent_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_agent_callback,
+      original_sub_agent.after_agent_callback,
+      cloned_sub_agent.after_agent_callback,
+  )
+  _check_lists_contain_same_contents(
+      before_model_callback,
+      original_sub_agent.before_model_callback,
+      cloned_sub_agent.before_model_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_model_callback,
+      original_sub_agent.after_model_callback,
+      cloned_sub_agent.after_model_callback,
+  )
+  _check_lists_contain_same_contents(
+      before_tool_callback,
+      original_sub_agent.before_tool_callback,
+      cloned_sub_agent.before_tool_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_tool_callback,
+      original_sub_agent.after_tool_callback,
+      cloned_sub_agent.after_tool_callback,
+  )
+  _check_lists_contain_same_contents(
+      tools, original_sub_agent.tools, cloned_sub_agent.tools
+  )
 
 
 if __name__ == "__main__":
