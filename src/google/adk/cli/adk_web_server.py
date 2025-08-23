@@ -203,6 +203,10 @@ class CreateEvalSetRequest(common.BaseModel):
   eval_set: EvalSet
 
 
+class ListEvalSetsResponse(common.BaseModel):
+  eval_set_ids: list[str]
+
+
 class AdkWebServer:
   """Helper class for setting up and running the ADK web server on FastAPI.
 
@@ -512,18 +516,38 @@ class AdkWebServer:
       )
 
     @app.get(
+        "/apps/{app_name}/eval-sets",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_sets(app_name: str) -> ListEvalSetsResponse:
+      """Lists all eval sets for the given app."""
+      eval_sets = []
+      try:
+        eval_sets = self.eval_sets_manager.list_eval_sets(app_name)
+      except NotFoundError as e:
+        logger.warning(e)
+
+      return ListEvalSetsResponse(eval_set_ids=eval_sets)
+
+    @deprecated(
+        "Please use list_eval_sets instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
         "/apps/{app_name}/eval_sets",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
-    async def list_eval_sets(app_name: str) -> list[str]:
-      """Lists all eval sets for the given app."""
-      try:
-        return self.eval_sets_manager.list_eval_sets(app_name)
-      except NotFoundError as e:
-        logger.warning(e)
-        return []
+    async def list_eval_sets_legacy(app_name: str) -> list[str]:
+      list_eval_sets_response = await list_eval_sets(app_name)
+      return list_eval_sets_response.eval_set_ids
 
+    @app.post(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/add-session",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
         response_model_exclude_none=True,
@@ -584,6 +608,11 @@ class AdkWebServer:
       return sorted([x.eval_id for x in eval_set_data.eval_cases])
 
     @app.get(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    @app.get(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
@@ -606,6 +635,11 @@ class AdkWebServer:
           ),
       )
 
+    @app.put(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
     @app.put(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
@@ -638,6 +672,10 @@ class AdkWebServer:
       except NotFoundError as nfe:
         raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
+    @app.delete(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        tags=[TAG_EVALUATION],
+    )
     @app.delete(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         tags=[TAG_EVALUATION],
