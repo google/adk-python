@@ -448,7 +448,8 @@ class OpenAILlmConnection(BaseLlmConnection):
                     total or ((prompt or 0) + (completion or 0))
                 ),
             )
-    except Exception:
+    except Exception as e:
+      logger.warning('Failed to parse usage metadata: %s', e, exc_info=True)
       usage_meta = None
     transcript_response: LlmResponse | None = None
 

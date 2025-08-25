@@ -130,8 +130,13 @@ class OpenAIRealtime(BaseLlm):
           overrides = vendor_raw
       if isinstance(overrides, dict):
         session_update['session'].update(overrides)
-    except Exception:
-      pass
+    except Exception as e:
+      logger.warning(
+          'Failed to apply vendor-specific session overrides from'
+          ' RunConfig: %s',
+          e,
+          exc_info=True,
+      )
     # Encourage function calling by default if not specified
     if 'tool_choice' not in session_update['session']:
       session_update['session']['tool_choice'] = 'auto'
@@ -169,8 +174,6 @@ class OpenAIRealtime(BaseLlm):
       )
     except Exception:
       pass
-    # import pdb  # noqa: E402
-    # pdb.set_trace()
     await ws.send(json_dumps(session_update))
 
     try:

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import AsyncGenerator
 from typing import Generator
 
@@ -26,6 +27,8 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -96,8 +99,13 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
         # Normalize Pydantic/GenAI types to plain JSON if available
         if hasattr(types, 'any_serialize'):
           payload = types.any_serialize(openai_session)
-      except Exception:
-        pass
+      except Exception as e:
+        logger.warning(
+            'Failed to any_serialize openai_realtime_session; passing raw'
+            ' payload. %s',
+            e,
+            exc_info=True,
+        )
       llm_request.config.labels['adk_openai_session_json'] = payload
 
     # TODO: handle tool append here, instead of in BaseTool.process_llm_request.

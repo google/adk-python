@@ -268,7 +268,13 @@ class OpenAILlmFlow(BaseLlmFlow):
           model = getattr(agent_to_run, 'canonical_model', None)
           if model and isinstance(model, OpenAIRealtime):
             use_realtime = True
-        except Exception:
+        except Exception as e:
+          logger.warning(
+              'Failed to determine if sub-agent uses realtime model; '
+              'falling back to run_live. Error: %s',
+              e,
+              exc_info=True,
+          )
           use_realtime = False
 
         if use_realtime and hasattr(agent_to_run, 'run_realtime'):
