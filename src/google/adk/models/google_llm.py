@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 from functools import cached_property
 import logging
 import os
@@ -115,7 +116,17 @@ class Gemini(BaseLlm):
         self._api_backend,
         stream,
     )
-    logger.debug(_build_request_log(llm_request))
+    now = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    with open(
+        f'/tmp/llm_request_{llm_request.config.labels["adk_agent_name"]}_{now}.json',
+        'w',
+    ) as f:
+      f.write(_build_request_log(llm_request))
+    print(
+        'LLM Request written to'
+        f' /tmp/llm_request_{llm_request.config.labels["adk_agent_name"]}_{now}.json'
+    )
+    # logger.info(_build_request_log(llm_request))
 
     # Always add tracking headers to custom headers given it will override
     # the headers set in the api client constructor to avoid tracking headers
