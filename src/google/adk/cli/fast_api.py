@@ -199,7 +199,7 @@ def get_fast_api_app(
   if plugins:
     for plugin_path in plugins:
       plugin_class = _load_plugin_class(plugin_path)
-      plugin_instances.append(plugin_class())
+      plugin_instances.append(plugin_class(name=plugin_class.__name__))
 
   adk_web_server = AdkWebServer(
       agent_loader=agent_loader,
