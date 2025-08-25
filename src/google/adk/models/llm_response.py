@@ -40,6 +40,8 @@ class LlmResponse(BaseModel):
     interrupted: Flag indicating that LLM was interrupted when generating the
       content. Usually it's due to user interruption during a bidi streaming.
     custom_metadata: The custom metadata of the LlmResponse.
+    input_transcription: Audio transcription of user input.
+    output_transcription: Audio transcription of model output.
   """
 
   model_config = ConfigDict(
@@ -96,6 +98,12 @@ class LlmResponse(BaseModel):
       types.LiveServerSessionResumptionUpdate
   ] = None
   """The session resumption update of the LlmResponse"""
+
+  input_transcription: Optional[types.Transcription] = None
+  """Audio transcription of user input."""
+
+  output_transcription: Optional[types.Transcription] = None
+  """Audio transcription of model output."""
 
   @staticmethod
   def create(

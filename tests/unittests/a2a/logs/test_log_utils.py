@@ -15,37 +15,35 @@
 """Tests for log_utils module."""
 
 import json
+import sys
 from unittest.mock import Mock
 from unittest.mock import patch
 
 import pytest
 
-# Import the actual A2A types that we need to mock
-try:
-  from a2a.types import DataPart as A2ADataPart
-  from a2a.types import Message as A2AMessage
-  from a2a.types import MessageSendConfiguration
-  from a2a.types import MessageSendParams
-  from a2a.types import Part as A2APart
-  from a2a.types import Role
-  from a2a.types import SendMessageRequest
-  from a2a.types import Task as A2ATask
-  from a2a.types import TaskState
-  from a2a.types import TaskStatus
-  from a2a.types import TextPart as A2ATextPart
+# Skip entire module if Python < 3.10
+if sys.version_info < (3, 10):
+  pytest.skip("A2A requires Python 3.10+", allow_module_level=True)
 
-  A2A_AVAILABLE = True
-except ImportError:
-  A2A_AVAILABLE = False
+# Normal imports after the skip
+from a2a.types import DataPart as A2ADataPart
+from a2a.types import Message as A2AMessage
+from a2a.types import MessageSendConfiguration
+from a2a.types import MessageSendParams
+from a2a.types import Part as A2APart
+from a2a.types import Role
+from a2a.types import SendMessageRequest
+from a2a.types import Task as A2ATask
+from a2a.types import TaskState
+from a2a.types import TaskStatus
+from a2a.types import TextPart as A2ATextPart
 
 
 class TestBuildMessagePartLog:
   """Test suite for build_message_part_log function."""
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_text_part_short_text(self):
     """Test TextPart with short text."""
-    # Import here to avoid import issues at module level
     from google.adk.a2a.logs.log_utils import build_message_part_log
 
     # Create real A2A objects
@@ -56,7 +54,6 @@ class TestBuildMessagePartLog:
 
     assert result == "TextPart: Hello, world!"
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_text_part_long_text(self):
     """Test TextPart with long text that gets truncated."""
     from google.adk.a2a.logs.log_utils import build_message_part_log
@@ -70,7 +67,6 @@ class TestBuildMessagePartLog:
     expected = f"TextPart: {'x' * 100}..."
     assert result == expected
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_data_part_simple_data(self):
     """Test DataPart with simple data."""
     from google.adk.a2a.logs.log_utils import build_message_part_log
@@ -84,7 +80,6 @@ class TestBuildMessagePartLog:
     expected = f"DataPart: {json.dumps(expected_data, indent=2)}"
     assert result == expected
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_data_part_large_values(self):
     """Test DataPart with large values that get summarized."""
     from google.adk.a2a.logs.log_utils import build_message_part_log
@@ -278,7 +273,6 @@ class TestBuildA2AResponseLog:
     assert "Not Found" in result
     assert "Error Data: None" in result
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_success_response_with_task(self):
     """Test success response logging with Task result."""
     # Use module-level imported types consistently
@@ -309,7 +303,6 @@ class TestBuildA2AResponseLog:
         or '"state": "working"' in result
     )
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_success_response_with_task_and_status_message(self):
     """Test success response with Task that has status message."""
     from google.adk.a2a.logs.log_utils import build_a2a_response_log
@@ -353,7 +346,6 @@ class TestBuildA2AResponseLog:
     )
     assert "Message Parts:" in result
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_success_response_with_message(self):
     """Test success response logging with Message result."""
     from google.adk.a2a.logs.log_utils import build_a2a_response_log

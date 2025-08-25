@@ -45,6 +45,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
 from starlette.types import Lifespan
+from typing_extensions import deprecated
 from typing_extensions import override
 from watchdog.observers import Observer
 
@@ -66,6 +67,7 @@ from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
+from ..evaluation.eval_set import EvalSet
 from ..evaluation.eval_set_results_manager import EvalSetResultsManager
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..events.event import Event
@@ -195,6 +197,14 @@ class RunEvalResult(common.BaseModel):
 
 class GetEventGraphResult(common.BaseModel):
   dot_src: str
+
+
+class CreateEvalSetRequest(common.BaseModel):
+  eval_set: EvalSet
+
+
+class ListEvalSetsResponse(common.BaseModel):
+  eval_set_ids: list[str]
 
 
 class AdkWebServer:
@@ -466,36 +476,78 @@ class AdkWebServer:
       )
 
     @app.post(
-        "/apps/{app_name}/eval_sets/{eval_set_id}",
+        "/apps/{app_name}/eval-sets",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def create_eval_set(
-        app_name: str,
-        eval_set_id: str,
-    ):
-      """Creates an eval set, given the id."""
+        app_name: str, create_eval_set_request: CreateEvalSetRequest
+    ) -> EvalSet:
       try:
-        self.eval_sets_manager.create_eval_set(app_name, eval_set_id)
+        return self.eval_sets_manager.create_eval_set(
+            app_name=app_name,
+            eval_set_id=create_eval_set_request.eval_set.eval_set_id,
+        )
       except ValueError as ve:
         raise HTTPException(
             status_code=400,
             detail=str(ve),
         ) from ve
 
+    @deprecated(
+        "Please use create_eval_set instead. This will be removed in future"
+        " releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def create_eval_set_legacy(
+        app_name: str,
+        eval_set_id: str,
+    ):
+      """Creates an eval set, given the id."""
+      await create_eval_set(
+          app_name=app_name,
+          create_eval_set_request=CreateEvalSetRequest(
+              eval_set=EvalSet(eval_set_id=eval_set_id, eval_cases=[])
+          ),
+      )
+
+    @app.get(
+        "/apps/{app_name}/eval-sets",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_sets(app_name: str) -> ListEvalSetsResponse:
+      """Lists all eval sets for the given app."""
+      eval_sets = []
+      try:
+        eval_sets = self.eval_sets_manager.list_eval_sets(app_name)
+      except NotFoundError as e:
+        logger.warning(e)
+
+      return ListEvalSetsResponse(eval_set_ids=eval_sets)
+
+    @deprecated(
+        "Please use list_eval_sets instead. This will be removed in future"
+        " releases."
+    )
     @app.get(
         "/apps/{app_name}/eval_sets",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
-    async def list_eval_sets(app_name: str) -> list[str]:
-      """Lists all eval sets for the given app."""
-      try:
-        return self.eval_sets_manager.list_eval_sets(app_name)
-      except NotFoundError as e:
-        logger.warning(e)
-        return []
+    async def list_eval_sets_legacy(app_name: str) -> list[str]:
+      list_eval_sets_response = await list_eval_sets(app_name)
+      return list_eval_sets_response.eval_set_ids
 
+    @app.post(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/add-session",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
         response_model_exclude_none=True,
@@ -556,6 +608,11 @@ class AdkWebServer:
       return sorted([x.eval_id for x in eval_set_data.eval_cases])
 
     @app.get(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    @app.get(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
@@ -578,6 +635,11 @@ class AdkWebServer:
           ),
       )
 
+    @app.put(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
     @app.put(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
@@ -610,6 +672,10 @@ class AdkWebServer:
       except NotFoundError as nfe:
         raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
+    @app.delete(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        tags=[TAG_EVALUATION],
+    )
     @app.delete(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         tags=[TAG_EVALUATION],
