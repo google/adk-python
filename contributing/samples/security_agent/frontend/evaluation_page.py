@@ -81,8 +81,9 @@ class EvaluationPageManager:
         
         st.divider()
         
-        # Test case management
-        self._display_test_cases()
+        # Test case management - only show if button was clicked
+        if st.session_state.get('show_test_cases', False):
+            self._display_test_cases()
         
         st.divider()
         
@@ -334,8 +335,27 @@ class EvaluationPageManager:
         
         st.subheader("🧪 Available Test Cases")
         
+        # First show the predefined quick test cases
+        st.write("### Quick Test Cases (Built-in)")
+        quick_cases = streamlit_evaluator.get_predefined_test_cases()
+        
+        with st.expander(f"📄 Quick Security Tests ({len(quick_cases)} test cases)"):
+            st.write("**Description:** Quick evaluation tests for security agent capabilities")
+            st.write(f"**Test Cases:** {len(quick_cases)}")
+            
+            for i, case in enumerate(quick_cases[:5]):  # Show first 5
+                test_id = case.get("test_id", f"Test {i+1}")
+                query = case.get("query", "No query")
+                st.write(f"• **{test_id}:** {query[:100]}...")
+            
+            if len(quick_cases) > 5:
+                st.write(f"... and {len(quick_cases) - 5} more test cases")
+        
+        # Then check for additional datasets
+        st.write("### Additional Test Datasets")
+        
         if not self.datasets_dir.exists():
-            st.warning("Evaluation datasets directory not found!")
+            st.info("No additional evaluation datasets found. Using built-in test cases.")
             return
         
         # List available evaluation datasets

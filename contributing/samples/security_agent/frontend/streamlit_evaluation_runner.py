@@ -33,13 +33,25 @@ class StreamlitEvaluationRunner:
         """Run evaluation synchronously for Streamlit"""
         
         try:
-            # Import the evaluation components
-            from vertex_sqlite_agent import root_agent
+            # Import the evaluation components with proper path handling
+            import os
+            import sys
+            agent_dir = project_root / "agents" / "gcp_security"
+            
+            # Save current directory and change to agent directory for imports
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(agent_dir)
+                sys.path.insert(0, str(agent_dir))
+                from vertex_sqlite_agent import root_agent
+            finally:
+                os.chdir(original_cwd)
+            
             from google.adk import Runner
             from google.adk.sessions import InMemorySessionService
             from google.genai import types
             
-            # Create session service and runner
+            # Create session service and runner with timeout
             session_service = InMemorySessionService()
             runner = Runner(
                 app_name="streamlit_eval",
@@ -66,22 +78,43 @@ class StreamlitEvaluationRunner:
                         parts=[types.Part(text=test_case["query"])]
                     )
                     
-                    # Run agent and collect response
+                    # Run agent and collect response with timeout handling
                     response_parts = []
                     tools_used = []
+                    event_count = 0
+                    max_events = 100  # Prevent infinite loops
+                    start_time = time.time()
+                    timeout_seconds = 30  # 30 second timeout per test
                     
-                    for event in runner.run(
-                        user_id="streamlit_user",
-                        session_id=session_id,
-                        new_message=message
-                    ):
-                        if hasattr(event, 'content') and event.content:
-                            if hasattr(event.content, 'parts'):
-                                for part in event.content.parts:
-                                    if hasattr(part, 'text') and part.text:
-                                        response_parts.append(part.text)
-                                    elif hasattr(part, 'function_call') and part.function_call:
-                                        tools_used.append(part.function_call.name)
+                    try:
+                        for event in runner.run(
+                            user_id="streamlit_user",
+                            session_id=session_id,
+                            new_message=message
+                        ):
+                            # Check for timeout
+                            if time.time() - start_time > timeout_seconds:
+                                logger.warning(f"Test {test_case['test_id']} timed out after {timeout_seconds} seconds")
+                                response_parts.append("[TIMEOUT - Test execution exceeded time limit]")
+                                break
+                            
+                            # Prevent infinite loops
+                            event_count += 1
+                            if event_count > max_events:
+                                logger.warning(f"Test {test_case['test_id']} exceeded max event count")
+                                response_parts.append("[MAX_EVENTS - Too many events generated]")
+                                break
+                            
+                            if hasattr(event, 'content') and event.content:
+                                if hasattr(event.content, 'parts'):
+                                    for part in event.content.parts:
+                                        if hasattr(part, 'text') and part.text:
+                                            response_parts.append(part.text)
+                                        elif hasattr(part, 'function_call') and part.function_call:
+                                            tools_used.append(part.function_call.name)
+                    except Exception as event_error:
+                        logger.error(f"Error processing events for test {test_case['test_id']}: {event_error}")
+                        response_parts.append(f"[ERROR - {str(event_error)}]")
                     
                     full_response = " ".join(response_parts)
                     

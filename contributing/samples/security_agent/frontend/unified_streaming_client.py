@@ -74,12 +74,12 @@ finally:
 # Page config
 st.set_page_config(
     page_title="GCP Security Executive Dashboard",
-    page_icon="🔐",
+    page_icon=":lock:",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"  # Changed to collapsed by default
 )
 
-# Custom CSS for better display
+# Custom CSS for better display, accessibility, and mobile responsiveness
 st.markdown("""
 <style>
     .stChatMessage {
@@ -95,8 +95,164 @@ st.markdown("""
         padding: 20px;
         color: white;
     }
+    
+    /* Loading indicator styles */
+    .loading-indicator {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid rgba(255,255,255,0.3);
+        border-radius: 50%;
+        border-top-color: #667eea;
+        animation: spin 1s ease-in-out infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    
+    /* Auto-refresh indicator */
+    .refresh-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        color: #28a745;
+        font-size: 0.8rem;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    
+    /* Better button responsiveness */
+    @media (max-width: 768px) {
+        .stButton button {
+            font-size: 0.8rem !important;
+            padding: 0.5rem 0.75rem !important;
+        }
+        .element-container .stButton {
+            margin-bottom: 0.5rem;
+        }
+    }
+    
+    /* Error boundary styling */
+    .error-boundary {
+        background-color: #fee;
+        border: 1px solid #fcc;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    
+    /* Accessibility improvements */
+    .stButton button:focus {
+        outline: 2px solid #667eea !important;
+        outline-offset: 2px !important;
+    }
+    
+    /* Better loading states */
+    .stSpinner {
+        border-color: #667eea !important;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+
+def error_boundary(func):
+    """
+    Error boundary decorator for better error handling.
+    Wraps functions to catch and display user-friendly error messages.
+    """
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except ConnectionError as e:
+            st.markdown(
+                '<div class="error-boundary" role="alert">'
+                '<h4>Connection Error</h4>'
+                '<p>Unable to connect to the backend service. Please check if the backend is running.</p>'
+                f'<details><summary>Technical details</summary><pre>{str(e)}</pre></details>'
+                '</div>',
+                unsafe_allow_html=True
+            )
+            logger.error(f"Connection error in {func.__name__}: {e}")
+        except FileNotFoundError as e:
+            st.markdown(
+                '<div class="error-boundary" role="alert">'
+                '<h4>File Not Found</h4>'
+                '<p>Required file or database not found. Please check the configuration.</p>'
+                f'<details><summary>Technical details</summary><pre>{str(e)}</pre></details>'
+                '</div>',
+                unsafe_allow_html=True
+            )
+            logger.error(f"File not found error in {func.__name__}: {e}")
+        except Exception as e:
+            st.markdown(
+                '<div class="error-boundary" role="alert">'
+                '<h4>Unexpected Error</h4>'
+                '<p>Something went wrong. The error has been logged and will be investigated.</p>'
+                f'<details><summary>Technical details</summary><pre>{str(e)}</pre></details>'
+                '</div>',
+                unsafe_allow_html=True
+            )
+            logger.error(f"Unexpected error in {func.__name__}: {e}")
+            
+    return wrapper
+
+
+def show_loading_state(message: str = "Loading..."):
+    """Display a loading state with custom message."""
+    st.markdown(
+        f'<div class="refresh-indicator" aria-live="polite">'
+        f'<div class="loading-indicator"></div> {message}'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+
+def export_security_summary():
+    """Generate and export a security summary report."""
+    try:
+        dashboard = SecurityDashboard()
+        metrics = dashboard.get_summary_metrics()
+        
+        # Generate summary text
+        report_content = f"""# GCP Security Executive Summary
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Security Posture Overview
+
+### Key Metrics
+- **Total Assets**: {metrics.get('total_assets', 0)}
+- **Critical/High Findings**: {metrics.get('critical_high_findings', 0)}
+- **Public Storage Buckets**: {metrics.get('public_buckets', 0)}
+- **Risky Firewall Rules**: {metrics.get('risky_firewall', 0)}
+
+### Security Findings by Severity
+"""
+        
+        findings_by_severity = metrics.get('findings_by_severity', {})
+        for severity, count in findings_by_severity.items():
+            report_content += f"- **{severity}**: {count}\n"
+        
+        report_content += f"""
+### Asset Distribution
+"""
+        assets_by_type = metrics.get('assets_by_type', {})
+        for asset_type, count in list(assets_by_type.items())[:5]:
+            report_content += f"- **{asset_type}**: {count}\n"
+        
+        report_content += f"""
+### Recommendations
+1. **Immediate**: Address {metrics.get('critical_high_findings', 0)} critical/high severity findings
+2. **Storage**: Secure {metrics.get('public_buckets', 0)} public storage buckets
+3. **Network**: Review {metrics.get('risky_firewall', 0)} potentially risky firewall rules
+4. **Compliance**: Regular security scans recommended
+
+---
+*Report generated by GCP Security Executive Dashboard*
+"""
+        
+        return report_content
+        
+    except Exception as e:
+        logger.error(f"Error generating security summary: {e}")
+        return f"Error generating report: {str(e)}"
 
 
 def init_session():
@@ -135,7 +291,7 @@ def display_executive_dashboard():
     database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
     
     if not os.path.exists(database_path):
-        st.warning("⚠️ Database not found. Please run `python populate_sqlite.py` to fetch GCP data.")
+        st.warning("Database not found. Please run `python populate_sqlite.py` to fetch GCP data.")
         return
     
     # Initialize dashboard
@@ -143,11 +299,11 @@ def display_executive_dashboard():
     metrics = dashboard.get_overview_metrics()
     
     # Main title
-    st.title("🔐 GCP Security Executive Dashboard")
+    st.title("GCP Security Executive Dashboard")
     st.caption("Real-time Security Analytics, MSA Impact Analysis & Intelligent Chat Assistant")
     
     # Executive KPIs - More compact and consolidated
-    st.header("📊 Security Posture at a Glance")
+    st.header("Security Posture at a Glance")
     
     col1, col2, col3, col4, col5 = st.columns(5)
     
@@ -169,14 +325,14 @@ def display_executive_dashboard():
             st.metric(
                 "Critical/High", 
                 total_critical_high,
-                delta=f"⚠️ Needs attention",
+                delta=f"Needs attention",
                 delta_color="inverse"
             )
         else:
             st.metric(
                 "Critical/High", 
                 "0",
-                delta="✅ Secure",
+                delta="Secure",
                 delta_color="normal"
             )
     
@@ -221,11 +377,11 @@ def display_executive_dashboard():
         overall_score = sum(scores) / len(scores) if scores else 0
         
         if overall_score >= 80:
-            status = "🟢 Healthy"
+            status = "Healthy"
         elif overall_score >= 60:
-            status = "🟡 Review"
+            status = "Review"
         else:
-            status = "🔴 At Risk"
+            status = "At Risk"
             
         st.metric(
             "Overall Health", 
@@ -234,7 +390,7 @@ def display_executive_dashboard():
         )
     
     # Key visualizations in a single row
-    st.subheader("🔍 Security Analytics")
+    st.subheader("Security Analytics")
     
     col1, col2 = st.columns(2)
     
@@ -255,7 +411,7 @@ def display_executive_dashboard():
             )
             st.plotly_chart(fig_severity, use_container_width=True)
         else:
-            st.success("✅ No security findings detected - Environment is secure!")
+            st.success("No security findings detected - Environment is secure!")
     
     with col2:
         # Asset distribution - top 5 only
@@ -276,36 +432,91 @@ def display_executive_dashboard():
             st.info("No asset data available")
     
     # Quick action buttons
-    st.subheader("⚡ Quick Security Actions")
+    st.subheader("Quick Security Actions")
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        if st.button("🔍 Full Security Scan", use_container_width=True, type="primary"):
+        if st.button("Full Security Scan", use_container_width=True, type="primary", 
+                    help="Run comprehensive security analysis"):
             st.session_state['quick_query'] = "Run a comprehensive security scan of all GCP resources"
     
     with col2:
-        if st.button("🚨 Show Critical Issues", use_container_width=True):
+        if st.button("Show Critical Issues", use_container_width=True, 
+                    help="Display critical and high severity findings"):
             st.session_state['quick_query'] = "Show me all critical and high severity security findings"
     
     with col3:
-        if st.button("🗄️ Storage Analysis", use_container_width=True):
+        if st.button("Storage Analysis", use_container_width=True,
+                    help="Analyze storage bucket security"):
             st.session_state['quick_query'] = "Analyze storage bucket security and show any public buckets"
     
     with col4:
-        if st.button("🌐 Network Review", use_container_width=True):
+        if st.button("Network Review", use_container_width=True,
+                    help="Review firewall rules and network security"):
             st.session_state['quick_query'] = "Review firewall rules and identify security risks"
+    
+    # Add export functionality
+    st.markdown("---")
+    col_export1, col_export2 = st.columns([1, 1])
+    
+    with col_export1:
+        if st.button("Export Security Summary", use_container_width=True, 
+                    help="Download security summary report"):
+            try:
+                report_content = export_security_summary()
+                st.download_button(
+                    label="Download Report (Markdown)",
+                    data=report_content,
+                    file_name=f"security_summary_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                    mime="text/markdown",
+                    help="Download as Markdown file"
+                )
+                st.success("Security summary generated successfully!")
+            except Exception as e:
+                st.error(f"Failed to generate report: {str(e)}")
+    
+    with col_export2:
+        # Add JSON export option
+        if st.button("Export Raw Data (JSON)", use_container_width=True,
+                    help="Download raw security metrics as JSON"):
+            try:
+                dashboard = SecurityDashboard()
+                metrics = dashboard.get_summary_metrics()
+                json_data = json.dumps(metrics, indent=2, default=str)
+                st.download_button(
+                    label="Download JSON Data",
+                    data=json_data,
+                    file_name=f"security_metrics_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                    mime="application/json",
+                    help="Download as JSON file for further analysis"
+                )
+                st.success("Raw data exported successfully!")
+            except Exception as e:
+                st.error(f"Failed to export data: {str(e)}")
 
 
 def stream_agent_response(query: str):
     """
     Stream agent response token by token.
-    
-    This uses the sync runner.run() but processes events properly for streaming.
+    Enhanced with better error handling and validation.
     """
+    # Validate input
+    if not query or not query.strip():
+        yield "Please enter a question about your GCP security posture. "
+        yield "You can ask about security findings, storage buckets, IAM policies, or use the quick query buttons above."
+        return
+    
+    if len(query.strip()) < 3:
+        yield "Your query seems too short. Please provide more details about what you'd like to know."
+        return
+        
     runner = st.session_state.runner
     
     try:
+        # Show that we're processing the query
+        yield "Analyzing your security environment...\n"
+        
         # Create a message object for the query
         new_message = types.Content(
             role="user", 
@@ -314,6 +525,8 @@ def stream_agent_response(query: str):
         
         # Process events from runner
         full_response = ""
+        has_streamed = False
+        
         for event in runner.run(
             user_id=st.session_state.user_id,
             session_id=st.session_state.session_id,
@@ -324,6 +537,11 @@ def stream_agent_response(query: str):
                 if hasattr(event.content, 'parts'):
                     for part in event.content.parts:
                         if hasattr(part, 'text') and part.text:
+                            # Clear the "analyzing" message once we get real content
+                            if not has_streamed:
+                                yield "\r"  # Clear the analyzing message
+                                has_streamed = True
+                            
                             # Yield each part of text
                             text = part.text
                             full_response += text
@@ -338,6 +556,9 @@ def stream_agent_response(query: str):
             
             # Also check for streaming events
             elif hasattr(event, 'delta') and hasattr(event.delta, 'text'):
+                if not has_streamed:
+                    yield "\r"  # Clear the analyzing message
+                    has_streamed = True
                 yield event.delta.text
                 
             # Check for final response
@@ -348,35 +569,55 @@ def stream_agent_response(query: str):
                             if hasattr(part, 'text') and part.text:
                                 # If we haven't yielded anything yet, yield the final text
                                 if not full_response:
+                                    if not has_streamed:
+                                        yield "\r"  # Clear the analyzing message
+                                        has_streamed = True
                                     yield part.text
+        
+        # If no response was generated, provide helpful message
+        if not full_response and not has_streamed:
+            yield "\r"  # Clear the analyzing message
+            yield "I'm having trouble accessing the security data right now. "
+            yield "Please try refreshing the page or contact support if the issue persists."
                             
+    except ConnectionError as e:
+        logger.error(f"Connection error during streaming: {str(e)}")
+        yield "\r**Connection Error**: Unable to reach the security analysis service.\n\n"
+        yield "**What you can try:**\n"
+        yield "1. Check if the backend server is running\n"
+        yield "2. Refresh the page\n"
+        yield "3. Try again in a few moments\n"
     except Exception as e:
         logger.error(f"Streaming error: {str(e)}")
-        yield f"❌ Error: {str(e)}\n"
-        yield "Please check if the database is accessible and ADK is configured correctly."
+        yield f"\r**Unexpected Error**: Something went wrong while processing your query.\n\n"
+        yield f"**Error details**: {str(e)[:100]}...\n\n"
+        yield "**What you can try:**\n"
+        yield "1. Try rephrasing your question\n"
+        yield "2. Use one of the quick query buttons\n"
+        yield "3. Refresh the page if the issue persists\n"
 
 
 def display_msa_analyzer():
     """Display MSA (Monthly Service Announcement) analyzer interface."""
-    st.header("📧 MSA Impact Analyzer")
+    st.header("MSA Impact Analyzer")
     st.caption("Analyze Google Cloud service announcements for impact on your environment")
     
     # Create two columns for the interface
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.subheader("📝 MSA Document Input")
+        st.subheader("MSA Document Input")
         
         # Document upload section
         upload_option = st.radio(
             "Choose input method:",
-            ["📄 Upload Document", "✏️ Paste Text"],
+            ["Upload Document", "Paste Text"],
             horizontal=True
         )
         
         msa_content = ""
         
-        if upload_option == "📄 Upload Document":
+        if upload_option == "Upload Document":
             uploaded_file = st.file_uploader(
                 "Upload MSA document:",
                 type=['pdf', 'docx', 'txt'],
@@ -384,7 +625,7 @@ def display_msa_analyzer():
             )
             
             if uploaded_file is not None:
-                with st.spinner("📖 Extracting text from document..."):
+                with st.spinner("Extracting text from document..."):
                     try:
                         # Extract text based on file type
                         if uploaded_file.type == "application/pdf":
@@ -413,8 +654,8 @@ def display_msa_analyzer():
                         
                         # Display preview of extracted text
                         if msa_content:
-                            st.success(f"✅ Extracted {len(msa_content)} characters from {uploaded_file.name}")
-                            with st.expander("👀 Preview extracted text", expanded=False):
+                            st.success(f"Extracted {len(msa_content)} characters from {uploaded_file.name}")
+                            with st.expander("Preview extracted text", expanded=False):
                                 st.text_area(
                                     "Extracted content:",
                                     value=msa_content[:2000] + "..." if len(msa_content) > 2000 else msa_content,
@@ -452,10 +693,10 @@ This email contains important updates about changes to Google Cloud Platform ser
         )
         
         # Analyze button
-        analyze_clicked = st.button("🔍 Analyze MSA Impact", type="primary", use_container_width=True)
+        analyze_clicked = st.button("Analyze MSA Impact", type="primary", use_container_width=True)
         
         # Sample MSA button
-        if st.button("📋 Load Sample MSA", use_container_width=True):
+        if st.button("Load Sample MSA", use_container_width=True):
             # Call backend to get sample MSA
             try:
                 backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
@@ -468,11 +709,11 @@ This email contains important updates about changes to Google Cloud Platform ser
                 st.error(f"Failed to load sample: {e}")
     
     with col2:
-        st.subheader("📊 Impact Analysis Results")
+        st.subheader("Impact Analysis Results")
         
         # Analysis results container
         if analyze_clicked and msa_content:
-            with st.spinner("🤖 Analyzing MSA with Gemini..."):
+            with st.spinner("Analyzing MSA with Gemini..."):
                 try:
                     # Call backend MSA analyzer
                     backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
@@ -492,7 +733,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                         results = response.json()
                         
                         # Display summary metrics
-                        st.success("✅ Analysis Complete!")
+                        st.success("Analysis Complete!")
                         
                         summary = results.get("summary", {})
                         
@@ -508,7 +749,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                         # Show extracted structured data summary
                         if results.get("extracted_changes"):
                             st.divider()
-                            st.subheader("📊 Structured Data Extracted")
+                            st.subheader("Structured Data Extracted")
                             
                             # Create a summary table of what was parsed
                             import pandas as pd
@@ -546,7 +787,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                                 )
                                 
                                 # Show what types of data were successfully extracted
-                                st.success("✅ **Successfully Extracted:**")
+                                st.success("**Successfully Extracted:**")
                                 cols = st.columns(4)
                                 
                                 # Count different types of extracted data
@@ -556,13 +797,13 @@ This email contains important updates about changes to Google Cloud Platform ser
                                 actions_count = sum(1 for c in results["extracted_changes"] if c.get("required_action"))
                                 
                                 with cols[0]:
-                                    st.info(f"🔐 {permission_count} Permission Changes")
+                                    st.info(f"{permission_count} Permission Changes")
                                 with cols[1]:
-                                    st.info(f"🔧 {api_count} API Changes")
+                                    st.info(f"{api_count} API Changes")
                                 with cols[2]:
-                                    st.info(f"📅 {dates_count} Dates Extracted")
+                                    st.info(f"{dates_count} Dates Extracted")
                                 with cols[3]:
-                                    st.info(f"⚡ {actions_count} Actions Required")
+                                    st.info(f"{actions_count} Actions Required")
                         
                         # Create impact visualization
                         if results.get("extracted_changes"):
@@ -613,7 +854,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                         
                         # Extracted changes with structured display
                         st.divider()
-                        st.subheader("🔄 Extracted Changes")
+                        st.subheader("Extracted Changes")
                         
                         # Group changes by type for better organization
                         permission_changes = []
@@ -630,24 +871,24 @@ This email contains important updates about changes to Google Cloud Platform ser
                         
                         # Display Permission Changes
                         if permission_changes:
-                            st.markdown("### 🔐 Permission Changes")
+                            st.markdown("### Permission Changes")
                             for change in permission_changes:
                                 # Color code by impact level
                                 if change["impact_level"] == "critical":
-                                    icon = "🔴"
+                                    icon = "[HIGH]"
                                 elif change["impact_level"] == "high":
-                                    icon = "🟠"
+                                    icon = "[MEDIUM]"
                                 elif change["impact_level"] == "medium":
-                                    icon = "🟡"
+                                    icon = "[LOW]"
                                 else:
-                                    icon = "🟢"
+                                    icon = "[INFO]"
                                 
                                 with st.expander(f"{icon} {change['service']}: {change['change_type'].replace('_', ' ').title()}", expanded=True):
                                     # Highlight specific permissions with code formatting
                                     col1, col2 = st.columns(2)
                                     
                                     with col1:
-                                        st.markdown("**📝 Change Details:**")
+                                        st.markdown("**Change Details:**")
                                         # Extract and highlight permission names
                                         desc = change['description']
                                         # Find permission names (pattern: word.word.word)
@@ -658,7 +899,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                                         st.markdown(desc)
                                     
                                     with col2:
-                                        st.markdown("**⚡ Required Action:**")
+                                        st.markdown("**Required Action:**")
                                         if change.get('required_action'):
                                             action = change['required_action']
                                             # Highlight permission names in actions too
@@ -669,7 +910,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                                     
                                     # Show affected resources as tags
                                     if change.get('affected_resources'):
-                                        st.markdown("**🎯 Affected Resources:**")
+                                        st.markdown("**Affected Resources:**")
                                         cols = st.columns(len(change['affected_resources'][:4]))
                                         for i, resource in enumerate(change['affected_resources'][:4]):
                                             with cols[i]:
@@ -677,13 +918,13 @@ This email contains important updates about changes to Google Cloud Platform ser
                                     
                                     # Highlight the effective date
                                     if change.get('effective_date'):
-                                        st.warning(f"📅 **Effective Date: {change['effective_date']}**")
+                                        st.warning(f"**Effective Date: {change['effective_date']}**")
                         
                         # Display API Changes
                         if api_changes:
-                            st.markdown("### 🔧 API Changes")
+                            st.markdown("### API Changes")
                             for change in api_changes:
-                                icon = "🟡" if change["impact_level"] == "medium" else "🟠"
+                                icon = "[MEDIUM]" if change["impact_level"] == "medium" else "[HIGH]"
                                 
                                 with st.expander(f"{icon} {change['service']}: {change['change_type'].replace('_', ' ').title()}", expanded=False):
                                     st.markdown("**📝 API Update:**")
@@ -706,7 +947,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                         
                         # Display other changes
                         if other_changes:
-                            st.markdown("### 📋 Other Changes")
+                            st.markdown("### Other Changes")
                             for change in other_changes:
                                 with st.expander(f"{change['service']} - {change['change_type']}", expanded=False):
                                     st.write(change['description'])
@@ -755,7 +996,7 @@ This email contains important updates about changes to Google Cloud Platform ser
         
         elif 'msa_results' in st.session_state:
             # Show previous results if available
-            st.info("📊 Showing previous analysis results. Enter new MSA content and click Analyze to refresh.")
+            st.info("Showing previous analysis results. Enter new MSA content and click Analyze to refresh.")
             
             # Display the stored results
             results = st.session_state.msa_results
@@ -766,7 +1007,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                 import re
                 
                 # Display Analysis Summary
-                st.subheader("📊 Analysis Summary")
+                st.subheader("Analysis Summary")
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
@@ -811,7 +1052,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                 if permission_changes:
                     st.markdown("### 🔐 Permission Changes")
                     for change in permission_changes:
-                        icon = "🔴" if change["impact_level"] == "critical" else "🟠" if change["impact_level"] == "high" else "🟡"
+                        icon = "[CRITICAL]" if change["impact_level"] == "critical" else "[HIGH]" if change["impact_level"] == "high" else "[MEDIUM]"
                         
                         with st.expander(f"{icon} {change['service']}: {change['change_type'].replace('_', ' ').title()}", expanded=True):
                             st.markdown("**🔄 Permission Split:**")
@@ -847,7 +1088,7 @@ This email contains important updates about changes to Google Cloud Platform ser
                 if api_changes:
                     st.markdown("### 🔧 API Changes")
                     for change in api_changes:
-                        icon = "🟡" if change["impact_level"] == "medium" else "🟠"
+                        icon = "[MEDIUM]" if change["impact_level"] == "medium" else "[HIGH]"
                         
                         with st.expander(f"{icon} {change['service']}: {change['change_type'].replace('_', ' ').title()}", expanded=False):
                             st.markdown("**📝 API Update:**")
@@ -994,7 +1235,7 @@ def display_feedback_widgets(message: Dict[str, str], message_index: int):
         
         # Show detailed feedback form if requested
         if feedback_state["show_details"]:
-            with st.expander("📋 Detailed Feedback", expanded=True):
+            with st.expander("Detailed Feedback", expanded=True):
                 # Rating
                 rating = st.slider(
                     "Rate this response:",
@@ -1100,7 +1341,7 @@ def display_feedback_widgets(message: Dict[str, str], message_index: int):
 
 def display_chat_interface():
     """Display the streaming chat interface."""
-    st.header("💬 Security Intelligence Chat")
+    st.header("Security Intelligence Chat")
     
     # Sidebar with quick queries
     with st.sidebar:
@@ -1131,7 +1372,7 @@ def display_chat_interface():
         st.divider()
         
         # Session info
-        st.subheader("📊 Session Info")
+        st.subheader("Session Info")
         st.text(f"Session: {st.session_state.session_id[:8]}...")
         st.text(f"Messages: {len(st.session_state.messages)}")
         
@@ -1139,17 +1380,43 @@ def display_chat_interface():
         database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
         if os.path.exists(database_path):
             st.success("✅ Database connected")
-            # Get file modification time
+            # Get file modification time with auto-refresh indicator
             mod_time = datetime.fromtimestamp(os.path.getmtime(database_path))
             time_ago = datetime.now() - mod_time
-            if time_ago.seconds < 3600:
-                st.text(f"📅 Updated: {time_ago.seconds // 60} min ago")
+            minutes_ago = time_ago.seconds // 60
+            hours_ago = time_ago.seconds // 3600
+            
+            # Show refresh status with visual indicator
+            if minutes_ago < 30:
+                refresh_status = "[FRESH]"
+                refresh_color = "#28a745"
+            elif minutes_ago < 60:
+                refresh_status = "[RECENT]"  
+                refresh_color = "#ffc107"
             else:
-                st.text(f"📅 Updated: {time_ago.seconds // 3600} hours ago")
+                refresh_status = "[STALE]"
+                refresh_color = "#dc3545"
+            
+            if time_ago.seconds < 3600:
+                time_display = f"{minutes_ago} min ago"
+            else:
+                time_display = f"{hours_ago} hours ago"
+                
+            st.markdown(
+                f'<div class="refresh-indicator" style="color: {refresh_color};" role="status" aria-live="polite">'
+                f'📅 Updated: {time_display} <span style="margin-left: 8px;">{refresh_status}</span>'
+                '</div>',
+                unsafe_allow_html=True
+            )
+            
+            # Auto-refresh button with better UX
+            if st.button("🔄 Refresh Data", use_container_width=True, help="Refresh security metrics from GCP APIs"):
+                show_loading_state("Refreshing security data...")
+                st.rerun()
         else:
             st.error("❌ Database not found")
         
-        if st.button("🗑️ Clear Chat", use_container_width=True):
+        if st.button("Clear Chat", use_container_width=True):
             st.session_state.messages = []
             st.rerun()
     
@@ -1225,7 +1492,7 @@ def display_chat_interface():
 
 def display_service_evaluation():
     """Display the service evaluation interface for new GCP services."""
-    st.header("🔍 New GCP Service Evaluation")
+    st.header("New GCP Service Evaluation")
     st.markdown("""
     Evaluate new Google Cloud services for security risks, compliance requirements, 
     and integration readiness. This framework automatically analyzes services like 
@@ -1238,14 +1505,11 @@ def display_service_evaluation():
     with col1:
         st.subheader("🎯 Service Evaluation")
         
-        # Service selection
-        service_name = st.text_input(
-            "Service Name",
-            placeholder="e.g., vertex-ai-memory-store",
-            help="Enter the name of the GCP service to evaluate"
-        )
+        # Service selection - Use session state to manage the service name
+        if 'service_name_input' not in st.session_state:
+            st.session_state.service_name_input = ""
         
-        # Example services dropdown
+        # Example services dropdown (placed first so user can select preset)
         example_services = [
             "vertex-ai-memory-store",
             "cloud-run",
@@ -1257,12 +1521,26 @@ def display_service_evaluation():
         ]
         
         selected_example = st.selectbox(
-            "Or select an example service:",
-            [""] + example_services
+            "Select an example service:",
+            ["<Choose a service>"] + example_services,
+            key="service_example_selectbox"
         )
         
-        if selected_example:
-            service_name = selected_example
+        # Update text input if an example is selected (but not "<Choose a service>")
+        if selected_example and selected_example != "<Choose a service>":
+            st.session_state.service_name_input = selected_example
+        
+        # Service name input (can be manually edited or populated from dropdown)
+        service_name = st.text_input(
+            "Service Name",
+            value=st.session_state.service_name_input,
+            placeholder="e.g., vertex-ai-memory-store",
+            help="Enter the name of the GCP service to evaluate",
+            key="service_name_text_input"
+        )
+        
+        # Update session state with manual input
+        st.session_state.service_name_input = service_name
         
         # Project ID
         project_id = st.text_input(
@@ -1273,7 +1551,7 @@ def display_service_evaluation():
         
         # Evaluation button
         evaluate_clicked = st.button(
-            "🔍 Evaluate Service",
+            "Evaluate Service",
             type="primary",
             use_container_width=True,
             disabled=not service_name
@@ -1298,10 +1576,10 @@ def display_service_evaluation():
                 st.session_state['switch_to_chat'] = True
     
     with col2:
-        st.subheader("📊 Evaluation Results")
+        st.subheader("Evaluation Results")
         
         # Add a button to show all previous evaluations
-        if st.button("📋 Show All Previous Evaluations", use_container_width=True):
+        if st.button("Show All Previous Evaluations", use_container_width=True):
             with st.spinner("Loading previous evaluations..."):
                 try:
                     backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
@@ -1351,7 +1629,7 @@ def display_service_evaluation():
                         st.success(f"✅ Evaluation Complete for {service_name}")
                         
                         # Service profile
-                        st.subheader("📋 Service Profile")
+                        st.subheader("Service Profile")
                         st.write(f"**Description:** {results.get('description', 'N/A')}")
                         st.write(f"**Release Stage:** {results.get('release_stage', 'N/A')}")
                         
@@ -1372,7 +1650,7 @@ def display_service_evaluation():
                             col_a, col_b, col_c = st.columns(3)
                             with col_a:
                                 risk_score = assessment.get('risk_score', 0)
-                                color = "🟢" if risk_score < 4 else "🟡" if risk_score < 7 else "🔴"
+                                color = "[LOW]" if risk_score < 4 else "[MEDIUM]" if risk_score < 7 else "[HIGH]"
                                 st.metric("Overall Risk", f"{color} {risk_score}/10")
                             
                             with col_b:
@@ -1475,7 +1753,7 @@ def display_service_evaluation():
                         
                         with col_export3:
                             # JSON Export button
-                            if st.button("📋 Export as JSON", use_container_width=True):
+                            if st.button("Export as JSON", use_container_width=True):
                                 # Create download button for JSON
                                 json_data = json.dumps(results, indent=2)
                                 st.download_button(
@@ -1514,12 +1792,12 @@ def display_service_evaluation():
     # Handle switching to chat tab for quick queries
     if st.session_state.get('switch_to_chat'):
         st.session_state['switch_to_chat'] = False
-        st.info("💬 Switch to the Security Chat tab to see query results")
+        st.info("Switch to the Security Chat tab to see query results")
 
 
 def display_statistical_analysis():
     """Display comprehensive statistical analysis dashboard (STORY-006)."""
-    st.header("📊 Statistical Analysis Dashboard")
+    st.header("Statistical Analysis Dashboard")
     st.markdown("**Advanced analytics for security metrics with trends, anomalies, and forecasting**")
     
     backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
@@ -1543,7 +1821,7 @@ def display_statistical_analysis():
         )
     
     with col3:
-        if st.button("🔍 Run Analysis", type="primary", use_container_width=True):
+        if st.button("Run Analysis", type="primary", use_container_width=True):
             st.session_state.run_analysis = True
     
     # Run analysis if requested
@@ -1561,26 +1839,33 @@ def display_statistical_analysis():
                     if response.status_code == 200:
                         result = response.json()
                         data = result.get('data', {})
-                        
-                        # Display insights
-                        insights = data.get('insights', [])
-                        if insights:
-                            st.subheader("🎯 Key Insights")
-                            for insight in insights[:5]:
-                                priority = insight.get('priority', 'medium')
-                                icon = "🔴" if priority == 'high' else "🟡" if priority == 'medium' else "🟢"
-                                
-                                with st.expander(f"{icon} {insight.get('insight', '')}", expanded=(priority == 'high')):
-                                    st.write(f"**Type:** {insight.get('type', '').title()}")
-                                    st.write(f"**Recommendation:** {insight.get('recommendation', '')}")
-                                    st.write(f"**Confidence:** {insight.get('confidence', 0):.1%}")
-                                    if 'metric' in insight:
-                                        st.write(f"**Metric:** {insight['metric']}")
+                    elif response.status_code == 404:
+                        st.error("❌ Statistical Analysis API not found. Please ensure the backend is running and the statistics module is loaded.")
+                        st.info("Try restarting the backend server or checking the API logs.")
+                        return
+                    else:
+                        st.error(f"API Error: HTTP {response.status_code} - {response.text[:200]}")
+                        return
+                    
+                    # Display insights
+                    insights = data.get('insights', [])
+                    if insights:
+                        st.subheader("🎯 Key Insights")
+                        for insight in insights[:5]:
+                            priority = insight.get('priority', 'medium')
+                            icon = "[HIGH]" if priority == 'high' else "[MEDIUM]" if priority == 'medium' else "[LOW]"
+                            
+                            with st.expander(f"{icon} {insight.get('insight', '')}", expanded=(priority == 'high')):
+                                st.write(f"**Type:** {insight.get('type', '').title()}")
+                                st.write(f"**Recommendation:** {insight.get('recommendation', '')}")
+                                st.write(f"**Confidence:** {insight.get('confidence', 0):.1%}")
+                                if 'metric' in insight:
+                                    st.write(f"**Metric:** {insight['metric']}")
                         
                         # Display summary metrics
                         summary = data.get('summary', {})
                         if summary:
-                            st.subheader("📈 Analysis Summary")
+                            st.subheader("Analysis Summary")
                             col1, col2, col3, col4 = st.columns(4)
                             with col1:
                                 st.metric("Metrics Analyzed", summary.get('total_metrics_analyzed', 0))
@@ -1594,7 +1879,7 @@ def display_statistical_analysis():
                         # Display trends
                         trends = data.get('trends', {})
                         if trends:
-                            st.subheader("📊 Trend Analysis")
+                            st.subheader("Trend Analysis")
                             for metric_name, trend_data in trends.items():
                                 if isinstance(trend_data, dict) and 'trend_direction' in trend_data:
                                     col1, col2, col3 = st.columns(3)
@@ -1702,7 +1987,7 @@ def display_statistical_analysis():
                                     # Show accuracy metrics
                                     accuracy = forecast_data.get('accuracy_metrics', {})
                                     if accuracy.get('mape') is not None:
-                                        st.info(f"📊 Forecast Accuracy: MAPE = {accuracy['mape']:.1f}%, RMSE = {accuracy.get('rmse', 0):.2f}")
+                                        st.info(f"Forecast Accuracy: MAPE = {accuracy['mape']:.1f}%, RMSE = {accuracy.get('rmse', 0):.2f}")
                         
                         st.success(f"✅ Analysis completed successfully!")
                     else:
@@ -1735,7 +2020,7 @@ def display_statistical_analysis():
                 st.session_state.run_analysis = False
     
     # Available metrics reference
-    with st.expander("📋 Available Metrics Reference"):
+    with st.expander("Available Metrics Reference"):
         st.markdown("""
         **Security Findings**: severity_score, count, risk_level
         **IAM Policies**: member_count, permission_count, risk_score  
@@ -1747,7 +2032,7 @@ def display_statistical_analysis():
 
 def display_feedback_analytics():
     """Display comprehensive feedback analytics dashboard."""
-    st.header("📈 Feedback Analytics & Improvement Insights")
+    st.header("Feedback Analytics & Improvement Insights")
     st.caption("Track feedback trends, identify improvement opportunities, and monitor ADK evaluation performance")
     
     # Time period selector
@@ -1765,7 +2050,7 @@ def display_feedback_analytics():
             st.rerun()
     
     with col3:
-        if st.button("📊 Generate Evalset", use_container_width=True):
+        if st.button("Generate Evalset", use_container_width=True):
             generate_evalset_from_feedback()
     
     # Fetch feedback metrics
@@ -1775,57 +2060,63 @@ def display_feedback_analytics():
         
         if response.status_code == 200:
             metrics = response.json()
+        elif response.status_code == 404:
+            st.warning("⚠️ Feedback API not available. Please ensure the backend is running with feedback support.")
+            return
+        else:
+            st.error(f"Failed to fetch feedback metrics: HTTP {response.status_code}")
+            return
             
-            # Overview metrics
-            st.subheader("📊 Feedback Overview")
-            overview = metrics.get('overview', {})
+        # Overview metrics
+        st.subheader("Feedback Overview")
+        overview = metrics.get('overview', {})
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            total_feedback = overview.get('total_feedback', 0)
+            st.metric("Total Feedback", total_feedback)
+        
+        with col2:
+            avg_rating = overview.get('avg_rating', 0)
+            st.metric("Average Rating", f"{avg_rating:.1f}/5.0" if avg_rating else "No ratings")
+        
+        with col3:
+            thumbs_up = overview.get('thumbs_up', 0)
+            thumbs_down = overview.get('thumbs_down', 0)
+            satisfaction = (thumbs_up / max(1, thumbs_up + thumbs_down)) * 100
+            st.metric("Satisfaction", f"{satisfaction:.1f}%")
+        
+        with col4:
+            unique_sessions = overview.get('unique_sessions', 0)
+            st.metric("Active Sessions", unique_sessions)
+        
+        with col5:
+            if total_feedback > 0:
+                feedback_rate = min(100, (total_feedback / max(1, unique_sessions * 5)) * 100)
+                st.metric("Feedback Rate", f"{feedback_rate:.1f}%")
+            else:
+                st.metric("Feedback Rate", "0%")
+        
+        # ADK Evalset Generation
+        st.subheader("🤖 ADK Evaluation Integration")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Generate Evalset from Feedback**")
+            st.write("Convert collected feedback into ADK evaluation datasets for model improvement.")
             
-            col1, col2, col3, col4, col5 = st.columns(5)
+            min_feedback = st.number_input(
+                "Minimum feedback items:",
+                min_value=5,
+                max_value=100,
+                value=15,
+                help="Minimum number of feedback items to include in evalset"
+            )
             
-            with col1:
-                total_feedback = overview.get('total_feedback', 0)
-                st.metric("Total Feedback", total_feedback)
-            
-            with col2:
-                avg_rating = overview.get('avg_rating', 0)
-                st.metric("Average Rating", f"{avg_rating:.1f}/5.0" if avg_rating else "No ratings")
-            
-            with col3:
-                thumbs_up = overview.get('thumbs_up', 0)
-                thumbs_down = overview.get('thumbs_down', 0)
-                satisfaction = (thumbs_up / max(1, thumbs_up + thumbs_down)) * 100
-                st.metric("Satisfaction", f"{satisfaction:.1f}%")
-            
-            with col4:
-                unique_sessions = overview.get('unique_sessions', 0)
-                st.metric("Active Sessions", unique_sessions)
-            
-            with col5:
-                if total_feedback > 0:
-                    feedback_rate = min(100, (total_feedback / max(1, unique_sessions * 5)) * 100)
-                    st.metric("Feedback Rate", f"{feedback_rate:.1f}%")
-                else:
-                    st.metric("Feedback Rate", "0%")
-            
-            # ADK Evalset Generation
-            st.subheader("🤖 ADK Evaluation Integration")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**Generate Evalset from Feedback**")
-                st.write("Convert collected feedback into ADK evaluation datasets for model improvement.")
-                
-                min_feedback = st.number_input(
-                    "Minimum feedback items:",
-                    min_value=5,
-                    max_value=100,
-                    value=15,
-                    help="Minimum number of feedback items to include in evalset"
-                )
-                
-                if st.button("🎯 Generate ADK Evalset", type="primary"):
-                    generate_evalset_from_feedback(min_feedback)
+            if st.button("🎯 Generate ADK Evalset", type="primary"):
+                generate_evalset_from_feedback(min_feedback)
             
             with col2:
                 st.markdown("**Feedback Quality Metrics**")
@@ -1859,8 +2150,8 @@ def generate_evalset_from_feedback(min_feedback_count: int = 15):
                 result = response.json()
                 
                 st.success(f"✅ Evalset generated successfully!")
-                st.info(f"📊 Evalset ID: `{result['evalset_id']}`")
-                st.info(f"📋 Evaluation cases: {result['eval_cases_count']}")
+                st.info(f"Evalset ID: `{result['evalset_id']}`")
+                st.info(f"Evaluation cases: {result['eval_cases_count']}")
                 st.info(f"📁 File saved to: `{result['file_path']}`")
                 
                 st.markdown("**Next Steps:**")
@@ -1887,7 +2178,7 @@ def main():
     st.divider()
     
     # Create tabs for different features
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["💬 Security Chat", "📧 MSA Analyzer", "🔍 Service Evaluation", "🧪 Agent Evaluation", "📈 Feedback Analytics", "📊 Statistical Analysis"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Security Chat", "MSA Analyzer", "Service Evaluation", "Agent Evaluation", "Feedback Analytics", "Statistical Analysis"])
     
     with tab1:
         # Display chat interface

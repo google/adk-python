@@ -940,46 +940,49 @@ async def status_endpoint():
 
 async def background_cache_refresh():
     """Background task to refresh cache every 30 minutes."""
-    while True:
-        try:
-            await asyncio.sleep(1800)  # 30 minutes
-            
-            logger.info("🔄 Starting scheduled cache refresh...")
-            
-            # Try to refresh cache using data fetcher
+    try:
+        while True:
             try:
-                from services.data_fetcher import DataFetcher
-                import os
+                # Wait for 30 minutes (or until cancelled)
+                await asyncio.sleep(1800)  # 30 minutes
                 
-                # Get project ID from environment
-                project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-                if not project_id or project_id == "your-project-id":
-                    logger.warning("⚠️ GOOGLE_CLOUD_PROJECT not configured, skipping cache refresh")
-                    continue
+                logger.info("🔄 Starting scheduled cache refresh...")
+                
+                # Try to refresh cache using data fetcher
+                try:
+                    from services.data_fetcher import DataFetcher
+                    import os
                     
-                fetcher = DataFetcher(project_id=project_id)
-                result = await fetcher.fetch_all_data()
-                
-                # Create summary from result stats
-                total_records = sum(
-                    stat.get('count', 0) for stat in result.get('stats', {}).values() 
-                    if isinstance(stat, dict)
-                )
-                error_count = len(result.get('errors', []))
-                duration = result.get('duration_seconds', 0)
-                
-                summary = f"{total_records} records, {error_count} errors, {duration:.1f}s"
-                logger.info(f"✅ Background cache refresh complete: {summary}")
-                
+                    # Get project ID from environment
+                    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+                    if not project_id or project_id == "your-project-id":
+                        logger.warning("⚠️ GOOGLE_CLOUD_PROJECT not configured, skipping cache refresh")
+                        continue
+                        
+                    fetcher = DataFetcher(project_id=project_id)
+                    result = await fetcher.fetch_all_data()
+                    
+                    # Create summary from result stats
+                    total_records = sum(
+                        stat.get('count', 0) for stat in result.get('stats', {}).values() 
+                        if isinstance(stat, dict)
+                    )
+                    error_count = len(result.get('errors', []))
+                    duration = result.get('duration_seconds', 0)
+                    
+                    summary = f"{total_records} records, {error_count} errors, {duration:.1f}s"
+                    logger.info(f"✅ Background cache refresh complete: {summary}")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Background cache refresh failed: {e}")
+                    
             except Exception as e:
-                logger.warning(f"⚠️ Background cache refresh failed: {e}")
+                logger.error(f"❌ Background cache refresh error: {e}")
+                await asyncio.sleep(300)  # Wait 5 minutes before retry
                 
-        except asyncio.CancelledError:
-            logger.info("🛑 Background cache refresh stopped")
-            break
-        except Exception as e:
-            logger.error(f"❌ Background cache refresh error: {e}")
-            await asyncio.sleep(300)  # Wait 5 minutes before retry
+    except asyncio.CancelledError:
+        logger.info("🛑 Background cache refresh task cancelled gracefully")
+        raise  # Re-raise to properly propagate cancellation
 
 @app.on_event("startup")
 async def startup_event():
@@ -1012,12 +1015,23 @@ async def startup_event():
     
     # Start background cache refresh job
     logger.info("🔄 Starting background cache refresh job...")
-    asyncio.create_task(background_cache_refresh())
+    app.state.cache_refresh_task = asyncio.create_task(background_cache_refresh())
 
 @app.on_event("shutdown") 
 async def shutdown_event():
-    """Application shutdown."""
+    """Application shutdown with proper task cleanup."""
     logger.info("🛑 Security Agent Backend shutting down")
+    
+    # Cancel background cache refresh task if it exists
+    if hasattr(app.state, 'cache_refresh_task'):
+        logger.info("📋 Cancelling background cache refresh task...")
+        app.state.cache_refresh_task.cancel()
+        try:
+            await app.state.cache_refresh_task
+        except asyncio.CancelledError:
+            logger.info("✅ Background cache refresh task cancelled successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ Error cancelling cache refresh task: {e}")
 
 if __name__ == "__main__":
     # Use port from environment or default to 8000

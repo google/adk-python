@@ -9,7 +9,7 @@ and assess impact on customer's GCP environment.
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import json
 import sqlite3
@@ -364,35 +364,86 @@ def analyze_impact_on_environment(changes: List[MSAChange], project_id: str) -> 
 
 def generate_recommendations(change: MSAChange, resource_count: int) -> List[str]:
     """
-    Generate specific recommendations based on the change and affected resources.
+    Generate specific, actionable recommendations for security teams.
     """
     recommendations = []
     
-    # Base recommendations
+    # Base recommendations with specific actions
     if change.required_action:
-        recommendations.append(f"Required: {change.required_action}")
+        recommendations.append(f"🎯 ACTION REQUIRED: {change.required_action}")
     
-    # Impact-based recommendations
+    # Impact-based recommendations with concrete steps
     if change.impact_level in ["critical", "high"]:
-        recommendations.append(f"🚨 HIGH PRIORITY: Review all {resource_count} affected resources immediately")
-        recommendations.append("Create a backup or snapshot before the change takes effect")
-        recommendations.append("Test changes in a development environment first")
+        recommendations.append(f"🚨 IMMEDIATE ACTION: Audit {resource_count} affected resources by {change.effective_date or 'ASAP'}")
+        recommendations.append(f"📋 STEP 1: Run 'gcloud projects list' to identify all affected projects")
+        recommendations.append(f"🔧 STEP 2: Execute backup script: 'gcloud compute snapshots create backup-{datetime.now().strftime('%Y%m%d')}'")
+        recommendations.append(f"🧪 STEP 3: Deploy test in dev: 'gcloud config set project <dev-project-id>'")
+        recommendations.append(f"📊 STEP 4: Generate impact report: Use Cloud Asset Inventory API to list all affected resources")
     elif change.impact_level == "medium":
-        recommendations.append(f"⚠️ Review {resource_count} affected resources within the next week")
-        recommendations.append("Update documentation to reflect the changes")
+        recommendations.append(f"⚠️ PRIORITY ACTION: Schedule review of {resource_count} resources within 7 days")
+        recommendations.append(f"📝 TASK: Create JIRA ticket with label 'msa-change-{datetime.now().strftime('%Y%m')}'")
+        recommendations.append(f"📚 TASK: Update runbook at /docs/security/msa-changes.md")
+        recommendations.append(f"🔍 TASK: Run compliance check: 'python scripts/compliance_check.py --service {change.service}'")
     else:
-        recommendations.append(f"ℹ️ Monitor {resource_count} affected resources for any issues")
+        recommendations.append(f"ℹ️ MONITORING: Set up alert for {resource_count} resources")
+        recommendations.append(f"📈 ACTION: Configure Cloud Monitoring dashboard for affected resources")
+        recommendations.append(f"🔔 ACTION: Create alert policy with threshold-based notifications")
     
-    # Change type specific recommendations
+    # Change type specific recommendations with commands
     if "permission" in change.change_type.lower():
-        recommendations.append("Review and update IAM policies if necessary")
-        recommendations.append("Verify service accounts have required permissions")
+        recommendations.append("🔐 IAM ACTION: Execute permission audit script")
+        recommendations.append(f"   └─ Command: 'gcloud projects get-iam-policy <project-id> --format=json > iam-audit-{datetime.now().strftime('%Y%m%d')}.json'")
+        if change.new_permissions:
+            for perm in change.new_permissions[:3]:  # Show first 3 permissions
+                recommendations.append(f"   └─ Grant permission: 'gcloud projects add-iam-policy-binding <project-id> --member=<service-account> --role={perm}'")
+        recommendations.append("🤖 SERVICE ACCOUNT CHECK: Verify all service accounts")
+        recommendations.append(f"   └─ List SAs: 'gcloud iam service-accounts list --project=<project-id>'")
+        recommendations.append(f"   └─ Check keys: 'gcloud iam service-accounts keys list --iam-account=<sa-email>'")
+        
     elif "deprecat" in change.change_type.lower():
-        recommendations.append("Plan migration to the replacement service/API")
-        recommendations.append("Update any automation scripts or tools")
+        recommendations.append("🔄 MIGRATION PLAN: Create detailed migration checklist")
+        recommendations.append(f"   └─ WEEK 1: Inventory all {change.service} resources using 'gcloud {change.service.lower()} list'")
+        recommendations.append(f"   └─ WEEK 2: Update CI/CD pipelines - check .github/workflows/*.yml and cloudbuild.yaml")
+        recommendations.append(f"   └─ WEEK 3: Test migration in staging environment")
+        recommendations.append(f"   └─ WEEK 4: Execute production migration with rollback plan")
+        recommendations.append("📜 SCRIPT UPDATE: Search and update all automation")
+        recommendations.append(f"   └─ Find scripts: 'grep -r \"{change.service}\" ./scripts/ ./automation/'")
+        recommendations.append(f"   └─ Update Terraform: 'terraform plan -target=module.{change.service.lower()}'")
+        
     elif "breaking" in change.change_type.lower():
-        recommendations.append("Test all integrations thoroughly")
-        recommendations.append("Prepare rollback plan in case of issues")
+        recommendations.append("⚡ BREAKING CHANGE RESPONSE PLAN:")
+        recommendations.append(f"   └─ HOUR 0: Freeze deployments - 'gcloud app versions stop-traffic --version=<current>'")
+        recommendations.append(f"   └─ HOUR 1: Run integration tests - 'pytest tests/integration/ -k {change.service}'")
+        recommendations.append(f"   └─ HOUR 2: Create rollback snapshot - 'gcloud compute disks snapshot <disk-name>'")
+        recommendations.append(f"   └─ HOUR 3: Deploy canary - 'kubectl set image deployment/<app> <container>=<new-image> --record'")
+        recommendations.append(f"   └─ HOUR 24: Monitor metrics - Check dashboard at https://console.cloud.google.com/monitoring")
+    
+    elif "api" in change.change_type.lower():
+        recommendations.append("🔌 API UPDATE CHECKLIST:")
+        if change.api_parameters:
+            for param, details in list(change.api_parameters.items())[:2]:
+                recommendations.append(f"   └─ Update API calls to include '{param}' parameter")
+                if isinstance(details, dict) and "default" in details:
+                    recommendations.append(f"      └─ Default value: '{details['default']}' - explicitly set if different needed")
+        recommendations.append(f"   └─ Update API clients: Check requirements.txt for google-cloud-{change.service.lower()} version")
+        recommendations.append(f"   └─ Test API changes: 'python -m pytest tests/api/test_{change.service.lower()}.py'")
+    
+    # Add timeline-based actions if effective date is known
+    if change.effective_date:
+        from datetime import datetime, timedelta
+        try:
+            effective = datetime.strptime(change.effective_date, "%Y-%m-%d")
+            days_until = (effective - datetime.now()).days
+            if days_until > 0:
+                recommendations.append(f"⏰ TIMELINE: {days_until} days until change takes effect")
+                if days_until <= 30:
+                    recommendations.append(f"   └─ URGENT: Schedule emergency change review this week")
+                elif days_until <= 90:
+                    recommendations.append(f"   └─ Schedule change review for sprint planning")
+                else:
+                    recommendations.append(f"   └─ Add to quarterly planning roadmap")
+        except:
+            pass
     
     return recommendations
 

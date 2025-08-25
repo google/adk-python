@@ -228,6 +228,45 @@ class DataFetcher:
                 )
             """)
             
+            # GKE clusters table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS gke_clusters (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    location TEXT,
+                    location_type TEXT,
+                    status TEXT,
+                    endpoint TEXT,
+                    current_master_version TEXT,
+                    current_node_version TEXT,
+                    initial_node_count INTEGER,
+                    current_node_count INTEGER,
+                    node_config TEXT,
+                    network TEXT,
+                    subnetwork TEXT,
+                    cluster_ipv4_cidr TEXT,
+                    services_ipv4_cidr TEXT,
+                    locations TEXT,
+                    enable_autopilot BOOLEAN,
+                    enable_network_policy BOOLEAN,
+                    enable_ip_alias BOOLEAN,
+                    master_auth TEXT,
+                    logging_config TEXT,
+                    monitoring_config TEXT,
+                    addons_config TEXT,
+                    node_pools TEXT,
+                    legacy_abac_enabled BOOLEAN,
+                    workload_identity_config TEXT,
+                    private_cluster_config TEXT,
+                    database_encryption TEXT,
+                    shielded_nodes TEXT,
+                    release_channel TEXT,
+                    data TEXT NOT NULL,
+                    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             # Monitoring metrics table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS monitoring_metrics (
@@ -269,6 +308,8 @@ class DataFetcher:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_buckets_public ON storage_buckets(public_access)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_iam_policies_member ON iam_policies(member)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_iam_policies_role ON iam_policies(role)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_gke_status ON gke_clusters(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_gke_location ON gke_clusters(location)")
             
             conn.commit()
     
@@ -312,13 +353,14 @@ class DataFetcher:
             self._fetch_all_assets(),  # General asset inventory
             self._fetch_secrets(),  # Secret Manager
             self._fetch_monitoring_metrics(),  # Cloud Monitoring
+            self._fetch_gke_clusters(),  # GKE clusters
         ]
         
         fetch_results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Process results
         for i, result in enumerate(fetch_results):
-            fetch_type = ["compute", "storage", "networks", "firewall", "iam", "databases", "findings", "assets", "secrets", "monitoring"][i]
+            fetch_type = ["compute", "storage", "networks", "firewall", "iam", "databases", "findings", "assets", "secrets", "monitoring", "gke"][i]
             if isinstance(result, Exception):
                 logger.error(f"Error fetching {fetch_type}: {result}")
                 results["errors"].append(f"{fetch_type}: {str(result)}")
@@ -731,42 +773,87 @@ class DataFetcher:
             return {"count": 0, "error": str(e)}
     
     async def _fetch_all_assets(self) -> Dict[str, Any]:
-        """Fetch all assets using Cloud Asset Inventory."""
+        """Fetch all assets using Cloud Asset Inventory - Enhanced to capture full resource data."""
         try:
             from google.cloud import asset_v1
+            from google.protobuf.json_format import MessageToDict
             
             asset_client = asset_v1.AssetServiceClient()
             parent = f"projects/{self.project_id}"
             
             assets = []
+            asset_types_found = set()
             
-            # List all assets
+            # List all assets with full resource data
             request = asset_v1.ListAssetsRequest(
                 parent=parent,
-                page_size=100
+                page_size=100,
+                content_type=asset_v1.ContentType.RESOURCE  # Get full resource data
             )
             
             for asset in asset_client.list_assets(request=request):
+                # Track asset types we've found
+                asset_types_found.add(asset.asset_type)
+                
+                # Convert the entire asset to a dictionary for complete data preservation
+                try:
+                    asset_dict = MessageToDict(asset._pb)
+                except:
+                    # Fallback to manual extraction if protobuf conversion fails
+                    asset_dict = {
+                        "name": asset.name,
+                        "assetType": asset.asset_type,
+                        "resource": MessageToDict(asset.resource._pb) if asset.resource else {}
+                    }
+                
+                # Extract common fields with better null handling
+                resource_data = asset_dict.get("resource", {}).get("data", {})
+                
+                # Extract location from various possible fields
+                location = (resource_data.get("location") or 
+                           resource_data.get("zone") or 
+                           resource_data.get("region") or
+                           resource_data.get("locationId") or "")
+                
+                # Extract display name from various possible fields  
+                display_name = (resource_data.get("displayName") or
+                               resource_data.get("name") or
+                               asset.name.split('/')[-1])
+                
+                # Extract state/status from various possible fields
+                state = (resource_data.get("state") or
+                        resource_data.get("status") or
+                        resource_data.get("lifecycleState") or "")
+                
+                # Ensure parent_resource is always a string
+                parent = asset_dict.get("resource", {}).get("parent", "")
+                if not isinstance(parent, str):
+                    logger.warning(f"Parent resource is not a string for {asset.name}: {type(parent)}")
+                    parent = str(parent) if parent else ""
+                
                 asset_data = {
                     "id": asset.name,
-                    "name": asset.name,
+                    "name": asset.name.split('/')[-1],  # Extract just the resource name
                     "asset_type": asset.asset_type,
-                    "display_name": asset.resource.data.get("displayName", "") if asset.resource else "",
-                    "description": asset.resource.data.get("description", "") if asset.resource else "",
-                    "location": asset.resource.data.get("location", "") if asset.resource else "",
-                    "labels": json.dumps(asset.resource.data.get("labels", {})) if asset.resource else "{}",
+                    "display_name": display_name,
+                    "description": resource_data.get("description", ""),
+                    "location": location,
+                    "labels": json.dumps(resource_data.get("labels", {})),
                     "create_time": asset.update_time.isoformat() if asset.update_time else None,
                     "update_time": asset.update_time.isoformat() if asset.update_time else None,
-                    "state": asset.resource.data.get("state", "") if asset.resource else "",
-                    "parent_resource": asset.resource.parent if asset.resource else "",
-                    "data": json.dumps({"asset": str(asset)}) if asset else "{}"
+                    "state": state,
+                    "parent_resource": parent,
+                    "data": json.dumps(asset_dict)  # Store the complete asset data
                 }
                 assets.append(asset_data)
             
             # Store in database
             self._store_assets(assets)
             
-            return {"count": len(assets)}
+            # Log discovered asset types for debugging
+            logger.info(f"Discovered {len(asset_types_found)} unique asset types: {sorted(asset_types_found)[:10]}...")
+            
+            return {"count": len(assets), "asset_types": len(asset_types_found)}
             
         except Exception as e:
             logger.error(f"Error fetching assets: {e}")
@@ -971,27 +1058,42 @@ class DataFetcher:
     def _store_assets(self, assets: List[Dict]):
         """Store general assets in database."""
         with self._get_connection() as conn:
-            for asset in assets:
-                conn.execute("""
-                    INSERT OR REPLACE INTO assets
-                    (id, project_id, name, asset_type, display_name, description,
-                     location, labels, create_time, update_time, state, parent_resource, data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    asset["id"],
-                    self.project_id,
-                    asset["name"],
-                    asset["asset_type"],
-                    asset["display_name"],
-                    asset["description"],
-                    asset["location"],
-                    asset["labels"],
-                    asset["create_time"],
-                    asset["update_time"],
-                    asset["state"],
-                    asset["parent_resource"],
-                    asset["data"]
-                ))
+            for i, asset in enumerate(assets):
+                try:
+                    # Validate all parameters are the right type
+                    params = (
+                        asset["id"],                # 1
+                        self.project_id,             # 2
+                        asset["name"],               # 3
+                        asset["asset_type"],         # 4
+                        asset["display_name"],       # 5
+                        asset["description"],        # 6
+                        asset["location"],           # 7
+                        asset["labels"],             # 8
+                        asset["create_time"],        # 9
+                        asset["update_time"],        # 10
+                        asset["state"],              # 11
+                        asset["parent_resource"],    # 12
+                        asset["data"]                # 13
+                    )
+                    
+                    # Check for any non-string/None values
+                    for j, param in enumerate(params):
+                        if param is not None and not isinstance(param, str):
+                            logger.error(f"Asset {i} param {j+1} is type {type(param)}: {param}")
+                            
+                    conn.execute("""
+                        INSERT OR REPLACE INTO assets
+                        (id, project_id, name, asset_type, display_name, description,
+                         location, labels, create_time, update_time, state, parent_resource, data)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, params)
+                except Exception as e:
+                    logger.error(f"Error storing asset {i} ({asset.get('name', 'unknown')}): {e}")
+                    # Log the problematic data
+                    for key, value in asset.items():
+                        logger.debug(f"  {key}: {type(value).__name__} = {repr(value)[:100]}")
+                    raise
             conn.commit()
     
     def _update_fetch_status(self, status: str, stats: Dict):
@@ -1096,8 +1198,12 @@ class DataFetcher:
     async def _fetch_monitoring_metrics(self) -> Dict[str, Any]:
         """Fetch key monitoring metrics from Cloud Monitoring."""
         try:
-            from google.cloud import monitoring_v3
-            from google.cloud.monitoring_v3 import query
+            try:
+                from google.cloud import monitoring_v3
+                from google.cloud.monitoring_v3 import query
+            except ImportError:
+                logger.warning("Cloud Monitoring library not available - skipping metrics")
+                return {"count": 0, "skipped": "monitoring_v3 library not installed"}
             
             client = monitoring_v3.MetricServiceClient()
             project_name = f"projects/{self.project_id}"
@@ -1217,7 +1323,7 @@ class DataFetcher:
             # Count resources including new tables
             for table in ["compute_instances", "storage_buckets", "networks", 
                          "firewall_rules", "iam_accounts", "databases", "security_findings",
-                         "secrets", "monitoring_metrics"]:
+                         "secrets", "monitoring_metrics", "gke_clusters"]:
                 cursor = conn.execute(f"SELECT COUNT(*) as count FROM {table} WHERE project_id = ?", [self.project_id])
                 stats[table] = cursor.fetchone()["count"]
             
@@ -1232,6 +1338,170 @@ class DataFetcher:
             stats["last_fetch"] = result["last_fetch"] if result else None
             
             return stats
+
+    async def _fetch_gke_clusters(self) -> Dict[str, Any]:
+        """Fetch all GKE clusters."""
+        try:
+            from google.cloud import container_v1
+            
+            cluster_client = container_v1.ClusterManagerClient()
+            project_id = self.project_id
+            
+            clusters = []
+            
+            # List all clusters across all locations
+            parent = f"projects/{project_id}/locations/-"
+            
+            try:
+                response = cluster_client.list_clusters(parent=parent)
+                for cluster in response.clusters:
+                    cluster_data = {
+                        "id": f"{project_id}/{cluster.location}/{cluster.name}",
+                        "project_id": project_id,
+                        "name": cluster.name,
+                        "location": cluster.location,
+                        "location_type": cluster.location_type.name if cluster.location_type else "UNSPECIFIED",
+                        "status": cluster.status.name if cluster.status else "UNKNOWN",
+                        "endpoint": cluster.endpoint,
+                        "current_master_version": cluster.current_master_version,
+                        "current_node_version": cluster.current_node_version,
+                        "initial_node_count": cluster.initial_node_count,
+                        "current_node_count": cluster.current_node_count,
+                        "node_config": json.dumps({
+                            "machine_type": cluster.node_config.machine_type if cluster.node_config else None,
+                            "disk_size_gb": cluster.node_config.disk_size_gb if cluster.node_config else None,
+                            "disk_type": cluster.node_config.disk_type if cluster.node_config else None,
+                            "image_type": cluster.node_config.image_type if cluster.node_config else None,
+                            "service_account": cluster.node_config.service_account if cluster.node_config else None,
+                            "preemptible": cluster.node_config.preemptible if cluster.node_config else False,
+                        }) if cluster.node_config else "{}",
+                        "network": cluster.network,
+                        "subnetwork": cluster.subnetwork,
+                        "cluster_ipv4_cidr": cluster.cluster_ipv4_cidr,
+                        "services_ipv4_cidr": cluster.services_ipv4_cidr,
+                        "locations": json.dumps(list(cluster.locations)) if cluster.locations else "[]",
+                        "enable_autopilot": cluster.autopilot.enabled if cluster.autopilot else False,
+                        "enable_network_policy": cluster.network_policy.enabled if cluster.network_policy else False,
+                        "enable_ip_alias": cluster.ip_allocation_policy.use_ip_aliases if cluster.ip_allocation_policy else False,
+                        "master_auth": json.dumps({
+                            "username": cluster.master_auth.username if cluster.master_auth else None,
+                            "client_certificate_config": {
+                                "issue_client_certificate": cluster.master_auth.client_certificate_config.issue_client_certificate if cluster.master_auth and cluster.master_auth.client_certificate_config else False
+                            }
+                        }) if cluster.master_auth else "{}",
+                        "logging_config": json.dumps({
+                            "component_config": {
+                                "enable_components": list(cluster.logging_config.component_config.enable_components) if cluster.logging_config and cluster.logging_config.component_config else []
+                            }
+                        }) if cluster.logging_config else "{}",
+                        "monitoring_config": json.dumps({
+                            "component_config": {
+                                "enable_components": list(cluster.monitoring_config.component_config.enable_components) if cluster.monitoring_config and cluster.monitoring_config.component_config else []
+                            }
+                        }) if cluster.monitoring_config else "{}",
+                        "addons_config": json.dumps({
+                            "http_load_balancing": cluster.addons_config.http_load_balancing.disabled if cluster.addons_config and cluster.addons_config.http_load_balancing else None,
+                            "horizontal_pod_autoscaling": cluster.addons_config.horizontal_pod_autoscaling.disabled if cluster.addons_config and cluster.addons_config.horizontal_pod_autoscaling else None,
+                            "kubernetes_dashboard": cluster.addons_config.kubernetes_dashboard.disabled if cluster.addons_config and cluster.addons_config.kubernetes_dashboard else None,
+                            "network_policy_config": cluster.addons_config.network_policy_config.disabled if cluster.addons_config and cluster.addons_config.network_policy_config else None,
+                        }) if cluster.addons_config else "{}",
+                        "node_pools": json.dumps([{
+                            "name": pool.name,
+                            "status": pool.status.name if pool.status else "UNKNOWN",
+                            "initial_node_count": pool.initial_node_count,
+                            "version": pool.version,
+                            "config": {
+                                "machine_type": pool.config.machine_type if pool.config else None,
+                                "disk_size_gb": pool.config.disk_size_gb if pool.config else None,
+                                "preemptible": pool.config.preemptible if pool.config else False,
+                            }
+                        } for pool in cluster.node_pools]) if cluster.node_pools else "[]",
+                        "legacy_abac_enabled": cluster.legacy_abac.enabled if cluster.legacy_abac else False,
+                        "workload_identity_config": json.dumps({
+                            "workload_pool": cluster.workload_identity_config.workload_pool if cluster.workload_identity_config else None
+                        }) if cluster.workload_identity_config else "{}",
+                        "private_cluster_config": json.dumps({
+                            "enable_private_nodes": cluster.private_cluster_config.enable_private_nodes if cluster.private_cluster_config else False,
+                            "enable_private_endpoint": cluster.private_cluster_config.enable_private_endpoint if cluster.private_cluster_config else False,
+                            "master_ipv4_cidr_block": cluster.private_cluster_config.master_ipv4_cidr_block if cluster.private_cluster_config else None,
+                        }) if cluster.private_cluster_config else "{}",
+                        "database_encryption": json.dumps({
+                            "state": cluster.database_encryption.state.name if cluster.database_encryption and cluster.database_encryption.state else "DECRYPTED",
+                            "key_name": cluster.database_encryption.key_name if cluster.database_encryption else None,
+                        }) if cluster.database_encryption else "{}",
+                        "shielded_nodes": json.dumps({
+                            "enabled": cluster.shielded_nodes.enabled if cluster.shielded_nodes else False
+                        }) if cluster.shielded_nodes else "{}",
+                        "release_channel": json.dumps({
+                            "channel": cluster.release_channel.channel.name if cluster.release_channel and cluster.release_channel.channel else "UNSPECIFIED"
+                        }) if cluster.release_channel else "{}",
+                        "data": json.dumps({
+                            "name": cluster.name,
+                            "location": cluster.location,
+                            "status": cluster.status.name if cluster.status else "UNKNOWN",
+                            "endpoint": cluster.endpoint,
+                            "current_master_version": cluster.current_master_version,
+                            "current_node_version": cluster.current_node_version,
+                            "node_count": cluster.current_node_count,
+                            "network": cluster.network,
+                            "subnetwork": cluster.subnetwork,
+                        })
+                    }
+                    clusters.append(cluster_data)
+                
+                # Store in database
+                self._store_gke_clusters(clusters)
+                
+                return {"count": len(clusters)}
+                
+            except Exception as e:
+                logger.error(f"Error listing GKE clusters: {e}")
+                return {"count": 0, "error": str(e)}
+            
+        except ImportError:
+            logger.warning("Google Cloud Container library not available")
+            return {"count": 0, "skipped": "Library not installed"}
+        except Exception as e:
+            logger.error(f"Error fetching GKE clusters: {e}")
+            return {"count": 0, "error": str(e)}
+
+    def _store_gke_clusters(self, clusters: List[Dict]):
+        """Store GKE clusters in database."""
+        if not clusters:
+            return
+            
+        with self._get_connection() as conn:
+            # Clear existing data for this project
+            conn.execute("DELETE FROM gke_clusters WHERE project_id = ?", (self.project_id,))
+            
+            # Insert new data
+            for cluster in clusters:
+                conn.execute("""
+                    INSERT INTO gke_clusters (
+                        id, project_id, name, location, location_type, status, endpoint,
+                        current_master_version, current_node_version, initial_node_count,
+                        current_node_count, node_config, network, subnetwork, cluster_ipv4_cidr,
+                        services_ipv4_cidr, locations, enable_autopilot, enable_network_policy,
+                        enable_ip_alias, master_auth, logging_config, monitoring_config,
+                        addons_config, node_pools, legacy_abac_enabled, workload_identity_config,
+                        private_cluster_config, database_encryption, shielded_nodes,
+                        release_channel, data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    cluster["id"], cluster["project_id"], cluster["name"], cluster["location"],
+                    cluster["location_type"], cluster["status"], cluster["endpoint"],
+                    cluster["current_master_version"], cluster["current_node_version"],
+                    cluster["initial_node_count"], cluster["current_node_count"], 
+                    cluster["node_config"], cluster["network"], cluster["subnetwork"],
+                    cluster["cluster_ipv4_cidr"], cluster["services_ipv4_cidr"], cluster["locations"],
+                    cluster["enable_autopilot"], cluster["enable_network_policy"], cluster["enable_ip_alias"],
+                    cluster["master_auth"], cluster["logging_config"], cluster["monitoring_config"],
+                    cluster["addons_config"], cluster["node_pools"], cluster["legacy_abac_enabled"],
+                    cluster["workload_identity_config"], cluster["private_cluster_config"],
+                    cluster["database_encryption"], cluster["shielded_nodes"], cluster["release_channel"],
+                    cluster["data"]
+                ))
+            conn.commit()
 
 
 # Convenience function
