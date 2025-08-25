@@ -636,3 +636,76 @@ def test_to_gke_happy_path(
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+# Label merging tests
+@pytest.mark.parametrize(
+    "extra_gcloud_args, expected_labels",
+    [
+        # No user labels - should only have default ADK label
+        (None, "created-by=adk"),
+        ([], "created-by=adk"),
+        # Single user label
+        (["--labels=env=test"], "created-by=adk,env=test"),
+        # Multiple user labels in same argument
+        (
+            ["--labels=env=test,team=myteam"],
+            "created-by=adk,env=test,team=myteam",
+        ),
+        # User labels mixed with other args
+        (
+            ["--memory=1Gi", "--labels=env=test", "--cpu=1"],
+            "created-by=adk,env=test",
+        ),
+        # Multiple --labels arguments
+        (
+            ["--labels=env=test", "--labels=team=myteam"],
+            "created-by=adk,env=test,team=myteam",
+        ),
+        # Labels with other passthrough args
+        (
+            ["--timeout=300", "--labels=env=prod", "--max-instances=10"],
+            "created-by=adk,env=prod",
+        ),
+    ],
+)
+def test_cloud_run_label_merging(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+    extra_gcloud_args: list[str] | None,
+    expected_labels: str,
+) -> None:
+  """Test that user labels are properly merged with the default ADK label."""
+  src_dir = agent_dir(False, False)
+  run_recorder = _Recorder()
+
+  monkeypatch.setattr(subprocess, "run", run_recorder)
+  monkeypatch.setattr(shutil, "rmtree", lambda x: None)
+
+  # Execute the function under test
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      project="test-project",
+      region="us-central1",
+      service_name="test-service",
+      app_name="test-app",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.0.0",
+      extra_gcloud_args=tuple(extra_gcloud_args) if extra_gcloud_args else None,
+  )
+
+  # Verify that the gcloud command was called
+  assert len(run_recorder.calls) == 1
+  gcloud_args = run_recorder.get_last_call_args()[0]
+
+  # Find the labels argument
+  labels_idx = gcloud_args.index("--labels")
+  actual_labels = gcloud_args[labels_idx + 1]
+
+  assert actual_labels == expected_labels
