@@ -21,7 +21,6 @@ from unittest import mock
 from google.adk.tools.bigquery.client import get_bigquery_client
 from google.auth.exceptions import DefaultCredentialsError
 from google.oauth2.credentials import Credentials
-import pytest
 
 
 def test_bigquery_client_project():
