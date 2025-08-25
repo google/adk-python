@@ -359,6 +359,7 @@ contributing/samples/personal_assistant_agent
 
 # Crush tool (if used)
 .crush/
+crush.md
 
 # Evaluation results
 *.evalset.json
@@ -499,6 +500,7 @@ GRAPH_TD_INTEGRATION_GUIDE.md
 ai_generated/
 CLAUDE.md
 claude.md
+/CLAUDE.md
 
 # Swarm/orchestration artifacts
 swarm_*
