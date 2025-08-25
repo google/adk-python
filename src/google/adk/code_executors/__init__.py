@@ -28,6 +28,7 @@ __all__ = [
     'UnsafeLocalCodeExecutor',
     'VertexAiCodeExecutor',
     'ContainerCodeExecutor',
+    'GkeCodeExecutor',
 ]
 
 
@@ -50,6 +51,16 @@ def __getattr__(name: str):
     except ImportError as e:
       raise ImportError(
           'ContainerCodeExecutor requires additional dependencies. '
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  elif name == 'GkeCodeExecutor':
+    try:
+      from .gke_code_executor import GkeCodeExecutor
+
+      return GkeCodeExecutor
+    except ImportError as e:
+      raise ImportError(
+          'GkeCodeExecutor requires additional dependencies. '
           'Please install with: pip install "google-adk[extensions]"'
       ) from e
   raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
