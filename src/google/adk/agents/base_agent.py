@@ -181,6 +181,18 @@ class BaseAgent(BaseModel):
 
     cloned_agent = self.model_copy(update=update)
 
+    # If any field is stored as list and not provided in the update, need to
+    # shallow copy it for the cloned agent to avoid sharing the same list object
+    # with the original agent.
+    for field_name in cloned_agent.__class__.model_fields:
+      if field_name == 'sub_agents':
+        continue
+      if update is not None and field_name in update:
+        continue
+      field = getattr(cloned_agent, field_name)
+      if isinstance(field, list):
+        setattr(cloned_agent, field_name, field.copy())
+
     if update is None or 'sub_agents' not in update:
       # If `sub_agents` is not provided in the update, need to recursively clone
       # the sub-agents to avoid sharing the sub-agents with the original agent.

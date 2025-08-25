@@ -18,8 +18,6 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from pydantic import BaseModel
-from pydantic import ConfigDict
 from pydantic import model_validator
 from typing_extensions import override
 
@@ -137,7 +135,7 @@ class AgentTool(BaseTool):
     )
     session = await runner.session_service.create_session(
         app_name=self.agent.name,
-        user_id='tmp_user',
+        user_id=tool_context._invocation_context.user_id,
         state=tool_context.state.to_dict(),
     )
 
@@ -164,8 +162,8 @@ class AgentTool(BaseTool):
       tool_result = merged_text
     return tool_result
 
-  @classmethod
   @override
+  @classmethod
   def from_config(
       cls, config: ToolArgsConfig, config_abs_path: str
   ) -> AgentTool:
