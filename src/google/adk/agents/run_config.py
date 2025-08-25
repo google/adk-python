@@ -17,6 +17,7 @@ from __future__ import annotations
 from enum import Enum
 import logging
 import sys
+from typing import Any
 from typing import Optional
 
 from google.genai import types
@@ -107,3 +108,30 @@ class RunConfig(BaseModel):
       )
 
     return value
+
+  # ---------------- OpenAI Realtime (vendor-specific) ----------------
+  openai_realtime_session: Optional[Any] = None
+  """Optional raw OpenAI Realtime session settings.
+
+  These will be forwarded into the OpenAI Realtime `session.update` payload.
+  Examples:
+    {"modalities": ["text"], "turn_detection": {"type": "none"}, "voice": "ash"}
+
+  Accepts either a Python dict or a JSON string. Prefer generic fields
+  (response_modalities, realtime_input_config) when possible. Use this for
+  OpenAI-specific knobs not covered by the generic config.
+
+  Example (dict) with audio configuration:
+    {
+      "modalities": ["audio", "text"],
+      "voice": "ash",
+      "input_audio_format": "pcm16",
+      "output_audio_format": "pcm16",
+      "input_audio_transcription": {"model": "gpt-4o-mini-transcribe", "language": "fr"},
+      "turn_detection": {"type": "semantic_vad"}
+    }
+
+  Notes:
+    - If you pass a JSON string instead of a dict, it will be parsed the same
+      way (single quotes are not valid JSON; use double quotes).
+  """

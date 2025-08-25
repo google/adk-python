@@ -41,6 +41,7 @@ from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .events.event import EventActions
 from .flows.llm_flows.functions import find_matching_function_call
+from .flows.llm_flows.openai_llm_flow import OpenAILlmFlow
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
 from .platform.thread import create_thread
@@ -453,6 +454,90 @@ class Runner:
 
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
       async with Aclosing(ctx.agent.run_live(ctx)) as agen:
+        async for event in agen:
+          yield event
+
+    async with Aclosing(
+        self._exec_with_plugin(invocation_context, session, execute)
+    ) as agen:
+      async for event in agen:
+        yield event
+
+  async def run_realtime(
+      self,
+      *,
+      user_id: Optional[str] = None,
+      session_id: Optional[str] = None,
+      live_request_queue: LiveRequestQueue,
+      run_config: RunConfig = RunConfig(),
+      session: Optional[Session] = None,
+  ) -> AsyncGenerator[Event, None]:
+    """Runs the agent in realtime mode using OpenAI Realtime flow.
+
+    This uses OpenAILlmFlow.run_live under the hood, keeping the same
+    session/plugin orchestration as Runner.run_live, but delegating the
+    live interaction pipeline to the OpenAI-optimized flow.
+
+    Args:
+        user_id: The user ID for the session. Required if `session` is None.
+        session_id: The session ID for the session. Required if `session` is None.
+        live_request_queue: The queue for live requests.
+        run_config: The run config for the agent.
+        session: The session to use. Deprecated; prefer `user_id` and `session_id`.
+
+    Yields:
+        Event objects produced by the OpenAI Realtime flow.
+    """
+    if session is None and (user_id is None or session_id is None):
+      raise ValueError(
+          'Either session or user_id and session_id must be provided.'
+      )
+    if session is not None:
+      warnings.warn(
+          'The `session` parameter is deprecated. Please use `user_id` and'
+          ' `session_id` instead.',
+          DeprecationWarning,
+          stacklevel=2,
+      )
+    if not session:
+      session = await self.session_service.get_session(
+          app_name=self.app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise ValueError(f'Session not found: {session_id}')
+
+    invocation_context = self._new_invocation_context_for_live(
+        session,
+        live_request_queue=live_request_queue,
+        run_config=run_config,
+    )
+
+    root_agent = self.agent
+    invocation_context.agent = self._find_agent_to_run(session, root_agent)
+
+    # Pre-processing for live streaming tools (same as run_live)
+    invocation_context.active_streaming_tools = {}
+    if hasattr(invocation_context.agent, 'tools'):
+      import inspect
+
+      for tool in invocation_context.agent.tools:
+        callable_to_inspect = tool.func if hasattr(tool, 'func') else tool
+        if not callable(callable_to_inspect):
+          continue
+        for param in inspect.signature(callable_to_inspect).parameters.values():
+          if param.annotation is LiveRequestQueue:
+            if not invocation_context.active_streaming_tools:
+              invocation_context.active_streaming_tools = {}
+            active_streaming_tool = ActiveStreamingTool(
+                stream=LiveRequestQueue()
+            )
+            invocation_context.active_streaming_tools[tool.__name__] = (
+                active_streaming_tool
+            )
+
+    async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
+      # Delegate via agent entrypoint for consistency with run_live
+      async with Aclosing(ctx.agent.run_realtime(ctx)) as agen:
         async for event in agen:
           yield event
 

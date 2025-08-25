@@ -18,14 +18,19 @@ from .base_llm import BaseLlm
 from .google_llm import Gemini
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
+from .openai_llm import OpenAIRealtime
 from .registry import LLMRegistry
 
 __all__ = [
     'BaseLlm',
     'Gemini',
+    'OpenAIRealtime',
     'LLMRegistry',
 ]
 
 
 for regex in Gemini.supported_models():
   LLMRegistry.register(Gemini)
+
+for regex in OpenAIRealtime.supported_models():
+  LLMRegistry.register(OpenAIRealtime)

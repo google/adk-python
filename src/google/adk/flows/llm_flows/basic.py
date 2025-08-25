@@ -82,6 +82,24 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
         invocation_context.run_config.session_resumption
     )
 
+    # Vendor-specific: OpenAI Realtime session settings passthrough
+    # These will be consumed by the OpenAI provider when building session.update
+    openai_session = getattr(
+        invocation_context.run_config, 'openai_realtime_session', None
+    )
+    if openai_session is not None:
+      if llm_request.config.labels is None:
+        llm_request.config.labels = {}
+      # Prefer dict passthrough; if a JSON string is provided, pass as-is.
+      payload = openai_session
+      try:
+        # Normalize Pydantic/GenAI types to plain JSON if available
+        if hasattr(types, 'any_serialize'):
+          payload = types.any_serialize(openai_session)
+      except Exception:
+        pass
+      llm_request.config.labels['adk_openai_session_json'] = payload
+
     # TODO: handle tool append here, instead of in BaseTool.process_llm_request.
 
     return

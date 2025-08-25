@@ -40,10 +40,14 @@ from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
+from ..flows.llm_flows.openai_llm_flow import OpenAILlmFlow
+from ..flows.llm_flows.openai_llm_flow import OpenAutoFlow
+from ..flows.llm_flows.openai_llm_flow import OpenSingleFlow
 from ..flows.llm_flows.single_flow import SingleFlow
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
+from ..models.openai_llm import OpenAIRealtime
 from ..models.registry import LLMRegistry
 from ..planners.base_planner import BasePlanner
 from ..tools.base_tool import BaseTool
@@ -300,6 +304,17 @@ class LlmAgent(BaseAgent):
       if ctx.end_invocation:
         return
 
+  @override
+  async def _run_realtime_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    async with Aclosing(self._open_llm_flow.run_live(ctx)) as agen:
+      async for event in agen:
+        self.__maybe_save_output_to_state(event)
+        yield event
+      if ctx.end_invocation:
+        return
+
   @property
   def canonical_model(self) -> BaseLlm:
     """The resolved self.model field as BaseLlm.
@@ -442,6 +457,17 @@ class LlmAgent(BaseAgent):
       return SingleFlow()
     else:
       return AutoFlow()
+
+  @property
+  def _open_llm_flow(self) -> OpenAILlmFlow:
+    if (
+        self.disallow_transfer_to_parent
+        and self.disallow_transfer_to_peers
+        and not self.sub_agents
+    ):
+      return OpenSingleFlow()
+    else:
+      return OpenAutoFlow()
 
   def __maybe_save_output_to_state(self, event: Event):
     """Saves the model output to state if needed."""
