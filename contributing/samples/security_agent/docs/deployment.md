@@ -1,4 +1,15 @@
-# Deployment Guide
+# Deployment Guide - Enhanced UI v2.0
+
+## Overview
+This guide covers deploying the enhanced GCP Security Agent with new UI improvements, export functionality, and accessibility features.
+
+## 🆕 New Features in v2.0
+- 🛡️ Comprehensive error boundary with user-friendly messages
+- 📱 Mobile-responsive design with optimized touch interactions
+- ♿ Full accessibility support (ARIA labels, keyboard navigation)
+- 📋 Export functionality (Markdown reports + JSON data)
+- 🔄 Smart auto-refresh indicators with visual status
+- 📝 Collapsible sidebar for better screen usage
 
 ## Deployment Options
 
@@ -21,13 +32,27 @@ python run_backend.py
 python run_frontend.py
 ```
 
-### Development Configuration
+### Enhanced Development Configuration
 
-Create a `.env` file:
+Create a `.env` file with new UI features:
 ```env
+# Core Configuration
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 BACKEND_URL=http://localhost:8000
+
+# 🆕 Enhanced UI Settings
+SIDEBAR_COLLAPSED=true                    # Default sidebar state
+EXPORT_ENABLED=true                       # Enable export functionality
+ACCESSIBILITY_MODE=enhanced               # Full accessibility features
+MOBILE_OPTIMIZED=true                     # Mobile responsive design
+ERROR_BOUNDARY_ENABLED=true               # Enhanced error handling
+REFRESH_INDICATOR_ENABLED=true            # Visual refresh status
+
+# Performance Settings
+MAX_EXPORT_SIZE=50MB                      # Maximum export file size
+CACHE_TIMEOUT=1800                        # Cache timeout in seconds
+UI_REFRESH_INTERVAL=30000                 # UI refresh interval (ms)
 FRONTEND_URL=http://localhost:8501
 LOG_LEVEL=DEBUG
 ```

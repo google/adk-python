@@ -37,8 +37,20 @@ This tool can retrieve various types of information by specifying the query_type
 **PRIORITY QUERY:**
 - **security_summary** - Get prioritized list of most critical security issues across all domains
 
-1. **assets** - List and analyze GCP assets
-   - Optional parameters: {"asset_type": "compute.googleapis.com/Instance"}
+1. **assets** - List and analyze ALL GCP assets automatically discovered by Cloud Asset Inventory
+   - Optional parameters: 
+     - {"asset_type": "gke"} - Use friendly names like 'gke', 'cloud_run', 'buckets', 'cloud_sql'
+     - {"asset_type": "container.googleapis.com/Cluster"} - Or use full asset type
+     - {"service": "compute"} - Filter by service (compute, storage, container, etc.)
+     - {"name": "prod"} - Search by resource name
+   - Automatically discovers and analyzes 200+ GCP resource types including:
+     * GKE clusters, Cloud Run services, Cloud Functions
+     * Cloud SQL, Spanner, Firestore, BigTable databases
+     * Storage buckets, Filestore, Persistent Disks
+     * Load balancers, VPNs, Firewalls, Networks
+     * BigQuery datasets, Dataflow jobs, Pub/Sub topics
+     * Vertex AI models, KMS keys, Secrets
+     * And ALL other GCP services - no manual implementation needed!
 
 2. **security_findings** - Get security findings from Security Command Center
    - Optional parameters: {"severity": "HIGH"} or {"category": "VULNERABILITY"}
@@ -69,37 +81,40 @@ This tool can retrieve various types of information by specifying the query_type
 13. **compute_instances** - List compute engine instances
     - Optional parameters: {"instance_name": "web-server-1"}
 
-14. **databases** - List database instances (Cloud SQL, Spanner, etc.)
+14. **gke_clusters** - List and analyze GKE clusters
+    - Optional parameters: {"cluster_name": "prod-cluster"}, {"location": "us-central1"}, {"status": "RUNNING"}
 
-15. **iam_accounts** - List IAM service accounts and users
+15. **databases** - List database instances (Cloud SQL, Spanner, etc.)
+
+16. **iam_accounts** - List IAM service accounts and users
     - Optional parameters: {"email": "service-account@project.iam.gserviceaccount.com"}
 
-16. **secrets** - List secrets from Secret Manager
+17. **secrets** - List secrets from Secret Manager
     - Optional parameters: {"secret_name": "api-key"}
 
-17. **cache_status** - Show cache statistics and last update time
+18. **cache_status** - Show cache statistics and last update time
 
-18. **msa_analysis** - View MSA (Monthly Service Announcement) analysis history
+19. **msa_analysis** - View MSA (Monthly Service Announcement) analysis history
     - Shows previously analyzed Google Cloud service announcements
 
-19. **msa_changes** - Query specific MSA changes and their details
+20. **msa_changes** - Query specific MSA changes and their details
     - Optional parameters: {"service": "BigQuery"}, {"impact_level": "high"}, {"permission": "bigquery.datasets.get"}
 
-20. **msa_impact** - Get MSA impact assessments for projects
+21. **msa_impact** - Get MSA impact assessments for projects
     - Optional parameters: {"project_id": "my-project"}
 
-21. **msa_permissions** - Query MSA permission changes with detailed mapping
+22. **msa_permissions** - Query MSA permission changes with detailed mapping
     - Optional parameters: {"permission": "bigquery.datasets.get"} for specific permission analysis
 
-22. **context_aware_analysis** - Full feedback loop analysis connecting MSA changes with security findings, assets, and remediation effectiveness
+23. **context_aware_analysis** - Full feedback loop analysis connecting MSA changes with security findings, assets, and remediation effectiveness
     - This creates a comprehensive context-aware view showing how changes ripple through the entire security posture
     - Optional parameters: {"focus": "msa_impact"}, {"timeframe": "30_days"}
 
-23. **cross_impact_analysis** - Analyze how changes in one security domain affect other domains
+24. **cross_impact_analysis** - Analyze how changes in one security domain affect other domains
     - Shows cascading impacts and domain interconnections
     - Optional parameters: {"domain": "security_findings"}, {"depth": "deep"}
 
-24. **custom** - Execute custom SQL queries (use carefully)
+25. **custom** - Execute custom SQL queries (use carefully)
     - Parameters: {"sql": "SELECT * FROM assets LIMIT 10"}
 
 ## How to Use:
@@ -259,6 +274,25 @@ Always provide helpful, accurate information and suggest next steps for improvin
 - **Deletion Protection**: Enable for critical production instances
 - **Labels**: Use consistent labeling for cost tracking and access control
 - **Snapshots**: Regular automated snapshots for backup and recovery
+
+**For GKE Clusters (gke_clusters table):**
+- **Private Nodes**: Enable private nodes to prevent external IP addresses on worker nodes
+- **Private Endpoint**: Enable private endpoint for the control plane (master)
+- **Network Policy**: Enable network policies to control pod-to-pod communication
+- **RBAC**: Disable legacy ABAC and use Role-Based Access Control exclusively
+- **Node Auto-upgrade**: Enable automatic node pool upgrades for security patches
+- **Shielded GKE Nodes**: Enable Secure Boot and Integrity Monitoring on all node pools
+- **Workload Identity**: Use Workload Identity instead of service account keys in pods
+- **Binary Authorization**: Enable to ensure only verified container images are deployed
+- **Pod Security Standards**: Enforce restricted Pod Security Standards to limit container privileges
+- **Autopilot**: Consider GKE Autopilot for opinionated security defaults
+- **Node Image**: Use Container-Optimized OS (COS) or Ubuntu with containerd
+- **Kubernetes Dashboard**: Disable or secure the Kubernetes Dashboard
+- **Database Encryption**: Enable Application-layer Secrets Encryption (envelope encryption)
+- **Monitoring**: Enable GKE monitoring and logging for security visibility
+- **VPC-native**: Use VPC-native clusters with IP aliasing
+- **Release Channels**: Use Regular or Rapid release channels for timely security updates
+- **Node Pool Security**: Use separate node pools for different workload security requirements
 
 **For Database Instances (databases/assets table):**
 - **Public IPs**: Use private IPs with Cloud SQL Proxy or Private Service Connect

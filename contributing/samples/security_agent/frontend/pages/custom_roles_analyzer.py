@@ -18,7 +18,7 @@ import os
 # Configure page
 st.set_page_config(
     page_title="Custom Roles Analyzer",
-    page_icon="🔐",
+    page_icon=":lock:",
     layout="wide"
 )
 
@@ -97,10 +97,10 @@ def export_recommendations(role_name: str, project_id: str, format: str):
 
 
 # Main UI
-st.title("🔐 Custom Roles Permission Analyzer")
+st.title(":lock: Custom Roles Permission Analyzer")
 st.markdown("""
-Analyze custom IAM roles to identify excessive permissions and recommend
-standard GCP role alternatives following the principle of least privilege.
+**Understand exactly what permissions your custom roles have and what they can access.**  
+Get clear explanations of each permission's impact and actionable recommendations to optimize security.
 """)
 
 # Sidebar configuration
@@ -127,10 +127,10 @@ with st.sidebar:
     
     # Quick actions
     st.subheader("Quick Actions")
-    if st.button("🔄 Refresh Roles", use_container_width=True):
+    if st.button(":arrows_counterclockwise: Refresh Roles", use_container_width=True):
         st.rerun()
     
-    if st.button("📊 Bulk Analysis", use_container_width=True):
+    if st.button(":bar_chart: Bulk Analysis", use_container_width=True):
         if project_id:
             with st.spinner("Running bulk analysis..."):
                 response = httpx.post(
@@ -146,7 +146,7 @@ with st.sidebar:
 # Main content
 if project_id:
     # Create tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Role Analysis", "📊 Dashboard", "🔍 Compare Roles", "📈 Statistics"])
+    tab1, tab2, tab3, tab4 = st.tabs([":clipboard: Role Analysis", ":bar_chart: Dashboard", ":mag: Compare Roles", ":chart_with_upwards_trend: Statistics"])
     
     with tab1:
         st.header("Custom Role Analysis")
@@ -166,7 +166,7 @@ if project_id:
                 )
             
             with col2:
-                analyze_btn = st.button("🔍 Analyze", use_container_width=True, type="primary")
+                analyze_btn = st.button(":mag: Analyze", use_container_width=True, type="primary")
             
             # Get selected role data
             role_data = next((r for r in roles if r["name"] == selected_role), None)
@@ -204,37 +204,104 @@ if project_id:
                     with col2:
                         st.metric("Total Permissions", analysis['total_permissions'])
                         
-                        # Permission categories
+                        # Enhanced permission categories with clear explanations
                         if analysis["permission_categories"]:
-                            st.subheader("Permission Categories")
+                            st.subheader("What This Role Can Access")
+                            
+                            # Create expandable sections for each service category
                             for service, perms in list(analysis["permission_categories"].items())[:5]:
-                                st.write(f"**{service}**: {len(perms)} permissions")
+                                service_name = service.replace("_", " ").title()
+                                with st.expander(f"**{service_name}** ({len(perms)} permissions)", expanded=False):
+                                    # Group permissions by action type
+                                    read_perms = [p for p in perms if any(action in p.lower() for action in ['get', 'list', 'view', 'read'])]
+                                    write_perms = [p for p in perms if any(action in p.lower() for action in ['create', 'update', 'set', 'insert', 'modify'])]
+                                    delete_perms = [p for p in perms if any(action in p.lower() for action in ['delete', 'remove'])]
+                                    admin_perms = [p for p in perms if any(action in p.lower() for action in ['admin', 'manage', '*'])]
+                                    other_perms = [p for p in perms if p not in read_perms + write_perms + delete_perms + admin_perms]
+                                    
+                                    if read_perms:
+                                        st.markdown("**:eyes: Read Access:**")
+                                        for perm in read_perms[:3]:  # Limit to first 3
+                                            st.markdown(f"• `{perm}`")
+                                        if len(read_perms) > 3:
+                                            st.markdown(f"• ... and {len(read_perms) - 3} more read permissions")
+                                    
+                                    if write_perms:
+                                        st.markdown("**:pencil2: Write Access:**")
+                                        for perm in write_perms[:3]:
+                                            st.markdown(f"• `{perm}`")
+                                        if len(write_perms) > 3:
+                                            st.markdown(f"• ... and {len(write_perms) - 3} more write permissions")
+                                    
+                                    if delete_perms:
+                                        st.markdown("**:wastebasket: Delete Access:**")
+                                        for perm in delete_perms:
+                                            st.markdown(f"• `{perm}`")
+                                    
+                                    if admin_perms:
+                                        st.markdown("**:crown: Admin Access:**")
+                                        for perm in admin_perms:
+                                            st.markdown(f"• `{perm}`")
+                                    
+                                    if other_perms:
+                                        st.markdown("**:gear: Other Permissions:**")
+                                        for perm in other_perms[:2]:
+                                            st.markdown(f"• `{perm}`")
+                                        if len(other_perms) > 2:
+                                            st.markdown(f"• ... and {len(other_perms) - 2} more permissions")
                     
                     with col3:
                         st.metric("Standard Role Matches", len(analysis['matches']))
                         
-                        # Top matches
+                        # Enhanced standard role recommendations
                         if analysis["matches"]:
-                            st.subheader("Best Matches")
+                            st.subheader("Recommended Standard Roles")
                             for match in analysis["matches"][:3]:
                                 role_name = match["role"].split("/")[-1]
-                                st.write(f"**{role_name}**")
-                                st.progress(match["match_percentage"] / 100)
-                                st.caption(f"{match['match_type']} - {match['match_percentage']:.0f}%")
+                                match_pct = match["match_percentage"]
+                                
+                                # Create a container for better formatting
+                                with st.container():
+                                    st.markdown(f"**{role_name}**")
+                                    
+                                    # Color-coded progress bar based on match percentage
+                                    if match_pct >= 80:
+                                        st.success(f":white_check_mark: {match_pct:.0f}% match - Excellent replacement")
+                                    elif match_pct >= 60:
+                                        st.warning(f":yellow_heart: {match_pct:.0f}% match - Good alternative")
+                                    else:
+                                        st.info(f":information_source: {match_pct:.0f}% match - Partial coverage")
+                                    
+                                    st.progress(match_pct / 100)
+                                    st.caption(f"**Match Type**: {match['match_type']}")
+                                    st.divider()
                     
-                    # Recommendations section
+                    # Enhanced recommendations section
                     st.divider()
-                    st.subheader("📋 Recommendations")
+                    st.subheader(":clipboard: Security Recommendations")
                     
                     if analysis["recommendations"]:
                         for rec in analysis["recommendations"]:
-                            severity_color = {
-                                "high": "🔴",
-                                "medium": "🟡", 
-                                "low": "🟢"
-                            }.get(rec.get("severity", "low"))
+                            severity = rec.get("severity", "low")
+                            severity_info = {
+                                "high": {
+                                    "color": ":red_circle:",
+                                    "label": "HIGH PRIORITY",
+                                    "style": "error"
+                                },
+                                "medium": {
+                                    "color": ":yellow_circle:", 
+                                    "label": "MEDIUM PRIORITY",
+                                    "style": "warning"
+                                },
+                                "low": {
+                                    "color": ":green_circle:",
+                                    "label": "LOW PRIORITY", 
+                                    "style": "info"
+                                }
+                            }.get(severity, {"color": ":blue_circle:", "label": "PRIORITY", "style": "info"})
                             
-                            with st.expander(f"{severity_color} {rec['message']}"):
+                            with st.expander(f"{severity_info['color']} {severity_info['label']}: {rec['message']}"):
                                 st.write(f"**Type**: {rec.get('type', 'N/A')}")
                                 st.write(f"**Severity**: {rec.get('severity', 'N/A')}")
                                 
@@ -251,11 +318,63 @@ if project_id:
                     else:
                         st.info("No specific recommendations. Role appears to be well-optimized.")
                     
+                    # Role summary section
+                    st.divider()
+                    st.subheader(":memo: Role Summary")
+                    
+                    # Create a clear summary of what this role does
+                    summary_col1, summary_col2 = st.columns(2)
+                    with summary_col1:
+                        st.markdown("**:key: Key Capabilities:**")
+                        if analysis["permission_categories"]:
+                            total_services = len(analysis["permission_categories"])
+                            top_services = list(analysis["permission_categories"].keys())[:3]
+                            st.write(f"• Access to **{total_services} GCP services**")
+                            st.write(f"• Primary services: {', '.join(top_services)}")
+                            st.write(f"• Total of **{analysis['total_permissions']} individual permissions**")
+                        
+                        # Risk assessment
+                        risk_score = analysis.get('risk_score', 0)
+                        if risk_score >= 70:
+                            st.error(f":warning: **High Risk** ({risk_score:.0f}/100)")
+                            st.write("This role has extensive permissions that may violate least privilege principle.")
+                        elif risk_score >= 40:
+                            st.warning(f":exclamation: **Medium Risk** ({risk_score:.0f}/100)")
+                            st.write("This role has moderate permissions that should be reviewed.")
+                        else:
+                            st.success(f":white_check_mark: **Low Risk** ({risk_score:.0f}/100)")
+                            st.write("This role follows good security practices.")
+                    
+                    with summary_col2:
+                        st.markdown("**:bulb: Optimization Opportunities:**")
+                        if analysis["matches"]:
+                            best_match = analysis["matches"][0]
+                            match_pct = best_match["match_percentage"]
+                            if match_pct >= 80:
+                                st.success(f":white_check_mark: **Can be replaced** with standard role `{best_match['role'].split('/')[-1]}`")
+                            elif match_pct >= 60:
+                                st.info(f":information_source: **Consider using** `{best_match['role'].split('/')[-1]}` as a base")
+                            else:
+                                st.warning(":thought_balloon: **Complex custom role** - may need custom solution")
+                        else:
+                            st.info(":gear: **Unique permissions** - no standard role matches found")
+                        
+                        # Action recommendations count
+                        if analysis["recommendations"]:
+                            high_priority = len([r for r in analysis["recommendations"] if r.get("severity") == "high"])
+                            medium_priority = len([r for r in analysis["recommendations"] if r.get("severity") == "medium"])
+                            if high_priority > 0:
+                                st.error(f":red_circle: **{high_priority} critical actions** needed")
+                            elif medium_priority > 0:
+                                st.warning(f":yellow_circle: **{medium_priority} recommended actions**")
+                            else:
+                                st.success(":green_circle: **No critical issues** found")
+                    
                     # Export section
                     st.divider()
                     col1, col2 = st.columns([1, 3])
                     with col1:
-                        if st.button("📥 Export Recommendations", use_container_width=True):
+                        if st.button(":inbox_tray: Export Analysis Report", use_container_width=True):
                             export_data = export_recommendations(selected_role, project_id, export_format)
                             if export_data:
                                 with col2:
@@ -357,7 +476,7 @@ if project_id:
                     key="compare_role2"
                 )
             
-            if st.button("🔍 Compare Roles", use_container_width=True, type="primary"):
+            if st.button(":mag: Compare Roles", use_container_width=True, type="primary"):
                 with st.spinner("Comparing roles..."):
                     try:
                         response = httpx.post(
@@ -486,23 +605,23 @@ if project_id:
             
             # Summary insights
             st.divider()
-            st.subheader("📊 Insights")
+            st.subheader(":bar_chart: Key Insights")
             
             if stats["optimization_potential"] > 30:
                 st.warning(
-                    f"🎯 High optimization potential detected! "
+                    f":dart: **High optimization potential detected!** "
                     f"{stats['optimization_potential']:.0f}% of custom roles could be replaced with standard roles."
                 )
             
             if stats["risk_distribution"]["high"] > stats["active_roles"] * 0.3:
                 st.error(
-                    f"⚠️ {stats['risk_distribution']['high']} high-risk custom roles detected. "
+                    f":warning: **{stats['risk_distribution']['high']} high-risk custom roles detected.** "
                     f"Review and apply principle of least privilege."
                 )
             
             if stats["average_permissions_per_role"] > 50:
                 st.info(
-                    f"💡 Roles have an average of {stats['average_permissions_per_role']:.0f} permissions. "
+                    f":bulb: **Roles have an average of {stats['average_permissions_per_role']:.0f} permissions.** "
                     f"Consider splitting large roles for better security."
                 )
         else:

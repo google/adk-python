@@ -39,6 +39,7 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             - 'security_findings': Get security findings
             - 'iam_analysis': Analyze IAM permissions
             - 'storage_buckets': List and analyze storage buckets
+            - 'gke_clusters': List and analyze GKE clusters
             - 'api_keys': List API keys
             - 'recommendations': Get security recommendations
             - 'org_policies': Check organization policies
@@ -131,6 +132,8 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             return _query_databases(cursor, params)
         elif query_type == 'iam_accounts':
             return _query_iam_accounts(cursor, params)
+        elif query_type == 'gke_clusters':
+            return _query_gke_clusters(cursor, params)
         elif query_type == 'secrets':
             return _query_secrets(cursor, params)
         elif query_type == 'msa_analysis':
@@ -168,44 +171,276 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             conn.close()
 
 def _query_assets(cursor, params: Dict) -> str:
-    """Query GCP assets"""
-    asset_type = params.get('asset_type', '')
+    """Enhanced query for GCP assets with intelligent type mapping and detailed analysis"""
+    
+    # Map friendly names to asset types
+    ASSET_TYPE_MAPPING = {
+        # Compute
+        'gke': 'container.googleapis.com/Cluster',
+        'gke_clusters': 'container.googleapis.com/Cluster',
+        'kubernetes': 'container.googleapis.com/Cluster',
+        'cloud_run': 'run.googleapis.com/Service',
+        'cloud_functions': 'cloudfunctions.googleapis.com/Function',
+        'functions': 'cloudfunctions.googleapis.com/Function',
+        'app_engine': 'appengine.googleapis.com/Application',
+        'compute': 'compute.googleapis.com/Instance',
+        'instances': 'compute.googleapis.com/Instance',
+        'vms': 'compute.googleapis.com/Instance',
+        
+        # Storage & Databases
+        'cloud_sql': 'sqladmin.googleapis.com/Instance',
+        'sql': 'sqladmin.googleapis.com/Instance',
+        'spanner': 'spanner.googleapis.com/Instance',
+        'bigtable': 'bigtableadmin.googleapis.com/Instance',
+        'firestore': 'firestore.googleapis.com/Database',
+        'filestore': 'file.googleapis.com/Instance',
+        'memorystore': 'redis.googleapis.com/Instance',
+        'redis': 'redis.googleapis.com/Instance',
+        'buckets': 'storage.googleapis.com/Bucket',
+        'storage': 'storage.googleapis.com/Bucket',
+        
+        # Networking
+        'load_balancer': 'compute.googleapis.com/ForwardingRule',
+        'vpn': 'compute.googleapis.com/VpnTunnel',
+        'firewall': 'compute.googleapis.com/Firewall',
+        'network': 'compute.googleapis.com/Network',
+        'subnet': 'compute.googleapis.com/Subnetwork',
+        'cloud_nat': 'compute.googleapis.com/Router',
+        
+        # Data & Analytics
+        'bigquery': 'bigquery.googleapis.com/Dataset',
+        'dataflow': 'dataflow.googleapis.com/Job',
+        'dataproc': 'dataproc.googleapis.com/Cluster',
+        'pubsub': 'pubsub.googleapis.com/Topic',
+        'composer': 'composer.googleapis.com/Environment',
+        
+        # AI/ML
+        'vertex_ai': 'aiplatform.googleapis.com/Model',
+        'ml_models': 'ml.googleapis.com/Model',
+        
+        # Security & Identity
+        'kms': 'cloudkms.googleapis.com/CryptoKey',
+        'service_accounts': 'iam.googleapis.com/ServiceAccount',
+        'secrets': 'secretmanager.googleapis.com/Secret',
+    }
+    
+    # Get the requested asset type
+    requested_type = params.get('asset_type', '').lower()
+    service_filter = params.get('service', '').lower()
+    name_filter = params.get('name', '')
+    
+    # Map friendly name to actual asset type
+    if requested_type in ASSET_TYPE_MAPPING:
+        asset_type = ASSET_TYPE_MAPPING[requested_type]
+    else:
+        asset_type = requested_type
     
     if asset_type:
+        # Query specific asset type with full data
         cursor.execute("""
-            SELECT name, asset_type, location, labels, create_time
+            SELECT name, asset_type, display_name, location, state, labels, 
+                   create_time, update_time, data
             FROM assets 
             WHERE asset_type = ?
-            ORDER BY create_time DESC
+            ORDER BY name
         """, (asset_type,))
+        
+        results = cursor.fetchall()
+        
+        if not results:
+            # Try partial match if exact match fails
+            cursor.execute("""
+                SELECT name, asset_type, display_name, location, state, labels,
+                       create_time, update_time, data
+                FROM assets 
+                WHERE asset_type LIKE ?
+                ORDER BY name
+            """, (f'%{requested_type}%',))
+            results = cursor.fetchall()
+    
+    elif service_filter:
+        # Filter by service domain
+        cursor.execute("""
+            SELECT name, asset_type, display_name, location, state, labels,
+                   create_time, update_time, data
+            FROM assets 
+            WHERE asset_type LIKE ?
+            ORDER BY asset_type, name
+        """, (f'%{service_filter}%',))
+        results = cursor.fetchall()
+        
+    elif name_filter:
+        # Search by resource name
+        cursor.execute("""
+            SELECT name, asset_type, display_name, location, state, labels,
+                   create_time, update_time, data
+            FROM assets 
+            WHERE name LIKE ? OR display_name LIKE ?
+            ORDER BY asset_type, name
+        """, (f'%{name_filter}%', f'%{name_filter}%'))
+        results = cursor.fetchall()
+        
     else:
+        # Show summary of all asset types
         cursor.execute("""
             SELECT asset_type, COUNT(*) as count
             FROM assets
             GROUP BY asset_type
             ORDER BY count DESC
         """)
-    
-    results = cursor.fetchall()
+        results = cursor.fetchall()
+        
+        if results:
+            output = "**Asset Inventory Summary:**\n\n"
+            total = sum(row['count'] for row in results)
+            output += f"Total assets discovered: {total}\n\n"
+            
+            # Group by service
+            services = {}
+            for row in results:
+                service = row['asset_type'].split('.')[0]
+                if service not in services:
+                    services[service] = []
+                services[service].append((row['asset_type'], row['count']))
+            
+            output += "**By Service:**\n"
+            for service in sorted(services.keys()):
+                total_in_service = sum(count for _, count in services[service])
+                output += f"\n**{service}** ({total_in_service} assets):\n"
+                for asset_type, count in sorted(services[service], key=lambda x: -x[1])[:5]:
+                    resource_type = asset_type.split('/')[-1] if '/' in asset_type else asset_type
+                    output += f"  - {resource_type}: {count}\n"
+                if len(services[service]) > 5:
+                    output += f"  ... and {len(services[service]) - 5} more types\n"
+            
+            output += "\n**Quick Queries:**\n"
+            output += "- Use `asset_type: 'gke'` to see GKE clusters\n"
+            output += "- Use `asset_type: 'cloud_run'` to see Cloud Run services\n"
+            output += "- Use `asset_type: 'buckets'` to see Storage buckets\n"
+            output += "- Use `service: 'compute'` to see all Compute resources\n"
+            output += "- Use `name: 'prod'` to search by resource name\n"
+            
+            return output
     
     if not results:
-        return "No assets found in cache."
+        return f"No assets found matching the criteria. Try 'assets' with no parameters to see available types."
     
-    if asset_type:
-        output = f"📦 Assets of type {asset_type}:\n\n"
+    # Format detailed results for specific queries
+    if asset_type or service_filter or name_filter:
+        output = f"**Found {len(results)} asset(s):**\n\n"
+        
+        # Group by asset type
+        by_type = {}
         for row in results:
-            output += f"• {row['name']}\n"
-            output += f"  Location: {row['location']}\n"
-            output += f"  Created: {row['create_time']}\n"
-            if row['labels']:
-                output += f"  Labels: {row['labels']}\n"
-            output += "\n"
-    else:
-        output = "📊 Asset Summary:\n\n"
-        total = sum(row['count'] for row in results)
-        output += f"Total assets: {total}\n\n"
+            asset_type = row['asset_type']
+            if asset_type not in by_type:
+                by_type[asset_type] = []
+            by_type[asset_type].append(row)
+        
+        for asset_type, assets in by_type.items():
+            resource_type = asset_type.split('/')[-1] if '/' in asset_type else asset_type
+            output += f"**{resource_type}** ({len(assets)} items):\n\n"
+            
+            for asset in assets[:10]:  # Limit to first 10 per type
+                # Parse the full data for detailed info
+                try:
+                    full_data = json.loads(asset['data'])
+                    resource_data = full_data.get('resource', {}).get('data', {})
+                except:
+                    resource_data = {}
+                
+                # Extract key information based on asset type
+                name = asset['display_name'] or asset['name'].split('/')[-1]
+                output += f"**{name}**\n"
+                
+                if asset['location']:
+                    output += f"  Location: {asset['location']}\n"
+                if asset['state']:
+                    output += f"  State: {asset['state']}\n"
+                
+                # Add type-specific details
+                if 'container.googleapis.com/Cluster' in asset_type:
+                    # GKE specific details
+                    if resource_data:
+                        output += f"  Version: {resource_data.get('currentMasterVersion', 'N/A')}\n"
+                        output += f"  Node Count: {resource_data.get('currentNodeCount', 'N/A')}\n"
+                        output += f"  Status: {resource_data.get('status', 'N/A')}\n"
+                        if resource_data.get('autopilot', {}).get('enabled'):
+                            output += f"  Mode: Autopilot\n"
+                        
+                elif 'run.googleapis.com/Service' in asset_type:
+                    # Cloud Run specific details
+                    if resource_data:
+                        output += f"  URL: {resource_data.get('status', {}).get('url', 'N/A')}\n"
+                        output += f"  Platform: {resource_data.get('metadata', {}).get('annotations', {}).get('run.googleapis.com/launch-stage', 'N/A')}\n"
+                        
+                elif 'storage.googleapis.com/Bucket' in asset_type:
+                    # Storage bucket specific details
+                    if resource_data:
+                        output += f"  Storage Class: {resource_data.get('storageClass', 'N/A')}\n"
+                        output += f"  Versioning: {resource_data.get('versioning', {}).get('enabled', False)}\n"
+                        output += f"  Public Access: {resource_data.get('iamConfiguration', {}).get('publicAccessPrevention', 'N/A')}\n"
+                
+                elif 'compute.googleapis.com/Instance' in asset_type:
+                    # VM instance specific details
+                    if resource_data:
+                        output += f"  Machine Type: {resource_data.get('machineType', '').split('/')[-1]}\n"
+                        output += f"  Status: {resource_data.get('status', 'N/A')}\n"
+                        
+                # Show labels if present
+                if asset['labels'] and asset['labels'] != '{}':
+                    try:
+                        labels = json.loads(asset['labels'])
+                        if labels:
+                            output += f"  Labels: {', '.join(f'{k}={v}' for k, v in labels.items())}\n"
+                    except:
+                        pass
+                
+                output += "\n"
+            
+            if len(assets) > 10:
+                output += f"... and {len(assets) - 10} more {resource_type} resources\n\n"
+        
+        # Add security recommendations based on discovered assets
+        output += "\n**Security Insights:**\n"
+        
+        # Check for risky configurations
+        security_issues = []
         for row in results:
-            output += f"• {row['asset_type']}: {row['count']}\n"
+            try:
+                full_data = json.loads(row['data'])
+                resource_data = full_data.get('resource', {}).get('data', {})
+                
+                # Check GKE clusters
+                if 'container.googleapis.com/Cluster' in row['asset_type']:
+                    if not resource_data.get('privateClusterConfig', {}).get('enablePrivateNodes'):
+                        security_issues.append(f"- GKE cluster '{row['display_name']}' has public nodes")
+                    if resource_data.get('legacyAbac', {}).get('enabled'):
+                        security_issues.append(f"- GKE cluster '{row['display_name']}' has legacy ABAC enabled")
+                        
+                # Check storage buckets  
+                elif 'storage.googleapis.com/Bucket' in row['asset_type']:
+                    if resource_data.get('iamConfiguration', {}).get('publicAccessPrevention') == 'inherited':
+                        security_issues.append(f"- Bucket '{row['display_name']}' may allow public access")
+                        
+                # Check Cloud SQL
+                elif 'sqladmin.googleapis.com/Instance' in row['asset_type']:
+                    if resource_data.get('settings', {}).get('ipConfiguration', {}).get('authorizedNetworks'):
+                        for network in resource_data.get('settings', {}).get('ipConfiguration', {}).get('authorizedNetworks', []):
+                            if network.get('value') == '0.0.0.0/0':
+                                security_issues.append(f"- Cloud SQL '{row['display_name']}' allows connections from anywhere")
+                                
+            except Exception as e:
+                continue
+        
+        if security_issues:
+            output += "\n**Potential Security Issues Found:**\n"
+            for issue in security_issues[:10]:
+                output += issue + "\n"
+            if len(security_issues) > 10:
+                output += f"... and {len(security_issues) - 10} more issues\n"
+        else:
+            output += "- No obvious security issues detected in these assets\n"
     
     return output
 
@@ -1046,6 +1281,146 @@ def _query_iam_accounts(cursor, params: Dict) -> str:
                 output += f"  • {user['email']}\n"
             if len(user_accounts) > 5:
                 output += f"  ... and {len(user_accounts) - 5} more\n"
+    
+    return output
+
+def _query_gke_clusters(cursor, params: Dict) -> str:
+    """Query GKE clusters"""
+    cluster_name = params.get('cluster_name', '')
+    location = params.get('location', '')
+    status = params.get('status', '')
+    
+    # Build dynamic query based on parameters
+    base_query = "SELECT * FROM gke_clusters WHERE 1=1"
+    query_params = []
+    
+    if cluster_name:
+        base_query += " AND name LIKE ?"
+        query_params.append(f'%{cluster_name}%')
+    
+    if location:
+        base_query += " AND location LIKE ?"
+        query_params.append(f'%{location}%')
+        
+    if status:
+        base_query += " AND status = ?"
+        query_params.append(status.upper())
+    
+    base_query += " ORDER BY name"
+    
+    cursor.execute(base_query, query_params)
+    clusters = cursor.fetchall()
+    
+    if not clusters:
+        return "No GKE clusters found matching the criteria."
+    
+    output = f"Found {len(clusters)} GKE cluster(s):\n\n"
+    
+    for cluster in clusters:
+        # Parse JSON fields safely
+        try:
+            node_config = json.loads(cluster['node_config']) if cluster['node_config'] else {}
+            private_config = json.loads(cluster['private_cluster_config']) if cluster['private_cluster_config'] else {}
+            addons_config = json.loads(cluster['addons_config']) if cluster['addons_config'] else {}
+            node_pools = json.loads(cluster['node_pools']) if cluster['node_pools'] else []
+        except (json.JSONDecodeError, TypeError):
+            node_config = {}
+            private_config = {}
+            addons_config = {}
+            node_pools = []
+        
+        # Basic cluster info
+        output += f"**{cluster['name']}**\n"
+        output += f"   Location: {cluster['location']} ({cluster['location_type']})\n"
+        output += f"   Status: {cluster['status']}\n"
+        output += f"   Master Version: {cluster['current_master_version'] or 'N/A'}\n"
+        output += f"   Node Version: {cluster['current_node_version'] or 'N/A'}\n"
+        output += f"   Node Count: {cluster['current_node_count'] or 0}\n"
+        
+        # Network configuration
+        if cluster['network'] or cluster['subnetwork']:
+            output += f"   Network: {cluster['network'] or 'default'}\n"
+            if cluster['subnetwork']:
+                output += f"   Subnetwork: {cluster['subnetwork']}\n"
+        
+        # Security features
+        security_features = []
+        if cluster['enable_network_policy']:
+            security_features.append("Network Policy")
+        if cluster['enable_ip_alias']:
+            security_features.append("IP Alias")
+        if private_config.get('enable_private_nodes'):
+            security_features.append("Private Nodes")
+        if private_config.get('enable_private_endpoint'):
+            security_features.append("Private Endpoint")
+        if not cluster['legacy_abac_enabled']:
+            security_features.append("RBAC (ABAC disabled)")
+        
+        if security_features:
+            output += f"   Security: {', '.join(security_features)}\n"
+        
+        # Autopilot mode
+        if cluster['enable_autopilot']:
+            output += f"   Mode: Autopilot (managed)\n"
+        else:
+            output += f"   Mode: Standard\n"
+        
+        # Node pools summary
+        if node_pools:
+            output += f"   Node Pools: {len(node_pools)}\n"
+            for i, pool in enumerate(node_pools[:3]):  # Show first 3 pools
+                machine_type = pool.get('config', {}).get('machine_type', 'N/A')
+                output += f"     - {pool.get('name', f'pool-{i+1}')}: {machine_type}\n"
+            if len(node_pools) > 3:
+                output += f"     ... and {len(node_pools) - 3} more pools\n"
+        
+        # Security warnings
+        warnings = []
+        if cluster['legacy_abac_enabled']:
+            warnings.append("WARNING: Legacy ABAC is enabled (security risk)")
+        if not cluster['enable_network_policy']:
+            warnings.append("WARNING: Network policy is disabled")
+        if not private_config.get('enable_private_nodes', False):
+            warnings.append("WARNING: Nodes are not private")
+        if addons_config.get('kubernetes_dashboard', {}).get('disabled') is False:
+            warnings.append("WARNING: Kubernetes Dashboard may be enabled")
+        
+        if warnings:
+            output += "\n   Security Warnings:\n"
+            for warning in warnings:
+                output += f"   {warning}\n"
+        
+        output += "\n"
+    
+    # Summary statistics
+    output += "**Summary:**\n"
+    total_nodes = sum(cluster['current_node_count'] or 0 for cluster in clusters)
+    autopilot_count = sum(1 for cluster in clusters if cluster['enable_autopilot'])
+    private_count = sum(1 for cluster in clusters 
+                       if json.loads(cluster['private_cluster_config'] or '{}').get('enable_private_nodes', False))
+    
+    output += f"   Total Clusters: {len(clusters)}\n"
+    output += f"   Total Nodes: {total_nodes}\n"
+    output += f"   Autopilot Clusters: {autopilot_count}\n"
+    output += f"   Private Clusters: {private_count}\n"
+    
+    # Security recommendations
+    if len(clusters) > 0:
+        output += "\n**Security Recommendations:**\n"
+        non_private_clusters = len(clusters) - private_count
+        if non_private_clusters > 0:
+            output += f"   - Enable private nodes for {non_private_clusters} cluster(s)\n"
+        
+        legacy_abac_clusters = sum(1 for cluster in clusters if cluster['legacy_abac_enabled'])
+        if legacy_abac_clusters > 0:
+            output += f"   - Disable legacy ABAC for {legacy_abac_clusters} cluster(s)\n"
+        
+        no_network_policy = sum(1 for cluster in clusters if not cluster['enable_network_policy'])
+        if no_network_policy > 0:
+            output += f"   - Enable network policies for {no_network_policy} cluster(s)\n"
+        
+        if autopilot_count < len(clusters):
+            output += f"   - Consider Autopilot mode for better security defaults\n"
     
     return output
 
