@@ -30,6 +30,7 @@ __all__ = [
     'ContainerCodeExecutor',
 ]
 
+
 def __getattr__(name: str):
   if name == 'VertexAiCodeExecutor':
     try:
@@ -51,17 +52,4 @@ def __getattr__(name: str):
           'ContainerCodeExecutor requires additional dependencies. '
           'Please install with: pip install "google-adk[extensions]"'
       ) from e
-  
   raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
-try:
-  from .gke_code_executor import GkeCodeExecutor
-
-  __all__.append('GkeCodeExecutor')
-except ImportError:
-  logger.debug(
-      'The kubernetes sdk is not installed. If you want to use the GKE Code'
-      ' Executor with agents, please install it. If not, you can ignore this'
-      ' warning.'
-  )
