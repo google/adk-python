@@ -164,7 +164,10 @@ def test_resolve_project_from_gcloud_fails(
             "sqlite://s",
             "gs://a",
             "rag://m",
-            "--session_service_uri=sqlite://s --artifact_service_uri=gs://a --memory_service_uri=rag://m",
+            (
+                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
+                " --memory_service_uri=rag://m"
+            ),
         ),
         (
             "1.2.5",
