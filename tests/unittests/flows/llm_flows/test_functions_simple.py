@@ -19,6 +19,7 @@ from typing import Callable
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import find_matching_function_call
+from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
@@ -929,6 +930,121 @@ async def test_async_function_without_yield_blocks_others():
 
   # Non-yielding async function blocks, so execution is sequential: A, B, C, D
   assert execution_order == ['non_yield_A', 'non_yield_B', 'yield_C', 'yield_D']
+
+
+def test_merge_parallel_function_response_events_preserves_invocation_id():
+  """Test that merge_parallel_function_response_events preserves the base event's invocation_id."""
+  # Create multiple function response events with different invocation IDs
+  invocation_id = 'base_invocation_123'
+
+  function_response1 = types.FunctionResponse(
+      id='func_123', name='test_function1', response={'result': 'success1'}
+  )
+
+  function_response2 = types.FunctionResponse(
+      id='func_456', name='test_function2', response={'result': 'success2'}
+  )
+
+  event1 = Event(
+      invocation_id=invocation_id,
+      author='test_agent',
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response1)]
+      ),
+  )
+
+  event2 = Event(
+      invocation_id='different_invocation_456',  # Different invocation ID
+      author='test_agent',
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response2)]
+      ),
+  )
+
+  # Merge the events
+  merged_event = merge_parallel_function_response_events([event1, event2])
+
+  # Should preserve the base event's (first event's) invocation_id
+  assert merged_event.invocation_id == invocation_id
+  assert merged_event.invocation_id != 'different_invocation_456'
+
+  # Should contain both function responses
+  assert len(merged_event.content.parts) == 2
+
+  # Verify the responses are preserved
+  response_ids = {
+      part.function_response.id for part in merged_event.content.parts
+  }
+  assert 'func_123' in response_ids
+  assert 'func_456' in response_ids
+
+
+def test_merge_parallel_function_response_events_single_event():
+  """Test that merge_parallel_function_response_events returns single event unchanged."""
+  invocation_id = 'single_invocation_123'
+
+  function_response = types.FunctionResponse(
+      id='func_123', name='test_function', response={'result': 'success'}
+  )
+
+  event = Event(
+      invocation_id=invocation_id,
+      author='test_agent',
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response)]
+      ),
+  )
+
+  # Merge single event
+  merged_event = merge_parallel_function_response_events([event])
+
+  # Should return the same event object
+  assert merged_event is event
+  assert merged_event.invocation_id == invocation_id
+
+
+def test_merge_parallel_function_response_events_preserves_other_attributes():
+  """Test that merge_parallel_function_response_events preserves other attributes from base event."""
+  invocation_id = 'base_invocation_123'
+  base_author = 'base_agent'
+  base_branch = 'main_branch'
+
+  function_response1 = types.FunctionResponse(
+      id='func_123', name='test_function1', response={'result': 'success1'}
+  )
+
+  function_response2 = types.FunctionResponse(
+      id='func_456', name='test_function2', response={'result': 'success2'}
+  )
+
+  event1 = Event(
+      invocation_id=invocation_id,
+      author=base_author,
+      branch=base_branch,
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response1)]
+      ),
+  )
+
+  event2 = Event(
+      invocation_id='different_invocation_456',
+      author='different_agent',  # Different author
+      branch='different_branch',  # Different branch
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response2)]
+      ),
+  )
+
+  # Merge the events
+  merged_event = merge_parallel_function_response_events([event1, event2])
+
+  # Should preserve base event's attributes
+  assert merged_event.invocation_id == invocation_id
+  assert merged_event.author == base_author
+  assert merged_event.branch == base_branch
+
+  # Should contain both function responses
+  assert len(merged_event.content.parts) == 2
 
 
 @pytest.mark.asyncio

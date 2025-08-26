@@ -78,7 +78,11 @@ def create_final_model_response_event(
   from google.genai import types
 
   # Create a proper model response event
-  final_event = Event(author=invocation_context.agent.name)
+  final_event = Event(
+      author=invocation_context.agent.name,
+      invocation_id=invocation_context.invocation_id,
+      branch=invocation_context.branch,
+  )
   final_event.content = types.Content(
       role='model', parts=[types.Part(text=json_response)]
   )

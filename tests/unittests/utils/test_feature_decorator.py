@@ -206,8 +206,12 @@ def test_working_in_progress_loads_from_dotenv_file():
       del os.environ["ADK_ALLOW_WIP_FEATURES"]
 
 
-def test_experimental_function_warns():
+def test_experimental_function_warns(monkeypatch):
   """Test that experimental function shows warnings (unchanged behavior)."""
+  # Ensure environment variable is not set
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 
@@ -220,8 +224,12 @@ def test_experimental_function_warns():
     assert "breaking change in the future" in str(w[0].message)
 
 
-def test_experimental_class_warns():
+def test_experimental_class_warns(monkeypatch):
   """Test that experimental class shows warnings (unchanged behavior)."""
+  # Ensure environment variable is not set
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 
@@ -233,6 +241,55 @@ def test_experimental_class_warns():
     assert issubclass(w[0].category, UserWarning)
     assert "[EXPERIMENTAL] ExperimentalClass:" in str(w[0].message)
     assert "class may change" in str(w[0].message)
+
+
+def test_experimental_function_bypassed_with_env_var(monkeypatch):
+  """Experimental function emits no warning when bypass env var is true."""
+  true_values = ["true", "True", "TRUE", "1", "yes", "YES", "on", "ON"]
+  for true_val in true_values:
+    monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", true_val)
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      result = experimental_fn()
+      assert result == "executing"
+      assert len(w) == 0, f"Bypass failed for env value {true_val}"
+
+
+def test_experimental_class_bypassed_with_env_var(monkeypatch):
+  """Experimental class emits no warning when bypass env var is true."""
+  true_values = ["true", "True", "TRUE", "1", "yes", "YES", "on", "ON"]
+  for true_val in true_values:
+    monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", true_val)
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      exp_class = ExperimentalClass()
+      result = exp_class.run()
+      assert result == "running experimental"
+      assert len(w) == 0, f"Bypass failed for env value {true_val}"
+
+
+def test_experimental_function_not_bypassed_for_false_env_var(monkeypatch):
+  """Experimental function still warns for non-true bypass env var values."""
+  false_values = ["false", "False", "FALSE", "0", "", "no", "off"]
+  for false_val in false_values:
+    monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", false_val)
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      experimental_fn()
+      assert len(w) == 1
+      assert "[EXPERIMENTAL] experimental_fn:" in str(w[0].message)
+
+
+def test_experimental_class_not_bypassed_for_false_env_var(monkeypatch):
+  """Experimental class still warns for non-true bypass env var values."""
+  false_values = ["false", "False", "FALSE", "0", "", "no", "off"]
+  for false_val in false_values:
+    monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", false_val)
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      ExperimentalClass()
+      assert len(w) == 1
+      assert "[EXPERIMENTAL] ExperimentalClass:" in str(w[0].message)
 
 
 def test_experimental_class_no_parens_warns():

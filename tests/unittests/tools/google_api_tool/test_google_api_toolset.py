@@ -425,3 +425,29 @@ class TestGoogleApiToolset:
 
     tool_set.set_tool_filter(new_filter_predicate)
     assert tool_set.tool_filter == new_filter_predicate
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  def test_init_with_tool_name_prefix(
+      self,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    """Test GoogleApiToolset initialization with tool_name_prefix."""
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    tool_name_prefix = "test_prefix"
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME,
+        api_version=TEST_API_VERSION,
+        tool_name_prefix=tool_name_prefix,
+    )
+
+    assert tool_set.tool_name_prefix == tool_name_prefix

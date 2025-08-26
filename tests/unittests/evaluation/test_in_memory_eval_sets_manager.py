@@ -41,8 +41,7 @@ def eval_case_id():
 
 
 def test_create_eval_set(manager, app_name, eval_set_id):
-  manager.create_eval_set(app_name, eval_set_id)
-  eval_set = manager.get_eval_set(app_name, eval_set_id)
+  eval_set = manager.create_eval_set(app_name, eval_set_id)
   assert eval_set is not None
   assert eval_set.eval_set_id == eval_set_id
   assert eval_set.eval_cases == []

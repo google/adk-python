@@ -230,6 +230,8 @@ async def test_output_schema_helper_functions():
   # Test create_final_model_response_event function
   final_event = create_final_model_response_event(invocation_context, test_json)
   assert final_event.author == 'test_agent'
+  assert final_event.invocation_id == invocation_context.invocation_id
+  assert final_event.branch == invocation_context.branch
   assert final_event.content.role == 'model'
   assert final_event.content.parts[0].text == test_json
 
@@ -348,6 +350,8 @@ async def test_flow_yields_both_events_for_set_model_response():
   # Second event should be the final model response with JSON
   second_event = events[1]
   assert second_event.author == 'test_agent'
+  assert second_event.invocation_id == invocation_context.invocation_id
+  assert second_event.branch == invocation_context.branch
   assert second_event.content.role == 'model'
   assert (
       second_event.content.parts[0].text

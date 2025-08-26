@@ -48,6 +48,7 @@ class TestSpannerCredentials:
     assert config.client_id == "test_client_id"
     assert config.client_secret == "test_client_secret"
     assert config.scopes == [
+        "https://www.googleapis.com/auth/spanner.admin",
         "https://www.googleapis.com/auth/spanner.data",
     ]
 
