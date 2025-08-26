@@ -18,7 +18,7 @@ import socket
 
 def deploy_to_cloud(project_id):
     """Deploy backend to Cloud Run using Cloud Build."""
-    print(f"☁️  Deploying backend to Cloud Run (Project: {project_id})...")
+    print(f"[CLOUD] Deploying backend to Cloud Run (Project: {project_id})...")
     print("=" * 50)
     
     # Change to deploy directory where cloudbuild.yaml is located
@@ -34,20 +34,20 @@ def deploy_to_cloud(project_id):
         "."
     ]
     
-    print(f"🔧 Command: {' '.join(cmd)}")
-    print("📦 Building and deploying backend service...")
+    print(f"[CONFIG] Command: {' '.join(cmd)}")
+    print("[BUILD] Building and deploying backend service...")
     
     try:
         subprocess.run(cmd, check=True, cwd=os.path.dirname(__file__))
-        print("✅ Backend deployed successfully!")
-        print(f"🔗 Service URL: https://security-agent-backend-<hash>-uc.a.run.app")
+        print("[SUCCESS] Backend deployed successfully!")
+        print(f"[URL] Service URL: https://security-agent-backend-<hash>-uc.a.run.app")
     except subprocess.CalledProcessError as e:
-        print(f"❌ Deployment failed: {e}")
+        print(f"[ERROR] Deployment failed: {e}")
         sys.exit(1)
 
 def kill_existing_backend(port='8000'):
     """Kill any existing processes on the specified port."""
-    print(f"🔍 Checking for existing processes on port {port}...")
+    print(f"[CHECK] Checking for existing processes on port {port}...")
     
     try:
         # Check if port is in use
@@ -56,7 +56,7 @@ def kill_existing_backend(port='8000'):
         sock.close()
         
         if result == 0:
-            print(f"⚠️ Port {port} is already in use")
+            print(f"[WARNING] Port {port} is already in use")
             
             # Find and kill processes using lsof
             try:
@@ -71,7 +71,7 @@ def kill_existing_backend(port='8000'):
                     pids = result.stdout.strip().split('\n')
                     for pid in pids:
                         if pid:
-                            print(f"🛑 Killing process {pid} on port {port}")
+                            print(f"[KILL] Killing process {pid} on port {port}")
                             try:
                                 os.kill(int(pid), signal.SIGKILL)
                             except ProcessLookupError:
@@ -79,17 +79,17 @@ def kill_existing_backend(port='8000'):
                     
                     # Wait for processes to die
                     time.sleep(2)
-                    print(f"✅ Cleared port {port}")
+                    print(f"[SUCCESS] Cleared port {port}")
                     
             except Exception as e:
-                print(f"⚠️ Could not kill processes: {e}")
+                print(f"[WARNING] Could not kill processes: {e}")
                 print("You may need to manually kill the process or use a different port")
                 
         else:
-            print(f"✅ Port {port} is free")
+            print(f"[OK] Port {port} is free")
             
     except Exception as e:
-        print(f"⚠️ Error checking port: {e}")
+        print(f"[ERROR] Error checking port: {e}")
 
 def run_local():
     """Start the FastAPI backend server locally."""
@@ -101,19 +101,19 @@ def run_local():
     if not is_cloud_run:
         kill_existing_backend(port)
     
-    print("🚀 Starting GCP Security Agent Backend (FastAPI)")
+    print("[STARTUP] Starting GCP Security Agent Backend (FastAPI)")
     print("=" * 50)
-    print("📋 Backend Services:")
-    print("  • Data refresh from GCP APIs")
-    print("  • SQLite cache management")
-    print("  • Security analysis endpoints")
-    print("  • Tool implementations for agent")
+    print("[SERVICES] Backend Services:")
+    print("  - Data refresh from GCP APIs")
+    print("  - SQLite cache management")
+    print("  - Security analysis endpoints")
+    print("  - Tool implementations for agent")
     print("=" * 50)
     
     if is_cloud_run:
-        print("☁️  Running in Cloud Run environment")
+        print("[ENV] Running in Cloud Run environment")
     else:
-        print("💻 Running in local development mode")
+        print("[ENV] Running in local development mode")
     
     # Load environment variables from .env if it exists (local dev only)
     if not is_cloud_run:
@@ -122,14 +122,14 @@ def run_local():
         if env_file.exists():
             from dotenv import load_dotenv
             load_dotenv(env_file)
-            print(f"✅ Loaded environment from: {env_file}")
+            print(f"[CONFIG] Loaded environment from: {env_file}")
     
     # Set environment variables with defaults
     if not os.environ.get('GOOGLE_CLOUD_PROJECT'):
         # Default to a placeholder - user should set their own
         os.environ['GOOGLE_CLOUD_PROJECT'] = os.getenv('GOOGLE_CLOUD_PROJECT', 'your-project-id')
         if os.environ['GOOGLE_CLOUD_PROJECT'] == 'your-project-id' and not is_cloud_run:
-            print("⚠️ GOOGLE_CLOUD_PROJECT not set. Please set it in .env file")
+            print("[WARNING] GOOGLE_CLOUD_PROJECT not set. Please set it in .env file")
     
     # Set Google Application Credentials if not already set (local dev only)
     if not os.environ.get('GOOGLE_APPLICATION_CREDENTIALS') and not is_cloud_run:
@@ -144,20 +144,20 @@ def run_local():
                 # Use the first JSON file found
                 service_account_path = json_files[0]
                 os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = service_account_path
-                print(f"✅ Set GOOGLE_APPLICATION_CREDENTIALS to: {service_account_path}")
+                print(f"[CREDS] Set GOOGLE_APPLICATION_CREDENTIALS to: {service_account_path}")
             else:
-                print("⚠️ No service account JSON files found in config/secrets/")
+                print("[WARNING] No service account JSON files found in config/secrets/")
         else:
-            print("⚠️ Service account directory not found, will use default credentials")
+            print("[WARNING] Service account directory not found, will use default credentials")
     
     # Change to backend directory - IMPORTANT for correct imports
     backend_dir = os.path.join(os.path.dirname(__file__), "backend")
     if os.path.exists(backend_dir):
         os.chdir(backend_dir)
-        print(f"📂 Changed to backend directory: {os.getcwd()}")
+        print(f"[DIR] Changed to backend directory: {os.getcwd()}")
     else:
-        print(f"⚠️ Backend directory not found at {backend_dir}")
-        print(f"📂 Current directory: {os.getcwd()}")
+        print(f"[WARNING] Backend directory not found at {backend_dir}")
+        print(f"[DIR] Current directory: {os.getcwd()}")
     
     # Configure uvicorn based on environment
     if is_cloud_run:
@@ -178,9 +178,9 @@ def run_local():
             "--port", port
         ]
     
-    print(f"📂 Working directory: {os.getcwd()}")
-    print(f"🔧 Command: {' '.join(cmd)}")
-    print(f"🌍 Project: {os.environ.get('GOOGLE_CLOUD_PROJECT')}")
+    print(f"[DIR] Working directory: {os.getcwd()}")
+    print(f"[CMD] Command: {' '.join(cmd)}")
+    print(f"[PROJECT] Project: {os.environ.get('GOOGLE_CLOUD_PROJECT')}")
     print("=" * 50)
     
     if is_cloud_run:
@@ -195,9 +195,9 @@ def run_local():
     try:
         subprocess.run(cmd, check=True)
     except KeyboardInterrupt:
-        print("\n👋 Backend stopped.")
+        print("\n[STOP] Backend stopped.")
     except subprocess.CalledProcessError as e:
-        print(f"❌ Error starting backend: {e}")
+        print(f"[ERROR] Error starting backend: {e}")
         sys.exit(1)
 
 def main():
@@ -213,13 +213,13 @@ def main():
     if env_file.exists():
         from dotenv import load_dotenv
         load_dotenv(env_file)
-        print(f"✅ Loaded environment from: {env_file}")
+        print(f"[CONFIG] Loaded environment from: {env_file}")
     
     if args.cloud:
         # Get project ID from environment
         project_id = os.environ.get('GOOGLE_CLOUD_PROJECT')
         if not project_id or project_id == 'your-project-id':
-            print("❌ GOOGLE_CLOUD_PROJECT not set in .env file")
+            print("[ERROR] GOOGLE_CLOUD_PROJECT not set in .env file")
             print("Please set GOOGLE_CLOUD_PROJECT in your .env file")
             sys.exit(1)
         deploy_to_cloud(project_id)
