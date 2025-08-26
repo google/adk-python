@@ -2117,18 +2117,14 @@ def display_feedback_analytics():
             
             if st.button("🎯 Generate ADK Evalset", type="primary"):
                 generate_evalset_from_feedback(min_feedback)
-            
-            with col2:
-                st.markdown("**Feedback Quality Metrics**")
-                
-                # Calculate quality metrics
-                st.metric("Total Feedback", f"{total_feedback}")
-                st.metric("Average Rating", f"{avg_rating:.1f}/5.0" if avg_rating else "No ratings")
-                st.metric("Evalset Ready", f"{min(total_feedback, 25)}/25")
         
-        else:
-            st.error(f"Failed to fetch feedback metrics: {response.status_code}")
-            st.info("Make sure the backend is running and the feedback API is available.")
+        with col2:
+            st.markdown("**Feedback Quality Metrics**")
+            
+            # Calculate quality metrics
+            st.metric("Total Feedback", f"{total_feedback}")
+            st.metric("Average Rating", f"{avg_rating:.1f}/5.0" if avg_rating else "No ratings")
+            st.metric("Evalset Ready", f"{min(total_feedback, 25)}/25")
     
     except Exception as e:
         st.error(f"Error loading feedback analytics: {e}")
