@@ -28,9 +28,6 @@ WORKDIR /app
 # Create a non-root user
 RUN adduser --disabled-password --gecos "" myuser
 
-# Change ownership of /app to myuser
-RUN chown -R myuser:myuser /app
-
 # Switch to the non-root user
 USER myuser
 
@@ -49,8 +46,8 @@ RUN pip install google-adk=={adk_version}
 
 # Copy agent - Start
 
-COPY "agents/{app_name}/" "/app/agents/{app_name}/"
-{install_agent_deps}
+# Set permission
+COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 # Copy agent - End
 
