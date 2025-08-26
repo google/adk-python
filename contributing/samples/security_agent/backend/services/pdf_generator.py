@@ -105,7 +105,7 @@ class PDFReportGenerator:
         
         # Add logo/header
         elements.append(Paragraph(
-            "🔐 GCP Security Evaluation Report",
+            "[SECURITY] GCP Security Evaluation Report",
             self.styles['CustomTitle']
         ))
         
@@ -143,7 +143,7 @@ class PDFReportGenerator:
         if evaluation_data.get('use_cases'):
             elements.append(Paragraph("Use Cases", self.styles['CustomSubtitle']))
             for use_case in evaluation_data['use_cases']:
-                elements.append(Paragraph(f"• {use_case}", self.styles['Normal']))
+                elements.append(Paragraph(f"* {use_case}", self.styles['Normal']))
             elements.append(Spacer(1, 20))
         
         # Security Assessment
@@ -220,7 +220,7 @@ class PDFReportGenerator:
                 elements.append(Paragraph("Required IAM Permissions", self.styles['Heading3']))
                 permissions = assessment['iam_permissions'][:10]  # First 10
                 for perm in permissions:
-                    elements.append(Paragraph(f"• {perm}", self.styles['Code']))
+                    elements.append(Paragraph(f"* {perm}", self.styles['Code']))
                 if len(assessment['iam_permissions']) > 10:
                     elements.append(Paragraph(
                         f"... and {len(assessment['iam_permissions']) - 10} more",
@@ -282,7 +282,7 @@ class PDFReportGenerator:
         risk_score = assessment.get('risk_score', 0)
         
         if risk_score >= 7:
-            recommendations.append("⚠️ HIGH RISK: Immediate security review recommended")
+            recommendations.append("[WARNING] HIGH RISK: Immediate security review recommended")
             recommendations.append("Implement additional access controls and monitoring")
         
         if assessment.get('risk_profile'):
@@ -502,7 +502,7 @@ class PDFReportGenerator:
             </style>
         </head>
         <body>
-            <h1>🔐 GCP Security Evaluation Report</h1>
+            <h1>[SECURITY] GCP Security Evaluation Report</h1>
             
             <div class="header-info">
                 <strong>Report Generated:</strong> {datetime.now().strftime('%B %d, %Y at %I:%M %p')}<br>
@@ -534,7 +534,7 @@ class PDFReportGenerator:
                 </tr>
                 <tr>
                     <td><strong>Service Status</strong></td>
-                    <td>{'✅ Enabled' if evaluation_data.get('is_enabled') else '❌ Not Enabled'}</td>
+                    <td>{'[OK] Enabled' if evaluation_data.get('is_enabled') else '[ERROR] Not Enabled'}</td>
                 </tr>
             </table>
             
@@ -592,12 +592,12 @@ class PDFReportGenerator:
             {iam_html}
             
             <div class="threat-model">
-                <h3>⚠️ Threat Model Summary</h3>
+                <h3>[WARNING] Threat Model Summary</h3>
                 <p>{assessment.get('threat_model_summary', 'No threat model available.')}</p>
             </div>
             
             <div class="recommendations">
-                <h2>📋 Recommendations</h2>
+                <h2>[INFO] Recommendations</h2>
                 <ol>
                     {rec_items}
                 </ol>

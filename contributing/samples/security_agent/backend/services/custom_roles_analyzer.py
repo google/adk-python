@@ -95,7 +95,7 @@ class CustomRolesAnalyzer:
         
         conn.commit()
         conn.close()
-        logger.info(f"✅ Database initialized at {self.db_path}")
+        logger.info(f"[OK] Database initialized at {self.db_path}")
     
     def _load_standard_roles(self):
         """Load standard GCP roles from cache or API."""
@@ -113,7 +113,7 @@ class CustomRolesAnalyzer:
         # Refresh if cache is empty or older than 7 days
         if row[0] == 0 or (row[1] and 
             (datetime.now() - datetime.fromisoformat(row[1])).days > 7):
-            logger.info("🔄 Refreshing standard roles cache...")
+            logger.info("[REFRESH] Refreshing standard roles cache...")
             self._fetch_standard_roles()
         
         # Load from cache
@@ -122,7 +122,7 @@ class CustomRolesAnalyzer:
             self.standard_roles_cache[row[0]] = set(json.loads(row[1]))
         
         conn.close()
-        logger.info(f"✅ Loaded {len(self.standard_roles_cache)} standard roles")
+        logger.info(f"[OK] Loaded {len(self.standard_roles_cache)} standard roles")
     
     def _fetch_standard_roles(self):
         """Fetch standard GCP roles from API."""
@@ -174,13 +174,13 @@ class CustomRolesAnalyzer:
                             self.standard_roles_cache[role.name] = set(full_role.included_permissions)
                             
                 except Exception as e:
-                    logger.warning(f"⚠️ Error fetching roles with prefix {prefix}: {e}")
+                    logger.warning(f"[WARNING] Error fetching roles with prefix {prefix}: {e}")
             
             conn.commit()
             conn.close()
             
         except Exception as e:
-            logger.error(f"❌ Error fetching standard roles: {e}")
+            logger.error(f"[ERROR] Error fetching standard roles: {e}")
             # Load some common roles as fallback
             self._load_fallback_roles()
     
@@ -246,10 +246,10 @@ class CustomRolesAnalyzer:
                 # Store in database
                 self._store_custom_role(role)
             
-            logger.info(f"✅ Fetched {len(custom_roles)} custom roles")
+            logger.info(f"[OK] Fetched {len(custom_roles)} custom roles")
             
         except Exception as e:
-            logger.error(f"❌ Error fetching custom roles: {e}")
+            logger.error(f"[ERROR] Error fetching custom roles: {e}")
             # Return sample data for testing
             custom_roles = self._get_sample_custom_roles()
         

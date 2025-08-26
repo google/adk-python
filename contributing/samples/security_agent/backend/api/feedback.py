@@ -119,7 +119,7 @@ async def submit_feedback(feedback: FeedbackSubmission, background_tasks: Backgr
         background_tasks.add_task(check_evalset_generation)
         background_tasks.add_task(update_improvement_metrics)
         
-        logger.info(f"✅ Feedback saved successfully with ID: {feedback_id}")
+        logger.info(f"[OK] Feedback saved successfully with ID: {feedback_id}")
         
         return FeedbackResponse(
             success=True,
@@ -313,7 +313,7 @@ async def check_evalset_generation():
             evalset = feedback_db.generate_evalset(min_feedback_count=20)
             if evalset:
                 file_path = feedback_db.save_evalset_to_file(evalset)
-                logger.info(f"✅ Auto-generated evalset saved to {file_path}")
+                logger.info(f"[OK] Auto-generated evalset saved to {file_path}")
     except Exception as e:
         logger.error(f"Error in background evalset generation: {e}")
 
@@ -322,7 +322,7 @@ async def update_improvement_metrics():
     try:
         # This would integrate with actual model performance metrics
         # For now, we'll just log that the task ran
-        logger.info("📊 Updated improvement metrics based on recent feedback")
+        logger.info("[STATS] Updated improvement metrics based on recent feedback")
     except Exception as e:
         logger.error(f"Error updating improvement metrics: {e}")
 
@@ -334,11 +334,11 @@ async def validate_evalset(file_path: str):
             evalset = json.load(f)
         
         if evalset.get('eval_cases') and len(evalset['eval_cases']) > 0:
-            logger.info(f"✅ Evalset validation passed: {file_path}")
+            logger.info(f"[OK] Evalset validation passed: {file_path}")
             # Update database validation status
             # This would be implemented based on specific validation requirements
         else:
-            logger.warning(f"⚠️ Evalset validation failed: {file_path}")
+            logger.warning(f"[WARNING] Evalset validation failed: {file_path}")
             
     except Exception as e:
         logger.error(f"Error validating evalset {file_path}: {e}")

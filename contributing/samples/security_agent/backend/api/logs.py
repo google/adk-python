@@ -32,10 +32,10 @@ logger = logging.getLogger(__name__)
 try:
     from ..services.optimized_log_analyzer import get_optimized_analyzer, AnalysisResult
     OPTIMIZED_ANALYZER_AVAILABLE = True
-    logger.info("✅ Optimized log analyzer loaded (TASK-005)")
+    logger.info("[OK] Optimized log analyzer loaded (TASK-005)")
 except ImportError as e:
     OPTIMIZED_ANALYZER_AVAILABLE = False
-    logger.warning(f"⚠️ Optimized analyzer not available: {e}")
+    logger.warning(f"[WARNING] Optimized analyzer not available: {e}")
     AnalysisResult = None
 
 # ============================================

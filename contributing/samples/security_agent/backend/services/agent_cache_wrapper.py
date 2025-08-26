@@ -56,14 +56,14 @@ class AgentCacheWrapper:
             Formatted storage analysis results
         """
         if not CACHE_AVAILABLE:
-            return "⚠️ Cache not available - storage analysis requires cached data"
+            return "[WARNING] Cache not available - storage analysis requires cached data"
         
         try:
             # Query cached storage buckets directly (sync)
             buckets = self.data_fetcher.query_storage_buckets()
             
             if not buckets:
-                return "⚠️ No storage data found in cache. Try refreshing data first."
+                return "[WARNING] No storage data found in cache. Try refreshing data first."
             
             logger.info(f"Found {len(buckets)} buckets in cache")
             logger.debug(f"First bucket sample: {buckets[0] if buckets else 'None'}")
@@ -134,49 +134,49 @@ class AgentCacheWrapper:
                     continue
             
             # Generate security analysis
-            analysis = f"""📊 Storage Security Analysis (from cache):
+            analysis = f"""[STATS] Storage Security Analysis (from cache):
 
 🗄️ **Total Buckets**: {total_buckets}
-🌐 **Public Buckets**: {len(public_buckets)} {'⚠️' if public_buckets else '✅'}
-🔒 **Unencrypted Buckets**: {len(unencrypted_buckets)} {'⚠️' if unencrypted_buckets else '✅'}
+[NETWORK] **Public Buckets**: {len(public_buckets)} {'[WARNING]' if public_buckets else '[OK]'}
+🔒 **Unencrypted Buckets**: {len(unencrypted_buckets)} {'[WARNING]' if unencrypted_buckets else '[OK]'}
 
 """
             
             # Add bucket details
             if public_buckets:
-                analysis += "⚠️ **Public Buckets Found**:\n"
+                analysis += "[WARNING] **Public Buckets Found**:\n"
                 for bucket in public_buckets[:3]:  # Show first 3
                     bucket_name = bucket.get('name', 'Unknown')
                     bucket_location = bucket.get('location', 'Unknown')
-                    analysis += f"  • {bucket_name} (Location: {bucket_location})\n"
+                    analysis += f"  * {bucket_name} (Location: {bucket_location})\n"
                 if len(public_buckets) > 3:
-                    analysis += f"  • ...and {len(public_buckets) - 3} more\n"
+                    analysis += f"  * ...and {len(public_buckets) - 3} more\n"
                 analysis += "\n"
             
             if unencrypted_buckets:
                 analysis += "🔓 **Unencrypted Buckets Found**:\n"
                 for bucket in unencrypted_buckets[:3]:
                     bucket_name = bucket.get('name', 'Unknown')
-                    analysis += f"  • {bucket_name}\n"
+                    analysis += f"  * {bucket_name}\n"
                 if len(unencrypted_buckets) > 3:
-                    analysis += f"  • ...and {len(unencrypted_buckets) - 3} more\n"
+                    analysis += f"  * ...and {len(unencrypted_buckets) - 3} more\n"
                 analysis += "\n"
             
             # Security recommendations
             if public_buckets or unencrypted_buckets:
-                analysis += "🎯 **Recommendations**:\n"
+                analysis += "[TARGET] **Recommendations**:\n"
                 if public_buckets:
-                    analysis += "  • Review and restrict public access to storage buckets\n"
+                    analysis += "  * Review and restrict public access to storage buckets\n"
                 if unencrypted_buckets:
-                    analysis += "  • Enable encryption for all storage buckets\n"
+                    analysis += "  * Enable encryption for all storage buckets\n"
             else:
-                analysis += "✅ **All storage buckets follow security best practices!**\n"
+                analysis += "[OK] **All storage buckets follow security best practices!**\n"
             
             return analysis
             
         except Exception as e:
             logger.error(f"Error in sync storage analysis: {e}")
-            return f"❌ Error analyzing cached storage data: {str(e)}"
+            return f"[ERROR] Error analyzing cached storage data: {str(e)}"
     
     def discover_assets_sync(self, force_refresh: bool = False) -> str:
         """
@@ -189,44 +189,44 @@ class AgentCacheWrapper:
             Formatted asset discovery results
         """
         if not CACHE_AVAILABLE:
-            return "⚠️ Cache not available - asset discovery requires cached data"
+            return "[WARNING] Cache not available - asset discovery requires cached data"
         
         try:
             # Get summary stats from cache
             stats = self.data_fetcher.get_summary_stats()
             
             if not stats or all(v == 0 for k, v in stats.items() if k != 'last_fetch'):
-                return "⚠️ No asset data found in cache. Try refreshing data first."
+                return "[WARNING] No asset data found in cache. Try refreshing data first."
             
             # Generate asset summary from cached data
             total_assets = sum(v for k, v in stats.items() if k != 'last_fetch' and isinstance(v, int))
             
-            analysis = f"""📊 GCP Asset Discovery (from cache):
+            analysis = f"""[STATS] GCP Asset Discovery (from cache):
 
 🏗️ **Total Resources**: {total_assets:,}
 🖥️ **Compute Instances**: {stats.get('compute_instances', 0)}
 🗄️ **Storage Buckets**: {stats.get('storage_buckets', 0)}
-🌐 **Networks**: {stats.get('networks', 0)}
+[NETWORK] **Networks**: {stats.get('networks', 0)}
 🔒 **IAM Accounts**: {stats.get('iam_accounts', 0)}
-🔍 **Security Findings**: {stats.get('security_findings', 0)}
-🔐 **Secrets**: {stats.get('secrets', 0)}
+[SEARCH] **Security Findings**: {stats.get('security_findings', 0)}
+[SECURITY] **Secrets**: {stats.get('secrets', 0)}
 
 """
             
             # Add freshness info
             if stats.get('last_fetch'):
-                analysis += f"📅 **Last Updated**: {stats['last_fetch']}\n"
+                analysis += f"[DATE] **Last Updated**: {stats['last_fetch']}\n"
             
             if total_assets > 0:
-                analysis += "\n✅ **Asset data is available in cache for detailed analysis**"
+                analysis += "\n[OK] **Asset data is available in cache for detailed analysis**"
             else:
-                analysis += "\n⚠️ **No assets found - try triggering a data refresh**"
+                analysis += "\n[WARNING] **No assets found - try triggering a data refresh**"
             
             return analysis
             
         except Exception as e:
             logger.error(f"Error in sync asset discovery: {e}")
-            return f"❌ Error discovering cached assets: {str(e)}"
+            return f"[ERROR] Error discovering cached assets: {str(e)}"
     
     def analyze_security_sync(self, force_refresh: bool = False) -> str:
         """
@@ -239,14 +239,14 @@ class AgentCacheWrapper:
             Formatted security analysis results
         """
         if not CACHE_AVAILABLE:
-            return "⚠️ Cache not available - security analysis requires cached data"
+            return "[WARNING] Cache not available - security analysis requires cached data"
         
         try:
             # Query cached security findings directly
             findings = self.data_fetcher.query_security_findings()
             
             if not findings:
-                return "⚠️ No security findings found in cache. Try refreshing data first."
+                return "[WARNING] No security findings found in cache. Try refreshing data first."
             
             # Categorize findings by severity with proper data handling
             critical = []
@@ -291,12 +291,12 @@ class AgentCacheWrapper:
             total_findings = len(findings)
             
             # Generate security analysis
-            analysis = f"""🛡️ Security Analysis (from cache):
+            analysis = f"""[SHIELD] Security Analysis (from cache):
 
 🚨 **Total Findings**: {total_findings}
-🔴 **Critical**: {len(critical)}
-🟠 **High**: {len(high)}
-🟡 **Medium**: {len(medium)}
+[CRITICAL] **Critical**: {len(critical)}
+[HIGH] **High**: {len(high)}
+[MEDIUM] **Medium**: {len(medium)}
 🔵 **Low**: {len(low)}
 
 """
@@ -304,38 +304,38 @@ class AgentCacheWrapper:
             # Risk assessment
             risk_score = (len(critical) * 10 + len(high) * 5 + len(medium) * 2 + len(low) * 1)
             if risk_score == 0:
-                risk_level = "✅ **EXCELLENT**"
+                risk_level = "[OK] **EXCELLENT**"
             elif risk_score <= 10:
-                risk_level = "🟢 **LOW**"
+                risk_level = "[LOW] **LOW**"
             elif risk_score <= 25:
-                risk_level = "🟡 **MEDIUM**"
+                risk_level = "[MEDIUM] **MEDIUM**"
             elif risk_score <= 50:
-                risk_level = "🟠 **HIGH**"
+                risk_level = "[HIGH] **HIGH**"
             else:
-                risk_level = "🔴 **CRITICAL**"
+                risk_level = "[CRITICAL] **CRITICAL**"
             
-            analysis += f"📊 **Risk Level**: {risk_level} (Score: {risk_score})\n\n"
+            analysis += f"[STATS] **Risk Level**: {risk_level} (Score: {risk_score})\n\n"
             
             # Show top critical/high findings
             priority_findings = critical + high
             if priority_findings:
-                analysis += "🎯 **Priority Issues**:\n"
+                analysis += "[TARGET] **Priority Issues**:\n"
                 for finding in priority_findings[:3]:  # Show top 3
                     severity = finding.get('severity', 'UNKNOWN')
                     category = finding.get('category', 'Unknown')
                     resource = finding.get('resource_name', 'Unknown')
-                    analysis += f"  • **{severity}**: {category} on `{resource}`\n"
+                    analysis += f"  * **{severity}**: {category} on `{resource}`\n"
                 
                 if len(priority_findings) > 3:
-                    analysis += f"  • ...and {len(priority_findings) - 3} more priority issues\n"
+                    analysis += f"  * ...and {len(priority_findings) - 3} more priority issues\n"
             else:
-                analysis += "✅ **No critical or high severity issues found!**\n"
+                analysis += "[OK] **No critical or high severity issues found!**\n"
             
             return analysis
             
         except Exception as e:
             logger.error(f"Error in sync security analysis: {e}")
-            return f"❌ Error analyzing cached security data: {str(e)}"
+            return f"[ERROR] Error analyzing cached security data: {str(e)}"
     
     async def discover_assets_cached(self, force_refresh: bool = False) -> str:
         """
@@ -348,7 +348,7 @@ class AgentCacheWrapper:
             Formatted asset discovery results
         """
         if not CACHE_AVAILABLE:
-            return "⚠️ Cache not available - run 'refresh data' to populate cache first"
+            return "[WARNING] Cache not available - run 'refresh data' to populate cache first"
         
         try:
             # Check cache first unless force refresh
@@ -390,21 +390,21 @@ class AgentCacheWrapper:
                 instances = self.data_fetcher.query_compute_instances()
                 buckets = self.data_fetcher.query_storage_buckets()
                 result = self._format_cached_assets(instances, buckets)
-                result += "\n\n🔄 *Background data refresh initiated for latest data*"
+                result += "\n\n[REFRESH] *Background data refresh initiated for latest data*"
                 return result
             
             # Cache is empty, suggest refresh
             return (
-                "📊 **No cached asset data found**\n\n"
+                "[STATS] **No cached asset data found**\n\n"
                 "To get asset discovery results:\n"
                 "1. Run 'refresh data' to populate cache (takes ~30-60 seconds)\n"
                 "2. Or ask me to 'discover assets with refresh' to force fresh data\n\n"
-                "💡 *Cache-first approach eliminates timeout errors and provides instant responses*"
+                "[TIP] *Cache-first approach eliminates timeout errors and provides instant responses*"
             )
             
         except Exception as e:
             logger.error(f"Error in cached asset discovery: {e}")
-            return f"❌ Error accessing cached data: {str(e)}"
+            return f"[ERROR] Error accessing cached data: {str(e)}"
     
     async def analyze_security_cached(self, force_refresh: bool = False) -> str:
         """
@@ -417,7 +417,7 @@ class AgentCacheWrapper:
             Formatted security analysis results  
         """
         if not CACHE_AVAILABLE:
-            return "⚠️ Cache not available - security analysis requires cached data"
+            return "[WARNING] Cache not available - security analysis requires cached data"
         
         try:
             # Check cache first
@@ -432,7 +432,7 @@ class AgentCacheWrapper:
                 await self._trigger_background_refresh()
                 findings = self.data_fetcher.query_security_findings()
                 result = self._format_cached_security_findings(findings)
-                result += "\n\n🔄 *Background data refresh initiated for latest findings*"
+                result += "\n\n[REFRESH] *Background data refresh initiated for latest findings*"
                 return result
             
             # Cache is empty - provide sample findings 
@@ -440,7 +440,7 @@ class AgentCacheWrapper:
             
         except Exception as e:
             logger.error(f"Error in cached security analysis: {e}")
-            return f"❌ Error accessing cached security data: {str(e)}"
+            return f"[ERROR] Error accessing cached security data: {str(e)}"
     
     async def analyze_iam_cached(self, force_refresh: bool = False) -> str:
         """
@@ -453,7 +453,7 @@ class AgentCacheWrapper:
             Formatted IAM analysis results
         """
         if not CACHE_AVAILABLE:
-            return "⚠️ Cache not available - IAM analysis requires cached data"
+            return "[WARNING] Cache not available - IAM analysis requires cached data"
         
         try:
             # Check cache first
@@ -477,16 +477,16 @@ class AgentCacheWrapper:
             
             # If cache empty, provide helpful message
             return (
-                "🔐 **IAM Analysis - Cache Empty**\n\n"
+                "[SECURITY] **IAM Analysis - Cache Empty**\n\n"
                 "To get IAM analysis:\n"
                 "1. Run 'refresh data' to fetch and cache IAM data\n"
                 "2. Or ask for 'IAM analysis with refresh' to force fresh data\n\n"
-                "💡 *Cached IAM analysis includes service accounts, keys, and permissions*"
+                "[TIP] *Cached IAM analysis includes service accounts, keys, and permissions*"
             )
             
         except Exception as e:
             logger.error(f"Error in cached IAM analysis: {e}")
-            return f"❌ Error accessing cached IAM data: {str(e)}"
+            return f"[ERROR] Error accessing cached IAM data: {str(e)}"
     
     async def analyze_storage_cached(self, force_refresh: bool = False) -> str:
         """
@@ -499,7 +499,7 @@ class AgentCacheWrapper:
             Formatted storage analysis results
         """
         if not CACHE_AVAILABLE:
-            return "⚠️ Cache not available - storage analysis requires cached data"
+            return "[WARNING] Cache not available - storage analysis requires cached data"
         
         try:
             # Check cache first
@@ -515,32 +515,32 @@ class AgentCacheWrapper:
                 "To get storage security analysis:\n"
                 "1. Run 'refresh data' to fetch and cache storage data\n"
                 "2. Or ask for 'storage analysis with refresh' to force fresh data\n\n"
-                "💡 *Cached storage analysis includes bucket permissions, encryption, and public access*"
+                "[TIP] *Cached storage analysis includes bucket permissions, encryption, and public access*"
             )
             
         except Exception as e:
             logger.error(f"Error in cached storage analysis: {e}")
-            return f"❌ Error accessing cached storage data: {str(e)}"
+            return f"[ERROR] Error accessing cached storage data: {str(e)}"
     
     async def get_cache_stats(self) -> str:
         """Get cache statistics and status."""
         if not CACHE_AVAILABLE:
-            return "⚠️ Cache not available"
+            return "[WARNING] Cache not available"
         
         try:
             stats = self.data_fetcher.get_summary_stats()
             
-            output = "📊 **Cache Statistics**\n\n"
+            output = "[STATS] **Cache Statistics**\n\n"
             output += f"Project: {self.project_id}\n\n"
             
             output += "**Cached Resources:**\n"
-            output += f"• Compute Instances: {stats.get('compute_instances', 0)}\n"
-            output += f"• Storage Buckets: {stats.get('storage_buckets', 0)}\n"
-            output += f"• Networks: {stats.get('networks', 0)}\n"
-            output += f"• Firewall Rules: {stats.get('firewall_rules', 0)}\n"
-            output += f"• IAM Accounts: {stats.get('iam_accounts', 0)}\n"
-            output += f"• Databases: {stats.get('databases', 0)}\n"
-            output += f"• Security Findings: {stats.get('security_findings', 0)}\n\n"
+            output += f"* Compute Instances: {stats.get('compute_instances', 0)}\n"
+            output += f"* Storage Buckets: {stats.get('storage_buckets', 0)}\n"
+            output += f"* Networks: {stats.get('networks', 0)}\n"
+            output += f"* Firewall Rules: {stats.get('firewall_rules', 0)}\n"
+            output += f"* IAM Accounts: {stats.get('iam_accounts', 0)}\n"
+            output += f"* Databases: {stats.get('databases', 0)}\n"
+            output += f"* Security Findings: {stats.get('security_findings', 0)}\n\n"
             
             last_fetch = stats.get('last_fetch')
             if last_fetch:
@@ -548,13 +548,13 @@ class AgentCacheWrapper:
             else:
                 output += "**Status:** Cache empty - run 'refresh data' to populate\n"
             
-            output += "\n💡 *Cache provides instant responses and eliminates timeout errors*"
+            output += "\n[TIP] *Cache provides instant responses and eliminates timeout errors*"
             
             return output
             
         except Exception as e:
             logger.error(f"Error getting cache stats: {e}")
-            return f"❌ Error accessing cache statistics: {str(e)}"
+            return f"[ERROR] Error accessing cache statistics: {str(e)}"
     
     async def _trigger_background_refresh(self):
         """Trigger background data refresh."""
@@ -569,7 +569,7 @@ class AgentCacheWrapper:
     
     def _format_cached_assets(self, instances, buckets) -> str:
         """Format cached asset data."""
-        output = f"🔍 **Asset Discovery Results** (from cache)\n\n"
+        output = f"[SEARCH] **Asset Discovery Results** (from cache)\n\n"
         output += f"**Project:** {self.project_id}\n"
         output += f"**Total Assets:** {len(instances) + len(buckets)}\n\n"
         
@@ -578,7 +578,7 @@ class AgentCacheWrapper:
             for instance in instances[:5]:
                 status = instance.get('status', 'unknown')
                 zone = instance.get('zone', 'unknown')
-                status_emoji = "🟢" if status == "RUNNING" else "🔴" if status == "TERMINATED" else "🟡"
+                status_emoji = "[LOW]" if status == "RUNNING" else "[CRITICAL]" if status == "TERMINATED" else "[MEDIUM]"
                 output += f"  {status_emoji} {instance['name']} ({zone}) - {status}\n"
             
             if len(instances) > 5:
@@ -590,7 +590,7 @@ class AgentCacheWrapper:
             for bucket in buckets[:5]:
                 location = bucket.get('location', 'unknown')
                 public_access = bucket.get('public_access', 'private')
-                access_emoji = "🔴" if public_access == "public" else "🟢"
+                access_emoji = "[CRITICAL]" if public_access == "public" else "[LOW]"
                 output += f"  {access_emoji} {bucket['name']} ({location}) - {public_access}\n"
             
             if len(buckets) > 5:
@@ -598,16 +598,16 @@ class AgentCacheWrapper:
             output += "\n"
         
         if not instances and not buckets:
-            output += "⚠️ No assets found in cache\n\n"
+            output += "[WARNING] No assets found in cache\n\n"
         
         output += "⚡ *Results from local cache - very fast!*\n"
-        output += "💡 Run 'refresh data' to update cache with latest data"
+        output += "[TIP] Run 'refresh data' to update cache with latest data"
         
         return output
     
     def _format_cached_assets_from_main_table(self, asset_count, asset_types) -> str:
         """Format cached asset data from main assets table."""
-        output = f"🔍 **Asset Discovery Results** (from cache)\n\n"
+        output = f"[SEARCH] **Asset Discovery Results** (from cache)\n\n"
         output += f"**Project:** {self.project_id}\n"
         output += f"**Total Assets:** {asset_count}\n\n"
         
@@ -619,22 +619,22 @@ class AgentCacheWrapper:
                 type_name = type_name.replace('googleapis.com', '').replace('.', ' ').title()
                 
                 # Add appropriate emoji
-                emoji = "💻" if "instance" in type_name.lower() else \
+                emoji = "[LOCAL]" if "instance" in type_name.lower() else \
                         "🗄️" if "bucket" in type_name.lower() or "storage" in type_name.lower() else \
-                        "🌐" if "network" in type_name.lower() else \
+                        "[NETWORK]" if "network" in type_name.lower() else \
                         "🔒" if "firewall" in type_name.lower() or "security" in type_name.lower() else \
                         "🔑" if "key" in type_name.lower() or "secret" in type_name.lower() else \
                         "🏷️" if "label" in type_name.lower() else \
-                        "📊"
+                        "[STATS]"
                 
                 output += f"  {emoji} {type_name}: {count}\n"
             
             if len(asset_types) > 10:
                 remaining = sum(count for _, count in asset_types[10:])
-                output += f"  📋 Other types: {remaining}\n"
+                output += f"  [INFO] Other types: {remaining}\n"
         
         output += "\n⚡ *Results from local cache - very fast!*\n"
-        output += "💡 Run 'refresh data' to update cache with latest data"
+        output += "[TIP] Run 'refresh data' to update cache with latest data"
         
         return output
     
@@ -650,14 +650,14 @@ class AgentCacheWrapper:
             if severity in severity_counts:
                 severity_counts[severity] += 1
         
-        output = f"🛡️ **Security Analysis Results** (from cache)\n\n"
+        output = f"[SHIELD] **Security Analysis Results** (from cache)\n\n"
         output += f"**Project:** {self.project_id}\n"
         output += f"**Total Findings:** {len(findings)}\n\n"
         
         output += "**By Severity:**\n"
         for severity, count in severity_counts.items():
             if count > 0:
-                emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵"}.get(severity, "⚪")
+                emoji = {"CRITICAL": "[CRITICAL]", "HIGH": "[HIGH]", "MEDIUM": "[MEDIUM]", "LOW": "🔵"}.get(severity, "⚪")
                 output += f"  {emoji} {severity}: {count}\n"
         output += "\n"
         
@@ -667,20 +667,20 @@ class AgentCacheWrapper:
             severity = finding.get('severity', 'UNKNOWN')
             category = finding.get('category', 'UNKNOWN')
             description = finding.get('description', 'No description')[:80]
-            emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵"}.get(severity, "⚪")
+            emoji = {"CRITICAL": "[CRITICAL]", "HIGH": "[HIGH]", "MEDIUM": "[MEDIUM]", "LOW": "🔵"}.get(severity, "⚪")
             output += f"  {emoji} **{severity}** - {category}: {description}...\n"
         
         if len(findings) > 5:
             output += f"    ... and {len(findings) - 5} more findings\n"
         
         output += "\n⚡ *Results from local cache - very fast!*\n"
-        output += "💡 Run 'refresh data' to update findings"
+        output += "[TIP] Run 'refresh data' to update findings"
         
         return output
     
     def _format_cached_iam_analysis(self, accounts) -> str:
         """Format cached IAM analysis."""
-        output = f"🔐 **IAM Analysis Results** (from cache)\n\n"
+        output = f"[SECURITY] **IAM Analysis Results** (from cache)\n\n"
         output += f"**Project:** {self.project_id}\n"
         output += f"**Service Accounts:** {len(accounts)}\n\n"
         
@@ -689,14 +689,14 @@ class AgentCacheWrapper:
         keys_count = sum(len(eval(a.get('keys', '[]'))) for a in accounts)
         
         output += "**Key Metrics:**\n"
-        output += f"• Active Accounts: {len(accounts) - disabled_count}\n"
-        output += f"• Disabled Accounts: {disabled_count}\n"
-        output += f"• Total Keys: {keys_count}\n\n"
+        output += f"* Active Accounts: {len(accounts) - disabled_count}\n"
+        output += f"* Disabled Accounts: {disabled_count}\n"
+        output += f"* Total Keys: {keys_count}\n\n"
         
         # Show sample accounts
         output += "**Service Accounts:**\n"
         for account in accounts[:5]:
-            status = "🔴 Disabled" if account.get('disabled') else "🟢 Active"
+            status = "[CRITICAL] Disabled" if account.get('disabled') else "[LOW] Active"
             keys = eval(account.get('keys', '[]'))
             output += f"  {status} {account.get('email', 'unknown')}\n"
             output += f"    Keys: {len(keys)}\n"
@@ -719,14 +719,14 @@ class AgentCacheWrapper:
         output += f"**Total Buckets:** {len(buckets)}\n\n"
         
         output += "**Security Status:**\n"
-        output += f"• Public Buckets: {len(public_buckets)} 🔴\n"
-        output += f"• Private Buckets: {len(buckets) - len(public_buckets)} 🟢\n"
-        output += f"• Customer-Encrypted: {len(encrypted_buckets)}\n\n"
+        output += f"* Public Buckets: {len(public_buckets)} [CRITICAL]\n"
+        output += f"* Private Buckets: {len(buckets) - len(public_buckets)} [LOW]\n"
+        output += f"* Customer-Encrypted: {len(encrypted_buckets)}\n\n"
         
         if public_buckets:
             output += "**🚨 Public Buckets (High Risk):**\n"
             for bucket in public_buckets[:5]:
-                output += f"  🔴 {bucket['name']} ({bucket.get('location', 'unknown')})\n"
+                output += f"  [CRITICAL] {bucket['name']} ({bucket.get('location', 'unknown')})\n"
             
             if len(public_buckets) > 5:
                 output += f"    ... and {len(public_buckets) - 5} more public buckets\n"
@@ -735,7 +735,7 @@ class AgentCacheWrapper:
         # Show sample buckets
         output += "**Storage Buckets:**\n"
         for bucket in buckets[:5]:
-            access_emoji = "🔴" if bucket.get('public_access') == 'public' else "🟢"
+            access_emoji = "[CRITICAL]" if bucket.get('public_access') == 'public' else "[LOW]"
             location = bucket.get('location', 'unknown')
             storage_class = bucket.get('storage_class', 'unknown')
             output += f"  {access_emoji} {bucket['name']} ({location}) - {storage_class}\n"
@@ -750,13 +750,13 @@ class AgentCacheWrapper:
     def _get_sample_security_findings(self) -> str:
         """Get sample security findings when cache is empty."""
         return (
-            f"🛡️ **Security Analysis** (sample data)\n\n"
+            f"[SHIELD] **Security Analysis** (sample data)\n\n"
             f"**Project:** {self.project_id}\n\n"
             "**Sample Security Findings:**\n"
-            "🔴 **CRITICAL** - Public Bucket: Storage bucket publicly accessible\n"
-            "🟠 **HIGH** - Weak Credentials: Service account key >90 days old\n"
-            "🟡 **MEDIUM** - Firewall Misconfiguration: Overly permissive rules\n\n"
-            "💡 **To get real findings:**\n"
+            "[CRITICAL] **CRITICAL** - Public Bucket: Storage bucket publicly accessible\n"
+            "[HIGH] **HIGH** - Weak Credentials: Service account key >90 days old\n"
+            "[MEDIUM] **MEDIUM** - Firewall Misconfiguration: Overly permissive rules\n\n"
+            "[TIP] **To get real findings:**\n"
             "1. Run 'refresh data' to populate security findings cache\n"
             "2. Or ask for 'security analysis with refresh' for fresh data\n\n"
             "⚡ *Cache-first approach provides instant responses*"

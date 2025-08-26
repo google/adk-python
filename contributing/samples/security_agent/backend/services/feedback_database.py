@@ -29,7 +29,7 @@ class FeedbackDatabase:
         
         # Initialize schema
         self._create_schema()
-        logger.info(f"✅ Feedback database initialized at {self.database_path}")
+        logger.info(f"[OK] Feedback database initialized at {self.database_path}")
     
     def _create_schema(self):
         """Create feedback database schema."""
@@ -113,7 +113,7 @@ class FeedbackDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_date ON feedback_metrics(date)")
             
             conn.commit()
-            logger.info("✅ Feedback database schema created successfully")
+            logger.info("[OK] Feedback database schema created successfully")
     
     def save_feedback(self, feedback_data: Dict[str, Any]) -> int:
         """Save feedback to database."""
@@ -151,7 +151,7 @@ class FeedbackDatabase:
                 # Update daily metrics
                 self._update_daily_metrics()
                 
-                logger.info(f"✅ Feedback saved with ID: {feedback_id}")
+                logger.info(f"[OK] Feedback saved with ID: {feedback_id}")
                 return feedback_id
                 
         except Exception as e:
@@ -433,7 +433,7 @@ class FeedbackDatabase:
                 
                 conn.commit()
             
-            logger.info(f"✅ Generated evalset {evalset_id} with {len(evalset['eval_cases'])} cases")
+            logger.info(f"[OK] Generated evalset {evalset_id} with {len(evalset['eval_cases'])} cases")
             return evalset
             
         except Exception as e:
@@ -465,7 +465,7 @@ class FeedbackDatabase:
                 """, (str(file_path), evalset['eval_set_id']))
                 conn.commit()
             
-            logger.info(f"✅ Evalset saved to {file_path}")
+            logger.info(f"[OK] Evalset saved to {file_path}")
             return str(file_path)
             
         except Exception as e:

@@ -646,13 +646,13 @@ class IAMSecurityAnalyzer:
         
         # Priority recommendations based on findings
         if risk_distribution["CRITICAL"] > 0:
-            recommendations.append("🔴 CRITICAL: Address wildcard IAM bindings and admin role misuse immediately")
+            recommendations.append("[CRITICAL] CRITICAL: Address wildcard IAM bindings and admin role misuse immediately")
         
         if overprivileged_accounts > 0:
-            recommendations.append(f"🟠 HIGH: Review {overprivileged_accounts} overprivileged service accounts and implement least privilege")
+            recommendations.append(f"[HIGH] HIGH: Review {overprivileged_accounts} overprivileged service accounts and implement least privilege")
         
         if stale_keys > 0:
-            recommendations.append(f"🟡 MEDIUM: Rotate {stale_keys} stale service account keys (>90 days old)")
+            recommendations.append(f"[MEDIUM] MEDIUM: Rotate {stale_keys} stale service account keys (>90 days old)")
         
         # General recommendations
         recommendations.extend([
@@ -717,8 +717,8 @@ class IAMSecurityAnalyzer:
             cross_project_bindings=0,
             external_users=0,
             recommendations=[
-                "🟠 HIGH: Review 1 overprivileged service account and implement least privilege",
-                "🟡 MEDIUM: Rotate 1 stale service account key (>90 days old)",
+                "[HIGH] HIGH: Review 1 overprivileged service account and implement least privilege",
+                "[MEDIUM] MEDIUM: Rotate 1 stale service account key (>90 days old)",
                 "Implement automated service account key rotation",
                 "Use Workload Identity for GKE workloads"
             ],

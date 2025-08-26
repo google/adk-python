@@ -385,7 +385,7 @@ def main():
     kb.create_schema()
     kb.insert_sample_data()
     kb.close()
-    print("✅ Knowledge base database initialized successfully")
+    print("[OK] Knowledge base database initialized successfully")
 
 
 if __name__ == "__main__":

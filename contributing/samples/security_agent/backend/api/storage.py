@@ -22,14 +22,14 @@ def _get_credentials():
     try:
         creds_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
         if creds_path and os.path.exists(creds_path):
-            logger.info(f"🔐 Using service account credentials from {creds_path}")
+            logger.info(f"[SECURITY] Using service account credentials from {creds_path}")
             return service_account.Credentials.from_service_account_file(creds_path)
         else:
-            logger.info("🔐 Using default Google Cloud credentials")
+            logger.info("[SECURITY] Using default Google Cloud credentials")
             credentials, project = google.auth.default()
             return credentials
     except Exception as e:
-        logger.warning(f"⚠️ Authentication failed, will use mock data: {e}")
+        logger.warning(f"[WARNING] Authentication failed, will use mock data: {e}")
         return None
 
 def _check_public_access(bucket):
@@ -115,11 +115,11 @@ async def _get_real_bucket(project_id: str, bucket_name: str) -> Dict[str, Any]:
             "retentionPolicy": {"retentionPeriod": bucket.retention_period} if bucket.retention_period else None,
         }
         api_duration = time.time() - start_time
-        logger.info(f"✅ Response for {bucket_name} received: 200 OK, {api_duration:.1f}s")
+        logger.info(f"[OK] Response for {bucket_name} received: 200 OK, {api_duration:.1f}s")
         return {"success": True, "bucket": bucket_data, "api_duration": api_duration}
     except Exception as e:
         api_duration = time.time() - start_time
-        logger.error(f"❌ Failed to get bucket {bucket_name} after {api_duration:.1f}s: {e}")
+        logger.error(f"[ERROR] Failed to get bucket {bucket_name} after {api_duration:.1f}s: {e}")
         return {"success": False, "error": str(e), "api_duration": api_duration}
 
 async def _get_real_buckets(project_id: str) -> Dict[str, Any]:
@@ -174,8 +174,8 @@ async def _get_real_buckets(project_id: str) -> Dict[str, Any]:
             buckets_data.append(bucket_data)
         
         api_duration = time.time() - start_time
-        logger.info(f"✅ Response received: 200 OK, {api_duration:.1f}s")
-        logger.info(f"📊 Found {len(buckets_data)} real buckets in project {project_id}")
+        logger.info(f"[OK] Response received: 200 OK, {api_duration:.1f}s")
+        logger.info(f"[STATS] Found {len(buckets_data)} real buckets in project {project_id}")
         
         return {
             "success": True,
@@ -187,7 +187,7 @@ async def _get_real_buckets(project_id: str) -> Dict[str, Any]:
         
     except Exception as e:
         api_duration = time.time() - start_time
-        logger.error(f"❌ Storage API failed after {api_duration:.1f}s: {e}")
+        logger.error(f"[ERROR] Storage API failed after {api_duration:.1f}s: {e}")
         return {
             "success": False,
             "error": str(e),
@@ -212,7 +212,7 @@ async def analyze_buckets_basic(
 
     buckets = real_data["buckets"]
     total_storage_bytes = real_data.get("total_storage_bytes", 0)
-    logger.info(f"🎯 Using real API data: {len(buckets)} buckets from Google Cloud Storage")
+    logger.info(f"[TARGET] Using real API data: {len(buckets)} buckets from Google Cloud Storage")
         
     if not buckets:
         return {

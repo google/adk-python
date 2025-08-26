@@ -43,7 +43,7 @@ class StatisticalAnalyzer:
         self._cache = {}
         self._cache_ttl = 300  # 5 minutes
         
-        logger.info("✅ Statistical analyzer initialized")
+        logger.info("[OK] Statistical analyzer initialized")
     
     def get_metrics_data(self, 
                         metric_type: str,
@@ -649,7 +649,7 @@ class StatisticalAnalyzer:
                 'analysis_timestamp': datetime.now().isoformat()
             }
             
-            logger.info(f"✅ Comprehensive analysis completed: {results['summary']}")
+            logger.info(f"[OK] Comprehensive analysis completed: {results['summary']}")
             return results
             
         except Exception as e:

@@ -436,4 +436,4 @@ async def run_scheduled_analysis():
     except Exception as e:
         logger.error(f"Error in scheduled analysis: {e}")
 
-logger.info("✅ Statistics API router initialized (STORY-006)")
+logger.info("[OK] Statistics API router initialized (STORY-006)")

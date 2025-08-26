@@ -370,28 +370,28 @@ def generate_recommendations(change: MSAChange, resource_count: int) -> List[str
     
     # Base recommendations with specific actions
     if change.required_action:
-        recommendations.append(f"🎯 ACTION REQUIRED: {change.required_action}")
+        recommendations.append(f"[TARGET] ACTION REQUIRED: {change.required_action}")
     
     # Impact-based recommendations with concrete steps
     if change.impact_level in ["critical", "high"]:
         recommendations.append(f"🚨 IMMEDIATE ACTION: Audit {resource_count} affected resources by {change.effective_date or 'ASAP'}")
-        recommendations.append(f"📋 STEP 1: Run 'gcloud projects list' to identify all affected projects")
-        recommendations.append(f"🔧 STEP 2: Execute backup script: 'gcloud compute snapshots create backup-{datetime.now().strftime('%Y%m%d')}'")
+        recommendations.append(f"[INFO] STEP 1: Run 'gcloud projects list' to identify all affected projects")
+        recommendations.append(f"[CONFIG] STEP 2: Execute backup script: 'gcloud compute snapshots create backup-{datetime.now().strftime('%Y%m%d')}'")
         recommendations.append(f"🧪 STEP 3: Deploy test in dev: 'gcloud config set project <dev-project-id>'")
-        recommendations.append(f"📊 STEP 4: Generate impact report: Use Cloud Asset Inventory API to list all affected resources")
+        recommendations.append(f"[STATS] STEP 4: Generate impact report: Use Cloud Asset Inventory API to list all affected resources")
     elif change.impact_level == "medium":
-        recommendations.append(f"⚠️ PRIORITY ACTION: Schedule review of {resource_count} resources within 7 days")
+        recommendations.append(f"[WARNING] PRIORITY ACTION: Schedule review of {resource_count} resources within 7 days")
         recommendations.append(f"📝 TASK: Create JIRA ticket with label 'msa-change-{datetime.now().strftime('%Y%m')}'")
         recommendations.append(f"📚 TASK: Update runbook at /docs/security/msa-changes.md")
-        recommendations.append(f"🔍 TASK: Run compliance check: 'python scripts/compliance_check.py --service {change.service}'")
+        recommendations.append(f"[SEARCH] TASK: Run compliance check: 'python scripts/compliance_check.py --service {change.service}'")
     else:
-        recommendations.append(f"ℹ️ MONITORING: Set up alert for {resource_count} resources")
-        recommendations.append(f"📈 ACTION: Configure Cloud Monitoring dashboard for affected resources")
+        recommendations.append(f"[INFO] MONITORING: Set up alert for {resource_count} resources")
+        recommendations.append(f"[TRENDING] ACTION: Configure Cloud Monitoring dashboard for affected resources")
         recommendations.append(f"🔔 ACTION: Create alert policy with threshold-based notifications")
     
     # Change type specific recommendations with commands
     if "permission" in change.change_type.lower():
-        recommendations.append("🔐 IAM ACTION: Execute permission audit script")
+        recommendations.append("[SECURITY] IAM ACTION: Execute permission audit script")
         recommendations.append(f"   └─ Command: 'gcloud projects get-iam-policy <project-id> --format=json > iam-audit-{datetime.now().strftime('%Y%m%d')}.json'")
         if change.new_permissions:
             for perm in change.new_permissions[:3]:  # Show first 3 permissions
@@ -401,7 +401,7 @@ def generate_recommendations(change: MSAChange, resource_count: int) -> List[str
         recommendations.append(f"   └─ Check keys: 'gcloud iam service-accounts keys list --iam-account=<sa-email>'")
         
     elif "deprecat" in change.change_type.lower():
-        recommendations.append("🔄 MIGRATION PLAN: Create detailed migration checklist")
+        recommendations.append("[REFRESH] MIGRATION PLAN: Create detailed migration checklist")
         recommendations.append(f"   └─ WEEK 1: Inventory all {change.service} resources using 'gcloud {change.service.lower()} list'")
         recommendations.append(f"   └─ WEEK 2: Update CI/CD pipelines - check .github/workflows/*.yml and cloudbuild.yaml")
         recommendations.append(f"   └─ WEEK 3: Test migration in staging environment")
@@ -483,11 +483,11 @@ async def analyze_msa(input_data: MSAInput):
         if summary["critical_changes"] > 0:
             overall_recommendations.append("🚨 Critical changes detected - immediate action required")
         if summary["high_impact_changes"] > 0:
-            overall_recommendations.append("⚠️ High impact changes - review within 48 hours")
+            overall_recommendations.append("[WARNING] High impact changes - review within 48 hours")
         if summary["total_resources_affected"] > 50:
-            overall_recommendations.append("📊 Large number of resources affected - consider phased rollout")
+            overall_recommendations.append("[STATS] Large number of resources affected - consider phased rollout")
         if not overall_recommendations:
-            overall_recommendations.append("✅ Changes appear manageable - standard review process recommended")
+            overall_recommendations.append("[OK] Changes appear manageable - standard review process recommended")
         
         # Store analysis results in database
         try:
@@ -512,7 +512,7 @@ async def analyze_msa(input_data: MSAInput):
             
             msa_id = store_msa_analysis(database_path, storage_data)
             if msa_id:
-                logger.info(f"✅ Stored MSA analysis with ID: {msa_id}")
+                logger.info(f"[OK] Stored MSA analysis with ID: {msa_id}")
             else:
                 logger.warning("MSA analysis completed but not saved to database")
         except Exception as e:

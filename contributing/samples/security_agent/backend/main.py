@@ -30,28 +30,28 @@ logger = logging.getLogger(__name__)
 try:
     from middleware.validation import InputValidationMiddleware
     INPUT_VALIDATION_AVAILABLE = True
-    logger.info("✅ Input validation middleware loaded")
+    logger.info("[OK] Input validation middleware loaded")
 except ImportError as e:
     INPUT_VALIDATION_AVAILABLE = False
-    logger.warning(f"⚠️ Input validation not available: {e}")
+    logger.warning(f"[WARNING] Input validation not available: {e}")
 
 # Import input sanitizer
 try:
     from middleware.input_sanitizer import InputSanitizer
     INPUT_SANITIZER_AVAILABLE = True
-    logger.info("✅ Input sanitizer loaded")
+    logger.info("[OK] Input sanitizer loaded")
 except ImportError as e:
     INPUT_SANITIZER_AVAILABLE = False
-    logger.warning(f"⚠️ Input sanitizer not available: {e}")
+    logger.warning(f"[WARNING] Input sanitizer not available: {e}")
 
 # Import rate limiting middleware
 try:
     from middleware.rate_limiter import RateLimitMiddleware
     RATE_LIMITER_AVAILABLE = True
-    logger.info("✅ Rate limiting middleware loaded")
+    logger.info("[OK] Rate limiting middleware loaded")
 except ImportError as e:
     RATE_LIMITER_AVAILABLE = False
-    logger.warning(f"⚠️ Rate limiting not available: {e}")
+    logger.warning(f"[WARNING] Rate limiting not available: {e}")
 
 # Try multiple locations for .env file
 env_locations = [
@@ -63,10 +63,10 @@ env_locations = [
 for env_path in env_locations:
     if env_path.exists():
         load_dotenv(env_path)
-        print(f"✅ Loaded environment from: {env_path}")
+        print(f"[OK] Loaded environment from: {env_path}")
         break
 else:
-    print("⚠️ No .env file found, using system environment variables")
+    print("[WARNING] No .env file found, using system environment variables")
 
 # Set up Google Application Credentials if not already set
 if not os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
@@ -78,11 +78,11 @@ if not os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
             # Use the first JSON file found
             service_account_path = json_files[0]
             os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(service_account_path)
-            print(f"✅ Set GOOGLE_APPLICATION_CREDENTIALS to: {service_account_path}")
+            print(f"[OK] Set GOOGLE_APPLICATION_CREDENTIALS to: {service_account_path}")
         else:
-            print("⚠️ No service account JSON files found in config/secrets/")
+            print("[WARNING] No service account JSON files found in config/secrets/")
     else:
-        print("⚠️ Service account directory not found, will use default credentials")
+        print("[WARNING] Service account directory not found, will use default credentials")
 
 # Add backend's parent directory to sys.path to make 'backend' importable.
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -110,7 +110,7 @@ except ImportError:
 # Backend doesn't need ADK - it just processes requests
 # The frontend is the thin client that displays UI
 # The backend provides the intelligence via API endpoints
-logger.info("✅ Backend configured as API service (no local ADK needed)")
+logger.info("[OK] Backend configured as API service (no local ADK needed)")
 
 # Context management is handled by ADK natively
 context_manager_available = False
@@ -149,12 +149,12 @@ def setup_service_account_from_secret():
         
         # Set the environment variable to point to the temporary file
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = temp_path
-        logger.info(f"✅ Service account credentials loaded from Secret Manager")
+        logger.info(f"[OK] Service account credentials loaded from Secret Manager")
         
         return temp_path
         
     except Exception as e:
-        logger.error(f"❌ Failed to load service account from Secret Manager: {e}")
+        logger.error(f"[ERROR] Failed to load service account from Secret Manager: {e}")
         logger.info("Falling back to default Cloud Run credentials")
 
 # Unified ADK chat service
@@ -196,7 +196,7 @@ app = FastAPI(
 
 # Setup monitoring - temporarily disabled
 # setup_monitoring(app)
-logger.info("⚠️ Monitoring temporarily disabled")
+logger.info("[WARNING] Monitoring temporarily disabled")
 
 
 # Configure CORS
@@ -236,21 +236,21 @@ async def sanitize_requests(request, call_next):
 # Add Input Validation Middleware
 # if INPUT_VALIDATION_AVAILABLE:
 #     app.add_middleware(InputValidationMiddleware)
-#     logger.info(f"✅ Input validation enabled")
+#     logger.info(f"[OK] Input validation enabled")
 # else:
-#     logger.info("⚠️ Input validation disabled")
-logger.info("✅ Request sanitization enabled to prevent injection attacks")
+#     logger.info("[WARNING] Input validation disabled")
+logger.info("[OK] Request sanitization enabled to prevent injection attacks")
 
 # Add Rate Limiting Middleware
 if RATE_LIMITER_AVAILABLE:
     try:
         # Use in-memory rate limiter (no Redis dependency)
         app.add_middleware(RateLimitMiddleware, storage_backend="memory")
-        logger.info(f"✅ Rate limiting enabled (in-memory)")
+        logger.info(f"[OK] Rate limiting enabled (in-memory)")
     except Exception as e:
-        logger.warning(f"⚠️ Rate limiting failed to initialize: {e}")
+        logger.warning(f"[WARNING] Rate limiting failed to initialize: {e}")
 else:
-    logger.info("⚠️ Rate limiting disabled")
+    logger.info("[WARNING] Rate limiting disabled")
 
 # ===========================================
 # API ROUTER REGISTRATION
@@ -272,16 +272,16 @@ try:
     from api.sessions import router as sessions_router
     app.include_router(sessions_router, prefix="/api/v1")
     print("Sessions router included")
-    logger.info("✅ Sessions router included at /api/v1/sessions (STORY-013: SQLite persistence)")
+    logger.info("[OK] Sessions router included at /api/v1/sessions (STORY-013: SQLite persistence)")
 except ImportError as e:
-    logger.warning(f"⚠️ Sessions router not available: {e}")
-    logger.info("✅ Using ADK's built-in session management as fallback")
+    logger.warning(f"[WARNING] Sessions router not available: {e}")
+    logger.info("[OK] Using ADK's built-in session management as fallback")
 
 # GCP router
 try:
     from api.gcp import router as gcp_router
     app.include_router(gcp_router, prefix="/api/v1/gcp")
-    logger.info("✅ GCP router included at /api/v1/gcp")
+    logger.info("[OK] GCP router included at /api/v1/gcp")
 except ImportError as e:
     logger.error(f"GCP router not available: {e}")
 
@@ -289,7 +289,7 @@ except ImportError as e:
 try:
     from api.security import router as security_router
     app.include_router(security_router, prefix="/api/v1/security")
-    logger.info("✅ Security router included at /api/v1/security")
+    logger.info("[OK] Security router included at /api/v1/security")
 except ImportError as e:
     logger.error(f"Security router not available: {e}")
 
@@ -297,7 +297,7 @@ except ImportError as e:
 try:
     from api.monitoring import router as monitoring_router
     app.include_router(monitoring_router, prefix="/api/v1/monitoring")
-    logger.info("✅ Monitoring router included at /api/v1/monitoring")
+    logger.info("[OK] Monitoring router included at /api/v1/monitoring")
 except ImportError as e:
     logger.warning(f"Monitoring router not available: {e}")
 
@@ -305,26 +305,26 @@ except ImportError as e:
 try:
     from api.iam import router as iam_router
     app.include_router(iam_router, prefix="/api/v1/iam")
-    logger.info("✅ IAM router included at /api/v1/iam")
+    logger.info("[OK] IAM router included at /api/v1/iam")
 except ImportError as e:
-    logger.warning(f"⚠️ IAM router not available: {e}")
+    logger.warning(f"[WARNING] IAM router not available: {e}")
 
 # Recommendations router for Google Cloud Recommender API
 try:
     from api.recommendations import router as recommendations_router
     app.include_router(recommendations_router, prefix="/api/v1/recommendations", tags=["recommendations"])
-    logger.info("✅ Recommendations router included (Google Cloud Recommender API)")
+    logger.info("[OK] Recommendations router included (Google Cloud Recommender API)")
 except ImportError as e:
-    logger.warning(f"⚠️ Recommendations router not available: {e}")
+    logger.warning(f"[WARNING] Recommendations router not available: {e}")
 
 # Search is handled natively by ADK tools - no custom router needed
-logger.info("✅ Using ADK's built-in search tools")
+logger.info("[OK] Using ADK's built-in search tools")
 
 # Storage router
 try:
     from api.storage import router as storage_router
     app.include_router(storage_router, prefix="/api/v1/storage")
-    logger.info("✅ Storage router included at /api/v1/storage")
+    logger.info("[OK] Storage router included at /api/v1/storage")
 except ImportError as e:
     logger.warning(f"Storage router not available: {e}")
 
@@ -332,23 +332,23 @@ except ImportError as e:
 try:
     from api.knowledge_base import router as knowledge_base_router
     app.include_router(knowledge_base_router, prefix="/api/v1/knowledge")
-    logger.info("✅ Knowledge Base router included at /api/v1/knowledge")
+    logger.info("[OK] Knowledge Base router included at /api/v1/knowledge")
 except ImportError as e:
-    logger.warning(f"⚠️ Knowledge Base router not available: {e}")
+    logger.warning(f"[WARNING] Knowledge Base router not available: {e}")
 
 # Custom Roles Analyzer router for IAM role optimization (STORY-002)
 try:
     from api.custom_roles import router as custom_roles_router
     app.include_router(custom_roles_router, prefix="/api/v1/custom-roles")
-    logger.info("✅ Custom Roles Analyzer router included at /api/v1/custom-roles (STORY-002)")
+    logger.info("[OK] Custom Roles Analyzer router included at /api/v1/custom-roles (STORY-002)")
 except ImportError as e:
-    logger.warning(f"⚠️ Custom Roles Analyzer router not available: {e}")
+    logger.warning(f"[WARNING] Custom Roles Analyzer router not available: {e}")
 
 # Asset Inventory router for unified GCP resource access
 try:
     from api.asset_inventory import router as asset_inventory_router
     app.include_router(asset_inventory_router, prefix="/api/v1/assets")
-    logger.info("✅ Asset Inventory router included at /api/v1/assets")
+    logger.info("[OK] Asset Inventory router included at /api/v1/assets")
 except ImportError as e:
     logger.warning(f"Asset Inventory router not available: {e}")
 
@@ -356,7 +356,7 @@ except ImportError as e:
 try:
     from api.keys import router as keys_router
     app.include_router(keys_router, prefix="/api/v1/keys")
-    logger.info("✅ API Keys router included at /api/v1/keys")
+    logger.info("[OK] API Keys router included at /api/v1/keys")
 except ImportError as e:
     logger.warning(f"API Keys router not available: {e}")
 
@@ -364,7 +364,7 @@ except ImportError as e:
 try:
     from api.advisory_notifications import router as advisory_router
     app.include_router(advisory_router, prefix="/api/v1/advisory")
-    logger.info("✅ Advisory Notifications router included at /api/v1/advisory")
+    logger.info("[OK] Advisory Notifications router included at /api/v1/advisory")
 except ImportError as e:
     logger.warning(f"Advisory Notifications router not available: {e}")
 
@@ -372,7 +372,7 @@ except ImportError as e:
 try:
     from api.google_services import router as google_services_router
     app.include_router(google_services_router, prefix="/api/v1/google-services")
-    logger.info("✅ Google Services router included at /api/v1/google-services")
+    logger.info("[OK] Google Services router included at /api/v1/google-services")
 except ImportError as e:
     logger.warning(f"Google Services router not available: {e}")
 
@@ -380,49 +380,49 @@ except ImportError as e:
 try:
     from api.remediation import router as remediation_router
     app.include_router(remediation_router, prefix="/api/v1/remediation")
-    logger.info("✅ Remediation API loaded (STORY-210)")
+    logger.info("[OK] Remediation API loaded (STORY-210)")
 except ImportError as e:
-    logger.warning(f"⚠️ Remediation API not available: {e}")
+    logger.warning(f"[WARNING] Remediation API not available: {e}")
 
 # Health monitoring API (TASK-007)
 try:
     from api.health import router as health_router
     app.include_router(health_router, prefix="/api/v1/health")
-    logger.info("✅ Comprehensive health monitoring loaded (TASK-007)")
+    logger.info("[OK] Comprehensive health monitoring loaded (TASK-007)")
 except ImportError as e:
-    logger.warning(f"⚠️ Health monitoring API not available: {e}")
+    logger.warning(f"[WARNING] Health monitoring API not available: {e}")
 
 # Data refresh API for comprehensive caching
 try:
     from api.data_refresh import router as data_refresh_router
     app.include_router(data_refresh_router, prefix="/api/v1/data")
-    logger.info("✅ Data refresh API loaded - comprehensive caching enabled")
+    logger.info("[OK] Data refresh API loaded - comprehensive caching enabled")
 except ImportError as e:
-    logger.warning(f"⚠️ Data refresh API not available: {e}")
+    logger.warning(f"[WARNING] Data refresh API not available: {e}")
 
 # Import MSA Analyzer router
 try:
     from api.msa_analyzer import router as msa_router
     app.include_router(msa_router)  # Already has /api/v1/msa prefix
-    logger.info("✅ MSA Analyzer router included at /api/v1/msa (STORY-012)")
+    logger.info("[OK] MSA Analyzer router included at /api/v1/msa (STORY-012)")
 except ImportError as e:
-    logger.warning(f"⚠️ MSA Analyzer API not available: {e}")
+    logger.warning(f"[WARNING] MSA Analyzer API not available: {e}")
 
 # Import Feedback System router (STORY-005)
 try:
     from api.feedback import router as feedback_router
     app.include_router(feedback_router)  # Already has /api/v1/feedback prefix
-    logger.info("✅ Feedback System router included at /api/v1/feedback (STORY-005)")
+    logger.info("[OK] Feedback System router included at /api/v1/feedback (STORY-005)")
 except ImportError as e:
-    logger.warning(f"⚠️ Feedback System API not available: {e}")
+    logger.warning(f"[WARNING] Feedback System API not available: {e}")
 
 # Import Statistical Analysis router (STORY-006)
 try:
     from api.statistics import router as statistics_router
     app.include_router(statistics_router)  # Already has /api/v1/statistics prefix
-    logger.info("✅ Statistical Analysis router included at /api/v1/statistics (STORY-006)")
+    logger.info("[OK] Statistical Analysis router included at /api/v1/statistics (STORY-006)")
 except ImportError as e:
-    logger.warning(f"⚠️ Statistical Analysis API not available: {e}")
+    logger.warning(f"[WARNING] Statistical Analysis API not available: {e}")
 
 
 # Chat endpoint for frontend communication
@@ -494,7 +494,7 @@ async def chat_message(request: Dict[str, Any]):
         logger.error(f"Error processing query with agent: {e}")
         # Fallback to basic response
         project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'your-project')
-        response_text = f"🔍 **GCP Security Assistant for project: {project_id}**\n\nI can help you with:\n\n• **Resource Discovery**: 'What resources do I have?'\n• **Security Analysis**: 'Check my security posture'\n• **IAM Review**: 'Show my service accounts'\n• **Vulnerability Scan**: 'Find security issues'\n\nWhat would you like to explore?"
+        response_text = f"[SEARCH] **GCP Security Assistant for project: {project_id}**\n\nI can help you with:\n\n* **Resource Discovery**: 'What resources do I have?'\n* **Security Analysis**: 'Check my security posture'\n* **IAM Review**: 'Show my service accounts'\n* **Vulnerability Scan**: 'Find security issues'\n\nWhat would you like to explore?"
     
     # Always return a properly formatted response
     return {
@@ -509,7 +509,7 @@ async def _get_cached_assets_response() -> str:
     """Get assets from cache for faster response."""
     project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
     if not project_id:
-        return "⚠️ GOOGLE_CLOUD_PROJECT environment variable not configured"
+        return "[WARNING] GOOGLE_CLOUD_PROJECT environment variable not configured"
     
     try:
         import httpx
@@ -522,29 +522,29 @@ async def _get_cached_assets_response() -> str:
                 assets = data.get('assets', [])
                 
                 if not assets:
-                    return "📊 **No cached asset data found.**\n\nTrigger a data refresh first: 'refresh data'"
+                    return "[STATS] **No cached asset data found.**\n\nTrigger a data refresh first: 'refresh data'"
                 
                 # Format response
                 compute_count = len([a for a in assets if 'compute' in a.get('asset_type', '')])
                 storage_count = len([a for a in assets if 'storage' in a.get('asset_type', '')])
                 
-                result = f"🔍 **Asset Discovery Results** (from cache)\n\n"
+                result = f"[SEARCH] **Asset Discovery Results** (from cache)\n\n"
                 result += f"**Total Assets**: {len(assets)}\n"
-                result += f"• Compute Instances: {compute_count}\n"
-                result += f"• Storage Buckets: {storage_count}\n\n"
+                result += f"* Compute Instances: {compute_count}\n"
+                result += f"* Storage Buckets: {storage_count}\n\n"
                 
                 if compute_count > 0:
                     result += "**Compute Instances:**\n"
                     for asset in [a for a in assets if 'compute' in a.get('asset_type', '')][:5]:
                         location = asset.get('location', 'unknown')
                         state = asset.get('state', 'unknown')
-                        result += f"• {asset['name']} ({location}) - {state}\n"
+                        result += f"* {asset['name']} ({location}) - {state}\n"
                     
                 if storage_count > 0:
                     result += "\n**Storage Buckets:**\n"
                     for asset in [a for a in assets if 'storage' in a.get('asset_type', '')][:5]:
                         location = asset.get('location', 'unknown') 
-                        result += f"• {asset['name']} ({location})\n"
+                        result += f"* {asset['name']} ({location})\n"
                 
                 result += f"\n⚡ *Response from local cache - very fast!*"
                 return result
@@ -560,7 +560,7 @@ async def _get_cached_findings_response() -> str:
     """Get security findings from cache for faster response."""
     project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
     if not project_id:
-        return "⚠️ GOOGLE_CLOUD_PROJECT environment variable not configured"
+        return "[WARNING] GOOGLE_CLOUD_PROJECT environment variable not configured"
     
     try:
         import httpx
@@ -581,12 +581,12 @@ async def _get_cached_findings_response() -> str:
                 medium = len([f for f in findings if f.get('severity') == 'MEDIUM'])
                 low = len([f for f in findings if f.get('severity') == 'LOW'])
                 
-                result = f"🛡️ **Security Analysis Results** (from cache)\n\n"
+                result = f"[SHIELD] **Security Analysis Results** (from cache)\n\n"
                 result += f"**Total Findings**: {len(findings)}\n"
-                result += f"• Critical: {critical}\n"
-                result += f"• High: {high}\n"
-                result += f"• Medium: {medium}\n"
-                result += f"• Low: {low}\n\n"
+                result += f"* Critical: {critical}\n"
+                result += f"* High: {high}\n"
+                result += f"* Medium: {medium}\n"
+                result += f"* Low: {low}\n\n"
                 
                 # Show top findings
                 result += "**Top Findings:**\n"
@@ -594,7 +594,7 @@ async def _get_cached_findings_response() -> str:
                     severity = finding.get('severity', 'UNKNOWN')
                     category = finding.get('category', 'UNKNOWN')
                     description = finding.get('description', 'No description')[:100]
-                    result += f"• **{severity}** - {category}: {description}...\n"
+                    result += f"* **{severity}** - {category}: {description}...\n"
                 
                 result += f"\n⚡ *Response from local cache - very fast!*"
                 return result
@@ -621,41 +621,41 @@ def _generate_fallback_response(query_lower: str) -> str:
     elif "security" in query_lower or "vulnerabilit" in query_lower:
         return (
             "For security analysis, I can help with:\n"
-            "• Vulnerability scanning\n"
-            "• IAM permission analysis\n"
-            "• Security best practices review\n"
-            "• Compliance checking\n\n"
+            "* Vulnerability scanning\n"
+            "* IAM permission analysis\n"
+            "* Security best practices review\n"
+            "* Compliance checking\n\n"
             "Please specify what aspect of security you'd like to examine."
         )
     
     elif "iam" in query_lower or "permission" in query_lower or "access" in query_lower:
         return (
             "IAM analysis includes:\n"
-            "• User and service account permissions\n"
-            "• Role assignments and custom roles\n"
-            "• Policy bindings at project/resource level\n"
-            "• Least privilege recommendations\n\n"
+            "* User and service account permissions\n"
+            "* Role assignments and custom roles\n"
+            "* Policy bindings at project/resource level\n"
+            "* Least privilege recommendations\n\n"
             "What specific IAM aspect would you like to review?"
         )
     
     elif "recommend" in query_lower or "suggest" in query_lower or "improve" in query_lower:
         return (
             "I can provide recommendations for:\n"
-            "• Security hardening\n"
-            "• Cost optimization\n"
-            "• Performance improvements\n"
-            "• Compliance alignment\n\n"
+            "* Security hardening\n"
+            "* Cost optimization\n"
+            "* Performance improvements\n"
+            "* Compliance alignment\n\n"
             "Which area would you like recommendations for?"
         )
     
     else:
         return (
             "I'm your GCP Security Assistant. I can help with:\n\n"
-            "🔍 **Resource Discovery**: Find and inventory all GCP assets\n"
-            "🛡️ **Security Analysis**: Identify vulnerabilities and risks\n"
-            "🔐 **IAM Review**: Analyze permissions and access controls\n"
-            "📊 **Recommendations**: Get actionable security improvements\n"
-            "✅ **Compliance**: Check alignment with standards\n\n"
+            "[SEARCH] **Resource Discovery**: Find and inventory all GCP assets\n"
+            "[SHIELD] **Security Analysis**: Identify vulnerabilities and risks\n"
+            "[SECURITY] **IAM Review**: Analyze permissions and access controls\n"
+            "[STATS] **Recommendations**: Get actionable security improvements\n"
+            "[OK] **Compliance**: Check alignment with standards\n\n"
             "What would you like to explore?"
         )
 
@@ -941,47 +941,62 @@ async def status_endpoint():
 async def background_cache_refresh():
     """Background task to refresh cache every 30 minutes."""
     try:
+        # Do immediate refresh on startup (after 30 seconds to let server start)
+        await asyncio.sleep(30)  # Wait 30 seconds for server to be ready
+        logger.info("[REFRESH] Starting initial cache refresh on startup...")
+        
+        # Perform initial refresh
+        await _perform_cache_refresh()
+        
         while True:
             try:
-                # Wait for 30 minutes (or until cancelled)
+                # Wait for 30 minutes before next refresh
                 await asyncio.sleep(1800)  # 30 minutes
                 
-                logger.info("🔄 Starting scheduled cache refresh...")
+                logger.info("[REFRESH] Starting scheduled cache refresh...")
+                await _perform_cache_refresh()
                 
-                # Try to refresh cache using data fetcher
-                try:
-                    from services.data_fetcher import DataFetcher
-                    import os
-                    
-                    # Get project ID from environment
-                    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-                    if not project_id or project_id == "your-project-id":
-                        logger.warning("⚠️ GOOGLE_CLOUD_PROJECT not configured, skipping cache refresh")
-                        continue
-                        
-                    fetcher = DataFetcher(project_id=project_id)
-                    result = await fetcher.fetch_all_data()
-                    
-                    # Create summary from result stats
-                    total_records = sum(
-                        stat.get('count', 0) for stat in result.get('stats', {}).values() 
-                        if isinstance(stat, dict)
-                    )
-                    error_count = len(result.get('errors', []))
-                    duration = result.get('duration_seconds', 0)
-                    
-                    summary = f"{total_records} records, {error_count} errors, {duration:.1f}s"
-                    logger.info(f"✅ Background cache refresh complete: {summary}")
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ Background cache refresh failed: {e}")
-                    
             except Exception as e:
-                logger.error(f"❌ Background cache refresh error: {e}")
+                logger.error(f"[ERROR] Background cache refresh error: {e}")
                 await asyncio.sleep(300)  # Wait 5 minutes before retry
+    except asyncio.CancelledError:
+        logger.info("[INFO] Background cache refresh task cancelled")
+    except Exception as e:
+        logger.error(f"[ERROR] Fatal error in background cache refresh: {e}")
+
+
+async def _perform_cache_refresh():
+    """Perform the actual cache refresh logic."""
+    try:
+        from services.data_fetcher import DataFetcher
+        import os
+        
+        # Get project ID from environment
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+        if not project_id or project_id == "your-project-id":
+            logger.warning("[WARNING] GOOGLE_CLOUD_PROJECT not configured, skipping cache refresh")
+            return
+            
+        fetcher = DataFetcher(project_id=project_id)
+        result = await fetcher.fetch_all_data()
+        
+        # Create summary from result stats
+        total_records = sum(
+            stat.get('count', 0) for stat in result.get('stats', {}).values() 
+            if isinstance(stat, dict)
+        )
+        error_count = len(result.get('errors', []))
+        duration = result.get('duration_seconds', 0)
+        
+        summary = f"{total_records} records, {error_count} errors, {duration:.1f}s"
+        logger.info(f"[OK] Background cache refresh complete: {summary}")
+        
+    except Exception as e:
+        logger.warning(f"[WARNING] Background cache refresh failed: {e}")
+        await asyncio.sleep(300)  # Wait 5 minutes before retry
                 
     except asyncio.CancelledError:
-        logger.info("🛑 Background cache refresh task cancelled gracefully")
+        logger.info("[STOPPED] Background cache refresh task cancelled gracefully")
         raise  # Re-raise to properly propagate cancellation
 
 @app.on_event("startup")
@@ -992,46 +1007,46 @@ async def startup_event():
     app.state.request_count = 0
     app.state.error_count = 0
     
-    logger.info("🚀 Security Agent Backend starting up")
-    logger.info("🛡️ Robust fallback system enabled")
-    logger.info("✅ ADK-compliant session management enabled")
-    logger.info(f"🔐 Secret Manager: {'✅ available' if SECRETMANAGER_AVAILABLE else '⚠️ not configured'}")
-    logger.info(f"🚫 Rate Limiting: {'✅ enabled' if RATE_LIMITER_AVAILABLE else '⚠️ disabled'}")
-    logger.info("🔄 All API endpoints operational with intelligent fallbacks")
-    logger.info("🎯 System ready to handle requests even with missing dependencies")
-    logger.info("📊 Monitoring endpoints available at /health, /metrics, /status")
+    logger.info("[STARTING] Security Agent Backend starting up")
+    logger.info("[SHIELD] Robust fallback system enabled")
+    logger.info("[OK] ADK-compliant session management enabled")
+    logger.info(f"[SECURITY] Secret Manager: {'[OK] available' if SECRETMANAGER_AVAILABLE else '[WARNING] not configured'}")
+    logger.info(f"[BLOCKED] Rate Limiting: {'[OK] enabled' if RATE_LIMITER_AVAILABLE else '[WARNING] disabled'}")
+    logger.info("[REFRESH] All API endpoints operational with intelligent fallbacks")
+    logger.info("[TARGET] System ready to handle requests even with missing dependencies")
+    logger.info("[STATS] Monitoring endpoints available at /health, /metrics, /status")
     
     # Perform internal healthcheck on startup
-    logger.info("🏥 Running startup healthcheck...")
+    logger.info("[HEALTH] Running startup healthcheck...")
     try:
         health_status = await health_check()
-        logger.info(f"✅ Healthcheck passed: {health_status['status']}")
-        logger.info(f"📋 Components status: {json.dumps(health_status['components'], indent=2)}")
-        logger.info(f"🔧 Active features: {json.dumps(health_status['features'], indent=2)}")
-        logger.info(f"🌐 Available endpoints: {len([e for e in health_status['endpoints'].values() if e is not None])} active")
+        logger.info(f"[OK] Healthcheck passed: {health_status['status']}")
+        logger.info(f"[INFO] Components status: {json.dumps(health_status['components'], indent=2)}")
+        logger.info(f"[CONFIG] Active features: {json.dumps(health_status['features'], indent=2)}")
+        logger.info(f"[NETWORK] Available endpoints: {len([e for e in health_status['endpoints'].values() if e is not None])} active")
     except Exception as e:
-        logger.error(f"❌ Healthcheck failed: {e}")
-        logger.warning("⚠️ System may have limited functionality")
+        logger.error(f"[ERROR] Healthcheck failed: {e}")
+        logger.warning("[WARNING] System may have limited functionality")
     
     # Start background cache refresh job
-    logger.info("🔄 Starting background cache refresh job...")
+    logger.info("[REFRESH] Starting background cache refresh job...")
     app.state.cache_refresh_task = asyncio.create_task(background_cache_refresh())
 
 @app.on_event("shutdown") 
 async def shutdown_event():
     """Application shutdown with proper task cleanup."""
-    logger.info("🛑 Security Agent Backend shutting down")
+    logger.info("[STOPPED] Security Agent Backend shutting down")
     
     # Cancel background cache refresh task if it exists
     if hasattr(app.state, 'cache_refresh_task'):
-        logger.info("📋 Cancelling background cache refresh task...")
+        logger.info("[INFO] Cancelling background cache refresh task...")
         app.state.cache_refresh_task.cancel()
         try:
             await app.state.cache_refresh_task
         except asyncio.CancelledError:
-            logger.info("✅ Background cache refresh task cancelled successfully")
+            logger.info("[OK] Background cache refresh task cancelled successfully")
         except Exception as e:
-            logger.warning(f"⚠️ Error cancelling cache refresh task: {e}")
+            logger.warning(f"[WARNING] Error cancelling cache refresh task: {e}")
 
 if __name__ == "__main__":
     # Use port from environment or default to 8000

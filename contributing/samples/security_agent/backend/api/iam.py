@@ -23,10 +23,10 @@ try:
     from google.cloud import resourcemanager_v3
     from google.api_core import exceptions as gcp_exceptions
     IAM_CLIENT_AVAILABLE = True
-    logger.info("✅ Google Cloud IAM client available")
+    logger.info("[OK] Google Cloud IAM client available")
 except ImportError:
     IAM_CLIENT_AVAILABLE = False
-    logger.warning("⚠️ Google Cloud IAM client not available. Install with: pip install google-cloud-iam google-cloud-resource-manager")
+    logger.warning("[WARNING] Google Cloud IAM client not available. Install with: pip install google-cloud-iam google-cloud-resource-manager")
 
 # Configuration
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'default-project')

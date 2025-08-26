@@ -821,9 +821,15 @@ class DataFetcher:
                                asset.name.split('/')[-1])
                 
                 # Extract state/status from various possible fields
-                state = (resource_data.get("state") or
-                        resource_data.get("status") or
-                        resource_data.get("lifecycleState") or "")
+                state_raw = (resource_data.get("state") or
+                            resource_data.get("status") or
+                            resource_data.get("lifecycleState") or "")
+                
+                # Ensure state is always a string
+                if isinstance(state_raw, dict):
+                    state = state_raw.get("state") or state_raw.get("status") or str(state_raw)
+                else:
+                    state = str(state_raw) if state_raw else ""
                 
                 # Ensure parent_resource is always a string
                 parent = asset_dict.get("resource", {}).get("parent", "")

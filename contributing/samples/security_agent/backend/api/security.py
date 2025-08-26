@@ -24,7 +24,7 @@ router = APIRouter()
 # Security Command Center disabled - using mock data only
 # (Security Command Center requires organization-level access which is not available)
 SCC_CLIENT_AVAILABLE = False
-logger.info("ℹ️ Security Command Center disabled - using sample data for security features")
+logger.info("[INFO] Security Command Center disabled - using sample data for security features")
 
 # Configuration
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'default-project')
@@ -339,10 +339,10 @@ try:
         VulnerabilitySeverity, FindingState
     )
     ENHANCED_ANALYSIS_AVAILABLE = True
-    logger.info("✅ Enhanced vulnerability analysis components loaded")
+    logger.info("[OK] Enhanced vulnerability analysis components loaded")
 except ImportError as e:
     ENHANCED_ANALYSIS_AVAILABLE = False
-    logger.warning(f"⚠️ Enhanced analysis not available: {e}")
+    logger.warning(f"[WARNING] Enhanced analysis not available: {e}")
     # Define fallback models when imports fail
     class SecurityAnalysisRequest(BaseModel):
         """Fallback model for security analysis request."""

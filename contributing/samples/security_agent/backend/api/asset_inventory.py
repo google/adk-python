@@ -27,10 +27,10 @@ try:
     from google.api_core import exceptions as gcp_exceptions
     from google.api_core.retry import Retry
     ASSET_CLIENT_AVAILABLE = True
-    logger.info("✅ Google Cloud Asset client available")
+    logger.info("[OK] Google Cloud Asset client available")
 except ImportError:
     ASSET_CLIENT_AVAILABLE = False
-    logger.warning("⚠️ Google Cloud Asset client not available. Install with: pip install google-cloud-asset")
+    logger.warning("[WARNING] Google Cloud Asset client not available. Install with: pip install google-cloud-asset")
 
 # Configuration
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'default-project')

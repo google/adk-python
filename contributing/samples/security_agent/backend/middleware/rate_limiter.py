@@ -149,7 +149,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             "start_time": time.time()
         }
         
-        logger.info(f"✅ Rate limiter initialized with {storage_backend} backend")
+        logger.info(f"[OK] Rate limiter initialized with {storage_backend} backend")
         
     def _get_client_identifier(self, request: Request) -> str:
         """Generate unique identifier for client."""

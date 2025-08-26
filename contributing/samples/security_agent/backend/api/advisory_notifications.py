@@ -22,10 +22,10 @@ try:
     from google.cloud import advisorynotifications_v1
     from google.api_core import exceptions as gcp_exceptions
     ADVISORY_CLIENT_AVAILABLE = True
-    logger.info("✅ Google Cloud Advisory Notifications client available")
+    logger.info("[OK] Google Cloud Advisory Notifications client available")
 except ImportError:
     ADVISORY_CLIENT_AVAILABLE = False
-    logger.warning("⚠️ Advisory Notifications client not available. Install with: pip install google-cloud-advisorynotifications")
+    logger.warning("[WARNING] Advisory Notifications client not available. Install with: pip install google-cloud-advisorynotifications")
 
 # Configuration
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'default-project')

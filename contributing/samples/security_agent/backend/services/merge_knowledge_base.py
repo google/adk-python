@@ -177,7 +177,7 @@ def merge_databases():
                         values
                     )
                 
-                logger.info(f"✅ Copied {len(rows)} rows to {table}")
+                logger.info(f"[OK] Copied {len(rows)} rows to {table}")
             else:
                 logger.info(f"No data in {table}")
                 
@@ -253,7 +253,7 @@ def merge_databases():
         except sqlite3.IntegrityError:
             logger.info(f"Standard '{standard['standard_name']}' already exists")
     
-    logger.info("✅ Added test-specific coding standards")
+    logger.info("[OK] Added test-specific coding standards")
     
     # Create indexes for performance
     logger.info("Creating indexes...")
@@ -274,7 +274,7 @@ def merge_databases():
     main_conn.commit()
     
     # Show statistics
-    logger.info("\n📊 Database merge complete!")
+    logger.info("\n[STATS] Database merge complete!")
     logger.info("Knowledge base tables in main database:")
     
     for table in ['enterprise_policies', 'coding_standards', 'compliance_frameworks', 'best_practices']:
@@ -298,10 +298,10 @@ def main():
     success = merge_databases()
     
     if success:
-        print("\n✅ Successfully merged knowledge base into main database!")
+        print("\n[OK] Successfully merged knowledge base into main database!")
         print("The chat agent can now query knowledge base data directly.")
     else:
-        print("\n❌ Failed to merge databases")
+        print("\n[ERROR] Failed to merge databases")
         return 1
     
     return 0

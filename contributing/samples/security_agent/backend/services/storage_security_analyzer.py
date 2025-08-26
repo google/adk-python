@@ -724,14 +724,14 @@ class StorageSecurityAnalyzer:
         
         # Priority recommendations based on findings
         if risk_distribution["CRITICAL"] > 0:
-            recommendations.append("🔴 CRITICAL: Remove public write access from storage buckets immediately")
+            recommendations.append("[CRITICAL] CRITICAL: Remove public write access from storage buckets immediately")
         
         if public_buckets > 0:
-            recommendations.append(f"🟠 HIGH: Review {public_buckets} public buckets and implement access controls")
+            recommendations.append(f"[HIGH] HIGH: Review {public_buckets} public buckets and implement access controls")
         
         if encrypted_buckets < total_buckets:
             unencrypted = total_buckets - encrypted_buckets
-            recommendations.append(f"🟡 MEDIUM: Enable customer-managed encryption for {unencrypted} buckets")
+            recommendations.append(f"[MEDIUM] MEDIUM: Enable customer-managed encryption for {unencrypted} buckets")
         
         # General recommendations
         recommendations.extend([
@@ -796,8 +796,8 @@ class StorageSecurityAnalyzer:
             compliant_buckets=3,
             findings=sample_findings,
             recommendations=[
-                "🟠 HIGH: Review 1 public bucket and implement access controls",
-                "🟡 MEDIUM: Enable customer-managed encryption for 3 buckets",
+                "[HIGH] HIGH: Review 1 public bucket and implement access controls",
+                "[MEDIUM] MEDIUM: Enable customer-managed encryption for 3 buckets",
                 "Enable public access prevention on all buckets by default",
                 "Implement uniform bucket-level access for consistent security"
             ],

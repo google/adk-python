@@ -87,12 +87,12 @@ def create_msa_tables(db_path: str):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_msa_emails_project ON msa_emails(project_id)")
         
         conn.commit()
-        logger.info("✅ MSA tables created successfully")
+        logger.info("[OK] MSA tables created successfully")
         
         # Log table information
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'msa_%'")
         tables = cursor.fetchall()
-        logger.info(f"📊 MSA tables in database: {[t[0] for t in tables]}")
+        logger.info(f"[STATS] MSA tables in database: {[t[0] for t in tables]}")
         
     except Exception as e:
         logger.error(f"Error creating MSA tables: {e}")
@@ -174,7 +174,7 @@ def store_msa_analysis(db_path: str, analysis_results: dict):
             """, (msa_email_id, rec))
         
         conn.commit()
-        logger.info(f"✅ Stored MSA analysis results (ID: {msa_email_id})")
+        logger.info(f"[OK] Stored MSA analysis results (ID: {msa_email_id})")
         return msa_email_id
         
     except Exception as e:
@@ -191,10 +191,10 @@ if __name__ == "__main__":
     # Make sure directory exists
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
-    print(f"📂 Setting up MSA tables in: {db_path}")
+    print(f"[FOLDER] Setting up MSA tables in: {db_path}")
     create_msa_tables(db_path)
     
-    print("\n📊 Verifying table creation...")
+    print("\n[STATS] Verifying table creation...")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
@@ -204,9 +204,9 @@ if __name__ == "__main__":
     for table in tables:
         cursor.execute(f"PRAGMA table_info({table[0]})")
         columns = cursor.fetchall()
-        print(f"\n✅ Table: {table[0]}")
+        print(f"\n[OK] Table: {table[0]}")
         for col in columns:
             print(f"   - {col[1]} ({col[2]})")
     
     conn.close()
-    print("\n✅ MSA database setup complete!")
+    print("\n[OK] MSA database setup complete!")

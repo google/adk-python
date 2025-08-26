@@ -162,9 +162,9 @@ async def run_bulk_analysis(analyzer: CustomRolesAnalyzer, include_deleted: bool
             
             # Log high-risk roles
             if analysis["risk_score"] > risk_threshold:
-                logger.warning(f"⚠️ High-risk role detected: {role['name']} (score: {analysis['risk_score']:.0f})")
+                logger.warning(f"[WARNING] High-risk role detected: {role['name']} (score: {analysis['risk_score']:.0f})")
         
-        logger.info(f"✅ Bulk analysis completed for {len(roles)} roles")
+        logger.info(f"[OK] Bulk analysis completed for {len(roles)} roles")
         
     except Exception as e:
         logger.error(f"Error in bulk analysis: {e}")

@@ -55,7 +55,7 @@ def test_rate_limit_basic():
     assert "X-RateLimit-Limit" in response.headers
     assert "X-RateLimit-Remaining" in response.headers
     
-    print("✅ Basic rate limiting test passed")
+    print("[OK] Basic rate limiting test passed")
 
 
 def test_rate_limit_headers():
@@ -75,9 +75,9 @@ def test_rate_limit_headers():
         assert "X-RateLimit-Limit" in response.headers
         assert "X-RateLimit-Remaining" in response.headers
         assert "X-RateLimit-Reset" in response.headers
-        print("✅ Rate limit headers test passed")
+        print("[OK] Rate limit headers test passed")
     else:
-        print("⚠️ Redis not available for testing")
+        print("[WARNING] Redis not available for testing")
 
 
 if __name__ == "__main__":
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     try:
         test_rate_limit_basic()
         test_rate_limit_headers()
-        print("🎉 All tests passed!")
+        print("[SUCCESS] All tests passed!")
     except Exception as e:
-        print(f"❌ Test failed: {e}")
+        print(f"[ERROR] Test failed: {e}")
         print("Note: Redis needs to be running on localhost:6379 for full testing")

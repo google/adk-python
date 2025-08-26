@@ -266,7 +266,7 @@ async def process_gcp_query(project_id: str, query: str) -> str:
     # Check for permission queries
     if any(word in query_lower for word in ["permission", "role", "iam policy", "access", "what can"]) and any(word in query_lower for word in ["service account", "these", "they"]):
         # Get IAM policy bindings
-        response = f"📊 **IAM Permissions for Service Accounts in {project_id}:**\n\n"
+        response = f"[STATS] **IAM Permissions for Service Accounts in {project_id}:**\n\n"
         
         try:
             from google.cloud import resourcemanager_v3
@@ -297,7 +297,7 @@ async def process_gcp_query(project_id: str, query: str) -> str:
                     response += f"  Roles ({len(roles)}):\n"
                     for role in sorted(roles):
                         role_name = role.replace("roles/", "")
-                        response += f"  • `{role_name}`\n"
+                        response += f"  * `{role_name}`\n"
                     response += "\n"
             else:
                 response += "No service account permissions found at project level.\n"
@@ -311,11 +311,11 @@ async def process_gcp_query(project_id: str, query: str) -> str:
             for sa_email, roles in sa_roles.items():
                 for role in roles:
                     if any(danger in role.lower() for danger in dangerous_roles):
-                        response += f"⚠️ **Warning**: {sa_email} has `{role}` - consider using more restrictive roles\n"
+                        response += f"[WARNING] **Warning**: {sa_email} has `{role}` - consider using more restrictive roles\n"
             
             # Check for default service accounts with permissions
             if any("compute@developer" in sa or "@appspot" in sa for sa in sa_roles.keys()):
-                response += "⚠️ **Warning**: Default service accounts have permissions - consider using custom service accounts\n"
+                response += "[WARNING] **Warning**: Default service accounts have permissions - consider using custom service accounts\n"
                 
         except Exception as e:
             logger.error(f"Error getting IAM policies: {e}")
@@ -330,9 +330,9 @@ async def process_gcp_query(project_id: str, query: str) -> str:
         resources = await client.discover_resources()
         
         if "error" in resources:
-            return f"❌ Error accessing GCP APIs: {resources['error']}"
+            return f"[ERROR] Error accessing GCP APIs: {resources['error']}"
         
-        response = f"📊 **Service Accounts in project {project_id}:**\n\n"
+        response = f"[STATS] **Service Accounts in project {project_id}:**\n\n"
         
         # Extract service accounts from IAM resources
         service_accounts = []
@@ -357,7 +357,7 @@ async def process_gcp_query(project_id: str, query: str) -> str:
             count = 0
             for sa in sa_list:
                 count += 1
-                response += f"• **{sa.display_name or 'Unnamed'}**\n"
+                response += f"* **{sa.display_name or 'Unnamed'}**\n"
                 response += f"  - Email: `{sa.email}`\n"
                 response += f"  - Unique ID: {sa.unique_id}\n"
                 response += f"  - Created: {sa.name.split('/')[-1]}\n\n"
@@ -378,7 +378,7 @@ async def process_gcp_query(project_id: str, query: str) -> str:
             if service_accounts:
                 response += "**Service Accounts found in resources:**\n"
                 for sa in service_accounts:
-                    response += f"• {sa}\n"
+                    response += f"* {sa}\n"
             else:
                 response += "No service accounts found in resource inventory.\n"
                 response += "\nTry enabling the IAM API or checking permissions.\n"
@@ -390,22 +390,22 @@ async def process_gcp_query(project_id: str, query: str) -> str:
         resources = await client.discover_resources()
         
         if "error" in resources:
-            return f"❌ Error accessing GCP APIs: {resources['error']}\n\nPlease ensure:\n1. You're authenticated with gcloud\n2. APIs are enabled for project {project_id}\n3. You have necessary permissions"
+            return f"[ERROR] Error accessing GCP APIs: {resources['error']}\n\nPlease ensure:\n1. You're authenticated with gcloud\n2. APIs are enabled for project {project_id}\n3. You have necessary permissions"
         
-        response = f"📊 **GCP Resources in project {project_id}:**\n\n"
+        response = f"[STATS] **GCP Resources in project {project_id}:**\n\n"
         
         if resources.get("summary"):
             summary = resources["summary"]
             response += f"**Summary:**\n"
-            response += f"• Total assets: {summary.get('total_assets', 0)}\n"
-            response += f"• Compute instances: {summary.get('compute_count', 0)}\n"
-            response += f"• Storage buckets: {summary.get('storage_count', 0)}\n"
-            response += f"• IAM resources: {summary.get('iam_count', 0)}\n\n"
+            response += f"* Total assets: {summary.get('total_assets', 0)}\n"
+            response += f"* Compute instances: {summary.get('compute_count', 0)}\n"
+            response += f"* Storage buckets: {summary.get('storage_count', 0)}\n"
+            response += f"* IAM resources: {summary.get('iam_count', 0)}\n\n"
         
         if resources["compute"]:
             response += f"**Compute Resources ({len(resources['compute'])}):**\n"
             for r in resources["compute"][:5]:
-                response += f"• {r['name']} ({r.get('type', 'Instance')})\n"
+                response += f"* {r['name']} ({r.get('type', 'Instance')})\n"
             if len(resources["compute"]) > 5:
                 response += f"  ...and {len(resources['compute']) - 5} more\n"
             response += "\n"
@@ -413,7 +413,7 @@ async def process_gcp_query(project_id: str, query: str) -> str:
         if resources["storage"]:
             response += f"**Storage Resources ({len(resources['storage'])}):**\n"
             for r in resources["storage"][:5]:
-                response += f"• {r['name']} ({r.get('location', 'unknown location')})\n"
+                response += f"* {r['name']} ({r.get('location', 'unknown location')})\n"
             if len(resources["storage"]) > 5:
                 response += f"  ...and {len(resources['storage']) - 5} more\n"
             response += "\n"
@@ -421,15 +421,15 @@ async def process_gcp_query(project_id: str, query: str) -> str:
         if resources["iam"]:
             response += f"**IAM Resources ({len(resources['iam'])}):**\n"
             for r in resources["iam"][:5]:
-                response += f"• {r['name']}\n"
+                response += f"* {r['name']}\n"
             if len(resources["iam"]) > 5:
                 response += f"  ...and {len(resources['iam']) - 5} more\n"
         
         if not any([resources["compute"], resources["storage"], resources["iam"]]):
-            response += "ℹ️ No resources found. This could mean:\n"
-            response += "• The project has no resources yet\n"
-            response += "• APIs need to be enabled\n"
-            response += "• Permissions need to be granted\n"
+            response += "[INFO] No resources found. This could mean:\n"
+            response += "* The project has no resources yet\n"
+            response += "* APIs need to be enabled\n"
+            response += "* Permissions need to be granted\n"
         
         return response
     
@@ -438,29 +438,29 @@ async def process_gcp_query(project_id: str, query: str) -> str:
         resources = await client.discover_resources()
         
         if "error" in resources:
-            return f"❌ Error accessing GCP APIs: {resources['error']}"
+            return f"[ERROR] Error accessing GCP APIs: {resources['error']}"
         
         analysis = client.analyze_security(resources)
         
-        response = f"🔐 **Security Analysis for project {project_id}:**\n\n"
+        response = f"[SECURITY] **Security Analysis for project {project_id}:**\n\n"
         response += f"**Summary:**\n"
-        response += f"• Total findings: {analysis['total_findings']}\n"
+        response += f"* Total findings: {analysis['total_findings']}\n"
         
         summary = analysis['summary']
         if summary['critical'] > 0:
-            response += f"• 🔴 Critical: {summary['critical']}\n"
+            response += f"* [CRITICAL] Critical: {summary['critical']}\n"
         if summary['high'] > 0:
-            response += f"• 🟠 High: {summary['high']}\n"
+            response += f"* [HIGH] High: {summary['high']}\n"
         if summary['medium'] > 0:
-            response += f"• 🟡 Medium: {summary['medium']}\n"
+            response += f"* [MEDIUM] Medium: {summary['medium']}\n"
         if summary['low'] > 0:
-            response += f"• 🟢 Low: {summary['low']}\n"
+            response += f"* [LOW] Low: {summary['low']}\n"
         if summary['info'] > 0:
-            response += f"• ℹ️ Info: {summary['info']}\n"
+            response += f"* [INFO] Info: {summary['info']}\n"
         
         response += "\n**Key Findings:**\n"
         for finding in analysis['findings'][:10]:
-            icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢", "INFO": "ℹ️"}.get(finding['severity'], "•")
+            icon = {"CRITICAL": "[CRITICAL]", "HIGH": "[HIGH]", "MEDIUM": "[MEDIUM]", "LOW": "[LOW]", "INFO": "[INFO]"}.get(finding['severity'], "*")
             response += f"{icon} {finding['finding']}\n"
         
         if len(analysis['findings']) > 10:
@@ -471,11 +471,11 @@ async def process_gcp_query(project_id: str, query: str) -> str:
     else:
         # General help
         return (
-            f"🔍 **GCP Security Assistant for project: {project_id}**\n\n"
+            f"[SEARCH] **GCP Security Assistant for project: {project_id}**\n\n"
             "I can help you with:\n\n"
-            "• **Resource Discovery**: 'What resources do I have?'\n"
-            "• **Security Analysis**: 'Check my security posture'\n"
-            "• **IAM Review**: 'Show my service accounts'\n"
-            "• **Vulnerability Scan**: 'Find security issues'\n\n"
+            "* **Resource Discovery**: 'What resources do I have?'\n"
+            "* **Security Analysis**: 'Check my security posture'\n"
+            "* **IAM Review**: 'Show my service accounts'\n"
+            "* **Vulnerability Scan**: 'Find security issues'\n\n"
             "What would you like to explore?"
         )
