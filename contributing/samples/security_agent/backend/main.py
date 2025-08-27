@@ -317,6 +317,22 @@ try:
 except ImportError as e:
     logger.warning(f"[WARNING] IAM Recommendations router not available: {e}")
 
+# Least-Privilege Analysis router - Advanced IAM Features
+try:
+    from api.least_privilege import router as least_privilege_router
+    app.include_router(least_privilege_router, tags=["least-privilege"])
+    logger.info("[OK] Least-Privilege Analysis router included - Advanced IAM Features")
+except ImportError as e:
+    logger.warning(f"[WARNING] Least-Privilege Analysis router not available: {e}")
+
+# Cross-Project Permission Analysis router - Advanced IAM Features
+try:
+    from api.cross_project import router as cross_project_router
+    app.include_router(cross_project_router, tags=["cross-project"])
+    logger.info("[OK] Cross-Project Analysis router included - Advanced IAM Features")
+except ImportError as e:
+    logger.warning(f"[WARNING] Cross-Project Analysis router not available: {e}")
+
 # Recommendations router for Google Cloud Recommender API
 try:
     from api.recommendations import router as recommendations_router
