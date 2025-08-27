@@ -1,572 +1,158 @@
-<testsuites id="" name="" tests="140" failures="0" skipped="140" errors="0" time="0.022517000000000054">
-<testsuite name="security_agent_full.spec.ts" timestamp="2025-08-27T20:10:25.480Z" hostname="chromium" tests="28" failures="0" skipped="28" time="0" errors="0">
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should show data freshness indicators" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should refresh data when refresh button clicked" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display security trend graphs" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should export security report" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display chat interface below dashboard" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should stream tokens in real-time for chat responses" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle multi-turn conversations" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display quick queries sidebar" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle empty queries gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze IAM policies" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should check storage bucket security" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should provide compliance assessment" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze security findings" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should handle backend connection errors gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should recover from transient errors" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should validate input and show helpful prompts" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should support keyboard navigation" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should have proper ARIA labels" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should work with screen readers" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should adapt to mobile viewport" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should handle touch interactions" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should load dashboard within acceptable time" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should handle large datasets efficiently" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should cache responses appropriately" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should query SQLite database correctly" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should integrate with GCP APIs through backend" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should handle API rate limiting gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
+<testsuites id="" name="" tests="5" failures="5" skipped="0" errors="0" time="15.622804999999998">
+<testsuite name="security_agent_streamlit.spec.ts" timestamp="2025-08-27T20:45:26.267Z" hostname="chromium" tests="1" failures="1" skipped="0" time="10.42" errors="0">
+<testcase name="Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_streamlit.spec.ts" time="10.42">
+<failure message="security_agent_streamlit.spec.ts:31:9 should display executive dashboard on front page" type="FAILURE">
+<![CDATA[  [chromium] › security_agent_streamlit.spec.ts:31:9 › Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page 
+
+    Test timeout of 10000ms exceeded.
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator:  getByText('GCP Security Executive Dashboard')
+    Expected: visible
+    Received: <element(s) not found>
+    Timeout:  5000ms
+
+    Call log:
+      - Expect "toBeVisible" with timeout 5000ms
+      - waiting for getByText('GCP Security Executive Dashboard')
+
+
+      31 |     test('should display executive dashboard on front page', async () => {
+      32 |       // Check for main title - Streamlit may render this in different ways
+    > 33 |       await expect(page.getByText('GCP Security Executive Dashboard')).toBeVisible();
+         |                                                                        ^
+      34 |       
+      35 |       // Check for Security Posture section header
+      36 |       await expect(page.getByText('Security Posture at a Glance')).toBeVisible();
+        at /Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e/security_agent_streamlit.spec.ts:33:72
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    ../../test-results/security_agent_streamlit-S-d8193-ive-dashboard-on-front-page-chromium/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: ../../test-results/security_agent_streamlit-S-d8193-ive-dashboard-on-front-page-chromium/error-context.md
+]]>
+</failure>
+<system-out>
+<![CDATA[
+[[ATTACHMENT|test-results/security_agent_streamlit-S-d8193-ive-dashboard-on-front-page-chromium/test-failed-1.png]]
+
+[[ATTACHMENT|test-results/security_agent_streamlit-S-d8193-ive-dashboard-on-front-page-chromium/error-context.md]]
+]]>
+</system-out>
 </testcase>
 </testsuite>
-<testsuite name="security_agent_full.spec.ts" timestamp="2025-08-27T20:10:25.480Z" hostname="firefox" tests="28" failures="0" skipped="28" time="0" errors="0">
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should show data freshness indicators" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should refresh data when refresh button clicked" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display security trend graphs" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should export security report" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display chat interface below dashboard" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should stream tokens in real-time for chat responses" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle multi-turn conversations" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display quick queries sidebar" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle empty queries gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze IAM policies" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should check storage bucket security" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should provide compliance assessment" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze security findings" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should handle backend connection errors gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should recover from transient errors" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should validate input and show helpful prompts" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should support keyboard navigation" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should have proper ARIA labels" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should work with screen readers" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should adapt to mobile viewport" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should handle touch interactions" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should load dashboard within acceptable time" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should handle large datasets efficiently" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should cache responses appropriately" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should query SQLite database correctly" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should integrate with GCP APIs through backend" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should handle API rate limiting gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
+<testsuite name="security_agent_streamlit.spec.ts" timestamp="2025-08-27T20:45:26.267Z" hostname="firefox" tests="1" failures="1" skipped="0" time="0.228" errors="0">
+<testcase name="Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_streamlit.spec.ts" time="0.228">
+<failure message="security_agent_streamlit.spec.ts:31:9 should display executive dashboard on front page" type="FAILURE">
+<![CDATA[  [firefox] › security_agent_streamlit.spec.ts:31:9 › Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page 
+
+    Error: browser.newContext: Unknown permission: clipboard-read
+
+      11 |
+      12 |   test.beforeEach(async ({ browser }) => {
+    > 13 |     context = await browser.newContext({
+         |               ^
+      14 |       permissions: ['clipboard-read', 'clipboard-write'],
+      15 |     });
+      16 |     page = await context.newPage();
+        at /Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e/security_agent_streamlit.spec.ts:13:15
+
+    TypeError: Cannot read properties of undefined (reading 'close')
+
+      25 |
+      26 |   test.afterEach(async () => {
+    > 27 |     await context.close();
+         |                   ^
+      28 |   });
+      29 |
+      30 |   test.describe('Dashboard Tests', () => {
+        at /Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e/security_agent_streamlit.spec.ts:27:19
+]]>
+</failure>
 </testcase>
 </testsuite>
-<testsuite name="security_agent_full.spec.ts" timestamp="2025-08-27T20:10:25.480Z" hostname="webkit" tests="28" failures="0" skipped="28" time="0" errors="0">
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should show data freshness indicators" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should refresh data when refresh button clicked" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display security trend graphs" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should export security report" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display chat interface below dashboard" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should stream tokens in real-time for chat responses" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle multi-turn conversations" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display quick queries sidebar" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle empty queries gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze IAM policies" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should check storage bucket security" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should provide compliance assessment" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze security findings" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should handle backend connection errors gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should recover from transient errors" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should validate input and show helpful prompts" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should support keyboard navigation" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should have proper ARIA labels" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should work with screen readers" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should adapt to mobile viewport" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should handle touch interactions" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should load dashboard within acceptable time" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should handle large datasets efficiently" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should cache responses appropriately" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should query SQLite database correctly" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should integrate with GCP APIs through backend" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should handle API rate limiting gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
+<testsuite name="security_agent_streamlit.spec.ts" timestamp="2025-08-27T20:45:26.267Z" hostname="webkit" tests="1" failures="1" skipped="0" time="1.732" errors="0">
+<testcase name="Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_streamlit.spec.ts" time="1.732">
+<failure message="security_agent_streamlit.spec.ts:31:9 should display executive dashboard on front page" type="FAILURE">
+<![CDATA[  [webkit] › security_agent_streamlit.spec.ts:31:9 › Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page 
+
+    Error: browserContext.newPage: Unknown permission: clipboard-write
+
+      14 |       permissions: ['clipboard-read', 'clipboard-write'],
+      15 |     });
+    > 16 |     page = await context.newPage();
+         |                          ^
+      17 |     
+      18 |     // Navigate to the app
+      19 |     await page.goto('/');
+        at /Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e/security_agent_streamlit.spec.ts:16:26
+]]>
+</failure>
 </testcase>
 </testsuite>
-<testsuite name="security_agent_full.spec.ts" timestamp="2025-08-27T20:10:25.480Z" hostname="Mobile Chrome" tests="28" failures="0" skipped="28" time="0" errors="0">
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should show data freshness indicators" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should refresh data when refresh button clicked" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display security trend graphs" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should export security report" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display chat interface below dashboard" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should stream tokens in real-time for chat responses" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle multi-turn conversations" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display quick queries sidebar" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle empty queries gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze IAM policies" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should check storage bucket security" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should provide compliance assessment" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze security findings" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should handle backend connection errors gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should recover from transient errors" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should validate input and show helpful prompts" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should support keyboard navigation" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should have proper ARIA labels" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should work with screen readers" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should adapt to mobile viewport" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should handle touch interactions" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should load dashboard within acceptable time" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should handle large datasets efficiently" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should cache responses appropriately" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should query SQLite database correctly" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should integrate with GCP APIs through backend" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should handle API rate limiting gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
+<testsuite name="security_agent_streamlit.spec.ts" timestamp="2025-08-27T20:45:26.267Z" hostname="Mobile Chrome" tests="1" failures="1" skipped="0" time="10.351" errors="0">
+<testcase name="Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_streamlit.spec.ts" time="10.351">
+<failure message="security_agent_streamlit.spec.ts:31:9 should display executive dashboard on front page" type="FAILURE">
+<![CDATA[  [Mobile Chrome] › security_agent_streamlit.spec.ts:31:9 › Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page 
+
+    Test timeout of 10000ms exceeded.
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator:  getByText('GCP Security Executive Dashboard')
+    Expected: visible
+    Received: <element(s) not found>
+    Timeout:  5000ms
+
+    Call log:
+      - Expect "toBeVisible" with timeout 5000ms
+      - waiting for getByText('GCP Security Executive Dashboard')
+
+
+      31 |     test('should display executive dashboard on front page', async () => {
+      32 |       // Check for main title - Streamlit may render this in different ways
+    > 33 |       await expect(page.getByText('GCP Security Executive Dashboard')).toBeVisible();
+         |                                                                        ^
+      34 |       
+      35 |       // Check for Security Posture section header
+      36 |       await expect(page.getByText('Security Posture at a Glance')).toBeVisible();
+        at /Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e/security_agent_streamlit.spec.ts:33:72
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    ../../test-results/security_agent_streamlit-S-d8193-ive-dashboard-on-front-page-Mobile-Chrome/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: ../../test-results/security_agent_streamlit-S-d8193-ive-dashboard-on-front-page-Mobile-Chrome/error-context.md
+]]>
+</failure>
+<system-out>
+<![CDATA[
+[[ATTACHMENT|test-results/security_agent_streamlit-S-d8193-ive-dashboard-on-front-page-Mobile-Chrome/test-failed-1.png]]
+
+[[ATTACHMENT|test-results/security_agent_streamlit-S-d8193-ive-dashboard-on-front-page-Mobile-Chrome/error-context.md]]
+]]>
+</system-out>
 </testcase>
 </testsuite>
-<testsuite name="security_agent_full.spec.ts" timestamp="2025-08-27T20:10:25.480Z" hostname="Mobile Safari" tests="28" failures="0" skipped="28" time="0" errors="0">
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should show data freshness indicators" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should refresh data when refresh button clicked" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should display security trend graphs" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Dashboard Tests › should export security report" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display chat interface below dashboard" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should stream tokens in real-time for chat responses" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle multi-turn conversations" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should display quick queries sidebar" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Streaming Chat Interface Tests › should handle empty queries gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze IAM policies" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should check storage bucket security" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should provide compliance assessment" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Security Analysis Features › should analyze security findings" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should handle backend connection errors gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should recover from transient errors" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Error Handling and Recovery › should validate input and show helpful prompts" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should support keyboard navigation" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should have proper ARIA labels" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Accessibility Tests › should work with screen readers" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should adapt to mobile viewport" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Mobile Responsiveness › should handle touch interactions" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should load dashboard within acceptable time" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should handle large datasets efficiently" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="Security Agent - Full E2E Testing › Performance Tests › should cache responses appropriately" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should query SQLite database correctly" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should integrate with GCP APIs through backend" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
-</testcase>
-<testcase name="API Integration Tests › should handle API rate limiting gracefully" classname="security_agent_full.spec.ts" time="0">
-<skipped>
-</skipped>
+<testsuite name="security_agent_streamlit.spec.ts" timestamp="2025-08-27T20:45:26.267Z" hostname="Mobile Safari" tests="1" failures="1" skipped="0" time="1.765" errors="0">
+<testcase name="Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page" classname="security_agent_streamlit.spec.ts" time="1.765">
+<failure message="security_agent_streamlit.spec.ts:31:9 should display executive dashboard on front page" type="FAILURE">
+<![CDATA[  [Mobile Safari] › security_agent_streamlit.spec.ts:31:9 › Security Agent - Streamlit App Testing › Dashboard Tests › should display executive dashboard on front page 
+
+    Error: browserContext.newPage: Unknown permission: clipboard-write
+
+      14 |       permissions: ['clipboard-read', 'clipboard-write'],
+      15 |     });
+    > 16 |     page = await context.newPage();
+         |                          ^
+      17 |     
+      18 |     // Navigate to the app
+      19 |     await page.goto('/');
+        at /Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e/security_agent_streamlit.spec.ts:16:26
+]]>
+</failure>
 </testcase>
 </testsuite>
 </testsuites>

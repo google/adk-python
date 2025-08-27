@@ -1,227 +1,26 @@
 # Page snapshot
 
 ```yaml
-- generic:
-  - generic [ref=e3]:
-    - generic [ref=e4]:
-      - generic:
-        - list:
-          - generic:
-            - listitem:
-              - link "unified streaming client" [ref=e5] [cursor=pointer]:
-                - /url: http://localhost:8501/
-                - generic: unified streaming client
-            - listitem:
-              - link "custom roles analyzer" [ref=e6] [cursor=pointer]:
-                - /url: http://localhost:8501/custom_roles_analyzer
-                - generic: custom roles analyzer
-      - generic [ref=e7]:
-        - heading "📚 Quick Security Queries" [level=3] [ref=e11]
-        - button "What tables are available in the database?" [ref=e14] [cursor=pointer]:
-          - paragraph [ref=e16] [cursor=pointer]: What tables are available in the database?
-        - button "Show me all security findings" [ref=e19] [cursor=pointer]:
-          - paragraph [ref=e21] [cursor=pointer]: Show me all security findings
-        - button "List all storage buckets and their security status" [ref=e24] [cursor=pointer]:
-          - paragraph [ref=e26] [cursor=pointer]: List all storage buckets and their security status
-        - button "Check for overly permissive firewall rules" [ref=e29] [cursor=pointer]:
-          - paragraph [ref=e31] [cursor=pointer]: Check for overly permissive firewall rules
-        - button "Show IAM accounts with high privileges" [ref=e34] [cursor=pointer]:
-          - paragraph [ref=e36] [cursor=pointer]: Show IAM accounts with high privileges
-        - button "What are the top security risks?" [ref=e39] [cursor=pointer]:
-          - paragraph [ref=e41] [cursor=pointer]: What are the top security risks?
-        - button "Generate a security compliance report" [ref=e44] [cursor=pointer]:
-          - paragraph [ref=e46] [cursor=pointer]: Generate a security compliance report
-        - button "Show assets created in the last 30 days" [ref=e49] [cursor=pointer]:
-          - paragraph [ref=e51] [cursor=pointer]: Show assets created in the last 30 days
-        - button "Show me MSA analysis history" [ref=e54] [cursor=pointer]:
-          - paragraph [ref=e56] [cursor=pointer]: Show me MSA analysis history
-        - button "What MSA changes affect BigQuery?" [ref=e59] [cursor=pointer]:
-          - paragraph [ref=e61] [cursor=pointer]: What MSA changes affect BigQuery?
-        - button "Show me permission changes from MSAs" [ref=e64] [cursor=pointer]:
-          - paragraph [ref=e66] [cursor=pointer]: Show me permission changes from MSAs
-        - button "What permissions are changing for bigquery.datasets.get?" [ref=e69] [cursor=pointer]:
-          - paragraph [ref=e71] [cursor=pointer]: What permissions are changing for bigquery.datasets.get?
-        - button "Show all evaluated GCP services" [ref=e74] [cursor=pointer]:
-          - paragraph [ref=e76] [cursor=pointer]: Show all evaluated GCP services
-        - button "What are the security risks for Vertex AI Memory Store?" [ref=e79] [cursor=pointer]:
-          - paragraph [ref=e81] [cursor=pointer]: What are the security risks for Vertex AI Memory Store?
-        - button "Check compliance for AI/ML services" [ref=e84] [cursor=pointer]:
-          - paragraph [ref=e86] [cursor=pointer]: Check compliance for AI/ML services
-        - separator [ref=e90]
-        - heading "Session Info" [level=3] [ref=e94]
-        - generic [ref=e97]: "Session: 7565fcd5..."
-        - generic [ref=e100]: "Messages: 0"
-        - alert [ref=e103]:
-          - generic:
-            - generic:
-              - generic:
-                - generic:
-                  - paragraph: ✅ Database connected
-        - status [ref=e107]:
-          - text: "📅 Updated: 2 hours ago"
-          - generic [ref=e108]: "[STALE]"
-        - button "🔄 Refresh Data" [ref=e114] [cursor=pointer]:
-          - paragraph [ref=e116] [cursor=pointer]: 🔄 Refresh Data
-        - button "Clear Chat" [ref=e119] [cursor=pointer]:
-          - paragraph [ref=e121] [cursor=pointer]: Clear Chat
-    - generic [ref=e124]:
-      - banner [ref=e125]:
-        - generic [ref=e127]:
-          - button "keyboard_double_arrow_right" [ref=e130] [cursor=pointer]:
-            - generic [ref=e132] [cursor=pointer]: keyboard_double_arrow_right
-          - generic [ref=e133]:
-            - generic [ref=e135]:
-              - img "Running..." [ref=e136]:
-                - img [ref=e137]
-              - button "Stop" [ref=e141] [cursor=pointer]
-            - button "Deploy" [ref=e143] [cursor=pointer]:
-              - generic [ref=e145] [cursor=pointer]: Deploy
-            - button [ref=e147] [cursor=pointer]:
-              - img [ref=e148] [cursor=pointer]
-      - generic [ref=e153]:
-        - heading "GCP Security Executive Dashboard" [level=1] [ref=e158]: GCP Security Executive Dashboard
-        - paragraph [ref=e163]: Real-time Security Analytics, MSA Impact Analysis & Intelligent Chat Assistant
-        - heading "Security Posture at a Glance" [level=2] [ref=e168]: Security Posture at a Glance
-        - generic [ref=e171]:
-          - generic [ref=e175]:
-            - generic [ref=e176]:
-              - paragraph [ref=e179]: Total Assets
-              - img [ref=e183]
-            - generic [ref=e187]: "586"
-          - generic [ref=e191]:
-            - paragraph [ref=e195]: Critical/High
-            - generic [ref=e197]: "2"
-            - generic [ref=e198]:
-              - img [ref=e199]
-              - generic [ref=e202]: Needs attention
-          - generic [ref=e206]:
-            - paragraph [ref=e210]: Storage Security
-            - generic [ref=e212]: 15%
-            - generic [ref=e213]:
-              - img [ref=e214]
-              - generic [ref=e217]: 11 public
-          - generic [ref=e221]:
-            - paragraph [ref=e225]: Network Security
-            - generic [ref=e227]: 25%
-            - generic [ref=e228]:
-              - img [ref=e229]
-              - generic [ref=e232]: 3 risky
-          - generic [ref=e236]:
-            - paragraph [ref=e240]: Overall Health
-            - generic [ref=e242]: 33%
-            - generic [ref=e243]:
-              - img [ref=e244]
-              - generic [ref=e247]: At Risk
-        - heading "Security Analytics" [level=3] [ref=e252]: Security Analytics
-        - generic [ref=e255]:
-          - generic [ref=e263]:
-            - img:
-              - generic:
-                - generic:
-                  - generic:
-                    - generic:
-                      - generic: 33.3%
-                  - generic:
-                    - generic:
-                      - generic: 33.3%
-                  - generic:
-                    - generic:
-                      - generic: 33.3%
-            - img:
-              - generic:
-                - generic [ref=e270]:
-                  - generic [ref=e272]: CRITICAL
-                  - generic [ref=e279]: HIGH
-                  - generic [ref=e286]: MEDIUM
-                - generic:
-                  - generic:
-                    - generic:
-                      - generic: Security Findings by Severity
-            - generic [ref=e292]:
-              - img [ref=e295] [cursor=pointer]
-              - img [ref=e299] [cursor=pointer]
-            - img
-          - generic [ref=e308]:
-            - img:
-              - generic:
-                - generic:
-                  - generic:
-                    - generic:
-                      - generic: "0"
-                    - generic:
-                      - generic: "50"
-                    - generic:
-                      - generic: "100"
-                  - generic:
-                    - generic:
-                      - generic: compute.googleapis.com/Route
-                    - generic:
-                      - generic: artifactregistry.googleapis.com/DockerImage
-                    - generic:
-                      - generic: run.googleapis.com/Revision
-                    - generic:
-                      - generic: serviceusage.googleapis.com/Service
-                    - generic:
-                      - generic: cloudbuild.googleapis.com/Build
-            - img:
-              - generic:
-                - generic:
-                  - generic:
-                    - generic:
-                      - generic: Top 5 Asset Types
-                - generic:
-                  - generic: x
-                - generic:
-                  - generic: "y"
-            - generic [ref=e322]:
-              - img [ref=e325] [cursor=pointer]
-              - generic [ref=e327]:
-                - img [ref=e329] [cursor=pointer]
-                - img [ref=e332] [cursor=pointer]
-              - generic [ref=e334]:
-                - img [ref=e336] [cursor=pointer]
-                - img [ref=e339] [cursor=pointer]
-                - img [ref=e342] [cursor=pointer]
-                - img [ref=e345] [cursor=pointer]
-              - img [ref=e349] [cursor=pointer]
-            - img
-        - heading "Quick Security Actions" [level=3] [ref=e355]: Quick Security Actions
-        - generic [ref=e358]:
-          - button "Full Security Scan" [ref=e366] [cursor=pointer]:
-            - paragraph [ref=e368] [cursor=pointer]: Full Security Scan
-          - button "Show Critical Issues" [ref=e376] [cursor=pointer]:
-            - paragraph [ref=e378] [cursor=pointer]: Show Critical Issues
-          - button "Storage Analysis" [ref=e386] [cursor=pointer]:
-            - paragraph [ref=e388] [cursor=pointer]: Storage Analysis
-          - button "Network Review" [ref=e396] [cursor=pointer]:
-            - paragraph [ref=e398] [cursor=pointer]: Network Review
-        - separator [ref=e402]
-        - generic [ref=e404]:
-          - button "Export Security Summary" [ref=e412] [cursor=pointer]:
-            - paragraph [ref=e414] [cursor=pointer]: Export Security Summary
-          - button "Export Raw Data (JSON)" [ref=e422] [cursor=pointer]:
-            - paragraph [ref=e424] [cursor=pointer]: Export Raw Data (JSON)
-        - separator [ref=e428]
-        - generic [ref=e430]:
-          - tablist [ref=e432]:
-            - tab "Security Chat" [selected] [ref=e433] [cursor=pointer]:
-              - paragraph [ref=e435] [cursor=pointer]: Security Chat
-            - tab "MSA Analyzer" [ref=e436] [cursor=pointer]:
-              - paragraph [ref=e438] [cursor=pointer]: MSA Analyzer
-            - tab "Service Evaluation" [ref=e439] [cursor=pointer]:
-              - paragraph [ref=e441] [cursor=pointer]: Service Evaluation
-            - tab "Agent Evaluation" [ref=e442] [cursor=pointer]:
-              - paragraph [ref=e444] [cursor=pointer]: Agent Evaluation
-            - tab "Feedback Analytics" [ref=e445] [cursor=pointer]:
-              - paragraph [ref=e447] [cursor=pointer]: Feedback Analytics
-            - tab "Statistical Analysis" [ref=e448] [cursor=pointer]:
-              - paragraph [ref=e450] [cursor=pointer]: Statistical Analysis
-          - tabpanel "Security Chat" [ref=e453]:
-            - generic [ref=e454]:
-              - heading "Security Intelligence Chat" [level=2] [ref=e459]: Security Intelligence Chat
-              - generic [ref=e463]:
-                - textbox "Ask about your GCP security posture..." [active] [ref=e466]
-                - button [disabled] [ref=e467]:
-                  - img [ref=e468]
-  - img [ref=e471]
+- generic [ref=e4]:
+  - banner [ref=e5]:
+    - generic [ref=e8]:
+      - button "Deploy" [ref=e10] [cursor=pointer]:
+        - generic [ref=e12] [cursor=pointer]: Deploy
+      - button [ref=e14] [cursor=pointer]:
+        - img [ref=e15] [cursor=pointer]
+  - alert [ref=e23]:
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]: FileNotFoundError
+        - text: ": Agent directory not found at: /Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/agents/agents/gcp_security"
+      - generic [ref=e29]:
+        - generic [ref=e30]: "Traceback:"
+        - code [ref=e33]:
+          - generic [ref=e34]: "File \"/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/agents/gcp_security/unified_streaming_client.py\", line 46, in <module> raise FileNotFoundError(f\"Agent directory not found at: {agent_dir}\")"
+      - generic [ref=e35]:
+        - button "Copy" [ref=e36] [cursor=pointer]
+        - link "Ask Google" [ref=e37] [cursor=pointer]:
+          - /url: https://www.google.com/search?q=FileNotFoundError%3A%20Agent%20directory%20not%20found%20at%3A%20%2FUsers%2Fstuartgano%2FDesktop%2FMicron%2FADK%2Fcontributing%2Fsamples%2Fsecurity_agent%2Fagents%2Fagents%2Fgcp_security
+        - link "Ask ChatGPT" [ref=e38] [cursor=pointer]:
+          - /url: https://chatgpt.com/?q=FileNotFoundError%3A%20Agent%20directory%20not%20found%20at%3A%20%2FUsers%2Fstuartgano%2FDesktop%2FMicron%2FADK%2Fcontributing%2Fsamples%2Fsecurity_agent%2Fagents%2Fagents%2Fgcp_security%0A%0AFile%20%22%2FUsers%2Fstuartgano%2FDesktop%2FMicron%2FADK%2Fcontributing%2Fsamples%2Fsecurity_agent%2Fagents%2Fgcp_security%2Funified_streaming_client.py%22%2C%20line%2046%2C%20in%20%3Cmodule%3E%0A%20%20%20%20raise%20FileNotFoundError(f%22Agent%20directory%20not%20found%20at%3A%20%7Bagent_dir%7D%22)
 ```
