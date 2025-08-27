@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dashboard import SecurityDashboard
 from evaluation_page import evaluation_manager
 from iam_features import IAMFeaturesUI
+from networking_dashboard import main as networking_main
 
 # Find and import the agent
 current_file = Path(__file__).resolve()
@@ -2164,6 +2165,51 @@ def generate_evalset_from_feedback(min_feedback_count: int = 15):
     except Exception as e:
         st.error(f"Error generating evalset: {e}")
 
+
+def display_networking_dashboard():
+    """Display the Networking Troubleshooting Ninja dashboard."""
+    try:
+        # Call the networking dashboard main function
+        networking_main()
+    except Exception as e:
+        logger.error(f"Error displaying networking dashboard: {e}")
+        st.error(f"Failed to load networking dashboard: {e}")
+        
+        # Fallback UI
+        st.markdown("## 🕸️ Networking Troubleshooting Ninja")
+        st.info("🚧 The networking dashboard is currently being developed. Please check back soon!")
+        
+        # Show planned features
+        st.markdown("### 🚀 Planned Features")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            **Connectivity Testing:**
+            - Ping tests
+            - Port connectivity checks
+            - Traceroute analysis
+            - Batch connectivity testing
+            """)
+        
+        with col2:
+            st.markdown("""
+            **Traffic Analysis:**
+            - VPC Flow Log processing
+            - Anomaly detection
+            - Traffic pattern analysis
+            - Security scoring
+            """)
+        
+        st.markdown("### 📊 Error Analysis & Resolution")
+        st.markdown("""
+        - Internal error code knowledge base
+        - Root cause analysis
+        - Resolution recommendations
+        - Learning from resolution feedback
+        """)
+
+
 def main():
     """Main application with unified dashboard and streaming chat."""
     # Initialize session
@@ -2175,7 +2221,7 @@ def main():
     st.divider()
     
     # Create tabs for different features
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Security Chat", "IAM Analysis", "MSA Analyzer", "Service Evaluation", "Agent Evaluation", "Feedback Analytics", "Statistical Analysis"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Security Chat", "IAM Analysis", "Networking", "MSA Analyzer", "Service Evaluation", "Agent Evaluation", "Feedback Analytics", "Statistical Analysis"])
     
     with tab1:
         # Display chat interface
@@ -2207,22 +2253,26 @@ def main():
             iam_ui.display_quick_iam_actions()
     
     with tab3:
+        # Display networking dashboard
+        display_networking_dashboard()
+    
+    with tab4:
         # Display MSA analyzer
         display_msa_analyzer()
     
-    with tab4:
+    with tab5:
         # Display service evaluation
         display_service_evaluation()
     
-    with tab5:
+    with tab6:
         # Display agent evaluation page
         evaluation_manager.display_evaluation_page()
     
-    with tab6:
+    with tab7:
         # Display feedback analytics dashboard
         display_feedback_analytics()
     
-    with tab7:
+    with tab8:
         # Display statistical analysis dashboard
         display_statistical_analysis()
     

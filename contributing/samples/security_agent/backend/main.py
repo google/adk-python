@@ -424,6 +424,14 @@ try:
 except ImportError as e:
     logger.warning(f"[WARNING] Data refresh API not available: {e}")
 
+# Networking Connectivity Testing API - Networking Troubleshooting Ninja (Phase 1)
+try:
+    from api.connectivity import router as connectivity_router
+    app.include_router(connectivity_router)  # Already has /api/v1/networking/connectivity prefix
+    logger.info("[OK] Connectivity Testing API loaded - Networking Troubleshooting Ninja (Phase 1)")
+except ImportError as e:
+    logger.warning(f"[WARNING] Connectivity Testing API not available: {e}")
+
 # Import MSA Analyzer router
 try:
     from api.msa_analyzer import router as msa_router
