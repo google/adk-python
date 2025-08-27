@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent))
 from dashboard import SecurityDashboard
 from evaluation_page import evaluation_manager
-from iam_features import IAMFeaturesUI
 
 # Find and import the agent
 current_file = Path(__file__).resolve()
@@ -2175,54 +2174,29 @@ def main():
     st.divider()
     
     # Create tabs for different features
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Security Chat", "IAM Analysis", "MSA Analyzer", "Service Evaluation", "Agent Evaluation", "Feedback Analytics", "Statistical Analysis"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Security Chat", "MSA Analyzer", "Service Evaluation", "Agent Evaluation", "Feedback Analytics", "Statistical Analysis"])
     
     with tab1:
         # Display chat interface
         display_chat_interface()
     
     with tab2:
-        # Display IAM Advanced Features
-        iam_ui = IAMFeaturesUI()
-        iam_ui.display_iam_overview()
-        
-        # Create sub-tabs for IAM features
-        iam_tab1, iam_tab2, iam_tab3, iam_tab4 = st.tabs([
-            "Role Recommendations", 
-            "Least-Privilege Analysis", 
-            "Cross-Project Permissions",
-            "Quick Actions"
-        ])
-        
-        with iam_tab1:
-            iam_ui.display_role_recommendations()
-        
-        with iam_tab2:
-            iam_ui.display_least_privilege_violations()
-        
-        with iam_tab3:
-            iam_ui.display_cross_project_analysis()
-        
-        with iam_tab4:
-            iam_ui.display_quick_iam_actions()
-    
-    with tab3:
         # Display MSA analyzer
         display_msa_analyzer()
     
-    with tab4:
+    with tab3:
         # Display service evaluation
         display_service_evaluation()
     
-    with tab5:
+    with tab4:
         # Display agent evaluation page
         evaluation_manager.display_evaluation_page()
     
-    with tab6:
+    with tab5:
         # Display feedback analytics dashboard
         display_feedback_analytics()
     
-    with tab7:
+    with tab6:
         # Display statistical analysis dashboard
         display_statistical_analysis()
     

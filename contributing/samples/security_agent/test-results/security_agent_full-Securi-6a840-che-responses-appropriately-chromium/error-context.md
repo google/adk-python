@@ -1,0 +1,227 @@
+# Page snapshot
+
+```yaml
+- generic:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic:
+        - list:
+          - generic:
+            - listitem:
+              - link "unified streaming client" [ref=e5] [cursor=pointer]:
+                - /url: http://localhost:8501/
+                - generic: unified streaming client
+            - listitem:
+              - link "custom roles analyzer" [ref=e6] [cursor=pointer]:
+                - /url: http://localhost:8501/custom_roles_analyzer
+                - generic: custom roles analyzer
+      - generic [ref=e7]:
+        - heading "📚 Quick Security Queries" [level=3] [ref=e11]
+        - button "What tables are available in the database?" [ref=e14] [cursor=pointer]:
+          - paragraph [ref=e16] [cursor=pointer]: What tables are available in the database?
+        - button "Show me all security findings" [ref=e19] [cursor=pointer]:
+          - paragraph [ref=e21] [cursor=pointer]: Show me all security findings
+        - button "List all storage buckets and their security status" [ref=e24] [cursor=pointer]:
+          - paragraph [ref=e26] [cursor=pointer]: List all storage buckets and their security status
+        - button "Check for overly permissive firewall rules" [ref=e29] [cursor=pointer]:
+          - paragraph [ref=e31] [cursor=pointer]: Check for overly permissive firewall rules
+        - button "Show IAM accounts with high privileges" [ref=e34] [cursor=pointer]:
+          - paragraph [ref=e36] [cursor=pointer]: Show IAM accounts with high privileges
+        - button "What are the top security risks?" [ref=e39] [cursor=pointer]:
+          - paragraph [ref=e41] [cursor=pointer]: What are the top security risks?
+        - button "Generate a security compliance report" [ref=e44] [cursor=pointer]:
+          - paragraph [ref=e46] [cursor=pointer]: Generate a security compliance report
+        - button "Show assets created in the last 30 days" [ref=e49] [cursor=pointer]:
+          - paragraph [ref=e51] [cursor=pointer]: Show assets created in the last 30 days
+        - button "Show me MSA analysis history" [ref=e54] [cursor=pointer]:
+          - paragraph [ref=e56] [cursor=pointer]: Show me MSA analysis history
+        - button "What MSA changes affect BigQuery?" [ref=e59] [cursor=pointer]:
+          - paragraph [ref=e61] [cursor=pointer]: What MSA changes affect BigQuery?
+        - button "Show me permission changes from MSAs" [ref=e64] [cursor=pointer]:
+          - paragraph [ref=e66] [cursor=pointer]: Show me permission changes from MSAs
+        - button "What permissions are changing for bigquery.datasets.get?" [ref=e69] [cursor=pointer]:
+          - paragraph [ref=e71] [cursor=pointer]: What permissions are changing for bigquery.datasets.get?
+        - button "Show all evaluated GCP services" [ref=e74] [cursor=pointer]:
+          - paragraph [ref=e76] [cursor=pointer]: Show all evaluated GCP services
+        - button "What are the security risks for Vertex AI Memory Store?" [ref=e79] [cursor=pointer]:
+          - paragraph [ref=e81] [cursor=pointer]: What are the security risks for Vertex AI Memory Store?
+        - button "Check compliance for AI/ML services" [ref=e84] [cursor=pointer]:
+          - paragraph [ref=e86] [cursor=pointer]: Check compliance for AI/ML services
+        - separator [ref=e90]
+        - heading "Session Info" [level=3] [ref=e94]
+        - generic [ref=e97]: "Session: bf334bff..."
+        - generic [ref=e100]: "Messages: 0"
+        - alert [ref=e103]:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - paragraph: ✅ Database connected
+        - status [ref=e107]:
+          - text: "📅 Updated: 2 hours ago"
+          - generic [ref=e108]: "[STALE]"
+        - button "🔄 Refresh Data" [ref=e114] [cursor=pointer]:
+          - paragraph [ref=e116] [cursor=pointer]: 🔄 Refresh Data
+        - button "Clear Chat" [ref=e119] [cursor=pointer]:
+          - paragraph [ref=e121] [cursor=pointer]: Clear Chat
+    - generic [ref=e124]:
+      - banner [ref=e125]:
+        - generic [ref=e127]:
+          - button "keyboard_double_arrow_right" [ref=e130] [cursor=pointer]:
+            - generic [ref=e132] [cursor=pointer]: keyboard_double_arrow_right
+          - generic [ref=e133]:
+            - generic [ref=e135]:
+              - img "Running..." [ref=e136]:
+                - img [ref=e137]
+              - button "Stop" [ref=e142] [cursor=pointer]
+            - button "Deploy" [ref=e144] [cursor=pointer]:
+              - generic [ref=e146] [cursor=pointer]: Deploy
+            - button [ref=e148] [cursor=pointer]:
+              - img [ref=e149] [cursor=pointer]
+      - generic [ref=e154]:
+        - heading "GCP Security Executive Dashboard" [level=1] [ref=e159]: GCP Security Executive Dashboard
+        - paragraph [ref=e164]: Real-time Security Analytics, MSA Impact Analysis & Intelligent Chat Assistant
+        - heading "Security Posture at a Glance" [level=2] [ref=e169]: Security Posture at a Glance
+        - generic [ref=e172]:
+          - generic [ref=e176]:
+            - generic [ref=e177]:
+              - paragraph [ref=e180]: Total Assets
+              - img [ref=e184]
+            - generic [ref=e188]: "586"
+          - generic [ref=e192]:
+            - paragraph [ref=e196]: Critical/High
+            - generic [ref=e198]: "2"
+            - generic [ref=e199]:
+              - img [ref=e200]
+              - generic [ref=e203]: Needs attention
+          - generic [ref=e207]:
+            - paragraph [ref=e211]: Storage Security
+            - generic [ref=e213]: 15%
+            - generic [ref=e214]:
+              - img [ref=e215]
+              - generic [ref=e218]: 11 public
+          - generic [ref=e222]:
+            - paragraph [ref=e226]: Network Security
+            - generic [ref=e228]: 25%
+            - generic [ref=e229]:
+              - img [ref=e230]
+              - generic [ref=e233]: 3 risky
+          - generic [ref=e237]:
+            - paragraph [ref=e241]: Overall Health
+            - generic [ref=e243]: 33%
+            - generic [ref=e244]:
+              - img [ref=e245]
+              - generic [ref=e248]: At Risk
+        - heading "Security Analytics" [level=3] [ref=e253]: Security Analytics
+        - generic [ref=e256]:
+          - generic [ref=e264]:
+            - img:
+              - generic:
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic: 33.3%
+                  - generic:
+                    - generic:
+                      - generic: 33.3%
+                  - generic:
+                    - generic:
+                      - generic: 33.3%
+            - img:
+              - generic:
+                - generic [ref=e271]:
+                  - generic [ref=e273]: CRITICAL
+                  - generic [ref=e280]: HIGH
+                  - generic [ref=e287]: MEDIUM
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic: Security Findings by Severity
+            - generic [ref=e293]:
+              - img [ref=e296] [cursor=pointer]
+              - img [ref=e300] [cursor=pointer]
+            - img
+          - generic [ref=e309]:
+            - img:
+              - generic:
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic: "0"
+                    - generic:
+                      - generic: "50"
+                    - generic:
+                      - generic: "100"
+                  - generic:
+                    - generic:
+                      - generic: compute.googleapis.com/Route
+                    - generic:
+                      - generic: artifactregistry.googleapis.com/DockerImage
+                    - generic:
+                      - generic: run.googleapis.com/Revision
+                    - generic:
+                      - generic: serviceusage.googleapis.com/Service
+                    - generic:
+                      - generic: cloudbuild.googleapis.com/Build
+            - img:
+              - generic:
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic: Top 5 Asset Types
+                - generic:
+                  - generic: x
+                - generic:
+                  - generic: "y"
+            - generic [ref=e323]:
+              - img [ref=e326] [cursor=pointer]
+              - generic [ref=e328]:
+                - img [ref=e330] [cursor=pointer]
+                - img [ref=e333] [cursor=pointer]
+              - generic [ref=e335]:
+                - img [ref=e337] [cursor=pointer]
+                - img [ref=e340] [cursor=pointer]
+                - img [ref=e343] [cursor=pointer]
+                - img [ref=e346] [cursor=pointer]
+              - img [ref=e350] [cursor=pointer]
+            - img
+        - heading "Quick Security Actions" [level=3] [ref=e356]: Quick Security Actions
+        - generic [ref=e359]:
+          - button "Full Security Scan" [ref=e367] [cursor=pointer]:
+            - paragraph [ref=e369] [cursor=pointer]: Full Security Scan
+          - button "Show Critical Issues" [ref=e377] [cursor=pointer]:
+            - paragraph [ref=e379] [cursor=pointer]: Show Critical Issues
+          - button "Storage Analysis" [ref=e387] [cursor=pointer]:
+            - paragraph [ref=e389] [cursor=pointer]: Storage Analysis
+          - button "Network Review" [ref=e397] [cursor=pointer]:
+            - paragraph [ref=e399] [cursor=pointer]: Network Review
+        - separator [ref=e403]
+        - generic [ref=e405]:
+          - button "Export Security Summary" [ref=e413] [cursor=pointer]:
+            - paragraph [ref=e415] [cursor=pointer]: Export Security Summary
+          - button "Export Raw Data (JSON)" [ref=e423] [cursor=pointer]:
+            - paragraph [ref=e425] [cursor=pointer]: Export Raw Data (JSON)
+        - separator [ref=e429]
+        - generic [ref=e431]:
+          - tablist [ref=e433]:
+            - tab "Security Chat" [selected] [ref=e434] [cursor=pointer]:
+              - paragraph [ref=e436] [cursor=pointer]: Security Chat
+            - tab "MSA Analyzer" [ref=e437] [cursor=pointer]:
+              - paragraph [ref=e439] [cursor=pointer]: MSA Analyzer
+            - tab "Service Evaluation" [ref=e440] [cursor=pointer]:
+              - paragraph [ref=e442] [cursor=pointer]: Service Evaluation
+            - tab "Agent Evaluation" [ref=e443] [cursor=pointer]:
+              - paragraph [ref=e445] [cursor=pointer]: Agent Evaluation
+            - tab "Feedback Analytics" [ref=e446] [cursor=pointer]:
+              - paragraph [ref=e448] [cursor=pointer]: Feedback Analytics
+            - tab "Statistical Analysis" [ref=e449] [cursor=pointer]:
+              - paragraph [ref=e451] [cursor=pointer]: Statistical Analysis
+          - tabpanel "Security Chat" [ref=e454]:
+            - generic [ref=e455]:
+              - heading "Security Intelligence Chat" [level=2] [ref=e460]: Security Intelligence Chat
+              - generic [ref=e464]:
+                - textbox "Ask about your GCP security posture..." [active] [ref=e467]
+                - button [disabled] [ref=e468]:
+                  - img [ref=e469]
+  - img [ref=e472]
+```

@@ -1,0 +1,3016 @@
+{
+  "config": {
+    "configFile": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/playwright.config.ts",
+    "rootDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e",
+    "forbidOnly": false,
+    "fullyParallel": true,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {},
+    "preserveOutput": "always",
+    "reporter": [
+      [
+        "html",
+        {
+          "outputFolder": "playwright-report"
+        }
+      ],
+      [
+        "json",
+        {
+          "outputFile": "test-results.json"
+        }
+      ],
+      [
+        "junit",
+        {
+          "outputFile": "junit-results.xml"
+        }
+      ],
+      [
+        "list",
+        null
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "quiet": false,
+    "projects": [
+      {
+        "outputDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "id": "firefox",
+        "name": "firefox",
+        "testDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "id": "webkit",
+        "name": "webkit",
+        "testDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "id": "Mobile Chrome",
+        "name": "Mobile Chrome",
+        "testDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "id": "Mobile Safari",
+        "name": "Mobile Safari",
+        "testDir": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "shard": null,
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.55.0",
+    "workers": 5,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "security_agent_full.spec.ts",
+      "file": "security_agent_full.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Security Agent - Full E2E Testing",
+          "file": "security_agent_full.spec.ts",
+          "line": 8,
+          "column": 6,
+          "specs": [],
+          "suites": [
+            {
+              "title": "Dashboard Tests",
+              "file": "security_agent_full.spec.ts",
+              "line": 32,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "should display executive dashboard on front page",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-895892501c2fbc4520df",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 33,
+                  "column": 9
+                },
+                {
+                  "title": "should show data freshness indicators",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-9a3537e9dbe12fbd2880",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 44,
+                  "column": 9
+                },
+                {
+                  "title": "should refresh data when refresh button clicked",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-93f13d2689c4c7f18bb7",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 55,
+                  "column": 9
+                },
+                {
+                  "title": "should display security trend graphs",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-6ea6d5dfb127d3ed54c3",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 72,
+                  "column": 9
+                },
+                {
+                  "title": "should export security report",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-d9fd59e15587fe7d510c",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 78,
+                  "column": 9
+                },
+                {
+                  "title": "should display executive dashboard on front page",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-82baf698f642c251fbd5",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 33,
+                  "column": 9
+                },
+                {
+                  "title": "should show data freshness indicators",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-4e3eab98449c89aa2540",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 44,
+                  "column": 9
+                },
+                {
+                  "title": "should refresh data when refresh button clicked",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-9e980ed11e758d0c7220",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 55,
+                  "column": 9
+                },
+                {
+                  "title": "should display security trend graphs",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-209dbc628f6efc0ee4b9",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 72,
+                  "column": 9
+                },
+                {
+                  "title": "should export security report",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-f9c0499f97449f2749c6",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 78,
+                  "column": 9
+                },
+                {
+                  "title": "should display executive dashboard on front page",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-db27fadb6a23162a84ab",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 33,
+                  "column": 9
+                },
+                {
+                  "title": "should show data freshness indicators",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-183d7fd615cca9fda3f9",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 44,
+                  "column": 9
+                },
+                {
+                  "title": "should refresh data when refresh button clicked",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-7e250bf7320fb5408c54",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 55,
+                  "column": 9
+                },
+                {
+                  "title": "should display security trend graphs",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-bce5da587afcb772cd94",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 72,
+                  "column": 9
+                },
+                {
+                  "title": "should export security report",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-440f7244ea5bc54b81f1",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 78,
+                  "column": 9
+                },
+                {
+                  "title": "should display executive dashboard on front page",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-5047ffeff839c158edbc",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 33,
+                  "column": 9
+                },
+                {
+                  "title": "should show data freshness indicators",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-da4889b12a84147e4bf4",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 44,
+                  "column": 9
+                },
+                {
+                  "title": "should refresh data when refresh button clicked",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-f99be48e80d3628ddec6",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 55,
+                  "column": 9
+                },
+                {
+                  "title": "should display security trend graphs",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-0aca6a29cd097526d5a3",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 72,
+                  "column": 9
+                },
+                {
+                  "title": "should export security report",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-5b4915eb3aa9e74cc1af",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 78,
+                  "column": 9
+                },
+                {
+                  "title": "should display executive dashboard on front page",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-ee1c34d666fbd97642dc",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 33,
+                  "column": 9
+                },
+                {
+                  "title": "should show data freshness indicators",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-36b7bc48db9488cfce7a",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 44,
+                  "column": 9
+                },
+                {
+                  "title": "should refresh data when refresh button clicked",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-e364984ddb965a2c66c3",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 55,
+                  "column": 9
+                },
+                {
+                  "title": "should display security trend graphs",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-bfa8ba536325af2be606",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 72,
+                  "column": 9
+                },
+                {
+                  "title": "should export security report",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-81f5428626c02f3a6d7b",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 78,
+                  "column": 9
+                }
+              ]
+            },
+            {
+              "title": "Streaming Chat Interface Tests",
+              "file": "security_agent_full.spec.ts",
+              "line": 93,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "should display chat interface below dashboard",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-8e2570672b20cec1a878",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 94,
+                  "column": 9
+                },
+                {
+                  "title": "should stream tokens in real-time for chat responses",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-4ce035503880f822f2d2",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 103,
+                  "column": 9
+                },
+                {
+                  "title": "should handle multi-turn conversations",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-ac116526be5377ad6c64",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 132,
+                  "column": 9
+                },
+                {
+                  "title": "should display quick queries sidebar",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-c706f43defebe516ceb6",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 151,
+                  "column": 9
+                },
+                {
+                  "title": "should handle empty queries gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-dd88752d741317431507",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 165,
+                  "column": 9
+                },
+                {
+                  "title": "should display chat interface below dashboard",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-d321940454962c3c44b1",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 94,
+                  "column": 9
+                },
+                {
+                  "title": "should stream tokens in real-time for chat responses",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-c990fd0262387831ddfe",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 103,
+                  "column": 9
+                },
+                {
+                  "title": "should handle multi-turn conversations",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-2109eec2b86f628d7240",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 132,
+                  "column": 9
+                },
+                {
+                  "title": "should display quick queries sidebar",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-3159adb89d3815539cf7",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 151,
+                  "column": 9
+                },
+                {
+                  "title": "should handle empty queries gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-f1fa61f6ff0a3f1c7d4e",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 165,
+                  "column": 9
+                },
+                {
+                  "title": "should display chat interface below dashboard",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-4c140bfadf1f7a259cbd",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 94,
+                  "column": 9
+                },
+                {
+                  "title": "should stream tokens in real-time for chat responses",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-ee6429f63398b5bd8165",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 103,
+                  "column": 9
+                },
+                {
+                  "title": "should handle multi-turn conversations",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-68e25639df26f6e7c2d3",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 132,
+                  "column": 9
+                },
+                {
+                  "title": "should display quick queries sidebar",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-b7e4eaf57c38f92dd3f4",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 151,
+                  "column": 9
+                },
+                {
+                  "title": "should handle empty queries gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-3e6edde3419e9518e5b1",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 165,
+                  "column": 9
+                },
+                {
+                  "title": "should display chat interface below dashboard",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-144c36da447e7ce869de",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 94,
+                  "column": 9
+                },
+                {
+                  "title": "should stream tokens in real-time for chat responses",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-35d0afbefeb5cee4552b",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 103,
+                  "column": 9
+                },
+                {
+                  "title": "should handle multi-turn conversations",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-68a68d44f3c0f512f5fa",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 132,
+                  "column": 9
+                },
+                {
+                  "title": "should display quick queries sidebar",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-30b3732cdf56f88eab36",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 151,
+                  "column": 9
+                },
+                {
+                  "title": "should handle empty queries gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-74895b0bb2e74b355edb",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 165,
+                  "column": 9
+                },
+                {
+                  "title": "should display chat interface below dashboard",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-904c3f79b634c37b5a21",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 94,
+                  "column": 9
+                },
+                {
+                  "title": "should stream tokens in real-time for chat responses",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-6882cc194999a3fd7c00",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 103,
+                  "column": 9
+                },
+                {
+                  "title": "should handle multi-turn conversations",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-3af4d66a2aa0b066d1f7",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 132,
+                  "column": 9
+                },
+                {
+                  "title": "should display quick queries sidebar",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-77d1bd130c7dfd8b4f19",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 151,
+                  "column": 9
+                },
+                {
+                  "title": "should handle empty queries gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-192c397e319901f7dfa0",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 165,
+                  "column": 9
+                }
+              ]
+            },
+            {
+              "title": "Security Analysis Features",
+              "file": "security_agent_full.spec.ts",
+              "line": 176,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "should analyze IAM policies",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-9810003f1247e10feaf9",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 177,
+                  "column": 9
+                },
+                {
+                  "title": "should check storage bucket security",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-d42143aa59715674bb98",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 191,
+                  "column": 9
+                },
+                {
+                  "title": "should provide compliance assessment",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-09c27a5a13d9952557ac",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 205,
+                  "column": 9
+                },
+                {
+                  "title": "should analyze security findings",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-6c020e3e150200aab513",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 219,
+                  "column": 9
+                },
+                {
+                  "title": "should analyze IAM policies",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-b8756f0db6ef226d1caf",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 177,
+                  "column": 9
+                },
+                {
+                  "title": "should check storage bucket security",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-a90ebf27a7c2d03a7640",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 191,
+                  "column": 9
+                },
+                {
+                  "title": "should provide compliance assessment",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-24dcc59840297fb0a772",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 205,
+                  "column": 9
+                },
+                {
+                  "title": "should analyze security findings",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-5b10a4060ae8d68b04b3",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 219,
+                  "column": 9
+                },
+                {
+                  "title": "should analyze IAM policies",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-48b69c5a4ac421fab8dd",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 177,
+                  "column": 9
+                },
+                {
+                  "title": "should check storage bucket security",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-3939e5b653df59bfa514",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 191,
+                  "column": 9
+                },
+                {
+                  "title": "should provide compliance assessment",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-3397980567c0f4f1ec3f",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 205,
+                  "column": 9
+                },
+                {
+                  "title": "should analyze security findings",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-3d7143205f8d1e16f1de",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 219,
+                  "column": 9
+                },
+                {
+                  "title": "should analyze IAM policies",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-7917ee49ef3044feac5d",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 177,
+                  "column": 9
+                },
+                {
+                  "title": "should check storage bucket security",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-9377ff94b57e5195fcc9",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 191,
+                  "column": 9
+                },
+                {
+                  "title": "should provide compliance assessment",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-aea14b73db08b6d06f90",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 205,
+                  "column": 9
+                },
+                {
+                  "title": "should analyze security findings",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-f2fda57fc77d3c303f9a",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 219,
+                  "column": 9
+                },
+                {
+                  "title": "should analyze IAM policies",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-6d57fb49ba88b87d8782",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 177,
+                  "column": 9
+                },
+                {
+                  "title": "should check storage bucket security",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-3139da4758358a3c69d1",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 191,
+                  "column": 9
+                },
+                {
+                  "title": "should provide compliance assessment",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-fa5f0b258017f37935ac",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 205,
+                  "column": 9
+                },
+                {
+                  "title": "should analyze security findings",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-50a3473eaade47be98cc",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 219,
+                  "column": 9
+                }
+              ]
+            },
+            {
+              "title": "Error Handling and Recovery",
+              "file": "security_agent_full.spec.ts",
+              "line": 234,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "should handle backend connection errors gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-6f150996a56f45327f98",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 235,
+                  "column": 9
+                },
+                {
+                  "title": "should recover from transient errors",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-fe9e71666678a064679d",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 249,
+                  "column": 9
+                },
+                {
+                  "title": "should validate input and show helpful prompts",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-267b460ed9e517b0e9a2",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 272,
+                  "column": 9
+                },
+                {
+                  "title": "should handle backend connection errors gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-837743eab0bf50a02fe9",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 235,
+                  "column": 9
+                },
+                {
+                  "title": "should recover from transient errors",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-794d3c1e417984c3cbd3",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 249,
+                  "column": 9
+                },
+                {
+                  "title": "should validate input and show helpful prompts",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-2b1c87f577b9c047158a",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 272,
+                  "column": 9
+                },
+                {
+                  "title": "should handle backend connection errors gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-fc636cf4dec5b72d1997",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 235,
+                  "column": 9
+                },
+                {
+                  "title": "should recover from transient errors",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-14e478908f7a2b2bdf21",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 249,
+                  "column": 9
+                },
+                {
+                  "title": "should validate input and show helpful prompts",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-fe56d6d5bbce630b80a5",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 272,
+                  "column": 9
+                },
+                {
+                  "title": "should handle backend connection errors gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-8af1c21d2c8b48a9d008",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 235,
+                  "column": 9
+                },
+                {
+                  "title": "should recover from transient errors",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-13ea58932f4e2b537fc7",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 249,
+                  "column": 9
+                },
+                {
+                  "title": "should validate input and show helpful prompts",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-87d820d499e05526c8f4",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 272,
+                  "column": 9
+                },
+                {
+                  "title": "should handle backend connection errors gracefully",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-2d5956971953bdb9afd5",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 235,
+                  "column": 9
+                },
+                {
+                  "title": "should recover from transient errors",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-8ca586453da74d90879e",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 249,
+                  "column": 9
+                },
+                {
+                  "title": "should validate input and show helpful prompts",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-c111839d12199c870c08",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 272,
+                  "column": 9
+                }
+              ]
+            },
+            {
+              "title": "Accessibility Tests",
+              "file": "security_agent_full.spec.ts",
+              "line": 285,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "should support keyboard navigation",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-874ec36c6848b15dbdc4",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 286,
+                  "column": 9
+                },
+                {
+                  "title": "should have proper ARIA labels",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-597aa7b826aa5c85bce8",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 306,
+                  "column": 9
+                },
+                {
+                  "title": "should work with screen readers",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-be0271f6afe540a0c6b2",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 313,
+                  "column": 9
+                },
+                {
+                  "title": "should support keyboard navigation",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-b8eb9de7fdd7946d607e",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 286,
+                  "column": 9
+                },
+                {
+                  "title": "should have proper ARIA labels",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-812e9b2789836599f2ca",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 306,
+                  "column": 9
+                },
+                {
+                  "title": "should work with screen readers",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-70994d32e0fe25004d9e",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 313,
+                  "column": 9
+                },
+                {
+                  "title": "should support keyboard navigation",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-ef46dbc55cb95effeb03",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 286,
+                  "column": 9
+                },
+                {
+                  "title": "should have proper ARIA labels",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-a61cb198084d3f964f7f",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 306,
+                  "column": 9
+                },
+                {
+                  "title": "should work with screen readers",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-52658083e02d925a4773",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 313,
+                  "column": 9
+                },
+                {
+                  "title": "should support keyboard navigation",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-282a050e7f6c77223449",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 286,
+                  "column": 9
+                },
+                {
+                  "title": "should have proper ARIA labels",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-5c831adc52c36f3e6583",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 306,
+                  "column": 9
+                },
+                {
+                  "title": "should work with screen readers",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-0e81ff9f40bc0dd7f92b",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 313,
+                  "column": 9
+                },
+                {
+                  "title": "should support keyboard navigation",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-70fab6d9088764734f05",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 286,
+                  "column": 9
+                },
+                {
+                  "title": "should have proper ARIA labels",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-45107888dde9bae5007a",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 306,
+                  "column": 9
+                },
+                {
+                  "title": "should work with screen readers",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-17b5f70d39adb62456e6",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 313,
+                  "column": 9
+                }
+              ]
+            },
+            {
+              "title": "Mobile Responsiveness",
+              "file": "security_agent_full.spec.ts",
+              "line": 329,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "should adapt to mobile viewport",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-1c1aad8ac9f2b9bf5f07",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 330,
+                  "column": 9
+                },
+                {
+                  "title": "should handle touch interactions",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-0281f2a53f09567f8ba1",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 345,
+                  "column": 9
+                },
+                {
+                  "title": "should adapt to mobile viewport",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-1935b97c89a6f0ab7f10",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 330,
+                  "column": 9
+                },
+                {
+                  "title": "should handle touch interactions",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-9abe58797dbcc59d5b6e",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 345,
+                  "column": 9
+                },
+                {
+                  "title": "should adapt to mobile viewport",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-bd38c0b473526157e424",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 330,
+                  "column": 9
+                },
+                {
+                  "title": "should handle touch interactions",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-b79d3e319a24312da34c",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 345,
+                  "column": 9
+                },
+                {
+                  "title": "should adapt to mobile viewport",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-7f6adbb763b315931a3c",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 330,
+                  "column": 9
+                },
+                {
+                  "title": "should handle touch interactions",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-7e062b8ae43a7f03181e",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 345,
+                  "column": 9
+                },
+                {
+                  "title": "should adapt to mobile viewport",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-93770f87d65d90559d33",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 330,
+                  "column": 9
+                },
+                {
+                  "title": "should handle touch interactions",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-29f20ae2a2848b0b1c27",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 345,
+                  "column": 9
+                }
+              ]
+            },
+            {
+              "title": "Performance Tests",
+              "file": "security_agent_full.spec.ts",
+              "line": 357,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "should load dashboard within acceptable time",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-5bb0780876bc92b7ca9a",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 358,
+                  "column": 9
+                },
+                {
+                  "title": "should handle large datasets efficiently",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-8fa4fe9759decb338696",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 368,
+                  "column": 9
+                },
+                {
+                  "title": "should cache responses appropriately",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "chromium",
+                      "projectName": "chromium",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-3bf45efaf99f7b110459",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 384,
+                  "column": 9
+                },
+                {
+                  "title": "should load dashboard within acceptable time",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-b9a7b6b2b2363ad63a79",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 358,
+                  "column": 9
+                },
+                {
+                  "title": "should handle large datasets efficiently",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-ed227817d1e4f88bb423",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 368,
+                  "column": 9
+                },
+                {
+                  "title": "should cache responses appropriately",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "firefox",
+                      "projectName": "firefox",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-56f95caad93c7d7b12a9",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 384,
+                  "column": 9
+                },
+                {
+                  "title": "should load dashboard within acceptable time",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-ef77803109d64de616a6",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 358,
+                  "column": 9
+                },
+                {
+                  "title": "should handle large datasets efficiently",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-abeef4b0f0873f2cd045",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 368,
+                  "column": 9
+                },
+                {
+                  "title": "should cache responses appropriately",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "webkit",
+                      "projectName": "webkit",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-1e1b9bb8ab4ab18d5781",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 384,
+                  "column": 9
+                },
+                {
+                  "title": "should load dashboard within acceptable time",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-0329599c1ea9501aa025",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 358,
+                  "column": 9
+                },
+                {
+                  "title": "should handle large datasets efficiently",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-0812c24ebad6fc0636a0",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 368,
+                  "column": 9
+                },
+                {
+                  "title": "should cache responses appropriately",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Chrome",
+                      "projectName": "Mobile Chrome",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-fbf8599c0f6003b4a3d2",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 384,
+                  "column": 9
+                },
+                {
+                  "title": "should load dashboard within acceptable time",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-5ba3a53588ec4890f119",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 358,
+                  "column": 9
+                },
+                {
+                  "title": "should handle large datasets efficiently",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-d0721f3cdb35c88fa032",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 368,
+                  "column": 9
+                },
+                {
+                  "title": "should cache responses appropriately",
+                  "ok": true,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "Mobile Safari",
+                      "projectName": "Mobile Safari",
+                      "results": [],
+                      "status": "skipped"
+                    }
+                  ],
+                  "id": "a3b9ce64b3b18f27fa73-10c9da7fc05aedd8a061",
+                  "file": "security_agent_full.spec.ts",
+                  "line": 384,
+                  "column": 9
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "API Integration Tests",
+          "file": "security_agent_full.spec.ts",
+          "line": 405,
+          "column": 6,
+          "specs": [
+            {
+              "title": "should query SQLite database correctly",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-18ba543897947a0c9df9",
+              "file": "security_agent_full.spec.ts",
+              "line": 406,
+              "column": 7
+            },
+            {
+              "title": "should integrate with GCP APIs through backend",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-ea19c851c71406c88813",
+              "file": "security_agent_full.spec.ts",
+              "line": 423,
+              "column": 7
+            },
+            {
+              "title": "should handle API rate limiting gracefully",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-7df862fc2c39635814d8",
+              "file": "security_agent_full.spec.ts",
+              "line": 435,
+              "column": 7
+            },
+            {
+              "title": "should query SQLite database correctly",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "firefox",
+                  "projectName": "firefox",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-89e2bcc5db6544f527a4",
+              "file": "security_agent_full.spec.ts",
+              "line": 406,
+              "column": 7
+            },
+            {
+              "title": "should integrate with GCP APIs through backend",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "firefox",
+                  "projectName": "firefox",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-d2e7196a5862c23dfc84",
+              "file": "security_agent_full.spec.ts",
+              "line": 423,
+              "column": 7
+            },
+            {
+              "title": "should handle API rate limiting gracefully",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "firefox",
+                  "projectName": "firefox",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-45aabc96fcfb9d7bb86c",
+              "file": "security_agent_full.spec.ts",
+              "line": 435,
+              "column": 7
+            },
+            {
+              "title": "should query SQLite database correctly",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "webkit",
+                  "projectName": "webkit",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-1527eadfe1f58ef27d9c",
+              "file": "security_agent_full.spec.ts",
+              "line": 406,
+              "column": 7
+            },
+            {
+              "title": "should integrate with GCP APIs through backend",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "webkit",
+                  "projectName": "webkit",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-4527b60fa01a5e0d97c6",
+              "file": "security_agent_full.spec.ts",
+              "line": 423,
+              "column": 7
+            },
+            {
+              "title": "should handle API rate limiting gracefully",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "webkit",
+                  "projectName": "webkit",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-725a67c7ca4f3ecceb8e",
+              "file": "security_agent_full.spec.ts",
+              "line": 435,
+              "column": 7
+            },
+            {
+              "title": "should query SQLite database correctly",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "Mobile Chrome",
+                  "projectName": "Mobile Chrome",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-6625bde0c83f958aef9f",
+              "file": "security_agent_full.spec.ts",
+              "line": 406,
+              "column": 7
+            },
+            {
+              "title": "should integrate with GCP APIs through backend",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "Mobile Chrome",
+                  "projectName": "Mobile Chrome",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-d9e47cac6d24fbc9ef7b",
+              "file": "security_agent_full.spec.ts",
+              "line": 423,
+              "column": 7
+            },
+            {
+              "title": "should handle API rate limiting gracefully",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "Mobile Chrome",
+                  "projectName": "Mobile Chrome",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-d88045710421e1312b82",
+              "file": "security_agent_full.spec.ts",
+              "line": 435,
+              "column": 7
+            },
+            {
+              "title": "should query SQLite database correctly",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "Mobile Safari",
+                  "projectName": "Mobile Safari",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-68f9b19c30ada6da5d09",
+              "file": "security_agent_full.spec.ts",
+              "line": 406,
+              "column": 7
+            },
+            {
+              "title": "should integrate with GCP APIs through backend",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "Mobile Safari",
+                  "projectName": "Mobile Safari",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-a21c6b6c8afcbe9bf6d3",
+              "file": "security_agent_full.spec.ts",
+              "line": 423,
+              "column": 7
+            },
+            {
+              "title": "should handle API rate limiting gracefully",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "Mobile Safari",
+                  "projectName": "Mobile Safari",
+                  "results": [],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a3b9ce64b3b18f27fa73-7eec1d6ed44da73ece44",
+              "file": "security_agent_full.spec.ts",
+              "line": 435,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2025-08-27T20:10:25.459Z",
+    "duration": 22.517000000000053,
+    "expected": 0,
+    "skipped": 140,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}
