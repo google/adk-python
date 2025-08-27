@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -348,6 +349,7 @@ def to_agent_engine(
     description: Optional[str] = None,
     requirements_file: Optional[str] = None,
     env_file: Optional[str] = None,
+    agent_engine_config_file: Optional[str] = None,
 ):
   """Deploys an agent to Vertex AI Agent Engine.
 
@@ -397,6 +399,9 @@ def to_agent_engine(
       variables. If not specified, the `.env` file in the `agent_folder` will be
       used. The values of `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`
       will be overridden by `project` and `region` if they are specified.
+    agent_engine_config_file (str): The filepath to the agent engine config file
+      to use. If not specified, the `.agent_engine_config.json` file in the
+      `agent_folder` will be used.
   """
   app_name = os.path.basename(agent_folder)
   agent_src_path = os.path.join(temp_folder, app_name)
@@ -427,6 +432,34 @@ def to_agent_engine(
     project = _resolve_project(project)
 
     click.echo('Resolving files and dependencies...')
+    agent_config = {}
+    if not agent_engine_config_file:
+      # Attempt to read the agent engine config from .agent_engine_config.json in the dir (if any).
+      agent_engine_config_file = os.path.join(
+          agent_folder, '.agent_engine_config.json'
+      )
+    if os.path.exists(agent_engine_config_file):
+      click.echo(f'Reading agent engine config from {agent_engine_config_file}')
+      with open(agent_engine_config_file, 'r') as f:
+        agent_config = json.load(f)
+    if display_name:
+      if 'display_name' in agent_config:
+        click.echo(
+            'Overriding display_name in agent engine config with'
+            f' {display_name}'
+        )
+      agent_config['display_name'] = display_name
+    if description:
+      if 'description' in agent_config:
+        click.echo(
+            f'Overriding description in agent engine config with {description}'
+        )
+      agent_config['description'] = description
+    if agent_config.get('extra_packages'):
+      agent_config['extra_packages'].append(temp_folder)
+    else:
+      agent_config['extra_packages'] = [temp_folder]
+
     if not requirements_file:
       # Attempt to read requirements from requirements.txt in the dir (if any).
       requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
@@ -435,7 +468,18 @@ def to_agent_engine(
         with open(requirements_txt_path, 'w', encoding='utf-8') as f:
           f.write('google-cloud-aiplatform[adk,agent_engines]')
         click.echo(f'Created {requirements_txt_path}')
-      requirements_file = requirements_txt_path
+      agent_config['requirements'] = agent_config.get(
+          'requirements',
+          requirements_txt_path,
+      )
+    else:
+      if 'requirements' in agent_config:
+        click.echo(
+            'Overriding requirements in agent engine config with '
+            f'{requirements_file}'
+        )
+      agent_config['requirements'] = requirements_file
+
     env_vars = None
     if not env_file:
       # Attempt to read the env variables from .env in the dir (if any).
@@ -469,6 +513,14 @@ def to_agent_engine(
           else:
             region = env_region
             click.echo(f'{region=} set by GOOGLE_CLOUD_LOCATION in {env_file}')
+    if env_vars:
+      if 'env_vars' in agent_config:
+        click.echo(
+            f'Overriding env_vars in agent engine config with {env_vars}'
+        )
+      agent_config['env_vars'] = env_vars
+    # Set env_vars in agent_config to None if it is not set.
+    agent_config['env_vars'] = agent_config.get('env_vars', env_vars)
 
     vertexai.init(
         project=project,
@@ -480,7 +532,7 @@ def to_agent_engine(
     is_config_agent = False
     config_root_agent_file = os.path.join(agent_src_path, 'root_agent.yaml')
     if os.path.exists(config_root_agent_file):
-      click.echo('Config agent detected.')
+      click.echo(f'Config agent detected: {config_root_agent_file}')
       is_config_agent = True
 
     adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
@@ -513,7 +565,7 @@ def to_agent_engine(
               click.echo(f'The following exception was raised: {e}')
 
     click.echo('Deploying to agent engine...')
-    agent_engine = agent_engines.ModuleAgent(
+    agent_config['agent_engine'] = agent_engines.ModuleAgent(
         module_name=adk_app,
         agent_name='adk_app',
         register_operations={
@@ -534,14 +586,6 @@ def to_agent_engine(
         },
         sys_paths=[temp_folder[1:]],
         agent_framework='google-adk',
-    )
-    agent_config = dict(
-        agent_engine=agent_engine,
-        requirements=requirements_file,
-        display_name=display_name,
-        description=description,
-        env_vars=env_vars,
-        extra_packages=[temp_folder],
     )
 
     if not agent_engine_id:

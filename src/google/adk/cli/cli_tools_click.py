@@ -1184,6 +1184,17 @@ def cli_deploy_cloud_run(
         " NOTE: This flag is temporary and will be removed in the future."
     ),
 )
+@click.option(
+    "--agent_engine_config_file",
+    type=str,
+    default="",
+    help=(
+        "Optional. The filepath to the `.agent_engine_config.json` file to use."
+        " The values in this file will be overriden by the values set by other"
+        " flags. (default: the `.agent_engine_config.json` file in the `agent`"
+        " directory, if any.)"
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1204,6 +1215,7 @@ def cli_deploy_agent_engine(
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
+    agent_engine_config_file: str,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -1227,6 +1239,7 @@ def cli_deploy_agent_engine(
         env_file=env_file,
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
+        agent_engine_config_file=agent_engine_config_file,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
