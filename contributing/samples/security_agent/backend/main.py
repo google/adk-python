@@ -309,6 +309,14 @@ try:
 except ImportError as e:
     logger.warning(f"[WARNING] IAM router not available: {e}")
 
+# IAM Recommendations router - Advanced IAM Features
+try:
+    from api.iam_recommendations import router as iam_recommendations_router
+    app.include_router(iam_recommendations_router, tags=["iam-recommendations"])
+    logger.info("[OK] IAM Recommendations router included - Advanced IAM Features")
+except ImportError as e:
+    logger.warning(f"[WARNING] IAM Recommendations router not available: {e}")
+
 # Recommendations router for Google Cloud Recommender API
 try:
     from api.recommendations import router as recommendations_router
