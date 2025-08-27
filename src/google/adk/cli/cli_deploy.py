@@ -28,9 +28,6 @@ WORKDIR /app
 # Create a non-root user
 RUN adduser --disabled-password --gecos "" myuser
 
-# Change ownership of /app to myuser
-RUN chown -R myuser:myuser /app
-
 # Switch to the non-root user
 USER myuser
 
@@ -49,8 +46,8 @@ RUN pip install google-adk=={adk_version}
 
 # Copy agent - Start
 
-COPY "agents/{app_name}/" "/app/agents/{app_name}/"
-{install_agent_deps}
+# Set permission
+COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 # Copy agent - End
 
@@ -93,6 +90,52 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   project = result.stdout.strip()
   click.echo(f'Use default project: {project}')
   return project
+
+
+def _validate_gcloud_extra_args(
+    extra_gcloud_args: Optional[tuple[str, ...]], adk_managed_args: set[str]
+) -> None:
+  """Validates that extra gcloud args don't conflict with ADK-managed args.
+
+  This function dynamically checks for conflicts based on the actual args
+  that ADK will set, rather than using a hardcoded list.
+
+  Args:
+    extra_gcloud_args: User-provided extra arguments for gcloud.
+    adk_managed_args: Set of argument names that ADK will set automatically.
+                     Should include '--' prefix (e.g., '--project').
+
+  Raises:
+    click.ClickException: If any conflicts are found.
+  """
+  if not extra_gcloud_args:
+    return
+
+  # Parse user arguments into a set of argument names for faster lookup
+  user_arg_names = set()
+  for arg in extra_gcloud_args:
+    if arg.startswith('--'):
+      # Handle both '--arg=value' and '--arg value' formats
+      arg_name = arg.split('=')[0]
+      user_arg_names.add(arg_name)
+
+  # Check for conflicts with ADK-managed args
+  conflicts = user_arg_names.intersection(adk_managed_args)
+
+  if conflicts:
+    conflict_list = ', '.join(f"'{arg}'" for arg in sorted(conflicts))
+    if len(conflicts) == 1:
+      raise click.ClickException(
+          f"The argument {conflict_list} conflicts with ADK's automatic"
+          ' configuration. ADK will set this argument automatically, so please'
+          ' remove it from your command.'
+      )
+    else:
+      raise click.ClickException(
+          f"The arguments {conflict_list} conflict with ADK's automatic"
+          ' configuration. ADK will set these arguments automatically, so'
+          ' please remove them from your command.'
+      )
 
 
 def _get_service_option_by_adk_version(
@@ -141,6 +184,7 @@ def to_cloud_run(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     a2a: bool = False,
+    extra_gcloud_args: Optional[tuple[str, ...]] = None,
 ):
   """Deploys an agent to Google Cloud Run.
 
@@ -234,26 +278,56 @@ def to_cloud_run(
     click.echo('Deploying to Cloud Run...')
     region_options = ['--region', region] if region else []
     project = _resolve_project(project)
-    subprocess.run(
-        [
-            'gcloud',
-            'run',
-            'deploy',
-            service_name,
-            '--source',
-            temp_folder,
-            '--project',
-            project,
-            *region_options,
-            '--port',
-            str(port),
-            '--verbosity',
-            log_level.lower() if log_level else verbosity,
-            '--labels',
-            'created-by=adk',
-        ],
-        check=True,
-    )
+
+    # Build the set of args that ADK will manage
+    adk_managed_args = {'--source', '--project', '--port', '--verbosity'}
+    if region:
+      adk_managed_args.add('--region')
+
+    # Validate that extra gcloud args don't conflict with ADK-managed args
+    _validate_gcloud_extra_args(extra_gcloud_args, adk_managed_args)
+
+    # Build the command with extra gcloud args
+    gcloud_cmd = [
+        'gcloud',
+        'run',
+        'deploy',
+        service_name,
+        '--source',
+        temp_folder,
+        '--project',
+        project,
+        *region_options,
+        '--port',
+        str(port),
+        '--verbosity',
+        log_level.lower() if log_level else verbosity,
+    ]
+
+    # Handle labels specially - merge user labels with ADK label
+    user_labels = []
+    extra_args_without_labels = []
+
+    if extra_gcloud_args:
+      for arg in extra_gcloud_args:
+        if arg.startswith('--labels='):
+          # Extract user-provided labels
+          user_labels_value = arg[9:]  # Remove '--labels=' prefix
+          user_labels.append(user_labels_value)
+        else:
+          extra_args_without_labels.append(arg)
+
+    # Combine ADK label with user labels
+    all_labels = ['created-by=adk']
+    all_labels.extend(user_labels)
+    labels_arg = ','.join(all_labels)
+
+    gcloud_cmd.extend(['--labels', labels_arg])
+
+    # Add any remaining extra passthrough args
+    gcloud_cmd.extend(extra_args_without_labels)
+
+    subprocess.run(gcloud_cmd, check=True)
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(temp_folder)

@@ -137,7 +137,7 @@ def test_adk_deploy_cloud_run():
       cloud_run_command,
       cli_deploy_cloud_run.callback,
       "deploy cloud_run",
-      ignore_params={"verbose"},
+      ignore_params={"verbose", "ctx"},
   )
 
 
