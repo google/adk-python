@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 from typing import Final
@@ -43,7 +44,7 @@ ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 # Set up environment variables - End
 
 # Install ADK - Start
-RUN pip install google-adk=={adk_version}
+{adk_install_instructions}
 # Install ADK - End
 
 # Copy agent - Start
@@ -246,6 +247,10 @@ def to_cloud_run(
     )
     click.echo('Copying agent source code completed.')
 
+    adk_install_instructions = (
+        f'RUN pip install google-adk=={adk_version}'
+    )
+
     # create Dockerfile
     click.echo('Creating Dockerfile...')
     host_option = '--host=0.0.0.0' if adk_version > '0.5.0' else ''
@@ -268,6 +273,7 @@ def to_cloud_run(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         allow_origins_option=allow_origins_option,
+        adk_install_instructions=adk_install_instructions,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
@@ -622,6 +628,8 @@ def to_gke(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     a2a: bool = False,
+    editable: bool = False,
+    service_account_name: Optional[str] = None,
 ):
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -645,6 +653,7 @@ def to_gke(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    service_account_name: The name of the Kubernetes Service Account to use for the deployed agent pod.
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -680,6 +689,22 @@ def to_gke(
     )
     click.secho('✅ Environment prepared.', fg='green')
 
+    adk_install_instructions = (
+        f'RUN pip install "google-adk[extensions]=={adk_version}"'
+    )
+    if editable:
+      click.echo('  - Preparing local ADK source for editable install...')
+      # Find the project root to include pyproject.toml
+      adk_source_path = Path(__file__).resolve().parents[4]
+      temp_adk_source_dest = os.path.join(temp_folder, 'adk_local_src')
+      shutil.copytree(adk_source_path, temp_adk_source_dest)
+      adk_install_instructions = (
+          '# Install ADK from local source \n'
+          'COPY --chown=myuser:myuser adk_local_src/ /app/adk_local_src/\n'
+          'RUN pip install --editable "/app/adk_local_src/[extensions]"'
+      )
+      click.secho('✅ Local ADK source prepared.', fg='green')
+
     allow_origins_option = (
         f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
     )
@@ -703,6 +728,7 @@ def to_gke(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         allow_origins_option=allow_origins_option,
+        adk_install_instructions=adk_install_instructions,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',
@@ -742,6 +768,10 @@ def to_gke(
 
     # Create a Kubernetes deployment
     click.echo('  - Creating Kubernetes deployment.yaml...')
+    sa_yaml_block = ''
+    if service_account_name:
+      # The newline at the end is important for correct YAML formatting.
+      sa_yaml_block = f'      serviceAccountName: {service_account_name}\n'
     deployment_yaml = f"""
 apiVersion: apps/v1
 kind: Deployment
@@ -766,6 +796,7 @@ spec:
         app.kubernetes.io/instance: {service_name}
         app.kubernetes.io/managed-by: adk-cli
     spec:
+      {sa_yaml_block}
       containers:
       - name: {service_name}
         image: {image_name}

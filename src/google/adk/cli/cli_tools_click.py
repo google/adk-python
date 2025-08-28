@@ -1286,6 +1286,11 @@ def cli_deploy_agent_engine(
     ),
 )
 @click.option(
+    "--service-account-name",
+    default=None,
+    help="Optional. Name of the K8s Service Account for the pod.",
+)
+@click.option(
     "--port",
     type=int,
     default=8000,
@@ -1351,6 +1356,7 @@ def cli_deploy_gke(
     cluster_name: str,
     service_name: str,
     app_name: str,
+    service_account_name: Optional[str],
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
@@ -1377,6 +1383,7 @@ def cli_deploy_gke(
         cluster_name=cluster_name,
         service_name=service_name,
         app_name=app_name,
+        service_account_name=service_account_name,
         temp_folder=temp_folder,
         port=port,
         trace_to_cloud=trace_to_cloud,
