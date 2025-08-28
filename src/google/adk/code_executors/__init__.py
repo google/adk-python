@@ -44,7 +44,7 @@ def __getattr__(name: str):
       ) from e
   elif name == 'ContainerCodeExecutor':
     try:
-      from .gke_code_executor import ContainerCodeExecutor
+      from .container_code_executor import ContainerCodeExecutor
 
       return ContainerCodeExecutor
     except ImportError as e:
