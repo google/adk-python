@@ -456,6 +456,50 @@ try:
 except ImportError as e:
     logger.warning(f"[WARNING] Statistical Analysis API not available: {e}")
 
+# ===========================================================================
+# Phase 2 Advanced Security Features
+# ===========================================================================
+
+# Org Policy Test router (Phase 2)
+try:
+    from api.org_policy_test import router as org_policy_router
+    app.include_router(org_policy_router)  # Already has /api/v1/org-policy prefix
+    logger.info("[OK] Org Policy Test router included at /api/v1/org-policy (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] Org Policy Test API not available: {e}")
+
+# VPC Error Analysis router (Phase 2)
+try:
+    from api.vpc_errors import router as vpc_errors_router
+    app.include_router(vpc_errors_router)  # Already has /api/v1/vpc-errors prefix
+    logger.info("[OK] VPC Error Analysis router included at /api/v1/vpc-errors (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] VPC Error Analysis API not available: {e}")
+
+# Google Cloud Support Tickets router (Phase 2)
+try:
+    from api.support_tickets import router as support_tickets_router
+    app.include_router(support_tickets_router)  # Already has /api/v1/support-tickets prefix
+    logger.info("[OK] Google Cloud Support Tickets router included at /api/v1/support-tickets (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] Support Tickets API not available: {e}")
+
+# VPC-SC Dry Run router (Phase 2)
+try:
+    from api.vpcsc_dry_run import router as vpcsc_router
+    app.include_router(vpcsc_router)  # Already has /api/v1/vpcsc prefix
+    logger.info("[OK] VPC-SC Dry Run router included at /api/v1/vpcsc (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] VPC-SC Dry Run API not available: {e}")
+
+# Asset Reporter router (Phase 2)
+try:
+    from api.asset_reporter import router as asset_reporter_router
+    app.include_router(asset_reporter_router)  # Already has /api/v1/assets prefix
+    logger.info("[OK] Asset Reporter router included at /api/v1/assets (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] Asset Reporter API not available: {e}")
+
 
 # Chat endpoint for frontend communication
 @app.post("/api/v1/chat/message")
