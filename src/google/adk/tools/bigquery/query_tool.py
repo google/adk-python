@@ -80,7 +80,9 @@ def execute_sql(
   try:
     # Get BigQuery client
     bq_client = client.get_bigquery_client(
-        project=project_id, credentials=credentials
+        project=project_id,
+        credentials=credentials,
+        user_agent=settings.application_name,
     )
 
     # BigQuery connection properties where applicable

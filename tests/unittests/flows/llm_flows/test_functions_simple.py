@@ -760,11 +760,13 @@ async def test_parallel_function_execution_timing():
       start_time_diff < 0.01
   ), f'Functions started too far apart: {start_time_diff}s'
 
-  # Total execution time should be closer to 0.1s (parallel) than 0.2s (sequential)
-  # Allow some overhead for task creation and synchronization
-  assert (
-      total_time < 0.15
-  ), f'Execution took too long: {total_time}s, expected < 0.15s'
+  # Total execution time should be less than the sum of all parallel function delays (0.2s)
+  # This proves parallel execution rather than sequential execution
+  sequential_time = 0.2  # 0.1s + 0.1s if functions ran sequentially
+  assert total_time < sequential_time, (
+      f'Execution took too long: {total_time}s, expected < {sequential_time}s'
+      ' (sequential time)'
+  )
 
   # Verify the results are correct
   assert testing_utils.simplify_events(events) == [

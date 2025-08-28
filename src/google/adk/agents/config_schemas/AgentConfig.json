@@ -681,12 +681,29 @@
     "EnterpriseWebSearch": {
       "additionalProperties": false,
       "description": "Tool to search public web data, powered by Vertex AI Search and Sec4 compliance.",
-      "properties": {},
+      "properties": {
+        "excludeDomains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. List of domains to be excluded from the search results. The default limit is 2000 domains.",
+          "title": "Excludedomains"
+        }
+      },
       "title": "EnterpriseWebSearch",
       "type": "object"
     },
     "Environment": {
-      "description": "Required. The environment being operated.",
+      "description": "The environment being operated.",
       "enum": [
         "ENVIRONMENT_UNSPECIFIED",
         "ENVIRONMENT_BROWSER"
@@ -1476,20 +1493,7 @@
               "$ref": "#/$defs/Content"
             },
             {
-              "items": {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/File"
-                  },
-                  {
-                    "$ref": "#/$defs/Part"
-                  },
-                  {
-                    "type": "string"
-                  }
-                ]
-              },
-              "type": "array"
+              "type": "string"
             },
             {
               "$ref": "#/$defs/File"
@@ -1498,7 +1502,20 @@
               "$ref": "#/$defs/Part"
             },
             {
-              "type": "string"
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "$ref": "#/$defs/File"
+                  },
+                  {
+                    "$ref": "#/$defs/Part"
+                  }
+                ]
+              },
+              "type": "array"
             },
             {
               "type": "null"
@@ -1830,10 +1847,10 @@
         "speechConfig": {
           "anyOf": [
             {
-              "$ref": "#/$defs/SpeechConfig"
+              "type": "string"
             },
             {
-              "type": "string"
+              "$ref": "#/$defs/SpeechConfig"
             },
             {
               "type": "null"
@@ -1999,6 +2016,22 @@
           ],
           "default": null,
           "description": "Optional. Filter search results to a specific time range.\n      If customers set a start time, they must set an end time (and vice versa).\n      "
+        },
+        "excludeDomains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. List of domains to be excluded from the search results.\n      The default limit is 2000 domains.",
+          "title": "Excludedomains"
         }
       },
       "title": "GoogleSearch",
@@ -2356,10 +2389,6 @@
         "agent_class": {
           "default": "LlmAgent",
           "description": "The value is used to uniquely identify the LlmAgent class. If it is empty, it is by default an LlmAgent.",
-          "enum": [
-            "LlmAgent",
-            ""
-          ],
           "title": "Agent Class",
           "type": "string"
         },
@@ -2618,7 +2647,6 @@
       "description": "The config for the YAML schema of a LoopAgent.",
       "properties": {
         "agent_class": {
-          "const": "LoopAgent",
           "default": "LoopAgent",
           "description": "The value is used to uniquely identify the LoopAgent class.",
           "title": "Agent Class",
@@ -2774,7 +2802,6 @@
       "description": "The config for the YAML schema of a ParallelAgent.",
       "properties": {
         "agent_class": {
-          "const": "ParallelAgent",
           "default": "ParallelAgent",
           "description": "The value is used to uniquely identify the ParallelAgent class.",
           "title": "Agent Class",
@@ -3680,7 +3707,6 @@
       "description": "The config for the YAML schema of a SequentialAgent.",
       "properties": {
         "agent_class": {
-          "const": "SequentialAgent",
           "default": "SequentialAgent",
           "description": "The value is used to uniquely identify the SequentialAgent class.",
           "title": "Agent Class",
@@ -4413,6 +4439,18 @@
           "default": null,
           "description": "Optional. Tool to support URL context retrieval."
         },
+        "computerUse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolComputerUse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Tool to support the model interacting directly with the\n      computer. If enabled, it automatically populates computer-use specific\n      Function Declarations."
+        },
         "codeExecution": {
           "anyOf": [
             {
@@ -4424,18 +4462,6 @@
           ],
           "default": null,
           "description": "Optional. CodeExecution tool type. Enables the model to execute code as part of generation."
-        },
-        "computerUse": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ToolComputerUse"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional. Tool to support the model interacting directly with the computer. If enabled, it automatically populates computer-use specific Function Declarations."
         }
       },
       "title": "Tool",
@@ -4556,7 +4582,8 @@
       "type": "object"
     }
   },
-  "anyOf": [
+  "description": "The config for the YAML schema to create an agent.",
+  "oneOf": [
     {
       "$ref": "#/$defs/LlmAgentConfig"
     },
@@ -4573,6 +4600,5 @@
       "$ref": "#/$defs/BaseAgentConfig"
     }
   ],
-  "description": "The config for the YAML schema to create an agent.",
   "title": "AgentConfig"
 }

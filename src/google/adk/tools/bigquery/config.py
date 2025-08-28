@@ -15,8 +15,10 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel
+from pydantic import field_validator
 
 from ...utils.feature_decorator import experimental
 
@@ -58,4 +60,21 @@ class BigQueryToolConfig(BaseModel):
   max_query_result_rows: int = 50
   """Maximum number of rows to return from a query.
 
-  By default, the query result will be limited to 50 rows."""
+  By default, the query result will be limited to 50 rows.
+  """
+
+  application_name: Optional[str] = None
+  """Name of the application using the BigQuery tools.
+
+  By default, no particular application name will be set in the BigQuery
+  interaction. But if the the tool user (agent builder) wants to differentiate
+  their application/agent for tracking or support purpose, they can set this field.
+  """
+
+  @field_validator('application_name')
+  @classmethod
+  def validate_application_name(cls, v):
+    """Validate the application name."""
+    if v and ' ' in v:
+      raise ValueError('Application name should not contain spaces.')
+    return v

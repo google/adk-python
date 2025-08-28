@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.13.0 (2025-08-27)
+
+### Features
+
+* [Tools] Add the ask_data_insights tool for natural language queries on BigQuery data [47b88d2](https://github.com/google/adk-python/commit/47b88d2b06d247a698915ebf74564dbb5d81153e)
+
+### Bug Fixes
+
+* Add the missing `from_config` class method in BaseToolset [2dd432c](https://github.com/google/adk-python/commit/2dd432cc1fe265a79986a28e2afb59ee2c83abb3)
+* Change LlmResponse to use Content for transcriptions [3b997a0](https://github.com/google/adk-python/commit/3b997a0a07d1a2915bc64d64355f4dbabb7e0ba0)
+* AgentTool returns last content, instead of the content in the last event [bcf0dda](https://github.com/google/adk-python/commit/bcf0dda8bcc221974098f3077007c9e84c63021a)
+* Fix adk deploy docker file permission [ad81aa5](https://github.com/google/adk-python/commit/ad81aa54de1f38df580915b7f47834ea8e5f1004)
+* Updating BaseAgent.clone() and LlmAgent.clone() to properly clone fields that are lists [29bb75f](https://github.com/google/adk-python/commit/29bb75f975fe0c9c9d9a7e534a9c20158e1cbe1e)
+* Make tool description for bigquery `execute_sql` for various write modes self contained [167182b](https://github.com/google/adk-python/commit/167182be0163117f814c70f453d5b2e19bf474df)
+* Set invocation_id and branch for event generated when both output_schema and tools are used [3f3aa7b](https://github.com/google/adk-python/commit/3f3aa7b32d63cae5750d71bc586c088427c979ea)
+* Rework parallel_agent.py to always aclose async generators [826f554](https://github.com/google/adk-python/commit/826f5547890dc02e707be33a3d6a58b527dac223)
+* Add table metadata info into Spanner tool `get_table_schema` and fix the key usage info [81a53b5](https://github.com/google/adk-python/commit/81a53b53d6336011187a50ae8f1544de9b2764a8)
+* Fix Spanner DatabaseSessionService support [54ed079](https://github.com/google/adk-python/commit/54ed0791005350542708eb2c38f32ce8b92356bc)
+* Add support for required params [c144b53](https://github.com/google/adk-python/commit/c144b5347cc459496d4fd41e0c63715ffffb4952)
+* Replaced hard coded value for user_id to the value from the tool context from parent agent. [0b89f18](https://github.com/google/adk-python/commit/0b89f1882dccc1acd0ee109832053edecec04850)
+
+### Improvements
+
+* Allow user to specify protocol for A2A RPC URL in to_a2a utility [157f731](https://github.com/google/adk-python/commit/157f73181d123b0fddc34205dc74434fcbc43b2a)
+* Passthrough extra args for `adk deploy cloud_run` as Cloud Run args [6806dea](https://github.com/google/adk-python/commit/6806deaf8811eb7f02ed958648886323aba16adb)
+* Renames MCPTool and MCPToolset to McpTool and McpToolset [4c70606](https://github.com/google/adk-python/commit/4c7060612967253dae824a14c5c3f853a547469b)
+* Ignore hidden files in autoformat.sh [0eb65c0](https://github.com/google/adk-python/commit/0eb65c07d52f71cf555f0c32dc34b2e4ac8cf2a2)
+
+### Documentation
+
+* Clean up docs in sample [a360bc2](https://github.com/google/adk-python/commit/a360bc25429bf4bef6a80da59afe30d6933a844b)
+* Fixes root_agent.yaml in tool_mcp_stdio_notion_config for Agent Config sample and add README.md [2c088ac](https://github.com/google/adk-python/commit/2c088acc9b34f030537b02b45a4afd458445d15b)
+* Add What's new section to README.md [ccab076](https://github.com/google/adk-python/commit/ccab076aceff917591eb3a3cc89a9f85226b832a)
+
 ## 1.12.0 (2025-08-21)
 
 ### Features
