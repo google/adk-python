@@ -12,7 +12,7 @@ from datetime import datetime
 
 # Import health monitoring components
 try:
-    from backend.health import health_monitor, HealthStatus
+    from health import health_monitor, HealthStatus
     HEALTH_MONITORING_AVAILABLE = True
 except ImportError:
     HEALTH_MONITORING_AVAILABLE = False
@@ -183,7 +183,7 @@ async def component_status() -> Dict[str, Any]:
     
     try:
         # Run component-specific health check
-        from backend.health import ComponentAvailabilityHealthCheck
+        from health import ComponentAvailabilityHealthCheck
         component_check = ComponentAvailabilityHealthCheck()
         result = await component_check.check()
         
@@ -218,7 +218,7 @@ async def system_resources() -> Dict[str, Any]:
         return _fallback_resource_status()
     
     try:
-        from backend.health import SystemResourcesHealthCheck
+        from health import SystemResourcesHealthCheck
         resource_check = SystemResourcesHealthCheck()
         result = await resource_check.check()
         
@@ -252,7 +252,7 @@ async def performance_metrics() -> Dict[str, Any]:
         return _fallback_performance_metrics()
     
     try:
-        from backend.health import PerformanceHealthCheck
+        from health import PerformanceHealthCheck
         perf_check = PerformanceHealthCheck()
         result = await perf_check.check()
         
@@ -285,7 +285,7 @@ async def database_health() -> Dict[str, Any]:
         return _fallback_database_health()
     
     try:
-        from backend.health import DatabaseHealthCheck
+        from health import DatabaseHealthCheck
         db_check = DatabaseHealthCheck()
         result = await db_check.check()
         
@@ -318,7 +318,7 @@ async def gcp_connectivity() -> Dict[str, Any]:
         return _fallback_gcp_health()
     
     try:
-        from backend.health import GCPAPIHealthCheck
+        from health import GCPAPIHealthCheck
         gcp_check = GCPAPIHealthCheck()
         result = await gcp_check.check()
         

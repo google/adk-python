@@ -11,7 +11,7 @@ import os
 from datetime import datetime
 
 try:
-    from backend.services.recommendation_engine import (
+    from services.recommendation_engine import (
         RecommendationEngine, 
         RecommendationSummary,
         Recommendation,

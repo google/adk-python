@@ -10,6 +10,12 @@ google-cloud-logging
 google-cloud-iam
 google-cloud-service-usage
 google-auth
+google-cloud-resource-manager
+google-cloud-api-keys
+google-cloud-advisorynotifications
+google-cloud-billing
+google-cloud-billing-budgets
+google-cloud-access-context-manager
 
 # Backend API Integration
 httpx>=0.24.0

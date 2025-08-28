@@ -442,7 +442,7 @@ async def analyze_iam_security(project_id: Optional[str] = None):
     
     # Import the enhanced analyzer
     try:
-        from backend.services.iam_security_analyzer import IAMSecurityAnalyzer
+        from services.iam_security_analyzer import IAMSecurityAnalyzer
         
         analyzer = IAMSecurityAnalyzer(project)
         posture = analyzer.analyze_iam_security()
