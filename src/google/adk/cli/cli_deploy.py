@@ -844,8 +844,8 @@ spec:
     result = subprocess.run(
         ['kubectl', 'apply', '-f', temp_folder],
         check=True,
-        capture_output=True,  # <-- Add this
-        text=True,  # <-- Add this
+        capture_output=True,
+        text=True,
     )
 
     # 2. Print the captured output line by line

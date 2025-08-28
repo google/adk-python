@@ -388,9 +388,46 @@ def test_to_gke_happy_path(
   assert f"containerPort: 9090" in yaml_content
   assert f"targetPort: 9090" in yaml_content
   assert "type: LoadBalancer" in yaml_content
+  assert "serviceAccountName:" not in yaml_content
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+def test_to_gke_with_service_account(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """
+  Tests that `to_gke` correctly adds the serviceAccountName to the
+  deployment manifest when the parameter is provided.
+  """
+  src_dir = agent_dir(False, False)
+  monkeypatch.setattr(subprocess, "run", lambda *a, **k: types.SimpleNamespace(stdout=""))
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  # Execute with the new service_account_name parameter
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+      service_account_name="my-test-sa",
+  )
+
+  deployment_yaml_path = tmp_path / "deployment.yaml"
+  assert deployment_yaml_path.is_file()
+  yaml_content = deployment_yaml_path.read_text()
+
+  assert "serviceAccountName: my-test-sa" in yaml_content
 
 def test_to_gke_editable_mode(
     monkeypatch: pytest.MonkeyPatch,
