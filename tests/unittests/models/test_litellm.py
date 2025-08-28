@@ -928,6 +928,21 @@ function_declaration_test_cases = [
         },
     ),
     (
+        "empty_parameters_not_defined",
+        types.FunctionDeclaration(
+            name="test_function_empty_params_not_defined",
+            parameters=None,
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "test_function_empty_params_not_defined",
+                "description": "",
+                # 'parameters' key is intentionally omitted
+            },
+        },
+    ),
+    (
         "nested_array",
         types.FunctionDeclaration(
             name="test_function_nested_array",
