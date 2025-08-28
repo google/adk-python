@@ -690,7 +690,7 @@ def to_gke(
     click.secho('✅ Environment prepared.', fg='green')
 
     adk_install_instructions = (
-        f'RUN pip install "google-adk[extensions]=={adk_version}"'
+        f'RUN pip install "google-adk=={adk_version}"'
     )
     if editable:
       click.echo('  - Preparing local ADK source for editable install...')
