@@ -627,3 +627,4 @@ claude-flow.ps1
 hive-mind-prompt-*.txt
 
 contributing/samples/security_agent/.cspell.json
+.playwright-mcp

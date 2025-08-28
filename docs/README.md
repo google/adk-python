@@ -120,23 +120,23 @@ print(assets)  # Should show assets with security context
 ## 📚 Documentation
 
 ### Core Documentation (BMad Method)
-- **[Product Requirements (PRD)](docs/prd.md)** - Product vision, features, and roadmap
-- **[Architecture](docs/architecture.md)** - System design and component architecture
-- **[Tech Stack](docs/architecture/tech-stack.md)** - Technologies and frameworks used
-- **[Source Tree](docs/architecture/source-tree.md)** - Project structure and organization
-- **[Coding Standards](docs/architecture/coding-standards.md)** - Development guidelines
+- **[Product Requirements (PRD)](PROJECT.md)** - Product vision, features, and roadmap
+- **[Architecture](evaluation/ARCHITECTURE.md)** - System design and component architecture
+- **[Tech Stack](ROADMAP.md)** - Technologies and frameworks used
+- **[Source Tree](evaluation/ARCHITECTURE.md)** - Project structure and organization
+- **[Coding Standards](ARCHITECT_CHECKLIST.md)** - Development guidelines
 
 ### User Guides
-- **[Quick Start Guide](docs/guides/quick-start.md)** - Getting started quickly
-- **[Environment Setup](docs/guides/env-setup.md)** - Detailed setup instructions
-- **[Deployment Guide](docs/guides/deployment.md)** - Production deployment
-- **[Testing Guide](docs/guides/testing.md)** - Testing procedures
-- **[Operations Manual](docs/guides/operations.md)** - Operational procedures
+- **[Quick Start Guide](guides/QUICK_START.md)** - Getting started quickly
+- **[Environment Setup](guides/ENV_SETUP.md)** - Detailed setup instructions
+- **[Deployment Guide](deploy/README.md)** - Production deployment
+- **[Testing Guide](tests/TEST_PLAN.md)** - Testing procedures
+- **[Operations Manual](deploy/README.md)** - Operational procedures
 
 ### Reference Documentation
-- **[API Reference](docs/reference/api-reference.md)** - Complete API documentation
-- **[Agent Patterns](docs/reference/agent-patterns.md)** - ADK delegation patterns
-- **[RADAR Methodology](docs/reference/radar-methodology.md)** - RADAR framework details
+- **[API Reference](api/sessions-api.md)** - Complete API documentation
+- **[Agent Patterns](evaluation/ADK_PATTERNS.md)** - ADK delegation patterns
+- **[RADAR Methodology](evaluation/IMPLEMENTATION_SUMMARY.md)** - RADAR framework details
 
 ## 🏗️ Architecture Overview
 
