@@ -28,7 +28,6 @@ __all__ = [
     'UnsafeLocalCodeExecutor',
     'VertexAiCodeExecutor',
     'ContainerCodeExecutor',
-    'GkeCodeExecutor',
 ]
 
 
@@ -41,16 +40,6 @@ def __getattr__(name: str):
     except ImportError as e:
       raise ImportError(
           'VertexAiCodeExecutor requires additional dependencies. '
-          'Please install with: pip install "google-adk[extensions]"'
-      ) from e
-  elif name == 'ContainerCodeExecutor':
-    try:
-      from .container_code_executor import ContainerCodeExecutor
-
-      return ContainerCodeExecutor
-    except ImportError as e:
-      raise ImportError(
-          'ContainerCodeExecutor requires additional dependencies. '
           'Please install with: pip install "google-adk[extensions]"'
       ) from e
   elif name == 'GkeCodeExecutor':
