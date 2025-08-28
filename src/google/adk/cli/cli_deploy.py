@@ -17,12 +17,13 @@ import json
 import os
 import shutil
 import subprocess
+from typing import Final
 from typing import Optional
 
 import click
 from packaging.version import parse
 
-_DOCKERFILE_TEMPLATE = """
+_DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
 WORKDIR /app
 
@@ -52,12 +53,16 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 # Copy agent - End
 
+# Install Agent Deps - Start
+{install_agent_deps}
+# Install Agent Deps - End
+
 EXPOSE {port}
 
 CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
 """
 
-_AGENT_ENGINE_APP_TEMPLATE = """
+_AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
 from vertexai.preview.reasoning_engines import AdkApp
 
 if {is_config_agent}:
@@ -237,7 +242,7 @@ def to_cloud_run(
     install_agent_deps = (
         f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
         if os.path.exists(requirements_txt_path)
-        else ''
+        else '# No requirements.txt found.'
     )
     click.echo('Copying agent source code completed.')
 
