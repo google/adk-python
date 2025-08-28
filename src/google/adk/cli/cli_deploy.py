@@ -695,8 +695,8 @@ def to_gke(
     if editable:
       click.echo('  - Preparing local ADK source for editable install...')
       # Find the project root to include pyproject.toml
-      adk_source_path = Path(__file__).resolve().parents[4]
-      temp_adk_source_dest = os.path.join(temp_folder, 'adk_local_src')
+      adk_source_path = next(p for p in Path(__file__).resolve().parents if (p / 'pyproject.toml').is_file())
+      temp_adk_source_dest = Path(temp_folder) / 'adk_local_src'
       shutil.copytree(adk_source_path, temp_adk_source_dest)
       adk_install_instructions = (
           '# Install ADK from local source \n'
