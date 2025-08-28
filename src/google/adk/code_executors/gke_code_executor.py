@@ -53,24 +53,50 @@ class GkeCodeExecutor(BaseCodeExecutor):
     cpu_limit: str = "500m"
     mem_limit: str = "512Mi"
 
+    kubeconfig_path: str | None = None
+    kubeconfig_context: str | None = None
+
     _batch_v1: client.BatchV1Api
     _core_v1: client.CoreV1Api
 
-    def __init__(self, **data):
+    def __init__(
+        self,
+        kubeconfig_path: str | None = None,
+        kubeconfig_context: str | None = None,
+        **data
+    ):
         """Initializes the executor and the Kubernetes API clients.
 
-        This constructor supports overriding default class attributes (like
-        'namespace', 'image', etc.) by passing them as keyword arguments. It
-        automatically configures the Kubernetes client to work either within a
-        cluster (in-cluster config) or locally using a kubeconfig file.
+        This constructor supports multiple authentication methods:
+        1. Explicitly via a kubeconfig file path and context.
+        2. Automatically via in-cluster service account (when running in GKE).
+        3. Automatically via the default local kubeconfig file (~/.kube/config).
         """
         super().__init__(**data)
-        try:
-            config.load_incluster_config()
-            logger.info("Using in-cluster Kubernetes configuration.")
-        except config.ConfigException:
-            logger.info("In-cluster config not found. Falling back to local kubeconfig.")
-            config.load_kube_config()
+        self.kubeconfig_path = kubeconfig_path
+        self.kubeconfig_context = kubeconfig_context
+
+        if self.kubeconfig_path:
+            try:
+                logger.info(f"Using explicit kubeconfig from '{self.kubeconfig_path}'.")
+                config.load_kube_config(
+                    config_file=self.kubeconfig_path,
+                    context=self.kubeconfig_context
+                )
+            except config.ConfigException as e:
+                logger.error(f"Failed to load explicit kubeconfig from {self.kubeconfig_path}", exc_info=True)
+                raise RuntimeError("Failed to configure Kubernetes client from provided path.") from e
+        else:
+            try:
+                config.load_incluster_config()
+                logger.info("Using in-cluster Kubernetes configuration.")
+            except config.ConfigException:
+                try:
+                    logger.info("In-cluster config not found. Falling back to default local kubeconfig.")
+                    config.load_kube_config()
+                except config.ConfigException as e:
+                    logger.error("Could not configure Kubernetes client automatically.", exc_info=True)
+                    raise RuntimeError("Failed to find any valid Kubernetes configuration.") from e
 
         self._batch_v1 = client.BatchV1Api()
         self._core_v1 = client.CoreV1Api()
