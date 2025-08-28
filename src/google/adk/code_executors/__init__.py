@@ -42,14 +42,14 @@ def __getattr__(name: str):
           'VertexAiCodeExecutor requires additional dependencies. '
           'Please install with: pip install "google-adk[extensions]"'
       ) from e
-  elif name == 'GkeCodeExecutor':
+  elif name == 'ContainerCodeExecutor':
     try:
-      from .gke_code_executor import GkeCodeExecutor
+      from .gke_code_executor import ContainerCodeExecutor
 
-      return GkeCodeExecutor
+      return ContainerCodeExecutor
     except ImportError as e:
       raise ImportError(
-          'GkeCodeExecutor requires additional dependencies. '
+          'ContainerCodeExecutor requires additional dependencies. '
           'Please install with: pip install "google-adk[extensions]"'
       ) from e
   raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
