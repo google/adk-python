@@ -98,6 +98,49 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   return project
 
 
+def _validate_gcloud_extra_args(
+    extra_gcloud_args: Optional[tuple[str, ...]], adk_managed_args: set[str]
+) -> None:
+  """Validates that extra gcloud args don't conflict with ADK-managed args.
+  This function dynamically checks for conflicts based on the actual args
+  that ADK will set, rather than using a hardcoded list.
+  Args:
+    extra_gcloud_args: User-provided extra arguments for gcloud.
+    adk_managed_args: Set of argument names that ADK will set automatically.
+                     Should include '--' prefix (e.g., '--project').
+  Raises:
+    click.ClickException: If any conflicts are found.
+  """
+  if not extra_gcloud_args:
+    return
+
+  # Parse user arguments into a set of argument names for faster lookup
+  user_arg_names = set()
+  for arg in extra_gcloud_args:
+    if arg.startswith('--'):
+      # Handle both '--arg=value' and '--arg value' formats
+      arg_name = arg.split('=')[0]
+      user_arg_names.add(arg_name)
+
+  # Check for conflicts with ADK-managed args
+  conflicts = user_arg_names.intersection(adk_managed_args)
+
+  if conflicts:
+    conflict_list = ', '.join(f"'{arg}'" for arg in sorted(conflicts))
+    if len(conflicts) == 1:
+      raise click.ClickException(
+          f"The argument {conflict_list} conflicts with ADK's automatic"
+          ' configuration. ADK will set this argument automatically, so please'
+          ' remove it from your command.'
+      )
+    else:
+      raise click.ClickException(
+          f"The arguments {conflict_list} conflict with ADK's automatic"
+          ' configuration. ADK will set these arguments automatically, so'
+          ' please remove them from your command.'
+      )
+
+
 def _get_service_option_by_adk_version(
     adk_version: str,
     session_uri: Optional[str],
