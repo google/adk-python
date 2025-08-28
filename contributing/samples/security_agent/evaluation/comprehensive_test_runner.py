@@ -140,6 +140,12 @@ class ComprehensiveTestRunner:
                 name="Vulnerability Assessment",
                 dataset_file="datasets/vulnerability_assessment.evalset.json",
                 timeout_seconds=200
+            ),
+            TestSuiteConfig(
+                name="MSA and Release Notes Analysis",
+                dataset_file="datasets/msa_analysis.evalset.json",
+                performance_critical=True,
+                timeout_seconds=180
             )
         ]
         

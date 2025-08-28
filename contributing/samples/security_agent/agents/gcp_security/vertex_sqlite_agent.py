@@ -98,23 +98,35 @@ This tool can retrieve various types of information by specifying the query_type
     - Shows previously analyzed Google Cloud service announcements
 
 20. **msa_changes** - Query specific MSA changes and their details
-    - Optional parameters: {"service": "BigQuery"}, {"impact_level": "high"}, {"permission": "bigquery.datasets.get"}
+    - Optional parameters: {"service": "bigquery"}, {"impact_level": "high"}, {"permission": "datasets.get"}
 
-21. **msa_impact** - Get MSA impact assessments for projects
+21. **msa_security_impacts** - Get security impacts from Google Cloud release notes
+    - Optional parameters: {"service": "compute"}, {"severity": "critical"}, {"days": 30}
+    - Shows encryption, authentication, vulnerability, and compliance impacts
+
+22. **msa_billing_impacts** - Get billing impacts from release notes  
+    - Optional parameters: {"service": "storage"}, {"impact_type": "price_increase"}, {"days": 30}
+    - Shows price changes, new charges, deprecated SKUs, and cost optimization tips
+
+23. **release_notes** - Query recent Google Cloud release notes
+    - Optional parameters: {"service": "bigquery"}, {"note_type": "security"}, {"days": 30}
+    - Fetches latest updates directly from Google Cloud services
+
+24. **msa_impact** - Get MSA impact assessments for projects
     - Optional parameters: {"project_id": "my-project"}
 
-22. **msa_permissions** - Query MSA permission changes with detailed mapping
+25. **msa_permissions** - Query MSA permission changes with detailed mapping
     - Optional parameters: {"permission": "bigquery.datasets.get"} for specific permission analysis
 
-23. **context_aware_analysis** - Full feedback loop analysis connecting MSA changes with security findings, assets, and remediation effectiveness
+26. **context_aware_analysis** - Full feedback loop analysis connecting MSA changes with security findings, assets, and remediation effectiveness
     - This creates a comprehensive context-aware view showing how changes ripple through the entire security posture
     - Optional parameters: {"focus": "msa_impact"}, {"timeframe": "30_days"}
 
-24. **cross_impact_analysis** - Analyze how changes in one security domain affect other domains
+27. **cross_impact_analysis** - Analyze how changes in one security domain affect other domains
     - Shows cascading impacts and domain interconnections
     - Optional parameters: {"domain": "security_findings"}, {"depth": "deep"}
 
-25. **custom** - Execute custom SQL queries (use carefully)
+28. **custom** - Execute custom SQL queries (use carefully)
     - Parameters: {"sql": "SELECT * FROM assets LIMIT 10"}
 
 ## How to Use:
@@ -139,6 +151,12 @@ Examples:
 - "What MSA changes affect BigQuery?" → query_security_data("msa_changes", '{"service": "BigQuery"}')
 - "Show me permission changes from MSAs" → query_security_data("msa_permissions")
 - "What permissions are changing for bigquery.datasets.get?" → query_security_data("msa_permissions", '{"permission": "bigquery.datasets.get"}')
+- "What security impacts are there from release notes?" → query_security_data("msa_security_impacts")
+- "Show critical security impacts for compute" → query_security_data("msa_security_impacts", '{"service": "compute", "severity": "critical"}')
+- "What are the billing impacts from recent changes?" → query_security_data("msa_billing_impacts")
+- "Show price increases for storage services" → query_security_data("msa_billing_impacts", '{"service": "storage", "impact_type": "price_increase"}')
+- "What are the latest Google Cloud release notes?" → query_security_data("release_notes")
+- "Show security release notes for BigQuery" → query_security_data("release_notes", '{"service": "bigquery", "note_type": "security"}')
 
 ## Knowledge Base Queries:
 The database now includes a comprehensive knowledge base with coding standards, enterprise policies, and best practices:

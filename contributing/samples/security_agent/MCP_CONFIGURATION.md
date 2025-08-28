@@ -217,7 +217,7 @@ Create a `.mcp/config.json` in your project:
       "command": "python",
       "args": ["mcp_server.py"],
       "env": {
-        "PROJECT_ROOT": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent",
+        "PROJECT_ROOT": "/path/to/your/security_agent",
         "BACKEND_URL": "http://localhost:8000",
         "FRONTEND_URL": "http://localhost:8501"
       }

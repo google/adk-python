@@ -51,7 +51,7 @@ echo "✅ API enablement complete!"
 # Check service account
 echo ""
 echo "🔐 Checking service account..."
-SERVICE_ACCOUNT_FILE="/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/mgm-digitalconcierge-8ba3b2f28e5f.json"
+SERVICE_ACCOUNT_FILE="/path/to/your/service-account-key.json"
 
 if [ -f "$SERVICE_ACCOUNT_FILE" ]; then
     echo "✅ Service account file found: $SERVICE_ACCOUNT_FILE"

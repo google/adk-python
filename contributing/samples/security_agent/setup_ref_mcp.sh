@@ -106,7 +106,7 @@ EOF
 echo -e "${GREEN}✅ Updated Claude configuration at: $USER_CONFIG${NC}"
 
 # Create a project-level configuration as well
-PROJECT_ROOT="/Users/stuartgano/Desktop/Micron/ADK"
+PROJECT_ROOT="/path/to/your/ADK"
 PROJECT_CONFIG="$PROJECT_ROOT/.claude/claude.json"
 mkdir -p "$PROJECT_ROOT/.claude"
 

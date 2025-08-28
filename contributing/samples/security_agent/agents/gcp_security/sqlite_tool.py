@@ -49,6 +49,9 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             - 'cache_status': Show cache statistics
             - 'msa_analysis': View MSA (Monthly Service Announcement) analysis history
             - 'msa_changes': Query specific MSA changes and their details
+            - 'msa_security_impacts': Get security impacts from release notes
+            - 'msa_billing_impacts': Get billing impacts from release notes
+            - 'release_notes': Query recent Google Cloud release notes
             - 'context_aware_analysis': Full feedback loop analysis connecting MSA changes with security findings, assets, and remediation effectiveness
             - 'cross_impact_analysis': Analyze how changes in one area affect other security domains
             - 'msa_impact': Get MSA impact assessments for projects
@@ -158,10 +161,22 @@ def query_security_data(query_type: str, parameters: Optional[str] = None) -> st
             return _query_best_practices(cursor, params)
         elif query_type == 'compliance':
             return _query_compliance(cursor, params)
+        elif query_type == 'msa_security_impacts':
+            return _query_msa_security_impacts(cursor, params)
+        elif query_type == 'msa_billing_impacts':
+            return _query_msa_billing_impacts(cursor, params)
+        elif query_type == 'release_notes':
+            return _query_release_notes(cursor, params)
+        elif query_type == 'custom_roles':
+            return _query_custom_roles(cursor, params)
+        elif query_type == 'custom_roles_analysis':
+            return _query_custom_roles_analysis(cursor, params)
+        elif query_type == 'role_mappings':
+            return _query_role_mappings(cursor, params)
         elif query_type == 'custom':
             return _execute_custom_query(cursor, params)
         else:
-            return f"❌ Unknown query type: {query_type}\n\nAvailable types: security_summary, assets, security_findings, iam_analysis, storage_buckets, api_keys, recommendations, org_policies, service_usage, monitoring, logs, firewall_rules, networks, compute_instances, databases, iam_accounts, secrets, msa_analysis, msa_changes, msa_impact, knowledge_base, coding_standards, enterprise_policies, best_practices, compliance, cache_status, custom"
+            return f"❌ Unknown query type: {query_type}\n\nAvailable types: security_summary, assets, security_findings, iam_analysis, storage_buckets, api_keys, recommendations, org_policies, service_usage, monitoring, logs, firewall_rules, networks, compute_instances, databases, iam_accounts, secrets, msa_analysis, msa_changes, msa_security_impacts, msa_billing_impacts, release_notes, custom_roles, custom_roles_analysis, role_mappings, msa_impact, knowledge_base, coding_standards, enterprise_policies, best_practices, compliance, cache_status, custom"
             
     except Exception as e:
         logger.error(f"Database query error: {str(e)}")
@@ -2494,3 +2509,635 @@ def _query_cross_impact_analysis(cursor, params: Dict) -> str:
     output += "4. 🛡️ Identify asset types most vulnerable to specific finding classes\n\n"
     
     return output
+
+def _query_msa_security_impacts(cursor, params: Dict) -> str:
+    """Query security impacts from release notes and MSA analysis"""
+    
+    # Build query based on parameters
+    where_clauses = []
+    query_params = []
+    
+    if params.get('service'):
+        where_clauses.append("service LIKE ?")
+        query_params.append(f"%{params['service']}%")
+    
+    if params.get('severity'):
+        where_clauses.append("severity = ?")
+        query_params.append(params['severity'].lower())
+    
+    if params.get('impact_type'):
+        where_clauses.append("impact_type = ?")
+        query_params.append(params['impact_type'])
+    
+    if params.get('days', 30):
+        where_clauses.append("created_at >= datetime('now', ?)")
+        query_params.append(f"-{params.get('days', 30)} days")
+    
+    where_clause = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    
+    query = f"""
+        SELECT * FROM security_impacts
+        {where_clause}
+        ORDER BY 
+            CASE severity
+                WHEN 'critical' THEN 1
+                WHEN 'high' THEN 2
+                WHEN 'medium' THEN 3
+                WHEN 'low' THEN 4
+                ELSE 5
+            END,
+            created_at DESC
+        LIMIT 50
+    """
+    
+    cursor.execute(query, query_params)
+    impacts = cursor.fetchall()
+    
+    if not impacts:
+        return "No security impacts found from recent release notes. Consider running MSA analysis to fetch latest data."
+    
+    output = f"🔒 Security Impacts from Release Notes ({len(impacts)} found):\n\n"
+    
+    # Group by severity
+    severity_groups = {}
+    for impact in impacts:
+        severity = impact['severity'] or 'unknown'
+        if severity not in severity_groups:
+            severity_groups[severity] = []
+        severity_groups[severity].append(impact)
+    
+    # Display by severity
+    for severity in ['critical', 'high', 'medium', 'low']:
+        if severity in severity_groups:
+            emoji = "🔴" if severity == 'critical' else "🟠" if severity == 'high' else "🟡" if severity == 'medium' else "🟢"
+            output += f"{emoji} {severity.upper()} Severity ({len(severity_groups[severity])} items):\n"
+            
+            for impact in severity_groups[severity][:5]:  # Show top 5 per severity
+                output += f"  • {impact['service']} - {impact['impact_type']}\n"
+                output += f"    {impact['description'][:100]}...\n" if impact['description'] and len(impact['description']) > 100 else f"    {impact['description']}\n"
+                
+                if impact['remediation']:
+                    output += f"    📝 Remediation: {impact['remediation'][:100]}...\n"
+                
+                if impact['compliance_frameworks']:
+                    try:
+                        import json
+                        frameworks = json.loads(impact['compliance_frameworks'])
+                        if frameworks:
+                            output += f"    📋 Compliance: {', '.join(frameworks)}\n"
+                    except:
+                        pass
+                
+                if impact['cve_ids']:
+                    try:
+                        import json
+                        cves = json.loads(impact['cve_ids'])
+                        if cves:
+                            output += f"    🔐 CVEs: {', '.join(cves)}\n"
+                    except:
+                        pass
+                output += "\n"
+    
+    # Add summary statistics
+    cursor.execute("""
+        SELECT 
+            COUNT(DISTINCT service) as services_affected,
+            COUNT(DISTINCT impact_type) as impact_types,
+            COUNT(*) as total_impacts
+        FROM security_impacts
+        WHERE created_at >= datetime('now', '-30 days')
+    """)
+    
+    stats = cursor.fetchone()
+    if stats:
+        output += "📊 30-Day Security Impact Summary:\n"
+        output += f"  • Services affected: {stats['services_affected']}\n"
+        output += f"  • Impact types: {stats['impact_types']}\n"
+        output += f"  • Total impacts: {stats['total_impacts']}\n"
+    
+    return output
+
+def _query_msa_billing_impacts(cursor, params: Dict) -> str:
+    """Query billing impacts from release notes and MSA analysis"""
+    
+    # Build query based on parameters
+    where_clauses = []
+    query_params = []
+    
+    if params.get('service'):
+        where_clauses.append("service LIKE ?")
+        query_params.append(f"%{params['service']}%")
+    
+    if params.get('impact_type'):
+        where_clauses.append("impact_type = ?")
+        query_params.append(params['impact_type'])
+    
+    if params.get('days', 30):
+        where_clauses.append("created_at >= datetime('now', ?)")
+        query_params.append(f"-{params.get('days', 30)} days")
+    
+    where_clause = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    
+    query = f"""
+        SELECT * FROM billing_impacts
+        {where_clause}
+        ORDER BY 
+            ABS(estimated_impact_percent) DESC,
+            created_at DESC
+        LIMIT 50
+    """
+    
+    cursor.execute(query, query_params)
+    impacts = cursor.fetchall()
+    
+    if not impacts:
+        return "No billing impacts found from recent release notes. Consider running MSA analysis to fetch latest data."
+    
+    output = f"💰 Billing Impacts from Release Notes ({len(impacts)} found):\n\n"
+    
+    # Group by impact type
+    impact_groups = {
+        'price_increase': [],
+        'price_decrease': [],
+        'new_charge': [],
+        'deprecated_sku': [],
+        'free_tier_change': []
+    }
+    
+    for impact in impacts:
+        impact_type = impact['impact_type'] or 'other'
+        if impact_type in impact_groups:
+            impact_groups[impact_type].append(impact)
+    
+    # Display price increases first (most important)
+    if impact_groups['price_increase']:
+        output += "📈 PRICE INCREASES:\n"
+        total_increase = 0
+        for impact in impact_groups['price_increase']:
+            percent = impact['estimated_impact_percent'] or 0
+            total_increase += percent
+            output += f"  • {impact['service']}: +{percent:.1f}%\n"
+            if impact['old_pricing']:
+                output += f"    Old: {impact['old_pricing'][:50]}\n"
+            if impact['new_pricing']:
+                output += f"    New: {impact['new_pricing'][:50]}\n"
+            if impact['effective_date']:
+                output += f"    📅 Effective: {impact['effective_date']}\n"
+            if impact['cost_optimization_tips']:
+                output += f"    💡 Tips: {impact['cost_optimization_tips'][:100]}...\n"
+            output += "\n"
+        output += f"  📊 Total estimated increase: +{total_increase:.1f}%\n\n"
+    
+    # Display price decreases
+    if impact_groups['price_decrease']:
+        output += "📉 PRICE DECREASES (Opportunities):\n"
+        total_decrease = 0
+        for impact in impact_groups['price_decrease']:
+            percent = abs(impact['estimated_impact_percent'] or 0)
+            total_decrease += percent
+            output += f"  • {impact['service']}: -{percent:.1f}%\n"
+            if impact['cost_optimization_tips']:
+                output += f"    💡 Tips: {impact['cost_optimization_tips'][:100]}\n"
+            output += "\n"
+        output += f"  📊 Total potential savings: -{total_decrease:.1f}%\n\n"
+    
+    # Display new charges
+    if impact_groups['new_charge']:
+        output += "🆕 NEW CHARGES:\n"
+        for impact in impact_groups['new_charge']:
+            output += f"  • {impact['service']}\n"
+            if impact['new_pricing']:
+                output += f"    Pricing: {impact['new_pricing'][:100]}\n"
+            if impact['affected_skus']:
+                output += f"    SKUs: {impact['affected_skus'][:100]}\n"
+            output += "\n"
+    
+    # Display deprecated SKUs
+    if impact_groups['deprecated_sku']:
+        output += "⚠️ DEPRECATED SKUs:\n"
+        for impact in impact_groups['deprecated_sku']:
+            output += f"  • {impact['service']}\n"
+            if impact['affected_skus']:
+                output += f"    SKUs: {impact['affected_skus'][:100]}\n"
+            if impact['cost_optimization_tips']:
+                output += f"    Migration: {impact['cost_optimization_tips'][:100]}\n"
+            output += "\n"
+    
+    # Add cost optimization recommendations
+    output += "💡 COST OPTIMIZATION RECOMMENDATIONS:\n"
+    output += "1. Review and migrate from deprecated SKUs before deadlines\n"
+    output += "2. Take advantage of price decreases by expanding usage where beneficial\n"
+    output += "3. Consider alternative services or machine types for price increases\n"
+    output += "4. Set up budget alerts for services with new charges\n"
+    output += "5. Review commitment discounts for services with stable usage\n"
+    
+    return output
+
+def _query_release_notes(cursor, params: Dict) -> str:
+    """Query recent Google Cloud release notes"""
+    
+    # Build query based on parameters
+    where_clauses = []
+    query_params = []
+    
+    if params.get('service'):
+        where_clauses.append("service LIKE ?")
+        query_params.append(f"%{params['service']}%")
+    
+    if params.get('note_type'):
+        where_clauses.append("note_type = ?")
+        query_params.append(params['note_type'])
+    
+    if params.get('days', 30):
+        where_clauses.append("release_date >= date('now', ?)")
+        query_params.append(f"-{params.get('days', 30)} days")
+    
+    where_clause = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    
+    query = f"""
+        SELECT * FROM release_notes
+        {where_clause}
+        ORDER BY release_date DESC, service ASC
+        LIMIT 50
+    """
+    
+    cursor.execute(query, query_params)
+    notes = cursor.fetchall()
+    
+    if not notes:
+        return "No recent release notes found. Consider running MSA release notes analysis to fetch latest data from Google Cloud."
+    
+    output = f"📰 Recent Google Cloud Release Notes ({len(notes)} found):\n\n"
+    
+    # Group by service
+    service_groups = {}
+    for note in notes:
+        service = note['service'] or 'Unknown'
+        if service not in service_groups:
+            service_groups[service] = []
+        service_groups[service].append(note)
+    
+    # Display by service
+    for service in sorted(service_groups.keys()):
+        output += f"📦 {service} ({len(service_groups[service])} updates):\n"
+        
+        for note in service_groups[service][:3]:  # Show top 3 per service
+            # Determine emoji based on note type
+            type_emoji = {
+                'security': '🔒',
+                'pricing': '💰',
+                'feature': '✨',
+                'deprecation': '⚠️',
+                'fix': '🔧',
+                'general': '📝'
+            }.get(note['note_type'], '📝')
+            
+            output += f"  {type_emoji} [{note['release_date']}] {note['title'] or 'Update'}\n"
+            
+            if note['description']:
+                desc = note['description'][:150]
+                output += f"    {desc}{'...' if len(note['description']) > 150 else ''}\n"
+            
+            # Check for security or billing impact
+            if note['security_impact']:
+                output += f"    🔐 Security Impact: Yes\n"
+            if note['billing_impact']:
+                output += f"    💳 Billing Impact: Yes\n"
+            
+            output += "\n"
+    
+    # Add summary statistics
+    cursor.execute("""
+        SELECT 
+            COUNT(DISTINCT service) as services_updated,
+            COUNT(CASE WHEN note_type = 'security' THEN 1 END) as security_updates,
+            COUNT(CASE WHEN note_type = 'pricing' THEN 1 END) as pricing_updates,
+            COUNT(CASE WHEN note_type = 'deprecation' THEN 1 END) as deprecations,
+            COUNT(*) as total_updates
+        FROM release_notes
+        WHERE release_date >= date('now', '-30 days')
+    """)
+    
+    stats = cursor.fetchone()
+    if stats:
+        output += "📊 30-Day Release Notes Summary:\n"
+        output += f"  • Services updated: {stats['services_updated']}\n"
+        output += f"  • Security updates: {stats['security_updates']}\n"
+        output += f"  • Pricing changes: {stats['pricing_updates']}\n"
+        output += f"  • Deprecations: {stats['deprecations']}\n"
+        output += f"  • Total updates: {stats['total_updates']}\n"
+    
+    output += "\n💡 TIP: Use 'msa_security_impacts' or 'msa_billing_impacts' for detailed impact analysis.\n"
+    
+    return output
+
+
+def _query_custom_roles(cursor, params: Dict) -> str:
+    """Query custom IAM roles and their permissions"""
+    
+    # Try custom_roles database first
+    custom_roles_db = os.path.join(os.path.dirname(DB_PATH), 'custom_roles.db')
+    
+    if os.path.exists(custom_roles_db):
+        # Use custom_roles.db for detailed analysis
+        conn_custom = sqlite3.connect(custom_roles_db)
+        conn_custom.row_factory = sqlite3.Row
+        cursor_custom = conn_custom.cursor()
+        
+        try:
+            # Parse parameters
+            role_name = params.get('role_name') if params else None
+            
+            if role_name:
+                # Query specific role
+                cursor_custom.execute("""
+                    SELECT * FROM custom_roles 
+                    WHERE role_name LIKE ? OR title LIKE ?
+                    ORDER BY analyzed_at DESC LIMIT 1
+                """, (f'%{role_name}%', f'%{role_name}%'))
+                
+                role = cursor_custom.fetchone()
+                if role:
+                    output = f"🔐 Custom Role: {role['role_name']}\n"
+                    output += f"  Title: {role['title'] or 'N/A'}\n"
+                    output += f"  Description: {role['description'] or 'N/A'}\n"
+                    output += f"  Stage: {role['stage']}\n"
+                    
+                    # Parse permissions
+                    permissions = json.loads(role['permissions_json'])
+                    output += f"  Total Permissions: {len(permissions)}\n\n"
+                    
+                    # Group permissions by service
+                    service_perms = {}
+                    for perm in permissions:
+                        service = perm.split('.')[0] if '.' in perm else 'other'
+                        if service not in service_perms:
+                            service_perms[service] = []
+                        service_perms[service].append(perm)
+                    
+                    output += "📋 Permissions by Service:\n"
+                    for service, perms in sorted(service_perms.items()):
+                        output += f"  • {service}: {len(perms)} permissions\n"
+                        for perm in perms[:3]:  # Show first 3
+                            output += f"    - {perm}\n"
+                        if len(perms) > 3:
+                            output += f"    ... and {len(perms) - 3} more\n"
+                    
+                    return output
+                else:
+                    return f"❌ No custom role found matching: {role_name}"
+            else:
+                # List all custom roles
+                cursor_custom.execute("""
+                    SELECT role_name, title, stage, 
+                           json_array_length(permissions_json) as perm_count,
+                           analyzed_at
+                    FROM custom_roles
+                    WHERE project_id IS NOT NULL
+                    ORDER BY analyzed_at DESC
+                """)
+                
+                roles = cursor_custom.fetchall()
+                if not roles:
+                    return "📭 No custom roles found in cache.\n\n💡 TIP: Call the custom roles analyzer API to fetch and analyze roles."
+                
+                output = f"🔐 Custom Roles ({len(roles)} total):\n\n"
+                
+                for role in roles:
+                    output += f"📌 {role['role_name'].split('/')[-1]}\n"
+                    output += f"  Title: {role['title'] or 'N/A'}\n"
+                    output += f"  Stage: {role['stage']}\n"
+                    output += f"  Permissions: {role['perm_count']}\n"
+                    if role['analyzed_at']:
+                        output += f"  Last Analyzed: {role['analyzed_at']}\n"
+                    output += "\n"
+                
+                return output
+                
+        finally:
+            conn_custom.close()
+    else:
+        # Fallback to main database (limited info)
+        return "❌ Custom roles database not found. Run custom roles analyzer first."
+
+
+def _query_custom_roles_analysis(cursor, params: Dict) -> str:
+    """Query custom roles analysis including risk scores and recommendations"""
+    
+    custom_roles_db = os.path.join(os.path.dirname(DB_PATH), 'custom_roles.db')
+    
+    if not os.path.exists(custom_roles_db):
+        return "❌ Custom roles analysis not available. Run the analyzer first."
+    
+    conn_custom = sqlite3.connect(custom_roles_db)
+    conn_custom.row_factory = sqlite3.Row
+    cursor_custom = conn_custom.cursor()
+    
+    try:
+        # Parse parameters
+        min_risk = float(params.get('min_risk_score', 0)) if params else 0
+        
+        # Query analysis results
+        cursor_custom.execute("""
+            SELECT 
+                cr.role_name,
+                cr.title,
+                pa.risk_score,
+                pa.analysis_json,
+                pa.recommendations
+            FROM custom_roles cr
+            JOIN permission_analysis pa ON cr.id = pa.custom_role_id
+            WHERE pa.risk_score >= ?
+            ORDER BY pa.risk_score DESC, pa.created_at DESC
+        """, (min_risk,))
+        
+        analyses = cursor_custom.fetchall()
+        
+        if not analyses:
+            return f"📭 No custom role analyses found with risk score >= {min_risk}"
+        
+        output = f"🔍 Custom Roles Analysis ({len(analyses)} roles):\n\n"
+        
+        for analysis in analyses:
+            role_name = analysis['role_name'].split('/')[-1]
+            risk_score = analysis['risk_score']
+            
+            # Determine risk level
+            if risk_score > 70:
+                risk_emoji = "🔴"
+                risk_level = "HIGH"
+            elif risk_score > 40:
+                risk_emoji = "🟡"
+                risk_level = "MEDIUM"
+            else:
+                risk_emoji = "🟢"
+                risk_level = "LOW"
+            
+            output += f"{risk_emoji} {role_name}\n"
+            output += f"  Title: {analysis['title'] or 'N/A'}\n"
+            output += f"  Risk Score: {risk_score:.1f}/100 ({risk_level})\n"
+            
+            # Parse analysis JSON for details
+            analysis_data = json.loads(analysis['analysis_json'])
+            
+            # Show risk breakdown
+            if 'risk_breakdown' in analysis_data:
+                breakdown = analysis_data['risk_breakdown']
+                output += f"  Risk Breakdown:\n"
+                output += f"    • High-risk permissions: {breakdown.get('high', 0)}\n"
+                output += f"    • Medium-risk permissions: {breakdown.get('medium', 0)}\n"
+                output += f"    • Low-risk permissions: {breakdown.get('low', 0)}\n"
+            
+            # Show recommendations
+            if analysis['recommendations']:
+                recs = json.loads(analysis['recommendations'])
+                if recs:
+                    output += "  📝 Top Recommendations:\n"
+                    for rec in recs[:2]:  # Show top 2
+                        severity_emoji = {
+                            'high': '🔴',
+                            'medium': '🟡',
+                            'low': '🟢'
+                        }.get(rec.get('severity', 'low'), '⚪')
+                        output += f"    {severity_emoji} {rec.get('message', 'N/A')}\n"
+            
+            output += "\n"
+        
+        # Add summary statistics
+        cursor_custom.execute("""
+            SELECT 
+                COUNT(*) as total,
+                COUNT(CASE WHEN risk_score > 70 THEN 1 END) as high_risk,
+                COUNT(CASE WHEN risk_score > 40 AND risk_score <= 70 THEN 1 END) as medium_risk,
+                COUNT(CASE WHEN risk_score <= 40 THEN 1 END) as low_risk,
+                AVG(risk_score) as avg_risk
+            FROM permission_analysis
+        """)
+        
+        stats = cursor_custom.fetchone()
+        if stats:
+            output += "📊 Risk Distribution:\n"
+            output += f"  🔴 High Risk: {stats['high_risk']} roles\n"
+            output += f"  🟡 Medium Risk: {stats['medium_risk']} roles\n"
+            output += f"  🟢 Low Risk: {stats['low_risk']} roles\n"
+            output += f"  📈 Average Risk Score: {stats['avg_risk']:.1f}/100\n"
+        
+        return output
+        
+    finally:
+        conn_custom.close()
+
+
+def _query_role_mappings(cursor, params: Dict) -> str:
+    """Query suggested standard role mappings for custom roles"""
+    
+    custom_roles_db = os.path.join(os.path.dirname(DB_PATH), 'custom_roles.db')
+    
+    if not os.path.exists(custom_roles_db):
+        return "❌ Role mappings not available. Run the custom roles analyzer first."
+    
+    conn_custom = sqlite3.connect(custom_roles_db)
+    conn_custom.row_factory = sqlite3.Row
+    cursor_custom = conn_custom.cursor()
+    
+    try:
+        # Parse parameters
+        min_match = float(params.get('min_match_percentage', 50)) if params else 50
+        
+        # Query role mappings
+        cursor_custom.execute("""
+            SELECT 
+                cr.role_name,
+                cr.title,
+                rm.suggested_standard_roles,
+                rm.match_type,
+                rm.match_percentage,
+                rm.permission_diff
+            FROM custom_roles cr
+            JOIN role_mappings rm ON cr.id = rm.custom_role_id
+            WHERE rm.match_percentage >= ?
+            ORDER BY rm.match_percentage DESC
+        """, (min_match,))
+        
+        mappings = cursor_custom.fetchall()
+        
+        if not mappings:
+            return f"📭 No role mappings found with match percentage >= {min_match}%"
+        
+        output = f"🔄 Custom Role to Standard Role Mappings:\n\n"
+        
+        # Group by custom role
+        role_mappings = {}
+        for mapping in mappings:
+            role_name = mapping['role_name']
+            if role_name not in role_mappings:
+                role_mappings[role_name] = []
+            role_mappings[role_name].append(mapping)
+        
+        for role_name, maps in role_mappings.items():
+            output += f"📌 {role_name.split('/')[-1]}\n"
+            
+            for mapping in maps[:3]:  # Show top 3 matches
+                match_type = mapping['match_type']
+                match_pct = mapping['match_percentage']
+                standard_role = mapping['suggested_standard_roles']
+                
+                # Emoji based on match type
+                match_emoji = {
+                    'exact': '✅',
+                    'subset': '🔽',
+                    'superset': '🔼',
+                    'partial': '🔀'
+                }.get(match_type, '❓')
+                
+                output += f"  {match_emoji} {standard_role.split('/')[-1]} ({match_pct:.1f}% match)\n"
+                output += f"    Type: {match_type}\n"
+                
+                # Parse permission differences
+                if mapping['permission_diff']:
+                    diff = json.loads(mapping['permission_diff'])
+                    missing = diff.get('missing', [])
+                    extra = diff.get('extra', [])
+                    
+                    if missing:
+                        output += f"    ➕ Missing from standard: {len(missing)} permissions\n"
+                        for perm in missing[:2]:
+                            output += f"      - {perm}\n"
+                    
+                    if extra:
+                        output += f"    ➖ Extra in standard: {len(extra)} permissions\n"
+                        for perm in extra[:2]:
+                            output += f"      - {perm}\n"
+                
+                # Add recommendation based on match type
+                if match_type == 'exact':
+                    output += "    💡 RECOMMENDATION: Replace with this standard role\n"
+                elif match_type == 'subset' and match_pct > 80:
+                    output += "    💡 RECOMMENDATION: Consider using standard role with additional permissions\n"
+                elif match_type == 'superset':
+                    output += "    💡 RECOMMENDATION: Review if all permissions are needed\n"
+            
+            output += "\n"
+        
+        # Add summary
+        cursor_custom.execute("""
+            SELECT 
+                COUNT(DISTINCT custom_role_id) as roles_with_matches,
+                COUNT(CASE WHEN match_type = 'exact' THEN 1 END) as exact_matches,
+                COUNT(CASE WHEN match_type = 'subset' THEN 1 END) as subset_matches,
+                COUNT(CASE WHEN match_percentage > 80 THEN 1 END) as high_confidence
+            FROM role_mappings
+        """)
+        
+        stats = cursor_custom.fetchone()
+        if stats:
+            output += "📊 Mapping Summary:\n"
+            output += f"  • Roles with matches: {stats['roles_with_matches']}\n"
+            output += f"  • Exact matches: {stats['exact_matches']}\n"
+            output += f"  • High confidence matches (>80%): {stats['high_confidence']}\n"
+            output += f"\n💡 TIP: Roles with exact or high-percentage subset matches can often be replaced with standard roles.\n"
+        
+        return output
+        
+    finally:
+        conn_custom.close()

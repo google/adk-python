@@ -6,7 +6,7 @@ Analyzes Google Cloud MSA emails to extract structured change information
 and assess impact on customer's GCP environment.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
@@ -14,6 +14,7 @@ import logging
 import json
 import sqlite3
 import os
+import asyncio
 try:
     from vertexai.generative_models import GenerativeModel
     import vertexai
@@ -76,6 +77,17 @@ class MSAAnalysisResponse(BaseModel):
     impact_assessments: List[ImpactAssessment]
     summary: Dict[str, Any]
     recommendations: List[str]
+    security_analysis: Optional[Dict[str, Any]] = None
+    billing_analysis: Optional[Dict[str, Any]] = None
+
+
+class ReleaseNotesAnalysis(BaseModel):
+    """Release notes analysis response"""
+    service: str
+    security_impacts: List[Dict[str, Any]]
+    billing_impacts: List[Dict[str, Any]]
+    recommendations: List[str]
+    summary: Dict[str, Any]
 
 
 def extract_structured_changes(email_content: str) -> List[MSAChange]:
@@ -529,6 +541,294 @@ async def analyze_msa(input_data: MSAInput):
         
     except Exception as e:
         logger.error(f"MSA analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/analyze-release-notes")
+async def analyze_release_notes_for_service(
+    service: str,
+    days_back: int = 30,
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Analyze recent release notes for security and billing impacts.
+    
+    Args:
+        service: The GCP service name (e.g., bigquery, compute-engine)
+        days_back: Number of days to look back for release notes
+    """
+    try:
+        # Import release notes fetcher
+        import sys
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+        
+        from services.release_notes_fetcher import ReleaseNotesFetcher
+        
+        fetcher = ReleaseNotesFetcher()
+        
+        # Fetch and analyze release notes
+        logger.info(f"🔍 Fetching release notes for {service}...")
+        notes = await fetcher.fetch_release_notes(service, days_back)
+        
+        security_impacts = []
+        billing_impacts = []
+        recommendations = []
+        
+        for note in notes:
+            # Analyze security impact
+            security = fetcher.analyze_security_impact(note)
+            if security['has_impact']:
+                security_impacts.append({
+                    'date': note.get('release_date'),
+                    'title': note.get('title'),
+                    'impact': security
+                })
+                
+                # Add security recommendations
+                if security['severity'] in ['critical', 'high']:
+                    recommendations.append(f"🚨 SECURITY: {security['impact_type']} - {security['details'][0] if security['details'] else 'Review changes'}")
+                    recommendations.extend(security['remediation'])
+            
+            # Analyze billing impact
+            billing = fetcher.analyze_billing_impact(note)
+            if billing['has_impact']:
+                billing_impacts.append({
+                    'date': note.get('release_date'),
+                    'title': note.get('title'),
+                    'impact': billing
+                })
+                
+                # Add billing recommendations
+                if billing['impact_type'] == 'price_increase':
+                    recommendations.append(f"💰 BILLING: Price increase detected - {billing['details'][0] if billing['details'] else 'Review pricing'}")
+                    recommendations.extend(billing['optimization_tips'])
+        
+        summary = {
+            'total_notes': len(notes),
+            'security_impacts': len(security_impacts),
+            'critical_security': sum(1 for s in security_impacts if s['impact']['severity'] == 'critical'),
+            'billing_impacts': len(billing_impacts),
+            'price_changes': sum(1 for b in billing_impacts if 'price' in b['impact'].get('impact_type', ''))
+        }
+        
+        return ReleaseNotesAnalysis(
+            service=service,
+            security_impacts=security_impacts,
+            billing_impacts=billing_impacts,
+            recommendations=recommendations[:10],  # Top 10 recommendations
+            summary=summary
+        )
+        
+    except Exception as e:
+        logger.error(f"Error analyzing release notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/analyze-all-services")
+async def analyze_all_services_release_notes(
+    days_back: int = 30,
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Analyze release notes for all organization services.
+    """
+    try:
+        import sys
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+        
+        from services.release_notes_fetcher import ReleaseNotesFetcher
+        
+        fetcher = ReleaseNotesFetcher()
+        
+        # Run full analysis
+        results = await fetcher.fetch_and_analyze_all_services(days_back)
+        
+        # Generate prioritized recommendations
+        recommendations = []
+        
+        # Critical security recommendations
+        for impact in results['security_impacts']:
+            if impact['severity'] == 'critical':
+                recommendations.append(f"🚨 CRITICAL - {impact['service']}: {impact['details'][0] if impact['details'] else 'Security issue detected'}")
+        
+        # High security recommendations
+        for impact in results['security_impacts']:
+            if impact['severity'] == 'high':
+                recommendations.append(f"⚠️ HIGH - {impact['service']}: {impact['details'][0] if impact['details'] else 'Security update required'}")
+        
+        # Billing impact recommendations
+        for impact in results['billing_impacts']:
+            if impact['impact_type'] == 'price_increase':
+                recommendations.append(f"💰 COST - {impact['service']}: {impact['details'][0] if impact['details'] else 'Price increase detected'}")
+        
+        return {
+            'success': True,
+            'services_analyzed': results['services_analyzed'],
+            'summary': results['summary'],
+            'recommendations': recommendations[:15],  # Top 15 recommendations
+            'security_analysis': {
+                'total_impacts': len(results['security_impacts']),
+                'by_severity': {
+                    'critical': results['summary']['critical_security_impacts'],
+                    'high': results['summary']['high_security_impacts']
+                },
+                'compliance_frameworks_affected': results['summary']['compliance_impacts']
+            },
+            'billing_analysis': {
+                'total_impacts': len(results['billing_impacts']),
+                'price_increases': results['summary']['price_increases'],
+                'price_decreases': results['summary']['price_decreases']
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error analyzing all services: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/security-summary")
+async def get_security_impact_summary(days: int = 30):
+    """
+    Get a summary of security impacts from recent release notes.
+    """
+    database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
+    
+    try:
+        conn = sqlite3.connect(database_path)
+        cursor = conn.cursor()
+        
+        # Get security impacts from the last N days
+        cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        cursor.execute("""
+            SELECT 
+                service,
+                impact_type,
+                severity,
+                COUNT(*) as count,
+                GROUP_CONCAT(description, ' | ') as descriptions
+            FROM security_impacts
+            WHERE created_at >= ?
+            GROUP BY service, impact_type, severity
+            ORDER BY 
+                CASE severity
+                    WHEN 'critical' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 3
+                    WHEN 'low' THEN 4
+                END,
+                count DESC
+        """, (cutoff_date,))
+        
+        impacts = []
+        for row in cursor.fetchall():
+            impacts.append({
+                'service': row[0],
+                'impact_type': row[1],
+                'severity': row[2],
+                'count': row[3],
+                'sample_descriptions': row[4][:500] if row[4] else ''
+            })
+        
+        # Get compliance impacts
+        cursor.execute("""
+            SELECT 
+                compliance_frameworks,
+                COUNT(*) as count
+            FROM security_impacts
+            WHERE created_at >= ? AND compliance_frameworks IS NOT NULL
+        """, (cutoff_date,))
+        
+        compliance_impacts = {}
+        for row in cursor.fetchall():
+            if row[0]:
+                try:
+                    frameworks = json.loads(row[0])
+                    for framework in frameworks:
+                        compliance_impacts[framework] = compliance_impacts.get(framework, 0) + row[1]
+                except:
+                    pass
+        
+        conn.close()
+        
+        return {
+            'period_days': days,
+            'security_impacts': impacts,
+            'compliance_impacts': compliance_impacts,
+            'summary': {
+                'total_impacts': len(impacts),
+                'critical_count': sum(i['count'] for i in impacts if i['severity'] == 'critical'),
+                'high_count': sum(i['count'] for i in impacts if i['severity'] == 'high'),
+                'services_affected': len(set(i['service'] for i in impacts))
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting security summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/billing-summary")
+async def get_billing_impact_summary(days: int = 30):
+    """
+    Get a summary of billing impacts from recent release notes.
+    """
+    database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
+    
+    try:
+        conn = sqlite3.connect(database_path)
+        cursor = conn.cursor()
+        
+        # Get billing impacts from the last N days
+        cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        cursor.execute("""
+            SELECT 
+                service,
+                impact_type,
+                AVG(estimated_impact_percent) as avg_impact,
+                COUNT(*) as count,
+                GROUP_CONCAT(cost_optimization_tips, ' | ') as tips
+            FROM billing_impacts
+            WHERE created_at >= ?
+            GROUP BY service, impact_type
+            ORDER BY avg_impact DESC
+        """, (cutoff_date,))
+        
+        impacts = []
+        for row in cursor.fetchall():
+            impacts.append({
+                'service': row[0],
+                'impact_type': row[1],
+                'avg_impact_percent': row[2] if row[2] else 0,
+                'count': row[3],
+                'optimization_tips': row[4][:500] if row[4] else ''
+            })
+        
+        conn.close()
+        
+        # Calculate estimated cost impact
+        total_increase = sum(i['avg_impact_percent'] for i in impacts if i['impact_type'] == 'price_increase')
+        total_decrease = sum(abs(i['avg_impact_percent']) for i in impacts if i['impact_type'] == 'price_decrease')
+        
+        return {
+            'period_days': days,
+            'billing_impacts': impacts,
+            'summary': {
+                'total_impacts': len(impacts),
+                'services_with_increases': sum(1 for i in impacts if i['impact_type'] == 'price_increase'),
+                'services_with_decreases': sum(1 for i in impacts if i['impact_type'] == 'price_decrease'),
+                'estimated_net_impact_percent': total_increase - total_decrease,
+                'services_affected': len(set(i['service'] for i in impacts))
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting billing summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
