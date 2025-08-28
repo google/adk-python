@@ -771,7 +771,7 @@ def to_gke(
     sa_yaml_block = ''
     if service_account_name:
       # The newline at the end is important for correct YAML formatting.
-      sa_yaml_block = f'      serviceAccountName: {service_account_name}\n'
+      sa_yaml_block = f'serviceAccountName: {service_account_name}\n'
     deployment_yaml = f"""
 apiVersion: apps/v1
 kind: Deployment
