@@ -45,11 +45,22 @@ class AgentTool(BaseTool):
   Attributes:
     agent: The agent to wrap.
     skip_summarization: Whether to skip summarization of the agent output.
+    include_plugins: Whether to propagate plugins from the parent runner context
+      to the agent's runner. When True (default), the agent will inherit all
+      plugins from its parent. Set to False to run the agent with an isolated
+      plugin environment.
   """
 
-  def __init__(self, agent: BaseAgent, skip_summarization: bool = False):
+  def __init__(
+      self,
+      agent: BaseAgent,
+      skip_summarization: bool = False,
+      *,
+      include_plugins: bool = True,
+  ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
+    self.include_plugins = include_plugins
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -130,6 +141,11 @@ class AgentTool(BaseTool):
         invocation_context.app_name if invocation_context else None
     )
     child_app_name = parent_app_name or self.agent.name
+    plugins = (
+        tool_context._invocation_context.plugin_manager.plugins
+        if self.include_plugins
+        else None
+    )
     runner = Runner(
         app_name=child_app_name,
         agent=self.agent,
@@ -137,7 +153,7 @@ class AgentTool(BaseTool):
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
         credential_service=tool_context._invocation_context.credential_service,
-        plugins=list(tool_context._invocation_context.plugin_manager.plugins),
+        plugins=plugins,
     )
 
     state_dict = {
@@ -192,7 +208,9 @@ class AgentTool(BaseTool):
         agent_tool_config.agent, config_abs_path
     )
     return cls(
-        agent=agent, skip_summarization=agent_tool_config.skip_summarization
+        agent=agent,
+        skip_summarization=agent_tool_config.skip_summarization,
+        include_plugins=agent_tool_config.include_plugins,
     )
 
 
@@ -204,3 +222,6 @@ class AgentToolConfig(BaseToolConfig):
 
   skip_summarization: bool = False
   """Whether to skip summarization of the agent output."""
+
+  include_plugins: bool = True
+  """Whether to include plugins from parent runner context."""
