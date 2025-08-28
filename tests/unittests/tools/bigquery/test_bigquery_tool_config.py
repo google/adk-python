@@ -25,3 +25,12 @@ def test_bigquery_tool_config_experimental_warning():
       match="Config defaults may have breaking change in the future.",
   ):
     BigQueryToolConfig()
+
+
+def test_bigquery_tool_config_invalid_application_name():
+  """Test BigQueryToolConfig with invalid application name."""
+  with pytest.raises(
+      ValueError,
+      match="Application name should not contain spaces.",
+  ):
+    BigQueryToolConfig(application_name="my agent")
