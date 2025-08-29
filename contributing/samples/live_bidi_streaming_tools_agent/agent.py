@@ -121,7 +121,9 @@ def stop_streaming(function_name: str):
 
 
 root_agent = Agent(
-    model="gemini-live-2.5-flash-preview",
+    # find supported models here: https://google.github.io/adk-docs/get-started/streaming/quickstart-streaming/
+    model="gemini-2.0-flash-live-preview-04-09",  # for Vertex project
+    # model="gemini-live-2.5-flash-preview",  # for AI studio key
     name="video_streaming_agent",
     instruction="""
       You are a monitoring agent. You can do video monitoring and stock price monitoring

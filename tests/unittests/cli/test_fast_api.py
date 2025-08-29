@@ -845,18 +845,20 @@ def test_run_eval(test_app, create_test_eval_set):
   assert data == [f"{info['app_name']}_test_eval_set_id_eval_result"]
 
 
-def test_list_eval_metrics(test_app):
-  """Test listing eval metrics."""
-  url = "/apps/test_app/eval_metrics"
+def test_list_metrics_info(test_app):
+  """Test listing metrics info."""
+  url = "/apps/test_app/metrics-info"
   response = test_app.get(url)
 
   # Verify the response
   assert response.status_code == 200
   data = response.json()
-  assert isinstance(data, list)
+  metrics_info_key = "metricsInfo"
+  assert metrics_info_key in data
+  assert isinstance(data[metrics_info_key], list)
   # Add more assertions based on the expected metrics
-  assert len(data) > 0
-  for metric in data:
+  assert len(data[metrics_info_key]) > 0
+  for metric in data[metrics_info_key]:
     assert "metricName" in metric
     assert "description" in metric
     assert "metricValueInfo" in metric

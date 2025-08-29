@@ -27,7 +27,15 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 class BigQueryToolset(GoogleApiToolset):
-  """Auto-generated Bigquery toolset based on Google BigQuery API v2 spec exposed by Google API discovery API"""
+  """Auto-generated BigQuery toolset based on Google BigQuery API v2 spec exposed by Google API discovery API.
+
+  Args:
+    client_id: OAuth2 client ID for authentication.
+    client_secret: OAuth2 client secret for authentication.
+    tool_filter: Optional filter to include only specific tools or use a predicate function.
+    service_account: Optional service account for authentication.
+    tool_name_prefix: Optional prefix to add to all tool names in this toolset.
+  """
 
   def __init__(
       self,
@@ -35,14 +43,29 @@ class BigQueryToolset(GoogleApiToolset):
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
+      tool_name_prefix: Optional[str] = None,
   ):
     super().__init__(
-        "bigquery", "v2", client_id, client_secret, tool_filter, service_account
+        "bigquery",
+        "v2",
+        client_id,
+        client_secret,
+        tool_filter,
+        service_account,
+        tool_name_prefix,
     )
 
 
 class CalendarToolset(GoogleApiToolset):
-  """Auto-generated Calendar toolset based on Google Calendar API v3 spec exposed by Google API discovery API"""
+  """Auto-generated Calendar toolset based on Google Calendar API v3 spec exposed by Google API discovery API.
+
+  Args:
+    client_id: OAuth2 client ID for authentication.
+    client_secret: OAuth2 client secret for authentication.
+    tool_filter: Optional filter to include only specific tools or use a predicate function.
+    service_account: Optional service account for authentication.
+    tool_name_prefix: Optional prefix to add to all tool names in this toolset.
+  """
 
   def __init__(
       self,
@@ -50,14 +73,29 @@ class CalendarToolset(GoogleApiToolset):
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
+      tool_name_prefix: Optional[str] = None,
   ):
     super().__init__(
-        "calendar", "v3", client_id, client_secret, tool_filter, service_account
+        "calendar",
+        "v3",
+        client_id,
+        client_secret,
+        tool_filter,
+        service_account,
+        tool_name_prefix,
     )
 
 
 class GmailToolset(GoogleApiToolset):
-  """Auto-generated Gmail toolset based on Google Gmail API v1 spec exposed by Google API discovery API"""
+  """Auto-generated Gmail toolset based on Google Gmail API v1 spec exposed by Google API discovery API.
+
+  Args:
+    client_id: OAuth2 client ID for authentication.
+    client_secret: OAuth2 client secret for authentication.
+    tool_filter: Optional filter to include only specific tools or use a predicate function.
+    service_account: Optional service account for authentication.
+    tool_name_prefix: Optional prefix to add to all tool names in this toolset.
+  """
 
   def __init__(
       self,
@@ -65,14 +103,29 @@ class GmailToolset(GoogleApiToolset):
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
+      tool_name_prefix: Optional[str] = None,
   ):
     super().__init__(
-        "gmail", "v1", client_id, client_secret, tool_filter, service_account
+        "gmail",
+        "v1",
+        client_id,
+        client_secret,
+        tool_filter,
+        service_account,
+        tool_name_prefix,
     )
 
 
 class YoutubeToolset(GoogleApiToolset):
-  """Auto-generated Youtube toolset based on Youtube API v3 spec exposed by Google API discovery API"""
+  """Auto-generated YouTube toolset based on YouTube API v3 spec exposed by Google API discovery API.
+
+  Args:
+    client_id: OAuth2 client ID for authentication.
+    client_secret: OAuth2 client secret for authentication.
+    tool_filter: Optional filter to include only specific tools or use a predicate function.
+    service_account: Optional service account for authentication.
+    tool_name_prefix: Optional prefix to add to all tool names in this toolset.
+  """
 
   def __init__(
       self,
@@ -80,14 +133,29 @@ class YoutubeToolset(GoogleApiToolset):
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
+      tool_name_prefix: Optional[str] = None,
   ):
     super().__init__(
-        "youtube", "v3", client_id, client_secret, tool_filter, service_account
+        "youtube",
+        "v3",
+        client_id,
+        client_secret,
+        tool_filter,
+        service_account,
+        tool_name_prefix,
     )
 
 
 class SlidesToolset(GoogleApiToolset):
-  """Auto-generated Slides toolset based on Google Slides API v1 spec exposed by Google API discovery API"""
+  """Auto-generated Slides toolset based on Google Slides API v1 spec exposed by Google API discovery API.
+
+  Args:
+    client_id: OAuth2 client ID for authentication.
+    client_secret: OAuth2 client secret for authentication.
+    tool_filter: Optional filter to include only specific tools or use a predicate function.
+    service_account: Optional service account for authentication.
+    tool_name_prefix: Optional prefix to add to all tool names in this toolset.
+  """
 
   def __init__(
       self,
@@ -95,14 +163,29 @@ class SlidesToolset(GoogleApiToolset):
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
+      tool_name_prefix: Optional[str] = None,
   ):
     super().__init__(
-        "slides", "v1", client_id, client_secret, tool_filter, service_account
+        "slides",
+        "v1",
+        client_id,
+        client_secret,
+        tool_filter,
+        service_account,
+        tool_name_prefix,
     )
 
 
 class SheetsToolset(GoogleApiToolset):
-  """Auto-generated Sheets toolset based on Google Sheets API v4 spec exposed by Google API discovery API"""
+  """Auto-generated Sheets toolset based on Google Sheets API v4 spec exposed by Google API discovery API.
+
+  Args:
+    client_id: OAuth2 client ID for authentication.
+    client_secret: OAuth2 client secret for authentication.
+    tool_filter: Optional filter to include only specific tools or use a predicate function.
+    service_account: Optional service account for authentication.
+    tool_name_prefix: Optional prefix to add to all tool names in this toolset.
+  """
 
   def __init__(
       self,
@@ -110,12 +193,29 @@ class SheetsToolset(GoogleApiToolset):
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
+      tool_name_prefix: Optional[str] = None,
   ):
-    super().__init__("sheets", "v4", client_id, client_secret, tool_filter)
+    super().__init__(
+        "sheets",
+        "v4",
+        client_id,
+        client_secret,
+        tool_filter,
+        service_account,
+        tool_name_prefix,
+    )
 
 
 class DocsToolset(GoogleApiToolset):
-  """Auto-generated Docs toolset based on Google Docs API v1 spec exposed by Google API discovery API"""
+  """Auto-generated Docs toolset based on Google Docs API v1 spec exposed by Google API discovery API.
+
+  Args:
+    client_id: OAuth2 client ID for authentication.
+    client_secret: OAuth2 client secret for authentication.
+    tool_filter: Optional filter to include only specific tools or use a predicate function.
+    service_account: Optional service account for authentication.
+    tool_name_prefix: Optional prefix to add to all tool names in this toolset.
+  """
 
   def __init__(
       self,
@@ -123,7 +223,14 @@ class DocsToolset(GoogleApiToolset):
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
+      tool_name_prefix: Optional[str] = None,
   ):
     super().__init__(
-        "docs", "v1", client_id, client_secret, tool_filter, service_account
+        "docs",
+        "v1",
+        client_id,
+        client_secret,
+        tool_filter,
+        service_account,
+        tool_name_prefix,
     )

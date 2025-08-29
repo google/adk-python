@@ -145,13 +145,13 @@ def deploy():
 )
 @click.option(
     "--type",
-    type=click.Choice([t.value for t in cli_create.Type]),
+    type=click.Choice(["CODE", "CONFIG"], case_sensitive=False),
     help=(
         "EXPERIMENTAL Optional. Type of agent to create: 'config' or 'code'."
         " 'config' is not ready for use so it defaults to 'code'. It may change"
         " later once 'config' is ready for use."
     ),
-    default=cli_create.Type.CODE.value,
+    default="CODE",
     show_default=True,
     hidden=True,  # Won't show in --help output. Not ready for use.
 )
@@ -162,7 +162,7 @@ def cli_create_cmd(
     api_key: Optional[str],
     project: Optional[str],
     region: Optional[str],
-    type: Optional[cli_create.Type],
+    type: Optional[str],
 ):
   """Creates a new app in the current folder with prepopulated agent template.
 
@@ -676,6 +676,15 @@ def fast_api_common_options():
         show_default=True,
         help="Optional. Whether to enable live reload for agents changes.",
     )
+    @click.option(
+        "--eval_storage_uri",
+        type=str,
+        help=(
+            "Optional. The evals storage URI to store agent evals,"
+            " supported URIs: gs://<bucket name>."
+        ),
+        default=None,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -740,7 +749,7 @@ def cli_web(
 +-----------------------------------------------------------------------------+
 | ADK Web Server started                                                      |
 |                                                                             |
-| For local testing, access at http://localhost:{port}.{" "*(29 - len(str(port)))}|
+| For local testing, access at http://{host}:{port}.{" "*(29 - len(str(port)))}|
 +-----------------------------------------------------------------------------+
 """,
         fg="green",
@@ -849,7 +858,13 @@ def cli_api_server(
   server.run()
 
 
-@deploy.command("cloud_run")
+@deploy.command(
+    "cloud_run",
+    context_settings={
+        "allow_extra_args": True,
+        "allow_interspersed_args": False,
+    },
+)
 @click.option(
     "--project",
     type=str,
@@ -947,9 +962,24 @@ def cli_api_server(
         " version in the dev environment)"
     ),
 )
+@click.option(
+    "--a2a",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to enable A2A endpoint.",
+)
+@click.option(
+    "--allow_origins",
+    help="Optional. Any additional origins to allow for CORS.",
+    multiple=True,
+)
+# TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
 @adk_services_options()
 @deprecated_adk_services_options()
+@click.pass_context
 def cli_deploy_cloud_run(
+    ctx,
     agent: str,
     project: Optional[str],
     region: Optional[str],
@@ -960,26 +990,27 @@ def cli_deploy_cloud_run(
     trace_to_cloud: bool,
     with_ui: bool,
     adk_version: str,
+    log_level: str,
     verbosity: Optional[str],
-    reload: bool = True,
     allow_origins: Optional[list[str]] = None,
-    log_level: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
-    eval_storage_uri: Optional[str] = None,
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
-    reload_agents: bool = False,
 ):
   """Deploys an agent to Cloud Run.
 
   AGENT: The path to the agent source code folder.
 
-  Example:
+  Use '--' to separate gcloud arguments from adk arguments.
+
+  Examples:
 
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
+
+    adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent -- --no-allow-unauthenticated --min-instances=2
   """
   if verbosity:
     click.secho(
@@ -991,6 +1022,36 @@ def cli_deploy_cloud_run(
 
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
+
+  # Parse arguments to separate gcloud args (after --) from regular args
+  gcloud_args = []
+  if "--" in ctx.args:
+    separator_index = ctx.args.index("--")
+    gcloud_args = ctx.args[separator_index + 1 :]
+    regular_args = ctx.args[:separator_index]
+
+    # If there are regular args before --, that's an error
+    if regular_args:
+      click.secho(
+          "Error: Unexpected arguments after agent path and before '--':"
+          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
+          " to gcloud.",
+          fg="red",
+          err=True,
+      )
+      ctx.exit(2)
+  else:
+    # No -- separator, treat all args as an error to enforce the new behavior
+    if ctx.args:
+      click.secho(
+          f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
+          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
+          " agent_path -- --min-instances=2",
+          fg="red",
+          err=True,
+      )
+      ctx.exit(2)
+
   try:
     cli_deploy.to_cloud_run(
         agent_folder=agent,
@@ -1010,6 +1071,7 @@ def cli_deploy_cloud_run(
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         a2a=a2a,
+        extra_gcloud_args=tuple(gcloud_args),
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
@@ -1122,6 +1184,17 @@ def cli_deploy_cloud_run(
         " NOTE: This flag is temporary and will be removed in the future."
     ),
 )
+@click.option(
+    "--agent_engine_config_file",
+    type=str,
+    default="",
+    help=(
+        "Optional. The filepath to the `.agent_engine_config.json` file to use."
+        " The values in this file will be overriden by the values set by other"
+        " flags. (default: the `.agent_engine_config.json` file in the `agent`"
+        " directory, if any.)"
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1142,6 +1215,7 @@ def cli_deploy_agent_engine(
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
+    agent_engine_config_file: str,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -1165,6 +1239,7 @@ def cli_deploy_agent_engine(
         env_file=env_file,
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
+        agent_engine_config_file=agent_engine_config_file,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

@@ -20,6 +20,8 @@ import uuid
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
+from pydantic import PrivateAttr
 
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
@@ -36,6 +38,25 @@ from .transcription_entry import TranscriptionEntry
 
 class LlmCallsLimitExceededError(Exception):
   """Error thrown when the number of LLM calls exceed the limit."""
+
+
+class RealtimeCacheEntry(BaseModel):
+  """Store audio data chunks for caching before flushing."""
+
+  model_config = ConfigDict(
+      arbitrary_types_allowed=True,
+      extra="forbid",
+  )
+  """The pydantic model config."""
+
+  role: str
+  """The role that created this audio data, typically "user" or "model"."""
+
+  data: types.Blob
+  """The audio data chunk."""
+
+  timestamp: float
+  """Timestamp when the audio chunk was received."""
 
 
 class _InvocationCostManager(BaseModel):
@@ -151,13 +172,24 @@ class InvocationContext(BaseModel):
   transcription_cache: Optional[list[TranscriptionEntry]] = None
   """Caches necessary data, audio or contents, that are needed by transcription."""
 
+  live_session_resumption_handle: Optional[str] = None
+  """The handle for live session resumption."""
+
+  input_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  """Caches input audio chunks before flushing to session and artifact services."""
+
+  output_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  """Caches output audio chunks before flushing to session and artifact services."""
+
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""
 
-  plugin_manager: PluginManager = PluginManager()
+  plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
-  _invocation_cost_manager: _InvocationCostManager = _InvocationCostManager()
+  _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
+      default_factory=_InvocationCostManager
+  )
   """A container to keep track of different kinds of costs incurred as a part
   of this invocation.
   """

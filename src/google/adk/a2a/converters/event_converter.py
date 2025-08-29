@@ -38,7 +38,7 @@ from google.genai import types as genai_types
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
@@ -224,7 +224,7 @@ def convert_a2a_task_to_event(
     raise
 
 
-@experimental
+@a2a_experimental
 def convert_a2a_message_to_event(
     a2a_message: Message,
     author: Optional[str] = None,
@@ -320,7 +320,7 @@ def convert_a2a_message_to_event(
     raise RuntimeError(f"Failed to convert message: {e}") from e
 
 
-@experimental
+@a2a_experimental
 def convert_event_to_a2a_message(
     event: Event, invocation_context: InvocationContext, role: Role = Role.agent
 ) -> Optional[Message]:
@@ -471,7 +471,7 @@ def _create_status_update_event(
   )
 
 
-@experimental
+@a2a_experimental
 def convert_event_to_a2a_events(
     event: Event,
     invocation_context: InvocationContext,

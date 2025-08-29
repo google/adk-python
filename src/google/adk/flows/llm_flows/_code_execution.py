@@ -39,6 +39,7 @@ from ...code_executors.code_executor_context import CodeExecutorContext
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ...models.llm_response import LlmResponse
+from ...utils.context_utils import Aclosing
 from ._base_llm_processor import BaseLlmRequestProcessor
 from ._base_llm_processor import BaseLlmResponseProcessor
 
@@ -122,8 +123,11 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
     if not invocation_context.agent.code_executor:
       return
 
-    async for event in _run_pre_processor(invocation_context, llm_request):
-      yield event
+    async with Aclosing(
+        _run_pre_processor(invocation_context, llm_request)
+    ) as agen:
+      async for event in agen:
+        yield event
 
     # Convert the code execution parts to text parts.
     if not isinstance(invocation_context.agent.code_executor, BaseCodeExecutor):
@@ -152,8 +156,11 @@ class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):
     if llm_response.partial:
       return
 
-    async for event in _run_post_processor(invocation_context, llm_response):
-      yield event
+    async with Aclosing(
+        _run_post_processor(invocation_context, llm_response)
+    ) as agen:
+      async for event in agen:
+        yield event
 
 
 response_processor = _CodeExecutionResponseProcessor()

@@ -20,6 +20,10 @@ from typing import List
 from typing import Optional
 from typing import TextIO
 from typing import Union
+import warnings
+
+from pydantic import model_validator
+from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
@@ -27,6 +31,8 @@ from ...auth.auth_schemes import AuthScheme
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
+from ..tool_configs import BaseToolConfig
+from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
 from .mcp_session_manager import SseConnectionParams
@@ -54,7 +60,7 @@ from .mcp_tool import MCPTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-class MCPToolset(BaseToolset):
+class McpToolset(BaseToolset):
   """Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
 
   This toolset manages the connection to an MCP server and provides tools
@@ -178,3 +184,79 @@ class MCPToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
+
+  @override
+  @classmethod
+  def from_config(
+      cls: type[MCPToolset], config: ToolArgsConfig, config_abs_path: str
+  ) -> MCPToolset:
+    """Creates an MCPToolset from a configuration object."""
+    mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
+
+    if mcp_toolset_config.stdio_server_params:
+      connection_params = mcp_toolset_config.stdio_server_params
+    elif mcp_toolset_config.stdio_connection_params:
+      connection_params = mcp_toolset_config.stdio_connection_params
+    elif mcp_toolset_config.sse_connection_params:
+      connection_params = mcp_toolset_config.sse_connection_params
+    elif mcp_toolset_config.streamable_http_connection_params:
+      connection_params = mcp_toolset_config.streamable_http_connection_params
+    else:
+      raise ValueError("No connection params found in MCPToolsetConfig.")
+
+    return cls(
+        connection_params=connection_params,
+        tool_filter=mcp_toolset_config.tool_filter,
+        auth_scheme=mcp_toolset_config.auth_scheme,
+        auth_credential=mcp_toolset_config.auth_credential,
+    )
+
+
+class MCPToolset(McpToolset):
+  """Deprecated name, use `McpToolset` instead."""
+
+  def __init__(self, *args, **kwargs):
+    warnings.warn(
+        "MCPToolset class is deprecated, use `McpToolset` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    super().__init__(*args, **kwargs)
+
+
+class McpToolsetConfig(BaseToolConfig):
+  """The config for MCPToolset."""
+
+  stdio_server_params: Optional[StdioServerParameters] = None
+
+  stdio_connection_params: Optional[StdioConnectionParams] = None
+
+  sse_connection_params: Optional[SseConnectionParams] = None
+
+  streamable_http_connection_params: Optional[
+      StreamableHTTPConnectionParams
+  ] = None
+
+  tool_filter: Optional[List[str]] = None
+
+  auth_scheme: Optional[AuthScheme] = None
+
+  auth_credential: Optional[AuthCredential] = None
+
+  @model_validator(mode="after")
+  def _check_only_one_params_field(self):
+    param_fields = [
+        self.stdio_server_params,
+        self.stdio_connection_params,
+        self.sse_connection_params,
+        self.streamable_http_connection_params,
+    ]
+    populated_fields = [f for f in param_fields if f is not None]
+
+    if len(populated_fields) != 1:
+      raise ValueError(
+          "Exactly one of stdio_server_params, stdio_connection_params,"
+          " sse_connection_params, streamable_http_connection_params must be"
+          " set."
+      )
+    return self

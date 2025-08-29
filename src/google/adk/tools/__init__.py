@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import logging
+import sys
 
 from ..auth.auth_tool import AuthToolArguments
 from .agent_tool import AgentTool
 from .apihub_tool.apihub_toolset import APIHubToolset
 from .base_tool import BaseTool
+from .enterprise_search_tool import enterprise_web_search_tool as enterprise_web_search
 from .example_tool import ExampleTool
 from .exit_loop_tool import exit_loop
 from .function_tool import FunctionTool
@@ -36,6 +38,7 @@ __all__ = [
     'APIHubToolset',
     'AuthToolArguments',
     'BaseTool',
+    'enterprise_web_search',
     'google_search',
     'url_context',
     'VertexAiSearchTool',
@@ -50,3 +53,17 @@ __all__ = [
     'ToolContext',
     'transfer_to_agent',
 ]
+
+
+if sys.version_info < (3, 10):
+  logger = logging.getLogger('google_adk.' + __name__)
+  logger.warning(
+      'MCP requires Python 3.10 or above. Please upgrade your Python'
+      ' version in order to use it.'
+  )
+else:
+  from .mcp_tool.mcp_toolset import MCPToolset
+
+  __all__.extend([
+      'MCPToolset',
+  ])

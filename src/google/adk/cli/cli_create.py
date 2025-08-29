@@ -14,19 +14,12 @@
 
 from __future__ import annotations
 
-import enum
 import os
 import subprocess
 from typing import Optional
 from typing import Tuple
 
 import click
-
-
-class Type(enum.Enum):
-  CONFIG = "config"
-  CODE = "code"
-
 
 _INIT_PY_TEMPLATE = """\
 from . import agent
@@ -44,6 +37,7 @@ root_agent = Agent(
 """
 
 _AGENT_CONFIG_TEMPLATE = """\
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
 name: root_agent
 description: A helpful assistant for user questions.
 instruction: Answer user questions to the best of your knowledge
@@ -179,7 +173,7 @@ def _generate_files(
     google_cloud_project: Optional[str] = None,
     google_cloud_region: Optional[str] = None,
     model: Optional[str] = None,
-    type: Optional[Type] = None,
+    type: str,
 ):
   """Generates a folder name for the agent."""
   os.makedirs(agent_folder, exist_ok=True)
@@ -203,7 +197,7 @@ def _generate_files(
       lines.append(f"GOOGLE_CLOUD_LOCATION={google_cloud_region}")
     f.write("\n".join(lines))
 
-  if type == Type.CONFIG:
+  if type == "config":
     with open(agent_config_file_path, "w", encoding="utf-8") as f:
       f.write(_AGENT_CONFIG_TEMPLATE.format(model_name=model))
     with open(init_file_path, "w", encoding="utf-8") as f:
@@ -263,7 +257,7 @@ def _prompt_to_choose_backend(
   return google_api_key, google_cloud_project, google_cloud_region
 
 
-def _prompt_to_choose_type() -> Type:
+def _prompt_to_choose_type() -> str:
   """Prompts user to choose type of agent to create."""
   type_choice = click.prompt(
       """\
@@ -274,9 +268,9 @@ Choose type""",
       type=click.Choice(["1", "2"]),
   )
   if type_choice == "1":
-    return Type.CONFIG
+    return "CONFIG"
   else:
-    return Type.CODE
+    return "CODE"
 
 
 def run_cmd(
@@ -286,7 +280,7 @@ def run_cmd(
     google_api_key: Optional[str],
     google_cloud_project: Optional[str],
     google_cloud_region: Optional[str],
-    type: Optional[Type],
+    type: Optional[str],
 ):
   """Runs `adk create` command to create agent template.
 
@@ -298,7 +292,7 @@ def run_cmd(
       VertexAI as backend.
     google_cloud_region: Optional[str], The Google Cloud region for using
       VertexAI as backend.
-    type: Optional[Type], Whether to define agent with config file or code.
+    type: Optional[str], Whether to define agent with config file or code.
   """
   agent_folder = os.path.join(os.getcwd(), agent_name)
   # check folder doesn't exist or it's empty. Otherwise, throw
@@ -331,5 +325,5 @@ def run_cmd(
       google_cloud_project=google_cloud_project,
       google_cloud_region=google_cloud_region,
       model=model,
-      type=type,
+      type=type.lower(),
   )

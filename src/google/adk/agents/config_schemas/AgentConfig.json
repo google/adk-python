@@ -409,14 +409,17 @@
             }
           ],
           "default": "BaseAgent",
+          "description": "Required. The class of the agent. The value is used to differentiate among different agent classes.",
           "title": "Agent Class"
         },
         "name": {
+          "description": "Required. The name of the agent.",
           "title": "Name",
           "type": "string"
         },
         "description": {
           "default": "",
+          "description": "Optional. The description of the agent.",
           "title": "Description",
           "type": "string"
         },
@@ -433,6 +436,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The sub-agents of the agent.",
           "title": "Sub Agents"
         },
         "before_agent_callbacks": {
@@ -448,6 +452,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The before_agent_callbacks of the agent.\n\nExample:\n\n  ```\n  before_agent_callbacks:\n    - name: my_library.security_callbacks.before_agent_callback\n  ```",
           "title": "Before Agent Callbacks"
         },
         "after_agent_callbacks": {
@@ -463,6 +468,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The after_agent_callbacks of the agent.",
           "title": "After Agent Callbacks"
         }
       },
@@ -675,12 +681,29 @@
     "EnterpriseWebSearch": {
       "additionalProperties": false,
       "description": "Tool to search public web data, powered by Vertex AI Search and Sec4 compliance.",
-      "properties": {},
+      "properties": {
+        "excludeDomains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. List of domains to be excluded from the search results. The default limit is 2000 domains.",
+          "title": "Excludedomains"
+        }
+      },
       "title": "EnterpriseWebSearch",
       "type": "object"
     },
     "Environment": {
-      "description": "Required. The environment being operated.",
+      "description": "The environment being operated.",
       "enum": [
         "ENVIRONMENT_UNSPECIFIED",
         "ENVIRONMENT_BROWSER"
@@ -1470,20 +1493,7 @@
               "$ref": "#/$defs/Content"
             },
             {
-              "items": {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/File"
-                  },
-                  {
-                    "$ref": "#/$defs/Part"
-                  },
-                  {
-                    "type": "string"
-                  }
-                ]
-              },
-              "type": "array"
+              "type": "string"
             },
             {
               "$ref": "#/$defs/File"
@@ -1492,7 +1502,20 @@
               "$ref": "#/$defs/Part"
             },
             {
-              "type": "string"
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "$ref": "#/$defs/File"
+                  },
+                  {
+                    "$ref": "#/$defs/Part"
+                  }
+                ]
+              },
+              "type": "array"
             },
             {
               "type": "null"
@@ -1824,10 +1847,10 @@
         "speechConfig": {
           "anyOf": [
             {
-              "$ref": "#/$defs/SpeechConfig"
+              "type": "string"
             },
             {
-              "type": "string"
+              "$ref": "#/$defs/SpeechConfig"
             },
             {
               "type": "null"
@@ -1993,6 +2016,22 @@
           ],
           "default": null,
           "description": "Optional. Filter search results to a specific time range.\n      If customers set a start time, they must set an end time (and vice versa).\n      "
+        },
+        "excludeDomains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. List of domains to be excluded from the search results.\n      The default limit is 2000 domains.",
+          "title": "Excludedomains"
         }
       },
       "title": "GoogleSearch",
@@ -2156,7 +2195,7 @@
             }
           ],
           "default": null,
-          "description": "Extra parameters to add to the request body.",
+          "description": "Extra parameters to add to the request body.\n      The structure must match the backend API's request structure.\n      - VertexAI backend API docs: https://cloud.google.com/vertex-ai/docs/reference/rest\n      - GeminiAPI backend API docs: https://ai.google.dev/api/rest",
           "title": "Extrabody"
         },
         "retryOptions": {
@@ -2349,19 +2388,18 @@
       "properties": {
         "agent_class": {
           "default": "LlmAgent",
-          "enum": [
-            "LlmAgent",
-            ""
-          ],
+          "description": "The value is used to uniquely identify the LlmAgent class. If it is empty, it is by default an LlmAgent.",
           "title": "Agent Class",
           "type": "string"
         },
         "name": {
+          "description": "Required. The name of the agent.",
           "title": "Name",
           "type": "string"
         },
         "description": {
           "default": "",
+          "description": "Optional. The description of the agent.",
           "title": "Description",
           "type": "string"
         },
@@ -2378,6 +2416,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The sub-agents of the agent.",
           "title": "Sub Agents"
         },
         "before_agent_callbacks": {
@@ -2393,6 +2432,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The before_agent_callbacks of the agent.\n\nExample:\n\n  ```\n  before_agent_callbacks:\n    - name: my_library.security_callbacks.before_agent_callback\n  ```",
           "title": "Before Agent Callbacks"
         },
         "after_agent_callbacks": {
@@ -2408,6 +2448,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The after_agent_callbacks of the agent.",
           "title": "After Agent Callbacks"
         },
         "model": {
@@ -2420,9 +2461,11 @@
             }
           ],
           "default": null,
+          "description": "Optional. LlmAgent.model. If not set, the model will be inherited from the ancestor.",
           "title": "Model"
         },
         "instruction": {
+          "description": "Required. LlmAgent.instruction.",
           "title": "Instruction",
           "type": "string"
         },
@@ -2436,6 +2479,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. LlmAgent.disallow_transfer_to_parent.",
           "title": "Disallow Transfer To Parent"
         },
         "disallow_transfer_to_peers": {
@@ -2448,6 +2492,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. LlmAgent.disallow_transfer_to_peers.",
           "title": "Disallow Transfer To Peers"
         },
         "input_schema": {
@@ -2459,7 +2504,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Optional. LlmAgent.input_schema."
         },
         "output_schema": {
           "anyOf": [
@@ -2470,7 +2516,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Optional. LlmAgent.output_schema."
         },
         "output_key": {
           "anyOf": [
@@ -2482,10 +2529,12 @@
             }
           ],
           "default": null,
+          "description": "Optional. LlmAgent.output_key.",
           "title": "Output Key"
         },
         "include_contents": {
           "default": "default",
+          "description": "Optional. LlmAgent.include_contents.",
           "enum": [
             "default",
             "none"
@@ -2497,7 +2546,7 @@
           "anyOf": [
             {
               "items": {
-                "$ref": "#/$defs/google__adk__tools__base_tool__ToolConfig"
+                "$ref": "#/$defs/google__adk__tools__tool_configs__ToolConfig"
               },
               "type": "array"
             },
@@ -2506,6 +2555,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. LlmAgent.tools.\n\nExamples:\n\n  For ADK built-in tools in `google.adk.tools` package, they can be referenced\n  directly with the name:\n\n    ```\n    tools:\n      - name: google_search\n      - name: load_memory\n    ```\n\n  For user-defined tools, they can be referenced with fully qualified name:\n\n    ```\n    tools:\n      - name: my_library.my_tools.my_tool\n    ```\n\n  For tools that needs to be created via functions:\n\n    ```\n    tools:\n      - name: my_library.my_tools.create_tool\n        args:\n          - name: param1\n            value: value1\n          - name: param2\n            value: value2\n    ```\n\n  For more advanced tools, instead of specifying arguments in config, it's\n  recommended to define them in Python files and reference them. E.g.,\n\n    ```\n    # tools.py\n    my_mcp_toolset = MCPToolset(\n        connection_params=StdioServerParameters(\n            command=\"npx\",\n            args=[\"-y\", \"@notionhq/notion-mcp-server\"],\n            env={\"OPENAPI_MCP_HEADERS\": NOTION_HEADERS},\n        )\n    )\n    ```\n\n  Then, reference the toolset in config:\n\n  ```\n  tools:\n    - name: tools.my_mcp_toolset\n  ```",
           "title": "Tools"
         },
         "before_model_callbacks": {
@@ -2521,6 +2571,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. LlmAgent.before_model_callbacks.\n\nExample:\n\n  ```\n  before_model_callbacks:\n    - name: my_library.callbacks.before_model_callback\n  ```",
           "title": "Before Model Callbacks"
         },
         "after_model_callbacks": {
@@ -2536,6 +2587,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. LlmAgent.after_model_callbacks.",
           "title": "After Model Callbacks"
         },
         "before_tool_callbacks": {
@@ -2551,6 +2603,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. LlmAgent.before_tool_callbacks.",
           "title": "Before Tool Callbacks"
         },
         "after_tool_callbacks": {
@@ -2566,6 +2619,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. LlmAgent.after_tool_callbacks.",
           "title": "After Tool Callbacks"
         },
         "generate_content_config": {
@@ -2577,7 +2631,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Optional. LlmAgent.generate_content_config."
         }
       },
       "required": [
@@ -2592,17 +2647,19 @@
       "description": "The config for the YAML schema of a LoopAgent.",
       "properties": {
         "agent_class": {
-          "const": "LoopAgent",
           "default": "LoopAgent",
+          "description": "The value is used to uniquely identify the LoopAgent class.",
           "title": "Agent Class",
           "type": "string"
         },
         "name": {
+          "description": "Required. The name of the agent.",
           "title": "Name",
           "type": "string"
         },
         "description": {
           "default": "",
+          "description": "Optional. The description of the agent.",
           "title": "Description",
           "type": "string"
         },
@@ -2619,6 +2676,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The sub-agents of the agent.",
           "title": "Sub Agents"
         },
         "before_agent_callbacks": {
@@ -2634,6 +2692,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The before_agent_callbacks of the agent.\n\nExample:\n\n  ```\n  before_agent_callbacks:\n    - name: my_library.security_callbacks.before_agent_callback\n  ```",
           "title": "Before Agent Callbacks"
         },
         "after_agent_callbacks": {
@@ -2649,6 +2708,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The after_agent_callbacks of the agent.",
           "title": "After Agent Callbacks"
         },
         "max_iterations": {
@@ -2661,6 +2721,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. LoopAgent.max_iterations.",
           "title": "Max Iterations"
         }
       },
@@ -2741,17 +2802,19 @@
       "description": "The config for the YAML schema of a ParallelAgent.",
       "properties": {
         "agent_class": {
-          "const": "ParallelAgent",
           "default": "ParallelAgent",
+          "description": "The value is used to uniquely identify the ParallelAgent class.",
           "title": "Agent Class",
           "type": "string"
         },
         "name": {
+          "description": "Required. The name of the agent.",
           "title": "Name",
           "type": "string"
         },
         "description": {
           "default": "",
+          "description": "Optional. The description of the agent.",
           "title": "Description",
           "type": "string"
         },
@@ -2768,6 +2831,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The sub-agents of the agent.",
           "title": "Sub Agents"
         },
         "before_agent_callbacks": {
@@ -2783,6 +2847,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The before_agent_callbacks of the agent.\n\nExample:\n\n  ```\n  before_agent_callbacks:\n    - name: my_library.security_callbacks.before_agent_callback\n  ```",
           "title": "Before Agent Callbacks"
         },
         "after_agent_callbacks": {
@@ -2798,6 +2863,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The after_agent_callbacks of the agent.",
           "title": "After Agent Callbacks"
         }
       },
@@ -3641,17 +3707,19 @@
       "description": "The config for the YAML schema of a SequentialAgent.",
       "properties": {
         "agent_class": {
-          "const": "SequentialAgent",
           "default": "SequentialAgent",
+          "description": "The value is used to uniquely identify the SequentialAgent class.",
           "title": "Agent Class",
           "type": "string"
         },
         "name": {
+          "description": "Required. The name of the agent.",
           "title": "Name",
           "type": "string"
         },
         "description": {
           "default": "",
+          "description": "Optional. The description of the agent.",
           "title": "Description",
           "type": "string"
         },
@@ -3668,6 +3736,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The sub-agents of the agent.",
           "title": "Sub Agents"
         },
         "before_agent_callbacks": {
@@ -3683,6 +3752,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The before_agent_callbacks of the agent.\n\nExample:\n\n  ```\n  before_agent_callbacks:\n    - name: my_library.security_callbacks.before_agent_callback\n  ```",
           "title": "Before Agent Callbacks"
         },
         "after_agent_callbacks": {
@@ -3698,6 +3768,7 @@
             }
           ],
           "default": null,
+          "description": "Optional. The after_agent_callbacks of the agent.",
           "title": "After Agent Callbacks"
         }
       },
@@ -3889,7 +3960,7 @@
     },
     "ToolArgsConfig": {
       "additionalProperties": true,
-      "description": "The configuration for tool arguments.\n\nThis config allows arbitrary key-value pairs as tool arguments.",
+      "description": "Config to host free key-value pairs for the args in ToolConfig.",
       "properties": {},
       "title": "ToolArgsConfig",
       "type": "object"
@@ -4248,11 +4319,12 @@
       "title": "VoiceConfig",
       "type": "object"
     },
-    "google__adk__tools__base_tool__ToolConfig": {
+    "google__adk__tools__tool_configs__ToolConfig": {
       "additionalProperties": false,
-      "description": "The configuration for a tool.\n\nThe config supports these types of tools:\n1. ADK built-in tools\n2. User-defined tool instances\n3. User-defined tool classes\n4. User-defined functions that generate tool instances\n5. User-defined function tools\n\nFor examples:\n\n  1. For ADK built-in tool instances or classes in `google.adk.tools` package,\n  they can be referenced directly with the `name` and optionally with\n  `config`.\n\n  ```\n  tools:\n    - name: google_search\n    - name: AgentTool\n      config:\n        agent: ./another_agent.yaml\n        skip_summarization: true\n  ```\n\n  2. For user-defined tool instances, the `name` is the fully qualified path\n  to the tool instance.\n\n  ```\n  tools:\n    - name: my_package.my_module.my_tool\n  ```\n\n  3. For user-defined tool classes (custom tools), the `name` is the fully\n  qualified path to the tool class and `config` is the arguments for the tool.\n\n  ```\n  tools:\n    - name: my_package.my_module.my_tool_class\n      config:\n        my_tool_arg1: value1\n        my_tool_arg2: value2\n  ```\n\n  4. For user-defined functions that generate tool instances, the `name` is the\n  fully qualified path to the function and `config` is passed to the function\n  as arguments.\n\n  ```\n  tools:\n    - name: my_package.my_module.my_tool_function\n      config:\n        my_function_arg1: value1\n        my_function_arg2: value2\n  ```\n\n  The function must have the following signature:\n  ```\n  def my_function(config: ToolArgsConfig) -> BaseTool:\n    ...\n  ```\n\n  5. For user-defined function tools, the `name` is the fully qualified path\n  to the function.\n\n  ```\n  tools:\n    - name: my_package.my_module.my_function_tool\n  ```",
+      "description": "The configuration for a tool.\n\nThe config supports these types of tools:\n1. ADK built-in tools\n2. User-defined tool instances\n3. User-defined tool classes\n4. User-defined functions that generate tool instances\n5. User-defined function tools\n\nFor examples:\n\n  1. For ADK built-in tool instances or classes in `google.adk.tools` package,\n  they can be referenced directly with the `name` and optionally with\n  `args`.\n\n  ```\n  tools:\n    - name: google_search\n    - name: AgentTool\n      args:\n        agent: ./another_agent.yaml\n        skip_summarization: true\n  ```\n\n  2. For user-defined tool instances, the `name` is the fully qualified path\n  to the tool instance.\n\n  ```\n  tools:\n    - name: my_package.my_module.my_tool\n  ```\n\n  3. For user-defined tool classes (custom tools), the `name` is the fully\n  qualified path to the tool class and `args` is the arguments for the tool.\n\n  ```\n  tools:\n    - name: my_package.my_module.my_tool_class\n      args:\n        my_tool_arg1: value1\n        my_tool_arg2: value2\n  ```\n\n  4. For user-defined functions that generate tool instances, the `name` is\n  the fully qualified path to the function and `args` is passed to the\n  function as arguments.\n\n  ```\n  tools:\n    - name: my_package.my_module.my_tool_function\n      args:\n        my_function_arg1: value1\n        my_function_arg2: value2\n  ```\n\n  The function must have the following signature:\n  ```\n  def my_function(args: ToolArgsConfig) -> BaseTool:\n    ...\n  ```\n\n  5. For user-defined function tools, the `name` is the fully qualified path\n  to the function.\n\n  ```\n  tools:\n    - name: my_package.my_module.my_function_tool\n  ```\n\n  If the above use cases don't suffice, users can define a custom tool config\n  by extending BaseToolConfig and override from_config() in the custom tool.",
       "properties": {
         "name": {
+          "description": "The name of the tool.\n\nFor ADK built-in tools, `name` is the name of the tool, e.g. `google_search`\nor `AgentTool`.\n\nFor user-defined tools, the name is the fully qualified path to the tool, e.g.\n`my_package.my_module.my_tool`.",
           "title": "Name",
           "type": "string"
         },
@@ -4265,7 +4337,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "The args for the tool."
         }
       },
       "required": [
@@ -4366,6 +4439,18 @@
           "default": null,
           "description": "Optional. Tool to support URL context retrieval."
         },
+        "computerUse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolComputerUse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Tool to support the model interacting directly with the\n      computer. If enabled, it automatically populates computer-use specific\n      Function Declarations."
+        },
         "codeExecution": {
           "anyOf": [
             {
@@ -4377,18 +4462,6 @@
           ],
           "default": null,
           "description": "Optional. CodeExecution tool type. Enables the model to execute code as part of generation."
-        },
-        "computerUse": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ToolComputerUse"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional. Tool to support the model interacting directly with the computer. If enabled, it automatically populates computer-use specific Function Declarations."
         }
       },
       "title": "Tool",
@@ -4509,7 +4582,8 @@
       "type": "object"
     }
   },
-  "anyOf": [
+  "description": "The config for the YAML schema to create an agent.",
+  "oneOf": [
     {
       "$ref": "#/$defs/LlmAgentConfig"
     },
@@ -4526,6 +4600,5 @@
       "$ref": "#/$defs/BaseAgentConfig"
     }
   ],
-  "description": "The config for the YAML schema to create an agent.",
   "title": "AgentConfig"
 }

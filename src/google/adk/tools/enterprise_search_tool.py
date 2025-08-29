@@ -65,3 +65,6 @@ class EnterpriseWebSearchTool(BaseTool):
           'Enterprise web search tool is not supported for model'
           f' {llm_request.model}'
       )
+
+
+enterprise_web_search_tool = EnterpriseWebSearchTool()

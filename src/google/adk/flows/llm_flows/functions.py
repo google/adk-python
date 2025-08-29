@@ -40,6 +40,7 @@ from ...telemetry import trace_tool_call
 from ...telemetry import tracer
 from ...tools.base_tool import BaseTool
 from ...tools.tool_context import ToolContext
+from ...utils.context_utils import Aclosing
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -320,8 +321,8 @@ async def handle_function_calls_live(
   if not function_calls:
     return None
 
-  # Create thread-safe lock for active_streaming_tools modifications
-  streaming_lock = threading.Lock()
+  # Create async lock for active_streaming_tools modifications
+  streaming_lock = asyncio.Lock()
 
   # Create tasks for parallel execution
   tasks = [
@@ -368,7 +369,7 @@ async def _execute_single_function_call_live(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
-    streaming_lock: threading.Lock,
+    streaming_lock: asyncio.Lock,
 ) -> Optional[Event]:
   """Execute a single function call for live mode with thread safety."""
   tool, tool_context = _get_tool_and_context(
@@ -448,7 +449,7 @@ async def _process_function_live_helper(
     function_call,
     function_args,
     invocation_context,
-    streaming_lock: threading.Lock,
+    streaming_lock: asyncio.Lock,
 ):
   function_response = None
   # Check if this is a stop_streaming function call
@@ -458,7 +459,7 @@ async def _process_function_live_helper(
   ):
     function_name = function_args['function_name']
     # Thread-safe access to active_streaming_tools
-    with streaming_lock:
+    async with streaming_lock:
       active_tasks = invocation_context.active_streaming_tools
       if (
           active_tasks
@@ -491,7 +492,7 @@ async def _process_function_live_helper(
           }
       if not function_response:
         # Clean up the reference under lock
-        with streaming_lock:
+        async with streaming_lock:
           if (
               invocation_context.active_streaming_tools
               and function_name in invocation_context.active_streaming_tools
@@ -510,21 +511,24 @@ async def _process_function_live_helper(
     # we require the function to be a async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
       try:
-        async for result in __call_tool_live(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            invocation_context=invocation_context,
-        ):
-          updated_content = types.Content(
-              role='user',
-              parts=[
-                  types.Part.from_text(
-                      text=f'Function {tool.name} returned: {result}'
-                  )
-              ],
-          )
-          invocation_context.live_request_queue.send_content(updated_content)
+        async with Aclosing(
+            __call_tool_live(
+                tool=tool,
+                args=function_args,
+                tool_context=tool_context,
+                invocation_context=invocation_context,
+            )
+        ) as agen:
+          async for result in agen:
+            updated_content = types.Content(
+                role='user',
+                parts=[
+                    types.Part.from_text(
+                        text=f'Function {tool.name} returned: {result}'
+                    )
+                ],
+            )
+            invocation_context.live_request_queue.send_content(updated_content)
       except asyncio.CancelledError:
         raise  # Re-raise to properly propagate the cancellation
 
@@ -533,7 +537,7 @@ async def _process_function_live_helper(
     )
 
     # Register streaming tool using original logic
-    with streaming_lock:
+    async with streaming_lock:
       if invocation_context.active_streaming_tools is None:
         invocation_context.active_streaming_tools = {}
 
@@ -586,12 +590,15 @@ async def __call_tool_live(
     invocation_context: InvocationContext,
 ) -> AsyncGenerator[Event, None]:
   """Calls the tool asynchronously (awaiting the coroutine)."""
-  async for item in tool._call_live(
-      args=args,
-      tool_context=tool_context,
-      invocation_context=invocation_context,
-  ):
-    yield item
+  async with Aclosing(
+      tool._call_live(
+          args=args,
+          tool_context=tool_context,
+          invocation_context=invocation_context,
+      )
+  ) as agen:
+    async for item in agen:
+      yield item
 
 
 async def __call_tool_async(
@@ -675,7 +682,7 @@ def merge_parallel_function_response_events(
 
   # Create the new merged event
   merged_event = Event(
-      invocation_id=Event.new_id(),
+      invocation_id=base_event.invocation_id,
       author=base_event.author,
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),
