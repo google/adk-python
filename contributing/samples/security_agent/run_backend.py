@@ -15,24 +15,74 @@ import argparse
 import signal
 import time
 import socket
+import json
 
-def deploy_to_cloud(project_id):
-    """Deploy backend to Cloud Run using Cloud Build."""
+def load_agent_config():
+    """Load agent configuration from .agent_engine_config.json if it exists."""
+    config_file = os.path.join(os.path.dirname(__file__), ".agent_engine_config.json")
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+                print(f"[CONFIG] Loaded agent configuration from {config_file}")
+                return config
+        except Exception as e:
+            print(f"[WARNING] Failed to load agent config: {e}")
+    return None
+
+def deploy_to_cloud(project_id, extra_args=None):
+    """Deploy backend to Cloud Run using Cloud Build.
+    
+    Args:
+        project_id: GCP project ID
+        extra_args: Additional gcloud arguments to pass through
+    """
     print(f"[CLOUD] Deploying backend to Cloud Run (Project: {project_id})...")
     print("=" * 50)
+    
+    # Load agent configuration if available
+    agent_config = load_agent_config()
+    if agent_config:
+        print(f"[AGENT] Using configuration for: {agent_config.get('display_name', 'Security Agent')}")
+        print(f"[VERSION] {agent_config.get('version', 'unknown')}")
     
     # Change to deploy directory where cloudbuild.yaml is located
     deploy_dir = os.path.join(os.path.dirname(__file__), "deploy")
     
     # Build the Cloud Build command
+    service_name = "security-agent-backend"
+    region = "us-central1"
+    
+    # Override with config values if available
+    if agent_config and 'deployment' in agent_config:
+        cloud_run_config = agent_config['deployment'].get('cloud_run', {})
+        # Build extra args from config if not already provided
+        if not extra_args and cloud_run_config:
+            extra_args = []
+            if 'memory' in cloud_run_config:
+                extra_args.append(f"--memory={cloud_run_config['memory']}")
+            if 'cpu' in cloud_run_config:
+                extra_args.append(f"--cpu={cloud_run_config['cpu']}")
+            if 'min_instances' in cloud_run_config:
+                extra_args.append(f"--min-instances={cloud_run_config['min_instances']}")
+            if 'max_instances' in cloud_run_config:
+                extra_args.append(f"--max-instances={cloud_run_config['max_instances']}")
+    
     cmd = [
         "gcloud", "builds", "submit",
         "--config", os.path.join(deploy_dir, "cloudbuild.yaml"),
         "--project", project_id,
         "--substitutions",
-        f"_SERVICE_NAME=security-agent-backend,_REGION=us-central1",
+        f"_SERVICE_NAME={service_name},_REGION={region}",
         "."
     ]
+    
+    # Add extra arguments if provided
+    if extra_args:
+        print(f"[EXTRA] Additional Cloud Run arguments: {' '.join(extra_args)}")
+        # Store extra args as a substitution for Cloud Build to use
+        existing_substitutions = cmd[cmd.index("--substitutions") + 1]
+        cmd[cmd.index("--substitutions") + 1] = f"{existing_substitutions},_EXTRA_ARGS={' '.join(extra_args)}"
     
     print(f"[CONFIG] Command: {' '.join(cmd)}")
     print("[BUILD] Building and deploying backend service...")
@@ -202,10 +252,30 @@ def run_local():
 
 def main():
     """Main entry point with argument parsing."""
-    parser = argparse.ArgumentParser(description='Run Security Agent Backend')
+    parser = argparse.ArgumentParser(description='Run Security Agent Backend',
+                                   # Allow unknown args to be passed to gcloud
+                                   allow_abbrev=False,
+                                   add_help=False)
     parser.add_argument('--cloud', action='store_true', 
                        help='Deploy to Cloud Run instead of running locally')
-    args = parser.parse_args()
+    parser.add_argument('-h', '--help', action='store_true',
+                       help='Show this help message and exit')
+    
+    # Parse known args and capture the rest for gcloud
+    args, unknown_args = parser.parse_known_args()
+    
+    # Handle help manually
+    if args.help:
+        print("Usage: python run_backend.py [OPTIONS] [-- GCLOUD_ARGS]")
+        print("\nOptions:")
+        print("  --cloud              Deploy to Cloud Run instead of running locally")
+        print("  -h, --help           Show this help message and exit")
+        print("\nCloud Run Deployment:")
+        print("  python run_backend.py --cloud")
+        print("  python run_backend.py --cloud -- --min-instances=2 --max-instances=10")
+        print("\nLocal Development:")
+        print("  python run_backend.py")
+        sys.exit(0)
     
     # Load environment variables from .env
     from pathlib import Path
@@ -222,8 +292,14 @@ def main():
             print("[ERROR] GOOGLE_CLOUD_PROJECT not set in .env file")
             print("Please set GOOGLE_CLOUD_PROJECT in your .env file")
             sys.exit(1)
-        deploy_to_cloud(project_id)
+        
+        # Remove '--' separator if present in unknown_args
+        extra_args = [arg for arg in unknown_args if arg != '--']
+        
+        deploy_to_cloud(project_id, extra_args)
     else:
+        if unknown_args:
+            print(f"[WARNING] Ignoring extra arguments for local run: {unknown_args}")
         run_local()
 
 if __name__ == "__main__":
