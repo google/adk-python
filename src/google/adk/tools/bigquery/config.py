@@ -71,6 +71,13 @@ class BigQueryToolConfig(BaseModel):
   their application/agent for tracking or support purpose, they can set this field.
   """
 
+  compute_project_id: Optional[str] = None
+  """GCP project ID to use for the BigQuery compute operations.
+
+  This can be set as a guardrail to ensure that the tools perform the compute
+  operations (such as query execution) in a specific project.
+  """
+
   @field_validator('application_name')
   @classmethod
   def validate_application_name(cls, v):
