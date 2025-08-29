@@ -17,20 +17,57 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+def get_service_account_email():
+    """Extract service account email from the key file."""
+    import json
+    
+    creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+    if not creds_path:
+        print("❌ GOOGLE_APPLICATION_CREDENTIALS not set in .env file")
+        print("Please set GOOGLE_APPLICATION_CREDENTIALS in your .env file")
+        sys.exit(1)
+    
+    # Convert relative path to absolute
+    if not os.path.isabs(creds_path):
+        creds_path = os.path.join(os.path.dirname(__file__), creds_path)
+    
+    if not os.path.exists(creds_path):
+        print(f"❌ Service account key file not found: {creds_path}")
+        print("Please ensure the service account JSON file exists")
+        sys.exit(1)
+    
+    try:
+        with open(creds_path, 'r') as f:
+            key_data = json.load(f)
+            return key_data.get('client_email')
+    except Exception as e:
+        print(f"❌ Failed to read service account key file: {e}")
+        sys.exit(1)
+
 def deploy_to_cloud(project_id):
     """Deploy unified frontend to Cloud Run using Cloud Build."""
     print(f"☁️  Deploying Unified Frontend to Cloud Run (Project: {project_id})...")
     print("=" * 50)
     print("✨ Deploying unified streaming client with executive dashboard")
     
+    # Get service account email from key file
+    service_account_email = get_service_account_email()
+    if not service_account_email:
+        print("❌ Could not extract service account email from key file")
+        sys.exit(1)
+    
+    print(f"🔐 Using service account: {service_account_email}")
+    
     # Change to deploy directory where cloudbuild.yaml is located
     deploy_dir = os.path.join(os.path.dirname(__file__), "deploy")
     
-    # Build the Cloud Build command for frontend
+    # Build the Cloud Build command for frontend with service account
     cmd = [
         "gcloud", "builds", "submit",
         "--config", os.path.join(deploy_dir, "cloudbuild-frontend.yaml"),
         "--project", project_id,
+        "--substitutions",
+        f"_SERVICE_ACCOUNT_EMAIL={service_account_email}",
         "."
     ]
     

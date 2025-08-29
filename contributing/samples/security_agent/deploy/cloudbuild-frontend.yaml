@@ -28,7 +28,7 @@ steps:
       - '--set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=TRUE'
       - '--set-env-vars=DATABASE_PATH=/app/backend/cache/gcp_data.db'
       - '--set-env-vars=K_SERVICE=frontend'
-      - '--service-account=security-agent@$PROJECT_ID.iam.gserviceaccount.com'
+      - '--service-account=${_SERVICE_ACCOUNT_EMAIL}'
 
 # Store images in Artifact Registry
 images:

@@ -26,7 +26,7 @@ steps:
       - '--min-instances=0'
       - '--set-env-vars=USE_LEGACY=true'
       - '--set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
-      - '--service-account=security-agent@$PROJECT_ID.iam.gserviceaccount.com'
+      - '--service-account=${_SERVICE_ACCOUNT_EMAIL}'
 
 # Store images in Artifact Registry
 images:
