@@ -36,9 +36,10 @@ from google.adk.runners import InMemoryRunner as AfInMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from typing_extensions import override
+
 from google.genai import types
 from google.genai.types import Part
-from typing_extensions import override
 
 
 def create_test_agent(name: str = 'test_agent') -> LlmAgent:
@@ -217,12 +218,15 @@ class InMemoryRunner:
         )
     )
 
-  async def run_async(self, new_message: types.ContentUnion) -> list[Event]:
+  async def run_async(
+      self, new_message: types.ContentUnion, run_config: RunConfig = None
+  ) -> list[Event]:
     events = []
     async for event in self.runner.run_async(
         user_id=self.session.user_id,
         session_id=self.session.id,
         new_message=get_user_content(new_message),
+        run_config=run_config or RunConfig(),
     ):
       events.append(event)
     return events

@@ -64,6 +64,10 @@ class ToolContext(CallbackContext):
   def actions(self) -> EventActions:
     return self._event_actions
 
+  @property
+  def run_config(self):
+    return self._invocation_context.run_config
+
   def request_credential(self, auth_config: AuthConfig) -> None:
     if not self.function_call_id:
       raise ValueError('function_call_id is not set.')

@@ -15,18 +15,26 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator as ABCAsyncGenerator
+from collections.abc import AsyncIterable as ABCAsyncIterable
+from collections.abc import AsyncIterator as ABCAsyncIterator
+from collections.abc import Generator as ABCGenerator
+from collections.abc import Iterable as ABCIterable
+from collections.abc import Iterator as ABCIterator
 import inspect
 import logging
 import types as typing_types
 from typing import _GenericAlias
+from typing import _SpecialGenericAlias
 from typing import Any
 from typing import get_args
 from typing import get_origin
 from typing import Literal
 from typing import Union
 
-from google.genai import types
 import pydantic
+
+from google.genai import types
 
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -276,6 +284,45 @@ def _parse_schema_from_parameter(
       _raise_if_schema_unsupported(variant, schema)
       return schema
       # all other generic alias will be invoked in raise branch
+  if get_origin(param.annotation) in (ABCGenerator, ABCIterator, ABCIterable):
+    origin = get_origin(param.annotation)
+    args = get_args(param.annotation)
+    if origin in {ABCGenerator, ABCIterator, ABCIterable}:
+      schema.type = types.Type.ARRAY
+      item_ann = args[0] if args else Any
+      schema.items = _parse_schema_from_parameter(
+          variant,
+          inspect.Parameter(
+              'item',
+              inspect.Parameter.POSITIONAL_OR_KEYWORD,
+              annotation=item_ann,
+          ),
+          func_name,
+      )
+      if param.default is not inspect.Parameter.empty:
+        if not _is_default_value_compatible(param.default, param.annotation):
+          raise ValueError(default_value_error_msg)
+        schema.default = param.default
+      _raise_if_schema_unsupported(variant, schema)
+      return schema
+    if origin in {ABCAsyncGenerator, ABCAsyncIterator, ABCAsyncIterable}:
+      schema.type = types.Type.ARRAY
+      item_ann = args[0] if args else Any
+      schema.items = _parse_schema_from_parameter(
+          variant,
+          inspect.Parameter(
+              'item',
+              inspect.Parameter.POSITIONAL_OR_KEYWORD,
+              annotation=item_ann,
+          ),
+          func_name,
+      )
+      if param.default is not inspect.Parameter.empty:
+        if not _is_default_value_compatible(param.default, param.annotation):
+          raise ValueError(default_value_error_msg)
+        schema.default = param.default
+      _raise_if_schema_unsupported(variant, schema)
+      return schema
   if (
       inspect.isclass(param.annotation)
       # for user defined class, we only support pydantic model

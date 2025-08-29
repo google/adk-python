@@ -17,12 +17,16 @@ from __future__ import annotations
 import inspect
 import logging
 from typing import Any
+from typing import AsyncIterator
 from typing import Callable
+from typing import Iterator
 from typing import Optional
 
-from google.genai import types
 from typing_extensions import override
 
+from google.genai import types
+
+from ..agents.run_config import StreamingMode
 from ..utils.context_utils import Aclosing
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
@@ -143,15 +147,40 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
 
     # Functions are callable objects, but not all callable objects are functions
     # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine funciton
-    if (
-        inspect.iscoroutinefunction(self.func)
-        or hasattr(self.func, '__call__')
-        and inspect.iscoroutinefunction(self.func.__call__)
+    # Callable's __call__ function is a coroutine function
+
+    func_result = self.func(**args_to_call)
+    if inspect.isawaitable(func_result):
+      result = await func_result
+
+    elif inspect.isgenerator(func_result) or isinstance(func_result, Iterator):
+      if tool_context.run_config.streaming_mode == StreamingMode.SSE:
+        return (
+            func_result  # if streaming_mode: SSE return just generator object.
+        )
+      res = None
+      for res in func_result:
+        if inspect.isawaitable(res):
+          res = await res
+      result = res
+
+    elif inspect.isasyncgen(func_result) or isinstance(
+        func_result, AsyncIterator
     ):
-      return await self.func(**args_to_call)
+      if tool_context.run_config.streaming_mode == StreamingMode.SSE:
+        return (
+            func_result  # if streaming_mode: SSE return just generator object.
+        )
+      res = None
+      async for res in func_result:
+        if inspect.isawaitable(res):
+          res = await res
+      result = res
+
     else:
-      return self.func(**args_to_call)
+      result = func_result
+
+    return result
 
   # TODO(hangfei): fix call live for function stream.
   async def _call_live(
