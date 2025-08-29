@@ -17,7 +17,7 @@ import random
 from google.adk import Agent
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
-
+from google.adk.apps import App
 
 def roll_die(sides: int, tool_context: ToolContext) -> int:
   """Roll a die and return the rolled result.
@@ -105,4 +105,13 @@ root_agent = Agent(
             ),
         ]
     ),
+)
+
+# The name "app" need to be exactly the same so ADK app loader can locate it and load it.
+app = App(
+    name='hello_world_app',
+    root_agent=root_agent,
+    plugins=[
+        SamplePlugin(),
+    ],
 )
