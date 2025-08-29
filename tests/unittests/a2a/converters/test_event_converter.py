@@ -49,34 +49,10 @@ try:
   from google.adk.events.event_actions import EventActions
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    DataPart = DummyTypes()
-    Message = DummyTypes()
-    Role = DummyTypes()
-    Task = DummyTypes()
-    TaskState = DummyTypes()
-    TaskStatusUpdateEvent = DummyTypes()
-    _create_artifact_id = lambda *args: None
-    _create_error_status_event = lambda *args: None
-    _create_status_update_event = lambda *args: None
-    _get_adk_metadata_key = lambda *args: None
-    _get_context_metadata = lambda *args: None
-    _process_long_running_tool = lambda *args: None
-    _serialize_metadata_value = lambda *args: None
-    ADK_METADATA_KEY_PREFIX = "adk_"
-    ARTIFACT_ID_SEPARATOR = "_"
-    convert_event_to_a2a_events = lambda *args: None
-    convert_event_to_a2a_message = lambda *args: None
-    convert_a2a_task_to_event = lambda *args: None
-    DEFAULT_ERROR_MESSAGE = "error"
-    InvocationContext = DummyTypes()
-    Event = DummyTypes()
-    EventActions = DummyTypes()
-    types = DummyTypes()
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 
