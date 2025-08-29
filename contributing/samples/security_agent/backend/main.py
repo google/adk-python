@@ -309,6 +309,30 @@ try:
 except ImportError as e:
     logger.warning(f"[WARNING] IAM router not available: {e}")
 
+# IAM Recommendations router - Advanced IAM Features
+try:
+    from api.iam_recommendations import router as iam_recommendations_router
+    app.include_router(iam_recommendations_router, tags=["iam-recommendations"])
+    logger.info("[OK] IAM Recommendations router included - Advanced IAM Features")
+except ImportError as e:
+    logger.warning(f"[WARNING] IAM Recommendations router not available: {e}")
+
+# Least-Privilege Analysis router - Advanced IAM Features
+try:
+    from api.least_privilege import router as least_privilege_router
+    app.include_router(least_privilege_router, tags=["least-privilege"])
+    logger.info("[OK] Least-Privilege Analysis router included - Advanced IAM Features")
+except ImportError as e:
+    logger.warning(f"[WARNING] Least-Privilege Analysis router not available: {e}")
+
+# Cross-Project Permission Analysis router - Advanced IAM Features
+try:
+    from api.cross_project import router as cross_project_router
+    app.include_router(cross_project_router, tags=["cross-project"])
+    logger.info("[OK] Cross-Project Analysis router included - Advanced IAM Features")
+except ImportError as e:
+    logger.warning(f"[WARNING] Cross-Project Analysis router not available: {e}")
+
 # Recommendations router for Google Cloud Recommender API
 try:
     from api.recommendations import router as recommendations_router
@@ -400,6 +424,14 @@ try:
 except ImportError as e:
     logger.warning(f"[WARNING] Data refresh API not available: {e}")
 
+# Networking Connectivity Testing API - Networking Troubleshooting Ninja (Phase 1)
+try:
+    from api.connectivity import router as connectivity_router
+    app.include_router(connectivity_router)  # Already has /api/v1/networking/connectivity prefix
+    logger.info("[OK] Connectivity Testing API loaded - Networking Troubleshooting Ninja (Phase 1)")
+except ImportError as e:
+    logger.warning(f"[WARNING] Connectivity Testing API not available: {e}")
+
 # Import MSA Analyzer router
 try:
     from api.msa_analyzer import router as msa_router
@@ -423,6 +455,50 @@ try:
     logger.info("[OK] Statistical Analysis router included at /api/v1/statistics (STORY-006)")
 except ImportError as e:
     logger.warning(f"[WARNING] Statistical Analysis API not available: {e}")
+
+# ===========================================================================
+# Phase 2 Advanced Security Features
+# ===========================================================================
+
+# Org Policy Test router (Phase 2)
+try:
+    from api.org_policy_test import router as org_policy_router
+    app.include_router(org_policy_router)  # Already has /api/v1/org-policy prefix
+    logger.info("[OK] Org Policy Test router included at /api/v1/org-policy (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] Org Policy Test API not available: {e}")
+
+# VPC Error Analysis router (Phase 2)
+try:
+    from api.vpc_errors import router as vpc_errors_router
+    app.include_router(vpc_errors_router)  # Already has /api/v1/vpc-errors prefix
+    logger.info("[OK] VPC Error Analysis router included at /api/v1/vpc-errors (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] VPC Error Analysis API not available: {e}")
+
+# Google Cloud Support Tickets router (Phase 2)
+try:
+    from api.support_tickets import router as support_tickets_router
+    app.include_router(support_tickets_router)  # Already has /api/v1/support-tickets prefix
+    logger.info("[OK] Google Cloud Support Tickets router included at /api/v1/support-tickets (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] Support Tickets API not available: {e}")
+
+# VPC-SC Dry Run router (Phase 2)
+try:
+    from api.vpcsc_dry_run import router as vpcsc_router
+    app.include_router(vpcsc_router)  # Already has /api/v1/vpcsc prefix
+    logger.info("[OK] VPC-SC Dry Run router included at /api/v1/vpcsc (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] VPC-SC Dry Run API not available: {e}")
+
+# Asset Reporter router (Phase 2)
+try:
+    from api.asset_reporter import router as asset_reporter_router
+    app.include_router(asset_reporter_router)  # Already has /api/v1/assets prefix
+    logger.info("[OK] Asset Reporter router included at /api/v1/assets (Phase 2)")
+except ImportError as e:
+    logger.warning(f"[WARNING] Asset Reporter API not available: {e}")
 
 
 # Chat endpoint for frontend communication

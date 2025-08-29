@@ -10,8 +10,8 @@ from fastapi import APIRouter, HTTPException, Query, Path as FastApiPath
 from pydantic import BaseModel, Field
 from pathlib import Path
 
-from backend.cache import cached
-from backend.services.session_manager import SessionManager, Session, Message
+from cache import cached
+from services.session_manager import SessionManager, Session, Message
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 

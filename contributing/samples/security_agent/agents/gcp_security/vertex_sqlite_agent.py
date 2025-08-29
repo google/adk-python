@@ -98,35 +98,54 @@ This tool can retrieve various types of information by specifying the query_type
     - Shows previously analyzed Google Cloud service announcements
 
 20. **msa_changes** - Query specific MSA changes and their details
-    - Optional parameters: {"service": "bigquery"}, {"impact_level": "high"}, {"permission": "datasets.get"}
 
-21. **msa_security_impacts** - Get security impacts from Google Cloud release notes
-    - Optional parameters: {"service": "compute"}, {"severity": "critical"}, {"days": 30}
-    - Shows encryption, authentication, vulnerability, and compliance impacts
+21. **org_policy_test** - Test and evaluate Organization Policy constraints
+    - Optional parameters: {"constraint": "compute.requireShieldedVm"}, {"test_mode": true}
+    - Shows policy violations, compliance status, and enforcement recommendations
 
-22. **msa_billing_impacts** - Get billing impacts from release notes  
-    - Optional parameters: {"service": "storage"}, {"impact_type": "price_increase"}, {"days": 30}
-    - Shows price changes, new charges, deprecated SKUs, and cost optimization tips
+22. **vpc_error_analysis** - Analyze VPC Flow Log errors and patterns
+    - Optional parameters: {"severity": "CRITICAL"}, {"pattern": "CONNECTION_TIMEOUT"}
+    - Provides error correlation, trend analysis, and automated remediation plans
 
-23. **release_notes** - Query recent Google Cloud release notes
-    - Optional parameters: {"service": "bigquery"}, {"note_type": "security"}, {"days": 30}
-    - Fetches latest updates directly from Google Cloud services
+23. **support_tickets** - Analyze Google Cloud Support tickets
+    - Optional parameters: {"priority": "CRITICAL"}, {"status": "OPEN"}
+    - Shows ticket patterns, SLA compliance, and common issues
 
-24. **msa_impact** - Get MSA impact assessments for projects
+24. **vpcsc_dry_run** - Analyze VPC Service Controls dry run violations
+    - Optional parameters: {"perimeter": "perimeter_production"}, {"severity": "HIGH"}
+    - Provides enforcement readiness assessment and remediation plans
+
+25. **vpcsc_readiness** - Get VPC-SC enforcement readiness report
+    - Shows readiness scores, blocking violations, and enforcement timeline
+
+26. **asset_inventory** - Comprehensive asset inventory and configuration analysis
+    - Optional parameters: {"category": "COMPUTE"}, {"importance": "CRITICAL"}, {"environment": "production"}
+    - Provides detailed asset discovery, configuration compliance, and security posture assessment
+    - Includes drift detection, risk scoring, and remediation recommendations
+
+27. **configuration_drift** - Detect configuration drift from baseline
+    - Shows assets that have drifted from approved configurations
+    - Includes auto-remediation suggestions and business impact assessment
+
+28. **asset_report** - Generate comprehensive asset inventory reports
+    - Optional parameters: {"report_type": "INVENTORY"}, {"export_format": "JSON"}
+    - Provides executive summaries, compliance analysis, and cost optimization insights
+
+29. **msa_impact** - Get MSA impact assessments for projects
     - Optional parameters: {"project_id": "my-project"}
 
-25. **msa_permissions** - Query MSA permission changes with detailed mapping
+30. **msa_permissions** - Query MSA permission changes with detailed mapping
     - Optional parameters: {"permission": "bigquery.datasets.get"} for specific permission analysis
 
-26. **context_aware_analysis** - Full feedback loop analysis connecting MSA changes with security findings, assets, and remediation effectiveness
+31. **context_aware_analysis** - Full feedback loop analysis connecting MSA changes with security findings, assets, and remediation effectiveness
     - This creates a comprehensive context-aware view showing how changes ripple through the entire security posture
     - Optional parameters: {"focus": "msa_impact"}, {"timeframe": "30_days"}
 
-27. **cross_impact_analysis** - Analyze how changes in one security domain affect other domains
+32. **cross_impact_analysis** - Analyze how changes in one security domain affect other domains
     - Shows cascading impacts and domain interconnections
     - Optional parameters: {"domain": "security_findings"}, {"depth": "deep"}
 
-28. **custom** - Execute custom SQL queries (use carefully)
+33. **custom** - Execute custom SQL queries (use carefully)
     - Parameters: {"sql": "SELECT * FROM assets LIMIT 10"}
 
 ## How to Use:
@@ -151,12 +170,10 @@ Examples:
 - "What MSA changes affect BigQuery?" → query_security_data("msa_changes", '{"service": "BigQuery"}')
 - "Show me permission changes from MSAs" → query_security_data("msa_permissions")
 - "What permissions are changing for bigquery.datasets.get?" → query_security_data("msa_permissions", '{"permission": "bigquery.datasets.get"}')
-- "What security impacts are there from release notes?" → query_security_data("msa_security_impacts")
-- "Show critical security impacts for compute" → query_security_data("msa_security_impacts", '{"service": "compute", "severity": "critical"}')
-- "What are the billing impacts from recent changes?" → query_security_data("msa_billing_impacts")
-- "Show price increases for storage services" → query_security_data("msa_billing_impacts", '{"service": "storage", "impact_type": "price_increase"}')
-- "What are the latest Google Cloud release notes?" → query_security_data("release_notes")
-- "Show security release notes for BigQuery" → query_security_data("release_notes", '{"service": "bigquery", "note_type": "security"}')
+- "Show me all compute assets" → query_security_data("asset_inventory", '{"category": "COMPUTE"}')
+- "What critical assets are publicly exposed?" → query_security_data("asset_inventory", '{"importance": "CRITICAL", "public_only": true}')
+- "Generate an inventory report" → query_security_data("asset_report", '{"report_type": "INVENTORY"}')
+- "Check for configuration drift" → query_security_data("configuration_drift")
 
 ## Knowledge Base Queries:
 The database now includes a comprehensive knowledge base with coding standards, enterprise policies, and best practices:

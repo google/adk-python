@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent))
 from dashboard import SecurityDashboard
 from evaluation_page import evaluation_manager
+from iam_features import IAMFeaturesUI
+from networking_dashboard import main as networking_main
 
 # Find and import the agent
 current_file = Path(__file__).resolve()
@@ -599,338 +601,9 @@ def stream_agent_response(query: str):
 
 def display_msa_analyzer():
     """Display MSA (Monthly Service Announcement) analyzer interface."""
-    st.header("MSA & Release Notes Impact Analyzer")
-    st.caption("Analyze Google Cloud service announcements and release notes for security and billing impacts")
+    st.header("MSA Impact Analyzer")
+    st.caption("Analyze Google Cloud service announcements for impact on your environment")
     
-    # Create tabs for different analysis modes
-    tab1, tab2, tab3 = st.tabs(["MSA Email Analysis", "Release Notes Analysis", "Impact Summary"])
-    
-    with tab1:
-        # Original MSA email analysis
-        display_msa_email_analysis()
-    
-    with tab2:
-        # New release notes analysis
-        display_release_notes_analysis()
-    
-    with tab3:
-        # Impact summary dashboards
-        display_impact_summary()
-
-
-def display_custom_roles_analyzer():
-    """Display Custom Roles Analyzer interface."""
-    st.header("🔐 Custom Roles Permission Analyzer")
-    st.caption("Compare custom IAM roles with standard GCP roles to find best matches and identify permission differences")
-    
-    # Create tabs for different features
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Role Analysis", 
-        "Permission Comparison", 
-        "Risk Assessment", 
-        "Export Recommendations"
-    ])
-    
-    backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
-    project_id = st.sidebar.text_input("GCP Project ID", value=os.getenv("GOOGLE_CLOUD_PROJECT", ""))
-    
-    with tab1:
-        display_role_analysis_tab(backend_url, project_id)
-    
-    with tab2:
-        display_permission_comparison_tab(backend_url, project_id)
-    
-    with tab3:
-        display_risk_assessment_tab(backend_url, project_id)
-    
-    with tab4:
-        display_export_recommendations_tab(backend_url, project_id)
-
-
-def display_role_analysis_tab(backend_url: str, project_id: str):
-    """Display role analysis tab."""
-    st.subheader("📋 Custom Role Analysis")
-    
-    if not project_id:
-        st.warning("Please enter a GCP Project ID in the sidebar")
-        return
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # Fetch and analyze roles button
-        if st.button("🔍 Fetch & Analyze Custom Roles", type="primary"):
-            with st.spinner("Fetching custom roles..."):
-                try:
-                    # Fetch custom roles
-                    response = httpx.get(
-                        f"{backend_url}/api/v1/custom-roles/roles",
-                        params={"project_id": project_id},
-                        timeout=30.0
-                    )
-                    
-                    if response.status_code == 200:
-                        roles = response.json()
-                        st.success(f"✅ Found {len(roles)} custom roles")
-                        
-                        # Store in session state
-                        st.session_state['custom_roles'] = roles
-                        
-                        # Analyze each role
-                        for role in roles[:5]:  # Limit to first 5 for demo
-                            with st.spinner(f"Analyzing {role['name'].split('/')[-1]}..."):
-                                analysis_response = httpx.post(
-                                    f"{backend_url}/api/v1/custom-roles/analyze",
-                                    json=role,
-                                    timeout=30.0
-                                )
-                                
-                                if analysis_response.status_code == 200:
-                                    analysis = analysis_response.json()
-                                    
-                                    # Display analysis results
-                                    with st.expander(f"📌 {role['name'].split('/')[-1]} - Risk Score: {analysis['risk_score']:.0f}/100"):
-                                        col_a, col_b = st.columns(2)
-                                        
-                                        with col_a:
-                                            st.metric("Total Permissions", analysis['total_permissions'])
-                                            st.metric("Risk Score", f"{analysis['risk_score']:.0f}/100")
-                                        
-                                        with col_b:
-                                            breakdown = analysis.get('risk_breakdown', {})
-                                            st.metric("High Risk", breakdown.get('high', 0))
-                                            st.metric("Medium Risk", breakdown.get('medium', 0))
-                                        
-                                        # Show best matches
-                                        if analysis.get('matches'):
-                                            st.write("**Best Standard Role Matches:**")
-                                            for match in analysis['matches'][:3]:
-                                                match_emoji = {
-                                                    'exact': '✅',
-                                                    'subset': '🔽',
-                                                    'superset': '🔼',
-                                                    'partial': '🔀'
-                                                }.get(match['match_type'], '❓')
-                                                
-                                                st.write(f"{match_emoji} **{match['role']}** ({match['match_percentage']:.1f}% match)")
-                                                
-                                                if match['missing_permissions']:
-                                                    st.caption(f"Missing: {', '.join(match['missing_permissions'][:3])}")
-                    else:
-                        st.error(f"Failed to fetch roles: {response.text}")
-                        
-                except Exception as e:
-                    st.error(f"Error: {e}")
-    
-    with col2:
-        # Display stats if available
-        try:
-            stats_response = httpx.get(
-                f"{backend_url}/api/v1/custom-roles/stats",
-                params={"project_id": project_id},
-                timeout=10.0
-            )
-            
-            if stats_response.status_code == 200:
-                stats = stats_response.json()
-                
-                st.metric("Total Roles", stats.get('total_roles', 0))
-                st.metric("Active Roles", stats.get('active_roles', 0))
-                st.metric("Replaceable", f"{stats.get('optimization_potential', 0):.0f}%")
-                
-                # Risk distribution pie chart
-                if stats.get('risk_distribution'):
-                    import plotly.express as px
-                    risk_data = stats['risk_distribution']
-                    fig = px.pie(
-                        values=list(risk_data.values()),
-                        names=[f"{k.title()} Risk" for k in risk_data.keys()],
-                        title="Risk Distribution",
-                        color_discrete_map={'High Risk': '#ff4444', 'Medium Risk': '#ffaa00', 'Low Risk': '#44ff44'}
-                    )
-                    fig.update_traces(textposition='inside', textinfo='percent+label')
-                    fig.update_layout(height=250)
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-        except:
-            pass
-
-
-def display_permission_comparison_tab(backend_url: str, project_id: str):
-    """Display permission comparison tab."""
-    st.subheader("🔄 Permission Comparison")
-    
-    if 'custom_roles' not in st.session_state:
-        st.info("Please fetch custom roles first in the Role Analysis tab")
-        return
-    
-    roles = st.session_state['custom_roles']
-    role_names = [r['name'].split('/')[-1] for r in roles]
-    
-    # Select two roles to compare
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        role1 = st.selectbox("First Role", role_names, key="compare_role1")
-    
-    with col2:
-        role2 = st.selectbox("Second Role", role_names, key="compare_role2")
-    
-    if st.button("Compare Roles"):
-        if role1 and role2 and role1 != role2:
-            try:
-                response = httpx.post(
-                    f"{backend_url}/api/v1/custom-roles/compare",
-                    params={
-                        "role_names": [role1, role2],
-                        "project_id": project_id
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code == 200:
-                    comparison = response.json()
-                    
-                    # Display comparison results
-                    col_a, col_b, col_c = st.columns(3)
-                    
-                    with col_a:
-                        st.metric("Common Permissions", len(comparison.get('common_permissions', [])))
-                    
-                    with col_b:
-                        st.metric(f"Unique to {role1}", len(comparison.get('unique_permissions', {}).get(f"projects/{project_id}/roles/{role1}", [])))
-                    
-                    with col_c:
-                        st.metric(f"Unique to {role2}", len(comparison.get('unique_permissions', {}).get(f"projects/{project_id}/roles/{role2}", [])))
-                    
-                    # Show details
-                    with st.expander("Common Permissions"):
-                        for perm in comparison.get('common_permissions', [])[:10]:
-                            st.write(f"• {perm}")
-                    
-                    with st.expander(f"Unique to {role1}"):
-                        for perm in comparison.get('unique_permissions', {}).get(f"projects/{project_id}/roles/{role1}", [])[:10]:
-                            st.write(f"• {perm}")
-                    
-                    with st.expander(f"Unique to {role2}"):
-                        for perm in comparison.get('unique_permissions', {}).get(f"projects/{project_id}/roles/{role2}", [])[:10]:
-                            st.write(f"• {perm}")
-                            
-            except Exception as e:
-                st.error(f"Error comparing roles: {e}")
-        else:
-            st.warning("Please select two different roles to compare")
-
-
-def display_risk_assessment_tab(backend_url: str, project_id: str):
-    """Display risk assessment tab."""
-    st.subheader("⚠️ Risk Assessment")
-    
-    # Risk threshold slider
-    risk_threshold = st.slider("Minimum Risk Score", 0, 100, 50, 10)
-    
-    if st.button("Get High-Risk Roles"):
-        try:
-            response = httpx.get(
-                f"{backend_url}/api/v1/custom-roles/recommendations",
-                params={
-                    "project_id": project_id,
-                    "severity": "high"
-                },
-                timeout=30.0
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                recommendations = data.get('recommendations', [])
-                
-                if recommendations:
-                    st.warning(f"⚠️ Found {len(recommendations)} high-risk recommendations")
-                    
-                    for rec in recommendations[:10]:
-                        with st.expander(f"🔴 {rec.get('role_title', rec.get('role_name', 'Unknown')).split('/')[-1]}"):
-                            st.write(f"**Issue:** {rec.get('message', 'N/A')}")
-                            
-                            if rec.get('action'):
-                                st.code(rec['action'], language="bash")
-                            
-                            if rec.get('details'):
-                                st.write(f"**Details:** {rec['details']}")
-                            
-                            if rec.get('missing'):
-                                st.write("**Missing Permissions:**")
-                                for perm in rec['missing'][:5]:
-                                    st.write(f"• {perm}")
-                else:
-                    st.success("✅ No high-risk issues found!")
-                    
-        except Exception as e:
-            st.error(f"Error fetching recommendations: {e}")
-
-
-def display_export_recommendations_tab(backend_url: str, project_id: str):
-    """Display export recommendations tab."""
-    st.subheader("📤 Export Recommendations")
-    
-    if 'custom_roles' not in st.session_state:
-        st.info("Please fetch custom roles first in the Role Analysis tab")
-        return
-    
-    roles = st.session_state['custom_roles']
-    role_names = [r['name'].split('/')[-1] for r in roles]
-    
-    selected_role = st.selectbox("Select Role to Export", role_names)
-    export_format = st.radio("Export Format", ["Terraform", "gcloud CLI", "JSON"], horizontal=True)
-    
-    format_map = {
-        "Terraform": "terraform",
-        "gcloud CLI": "gcloud",
-        "JSON": "json"
-    }
-    
-    if st.button("Generate Export"):
-        if selected_role:
-            try:
-                response = httpx.get(
-                    f"{backend_url}/api/v1/custom-roles/export/{selected_role}",
-                    params={
-                        "project_id": project_id,
-                        "format": format_map[export_format]
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code == 200:
-                    export_data = response.json()
-                    
-                    st.success(f"✅ Generated {export_format} export for {selected_role}")
-                    
-                    # Display export content
-                    if export_format == "JSON":
-                        st.json(export_data['content'])
-                    else:
-                        st.code(export_data['content'], language="hcl" if export_format == "Terraform" else "bash")
-                    
-                    # Download button
-                    file_extension = {
-                        "Terraform": ".tf",
-                        "gcloud CLI": ".sh",
-                        "JSON": ".json"
-                    }[export_format]
-                    
-                    st.download_button(
-                        label=f"Download {export_format} file",
-                        data=export_data['content'] if isinstance(export_data['content'], str) else json.dumps(export_data['content'], indent=2),
-                        file_name=f"{selected_role}_recommendations{file_extension}",
-                        mime="text/plain"
-                    )
-                    
-            except Exception as e:
-                st.error(f"Error generating export: {e}")
-
-
-def display_msa_email_analysis():
-    """Display MSA email analysis interface."""
     # Create two columns for the interface
     col1, col2 = st.columns([1, 1])
     
@@ -1819,368 +1492,6 @@ def display_chat_interface():
         st.rerun()
 
 
-def display_release_notes_analysis():
-    """Display release notes analysis interface."""
-    st.subheader("📰 Google Cloud Release Notes Analysis")
-    
-    # Analysis options
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        service_options = [
-            "All Services",
-            "bigquery", "compute-engine", "cloud-storage", "cloud-sql",
-            "cloud-iam", "vpc", "gke", "cloud-run", "cloud-functions"
-        ]
-        selected_service = st.selectbox(
-            "Select Service:",
-            service_options,
-            help="Choose a specific service or analyze all services"
-        )
-    
-    with col2:
-        days_back = st.number_input(
-            "Days to Look Back:",
-            min_value=7,
-            max_value=90,
-            value=30,
-            step=7,
-            help="How many days of release notes to analyze"
-        )
-    
-    with col3:
-        analysis_type = st.selectbox(
-            "Analysis Focus:",
-            ["Security & Billing", "Security Only", "Billing Only"],
-            help="Choose what type of impact to analyze"
-        )
-    
-    # Analyze button
-    if st.button("🔍 Analyze Release Notes", type="primary", use_container_width=True):
-        backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
-        
-        with st.spinner(f"Fetching and analyzing release notes for the last {days_back} days..."):
-            try:
-                if selected_service == "All Services":
-                    # Analyze all services
-                    response = httpx.post(
-                        f"{backend_url}/api/v1/msa/analyze-all-services?days_back={days_back}",
-                        timeout=120.0
-                    )
-                else:
-                    # Analyze specific service
-                    response = httpx.post(
-                        f"{backend_url}/api/v1/msa/analyze-release-notes?service={selected_service}&days_back={days_back}",
-                        timeout=60.0
-                    )
-                
-                if response.status_code == 200:
-                    results = response.json()
-                    
-                    # Display results based on analysis type
-                    if selected_service == "All Services":
-                        # Display comprehensive results
-                        st.success(f"✅ Analyzed {len(results.get('services_analyzed', []))} services")
-                        
-                        # Summary metrics
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        security_analysis = results.get('security_analysis', {})
-                        billing_analysis = results.get('billing_analysis', {})
-                        
-                        with col1:
-                            st.metric(
-                                "Security Impacts",
-                                security_analysis.get('total_impacts', 0),
-                                delta=f"{security_analysis.get('by_severity', {}).get('critical', 0)} critical"
-                            )
-                        
-                        with col2:
-                            st.metric(
-                                "High Severity",
-                                security_analysis.get('by_severity', {}).get('high', 0)
-                            )
-                        
-                        with col3:
-                            st.metric(
-                                "Price Increases",
-                                billing_analysis.get('price_increases', 0)
-                            )
-                        
-                        with col4:
-                            st.metric(
-                                "Price Decreases",
-                                billing_analysis.get('price_decreases', 0)
-                            )
-                        
-                        # Show recommendations
-                        if results.get('recommendations'):
-                            st.divider()
-                            st.subheader("🎯 Priority Recommendations")
-                            for rec in results['recommendations'][:10]:
-                                st.write(f"• {rec}")
-                        
-                        # Services analyzed
-                        if results.get('services_analyzed'):
-                            st.divider()
-                            st.subheader("📦 Services Analyzed")
-                            services_text = ", ".join(results['services_analyzed'])
-                            st.caption(services_text)
-                    
-                    else:
-                        # Display service-specific results
-                        st.success(f"✅ Analyzed {selected_service} release notes")
-                        
-                        summary = results.get('summary', {})
-                        
-                        # Metrics
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Total Notes", summary.get('total_notes', 0))
-                        with col2:
-                            st.metric("Security Impacts", summary.get('security_impacts', 0))
-                        with col3:
-                            st.metric("Billing Impacts", summary.get('billing_impacts', 0))
-                        
-                        # Security impacts
-                        if analysis_type in ["Security & Billing", "Security Only"] and results.get('security_impacts'):
-                            st.divider()
-                            st.subheader("🔒 Security Impacts")
-                            
-                            for impact in results['security_impacts'][:5]:
-                                with st.expander(f"[{impact['date']}] {impact['title']}", expanded=False):
-                                    st.write(f"**Type:** {impact['impact']['impact_type']}")
-                                    st.write(f"**Severity:** {impact['impact']['severity']}")
-                                    
-                                    if impact['impact'].get('details'):
-                                        st.write("**Details:**")
-                                        for detail in impact['impact']['details']:
-                                            st.write(f"• {detail}")
-                                    
-                                    if impact['impact'].get('remediation'):
-                                        st.write("**Remediation:**")
-                                        for rem in impact['impact']['remediation']:
-                                            st.write(f"• {rem}")
-                        
-                        # Billing impacts
-                        if analysis_type in ["Security & Billing", "Billing Only"] and results.get('billing_impacts'):
-                            st.divider()
-                            st.subheader("💰 Billing Impacts")
-                            
-                            for impact in results['billing_impacts'][:5]:
-                                with st.expander(f"[{impact['date']}] {impact['title']}", expanded=False):
-                                    st.write(f"**Type:** {impact['impact']['impact_type']}")
-                                    
-                                    if impact['impact'].get('estimated_change_percent'):
-                                        st.write(f"**Estimated Change:** {impact['impact']['estimated_change_percent']}%")
-                                    
-                                    if impact['impact'].get('details'):
-                                        st.write("**Details:**")
-                                        for detail in impact['impact']['details']:
-                                            st.write(f"• {detail}")
-                                    
-                                    if impact['impact'].get('optimization_tips'):
-                                        st.write("**Optimization Tips:**")
-                                        for tip in impact['impact']['optimization_tips']:
-                                            st.write(f"• {tip}")
-                        
-                        # Recommendations
-                        if results.get('recommendations'):
-                            st.divider()
-                            st.subheader("📋 Recommendations")
-                            for rec in results['recommendations'][:5]:
-                                st.write(f"• {rec}")
-                
-                else:
-                    st.error(f"Failed to analyze: {response.text}")
-                    
-            except Exception as e:
-                st.error(f"Error analyzing release notes: {e}")
-                logger.error(f"Release notes analysis error: {e}")
-
-
-def display_impact_summary():
-    """Display impact summary dashboards."""
-    st.subheader("📊 Impact Analysis Dashboard")
-    
-    # Time period selection
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        period_days = st.selectbox(
-            "Analysis Period:",
-            [7, 14, 30, 60, 90],
-            index=2,
-            format_func=lambda x: f"Last {x} days"
-        )
-    
-    with col2:
-        if st.button("🔄 Refresh Summaries", use_container_width=True):
-            st.session_state.refresh_summaries = True
-            st.rerun()
-    
-    backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
-    
-    # Security Impact Summary
-    st.divider()
-    st.subheader("🔒 Security Impact Summary")
-    
-    try:
-        response = httpx.get(
-            f"{backend_url}/api/v1/msa/security-summary?days={period_days}",
-            timeout=30.0
-        )
-        
-        if response.status_code == 200:
-            security_data = response.json()
-            summary = security_data.get('summary', {})
-            
-            # Metrics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Impacts", summary.get('total_impacts', 0))
-            with col2:
-                st.metric("Critical", summary.get('critical_count', 0))
-            with col3:
-                st.metric("High", summary.get('high_count', 0))
-            with col4:
-                st.metric("Services", summary.get('services_affected', 0))
-            
-            # Security impacts by severity and type
-            if security_data.get('security_impacts'):
-                import pandas as pd
-                import plotly.express as px
-                
-                # Create DataFrame for visualization
-                impacts_df = pd.DataFrame(security_data['security_impacts'])
-                
-                if not impacts_df.empty:
-                    # Severity distribution
-                    severity_counts = impacts_df['severity'].value_counts()
-                    fig = px.pie(
-                        values=severity_counts.values,
-                        names=severity_counts.index,
-                        title="Security Impacts by Severity",
-                        color_discrete_map={
-                            'critical': '#FF0000',
-                            'high': '#FF8C00',
-                            'medium': '#FFD700',
-                            'low': '#90EE90'
-                        }
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Top affected services
-                    service_impacts = impacts_df.groupby('service')['count'].sum().sort_values(ascending=False).head(10)
-                    if not service_impacts.empty:
-                        fig2 = px.bar(
-                            x=service_impacts.values,
-                            y=service_impacts.index,
-                            orientation='h',
-                            title="Top 10 Services with Security Impacts",
-                            labels={'x': 'Number of Impacts', 'y': 'Service'}
-                        )
-                        st.plotly_chart(fig2, use_container_width=True)
-            
-            # Compliance impacts
-            if security_data.get('compliance_impacts'):
-                st.subheader("📋 Compliance Framework Impacts")
-                compliance_df = pd.DataFrame(
-                    list(security_data['compliance_impacts'].items()),
-                    columns=['Framework', 'Impacts']
-                )
-                st.dataframe(compliance_df, use_container_width=True, hide_index=True)
-        
-        else:
-            st.error("Failed to fetch security summary")
-            
-    except Exception as e:
-        st.error(f"Error fetching security summary: {e}")
-    
-    # Billing Impact Summary
-    st.divider()
-    st.subheader("💰 Billing Impact Summary")
-    
-    try:
-        response = httpx.get(
-            f"{backend_url}/api/v1/msa/billing-summary?days={period_days}",
-            timeout=30.0
-        )
-        
-        if response.status_code == 200:
-            billing_data = response.json()
-            summary = billing_data.get('summary', {})
-            
-            # Metrics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Impacts", summary.get('total_impacts', 0))
-            with col2:
-                st.metric("Price Increases", summary.get('services_with_increases', 0))
-            with col3:
-                st.metric("Price Decreases", summary.get('services_with_decreases', 0))
-            with col4:
-                net_impact = summary.get('estimated_net_impact_percent', 0)
-                st.metric(
-                    "Net Impact",
-                    f"{net_impact:+.1f}%",
-                    delta="Cost increase" if net_impact > 0 else "Cost savings"
-                )
-            
-            # Billing impacts visualization
-            if billing_data.get('billing_impacts'):
-                import pandas as pd
-                
-                impacts_df = pd.DataFrame(billing_data['billing_impacts'])
-                
-                if not impacts_df.empty:
-                    # Impact type distribution
-                    impact_type_counts = impacts_df['impact_type'].value_counts()
-                    fig = px.pie(
-                        values=impact_type_counts.values,
-                        names=impact_type_counts.index,
-                        title="Billing Impacts by Type"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Services with price changes
-                    price_changes = impacts_df[impacts_df['avg_impact_percent'] != 0].sort_values(
-                        'avg_impact_percent', ascending=False
-                    ).head(10)
-                    
-                    if not price_changes.empty:
-                        fig2 = px.bar(
-                            x=price_changes['avg_impact_percent'],
-                            y=price_changes['service'],
-                            orientation='h',
-                            title="Top Services with Price Changes (%)",
-                            labels={'x': 'Impact %', 'y': 'Service'},
-                            color=price_changes['avg_impact_percent'],
-                            color_continuous_scale=['green', 'yellow', 'red']
-                        )
-                        st.plotly_chart(fig2, use_container_width=True)
-                    
-                    # Cost optimization tips
-                    if impacts_df['optimization_tips'].notna().any():
-                        st.subheader("💡 Cost Optimization Tips")
-                        unique_tips = set()
-                        for tips_str in impacts_df['optimization_tips'].dropna():
-                            if tips_str:
-                                for tip in tips_str.split('|'):
-                                    tip = tip.strip()
-                                    if tip:
-                                        unique_tips.add(tip)
-                        
-                        for tip in list(unique_tips)[:5]:
-                            st.write(f"• {tip}")
-        
-        else:
-            st.error("Failed to fetch billing summary")
-            
-    except Exception as e:
-        st.error(f"Error fetching billing summary: {e}")
-
-
 def display_service_evaluation():
     """Display the service evaluation interface for new GCP services."""
     st.header("New GCP Service Evaluation")
@@ -2854,85 +2165,115 @@ def generate_evalset_from_feedback(min_feedback_count: int = 15):
     except Exception as e:
         st.error(f"Error generating evalset: {e}")
 
+
+def display_networking_dashboard():
+    """Display the Networking Troubleshooting Ninja dashboard."""
+    try:
+        # Call the networking dashboard main function
+        networking_main()
+    except Exception as e:
+        logger.error(f"Error displaying networking dashboard: {e}")
+        st.error(f"Failed to load networking dashboard: {e}")
+        
+        # Fallback UI
+        st.markdown("## 🕸️ Networking Troubleshooting Ninja")
+        st.info("🚧 The networking dashboard is currently being developed. Please check back soon!")
+        
+        # Show planned features
+        st.markdown("### 🚀 Planned Features")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            **Connectivity Testing:**
+            - Ping tests
+            - Port connectivity checks
+            - Traceroute analysis
+            - Batch connectivity testing
+            """)
+        
+        with col2:
+            st.markdown("""
+            **Traffic Analysis:**
+            - VPC Flow Log processing
+            - Anomaly detection
+            - Traffic pattern analysis
+            - Security scoring
+            """)
+        
+        st.markdown("### 📊 Error Analysis & Resolution")
+        st.markdown("""
+        - Internal error code knowledge base
+        - Root cause analysis
+        - Resolution recommendations
+        - Learning from resolution feedback
+        """)
+
+
 def main():
-    """Main application with sidebar navigation and main dashboard/chat."""
+    """Main application with unified dashboard and streaming chat."""
     # Initialize session
     init_session()
     
-    # Configure sidebar navigation
-    with st.sidebar:
-        st.title("🔐 Security Agent")
-        
-        # Check if navigation was triggered by quick action button
-        if "page_navigation" in st.session_state:
-            default_page = st.session_state.page_navigation
-            # Clear the navigation state
-            del st.session_state.page_navigation
-        else:
-            default_page = "🏠 Dashboard & Chat"
-        
-        # Page selection
-        pages = [
-            "🏠 Dashboard & Chat",
-            "📧 MSA Analyzer", 
-            "🔐 Custom Roles Analyzer",
-            "⚖️ Service Evaluation", 
-            "🧪 Agent Evaluation", 
-            "📊 Feedback Analytics", 
-            "📈 Statistical Analysis"
-        ]
-        
-        try:
-            default_index = pages.index(default_page)
-        except ValueError:
-            default_index = 0
-        
-        selected_page = st.selectbox(
-            "Select Page",
-            pages,
-            index=default_index
-        )
-        
-        st.divider()
-        
-        # Quick stats in sidebar
-        try:
-            database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
-            if os.path.exists(database_path):
-                conn = sqlite3.connect(database_path)
-                cursor = conn.cursor()
-                
-                # Get quick stats
-                cursor.execute("SELECT COUNT(*) FROM assets")
-                asset_count = cursor.fetchone()[0]
-                
-                cursor.execute("SELECT COUNT(*) FROM security_findings WHERE severity IN ('CRITICAL', 'HIGH')")
-                critical_findings = cursor.fetchone()[0]
-                
-                st.metric("Total Assets", asset_count)
-                st.metric("Critical/High Findings", critical_findings)
-                
-                conn.close()
-        except:
-            pass
-        
-        st.divider()
-        st.caption("💡 Use the chat interface to ask security questions in natural language")
+    # Display executive dashboard at the top
+    display_executive_dashboard()
     
-    # Display selected page content
-    if selected_page == "🏠 Dashboard & Chat":
-        display_main_page()
-    elif selected_page == "📧 MSA Analyzer":
+    st.divider()
+    
+    # Create tabs for different features
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Security Chat", "IAM Analysis", "Networking", "MSA Analyzer", "Service Evaluation", "Agent Evaluation", "Feedback Analytics", "Statistical Analysis"])
+    
+    with tab1:
+        # Display chat interface
+        display_chat_interface()
+    
+    with tab2:
+        # Display IAM Advanced Features
+        iam_ui = IAMFeaturesUI()
+        iam_ui.display_iam_overview()
+        
+        # Create sub-tabs for IAM features
+        iam_tab1, iam_tab2, iam_tab3, iam_tab4 = st.tabs([
+            "Role Recommendations", 
+            "Least-Privilege Analysis", 
+            "Cross-Project Permissions",
+            "Quick Actions"
+        ])
+        
+        with iam_tab1:
+            iam_ui.display_role_recommendations()
+        
+        with iam_tab2:
+            iam_ui.display_least_privilege_violations()
+        
+        with iam_tab3:
+            iam_ui.display_cross_project_analysis()
+        
+        with iam_tab4:
+            iam_ui.display_quick_iam_actions()
+    
+    with tab3:
+        # Display networking dashboard
+        display_networking_dashboard()
+    
+    with tab4:
+        # Display MSA analyzer
         display_msa_analyzer()
-    elif selected_page == "🔐 Custom Roles Analyzer":
-        display_custom_roles_analyzer()
-    elif selected_page == "⚖️ Service Evaluation":
+    
+    with tab5:
+        # Display service evaluation
         display_service_evaluation()
-    elif selected_page == "🧪 Agent Evaluation":
+    
+    with tab6:
+        # Display agent evaluation page
         evaluation_manager.display_evaluation_page()
-    elif selected_page == "📊 Feedback Analytics":
+    
+    with tab7:
+        # Display feedback analytics dashboard
         display_feedback_analytics()
-    elif selected_page == "📈 Statistical Analysis":
+    
+    with tab8:
+        # Display statistical analysis dashboard
         display_statistical_analysis()
     
     # Footer
@@ -2940,64 +2281,9 @@ def main():
     st.markdown("""
     <div style='text-align: center'>
     <small>🔐 GCP Security Executive Dashboard | Powered by Vertex AI & ADK | 
-    Real-time streaming with SQLite integration</small>
+    Real-time streaming with SQLite integration | MSA Impact Analysis | Service Evaluation Framework | Agent Quality Assurance</small>
     </div>
     """, unsafe_allow_html=True)
-
-
-def display_main_page():
-    """Display the main page with executive dashboard and chat interface."""
-    # Display executive dashboard at the top
-    display_executive_dashboard()
-    
-    # Quick actions section
-    st.subheader("🚀 Quick Actions")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        if st.button("📧 Analyze MSA", help="Analyze Monthly Service Announcements", use_container_width=True):
-            st.session_state.page_navigation = "📧 MSA Analyzer"
-            st.rerun()
-    
-    with col2:
-        if st.button("🔐 Check Custom Roles", help="Analyze custom IAM roles", use_container_width=True):
-            st.session_state.page_navigation = "🔐 Custom Roles Analyzer"
-            st.rerun()
-    
-    with col3:
-        if st.button("⚖️ Service Evaluation", help="Evaluate service performance", use_container_width=True):
-            st.session_state.page_navigation = "⚖️ Service Evaluation"
-            st.rerun()
-    
-    with col4:
-        if st.button("📊 View Analytics", help="View feedback and statistics", use_container_width=True):
-            st.session_state.page_navigation = "📊 Feedback Analytics"
-            st.rerun()
-    
-    st.divider()
-    
-    # Display chat interface
-    st.subheader("💬 Security Chat Assistant")
-    st.caption("Ask questions about your GCP security posture using natural language")
-    
-    # Quick query examples
-    with st.expander("💡 Example Questions"):
-        st.write("**Security Analysis:**")
-        st.write("• What are my critical security findings?")
-        st.write("• Show me public storage buckets")
-        st.write("• What custom roles do we have?")
-        st.write("")
-        st.write("**MSA & Changes:**")
-        st.write("• What MSA changes affect BigQuery?")
-        st.write("• Show me recent security impacts")
-        st.write("• Are there any billing changes coming?")
-        st.write("")
-        st.write("**Infrastructure:**") 
-        st.write("• List my GKE clusters")
-        st.write("• Show me risky firewall rules")
-        st.write("• What compute instances are running?")
-    
-    display_chat_interface()
 
 
 if __name__ == "__main__":

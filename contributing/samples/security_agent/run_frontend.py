@@ -44,8 +44,13 @@ def get_service_account_email():
         print(f"❌ Failed to read service account key file: {e}")
         sys.exit(1)
 
-def deploy_to_cloud(project_id):
-    """Deploy unified frontend to Cloud Run using Cloud Build."""
+def deploy_to_cloud(project_id, extra_args=None):
+    """Deploy unified frontend to Cloud Run using Cloud Build.
+    
+    Args:
+        project_id: GCP project ID
+        extra_args: Additional gcloud arguments to pass through
+    """
     print(f"☁️  Deploying Unified Frontend to Cloud Run (Project: {project_id})...")
     print("=" * 50)
     print("✨ Deploying unified streaming client with executive dashboard")
@@ -70,6 +75,12 @@ def deploy_to_cloud(project_id):
         f"_SERVICE_ACCOUNT_EMAIL={service_account_email}",
         "."
     ]
+    
+    # Add extra arguments if provided
+    if extra_args:
+        print(f"🔧 Additional Cloud Run arguments: {' '.join(extra_args)}")
+        # We'll need to pass these to the Cloud Build config
+        cmd.extend(["--substitutions", f"_EXTRA_ARGS={' '.join(extra_args)}"])
     
     print(f"🔧 Command: {' '.join(cmd)}")
     print("📦 Building and deploying frontend service...")
@@ -160,10 +171,30 @@ def run_local():
 
 def main():
     """Main entry point with argument parsing."""
-    parser = argparse.ArgumentParser(description='Run Security Agent Frontend')
+    parser = argparse.ArgumentParser(description='Run Security Agent Frontend',
+                                   # Allow unknown args to be passed to gcloud
+                                   allow_abbrev=False,
+                                   add_help=False)
     parser.add_argument('--cloud', action='store_true', 
                        help='Deploy to Cloud Run instead of running locally')
-    args = parser.parse_args()
+    parser.add_argument('-h', '--help', action='store_true',
+                       help='Show this help message and exit')
+    
+    # Parse known args and capture the rest for gcloud
+    args, unknown_args = parser.parse_known_args()
+    
+    # Handle help manually  
+    if args.help:
+        print("Usage: python run_frontend.py [OPTIONS] [-- GCLOUD_ARGS]")
+        print("\nOptions:")
+        print("  --cloud              Deploy to Cloud Run instead of running locally")
+        print("  -h, --help           Show this help message and exit")
+        print("\nCloud Run Deployment:")
+        print("  python run_frontend.py --cloud")
+        print("  python run_frontend.py --cloud -- --min-instances=1 --max-instances=5")
+        print("\nLocal Development:")
+        print("  python run_frontend.py")
+        sys.exit(0)
     
     # Load environment variables from .env
     from pathlib import Path
@@ -180,8 +211,14 @@ def main():
             print("❌ GOOGLE_CLOUD_PROJECT not set in .env file")
             print("Please set GOOGLE_CLOUD_PROJECT in your .env file")
             sys.exit(1)
-        deploy_to_cloud(project_id)
+        
+        # Remove '--' separator if present in unknown_args
+        extra_args = [arg for arg in unknown_args if arg != '--']
+        
+        deploy_to_cloud(project_id, extra_args)
     else:
+        if unknown_args:
+            print(f"⚠️  Ignoring extra arguments for local run: {unknown_args}")
         run_local()
 
 if __name__ == "__main__":
