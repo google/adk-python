@@ -1,15 +1,15 @@
 {
   "coverage_summary": {
     "total_functional_areas": 15,
-    "covered_areas": 0,
-    "coverage_percentage": 0.0,
-    "report_generated_at": "2025-08-21T14:34:24.611834"
+    "covered_areas": 3,
+    "coverage_percentage": 20.0,
+    "report_generated_at": "2025-08-29T09:40:32.188484"
   },
   "coverage_by_priority": {
     "CRITICAL": {
       "total": 6,
-      "covered": 0,
-      "percentage": 0.0
+      "covered": 3,
+      "percentage": 50.0
     },
     "HIGH": {
       "total": 7,
@@ -30,29 +30,23 @@
   "critical_gaps": [
     "Custom Roles Analysis",
     "Enterprise Knowledge Base",
-    "IAM Security Analysis",
-    "Vulnerability Assessment",
-    "GCP Service Integration",
     "Application Security"
   ],
   "recommendations": [
-    "Implement missing test cases for Custom Roles Analysis: recommendation_generation, bulk_analysis, basic_role_analysis",
-    "Implement missing test cases for Enterprise Knowledge Base: coding_standards_management, statistics_reporting, knowledge_search",
-    "Implement missing test cases for API Endpoint Integration: rate_limiting_compliance, authentication_authorization, error_response_handling",
-    "Implement missing test cases for IAM Security Analysis: iam_policy_analysis, principle_least_privilege, role_binding_assessment",
-    "Implement missing test cases for Storage Security Analysis: access_control_validation, public_access_detection, lifecycle_policy_review",
-    "Implement missing test cases for Network Security Analysis: network_exposure_detection, private_connectivity_validation, load_balancer_security",
-    "Implement missing test cases for Compliance Assessment: hipaa_validation, pci_dss_compliance, gdpr_assessment",
-    "Implement missing test cases for Vulnerability Assessment: misconfiguration_detection, risk_prioritization, remediation_guidance",
-    "Implement missing test cases for Error Handling & Edge Cases: data_boundary_conditions, authentication_failures, resource_exhaustion",
-    "Implement missing test cases for Performance & Scalability: resource_utilization, concurrent_user_handling, database_performance",
-    "Implement missing test cases for GCP Service Integration: cloud_monitoring_integration, logging_api_integration, recommender_api_integration",
-    "Implement missing test cases for User Interface & Experience: export_functionality, responsive_design, interactive_analysis_workflow",
-    "Implement missing test cases for Application Security: input_sanitization, authentication_security, xss_protection",
-    "Implement missing test cases for Data Management: database_operations, backup_recovery, data_consistency",
-    "Implement missing test cases for Deployment & Operations: log_management, alerting_setup, metric_collection",
+    "Implement missing test cases for Custom Roles Analysis: standard_role_mapping, risk_scoring_validation, basic_role_analysis",
+    "Implement missing test cases for Enterprise Knowledge Base: best_practices_retrieval, coding_standards_management, knowledge_search",
+    "Implement missing test cases for API Endpoint Integration: error_response_handling, rate_limiting_compliance, authentication_authorization",
+    "Implement missing test cases for Storage Security Analysis: encryption_compliance, access_control_validation, lifecycle_policy_review",
+    "Implement missing test cases for Network Security Analysis: load_balancer_security, private_connectivity_validation, firewall_rule_analysis",
+    "Implement missing test cases for Compliance Assessment: pci_dss_compliance, gdpr_assessment, hipaa_validation",
+    "Implement missing test cases for Error Handling & Edge Cases: resource_exhaustion, data_boundary_conditions, network_connectivity_issues",
+    "Implement missing test cases for Performance & Scalability: resource_utilization, database_performance, concurrent_user_handling",
+    "Implement missing test cases for User Interface & Experience: streamlit_dashboard_functionality, real_time_updates, interactive_analysis_workflow",
+    "Implement missing test cases for Application Security: data_encryption, input_sanitization, authentication_security",
+    "Implement missing test cases for Data Management: retention_policies, cache_management, data_migration",
+    "Implement missing test cases for Deployment & Operations: metric_collection, alerting_setup, environment_configuration",
     "Coverage is below 70% - implement missing test cases as priority",
-    "Address critical coverage gaps immediately: Custom Roles Analysis, Enterprise Knowledge Base, IAM Security Analysis",
+    "Address critical coverage gaps immediately: Custom Roles Analysis, Enterprise Knowledge Base, Application Security",
     "Ensure all new features have corresponding test cases",
     "Add performance regression tests for critical operations",
     "Implement end-to-end integration tests for major workflows",
@@ -62,18 +56,18 @@
   "detailed_area_analysis": {
     "Custom Roles Analysis": {
       "covered": false,
-      "coverage_ratio": 0.375,
+      "coverage_ratio": 0.625,
       "covered_test_cases": [
         "statistics_dashboard",
-        "permission_comparison",
-        "terraform_export"
-      ],
-      "missing_test_cases": [
+        "terraform_export",
         "recommendation_generation",
         "bulk_analysis",
-        "basic_role_analysis",
+        "permission_comparison"
+      ],
+      "missing_test_cases": [
         "standard_role_mapping",
-        "risk_scoring_validation"
+        "risk_scoring_validation",
+        "basic_role_analysis"
       ],
       "test_files": [
         "custom_roles_analyzer.evalset.json"
@@ -87,12 +81,12 @@
         "compliance_frameworks"
       ],
       "missing_test_cases": [
+        "best_practices_retrieval",
         "coding_standards_management",
-        "statistics_reporting",
         "knowledge_search",
-        "enterprise_policies_crud",
         "import_export_functionality",
-        "best_practices_retrieval"
+        "enterprise_policies_crud",
+        "statistics_reporting"
       ],
       "test_files": [
         "knowledge_base.evalset.json"
@@ -104,13 +98,13 @@
       "coverage_ratio": 0.5,
       "covered_test_cases": [
         "custom_roles_api_workflow",
-        "knowledge_base_api_workflow",
-        "core_security_apis_validation"
+        "core_security_apis_validation",
+        "knowledge_base_api_workflow"
       ],
       "missing_test_cases": [
+        "error_response_handling",
         "rate_limiting_compliance",
-        "authentication_authorization",
-        "error_response_handling"
+        "authentication_authorization"
       ],
       "test_files": [
         "api_integration.evalset.json"
@@ -118,18 +112,18 @@
       "priority": "HIGH"
     },
     "IAM Security Analysis": {
-      "covered": false,
-      "coverage_ratio": 0.2,
+      "covered": true,
+      "coverage_ratio": 1.0,
       "covered_test_cases": [
-        "service_account_analysis"
-      ],
-      "missing_test_cases": [
         "iam_policy_analysis",
+        "overprivileged_user_detection",
         "principle_least_privilege",
-        "role_binding_assessment",
-        "overprivileged_user_detection"
+        "service_account_analysis",
+        "role_binding_assessment"
       ],
+      "missing_test_cases": [],
       "test_files": [
+        "iam_security.evalset.json",
         "test_iam_security_analyzer.py"
       ],
       "priority": "CRITICAL"
@@ -141,10 +135,10 @@
         "bucket_security_analysis"
       ],
       "missing_test_cases": [
+        "encryption_compliance",
         "access_control_validation",
-        "public_access_detection",
         "lifecycle_policy_review",
-        "encryption_compliance"
+        "public_access_detection"
       ],
       "test_files": [
         "test_storage_security_analyzer.py"
@@ -156,11 +150,11 @@
       "coverage_ratio": 0.0,
       "covered_test_cases": [],
       "missing_test_cases": [
-        "network_exposure_detection",
-        "private_connectivity_validation",
         "load_balancer_security",
+        "private_connectivity_validation",
+        "firewall_rule_analysis",
         "vpc_security_assessment",
-        "firewall_rule_analysis"
+        "network_exposure_detection"
       ],
       "test_files": [],
       "priority": "HIGH"
@@ -172,9 +166,9 @@
         "soc2_compliance_check"
       ],
       "missing_test_cases": [
-        "hipaa_validation",
         "pci_dss_compliance",
         "gdpr_assessment",
+        "hipaa_validation",
         "compliance_reporting"
       ],
       "test_files": [
@@ -183,17 +177,19 @@
       "priority": "HIGH"
     },
     "Vulnerability Assessment": {
-      "covered": false,
-      "coverage_ratio": 0.0,
-      "covered_test_cases": [],
-      "missing_test_cases": [
+      "covered": true,
+      "coverage_ratio": 1.0,
+      "covered_test_cases": [
         "misconfiguration_detection",
+        "security_finding_analysis",
         "risk_prioritization",
         "remediation_guidance",
-        "security_finding_analysis",
         "vulnerability_reporting"
       ],
-      "test_files": [],
+      "missing_test_cases": [],
+      "test_files": [
+        "vulnerability_assessment.evalset.json"
+      ],
       "priority": "CRITICAL"
     },
     "Error Handling & Edge Cases": {
@@ -205,10 +201,10 @@
         "api_failure_scenarios"
       ],
       "missing_test_cases": [
-        "data_boundary_conditions",
-        "authentication_failures",
         "resource_exhaustion",
-        "network_connectivity_issues"
+        "data_boundary_conditions",
+        "network_connectivity_issues",
+        "authentication_failures"
       ],
       "test_files": [
         "edge_cases_errors.evalset.json",
@@ -226,8 +222,8 @@
       ],
       "missing_test_cases": [
         "resource_utilization",
-        "concurrent_user_handling",
         "database_performance",
+        "concurrent_user_handling",
         "large_dataset_processing"
       ],
       "test_files": [
@@ -237,19 +233,19 @@
       "priority": "HIGH"
     },
     "GCP Service Integration": {
-      "covered": false,
-      "coverage_ratio": 0.16666666666666666,
+      "covered": true,
+      "coverage_ratio": 1.0,
       "covered_test_cases": [
-        "asset_inventory_integration"
-      ],
-      "missing_test_cases": [
-        "cloud_monitoring_integration",
-        "logging_api_integration",
-        "recommender_api_integration",
         "security_command_center",
-        "iam_api_integration"
+        "logging_api_integration",
+        "cloud_monitoring_integration",
+        "asset_inventory_integration",
+        "iam_api_integration",
+        "recommender_api_integration"
       ],
+      "missing_test_cases": [],
       "test_files": [
+        "gcp_service_integration.evalset.json",
         "test_security_chat_integration.py",
         "test_real_time_integration.py"
       ],
@@ -257,17 +253,20 @@
     },
     "User Interface & Experience": {
       "covered": false,
-      "coverage_ratio": 0.0,
-      "covered_test_cases": [],
+      "coverage_ratio": 0.16666666666666666,
+      "covered_test_cases": [
+        "responsive_design"
+      ],
       "missing_test_cases": [
-        "export_functionality",
-        "responsive_design",
+        "streamlit_dashboard_functionality",
+        "real_time_updates",
         "interactive_analysis_workflow",
         "data_visualization",
-        "real_time_updates",
-        "streamlit_dashboard_functionality"
+        "export_functionality"
       ],
-      "test_files": [],
+      "test_files": [
+        "test_msa_analyzer_ui.py"
+      ],
       "priority": "MEDIUM"
     },
     "Application Security": {
@@ -277,11 +276,11 @@
         "sql_injection_prevention"
       ],
       "missing_test_cases": [
+        "data_encryption",
         "input_sanitization",
         "authentication_security",
-        "xss_protection",
-        "data_encryption",
-        "audit_logging"
+        "audit_logging",
+        "xss_protection"
       ],
       "test_files": [
         "test_security.py"
@@ -290,17 +289,20 @@
     },
     "Data Management": {
       "covered": false,
-      "coverage_ratio": 0.0,
-      "covered_test_cases": [],
-      "missing_test_cases": [
-        "database_operations",
-        "backup_recovery",
-        "data_consistency",
-        "cache_management",
-        "retention_policies",
-        "data_migration"
+      "coverage_ratio": 0.16666666666666666,
+      "covered_test_cases": [
+        "backup_recovery"
       ],
-      "test_files": [],
+      "missing_test_cases": [
+        "retention_policies",
+        "cache_management",
+        "data_migration",
+        "data_consistency",
+        "database_operations"
+      ],
+      "test_files": [
+        "data_management.evalset.json"
+      ],
       "priority": "HIGH"
     },
     "Deployment & Operations": {
@@ -308,22 +310,22 @@
       "coverage_ratio": 0.0,
       "covered_test_cases": [],
       "missing_test_cases": [
-        "log_management",
-        "alerting_setup",
         "metric_collection",
-        "health_monitoring",
+        "alerting_setup",
         "environment_configuration",
-        "cloud_run_deployment"
+        "cloud_run_deployment",
+        "log_management",
+        "health_monitoring"
       ],
       "test_files": [],
       "priority": "MEDIUM"
     }
   },
   "test_file_inventory": {
-    "total_files": 49,
-    "evalset_files": 10,
-    "python_test_files": 39,
-    "total_test_cases": 393,
+    "total_files": 64,
+    "evalset_files": 14,
+    "python_test_files": 44,
+    "total_test_cases": 457,
     "files": {
       "compliance_check.evalset.json": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/compliance_check.evalset.json",
@@ -334,6 +336,47 @@
           "soc2_compliance",
           "gdpr_compliance"
         ]
+      },
+      "iam_recommendations.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/iam_recommendations.evalset.json",
+        "eval_set_id": "",
+        "name": "IAM Role Recommendations",
+        "description": "Evaluation dataset for testing IAM role recommendation features",
+        "test_cases": []
+      },
+      "cross_project.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/cross_project.evalset.json",
+        "eval_set_id": "",
+        "name": "Cross-Project Permission Analysis",
+        "description": "Evaluation dataset for testing cross-project permission detection and analysis",
+        "test_cases": []
+      },
+      "gcp_service_integration.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/gcp_service_integration.evalset.json",
+        "eval_set_id": "gcp_service_integration_evaluation",
+        "name": "GCP Service Integration",
+        "description": "Evaluation of GCP service integrations including Cloud Monitoring, Security Command Center, IAM API, Logging API, and Recommender API",
+        "test_cases": [
+          "cloud_monitoring_integration",
+          "security_command_center",
+          "iam_api_integration",
+          "logging_api_integration",
+          "recommender_api_integration"
+        ]
+      },
+      "msa_analysis.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/msa_analysis.evalset.json",
+        "eval_set_id": "",
+        "name": "MSA and Release Notes Analysis",
+        "description": "Evaluation dataset for MSA analyzer and release notes tools",
+        "test_cases": []
+      },
+      "networking_connectivity_testing.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/networking_connectivity_testing.evalset.json",
+        "eval_set_id": "",
+        "name": "Networking Connectivity Testing Evaluation",
+        "description": "Comprehensive evaluation of connectivity testing functionality including ping, port checks, traceroute, and batch testing",
+        "test_cases": []
       },
       "network_security.evalset.json": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/network_security.evalset.json",
@@ -377,7 +420,10 @@
           "custom_roles_standard_mapping",
           "custom_roles_terraform_export",
           "custom_roles_permission_comparison",
-          "custom_roles_statistics_dashboard"
+          "custom_roles_statistics_dashboard",
+          "custom_roles_bulk_analysis",
+          "custom_roles_recommendation_generation",
+          "custom_roles_risk_validation"
         ]
       },
       "knowledge_base.evalset.json": {
@@ -391,8 +437,17 @@
           "compliance_frameworks_query",
           "best_practices_query",
           "knowledge_base_search",
-          "knowledge_base_statistics"
+          "knowledge_base_statistics",
+          "knowledge_base_import_export",
+          "knowledge_base_crud_operations"
         ]
+      },
+      "networking_error_analysis.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/networking_error_analysis.evalset.json",
+        "eval_set_id": "",
+        "name": "Networking Error Analysis Evaluation",
+        "description": "Evaluation of error analysis, root cause analysis, and resolution recommendation functionality",
+        "test_cases": []
       },
       "vulnerability_assessment.evalset.json": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/vulnerability_assessment.evalset.json",
@@ -401,7 +456,12 @@
         "description": "Tests agent's ability to identify and assess security vulnerabilities",
         "test_cases": [
           "critical_security_findings",
-          "security_recommendations"
+          "security_recommendations",
+          "security_finding_analysis",
+          "remediation_guidance",
+          "misconfiguration_detection",
+          "risk_prioritization",
+          "vulnerability_reporting"
         ]
       },
       "edge_cases_errors.evalset.json": {
@@ -415,6 +475,17 @@
           "data_boundary_edge_cases"
         ]
       },
+      "application_security.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/application_security.evalset.json",
+        "eval_set_id": "application_security_evaluation",
+        "name": "Application Security",
+        "description": "Evaluation of application security including container security, secrets management, API security, code scanning, and dependency analysis",
+        "test_cases": [
+          "container_security_analysis",
+          "secrets_management_analysis",
+          "api_security_assessment"
+        ]
+      },
       "performance_scalability.evalset.json": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/performance_scalability.evalset.json",
         "eval_set_id": "performance_scalability_evaluation",
@@ -426,6 +497,16 @@
           "resource_optimization_analysis"
         ]
       },
+      "data_management.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/data_management.evalset.json",
+        "eval_set_id": "data_management_evaluation",
+        "name": "Data Management & Security",
+        "description": "Evaluation of data classification, backup/recovery, lifecycle management, and data governance",
+        "test_cases": [
+          "data_classification_assessment",
+          "backup_recovery_assessment"
+        ]
+      },
       "iam_security.evalset.json": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/iam_security.evalset.json",
         "eval_set_id": "iam_security_evaluation",
@@ -433,8 +514,29 @@
         "description": "Tests agent's ability to identify and remediate IAM security issues",
         "test_cases": [
           "iam_overprivileged_users",
-          "iam_service_account_keys"
+          "iam_service_account_keys",
+          "overprivileged_user_detection",
+          "role_binding_assessment",
+          "iam_policy_analysis",
+          "principle_least_privilege"
         ]
+      },
+      "deployment_operations.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/deployment_operations.evalset.json",
+        "eval_set_id": "deployment_operations_evaluation",
+        "name": "Deployment & Operations",
+        "description": "Evaluation of CI/CD security, infrastructure as code, monitoring, and operational security",
+        "test_cases": [
+          "cicd_security_assessment",
+          "infrastructure_as_code_security"
+        ]
+      },
+      "least_privilege.evalset.json": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/evaluation/datasets/least_privilege.evalset.json",
+        "eval_set_id": "",
+        "name": "Least-Privilege Analysis",
+        "description": "Evaluation dataset for testing least-privilege violation detection and compliance",
+        "test_cases": []
       },
       "test_security.py": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_security.py",
@@ -530,6 +632,11 @@
           "test_cache_wrapper_functions",
           "test_conversation_persistence"
         ]
+      },
+      "test_ui_command.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_ui_command.py",
+        "type": "python_test",
+        "test_cases": []
       },
       "test_session_flow.py": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_session_flow.py",
@@ -685,6 +792,15 @@
           "test_priority_enum"
         ]
       },
+      "test_ui_simple.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_ui_simple.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_main_page",
+          "test_sidebar_navigation",
+          "test_quick_actions"
+        ]
+      },
       "test_seamless_chat.py": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_seamless_chat.py",
         "type": "python_test",
@@ -815,6 +931,23 @@
           "test_chat_service_with_invalid_query"
         ]
       },
+      "test_msa_analyzer_ui.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_msa_analyzer_ui.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_main_page_structure",
+          "test_quick_action_navigation",
+          "test_msa_analyzer_tabs_exist",
+          "test_msa_email_analysis_text_input",
+          "test_msa_email_analysis_sample_load",
+          "test_release_notes_analysis_single_service",
+          "test_release_notes_analysis_all_services",
+          "test_impact_summary_dashboard",
+          "test_msa_structured_data_extraction",
+          "test_error_handling",
+          "test_responsive_design"
+        ]
+      },
       "test_sample_queries.py": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_sample_queries.py",
         "type": "python_test",
@@ -914,6 +1047,22 @@
           "test_concurrent_session_handling"
         ]
       },
+      "test_release_notes_integration.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_release_notes_integration.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_db_path",
+          "test_database_setup",
+          "test_fetch_single_service_notes",
+          "test_security_impact_analysis",
+          "test_billing_impact_analysis",
+          "test_compliance_impact_detection",
+          "test_database_persistence",
+          "test_fetch_and_analyze_all_services",
+          "test_error_handling",
+          "test_note_classification"
+        ]
+      },
       "test_real_api_transformation.py": {
         "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_real_api_transformation.py",
         "type": "python_test",
@@ -927,6 +1076,26 @@
         "type": "python_test",
         "test_cases": [
           "test_fetch_and_cache_assets_and_recommendations"
+        ]
+      },
+      "test_service_evaluation.py": {
+        "path": "/Users/stuartgano/Desktop/Micron/ADK/contributing/samples/security_agent/tests/test_service_evaluation.py",
+        "type": "python_test",
+        "test_cases": [
+          "test_service_analyzer_initializes_with_database",
+          "test_analyze_new_service_returns_profile",
+          "test_service_evaluation_persists_to_database",
+          "test_list_evaluations_returns_all_profiles",
+          "test_handles_missing_credentials_gracefully",
+          "test_evaluate_endpoint_returns_service_profile",
+          "test_list_evaluations_endpoint",
+          "test_evaluate_endpoint_validates_input",
+          "test_evaluate_endpoint_handles_errors",
+          "test_service_profile_contract",
+          "test_api_request_contract",
+          "test_caches_evaluation_results",
+          "test_provides_specialized_profiles_for_known_services",
+          "test_risk_scores_reflect_service_characteristics"
         ]
       },
       "test_smart_routing.py": {
@@ -1037,24 +1206,33 @@
     "Custom Roles Analysis": [],
     "Enterprise Knowledge Base": [],
     "API Endpoint Integration": [],
-    "IAM Security Analysis": [],
+    "IAM Security Analysis": [
+      "iam_security.evalset.json",
+      "test_iam_security_analyzer.py"
+    ],
     "Storage Security Analysis": [],
     "Network Security Analysis": [],
     "Compliance Assessment": [],
-    "Vulnerability Assessment": [],
+    "Vulnerability Assessment": [
+      "vulnerability_assessment.evalset.json"
+    ],
     "Error Handling & Edge Cases": [],
     "Performance & Scalability": [],
-    "GCP Service Integration": [],
+    "GCP Service Integration": [
+      "gcp_service_integration.evalset.json",
+      "test_security_chat_integration.py",
+      "test_real_time_integration.py"
+    ],
     "User Interface & Experience": [],
     "Application Security": [],
     "Data Management": [],
     "Deployment & Operations": []
   },
   "quality_metrics": {
-    "coverage_score": 0.0,
-    "critical_coverage": 0.0,
+    "coverage_score": 20.0,
+    "critical_coverage": 50.0,
     "test_completeness": "POOR",
-    "areas_needing_attention": 6,
-    "recommendation_count": 22
+    "areas_needing_attention": 3,
+    "recommendation_count": 19
   }
 }
