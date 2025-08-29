@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 import pytest
 
@@ -345,3 +346,51 @@ async def test_run_async_with_tool_context_and_unexpected_argument():
       "received_arg": "world",
       "context_present": True,
   }
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_require_confirmation():
+  """Test that run_async handles require_confirmation flag."""
+
+  def sample_func(arg1: str):
+    return {"received_arg": arg1}
+
+  tool = FunctionTool(sample_func, require_confirmation=True)
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context.session = MagicMock(spec=Session)
+  mock_invocation_context.session.state = MagicMock()
+  mock_invocation_context.agent = MagicMock()
+  mock_invocation_context.agent.name = "test_agent"
+  tool_context_mock = ToolContext(invocation_context=mock_invocation_context)
+  tool_context_mock.function_call_id = "test_function_call_id"
+
+  # First call, should request confirmation
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {
+      "error": "This tool call requires confirmation, please approve or reject."
+  }
+  assert tool_context_mock._event_actions.requested_tool_confirmations[
+      "test_function_call_id"
+  ].hint == (
+      "Please approve or reject the tool call sample_func() by responding with"
+      " a FunctionResponse with an expected ToolConfirmation payload."
+  )
+
+  # Second call, user rejects
+  tool_context_mock.tool_confirmation = ToolConfirmation(confirmed=False)
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {"error": "This tool call is rejected."}
+
+  # Third call, user approves
+  tool_context_mock.tool_confirmation = ToolConfirmation(confirmed=True)
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {"received_arg": "hello"}
