@@ -27,6 +27,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Tuple
+from typing import TypedDict
 from typing import Union
 
 from google.genai import types
@@ -35,15 +36,9 @@ from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
 from litellm import ChatCompletionDeveloperMessage
-from litellm import ChatCompletionFileObject
-from litellm import ChatCompletionImageObject
-from litellm import ChatCompletionImageUrlObject
 from litellm import ChatCompletionMessageToolCall
-from litellm import ChatCompletionTextObject
 from litellm import ChatCompletionToolMessage
 from litellm import ChatCompletionUserMessage
-from litellm import ChatCompletionVideoObject
-from litellm import ChatCompletionVideoUrlObject
 from litellm import completion
 from litellm import CustomStreamWrapper
 from litellm import Function
@@ -65,6 +60,11 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
+
+
+class ChatCompletionFileUrlObject(TypedDict):
+  file_data: str
+  format: str
 
 
 class FunctionChunk(BaseModel):
@@ -237,12 +237,10 @@ def _get_content(
     if part.text:
       if len(parts) == 1:
         return part.text
-      content_objects.append(
-          ChatCompletionTextObject(
-              type="text",
-              text=part.text,
-          )
-      )
+      content_objects.append({
+          "type": "text",
+          "text": part.text,
+      })
     elif (
         part.inline_data
         and part.inline_data.data
@@ -252,33 +250,32 @@ def _get_content(
       data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
 
       if part.inline_data.mime_type.startswith("image"):
-        # Extract format from mime type (e.g., "image/png" -> "png")
-        format_type = part.inline_data.mime_type.split("/")[-1]
-        content_objects.append(
-            ChatCompletionImageObject(
-                type="image_url",
-                image_url=ChatCompletionImageUrlObject(
-                    url=data_uri, format=format_type
-                ),
-            )
-        )
+        # Use full MIME type (e.g., "image/png") for providers that validate it
+        format_type = part.inline_data.mime_type
+        content_objects.append({
+            "type": "image_url",
+            "image_url": {"url": data_uri, "format": format_type},
+        })
       elif part.inline_data.mime_type.startswith("video"):
-        # Extract format from mime type (e.g., "video/mp4" -> "mp4")
-        format_type = part.inline_data.mime_type.split("/")[-1]
-        content_objects.append(
-            ChatCompletionVideoObject(
-                type="video_url",
-                video_url=ChatCompletionVideoUrlObject(
-                    url=data_uri, format=format_type
-                ),
-            )
-        )
+        # Use full MIME type (e.g., "video/mp4") for providers that validate it
+        format_type = part.inline_data.mime_type
+        content_objects.append({
+            "type": "video_url",
+            "video_url": {"url": data_uri, "format": format_type},
+        })
+      elif part.inline_data.mime_type.startswith("audio"):
+        # Use full MIME type (e.g., "audio/mpeg") for providers that validate it
+        format_type = part.inline_data.mime_type
+        content_objects.append({
+            "type": "audio_url",
+            "audio_url": {"url": data_uri, "format": format_type},
+        })
       elif part.inline_data.mime_type == "application/pdf":
-        content_objects.append(
-            ChatCompletionFileObject(
-                type="file", file={"file_data": data_uri, "format": "pdf"}
-            )
-        )
+        format_type = part.inline_data.mime_type
+        content_objects.append({
+            "type": "file",
+            "file": {"file_data": data_uri, "format": format_type},
+        })
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
 

@@ -1036,7 +1036,7 @@ def test_get_content_image():
       content[0]["image_url"]["url"]
       == "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
   )
-  assert content[0]["image_url"]["format"] == "png"
+  assert content[0]["image_url"]["format"] == "image/png"
 
 
 def test_get_content_video():
@@ -1049,7 +1049,33 @@ def test_get_content_video():
       content[0]["video_url"]["url"]
       == "data:video/mp4;base64,dGVzdF92aWRlb19kYXRh"
   )
-  assert content[0]["video_url"]["format"] == "mp4"
+  assert content[0]["video_url"]["format"] == "video/mp4"
+
+
+def test_get_content_pdf():
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "file"
+  assert (
+      content[0]["file"]["file_data"]
+      == "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ=="
+  )
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+def test_get_content_audio():
+  parts = [
+      types.Part.from_bytes(data=b"test_audio_data", mime_type="audio/mpeg")
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "audio_url"
+  assert (
+      content[0]["audio_url"]["url"]
+      == "data:audio/mpeg;base64,dGVzdF9hdWRpb19kYXRh"
+  )
+  assert content[0]["audio_url"]["format"] == "audio/mpeg"
 
 
 def test_to_litellm_role():
