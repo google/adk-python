@@ -16,12 +16,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+from typing import Union
 
 import click
 from google.genai import types
 from pydantic import BaseModel
 
+from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import LlmAgent
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
@@ -43,15 +46,19 @@ class InputFile(BaseModel):
 async def run_input_file(
     app_name: str,
     user_id: str,
-    root_agent: LlmAgent,
+    agent_or_app: Union[LlmAgent, App],
     artifact_service: BaseArtifactService,
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
     input_path: str,
 ) -> Session:
+  app = (
+      agent_or_app
+      if isinstance(agent_or_app, App)
+      else App(name=app_name, root_agent=agent_or_app)
+  )
   runner = Runner(
-      app_name=app_name,
-      agent=root_agent,
+      app=app,
       artifact_service=artifact_service,
       session_service=session_service,
       credential_service=credential_service,
@@ -79,15 +86,19 @@ async def run_input_file(
 
 
 async def run_interactively(
-    root_agent: LlmAgent,
+    root_agent_or_app: Union[LlmAgent, App],
     artifact_service: BaseArtifactService,
     session: Session,
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
 ) -> None:
+  app = (
+      root_agent_or_app
+      if isinstance(root_agent_or_app, App)
+      else App(name=session.app_name, root_agent=root_agent_or_app)
+  )
   runner = Runner(
-      app_name=session.app_name,
-      agent=root_agent,
+      app=app,
       artifact_service=artifact_service,
       session_service=session_service,
       credential_service=credential_service,
@@ -154,7 +165,7 @@ async def run_cli(
     session = await run_input_file(
         app_name=agent_folder_name,
         user_id=user_id,
-        root_agent=root_agent,
+        agent_or_app=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
         credential_service=credential_service,
