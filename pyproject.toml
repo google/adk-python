@@ -101,6 +101,7 @@ test = [
   # go/keep-sorted start
   "a2a-sdk>=0.3.0,<0.4.0;python_version>='3.10'",
   "anthropic>=0.43.0",                            # For anthropic model tests
+  "griptape>=1.8.2",                              # For GriptapeTool tests
   "langchain-community>=0.3.17",
   "langgraph>=0.2.60, <= 0.4.10",                 # For LangGraphAgent
   "litellm>=1.75.5, <2.0.0",                      # For LiteLLM tests
@@ -131,6 +132,7 @@ extensions = [
   "beautifulsoup4>=3.2.2",                     # For load_web_page tool.
   "crewai[tools];python_version>='3.10'",      # For CrewaiTool
   "docker>=7.0.0",                             # For ContainerCodeExecutor
+  "griptape>=1.8.2",                           # For GriptapeTool
   "langgraph>=0.2.60",                         # For LangGraphAgent
   "litellm>=1.75.5",                           # For LiteLlm class. Currently has OpenAI limitations. TODO: once LiteLlm fix it
   "llama-index-readers-file>=0.4.0",           # For retrieval using LlamaIndex.
