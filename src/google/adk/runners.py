@@ -34,7 +34,6 @@ from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
 from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
-from .apps.app import App
 from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
@@ -92,9 +91,8 @@ class Runner:
   def __init__(
       self,
       *,
-      app: Optional[App] = None,
-      app_name: Optional[str] = None,
-      agent: Optional[BaseAgent] = None,
+      app_name: str,
+      agent: BaseAgent,
       plugins: Optional[List[BasePlugin]] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       session_service: BaseSessionService,
@@ -103,84 +101,22 @@ class Runner:
   ):
     """Initializes the Runner.
 
-    Developers should provide either an `app` instance or both `app_name` and
-    `agent`. Providing a mix of `app` and `app_name`/`agent` will result in a
-    `ValueError`. Providing `app` is the recommended way to create a runner.
-
     Args:
-        app_name: The application name of the runner. Required if `app` is not
-          provided.
-        agent: The root agent to run. Required if `app` is not provided.
-        app: An optional `App` instance. If provided, `app_name` and `agent`
-          should not be specified.
-        plugins: Deprecated. A list of plugins for the runner. Please use the
-          `app` argument to provide plugins instead.
+        app_name: The application name of the runner.
+        agent: The root agent to run.
+        plugins: A list of plugins for the runner.
         artifact_service: The artifact service for the runner.
         session_service: The session service for the runner.
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
-
-    Raises:
-        ValueError: If `app` is provided along with `app_name` or `plugins`, or
-          if `app` is not provided but either `app_name` or `agent` is missing.
     """
-    self.app_name, self.agent, plugins = self._validate_runner_params(
-        app, app_name, agent, plugins
-    )
+    self.app_name = app_name
+    self.agent = agent
     self.artifact_service = artifact_service
     self.session_service = session_service
     self.memory_service = memory_service
     self.credential_service = credential_service
     self.plugin_manager = PluginManager(plugins=plugins)
-
-  def _validate_runner_params(
-      self,
-      app: Optional[App],
-      app_name: Optional[str],
-      agent: Optional[BaseAgent],
-      plugins: Optional[List[BasePlugin]],
-  ) -> tuple[str, BaseAgent, Optional[List[BasePlugin]]]:
-    """Validates and extracts runner parameters.
-
-    Args:
-        app: An optional `App` instance.
-        app_name: The application name of the runner.
-        agent: The root agent to run.
-        plugins: A list of plugins for the runner.
-
-    Returns:
-        A tuple containing (app_name, agent, plugins).
-
-    Raises:
-        ValueError: If parameters are invalid.
-    """
-    if app:
-      if app_name:
-        raise ValueError(
-            'When app is provided, app_name should not be provided.'
-        )
-      if agent:
-        raise ValueError('When app is provided, agent should not be provided.')
-      if plugins:
-        raise ValueError(
-            'When app is provided, plugins should not be provided and should be'
-            ' provided in the app instead.'
-        )
-      app_name = app.name
-      agent = app.root_agent
-      plugins = app.plugins
-    elif not app_name or not agent:
-      raise ValueError(
-          'Either app or both app_name and agent must be provided.'
-      )
-
-    if plugins:
-      warnings.warn(
-          'The `plugins` argument is deprecated. Please use the `app` argument'
-          ' to provide plugins instead.',
-          DeprecationWarning,
-      )
-    return app_name, agent, plugins
 
   def run(
       self,
@@ -720,11 +656,10 @@ class InMemoryRunner(Runner):
 
   def __init__(
       self,
-      agent: Optional[BaseAgent] = None,
+      agent: BaseAgent,
       *,
-      app_name: Optional[str] = 'InMemoryRunner',
+      app_name: str = 'InMemoryRunner',
       plugins: Optional[list[BasePlugin]] = None,
-      app: Optional[App] = None,
   ):
     """Initializes the InMemoryRunner.
 
@@ -739,7 +674,6 @@ class InMemoryRunner(Runner):
         agent=agent,
         artifact_service=InMemoryArtifactService(),
         plugins=plugins,
-        app=app,
         session_service=self._in_memory_session_service,
         memory_service=InMemoryMemoryService(),
     )

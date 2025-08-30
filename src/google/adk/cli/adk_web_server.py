@@ -50,12 +50,10 @@ from typing_extensions import override
 from watchdog.observers import Observer
 
 from . import agent_graph
-from ..agents.base_agent import BaseAgent
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
-from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..errors.not_found_error import NotFoundError
@@ -307,17 +305,10 @@ class AdkWebServer:
     envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
     if app_name in self.runner_dict:
       return self.runner_dict[app_name]
-    agent_or_app = self.agent_loader.load_agent(app_name)
-    agentic_app = None
-    if isinstance(agent_or_app, BaseAgent):
-      agentic_app = App(
-          name=app_name,
-          root_agent=agent_or_app,
-      )
-    else:
-      agentic_app = agent_or_app
+    root_agent = self.agent_loader.load_agent(app_name)
     runner = Runner(
-        app=agentic_app,
+        app_name=app_name,
+        agent=root_agent,
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
@@ -606,10 +597,9 @@ class AdkWebServer:
       invocations = evals.convert_session_to_eval_invocations(session)
 
       # Populate the session with initial session state.
-      agent_or_app = self.agent_loader.load_agent(app_name)
-      if isinstance(agent_or_app, App):
-        agent_or_app = agent_or_app.root_agent
-      initial_session_state = create_empty_state(agent_or_app)
+      initial_session_state = create_empty_state(
+          self.agent_loader.load_agent(app_name)
+      )
 
       new_eval_case = EvalCase(
           eval_id=req.eval_id,
