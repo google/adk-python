@@ -78,6 +78,20 @@ def execute_sql(
           }
   """
   try:
+    # Validate compute project if applicable
+    if (
+        settings.compute_project_id
+        and project_id != settings.compute_project_id
+    ):
+      return {
+          "status": "ERROR",
+          "error_details": (
+              f"Cannot execute query in the project {project_id}, as the tool"
+              " is restricted to execute queries only in the project"
+              f" {settings.compute_project_id}."
+          ),
+      }
+
     # Get BigQuery client
     bq_client = client.get_bigquery_client(
         project=project_id,
