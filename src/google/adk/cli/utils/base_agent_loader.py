@@ -18,17 +18,15 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
-from typing import Union
 
 from ...agents.base_agent import BaseAgent
-from ...apps.app import App
 
 
 class BaseAgentLoader(ABC):
   """Abstract base class for agent loaders."""
 
   @abstractmethod
-  def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:
+  def load_agent(self, agent_name: str) -> BaseAgent:
     """Loads an instance of an agent with the given name."""
 
   @abstractmethod

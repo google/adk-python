@@ -26,7 +26,6 @@ from typing import List
 from typing import Tuple
 
 import click
-from google.adk.agents.base_agent import BaseAgent
 import google.adk.cli.cli as cli
 import pytest
 
@@ -131,12 +130,12 @@ async def test_run_input_file_outputs(
   artifact_service = cli.InMemoryArtifactService()
   session_service = cli.InMemorySessionService()
   credential_service = cli.InMemoryCredentialService()
-  dummy_root = BaseAgent(name="root")
+  dummy_root = types.SimpleNamespace(name="root")
 
   session = await cli.run_input_file(
       app_name="app",
       user_id="user",
-      agent_or_app=dummy_root,
+      root_agent=dummy_root,
       artifact_service=artifact_service,
       session_service=session_service,
       credential_service=credential_service,
@@ -206,7 +205,7 @@ async def test_run_interactively_whitespace_and_exit(
   sess = await session_service.create_session(app_name="dummy", user_id="u")
   artifact_service = cli.InMemoryArtifactService()
   credential_service = cli.InMemoryCredentialService()
-  root_agent = BaseAgent(name="root")
+  root_agent = types.SimpleNamespace(name="root")
 
   # fake user input: blank -> 'hello' -> 'exit'
   answers = iter(["  ", "hello", "exit"])
