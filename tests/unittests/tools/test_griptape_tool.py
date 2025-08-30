@@ -78,6 +78,21 @@ class GreetingTool(BaseTool):
 
     return TextArtifact(greeting)
 
+  @activity(
+      config={
+          "description": "Generate a farewell message",
+          "schema": Schema({
+              Literal(
+                  "name", description="Name of the person to bid farewell"
+              ): str,
+          }),
+      }
+  )
+  def create_farewell(self, params: dict) -> BaseArtifact:
+    """Create a farewell message."""
+    name = params["name"]
+    return TextArtifact(f"Goodbye, {name}! See you later!")
+
 
 class TestGriptapeTool:
   """Test cases for GriptapeTool wrapper."""
@@ -133,7 +148,9 @@ class TestGriptapeTool:
   def test_griptape_tool_different_schema(self):
     """Test GriptapeTool with a different schema (string, string, bool parameters)."""
     greeting_tool = GreetingTool()
-    wrapped_tool = GriptapeTool(greeting_tool)
+    wrapped_tool = GriptapeTool(
+        greeting_tool, activity_method="create_greeting"
+    )
 
     # Check that it detects the correct method name
     assert wrapped_tool.name == "create_greeting"
@@ -146,7 +163,9 @@ class TestGriptapeTool:
   async def test_griptape_tool_different_schema_execution(self):
     """Test execution of GriptapeTool with different parameter types."""
     greeting_tool = GreetingTool()
-    wrapped_tool = GriptapeTool(greeting_tool)
+    wrapped_tool = GriptapeTool(
+        greeting_tool, activity_method="create_greeting"
+    )
 
     result = await wrapped_tool.run_async(
         args={"name": "Alice", "city": "Paris", "formal": True},
@@ -164,3 +183,54 @@ class TestGriptapeTool:
     )
 
     assert result == "Hey Bob! How's life in Tokyo?"
+
+  def test_griptape_tool_specific_activity_method(self):
+    """Test GriptapeTool with specific activity method selection."""
+    greeting_tool = GreetingTool()
+
+    # Wrap with specific activity method
+    wrapped_tool = GriptapeTool(
+        greeting_tool, activity_method="create_farewell"
+    )
+
+    # Check that it uses the specified method
+    assert wrapped_tool.name == "create_farewell"
+
+    # Check function declaration works
+    declaration = wrapped_tool._get_declaration()
+    assert declaration.name == "create_farewell"
+
+  @pytest.mark.asyncio
+  async def test_griptape_tool_specific_activity_method_execution(self):
+    """Test execution of GriptapeTool with specific activity method."""
+    greeting_tool = GreetingTool()
+    wrapped_tool = GriptapeTool(
+        greeting_tool, activity_method="create_farewell"
+    )
+
+    result = await wrapped_tool.run_async(
+        args={"name": "Charlie"}, tool_context=MagicMock()
+    )
+
+    assert result == "Goodbye, Charlie! See you later!"
+
+  def test_griptape_tool_invalid_activity_method(self):
+    """Test that GriptapeTool raises AttributeError for invalid activity method."""
+    greeting_tool = GreetingTool()
+
+    with pytest.raises(
+        AttributeError, match="Tool does not have method 'nonexistent_method'"
+    ):
+      GriptapeTool(greeting_tool, activity_method="nonexistent_method")
+
+  def test_griptape_tool_no_activity_methods(self):
+    """Test that GriptapeTool raises AttributeError when no activity methods found."""
+
+    # Create a simple class without activity methods that inherits from BaseTool
+    class EmptyTool(BaseTool):
+      pass
+
+    empty_tool = EmptyTool()
+
+    with pytest.raises(AttributeError, match="No activity method found"):
+      GriptapeTool(empty_tool)

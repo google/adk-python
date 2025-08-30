@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -56,12 +57,12 @@ class GriptapeTool(FunctionTool):
       wrapped_tool = GriptapeTool(scraper_tool, activity_method="scrape_url")
   """
 
-  _griptape_tool: Any
+  _griptape_tool: GriptapeBaseTool
   """The wrapped griptape tool."""
 
   def __init__(
       self,
-      tool: Any,
+      tool: GriptapeBaseTool,
       activity_method: Optional[str] = None,
       name: Optional[str] = None,
       description: Optional[str] = None,
@@ -73,7 +74,7 @@ class GriptapeTool(FunctionTool):
     # Find the activity method to wrap
     if activity_method:
       if not hasattr(tool, activity_method):
-        raise ValueError(f"Tool does not have method '{activity_method}'")
+        raise AttributeError(f"Tool does not have method '{activity_method}'")
       func = getattr(tool, activity_method)
     else:
       # Find the first method with @activity decorator
@@ -85,7 +86,7 @@ class GriptapeTool(FunctionTool):
           break
 
       if func is None:
-        raise ValueError(
+        raise AttributeError(
             'No activity method found. Specify activity_method parameter or'
             ' ensure tool has @activity decorated methods.'
         )
@@ -164,9 +165,9 @@ class GriptapeTool(FunctionTool):
             'description': param_description,
         }
 
-    except Exception as e:
+    except (AttributeError, KeyError, TypeError) as e:
       # If schema parsing fails, fall back to empty params
-      print(f'Warning: Could not parse Griptape schema: {e}')
+      logging.warning(f'Could not parse Griptape schema: {e}')
       return {}
 
     return param_info
@@ -230,7 +231,7 @@ class GriptapeTool(FunctionTool):
 
       return function_decl
 
-    except Exception as e:
+    except (AttributeError, KeyError, TypeError) as e:
       raise ValueError(
           f'Failed to build function declaration for Griptape tool: {e}'
       ) from e
@@ -248,14 +249,23 @@ class GriptapeTool(FunctionTool):
     tool = config_agent_utils.resolve_fully_qualified_name(
         griptape_tool_config.tool
     )
+    activity_method = griptape_tool_config.activity_method
     name = griptape_tool_config.name
     description = griptape_tool_config.description
-    return cls(tool, name=name, description=description)
+    return cls(
+        tool,
+        activity_method=activity_method,
+        name=name,
+        description=description,
+    )
 
 
 class GriptapeToolConfig(BaseToolConfig):
   tool: str
   """The fully qualified path of the Griptape tool instance."""
+
+  activity_method: Optional[str] = None
+  """Optional specific activity method name to wrap. If not provided, the first method with @activity decorator will be used."""
 
   name: str = ''
   """The name of the tool."""
