@@ -22,8 +22,12 @@ from unittest.mock import patch
 
 import pytest
 
-# Check if A2A dependencies are available
-A2A_AVAILABLE = True
+# Skip all tests in this module if Python version is less than 3.10
+pytestmark = pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
+)
+
+# Import dependencies with version checking
 try:
   from a2a.types import AgentCapabilities
   from a2a.types import AgentCard
@@ -35,29 +39,26 @@ try:
   from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
   from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
   from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
-except ImportError:
-  A2A_AVAILABLE = False
+except ImportError as e:
+  if sys.version_info < (3, 10):
+    # Create dummy classes to prevent NameError during module compilation.
+    # These are needed because the module has type annotations and module-level
+    # helper functions that reference imported types.
+    class DummyTypes:
+      pass
 
-  # Create dummy classes to prevent NameError during test collection
-  class DummyTypes:
-    pass
-
-  AgentCapabilities = DummyTypes()
-  AgentCard = DummyTypes()
-  AgentSkill = DummyTypes()
-  A2AMessage = DummyTypes()
-  SendMessageSuccessResponse = DummyTypes()
-  A2ATask = DummyTypes()
-  InvocationContext = DummyTypes()
-  RemoteA2aAgent = DummyTypes()
-  AgentCardResolutionError = Exception
-  A2A_METADATA_PREFIX = ""
-
-# Skip all tests in this module if Python < 3.10 or A2A dependencies are not available
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10) or not A2A_AVAILABLE,
-    reason="A2A requires Python 3.10+ and A2A dependencies must be available",
-)
+    AgentCapabilities = DummyTypes()
+    AgentCard = DummyTypes()
+    AgentSkill = DummyTypes()
+    A2AMessage = DummyTypes()
+    SendMessageSuccessResponse = DummyTypes()
+    A2ATask = DummyTypes()
+    InvocationContext = DummyTypes()
+    RemoteA2aAgent = DummyTypes()
+    AgentCardResolutionError = Exception
+    A2A_METADATA_PREFIX = ""
+  else:
+    raise e
 
 
 from google.adk.events.event import Event

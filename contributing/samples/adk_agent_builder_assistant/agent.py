@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import _code_execution
-from . import _nl_planning
-from . import contents
-from . import functions
-from . import identity
-from . import instructions
-from . import request_confirmation
+"""Agent Builder Assistant instance for ADK web testing."""
+
+from .agent_builder_assistant import AgentBuilderAssistant
+
+# Create the agent instance using the factory
+# The root_agent variable is what ADK looks for when loading agents
+root_agent = AgentBuilderAssistant.create_agent()

@@ -54,39 +54,10 @@ try:
   from google.adk.tools.example_tool import ExampleTool
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    AgentCapabilities = DummyTypes()
-    AgentCard = DummyTypes()
-    AgentProvider = DummyTypes()
-    AgentSkill = DummyTypes()
-    SecurityScheme = DummyTypes()
-    AgentCardBuilder = DummyTypes()
-    BaseAgent = DummyTypes()
-    LlmAgent = DummyTypes()
-    LoopAgent = DummyTypes()
-    ParallelAgent = DummyTypes()
-    SequentialAgent = DummyTypes()
-    ExampleTool = DummyTypes()
-    # Dummy functions
-    _build_agent_description = lambda x: ""
-    _build_llm_agent_description_with_instructions = lambda x: ""
-    _build_orchestration_skill = lambda x, y: None
-    _build_parallel_description = lambda x: ""
-    _build_sequential_description = lambda x: ""
-    _build_loop_description = lambda x: ""
-    _convert_example_tool_examples = lambda x: []
-    _extract_examples_from_instruction = lambda x: None
-    _get_agent_skill_name = lambda x: ""
-    _get_agent_type = lambda x: ""
-    _get_default_description = lambda x: ""
-    _get_input_modes = lambda x: None
-    _get_output_modes = lambda x: None
-    _get_workflow_description = lambda x: None
-    _replace_pronouns = lambda x: ""
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 

@@ -162,6 +162,60 @@ def test_get_contents_filters_empty_events():
   assert contents_result[0].parts[0].text == "Hello"
 
 
+def test_get_contents_filters_auth_and_confirmation_events():
+  """Test _get_contents filters out auth and request confirmation events."""
+  auth_event = Event(
+      invocation_id="test_inv",
+      author="agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="auth_func",
+                      name=contents.REQUEST_EUC_FUNCTION_CALL_NAME,
+                      args={},
+                  )
+              )
+          ],
+      ),
+  )
+
+  confirmation_event = Event(
+      invocation_id="test_inv",
+      author="agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionResponse(
+                      id="confirm_func",
+                      name=contents.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                      response={
+                          "confirmed": True,
+                      },
+                  )
+              )
+          ],
+      ),
+  )
+
+  valid_event = Event(
+      invocation_id="test_inv",
+      author="user",
+      content=types.Content(
+          role="user", parts=[types.Part.from_text(text="Hello")]
+      ),
+  )
+
+  contents_result = _get_contents(
+      None, [auth_event, confirmation_event, valid_event], "test_agent"
+  )
+  assert len(contents_result) == 1
+  assert contents_result[0].role == "user"
+  assert contents_result[0].parts[0].text == "Hello"
+
+
 def test_convert_foreign_event():
   """Test _convert_foreign_event function."""
   agent_event = Event(

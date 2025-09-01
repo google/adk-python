@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import _code_execution
-from . import _nl_planning
-from . import contents
-from . import functions
-from . import identity
-from . import instructions
-from . import request_confirmation
+"""Agent Builder Assistant for ADK.
+
+This package provides an intelligent assistant for building multi-agent systems
+using YAML configurations. It can be used directly as an agent or integrated
+with ADK tools and web interfaces.
+"""
+
+from . import agent  # Import to make agent.root_agent available
+from .agent_builder_assistant import AgentBuilderAssistant
+
+__all__ = [
+    'AgentBuilderAssistant',
+    'agent',  # Make agent module available for adk web discovery
+]

@@ -638,6 +638,12 @@ class BaseLlmFlow(ABC):
       if auth_event:
         yield auth_event
 
+      tool_confirmation_event = functions.generate_request_confirmation_event(
+          invocation_context, function_call_event, function_response_event
+      )
+      if tool_confirmation_event:
+        yield tool_confirmation_event
+
       # Always yield the function response event first
       yield function_response_event
 

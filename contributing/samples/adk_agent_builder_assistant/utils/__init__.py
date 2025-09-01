@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import _code_execution
-from . import _nl_planning
-from . import contents
-from . import functions
-from . import identity
-from . import instructions
-from . import request_confirmation
+"""Utility modules for Agent Builder Assistant."""
+
+from .adk_source_utils import find_adk_source_folder
+from .adk_source_utils import get_adk_schema_path
+from .adk_source_utils import load_agent_config_schema
+
+__all__ = [
+    'load_agent_config_schema',
+    'find_adk_source_folder',
+    'get_adk_schema_path',
+]

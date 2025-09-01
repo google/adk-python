@@ -17,22 +17,32 @@ from unittest.mock import Mock
 
 import pytest
 
-# Skip entire module if Python < 3.10
-if sys.version_info < (3, 10):
-  pytest.skip("A2A requires Python 3.10+", allow_module_level=True)
+# Skip all tests in this module if Python version is less than 3.10
+pytestmark = pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
+)
 
-# Normal imports after the skip
-from a2a.types import Message
-from a2a.types import Part
-from a2a.types import Role
-from a2a.types import TaskState
-from a2a.types import TaskStatus
-from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
-from google.adk.a2a.executor.task_result_aggregator import TaskResultAggregator
+# Import dependencies with version checking
+try:
+  from a2a.types import Message
+  from a2a.types import Part
+  from a2a.types import Role
+  from a2a.types import TaskState
+  from a2a.types import TaskStatus
+  from a2a.types import TaskStatusUpdateEvent
+  from a2a.types import TextPart
+  from google.adk.a2a.executor.task_result_aggregator import TaskResultAggregator
+except ImportError as e:
+  if sys.version_info < (3, 10):
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
+  else:
+    raise e
 
 
-def create_test_message(text: str) -> Message:
+def create_test_message(text: str):
   """Helper function to create a test Message object."""
   return Message(
       message_id="test-msg",
