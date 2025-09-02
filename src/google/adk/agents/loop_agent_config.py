@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
 from typing import Optional
 
 from pydantic import ConfigDict
@@ -34,7 +33,7 @@ class LoopAgentConfig(BaseAgentConfig):
       extra='forbid',
   )
 
-  agent_class: Literal['LoopAgent'] = Field(
+  agent_class: str = Field(
       default='LoopAgent',
       description='The value is used to uniquely identify the LoopAgent class.',
   )

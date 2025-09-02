@@ -42,25 +42,10 @@ try:
   from starlette.applications import Starlette
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    A2AStarletteApplication = DummyTypes()
-    DefaultRequestHandler = DummyTypes()
-    InMemoryTaskStore = DummyTypes()
-    AgentCard = DummyTypes()
-    Starlette = DummyTypes()
-    BaseAgent = DummyTypes()
-    InMemoryArtifactService = DummyTypes()
-    InMemoryCredentialService = DummyTypes()
-    InMemoryMemoryService = DummyTypes()
-    Runner = DummyTypes()
-    InMemorySessionService = DummyTypes()
-    A2aAgentExecutor = DummyTypes()
-    AgentCardBuilder = DummyTypes()
-    to_a2a = lambda x, **kwargs: None
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 

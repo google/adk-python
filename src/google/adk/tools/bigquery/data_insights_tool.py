@@ -34,14 +34,16 @@ def ask_data_insights(
 ) -> Dict[str, Any]:
   """Answers questions about structured data in BigQuery tables using natural language.
 
-  This function takes auser's question (which can include conversational
-  history for context) andreferences to specific BigQuery tables, and sends
+  This function takes a user's question (which can include conversational
+  history for context) and references to specific BigQuery tables, and sends
   them to a stateless conversational API.
 
   The API uses a GenAI agent to understand the question, generate and execute
   SQL queries and Python code, and formulate an answer. This function returns a
   detailed, sequential log of this entire process, which includes any generated
-  SQL or Python code, the data retrieved, and the final text answer.
+  SQL or Python code, the data retrieved, and the final text answer. The final
+  answer is always in plain text, as the underlying API is instructed not to
+  generate any charts, graphs, images, or other visualizations.
 
   Use this tool to perform data analysis, get insights, or answer complex
   questions about the contents of specific BigQuery tables.
@@ -123,9 +125,22 @@ def ask_data_insights(
     }
     ca_url = f"https://geminidataanalytics.googleapis.com/v1alpha/projects/{project_id}/locations/{location}:chat"
 
+    instructions = """**INSTRUCTIONS - FOLLOW THESE RULES:**
+    1.  **CONTENT:** Your answer should present the supporting data and then provide a conclusion based on that data.
+    2.  **OUTPUT FORMAT:** Your entire response MUST be in plain text format ONLY.
+    3.  **NO CHARTS:** You are STRICTLY FORBIDDEN from generating any charts, graphs, images, or any other form of visualization.
+    """
+
+    final_query_text = f"""
+{instructions}
+
+**User Query and Context:**
+{user_query_with_context}
+"""
+
     ca_payload = {
         "project": f"projects/{project_id}",
-        "messages": [{"userMessage": {"text": user_query_with_context}}],
+        "messages": [{"userMessage": {"text": final_query_text}}],
         "inlineContext": {
             "datasourceReferences": {
                 "bq": {"tableReferences": table_references}
@@ -289,7 +304,7 @@ def _handle_data_response(
     schema = resp["result"]["schema"]
     headers = [field.get("name") for field in schema.get("fields", [])]
 
-    all_rows = resp["result"]["data"]
+    all_rows = resp["result"].get("data", [])
     total_rows = len(all_rows)
 
     compact_rows = []

@@ -27,6 +27,7 @@ from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import remove_client_function_call_id
+from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
 
@@ -238,6 +239,9 @@ def _get_contents(
     if _is_auth_event(event):
       # Skip auth events.
       continue
+    if _is_request_confirmation_event(event):
+      # Skip request confirmation events.
+      continue
     filtered_events.append(
         _convert_foreign_event(event)
         if _is_other_agent_reply(agent_name, event)
@@ -431,18 +435,23 @@ def _is_event_belongs_to_branch(
   return invocation_branch.startswith(event.branch)
 
 
-def _is_auth_event(event: Event) -> bool:
-  if not event.content.parts:
+def _is_function_call_event(event: Event, function_name: str) -> bool:
+  """Checks if an event is a function call/response for a given function name."""
+  if not event.content or not event.content.parts:
     return False
   for part in event.content.parts:
-    if (
-        part.function_call
-        and part.function_call.name == REQUEST_EUC_FUNCTION_CALL_NAME
-    ):
+    if part.function_call and part.function_call.name == function_name:
       return True
-    if (
-        part.function_response
-        and part.function_response.name == REQUEST_EUC_FUNCTION_CALL_NAME
-    ):
+    if part.function_response and part.function_response.name == function_name:
       return True
   return False
+
+
+def _is_auth_event(event: Event) -> bool:
+  """Checks if the event is an authentication event."""
+  return _is_function_call_event(event, REQUEST_EUC_FUNCTION_CALL_NAME)
+
+
+def _is_request_confirmation_event(event: Event) -> bool:
+  """Checks if the event is a request confirmation event."""
+  return _is_function_call_event(event, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)

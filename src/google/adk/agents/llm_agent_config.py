@@ -37,7 +37,7 @@ class LlmAgentConfig(BaseAgentConfig):
       extra='forbid',
   )
 
-  agent_class: Literal['LlmAgent', ''] = Field(
+  agent_class: str = Field(
       default='LlmAgent',
       description=(
           'The value is used to uniquely identify the LlmAgent class. If it is'

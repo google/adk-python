@@ -41,6 +41,18 @@ from google.genai.types import Part
 from typing_extensions import override
 
 
+def create_test_agent(name: str = 'test_agent') -> LlmAgent:
+  """Create a simple test agent for use in unit tests.
+
+  Args:
+    name: The name of the test agent.
+
+  Returns:
+    A configured LlmAgent instance suitable for testing.
+  """
+  return LlmAgent(name=name)
+
+
 class UserContent(types.Content):
 
   def __init__(self, text_or_part: str):

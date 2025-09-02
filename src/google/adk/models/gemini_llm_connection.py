@@ -144,6 +144,8 @@ class GeminiLlmConnection(BaseLlmConnection):
 
     text = ''
     async with Aclosing(self._gemini_session.receive()) as agen:
+      # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
+      # partial content and emit responses as needed.
       async for message in agen:
         logger.debug('Got LLM Live message: %s', message)
         if message.server_content:

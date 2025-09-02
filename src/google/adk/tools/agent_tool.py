@@ -18,8 +18,6 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from pydantic import BaseModel
-from pydantic import ConfigDict
 from pydantic import model_validator
 from typing_extensions import override
 
@@ -137,11 +135,11 @@ class AgentTool(BaseTool):
     )
     session = await runner.session_service.create_session(
         app_name=self.agent.name,
-        user_id='tmp_user',
+        user_id=tool_context._invocation_context.user_id,
         state=tool_context.state.to_dict(),
     )
 
-    last_event = None
+    last_content = None
     async with Aclosing(
         runner.run_async(
             user_id=session.user_id, session_id=session.id, new_message=content
@@ -151,11 +149,12 @@ class AgentTool(BaseTool):
         # Forward state delta to parent session.
         if event.actions.state_delta:
           tool_context.state.update(event.actions.state_delta)
-        last_event = event
+        if event.content:
+          last_content = event.content
 
-    if not last_event or not last_event.content or not last_event.content.parts:
+    if not last_content:
       return ''
-    merged_text = '\n'.join(p.text for p in last_event.content.parts if p.text)
+    merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
           merged_text
@@ -164,8 +163,8 @@ class AgentTool(BaseTool):
       tool_result = merged_text
     return tool_result
 
-  @classmethod
   @override
+  @classmethod
   def from_config(
       cls, config: ToolArgsConfig, config_abs_path: str
   ) -> AgentTool:

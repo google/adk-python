@@ -858,7 +858,13 @@ def cli_api_server(
   server.run()
 
 
-@deploy.command("cloud_run")
+@deploy.command(
+    "cloud_run",
+    context_settings={
+        "allow_extra_args": True,
+        "allow_interspersed_args": False,
+    },
+)
 @click.option(
     "--project",
     type=str,
@@ -971,7 +977,9 @@ def cli_api_server(
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
 @adk_services_options()
 @deprecated_adk_services_options()
+@click.pass_context
 def cli_deploy_cloud_run(
+    ctx,
     agent: str,
     project: Optional[str],
     region: Optional[str],
@@ -996,9 +1004,13 @@ def cli_deploy_cloud_run(
 
   AGENT: The path to the agent source code folder.
 
-  Example:
+  Use '--' to separate gcloud arguments from adk arguments.
+
+  Examples:
 
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
+
+    adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent -- --no-allow-unauthenticated --min-instances=2
   """
   if verbosity:
     click.secho(
@@ -1010,6 +1022,36 @@ def cli_deploy_cloud_run(
 
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
+
+  # Parse arguments to separate gcloud args (after --) from regular args
+  gcloud_args = []
+  if "--" in ctx.args:
+    separator_index = ctx.args.index("--")
+    gcloud_args = ctx.args[separator_index + 1 :]
+    regular_args = ctx.args[:separator_index]
+
+    # If there are regular args before --, that's an error
+    if regular_args:
+      click.secho(
+          "Error: Unexpected arguments after agent path and before '--':"
+          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
+          " to gcloud.",
+          fg="red",
+          err=True,
+      )
+      ctx.exit(2)
+  else:
+    # No -- separator, treat all args as an error to enforce the new behavior
+    if ctx.args:
+      click.secho(
+          f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
+          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
+          " agent_path -- --min-instances=2",
+          fg="red",
+          err=True,
+      )
+      ctx.exit(2)
+
   try:
     cli_deploy.to_cloud_run(
         agent_folder=agent,
@@ -1029,6 +1071,7 @@ def cli_deploy_cloud_run(
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         a2a=a2a,
+        extra_gcloud_args=tuple(gcloud_args),
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
@@ -1141,6 +1184,17 @@ def cli_deploy_cloud_run(
         " NOTE: This flag is temporary and will be removed in the future."
     ),
 )
+@click.option(
+    "--agent_engine_config_file",
+    type=str,
+    default="",
+    help=(
+        "Optional. The filepath to the `.agent_engine_config.json` file to use."
+        " The values in this file will be overriden by the values set by other"
+        " flags. (default: the `.agent_engine_config.json` file in the `agent`"
+        " directory, if any.)"
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1161,6 +1215,7 @@ def cli_deploy_agent_engine(
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
+    agent_engine_config_file: str,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -1184,6 +1239,7 @@ def cli_deploy_agent_engine(
         env_file=env_file,
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
+        agent_engine_config_file=agent_engine_config_file,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

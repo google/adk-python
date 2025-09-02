@@ -983,3 +983,48 @@ def test_execute_sql_result_dtype(
   # Test the tool worked without invoking default auth
   result = execute_sql(project, query, credentials, tool_settings, tool_context)
   assert result == {"status": "SUCCESS", "rows": tool_result_rows}
+
+
+@mock.patch(
+    "google.adk.tools.bigquery.client.get_bigquery_client", autospec=True
+)
+def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
+  """Test BigQuery client creation params during execute_sql tool invocation."""
+  project = "my_project_id"
+  query = "SELECT 1"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  application_name = "my-agent"
+  tool_settings = BigQueryToolConfig(application_name=application_name)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  execute_sql(project, query, credentials, tool_settings, tool_context)
+  mock_get_bigquery_client.assert_called_once()
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert mock_get_bigquery_client.call_args.kwargs["project"] == project
+  assert mock_get_bigquery_client.call_args.kwargs["credentials"] == credentials
+  assert (
+      mock_get_bigquery_client.call_args.kwargs["user_agent"]
+      == application_name
+  )
+
+
+def test_execute_sql_unexpected_project_id():
+  """Test execute_sql tool invocation with unexpected project id."""
+  compute_project_id = "compute_project_id"
+  tool_call_project_id = "project_id"
+  query = "SELECT 1"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig(compute_project_id=compute_project_id)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  result = execute_sql(
+      tool_call_project_id, query, credentials, tool_settings, tool_context
+  )
+  assert result == {
+      "status": "ERROR",
+      "error_details": (
+          f"Cannot execute query in the project {tool_call_project_id}, as the"
+          " tool is restricted to execute queries only in the project"
+          f" {compute_project_id}."
+      ),
+  }

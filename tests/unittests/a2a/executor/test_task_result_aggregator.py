@@ -34,20 +34,15 @@ try:
   from google.adk.a2a.executor.task_result_aggregator import TaskResultAggregator
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    TaskState = DummyTypes()
-    TaskStatus = DummyTypes()
-    TaskStatusUpdateEvent = DummyTypes()
-    TaskResultAggregator = DummyTypes()
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 
 
-def create_test_message(text: str) -> Message:
+def create_test_message(text: str):
   """Helper function to create a test Message object."""
   return Message(
       message_id="test-msg",

@@ -1,4 +1,17 @@
-from google.adk.agents.invocation_context import InvocationContext
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.sessions.session import Session
@@ -17,7 +30,7 @@ class MockArtifactService:
     if filename in self.artifacts:
       return self.artifacts[filename]
     else:
-      raise KeyError(f"Artifact '{filename}' not found.")
+      return None
 
 
 async def _create_test_readonly_context(
@@ -114,7 +127,7 @@ async def test_inject_session_state_with_missing_artifact_raises_key_error():
       artifact_service=mock_artifact_service
   )
 
-  with pytest.raises(KeyError, match="Artifact 'missing_file' not found."):
+  with pytest.raises(KeyError, match="Artifact missing_file not found."):
     await instructions_utils.inject_session_state(
         instruction_template, invocation_context
     )
@@ -200,7 +213,7 @@ async def test_inject_session_state_with_empty_artifact_name_raises_key_error():
       artifact_service=mock_artifact_service
   )
 
-  with pytest.raises(KeyError, match="Artifact '' not found."):
+  with pytest.raises(KeyError, match="Artifact  not found."):
     await instructions_utils.inject_session_state(
         instruction_template, invocation_context
     )
@@ -214,3 +227,43 @@ async def test_inject_session_state_artifact_service_not_initialized_raises_valu
     await instructions_utils.inject_session_state(
         instruction_template, invocation_context
     )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_optional_missing_artifact_returns_empty():
+  instruction_template = "Optional artifact: {artifact.missing_file?}"
+  mock_artifact_service = MockArtifactService(
+      {"my_file": "This is my artifact content."}
+  )
+  invocation_context = await _create_test_readonly_context(
+      artifact_service=mock_artifact_service
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Optional artifact: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_none_state_value_returns_empty():
+  instruction_template = "Value: {test_key}"
+  invocation_context = await _create_test_readonly_context(
+      state={"test_key": None}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Value: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_optional_missing_state_returns_empty():
+  instruction_template = "Optional value: {missing_key?}"
+  invocation_context = await _create_test_readonly_context()
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Optional value: "

@@ -39,11 +39,17 @@ from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
 from ..executor.a2a_agent_executor import A2aAgentExecutor
+from ..experimental import a2a_experimental
 from .agent_card_builder import AgentCardBuilder
 
 
+@a2a_experimental
 def to_a2a(
-    agent: BaseAgent, *, host: str = "localhost", port: int = 8000
+    agent: BaseAgent,
+    *,
+    host: str = "localhost",
+    port: int = 8000,
+    protocol: str = "http",
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -51,13 +57,14 @@ def to_a2a(
       agent: The ADK agent to convert
       host: The host for the A2A RPC URL (default: "localhost")
       port: The port for the A2A RPC URL (default: 8000)
+      protocol: The protocol for the A2A RPC URL (default: "http")
 
   Returns:
       A Starlette application that can be run with uvicorn
 
   Example:
       agent = MyAgent()
-      app = to_a2a(agent, host="localhost", port=8000)
+      app = to_a2a(agent, host="localhost", port=8000, protocol="http")
       # Then run with: uvicorn module:app --host localhost --port 8000
   """
   # Set up ADK logging to ensure logs are visible when using uvicorn directly
@@ -87,7 +94,7 @@ def to_a2a(
   )
 
   # Build agent card
-  rpc_url = f"http://{host}:{port}/"
+  rpc_url = f"{protocol}://{host}:{port}/"
   card_builder = AgentCardBuilder(
       agent=agent,
       rpc_url=rpc_url,

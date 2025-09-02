@@ -20,7 +20,7 @@ import pytest
 
 # Skip all tests in this module if Python version is less than 3.10
 pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A tool requires Python 3.10+"
+    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
 )
 
 # Import dependencies with version checking
@@ -32,17 +32,10 @@ try:
   from google.genai import types as genai_types
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    a2a_types = DummyTypes()
-    genai_types = DummyTypes()
-    RequestContext = DummyTypes()
-    RunConfig = DummyTypes()
-    _get_user_id = lambda x: None
-    convert_a2a_request_to_adk_run_args = lambda x: None
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 

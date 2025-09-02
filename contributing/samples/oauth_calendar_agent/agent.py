@@ -51,6 +51,21 @@ calendar_toolset = CalendarToolset(
 )
 
 
+# this tool will be invoked right after google_calendar_events_get returns a
+# final response to test whether adk works correctly for subsequent function
+# call right after a function call that request auth
+# see https://github.com/google/adk-python/issues/1944 for details
+def redact_event_content(event_content: str) -> str:
+  """Redact confidential informaiton in the calendar event content
+  Args:
+      event_content: the content of the calendar event to redact
+
+  Returns:
+      str: redacted content of the calendar event
+  """
+  return event_content
+
+
 def list_calendar_events(
     start_time: str,
     end_time: str,
@@ -126,7 +141,17 @@ root_agent = Agent(
 
       Scenario2:
       User want to know the details of one of the listed calendar events.
-      Use google_calendar_events_get to get the details of a calendar event.
+      Use google_calendar_events_get to get the details of a calendar event and use redact_event_content to redact confidential information before sending the details to user
+
+      Scenario3:
+      User want to update calendar events.
+      Use google_calendar_events_update to update calendar events
+
+      IMPORTANT NOTE
+      Whenever you use google_calendar_events_get to the details of a calendar event ,
+      you MUST use format_calendar_redact_event_content to redact it and use the return value to reply the user.
+      This very important! Otherwise you run the risk of leaking confidential information!!!
+
 
 
       Current user:
@@ -163,6 +188,7 @@ root_agent = Agent(
             ),
         ),
         calendar_toolset,
+        redact_event_content,
     ],
     before_agent_callback=update_time,
 )
