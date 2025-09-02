@@ -41,6 +41,5 @@ jobs:
           OWNER: 'google'
           REPO: 'adk-python'
           INTERACTIVE: 0
-          DISCUSSION_NUMBER: ${{ github.event.discussion.number }}
           PYTHONPATH: contributing/samples
-        run: python -m adk_answering_agent.main
+        run: python -m adk_answering_agent.main --discussion_number ${{ github.event.discussion.number }}
