@@ -403,12 +403,13 @@ class RestApiTool(BaseTool):
       return response.json()  # Try to decode JSON
     except requests.exceptions.HTTPError:
       error_details = response.content.decode("utf-8")
+      error_status_code = response.status_code
       return {
           "error": (
               f"Tool {self.name} execution failed. Analyze this execution error"
               " and your inputs. Retry with adjustments if applicable. But"
               " make sure don't retry more than 3 times. Execution Error:"
-              f" {error_details}"
+              f" Status Code: {error_status_code}, {error_details}"
           )
       }
     except ValueError:
