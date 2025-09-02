@@ -109,10 +109,23 @@ def run_local():
     print("  • Consolidated security views")
     print("=" * 50)
     
-    # Set critical environment variables
-    os.environ['DATABASE_PATH'] = os.path.join(
-        os.path.dirname(__file__), 'backend', 'cache', 'gcp_data.db'
-    )
+    # Set critical environment variables with absolute path
+    try:
+        import sys
+        sys.path.insert(0, os.path.dirname(__file__))
+        from config.database import DatabaseConfig
+        database_path = DatabaseConfig.get_database_path()
+        os.environ['DATABASE_PATH'] = database_path
+        print(f"✅ Database path set to: {database_path}")
+    except Exception as e:
+        print(f"⚠️ Failed to set database path: {e}")
+        # Fallback to absolute path
+        fallback_path = os.path.join(
+            os.path.dirname(__file__), 'backend', 'cache', 'gcp_data.db'
+        )
+        os.environ['DATABASE_PATH'] = os.path.abspath(fallback_path)
+        print(f"Using fallback database path: {os.environ['DATABASE_PATH']}")
+    
     os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'TRUE'
     
     if is_cloud_run:
@@ -147,11 +160,27 @@ def run_local():
             "--server.address", "localhost"
         ]
     
-    print(f"📂 Working directory: {os.getcwd()}")
-    print(f"🔧 Command: {' '.join(cmd)}")
-    print(f"🗄️ Database: {os.environ.get('DATABASE_PATH')}")
-    print(f"🤖 Using: vertex_sqlite agent with Gemini 2.0 Flash")
-    print("=" * 50)
+    # Display configuration summary
+    try:
+        from config.environment import EnvironmentConfig
+        config_summary = EnvironmentConfig.get_configuration_summary()
+        
+        print(f"📂 Working directory: {os.getcwd()}")
+        print(f"🔧 Command: {' '.join(cmd)}")
+        print(f"🗄️ Database: {os.environ.get('DATABASE_PATH')}")
+        print(f"🤖 Using: vertex_sqlite agent with Gemini 2.0 Flash")
+        print(f"⚙️ Config: {'Valid' if config_summary['is_valid'] else 'Issues Detected'} ({config_summary['valid_count']} vars)")
+        print(f"📅 Project: {config_summary['project_id']}")
+        print("=" * 50)
+        
+    except Exception:
+        # Fallback to basic display
+        print(f"📂 Working directory: {os.getcwd()}")
+        print(f"🔧 Command: {' '.join(cmd)}")
+        print(f"🗄️ Database: {os.environ.get('DATABASE_PATH')}")
+        print(f"🤖 Using: vertex_sqlite agent with Gemini 2.0 Flash")
+        print(f"⚙️ Config: Fallback Mode")
+        print("=" * 50)
     
     if is_cloud_run:
         print(f"Frontend listening on port: {port}")

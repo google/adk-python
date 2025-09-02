@@ -19,12 +19,31 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# Load environment variables from .env file
+# Load environment variables from centralized configuration
 from dotenv import load_dotenv
 
 # Configure logging first
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Import centralized environment configuration
+try:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from config.environment import EnvironmentConfig
+    
+    # Load and validate environment
+    env_config = EnvironmentConfig.load_environment()
+    config_summary = EnvironmentConfig.get_configuration_summary()
+    
+    if config_summary['is_valid']:
+        logger.info(f"✅ Environment configuration loaded: {config_summary['valid_count']} variables")
+    else:
+        logger.warning(f"⚠️ Environment configuration issues: {config_summary['invalid_count']} invalid, {config_summary['missing_required_count']} missing")
+    
+except Exception as e:
+    logger.warning(f"⚠️ Failed to load centralized environment config: {e}")
+    logger.info("Using fallback environment loading")
 
 # Import validation middleware  
 try:
@@ -53,20 +72,24 @@ except ImportError as e:
     RATE_LIMITER_AVAILABLE = False
     logger.warning(f"[WARNING] Rate limiting not available: {e}")
 
-# Try multiple locations for .env file
-env_locations = [
-    Path(__file__).parent.parent / "deploy" / ".env",  # deploy/.env
-    Path(__file__).parent.parent / ".env",  # security_agent/.env
-    Path(__file__).parent / ".env",  # backend/.env
-]
-
-for env_path in env_locations:
-    if env_path.exists():
-        load_dotenv(env_path)
-        print(f"[OK] Loaded environment from: {env_path}")
-        break
-else:
-    print("[WARNING] No .env file found, using system environment variables")
+# Environment loading is now handled by centralized configuration above
+# This fallback code is kept for compatibility
+if 'EnvironmentConfig' not in globals():
+    logger.info("Using fallback .env file loading")
+    # Try multiple locations for .env file
+    env_locations = [
+        Path(__file__).parent.parent / "deploy" / ".env",  # deploy/.env
+        Path(__file__).parent.parent / ".env",  # security_agent/.env
+        Path(__file__).parent / ".env",  # backend/.env
+    ]
+    
+    for env_path in env_locations:
+        if env_path.exists():
+            load_dotenv(env_path)
+            print(f"[OK] Loaded environment from: {env_path}")
+            break
+    else:
+        print("[WARNING] No .env file found, using system environment variables")
 
 # Set up Google Application Credentials if not already set
 if not os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
@@ -1015,60 +1038,128 @@ async def status_endpoint():
 # WebSocket endpoint is available in agent_llm.py at /api/v1/agent/ws
 
 async def background_cache_refresh():
-    """Background task to refresh cache every 30 minutes."""
+    """Background task to refresh cache every 30 minutes with proper cancellation handling."""
+    task_name = "background_cache_refresh"
+    logger.info(f"[{task_name.upper()}] Starting background cache refresh service...")
+    
     try:
         # Do immediate refresh on startup (after 30 seconds to let server start)
+        logger.info(f"[{task_name.upper()}] Waiting 30s for server initialization...")
         await asyncio.sleep(30)  # Wait 30 seconds for server to be ready
-        logger.info("[REFRESH] Starting initial cache refresh on startup...")
         
-        # Perform initial refresh
+        logger.info(f"[{task_name.upper()}] Starting initial cache refresh on startup...")
         await _perform_cache_refresh()
+        
+        refresh_interval = int(os.getenv('DATA_REFRESH_INTERVAL', '1800'))  # Default 30 minutes
+        logger.info(f"[{task_name.upper()}] Scheduled refresh every {refresh_interval}s")
         
         while True:
             try:
-                # Wait for 30 minutes before next refresh
-                await asyncio.sleep(1800)  # 30 minutes
+                # Wait for scheduled interval before next refresh
+                logger.debug(f"[{task_name.upper()}] Waiting {refresh_interval}s for next refresh...")
+                await asyncio.sleep(refresh_interval)
                 
-                logger.info("[REFRESH] Starting scheduled cache refresh...")
+                logger.info(f"[{task_name.upper()}] Starting scheduled cache refresh...")
                 await _perform_cache_refresh()
                 
+            except asyncio.CancelledError:
+                logger.info(f"[{task_name.upper()}] Received cancellation request")
+                raise  # Re-raise to exit the loop
+                
             except Exception as e:
-                logger.error(f"[ERROR] Background cache refresh error: {e}")
-                await asyncio.sleep(300)  # Wait 5 minutes before retry
+                logger.error(f"[{task_name.upper()}] Cache refresh error: {e}")
+                logger.info(f"[{task_name.upper()}] Will retry in 5 minutes...")
+                
+                # Wait before retry, but make it cancellable
+                try:
+                    await asyncio.sleep(300)  # Wait 5 minutes before retry
+                except asyncio.CancelledError:
+                    logger.info(f"[{task_name.upper()}] Cancelled during error recovery wait")
+                    raise
+                    
     except asyncio.CancelledError:
-        logger.info("[INFO] Background cache refresh task cancelled")
+        logger.info(f"[{task_name.upper()}] Background cache refresh task cancelled gracefully")
+        # Perform any cleanup if needed
+        try:
+            logger.info(f"[{task_name.upper()}] Performing cleanup before exit...")
+            # Add any cleanup logic here if needed
+        except Exception as cleanup_error:
+            logger.warning(f"[{task_name.upper()}] Cleanup error: {cleanup_error}")
+        
+        logger.info(f"[{task_name.upper()}] Background cache refresh service stopped")
+        raise  # Re-raise to properly signal cancellation
+        
     except Exception as e:
-        logger.error(f"[ERROR] Fatal error in background cache refresh: {e}")
+        logger.error(f"[{task_name.upper()}] Fatal error in background cache refresh: {e}")
+        logger.error(f"[{task_name.upper()}] Background cache refresh service terminated")
+    
+    finally:
+        logger.info(f"[{task_name.upper()}] Background cache refresh task cleanup complete")
 
 
 async def _perform_cache_refresh():
     """Perform the actual cache refresh logic."""
     try:
-        from services.data_fetcher import DataFetcher
-        import os
-        
-        # Get project ID from environment
+        # Get project ID from environment with validation
         project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
         if not project_id or project_id == "your-project-id":
             logger.warning("[WARNING] GOOGLE_CLOUD_PROJECT not configured, skipping cache refresh")
             return
+        
+        # Try to import and initialize DataFetcher safely
+        try:
+            from services.data_fetcher import DataFetcher
             
-        fetcher = DataFetcher(project_id=project_id)
+            # Initialize with proper error handling
+            fetcher = DataFetcher(project_id=project_id)
+            logger.info(f"[OK] DataFetcher initialized for project: {project_id}")
+            
+        except ImportError as e:
+            logger.warning(f"[WARNING] DataFetcher not available: {e}")
+            logger.info("[INFO] Cache refresh disabled - using manual refresh only")
+            return
+            
+        except TypeError as e:
+            logger.error(f"[ERROR] DataFetcher initialization failed: {e}")
+            logger.warning("[WARNING] Check DataFetcher constructor parameters")
+            return
+        
+        # Perform the data fetch
         result = await fetcher.fetch_all_data()
         
-        # Create summary from result stats
-        total_records = sum(
-            stat.get('count', 0) for stat in result.get('stats', {}).values() 
-            if isinstance(stat, dict)
-        )
-        error_count = len(result.get('errors', []))
-        duration = result.get('duration_seconds', 0)
+        # Create summary from result stats with better error handling
+        if result and isinstance(result, dict):
+            stats = result.get('stats', {})
+            if isinstance(stats, dict):
+                total_records = sum(
+                    stat.get('count', 0) for stat in stats.values() 
+                    if isinstance(stat, dict) and 'count' in stat
+                )
+            else:
+                total_records = 0
+            
+            errors = result.get('errors', [])
+            error_count = len(errors) if isinstance(errors, list) else 0
+            duration = result.get('duration_seconds', 0)
+            
+            summary = f"{total_records} records, {error_count} errors, {duration:.1f}s"
+            logger.info(f"[OK] Background cache refresh complete: {summary}")
+            
+            # Log errors if any
+            if error_count > 0 and isinstance(errors, list):
+                logger.warning(f"[WARNING] Cache refresh encountered {error_count} errors:")
+                for error in errors[:3]:  # Log first 3 errors
+                    logger.warning(f"  - {error}")
+        else:
+            logger.warning("[WARNING] Cache refresh returned invalid result format")
         
-        summary = f"{total_records} records, {error_count} errors, {duration:.1f}s"
-        logger.info(f"[OK] Background cache refresh complete: {summary}")
+    except ImportError as e:
+        logger.warning(f"[WARNING] Background cache refresh import error: {e}")
+        logger.info("[INFO] Disabling automatic cache refresh - manual refresh only")
         
     except Exception as e:
-        logger.warning(f"[WARNING] Background cache refresh failed: {e}")
+        logger.error(f"[ERROR] Background cache refresh failed: {e}")
+        logger.info("[INFO] Will retry cache refresh in 5 minutes")
         await asyncio.sleep(300)  # Wait 5 minutes before retry
                 
     except asyncio.CancelledError:
@@ -1104,25 +1195,96 @@ async def startup_event():
         logger.error(f"[ERROR] Healthcheck failed: {e}")
         logger.warning("[WARNING] System may have limited functionality")
     
-    # Start background cache refresh job
+    # Start background cache refresh job with error handling
     logger.info("[REFRESH] Starting background cache refresh job...")
-    app.state.cache_refresh_task = asyncio.create_task(background_cache_refresh())
+    try:
+        app.state.cache_refresh_task = asyncio.create_task(
+            background_cache_refresh(),
+            name="background_cache_refresh"
+        )
+        logger.info("[OK] Background cache refresh task created successfully")
+        
+        # Add a callback to handle task completion/errors
+        def task_done_callback(task):
+            if task.cancelled():
+                logger.info("[INFO] Background cache refresh task was cancelled")
+            elif task.exception():
+                logger.error(f"[ERROR] Background cache refresh task failed: {task.exception()}")
+            else:
+                logger.warning("[WARNING] Background cache refresh task completed unexpectedly")
+        
+        app.state.cache_refresh_task.add_done_callback(task_done_callback)
+        
+    except Exception as e:
+        logger.error(f"[ERROR] Failed to create background cache refresh task: {e}")
+        logger.warning("[WARNING] Background cache refresh disabled - manual refresh only")
+        app.state.cache_refresh_task = None
 
 @app.on_event("shutdown") 
 async def shutdown_event():
-    """Application shutdown with proper task cleanup."""
-    logger.info("[STOPPED] Security Agent Backend shutting down")
+    """Application shutdown with proper task cleanup and graceful termination."""
+    logger.info("[SHUTDOWN] Security Agent Backend shutting down gracefully...")
+    
+    shutdown_tasks = []
     
     # Cancel background cache refresh task if it exists
-    if hasattr(app.state, 'cache_refresh_task'):
+    if hasattr(app.state, 'cache_refresh_task') and app.state.cache_refresh_task:
         logger.info("[INFO] Cancelling background cache refresh task...")
-        app.state.cache_refresh_task.cancel()
+        
         try:
-            await app.state.cache_refresh_task
-        except asyncio.CancelledError:
-            logger.info("[OK] Background cache refresh task cancelled successfully")
+            # Request cancellation
+            app.state.cache_refresh_task.cancel()
+            
+            # Wait for cancellation with timeout
+            try:
+                await asyncio.wait_for(app.state.cache_refresh_task, timeout=5.0)
+                logger.info("[OK] Background cache refresh task cancelled successfully")
+            except asyncio.TimeoutError:
+                logger.warning("[WARNING] Cache refresh task cancellation timed out")
+            except asyncio.CancelledError:
+                logger.info("[OK] Background cache refresh task cancelled successfully")
+                
         except Exception as e:
-            logger.warning(f"[WARNING] Error cancelling cache refresh task: {e}")
+            logger.warning(f"[WARNING] Error during cache refresh task cancellation: {e}")
+    
+    # Cancel any other background tasks
+    try:
+        # Get all pending tasks
+        pending_tasks = [task for task in asyncio.all_tasks() 
+                        if not task.done() and task != asyncio.current_task()]
+        
+        if pending_tasks:
+            logger.info(f"[INFO] Cancelling {len(pending_tasks)} remaining background tasks...")
+            
+            # Cancel all pending tasks
+            for task in pending_tasks:
+                task.cancel()
+            
+            # Wait for all tasks to complete or timeout
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending_tasks, return_exceptions=True),
+                    timeout=10.0
+                )
+                logger.info("[OK] All background tasks cancelled successfully")
+            except asyncio.TimeoutError:
+                logger.warning("[WARNING] Some background tasks failed to cancel within timeout")
+                
+    except Exception as e:
+        logger.warning(f"[WARNING] Error during background task cleanup: {e}")
+    
+    # Log final shutdown metrics if available
+    if hasattr(app.state, 'start_time'):
+        uptime = time.time() - app.state.start_time
+        logger.info(f"[STATS] Total uptime: {uptime:.1f} seconds")
+        
+        if hasattr(app.state, 'request_count'):
+            logger.info(f"[STATS] Total requests processed: {app.state.request_count}")
+            
+        if hasattr(app.state, 'error_count'):
+            logger.info(f"[STATS] Total errors encountered: {app.state.error_count}")
+    
+    logger.info("[STOPPED] Security Agent Backend shutdown complete")
 
 if __name__ == "__main__":
     # Use port from environment or default to 8000

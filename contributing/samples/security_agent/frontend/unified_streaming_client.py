@@ -38,40 +38,29 @@ from evaluation_page import evaluation_manager
 from iam_features import IAMFeaturesUI
 from networking_dashboard import main as networking_main
 
-# Find and import the agent
-current_file = Path(__file__).resolve()
-project_root = current_file.parent.parent
-agent_dir = project_root / "agents" / "gcp_security"
+# Import centralized database configuration and safe agent loader
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config.database import DatabaseConfig
+from utils.agent_loader import AgentLoader
 
-if not agent_dir.exists():
-    logger.error(f"Agent directory not found at: {agent_dir}")
-    raise FileNotFoundError(f"Agent directory not found at: {agent_dir}")
-
-if str(agent_dir) not in sys.path:
-    sys.path.insert(0, str(agent_dir))
-
-# Import agent with proper directory context
-original_cwd = Path.cwd()
-os.chdir(agent_dir)
+# Import agent safely without directory switching
 try:
-    from vertex_sqlite_agent import root_agent
-    logger.info(f"Successfully imported vertex_sqlite agent from {agent_dir}")
-except ImportError as e:
-    logger.error(f"Failed to import vertex_sqlite_agent: {e}")
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "vertex_sqlite_agent", 
-        agent_dir / "vertex_sqlite_agent.py"
-    )
-    if spec and spec.loader:
-        vertex_sqlite_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(vertex_sqlite_module)
-        root_agent = vertex_sqlite_module.root_agent
-        logger.info("Imported agent using alternative method")
-    else:
-        raise ImportError("Could not load vertex_sqlite_agent module")
-finally:
-    os.chdir(original_cwd)
+    root_agent = AgentLoader.load_agent("vertex_sqlite_agent")
+    logger.info("✅ Successfully imported vertex_sqlite agent using safe loader")
+except Exception as e:
+    logger.error(f"❌ Failed to import vertex_sqlite_agent: {e}")
+    
+    # Show agent info for debugging
+    agent_info = AgentLoader.get_agent_info()
+    logger.error(f"Agent info: {agent_info}")
+    
+    # Create a dummy agent as fallback
+    class DummyAgent:
+        def run_async(self, query):
+            yield "Error: Vertex AI agent not available. Please check agent configuration."
+    
+    root_agent = DummyAgent()
+    logger.warning("Using dummy agent as fallback")
 
 # Page config
 st.set_page_config(
@@ -262,38 +251,78 @@ def init_session():
     if "messages" not in st.session_state:
         st.session_state.messages = []
     
-    if "session_service" not in st.session_state:
-        st.session_state.session_service = InMemorySessionService()
+    # Use lock to prevent race conditions in session initialization
+    session_lock = "_session_init_lock"
+    
+    # Check if already initializing
+    if session_lock in st.session_state:
+        return  # Another process is initializing
+    
+    try:
+        # Set initialization lock
+        st.session_state[session_lock] = True
         
-    if "runner" not in st.session_state:
-        # Create the runner with the vertex_sqlite agent
-        st.session_state.runner = Runner(
-            app_name="gcp_security_agent",
-            agent=root_agent,
-            session_service=st.session_state.session_service
-        )
-        logger.info("Initialized Runner with vertex_sqlite agent")
-        
-    if "session_id" not in st.session_state:
-        st.session_state.session_id = str(uuid.uuid4())
-        st.session_state.user_id = "streamlit_user"
-        
-        # Create a session in the service (use sync version)
-        st.session_state.session = st.session_state.session_service.create_session_sync(
-            app_name="gcp_security_agent",
-            user_id=st.session_state.user_id,
-            session_id=st.session_state.session_id,
-            state={}
-        )
-        logger.info(f"Created session: {st.session_state.session_id[:8]}...")
+        if "session_service" not in st.session_state:
+            try:
+                st.session_state.session_service = InMemorySessionService()
+                logger.info("✅ Initialized session service")
+            except Exception as e:
+                logger.error(f"❌ Session service initialization failed: {e}")
+                st.session_state.session_service = None
+                return
+            
+        if "runner" not in st.session_state and st.session_state.session_service is not None:
+            try:
+                # Create the runner with the vertex_sqlite agent
+                st.session_state.runner = Runner(
+                    app_name="gcp_security_agent",
+                    agent=root_agent,
+                    session_service=st.session_state.session_service
+                )
+                logger.info("✅ Initialized Runner with vertex_sqlite agent")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Runner: {e}")
+                # Create a fallback runner
+                st.session_state.runner = None
+                st.session_state.runner_error = str(e)
+            
+        if "session_id" not in st.session_state and st.session_state.session_service is not None:
+            # Generate unique IDs with timestamp to prevent collisions
+            timestamp = int(time.time() * 1000)
+            st.session_state.session_id = f"session_{timestamp}_{uuid.uuid4().hex[:6]}"
+            st.session_state.user_id = f"user_{timestamp}_{uuid.uuid4().hex[:6]}"
+            
+            try:
+                # Create a session in the service (use sync version)
+                st.session_state.session = st.session_state.session_service.create_session_sync(
+                    app_name="gcp_security_agent",
+                    user_id=st.session_state.user_id,
+                    session_id=st.session_state.session_id,
+                    state={}
+                )
+                logger.info(f"✅ Created session: {st.session_state.session_id[:16]}...")
+            except Exception as e:
+                logger.error(f"❌ Failed to create session: {e}")
+                st.session_state.session = None
+                st.session_state.session_error = str(e)
+                
+    finally:
+        # Always remove the initialization lock
+        if session_lock in st.session_state:
+            del st.session_state[session_lock]
 
 
 def display_executive_dashboard():
     """Display consolidated executive dashboard on the front page."""
-    database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
-    
-    if not os.path.exists(database_path):
-        st.warning("Database not found. Please run `python populate_sqlite.py` to fetch GCP data.")
+    try:
+        database_path = DatabaseConfig.get_database_path()
+        
+        if not DatabaseConfig.ensure_database_exists():
+            st.warning(f"Database not found at: {database_path}")
+            st.info("Please run `python populate_sqlite.py` to fetch GCP data.")
+            return
+    except Exception as e:
+        st.error(f"Database configuration error: {e}")
         return
     
     # Initialize dashboard
@@ -512,6 +541,15 @@ def stream_agent_response(query: str):
     if len(query.strip()) < 3:
         yield "Your query seems too short. Please provide more details about what you'd like to know."
         return
+    
+    # Check if runner is available
+    if not hasattr(st.session_state, 'runner') or st.session_state.runner is None:
+        if hasattr(st.session_state, 'runner_error'):
+            yield f"\r**Agent Error**: {st.session_state.runner_error}\n\n"
+        else:
+            yield "\r**Agent Error**: Runner not initialized properly.\n\n"
+        yield "Please refresh the page or contact support if the issue persists."
+        return
         
     runner = st.session_state.runner
     
@@ -534,53 +572,63 @@ def stream_agent_response(query: str):
             session_id=st.session_state.session_id,
             new_message=new_message
         ):
-            # Check for different event types
-            if hasattr(event, 'content') and event.content:
-                if hasattr(event.content, 'parts'):
+            # Check for different event types with proper null checks
+            if hasattr(event, 'content') and event.content is not None:
+                if hasattr(event.content, 'parts') and event.content.parts:
                     for part in event.content.parts:
-                        if hasattr(part, 'text') and part.text:
+                        if hasattr(part, 'text') and part.text is not None and part.text.strip():
                             # Clear the "analyzing" message once we get real content
                             if not has_streamed:
                                 yield "\r"  # Clear the analyzing message
                                 has_streamed = True
                             
-                            # Yield each part of text
-                            text = part.text
+                            # Yield each part of text with null check
+                            text = str(part.text)  # Ensure it's a string
                             full_response += text
                             
                             # Break text into smaller chunks for better streaming effect
-                            words = text.split(' ')
-                            for i, word in enumerate(words):
-                                if i == 0:
-                                    yield word
-                                else:
-                                    yield ' ' + word
+                            try:
+                                words = text.split(' ') if text else []
+                                for i, word in enumerate(words):
+                                    if word:  # Skip empty words
+                                        if i == 0:
+                                            yield str(word)
+                                        else:
+                                            yield ' ' + str(word)
+                            except Exception as word_error:
+                                logger.warning(f"Word processing error: {word_error}")
+                                yield str(text)  # Fallback to raw text
             
-            # Also check for streaming events
-            elif hasattr(event, 'delta') and hasattr(event.delta, 'text'):
-                if not has_streamed:
-                    yield "\r"  # Clear the analyzing message
-                    has_streamed = True
-                yield event.delta.text
+            # Also check for streaming events with null checks
+            elif hasattr(event, 'delta') and event.delta is not None and hasattr(event.delta, 'text'):
+                if event.delta.text is not None and event.delta.text.strip():
+                    if not has_streamed:
+                        yield "\r"  # Clear the analyzing message
+                        has_streamed = True
+                    yield str(event.delta.text)
                 
-            # Check for final response
-            elif hasattr(event, 'is_final_response') and event.is_final_response():
-                if hasattr(event, 'content') and event.content:
-                    if hasattr(event.content, 'parts'):
+            # Check for final response with null checks
+            elif hasattr(event, 'is_final_response') and callable(event.is_final_response) and event.is_final_response():
+                if hasattr(event, 'content') and event.content is not None:
+                    if hasattr(event.content, 'parts') and event.content.parts:
                         for part in event.content.parts:
-                            if hasattr(part, 'text') and part.text:
+                            if hasattr(part, 'text') and part.text is not None and part.text.strip():
                                 # If we haven't yielded anything yet, yield the final text
                                 if not full_response:
                                     if not has_streamed:
                                         yield "\r"  # Clear the analyzing message
                                         has_streamed = True
-                                    yield part.text
+                                    yield str(part.text)
         
         # If no response was generated, provide helpful message
         if not full_response and not has_streamed:
             yield "\r"  # Clear the analyzing message
             yield "I'm having trouble accessing the security data right now. "
             yield "Please try refreshing the page or contact support if the issue persists."
+            yield "\n\n**Troubleshooting:**\n"
+            yield "1. Check if the database exists and is populated\n"
+            yield "2. Verify the agent is properly configured\n"
+            yield "3. Try one of the quick query buttons above"
                             
     except ConnectionError as e:
         logger.error(f"Connection error during streaming: {str(e)}")
@@ -1379,44 +1427,54 @@ def display_chat_interface():
         st.text(f"Messages: {len(st.session_state.messages)}")
         
         # Data info
-        database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
-        if os.path.exists(database_path):
-            st.success("✅ Database connected")
-            # Get file modification time with auto-refresh indicator
-            mod_time = datetime.fromtimestamp(os.path.getmtime(database_path))
-            time_ago = datetime.now() - mod_time
-            minutes_ago = time_ago.seconds // 60
-            hours_ago = time_ago.seconds // 3600
+        try:
+            database_path = DatabaseConfig.get_database_path()
+            db_status = DatabaseConfig.get_database_status()
             
-            # Show refresh status with visual indicator
-            if minutes_ago < 30:
-                refresh_status = "[FRESH]"
-                refresh_color = "#28a745"
-            elif minutes_ago < 60:
-                refresh_status = "[RECENT]"  
-                refresh_color = "#ffc107"
-            else:
-                refresh_status = "[STALE]"
-                refresh_color = "#dc3545"
-            
-            if time_ago.seconds < 3600:
-                time_display = f"{minutes_ago} min ago"
-            else:
-                time_display = f"{hours_ago} hours ago"
-                
-            st.markdown(
-                f'<div class="refresh-indicator" style="color: {refresh_color};" role="status" aria-live="polite">'
-                f'📅 Updated: {time_display} <span style="margin-left: 8px;">{refresh_status}</span>'
-                '</div>',
-                unsafe_allow_html=True
-            )
+            if db_status["exists"]:
+                st.success(f"✅ Database connected ({db_status['table_count']} tables)")
+                if db_status["last_modified"]:
+                    # Get file modification time with auto-refresh indicator
+                    mod_time = datetime.fromtimestamp(db_status["last_modified"])
+                    time_ago = datetime.now() - mod_time
+                    minutes_ago = time_ago.seconds // 60
+                    hours_ago = time_ago.seconds // 3600
+                    
+                    # Show refresh status with visual indicator
+                    if minutes_ago < 30:
+                        refresh_status = "[FRESH]"
+                        refresh_color = "#28a745"
+                    elif minutes_ago < 60:
+                        refresh_status = "[RECENT]"  
+                        refresh_color = "#ffc107"
+                    else:
+                        refresh_status = "[STALE]"
+                        refresh_color = "#dc3545"
+                    
+                    if time_ago.seconds < 3600:
+                        time_display = f"{minutes_ago} min ago"
+                    else:
+                        time_display = f"{hours_ago} hours ago"
+                        
+                    st.markdown(
+                        f'<div class="refresh-indicator" style="color: {refresh_color};" role="status" aria-live="polite">'
+                        f'📅 Updated: {time_display} <span style="margin-left: 8px;">{refresh_status}</span>'
+                        '</div>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.info("Database timestamp unavailable")
             
             # Auto-refresh button with better UX
             if st.button("🔄 Refresh Data", use_container_width=True, help="Refresh security metrics from GCP APIs"):
                 show_loading_state("Refreshing security data...")
                 st.rerun()
-        else:
-            st.error("❌ Database not found")
+            else:
+                st.error(f"❌ Database not found: {database_path}")
+                if db_status["error"]:
+                    st.error(f"Error: {db_status['error']}")
+        except Exception as e:
+            st.error(f"❌ Database status error: {e}")
         
         if st.button("Clear Chat", use_container_width=True):
             st.session_state.messages = []

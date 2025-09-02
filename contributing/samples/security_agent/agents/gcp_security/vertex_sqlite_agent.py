@@ -12,11 +12,60 @@ import os
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
-# Handle both relative and absolute imports
+# Safe SQLite tool import with multiple fallback methods
+def _import_sqlite_tool():
+    """Safely import the SQLite tool with multiple fallback methods."""
+    import_methods = [
+        # Method 1: Relative import
+        lambda: __import__('.sqlite_tool', fromlist=['query_security_data'], level=1),
+        # Method 2: Direct import
+        lambda: __import__('sqlite_tool'),
+        # Method 3: Absolute path import
+        lambda: _import_from_path('sqlite_tool.py'),
+    ]
+    
+    for i, method in enumerate(import_methods, 1):
+        try:
+            module = method()
+            if hasattr(module, 'query_security_data'):
+                logger.info(f"✅ SQLite tool imported using method {i}")
+                return getattr(module, 'query_security_data')
+        except Exception as e:
+            logger.debug(f"Import method {i} failed: {e}")
+    
+    raise ImportError("Failed to import query_security_data from sqlite_tool")
+
+def _import_from_path(filename):
+    """Import module from absolute file path."""
+    import importlib.util
+    from pathlib import Path
+    
+    # Find the sqlite_tool.py file
+    current_dir = Path(__file__).parent
+    sqlite_tool_path = current_dir / filename
+    
+    if not sqlite_tool_path.exists():
+        raise FileNotFoundError(f"SQLite tool not found at {sqlite_tool_path}")
+    
+    spec = importlib.util.spec_from_file_location("sqlite_tool", sqlite_tool_path)
+    if not spec or not spec.loader:
+        raise ImportError(f"Could not create spec for {sqlite_tool_path}")
+    
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+# Import the SQLite tool function safely
 try:
-    from .sqlite_tool import query_security_data
-except ImportError:
-    from sqlite_tool import query_security_data
+    query_security_data = _import_sqlite_tool()
+except Exception as e:
+    logger.error(f"❌ Failed to import SQLite tool: {e}")
+    
+    # Create a fallback function
+    def query_security_data(query_type: str, params: str = "{}") -> str:
+        return f"Error: SQLite tool not available. Query type: {query_type}, Params: {params}"
+    
+    logger.warning("Using fallback query_security_data function")
 
 # Load environment
 env_path = Path(__file__).parent.parent.parent / '.env'
@@ -405,14 +454,36 @@ else:
     logger.warning("⚠️ GOOGLE_APPLICATION_CREDENTIALS not set or file not found")
 
 # Create agent with SQLite tool (single tool for Vertex AI compliance)
-vertex_sqlite_agent = Agent(
-    name="gcp_security_sqlite",
-    model="gemini-2.0-flash-exp",
-    instruction=instruction,
-    tools=[
-        FunctionTool(query_security_data)  # Only ONE tool allowed with Vertex AI
-    ]
-)
+try:
+    vertex_sqlite_agent = Agent(
+        name="gcp_security_sqlite",
+        model="gemini-2.0-flash-exp",
+        instruction=instruction,
+        tools=[
+            FunctionTool(query_security_data)  # Only ONE tool allowed with Vertex AI
+        ]
+    )
+    logger.info("✅ Vertex SQLite agent created successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to create Vertex SQLite agent: {e}")
+    
+    # Create a minimal fallback agent
+    class FallbackAgent:
+        """Fallback agent when main agent creation fails."""
+        def __init__(self):
+            self.name = "gcp_security_fallback"
+            
+        async def run_async(self, query):
+            """Async generator that yields error messages."""
+            yield "Error: Agent initialization failed. "
+            yield "Please check the logs and ensure all dependencies are properly installed."
+            
+        def run(self, query):
+            """Sync method for compatibility."""
+            return ["Error: Agent initialization failed."]
+    
+    vertex_sqlite_agent = FallbackAgent()
+    logger.warning("Using fallback agent due to initialization failure")
 
 # Export as root_agent
 root_agent = vertex_sqlite_agent
