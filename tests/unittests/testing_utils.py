@@ -36,10 +36,9 @@ from google.adk.runners import InMemoryRunner as AfInMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
-from typing_extensions import override
-
 from google.genai import types
 from google.genai.types import Part
+from typing_extensions import override
 
 
 def create_test_agent(name: str = 'test_agent') -> LlmAgent:

@@ -27,11 +27,9 @@ from typing import cast
 from typing import Iterator
 from typing import List
 from typing import Optional
-from typing import Tuple
 from typing import TYPE_CHECKING
+from typing import Union
 import uuid
-
-from nltk.sem.chat80 import continent
 
 from google.genai import types
 
@@ -190,7 +188,6 @@ async def handle_function_calls_async(
     tools_dict: dict[str, BaseTool],
     filters: Optional[set[str]] = None,
     tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
-
 ) -> Optional[Event]:
   """Calls the functions and returns the function response event."""
   async with Aclosing(
@@ -327,6 +324,16 @@ async def _concat_function_call_generators(
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _aiter_from_iter(it: Union[Iterator, AsyncIterator]) -> AsyncIterator:
+  """returns an async iterator from an iterator or async iterator."""
+  if inspect.isasyncgen(it) or isinstance(it, AsyncIterator):
+    async for x in it:
+      yield x
+  else:
+    for x in it:
+      yield x
+
+
 async def _execute_single_function_call_async_gen(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
@@ -376,26 +383,14 @@ async def _execute_single_function_call_async_gen(
         function_response = await __call_tool_async(
             tool, args=function_args, tool_context=tool_context
         )
-        if inspect.isasyncgen(function_response) or isinstance(
-            function_response, AsyncIterator
+        if (
+            inspect.isasyncgen(function_response)
+            or isinstance(function_response, AsyncIterator)
+            or inspect.isgenerator(function_response)
+            or isinstance(function_response, Iterator)
         ):
           res = None
-          async for res in function_response:
-            if inspect.isawaitable(res):
-              res = await res
-            if (
-                invocation_context.run_config.streaming_mode
-                == StreamingMode.SSE
-            ):
-              yield __build_response_event(
-                  tool, res, tool_context, invocation_context
-              )
-          function_response = res
-        elif inspect.isgenerator(function_response) or isinstance(
-            function_response, Iterator
-        ):
-          res = None
-          for res in function_response:
+          async for res in _aiter_from_iter(function_response):
             if inspect.isawaitable(res):
               res = await res
             if (

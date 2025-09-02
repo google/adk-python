@@ -21,10 +21,10 @@ from typing import AsyncIterator
 from typing import Callable
 from typing import Iterator
 from typing import Optional
-
-from typing_extensions import override
+from typing import Union
 
 from google.genai import types
+from typing_extensions import override
 
 from ..agents.run_config import StreamingMode
 from ..utils.context_utils import Aclosing
@@ -34,6 +34,16 @@ from .tool_confirmation import ToolConfirmation
 from .tool_context import ToolContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+async def _aiter_from_iter(it: Union[Iterator, AsyncIterator]) -> AsyncIterator:
+  """returns an async iterator from an iterator or async iterator."""
+  if inspect.isasyncgen(it) or isinstance(it, AsyncIterator):
+    async for x in it:
+      yield x
+  else:
+    for x in it:
+      yield x
 
 
 class FunctionTool(BaseTool):
@@ -153,26 +163,18 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
     if inspect.isawaitable(func_result):
       result = await func_result
 
-    elif inspect.isgenerator(func_result) or isinstance(func_result, Iterator):
-      if tool_context.run_config.streaming_mode == StreamingMode.SSE:
-        return (
-            func_result  # if streaming_mode: SSE return just generator object.
-        )
-      res = None
-      for res in func_result:
-        if inspect.isawaitable(res):
-          res = await res
-      result = res
-
-    elif inspect.isasyncgen(func_result) or isinstance(
-        func_result, AsyncIterator
+    elif (
+        inspect.isgenerator(func_result)
+        or isinstance(func_result, Iterator)
+        or inspect.isasyncgen(func_result)
+        or isinstance(func_result, AsyncIterator)
     ):
       if tool_context.run_config.streaming_mode == StreamingMode.SSE:
         return (
             func_result  # if streaming_mode: SSE return just generator object.
         )
       res = None
-      async for res in func_result:
+      async for res in _aiter_from_iter(func_result):
         if inspect.isawaitable(res):
           res = await res
       result = res

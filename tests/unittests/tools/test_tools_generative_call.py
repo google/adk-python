@@ -28,9 +28,8 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.tools.function_tool import FunctionTool
-import pytest
-
 from google.genai import types
+import pytest
 
 from .. import testing_utils
 

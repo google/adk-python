@@ -32,9 +32,8 @@ from typing import get_origin
 from typing import Literal
 from typing import Union
 
-import pydantic
-
 from google.genai import types
+import pydantic
 
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -287,25 +286,14 @@ def _parse_schema_from_parameter(
   if get_origin(param.annotation) in (ABCGenerator, ABCIterator, ABCIterable):
     origin = get_origin(param.annotation)
     args = get_args(param.annotation)
-    if origin in {ABCGenerator, ABCIterator, ABCIterable}:
-      schema.type = types.Type.ARRAY
-      item_ann = args[0] if args else Any
-      schema.items = _parse_schema_from_parameter(
-          variant,
-          inspect.Parameter(
-              'item',
-              inspect.Parameter.POSITIONAL_OR_KEYWORD,
-              annotation=item_ann,
-          ),
-          func_name,
-      )
-      if param.default is not inspect.Parameter.empty:
-        if not _is_default_value_compatible(param.default, param.annotation):
-          raise ValueError(default_value_error_msg)
-        schema.default = param.default
-      _raise_if_schema_unsupported(variant, schema)
-      return schema
-    if origin in {ABCAsyncGenerator, ABCAsyncIterator, ABCAsyncIterable}:
+    if origin in {
+        ABCGenerator,
+        ABCIterator,
+        ABCIterable,
+        ABCAsyncGenerator,
+        ABCAsyncIterator,
+        ABCAsyncIterable,
+    }:
       schema.type = types.Type.ARRAY
       item_ann = args[0] if args else Any
       schema.items = _parse_schema_from_parameter(
