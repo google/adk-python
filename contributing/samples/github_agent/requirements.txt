@@ -1,3 +1,4 @@
-google-adk
+google-adk==1.13
 litellm==1.75.9
 litellm[proxy]
+dotenv==0.9.9

@@ -5,6 +5,8 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+if not GITHUB_TOKEN:
+    raise ValueError("GITHUB_TOKEN environment variable not set. Please create a .env file with your token.")
 
 def get_github_tools() -> MCPToolset:
     """Initializes and returns the GitHub toolset."""
