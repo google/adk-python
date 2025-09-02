@@ -24,10 +24,9 @@ from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.genai import types
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
-
-from google.genai import types
 
 from . import _output_schema_processor
 from . import functions
@@ -684,9 +683,6 @@ class BaseLlmFlow(ABC):
       function_call_event: Event,
       llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:
-    # if invocation_context.run_config.streaming_mode == StreamingMode.SSE:
-    #
-    # else:
     if function_response_event_agen := functions.handle_function_calls_async_gen(
         invocation_context, function_call_event, llm_request.tools_dict
     ):
