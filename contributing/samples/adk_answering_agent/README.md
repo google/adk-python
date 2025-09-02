@@ -36,6 +36,7 @@ The `main.py` script supports batch processing for ADK oncall team to process di
 ### Features
 * **Single Discussion**: Process a specific discussion by providing its number.
 * **Batch Process**: Process the N most recently updated discussions.
+* **Direct Discussion Data**: Process a discussion using JSON data directly (optimized for GitHub Actions).
 
 ### Running in Batch Script Mode
 To run the agent in batch script mode, first set the required environment variables. Then, execute one of the following commands:
@@ -48,13 +49,19 @@ python -m adk_answering_agent.main --discussion_number 27
 
 # Answer the 10 most recent updated discussions
 python -m adk_answering_agent.main --recent 10
+
+# Answer a discussion using direct JSON data (saves API calls)
+python -m adk_answering_agent.main --discussion '{"number": 27, "title": "How to...", "body": "I need help with...", "author": {"login": "username"}}'
 ```
 
 ---
 
 ## GitHub Workflow Mode
 
-The `main.py` script is automatically triggered by GitHub Actions when new discussions are created in the Q&A category. The workflow is configured in `.github/workflows/discussion_answering.yml` and automatically processes discussions using the `--discussion_number` flag.
+The `main.py` script is automatically triggered by GitHub Actions when new discussions are created in the Q&A category. The workflow is configured in `.github/workflows/discussion_answering.yml` and automatically processes discussions using the `--discussion` flag with JSON data from the GitHub event payload.
+
+### Optimization
+The GitHub Actions workflow passes discussion data directly from `github.event.discussion` using `toJson()`, eliminating the need for additional API calls to fetch discussion information that's already available in the event payload. This makes the workflow faster and more reliable.
 
 ---
 
