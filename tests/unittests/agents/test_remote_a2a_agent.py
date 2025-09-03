@@ -515,7 +515,7 @@ class TestRemoteA2aAgentMessageHandling:
     self.mock_session.events = [mock_event]
 
     with patch(
-        "google.adk.agents.remote_a2a_agent._convert_foreign_event"
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -937,7 +937,7 @@ class TestRemoteA2aAgentIntegration:
 
     # Mock dependencies
     with patch(
-        "google.adk.agents.remote_a2a_agent._convert_foreign_event"
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
