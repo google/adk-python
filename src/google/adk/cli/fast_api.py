@@ -232,8 +232,14 @@ def get_fast_api_app(
     )
 
   if web:
-    BASE_DIR = Path(__file__).parent.resolve()
-    ANGULAR_DIST_PATH = BASE_DIR / "browser"
+    # Default to the pre-packaged UI, but allow overriding for local development.
+    if adk_web_dir_override := os.environ.get("ADK_WEB_DIR"):
+      ANGULAR_DIST_PATH = Path(adk_web_dir_override)
+      logger.info("Serving ADK web UI from: %s", ANGULAR_DIST_PATH)
+    else:
+      BASE_DIR = Path(__file__).parent.resolve()
+      ANGULAR_DIST_PATH = BASE_DIR / "browser"
+      logger.info("Serving pre-packaged ADK web UI.")
     extra_fast_api_args.update(
         web_assets_dir=ANGULAR_DIST_PATH,
     )
