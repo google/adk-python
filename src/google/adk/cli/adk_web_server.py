@@ -166,6 +166,23 @@ class RunAgentRequest(common.BaseModel):
   state_delta: Optional[dict[str, Any]] = None
 
 
+class CreateSessionRequest(common.BaseModel):
+  session_id: Optional[str] = Field(
+      default=None,
+      description=(
+          "The ID of the session to create. If not provided, a random session"
+          " ID will be generated."
+      ),
+  )
+  state: Optional[dict[str, Any]] = Field(
+      default=None, description="The initial state of the session."
+  )
+  events: Optional[list[Event]] = Field(
+      default=None,
+      description="A list of events to initialize the session with.",
+  )
+
+
 class AddSessionToEvalSetRequest(common.BaseModel):
   eval_id: str
   session_id: str
@@ -452,6 +469,10 @@ class AdkWebServer:
           if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
       ]
 
+    @deprecated(
+        "Please use create_session instead. This will be removed in future"
+        " releases."
+    )
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
         response_model_exclude_none=True,
@@ -484,18 +505,24 @@ class AdkWebServer:
     async def create_session(
         app_name: str,
         user_id: str,
-        state: Optional[dict[str, Any]] = None,
-        events: Optional[list[Event]] = None,
+        req: Optional[CreateSessionRequest] = None,
     ) -> Session:
+      if not req:
+        return await self.session_service.create_session(
+            app_name=app_name, user_id=user_id
+        )
+
       session = await self.session_service.create_session(
-          app_name=app_name, user_id=user_id, state=state
+          app_name=app_name,
+          user_id=user_id,
+          state=req.state,
+          session_id=req.session_id,
       )
 
-      if events:
-        for event in events:
+      if req.events:
+        for event in req.events:
           await self.session_service.append_event(session=session, event=event)
 
-      logger.info("New session created")
       return session
 
     @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
