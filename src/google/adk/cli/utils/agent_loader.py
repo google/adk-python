@@ -32,6 +32,11 @@ from .base_agent_loader import BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
 
+# Special agents directory for agents with names starting with double underscore
+SPECIAL_AGENTS_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "..", "built_in_agents"
+)
+
 
 class AgentLoader(BaseAgentLoader):
   """Centralized agent loading with proper isolation, caching, and .env loading.
@@ -139,9 +144,11 @@ class AgentLoader(BaseAgentLoader):
     return None
 
   @experimental
-  def _load_from_yaml_config(self, agent_name: str) -> Optional[BaseAgent]:
+  def _load_from_yaml_config(
+      self, agent_name: str, agents_dir: str
+  ) -> Optional[BaseAgent]:
     # Load from the config file at agents_dir/{agent_name}/root_agent.yaml
-    config_path = os.path.join(self.agents_dir, agent_name, "root_agent.yaml")
+    config_path = os.path.join(agents_dir, agent_name, "root_agent.yaml")
     try:
       agent = config_agent_utils.from_config(config_path)
       logger.info("Loaded root agent for %s from %s", agent_name, config_path)
@@ -163,32 +170,41 @@ class AgentLoader(BaseAgentLoader):
 
   def _perform_load(self, agent_name: str) -> BaseAgent:
     """Internal logic to load an agent"""
-    # Add self.agents_dir to sys.path
-    if self.agents_dir not in sys.path:
-      sys.path.insert(0, self.agents_dir)
+    # Determine the directory to use for loading
+    if agent_name.startswith("__"):
+      # Special agent: use special agents directory
+      agents_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
+      # Remove the double underscore prefix for the actual agent name
+      actual_agent_name = agent_name[2:]
+    else:
+      # Regular agent: use the configured agents directory
+      agents_dir = self.agents_dir
+      actual_agent_name = agent_name
 
-    logger.debug(
-        "Loading .env for agent %s from %s", agent_name, self.agents_dir
-    )
-    envs.load_dotenv_for_agent(agent_name, str(self.agents_dir))
+    # Add agents_dir to sys.path
+    if agents_dir not in sys.path:
+      sys.path.insert(0, agents_dir)
 
-    if root_agent := self._load_from_module_or_package(agent_name):
+    logger.debug("Loading .env for agent %s from %s", agent_name, agents_dir)
+    envs.load_dotenv_for_agent(actual_agent_name, str(agents_dir))
+
+    if root_agent := self._load_from_module_or_package(actual_agent_name):
       return root_agent
 
-    if root_agent := self._load_from_submodule(agent_name):
+    if root_agent := self._load_from_submodule(actual_agent_name):
       return root_agent
 
-    if root_agent := self._load_from_yaml_config(agent_name):
+    if root_agent := self._load_from_yaml_config(actual_agent_name, agents_dir):
       return root_agent
 
     # If no root_agent was found by any pattern
     raise ValueError(
         f"No root_agent found for '{agent_name}'. Searched in"
-        f" '{agent_name}.agent.root_agent', '{agent_name}.root_agent' and"
-        f" '{agent_name}/root_agent.yaml'."
-        f" Ensure '{self.agents_dir}/{agent_name}' is structured correctly,"
-        " an .env file can be loaded if present, and a root_agent is"
-        " exposed."
+        f" '{actual_agent_name}.agent.root_agent',"
+        f" '{actual_agent_name}.root_agent' and"
+        f" '{actual_agent_name}/root_agent.yaml'. Ensure"
+        f" '{agents_dir}/{actual_agent_name}' is structured correctly, an .env"
+        " file can be loaded if present, and a root_agent is exposed."
     )
 
   @override
