@@ -79,17 +79,47 @@ async def build_graph(
   def get_node_caption(tool_or_agent: Union[BaseAgent, BaseTool]):
 
     if isinstance(tool_or_agent, BaseAgent):
-      return '🤖 ' + tool_or_agent.name
+      agent_name = (
+          tool_or_agent.displayName
+          if hasattr(tool_or_agent, 'displayName')
+          and tool_or_agent.displayName
+          else tool_or_agent.name
+      )
+      return '🤖 ' + agent_name
     elif retrieval_tool_module_loaded and isinstance(
         tool_or_agent, BaseRetrievalTool
     ):
-      return '🔎 ' + tool_or_agent.name
+      tool_name = (
+          tool_or_agent.displayName
+          if hasattr(tool_or_agent, 'displayName')
+          and tool_or_agent.displayName
+          else tool_or_agent.name
+      )
+      return '🔎 ' + tool_name
     elif isinstance(tool_or_agent, FunctionTool):
-      return '🔧 ' + tool_or_agent.name
+      tool_name = (
+          tool_or_agent.displayName
+          if hasattr(tool_or_agent, 'displayName')
+          and tool_or_agent.displayName
+          else tool_or_agent.name
+      )
+      return '🔧 ' + tool_name
     elif isinstance(tool_or_agent, AgentTool):
-      return '🤖 ' + tool_or_agent.name
+      agent_name = (
+          tool_or_agent.displayName
+          if hasattr(tool_or_agent, 'displayName')
+          and tool_or_agent.displayName
+          else tool_or_agent.name
+      )
+      return '🤖 ' + agent_name
     elif isinstance(tool_or_agent, BaseTool):
-      return '🔧 ' + tool_or_agent.name
+      tool_name = (
+          tool_or_agent.displayName
+          if hasattr(tool_or_agent, 'displayName')
+          and tool_or_agent.displayName
+          else tool_or_agent.name
+      )
+      return '🔧 ' + tool_name
     else:
       logger.warning(
           'Unsupported tool, type: %s, obj: %s',

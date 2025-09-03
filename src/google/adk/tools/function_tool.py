@@ -40,39 +40,54 @@ class FunctionTool(BaseTool):
   """
 
   def __init__(
-      self, func: Callable[..., Any], *, require_confirmation: bool = False
+      self,
+      func: Callable[..., Any],
+      name: Optional[str] = None,
+      description: Optional[str] = None,
+      displayName: Optional[str] = None,
   ):
-    """Initializes the FunctionTool. Extracts metadata from a callable object.
+    """Initializes the FunctionTool.
 
     Args:
-      func: The function to wrap.
-      require_confirmation: Whether the tool call requires user confirmation.
+      func: The callable to be wrapped as a tool.
+      name: Optional. The internal name of the tool. If None, it's inferred
+        from the function.
+      description: Optional. A description of what the tool does. If None,
+        it's inferred from the function's docstring.
+      displayName: Optional. A user-friendly name for display purposes. If
+        None, the internal name might be used as a fallback by consumers.
     """
-    name = ''
-    doc = ''
+    inferred_name = ''
+    inferred_description = ''
     # Handle different types of callables
     if hasattr(func, '__name__'):
       # Regular functions, unbound methods, etc.
-      name = func.__name__
+      inferred_name = func.__name__
     elif hasattr(func, '__class__'):
       # Callable objects, bound methods, etc.
-      name = func.__class__.__name__
+      inferred_name = func.__class__.__name__
 
     # Get documentation (prioritize direct __doc__ if available)
     if hasattr(func, '__doc__') and func.__doc__:
-      doc = inspect.cleandoc(func.__doc__)
+      inferred_description = inspect.cleandoc(func.__doc__)
     elif (
         hasattr(func, '__call__')
         and hasattr(func.__call__, '__doc__')
         and func.__call__.__doc__
     ):
       # For callable objects, try to get docstring from __call__ method
-      doc = inspect.cleandoc(func.__call__.__doc__)
+      inferred_description = inspect.cleandoc(func.__call__.__doc__)
 
-    super().__init__(name=name, description=doc)
+    tool_name = name if name is not None else inferred_name
+    tool_description = (
+        description if description is not None else inferred_description
+    )
+
+    super().__init__(name=tool_name, description=tool_description)
     self.func = func
+    self.displayName = displayName
     self._ignore_params = ['tool_context', 'input_stream']
-    self._require_confirmation = require_confirmation
+    self._require_confirmation = False
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
