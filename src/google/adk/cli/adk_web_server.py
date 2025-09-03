@@ -50,7 +50,6 @@ from typing_extensions import override
 from watchdog.observers import Observer
 
 from . import agent_graph
-from ..agents.base_agent import BaseAgent
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.run_config import RunConfig
@@ -58,7 +57,6 @@ from ..agents.run_config import StreamingMode
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..errors.not_found_error import NotFoundError
-from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -313,17 +311,6 @@ class AdkWebServer:
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
-
-  def _get_eval_service(self, agent: BaseAgent):
-    from ..evaluation.local_eval_service import LocalEvalService  # pylint: disable=g-import-not-at-top
-
-    return LocalEvalService(
-        root_agent=agent,
-        eval_sets_manager=self.eval_sets_manager,
-        eval_set_results_manager=self.eval_set_results_manager,
-        session_service=self.session_service,
-        artifact_service=self.artifact_service,
-    )
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the runner for the given app."""
@@ -789,6 +776,7 @@ class AdkWebServer:
       # Create a mapping from eval set file to all the evals that needed to be
       # run.
       try:
+        from ..evaluation.local_eval_service import LocalEvalService
         from .cli_eval import _collect_eval_results
         from .cli_eval import _collect_inferences
 
@@ -801,7 +789,15 @@ class AdkWebServer:
 
         root_agent = self.agent_loader.load_agent(app_name)
 
-        eval_service = self._get_eval_service(root_agent)
+        eval_case_results = []
+
+        eval_service = LocalEvalService(
+            root_agent=root_agent,
+            eval_sets_manager=self.eval_sets_manager,
+            eval_set_results_manager=self.eval_set_results_manager,
+            session_service=self.session_service,
+            artifact_service=self.artifact_service,
+        )
         inference_request = InferenceRequest(
             app_name=app_name,
             eval_set_id=eval_set.eval_set_id,
