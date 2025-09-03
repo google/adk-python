@@ -402,3 +402,42 @@ async def test_get_session_with_config(service_type):
   )
   events = session.events
   assert len(events) == num_test_events - after_timestamp + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+)
+async def test_append_event_with_fields(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id = 'test_user'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, state={}
+  )
+
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      content=types.Content(role='user', parts=[types.Part(text='text')]),
+      long_running_tool_ids={'tool1', 'tool2'},
+      partial=False,
+      turn_complete=True,
+      error_code='ERROR_CODE',
+      error_message='error message',
+      interrupted=True,
+      grounding_metadata=types.GroundingMetadata(
+          web_search_queries=['query1'],
+      ),
+      custom_metadata={'custom_key': 'custom_value'},
+  )
+  await session_service.append_event(session, event)
+
+  retrieved_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert retrieved_session
+  assert len(retrieved_session.events) == 1
+  retrieved_event = retrieved_session.events[0]
+
+  assert retrieved_event == event
