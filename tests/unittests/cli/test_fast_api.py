@@ -757,6 +757,7 @@ def test_agent_run(test_app, create_test_session):
 
   logger.info("Agent run test completed successfully")
 
+
 def test_agent_run_passes_state_delta(test_app, create_test_session):
   """Test /run forwards state_delta and surfaces it in events."""
   info = create_test_session
@@ -778,6 +779,7 @@ def test_agent_run_passes_state_delta(test_app, create_test_session):
 
   # Verify we got the expected event
   assert data[3]["actions"]["stateDelta"] == payload["state_delta"]
+
 
 def test_list_artifact_names(test_app, create_test_session):
   """Test listing artifact names for a session."""
