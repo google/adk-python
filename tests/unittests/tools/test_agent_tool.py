@@ -124,6 +124,7 @@ def test_update_artifacts():
 
   tool_agent = SequentialAgent(
       name='tool_agent',
+      sub_agents= [],
       before_agent_callback=before_tool_agent,
   )
 

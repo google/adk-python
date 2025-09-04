@@ -114,6 +114,9 @@ class AgentTool(BaseTool):
       tool_context: ToolContext,
   ) -> Any:
     from ..agents.llm_agent import LlmAgent
+    from ..runners import Runner
+    from ..sessions.in_memory_session_service import InMemorySessionService
+    from ..memory.in_memory_memory_service import InMemoryMemoryService
 
     if self.skip_summarization:
       tool_context.actions.skip_summarization = True
@@ -134,7 +137,25 @@ class AgentTool(BaseTool):
           parts=[types.Part.from_text(text=args['request'])],
       )
 
-    runner, session = await self._get_or_create_runner_and_session(tool_context)
+    session_id = tool_context._invocation_context.session.id
+    if self.persist_memory and session_id in self._runners:
+      runner, session = self._runners[session_id]
+    else:
+      runner = Runner(
+          app_name=self.agent.name,
+          agent=self.agent,
+          artifact_service=ForwardingArtifactService(tool_context),
+          session_service=InMemorySessionService(),
+          memory_service=InMemoryMemoryService(),
+          credential_service=tool_context._invocation_context.credential_service,
+      )
+      session = await runner.session_service.create_session(
+          app_name=self.agent.name,
+          user_id=tool_context._invocation_context.user_id,
+          state=tool_context.state.to_dict(),
+      )
+      if self.persist_memory:
+        self._runners[session_id] = (runner, session)
 
     last_content = None
     async with Aclosing(
@@ -159,34 +180,6 @@ class AgentTool(BaseTool):
     else:
       tool_result = merged_text
     return tool_result
-
-  async def _get_or_create_runner_and_session(self, tool_context: ToolContext):
-    from ..runners import Runner
-    from ..sessions.in_memory_session_service import InMemorySessionService
-    from ..memory.in_memory_memory_service import InMemoryMemoryService
-
-    session_id = tool_context._invocation_context.session.id
-    if self.persist_memory and session_id in self._runners:
-      return self._runners[session_id]
-
-    runner = Runner(
-        app_name=self.agent.name,
-        agent=self.agent,
-        artifact_service=ForwardingArtifactService(tool_context),
-        session_service=InMemorySessionService(),
-        memory_service=InMemoryMemoryService(),
-        credential_service=tool_context._invocation_context.credential_service,
-    )
-    session = await runner.session_service.create_session(
-        app_name=self.agent.name,
-        user_id=tool_context._invocation_context.user_id,
-        state=tool_context.state.to_dict(),
-    )
-
-    if self.persist_memory:
-      self._runners[session_id] = (runner, session)
-
-    return runner, session
 
   @override
   @classmethod
