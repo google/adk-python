@@ -57,7 +57,10 @@ import httpx
 from ..a2a.converters.event_converter import convert_a2a_message_to_event
 from ..a2a.converters.event_converter import convert_a2a_task_to_event
 from ..a2a.converters.event_converter import convert_event_to_a2a_message
+from ..a2a.converters.part_converter import A2APartToGenAIPartConverter
+from ..a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from ..a2a.converters.part_converter import convert_genai_part_to_a2a_part
+from ..a2a.converters.part_converter import GenAIPartToA2APartConverter
 from ..a2a.experimental import a2a_experimental
 from ..a2a.logs.log_utils import build_a2a_request_log
 from ..a2a.logs.log_utils import build_a2a_response_log
@@ -120,6 +123,8 @@ class RemoteA2aAgent(BaseAgent):
       description: str = "",
       httpx_client: Optional[httpx.AsyncClient] = None,
       timeout: float = DEFAULT_TIMEOUT,
+      genai_part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
+      a2a_part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -149,6 +154,8 @@ class RemoteA2aAgent(BaseAgent):
     self._httpx_client_needs_cleanup = httpx_client is None
     self._timeout = timeout
     self._is_resolved = False
+    self._genai_part_converter = genai_part_converter
+    self._a2a_part_converter = a2a_part_converter
 
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
@@ -298,7 +305,7 @@ class RemoteA2aAgent(BaseAgent):
       return None
 
     a2a_message = convert_event_to_a2a_message(
-        ctx.session.events[-1], ctx, Role.user
+        ctx.session.events[-1], ctx, Role.user, self._genai_part_converter
     )
     if function_call_event.custom_metadata:
       a2a_message.task_id = (
@@ -355,7 +362,7 @@ class RemoteA2aAgent(BaseAgent):
 
       for part in event.content.parts:
 
-        converted_part = convert_genai_part_to_a2a_part(part)
+        converted_part = self._genai_part_converter(part)
         if converted_part:
           message_parts.append(converted_part)
         else:
@@ -380,7 +387,10 @@ class RemoteA2aAgent(BaseAgent):
         if a2a_response.root.result:
           if isinstance(a2a_response.root.result, A2ATask):
             event = convert_a2a_task_to_event(
-                a2a_response.root.result, self.name, ctx
+                a2a_response.root.result,
+                self.name,
+                ctx,
+                self._a2a_part_converter,
             )
             event.custom_metadata = event.custom_metadata or {}
             event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = (
@@ -389,7 +399,10 @@ class RemoteA2aAgent(BaseAgent):
 
           else:
             event = convert_a2a_message_to_event(
-                a2a_response.root.result, self.name, ctx
+                a2a_response.root.result,
+                self.name,
+                ctx,
+                self._a2a_part_converter,
             )
             event.custom_metadata = event.custom_metadata or {}
             if a2a_response.root.result.task_id:

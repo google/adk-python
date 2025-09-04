@@ -31,6 +31,7 @@ from google.genai import types as genai_types
 
 from ...runners import RunConfig
 from ..experimental import a2a_experimental
+from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
 
 
@@ -50,6 +51,7 @@ def _get_user_id(request: RequestContext) -> str:
 @a2a_experimental
 def convert_a2a_request_to_adk_run_args(
     request: RequestContext,
+    part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> dict[str, Any]:
 
   if not request.message:
@@ -60,10 +62,7 @@ def convert_a2a_request_to_adk_run_args(
       'session_id': request.context_id,
       'new_message': genai_types.Content(
           role='user',
-          parts=[
-              convert_a2a_part_to_genai_part(part)
-              for part in request.message.parts
-          ],
+          parts=[part_converter(part) for part in request.message.parts],
       ),
       'run_config': RunConfig(),
   }

@@ -53,6 +53,10 @@ from pydantic import BaseModel
 from typing_extensions import override
 
 from ..converters.event_converter import convert_event_to_a2a_events
+from ..converters.part_converter import A2APartToGenAIPartConverter
+from ..converters.part_converter import convert_a2a_part_to_genai_part
+from ..converters.part_converter import convert_genai_part_to_a2a_part
+from ..converters.part_converter import GenAIPartToA2APartConverter
 from ..converters.request_converter import convert_a2a_request_to_adk_run_args
 from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
@@ -65,12 +69,18 @@ logger = logging.getLogger('google_adk.' + __name__)
 class A2aAgentExecutorConfig(BaseModel):
   """Configuration for the A2aAgentExecutor."""
 
-  pass
+  a2a_part_converter: A2APartToGenAIPartConverter = (
+      convert_a2a_part_to_genai_part
+  )
+  gen_ai_part_converter: GenAIPartToA2APartConverter = (
+      convert_genai_part_to_a2a_part
+  )
 
 
 @a2a_experimental
 class A2aAgentExecutor(AgentExecutor):
   """An AgentExecutor that runs an ADK Agent against an A2A request and
+
   publishes updates to an event queue.
   """
 
@@ -82,7 +92,7 @@ class A2aAgentExecutor(AgentExecutor):
   ):
     super().__init__()
     self._runner = runner
-    self._config = config
+    self._config = config or A2aAgentExecutorConfig()
 
   async def _resolve_runner(self) -> Runner:
     """Resolve the runner, handling cases where it's a callable that returns a Runner."""
@@ -183,7 +193,9 @@ class A2aAgentExecutor(AgentExecutor):
     runner = await self._resolve_runner()
 
     # Convert the a2a request to ADK run args
-    run_args = convert_a2a_request_to_adk_run_args(context)
+    run_args = convert_a2a_request_to_adk_run_args(
+        context, self._config.a2a_part_converter
+    )
 
     # ensure the session exists
     session = await self._prepare_session(context, run_args, runner)
@@ -217,7 +229,11 @@ class A2aAgentExecutor(AgentExecutor):
     async with Aclosing(runner.run_async(**run_args)) as agen:
       async for adk_event in agen:
         for a2a_event in convert_event_to_a2a_events(
-            adk_event, invocation_context, context.task_id, context.context_id
+            adk_event,
+            invocation_context,
+            context.task_id,
+            context.context_id,
+            self._config.gen_ai_part_converter,
         ):
           task_result_aggregator.process_event(a2a_event)
           await event_queue.enqueue_event(a2a_event)
