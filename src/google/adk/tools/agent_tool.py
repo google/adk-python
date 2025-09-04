@@ -165,23 +165,8 @@ class AgentTool(BaseTool):
     from ..sessions.in_memory_session_service import InMemorySessionService
     from ..memory.in_memory_memory_service import InMemoryMemoryService
 
-    if self.persist_memory:
-      session_id = tool_context._invocation_context.session.id
-      if session_id not in self._runners:
-        runner = Runner(
-            app_name=self.agent.name,
-            agent=self.agent,
-            artifact_service=ForwardingArtifactService(tool_context),
-            session_service=InMemorySessionService(),
-            memory_service=InMemoryMemoryService(),
-            credential_service=tool_context._invocation_context.credential_service,
-        )
-        session = await runner.session_service.create_session(
-            app_name=self.agent.name,
-            user_id=tool_context._invocation_context.user_id,
-            state=tool_context.state.to_dict(),
-        )
-        self._runners[session_id] = (runner, session)
+    session_id = tool_context._invocation_context.session.id
+    if self.persist_memory and session_id in self._runners:
       return self._runners[session_id]
 
     runner = Runner(
@@ -197,6 +182,10 @@ class AgentTool(BaseTool):
         user_id=tool_context._invocation_context.user_id,
         state=tool_context.state.to_dict(),
     )
+
+    if self.persist_memory:
+      self._runners[session_id] = (runner, session)
+
     return runner, session
 
   @override
