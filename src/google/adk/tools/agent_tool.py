@@ -46,6 +46,8 @@ class AgentTool(BaseTool):
     agent: The agent to wrap.
     skip_summarization: Whether to skip summarization of the agent output.
   """
+  _runners: Optional[dict[str, tuple['Runner', 'Session']]]
+  _runners: Optional[dict[str, tuple['Runner', 'Session']]]
 
   def __init__(
       self,

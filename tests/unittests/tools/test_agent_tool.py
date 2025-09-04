@@ -23,6 +23,7 @@ from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
+from pytest import fixture
 from pytest import mark
 
 from .. import testing_utils
@@ -42,6 +43,31 @@ function_response_custom = Part.from_function_response(
 function_response_no_schema = Part.from_function_response(
     name='tool_agent', response={'result': 'response1'}
 )
+
+
+@fixture
+def agent_tool_test_setup():
+  """Sets up common objects for agent tool tests."""
+  tool_mock_model = testing_utils.MockModel.create(
+      responses=["Sub-agent response 1", "Sub-agent response 2"]
+  )
+  tool_agent = Agent(
+      name="tool_agent",
+      model=tool_mock_model,
+  )
+
+  mock_context = MagicMock(spec=ToolContext)
+  mock_invocation_context = MagicMock()
+  mock_session = MagicMock()
+  mock_session.id = "test_session"
+  mock_invocation_context.session = mock_session
+  mock_invocation_context.user_id = "test_user"
+  mock_invocation_context.credential_service = InMemoryCredentialService()
+  mock_context._invocation_context = mock_invocation_context
+  mock_context.state = MagicMock()
+  mock_context.state.to_dict.return_value = {}
+  
+  return tool_agent, tool_mock_model, mock_context
 
 
 def change_state_callback(callback_context: CallbackContext):
@@ -361,30 +387,10 @@ def test_agent_tool_response_schema_with_input_schema_no_output_vertex_ai():
   assert declaration.response.type == types.Type.STRING
 
 @mark.asyncio
-async def test_persist_memory():
+async def test_persist_memory(agent_tool_test_setup):
   """Tests that the agent tool can persist memory across tool calls."""
-  # Model for the sub-agent
-  tool_mock_model = testing_utils.MockModel.create(
-      responses=["Sub-agent response 1", "Sub-agent response 2"]
-  )
-  tool_agent = Agent(
-      name="tool_agent",
-      model=tool_mock_model,
-  )
-
+  tool_agent, tool_mock_model, mock_context = agent_tool_test_setup
   agent_tool = AgentTool(agent=tool_agent, persist_memory=True)
-
-  # Create a mock tool context
-  mock_context = MagicMock(spec=ToolContext)
-  mock_invocation_context = MagicMock()
-  mock_session = MagicMock()
-  mock_session.id = "test_session"
-  mock_invocation_context.session = mock_session
-  mock_invocation_context.user_id = "test_user"
-  mock_invocation_context.credential_service = InMemoryCredentialService()
-  mock_context._invocation_context = mock_invocation_context
-  mock_context.state = MagicMock()
-  mock_context.state.to_dict.return_value = {}
 
   # First call to the tool
   await agent_tool.run_async(
@@ -410,30 +416,10 @@ async def test_persist_memory():
 
 
 @mark.asyncio
-async def test_no_persist_memory():
+async def test_no_persist_memory(agent_tool_test_setup):
   """Tests that the agent tool does not persist memory across tool calls."""
-  # Model for the sub-agent
-  tool_mock_model = testing_utils.MockModel.create(
-      responses=["Sub-agent response 1", "Sub-agent response 2"]
-  )
-  tool_agent = Agent(
-      name="tool_agent",
-      model=tool_mock_model,
-  )
-
+  tool_agent, tool_mock_model, mock_context = agent_tool_test_setup
   agent_tool = AgentTool(agent=tool_agent, persist_memory=False)
-
-  # Create a mock tool context
-  mock_context = MagicMock(spec=ToolContext)
-  mock_invocation_context = MagicMock()
-  mock_session = MagicMock()
-  mock_session.id = "test_session"
-  mock_invocation_context.session = mock_session
-  mock_invocation_context.user_id = "test_user"
-  mock_invocation_context.credential_service = InMemoryCredentialService()
-  mock_context._invocation_context = mock_invocation_context
-  mock_context.state = MagicMock()
-  mock_context.state.to_dict.return_value = {}
 
   # First call to the tool
   await agent_tool.run_async(
@@ -454,30 +440,10 @@ async def test_no_persist_memory():
   assert second_request_contents[0].parts[0].text == "test2"
 
 @mark.asyncio
-async def test_cleanup():
+async def test_cleanup(agent_tool_test_setup):
   """Tests that the agent tool can cleanup runners."""
-  # Model for the sub-agent
-  tool_mock_model = testing_utils.MockModel.create(
-      responses=["Sub-agent response 1", "Sub-agent response 2"]
-  )
-  tool_agent = Agent(
-      name="tool_agent",
-      model=tool_mock_model,
-  )
-
+  tool_agent, _, mock_context = agent_tool_test_setup
   agent_tool = AgentTool(agent=tool_agent, persist_memory=True)
-
-  # Create a mock tool context
-  mock_context = MagicMock(spec=ToolContext)
-  mock_invocation_context = MagicMock()
-  mock_session = MagicMock()
-  mock_session.id = "test_session"
-  mock_invocation_context.session = mock_session
-  mock_invocation_context.user_id = "test_user"
-  mock_invocation_context.credential_service = InMemoryCredentialService()
-  mock_context._invocation_context = mock_invocation_context
-  mock_context.state = MagicMock()
-  mock_context.state.to_dict.return_value = {}
 
   # First call to the tool
   await agent_tool.run_async(
