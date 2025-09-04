@@ -21,5 +21,6 @@ from .plan_reflection_planner import PlanReflectionPlanner
 __all__ = [
     'BasePlanner',
     'BuiltInPlanner',
-    'PlanReflectionPlanner',
+    'PlanReActPlanner',
+    'PlanReflectionPlanner'
 ]
