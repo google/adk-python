@@ -116,7 +116,6 @@ class AgentTool(BaseTool):
     from ..agents.llm_agent import LlmAgent
     from ..runners import Runner
     from ..sessions.in_memory_session_service import InMemorySessionService
-    from ..memory.in_memory_memory_service import InMemoryMemoryService
 
     if self.skip_summarization:
       tool_context.actions.skip_summarization = True
