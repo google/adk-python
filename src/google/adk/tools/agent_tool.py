@@ -14,10 +14,11 @@
 
 from __future__ import annotations
 
+import types
 from typing import Any
 from typing import TYPE_CHECKING
 
-from google.genai import types
+from google.genai import types as genai_types
 from pydantic import model_validator
 from typing_extensions import override
 
@@ -45,11 +46,13 @@ class AgentTool(BaseTool):
   Attributes:
     agent: The agent to wrap.
     skip_summarization: Whether to skip summarization of the agent output.
+    persist_memory: Whether to persist the agent's memory across tool calls.
   """
 
-  def __init__(self, agent: BaseAgent, skip_summarization: bool = False):
+  def __init__(self, agent: BaseAgent, skip_summarization: bool = False, persist_memory: bool = False):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
+    self.persist_memory: bool = persist_memory
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -60,7 +63,7 @@ class AgentTool(BaseTool):
     return data
 
   @override
-  def _get_declaration(self) -> types.FunctionDeclaration:
+  def _get_declaration(self) -> genai_types.FunctionDeclaration:
     from ..agents.llm_agent import LlmAgent
     from ..utils.variant_utils import GoogleLLMVariant
 
@@ -69,12 +72,12 @@ class AgentTool(BaseTool):
           func=self.agent.input_schema, variant=self._api_variant
       )
     else:
-      result = types.FunctionDeclaration(
-          parameters=types.Schema(
-              type=types.Type.OBJECT,
+      result = genai_types.FunctionDeclaration(
+          parameters=genai_types.Schema(
+              type=genai_types.Type.OBJECT,
               properties={
-                  'request': types.Schema(
-                      type=types.Type.STRING,
+                  'request': genai_types.Schema(
+                      type=genai_types.Type.STRING,
                   ),
               },
               required=['request'],
@@ -88,10 +91,10 @@ class AgentTool(BaseTool):
       # Determine response type based on agent's output schema
       if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
         # Agent has structured output schema - response is an object
-        result.response = types.Schema(type=types.Type.OBJECT)
+        result.response = genai_types.Schema(type=genai_types.Type.OBJECT)
       else:
         # Agent returns text - response is a string
-        result.response = types.Schema(type=types.Type.STRING)
+        result.response = genai_types.Schema(type=genai_types.Type.STRING)
 
     result.name = self.name
     return result
@@ -112,25 +115,43 @@ class AgentTool(BaseTool):
 
     if isinstance(self.agent, LlmAgent) and self.agent.input_schema:
       input_value = self.agent.input_schema.model_validate(args)
-      content = types.Content(
+      content = genai_types.Content(
           role='user',
           parts=[
-              types.Part.from_text(
+              genai_types.Part.from_text(
                   text=input_value.model_dump_json(exclude_none=True)
               )
           ],
       )
     else:
-      content = types.Content(
+      content = genai_types.Content(
           role='user',
-          parts=[types.Part.from_text(text=args['request'])],
+          parts=[genai_types.Part.from_text(text=args['request'])],
       )
+
+    memory_service = InMemoryMemoryService()
+    if self.persist_memory:
+      def get_state(self):
+        with self._lock:
+          return self._session_events
+      
+      def set_state(self, state):
+        with self._lock:
+          self._session_events = state
+      
+      memory_service.get_state = types.MethodType(get_state, memory_service)
+      memory_service.set_state = types.MethodType(set_state, memory_service)
+
+      memory_key = f"__memory_for_{self.agent.name}"
+      if memory_key in tool_context.state:
+        memory_service.set_state(tool_context.state[memory_key])
+
     runner = Runner(
         app_name=self.agent.name,
         agent=self.agent,
         artifact_service=ForwardingArtifactService(tool_context),
         session_service=InMemorySessionService(),
-        memory_service=InMemoryMemoryService(),
+        memory_service=memory_service,
         credential_service=tool_context._invocation_context.credential_service,
     )
     session = await runner.session_service.create_session(
@@ -152,6 +173,10 @@ class AgentTool(BaseTool):
         if event.content:
           last_content = event.content
 
+    if self.persist_memory:
+      memory_key = f"__memory_for_{self.agent.name}"
+      tool_context.state[memory_key] = memory_service.get_state()
+
     if not last_content:
       return ''
     merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
@@ -166,7 +191,9 @@ class AgentTool(BaseTool):
   @override
   @classmethod
   def from_config(
-      cls, config: ToolArgsConfig, config_abs_path: str
+      cls,
+      config: ToolArgsConfig,
+      config_abs_path: str,
   ) -> AgentTool:
     from ..agents import config_agent_utils
 
@@ -176,7 +203,9 @@ class AgentTool(BaseTool):
         agent_tool_config.agent, config_abs_path
     )
     return cls(
-        agent=agent, skip_summarization=agent_tool_config.skip_summarization
+        agent=agent,
+        skip_summarization=agent_tool_config.skip_summarization,
+        persist_memory=agent_tool_config.persist_memory
     )
 
 
@@ -188,3 +217,6 @@ class AgentToolConfig(BaseToolConfig):
 
   skip_summarization: bool = False
   """Whether to skip summarization of the agent output."""
+
+  persist_memory: bool = False
+  """Whether to persist the agent's memory across tool calls."""
