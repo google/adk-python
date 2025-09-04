@@ -327,7 +327,12 @@ class Runner:
       for i, part in enumerate(new_message.parts):
         if part.inline_data is None:
           continue
-        file_name = f'artifact_{invocation_context.invocation_id}_{i}'
+        file_name = (
+            part.inline_data.display_name
+            if hasattr(part.inline_data, 'display_name')
+            and part.inline_data.display_name
+            else f'artifact_{invocation_context.invocation_id}_{i}'
+        )
         await self.artifact_service.save_artifact(
             app_name=self.app_name,
             user_id=session.user_id,

@@ -96,6 +96,11 @@ class CallbackContext(ReadonlyContext):
     Returns:
      The version of the artifact.
     """
+    if (
+        hasattr(artifact.inline_data, 'display_name')
+        and artifact.inline_data.display_name
+    ):
+      filename = artifact.inline_data.display_name
     if self._invocation_context.artifact_service is None:
       raise ValueError("Artifact service is not initialized.")
     version = await self._invocation_context.artifact_service.save_artifact(
