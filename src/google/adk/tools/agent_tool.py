@@ -47,9 +47,19 @@ class AgentTool(BaseTool):
     skip_summarization: Whether to skip summarization of the agent output.
   """
 
-  def __init__(self, agent: BaseAgent, skip_summarization: bool = False):
+  def __init__(
+      self,
+      agent: BaseAgent,
+      skip_summarization: bool = False,
+      persist_memory: bool = False,
+  ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
+    self.persist_memory: bool = persist_memory
+    if self.persist_memory:
+      self._runners = {}
+    else:
+      self._runners = None
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -125,19 +135,38 @@ class AgentTool(BaseTool):
           role='user',
           parts=[types.Part.from_text(text=args['request'])],
       )
-    runner = Runner(
-        app_name=self.agent.name,
-        agent=self.agent,
-        artifact_service=ForwardingArtifactService(tool_context),
-        session_service=InMemorySessionService(),
-        memory_service=InMemoryMemoryService(),
-        credential_service=tool_context._invocation_context.credential_service,
-    )
-    session = await runner.session_service.create_session(
-        app_name=self.agent.name,
-        user_id=tool_context._invocation_context.user_id,
-        state=tool_context.state.to_dict(),
-    )
+    if self.persist_memory:
+      session_id = tool_context._invocation_context.session.id
+      if session_id not in self._runners:
+        runner = Runner(
+            app_name=self.agent.name,
+            agent=self.agent,
+            artifact_service=ForwardingArtifactService(tool_context),
+            session_service=InMemorySessionService(),
+            memory_service=InMemoryMemoryService(),
+            credential_service=tool_context._invocation_context.credential_service,
+        )
+        session = await runner.session_service.create_session(
+            app_name=self.agent.name,
+            user_id=tool_context._invocation_context.user_id,
+            state=tool_context.state.to_dict(),
+        )
+        self._runners[session_id] = (runner, session)
+      (runner, session) = self._runners[session_id]
+    else:
+      runner = Runner(
+          app_name=self.agent.name,
+          agent=self.agent,
+          artifact_service=ForwardingArtifactService(tool_context),
+          session_service=InMemorySessionService(),
+          memory_service=InMemoryMemoryService(),
+          credential_service=tool_context._invocation_context.credential_service,
+      )
+      session = await runner.session_service.create_session(
+          app_name=self.agent.name,
+          user_id=tool_context._invocation_context.user_id,
+          state=tool_context.state.to_dict(),
+      )
 
     last_content = None
     async with Aclosing(
@@ -176,7 +205,9 @@ class AgentTool(BaseTool):
         agent_tool_config.agent, config_abs_path
     )
     return cls(
-        agent=agent, skip_summarization=agent_tool_config.skip_summarization
+        agent=agent,
+        skip_summarization=agent_tool_config.skip_summarization,
+        persist_memory=agent_tool_config.persist_memory,
     )
 
 
@@ -188,3 +219,6 @@ class AgentToolConfig(BaseToolConfig):
 
   skip_summarization: bool = False
   """Whether to skip summarization of the agent output."""
+
+  persist_memory: bool = False
+  """Whether to persist the agent's memory across tool calls."""

@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import MagicMock
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.types import Part
@@ -355,3 +358,96 @@ def test_agent_tool_response_schema_with_input_schema_no_output_vertex_ai():
   # Should have string response schema for VERTEX_AI when no output_schema
   assert declaration.response is not None
   assert declaration.response.type == types.Type.STRING
+
+@mark.asyncio
+async def test_persist_memory():
+  """Tests that the agent tool can persist memory across tool calls."""
+  # Model for the sub-agent
+  tool_mock_model = testing_utils.MockModel.create(
+      responses=["Sub-agent response 1", "Sub-agent response 2"]
+  )
+  tool_agent = Agent(
+      name="tool_agent",
+      model=tool_mock_model,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent, persist_memory=True)
+
+  # Create a mock tool context
+  mock_context = MagicMock(spec=ToolContext)
+  mock_invocation_context = MagicMock()
+  mock_session = MagicMock()
+  mock_session.id = "test_session"
+  mock_invocation_context.session = mock_session
+  mock_invocation_context.user_id = "test_user"
+  mock_invocation_context.credential_service = InMemoryCredentialService()
+  mock_context._invocation_context = mock_invocation_context
+  mock_context.state = MagicMock()
+  mock_context.state.to_dict.return_value = {}
+
+  # First call to the tool
+  await agent_tool.run_async(
+      args={"request": "test1"}, tool_context=mock_context
+  )
+
+  # Second call to the tool
+  await agent_tool.run_async(
+      args={"request": "test2"}, tool_context=mock_context
+  )
+
+  # Check the history of the sub-agent's model
+  # The second request should contain the history of the first call.
+  assert len(tool_mock_model.requests) == 2
+  second_request_contents = tool_mock_model.requests[1].contents
+  assert len(second_request_contents) == 3
+  assert second_request_contents[0].role == "user"
+  assert second_request_contents[0].parts[0].text == "test1"
+  assert second_request_contents[1].role == "model"
+  assert second_request_contents[1].parts[0].text == "Sub-agent response 1"
+  assert second_request_contents[2].role == "user"
+  assert second_request_contents[2].parts[0].text == "test2"
+
+
+@mark.asyncio
+async def test_no_persist_memory():
+  """Tests that the agent tool does not persist memory across tool calls."""
+  # Model for the sub-agent
+  tool_mock_model = testing_utils.MockModel.create(
+      responses=["Sub-agent response 1", "Sub-agent response 2"]
+  )
+  tool_agent = Agent(
+      name="tool_agent",
+      model=tool_mock_model,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent, persist_memory=False)
+
+  # Create a mock tool context
+  mock_context = MagicMock(spec=ToolContext)
+  mock_invocation_context = MagicMock()
+  mock_session = MagicMock()
+  mock_session.id = "test_session"
+  mock_invocation_context.session = mock_session
+  mock_invocation_context.user_id = "test_user"
+  mock_invocation_context.credential_service = InMemoryCredentialService()
+  mock_context._invocation_context = mock_invocation_context
+  mock_context.state = MagicMock()
+  mock_context.state.to_dict.return_value = {}
+
+  # First call to the tool
+  await agent_tool.run_async(
+      args={"request": "test1"}, tool_context=mock_context
+  )
+
+  # Second call to the tool
+  await agent_tool.run_async(
+      args={"request": "test2"}, tool_context=mock_context
+  )
+
+  # Check the history of the sub-agent's model
+  # The second request should not contain the history of the first call.
+  assert len(tool_mock_model.requests) == 2
+  second_request_contents = tool_mock_model.requests[1].contents
+  assert len(second_request_contents) == 1
+  assert second_request_contents[0].role == "user"
+  assert second_request_contents[0].parts[0].text == "test2"
