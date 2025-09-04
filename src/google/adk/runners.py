@@ -296,7 +296,9 @@ class Runner:
           )
           yield (modified_event if modified_event else event)
 
-    # Step 4: Run the after_run callbacks to optionally modify the context.
+    # Step 4: Run the after_run callbacks to perform global cleanup tasks or
+    # finalizing logs and metrics data.
+    # This does NOT emit any event.
     await plugin_manager.run_after_run_callback(
         invocation_context=invocation_context
     )
