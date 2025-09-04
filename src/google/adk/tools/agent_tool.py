@@ -152,6 +152,7 @@ class AgentTool(BaseTool):
           app_name=self.agent.name,
           user_id=tool_context._invocation_context.user_id,
           state=tool_context.state.to_dict(),
+          session_id=session_id,
       )
       if self.persist_memory:
         self._runners[session_id] = (runner, session)
@@ -179,6 +180,14 @@ class AgentTool(BaseTool):
     else:
       tool_result = merged_text
     return tool_result
+
+  def cleanup(self, session_id: str | None = None):
+    """Cleans up the runners for all sessions."""
+    if self.persist_memory:
+      if session_id:
+        self._runners.pop(session_id, None)
+      else:
+        self._runners.clear()
 
   @override
   @classmethod

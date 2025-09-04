@@ -452,3 +452,53 @@ async def test_no_persist_memory():
   assert len(second_request_contents) == 1
   assert second_request_contents[0].role == "user"
   assert second_request_contents[0].parts[0].text == "test2"
+
+@mark.asyncio
+async def test_cleanup():
+  """Tests that the agent tool can cleanup runners."""
+  # Model for the sub-agent
+  tool_mock_model = testing_utils.MockModel.create(
+      responses=["Sub-agent response 1", "Sub-agent response 2"]
+  )
+  tool_agent = Agent(
+      name="tool_agent",
+      model=tool_mock_model,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent, persist_memory=True)
+
+  # Create a mock tool context
+  mock_context = MagicMock(spec=ToolContext)
+  mock_invocation_context = MagicMock()
+  mock_session = MagicMock()
+  mock_session.id = "test_session"
+  mock_invocation_context.session = mock_session
+  mock_invocation_context.user_id = "test_user"
+  mock_invocation_context.credential_service = InMemoryCredentialService()
+  mock_context._invocation_context = mock_invocation_context
+  mock_context.state = MagicMock()
+  mock_context.state.to_dict.return_value = {}
+
+  # First call to the tool
+  await agent_tool.run_async(
+      args={"request": "test1"}, tool_context=mock_context
+  )
+
+  assert len(agent_tool._runners) == 1
+
+  # Cleanup the session
+  agent_tool.cleanup("test_session")
+
+  assert len(agent_tool._runners) == 0
+
+  # Second call to the tool
+  await agent_tool.run_async(
+      args={"request": "test2"}, tool_context=mock_context
+  )
+
+  assert len(agent_tool._runners) == 1
+
+  # Cleanup all sessions
+  agent_tool.cleanup()
+
+  assert len(agent_tool._runners) == 0
