@@ -15,9 +15,11 @@
 from .base_planner import BasePlanner
 from .built_in_planner import BuiltInPlanner
 from .plan_re_act_planner import PlanReActPlanner
+from .plan_reflection_planner import PlanReflectionPlanner
+
 
 __all__ = [
     'BasePlanner',
     'BuiltInPlanner',
-    'PlanReActPlanner',
+    'PlanReflectionPlanner',
 ]
