@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 from typing import TYPE_CHECKING
 
+from cachetools import LRUCache
 from google.genai import types
 from pydantic import model_validator
 from typing_extensions import override
@@ -54,12 +55,13 @@ class AgentTool(BaseTool):
       agent: BaseAgent,
       skip_summarization: bool = False,
       persist_memory: bool = False,
+      cache_size: int = 128,
   ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
     self.persist_memory: bool = persist_memory
     if self.persist_memory:
-      self._runners = {}
+      self._runners = LRUCache(maxsize=cache_size)
     else:
       self._runners = None
 
@@ -183,14 +185,6 @@ class AgentTool(BaseTool):
       tool_result = merged_text
     return tool_result
 
-  def cleanup(self, session_id: str | None = None):
-    """Cleans up the runners for all sessions."""
-    if self.persist_memory:
-      if session_id:
-        self._runners.pop(session_id, None)
-      else:
-        self._runners.clear()
-
   @override
   @classmethod
   def from_config(
@@ -207,6 +201,7 @@ class AgentTool(BaseTool):
         agent=agent,
         skip_summarization=agent_tool_config.skip_summarization,
         persist_memory=agent_tool_config.persist_memory,
+        cache_size=agent_tool_config.cache_size,
     )
 
 
@@ -221,3 +216,6 @@ class AgentToolConfig(BaseToolConfig):
 
   persist_memory: bool = False
   """Whether to persist the agent's memory across tool calls."""
+
+  cache_size: int = 128
+  """The maximum number of runners to cache."""

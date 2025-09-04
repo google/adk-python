@@ -49,7 +49,7 @@ function_response_no_schema = Part.from_function_response(
 def agent_tool_test_setup():
   """Sets up common objects for agent tool tests."""
   tool_mock_model = testing_utils.MockModel.create(
-      responses=["Sub-agent response 1", "Sub-agent response 2"]
+      responses=["Sub-agent response 1", "Sub-agent response 2", "Sub-agent response 3"]
   )
   tool_agent = Agent(
       name="tool_agent",
@@ -440,31 +440,29 @@ async def test_no_persist_memory(agent_tool_test_setup):
   assert second_request_contents[0].parts[0].text == "test2"
 
 @mark.asyncio
-async def test_cleanup(agent_tool_test_setup):
-  """Tests that the agent tool can cleanup runners."""
+async def test_lru_cache(agent_tool_test_setup):
+  """Tests that the LRU cache evicts runners."""
   tool_agent, _, mock_context = agent_tool_test_setup
-  agent_tool = AgentTool(agent=tool_agent, persist_memory=True)
+  agent_tool = AgentTool(agent=tool_agent, persist_memory=True, cache_size=2)
 
   # First call to the tool
+  mock_context._invocation_context.session.id = "session1"
   await agent_tool.run_async(
       args={"request": "test1"}, tool_context=mock_context
   )
-
   assert len(agent_tool._runners) == 1
 
-  # Cleanup the session
-  agent_tool.cleanup("test_session")
-
-  assert len(agent_tool._runners) == 0
-
   # Second call to the tool
+  mock_context._invocation_context.session.id = "session2"
   await agent_tool.run_async(
       args={"request": "test2"}, tool_context=mock_context
   )
+  assert len(agent_tool._runners) == 2
 
-  assert len(agent_tool._runners) == 1
-
-  # Cleanup all sessions
-  agent_tool.cleanup()
-
-  assert len(agent_tool._runners) == 0
+  # Third call to the tool, should evict the first runner
+  mock_context._invocation_context.session.id = "session3"
+  await agent_tool.run_async(
+      args={"request": "test3"}, tool_context=mock_context
+  )
+  assert len(agent_tool._runners) == 2
+  assert "session1" not in agent_tool._runners

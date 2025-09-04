@@ -29,6 +29,7 @@ dependencies = [
   "absolufy-imports>=0.3.1, <1.0.0",                        # For Agent Engine deployment.
   "anyio>=4.9.0, <5.0.0;python_version>='3.10'",            # For MCP Session Manager
   "authlib>=1.5.1, <2.0.0",                                 # For RestAPI Tool
+  "cachetools>=5.3.3, <6.0.0",                              # For LRU cache
   "click>=8.1.8, <9.0.0",                                   # For CLI tools
   "fastapi>=0.115.0, <1.0.0",                               # FastAPI framework
   "google-api-python-client>=2.157.0, <3.0.0",              # Google API client discovery
