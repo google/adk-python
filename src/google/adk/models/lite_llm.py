@@ -154,8 +154,8 @@ def _safe_json_serialize(obj) -> str:
     return str(obj)
 
 
-def _content_to_message_param(
-    content: types.Content,
+async def _content_to_message_param(
+    content: types.Content, custom_llm_provider: str = None
 ) -> Union[Message, list[Message]]:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -184,7 +184,9 @@ def _content_to_message_param(
 
   # Handle user or assistant messages
   role = _to_litellm_role(content.role)
-  message_content = _get_content(content.parts) or None
+  message_content = (
+      await _get_content(content.parts, custom_llm_provider) or None
+  )
 
   if role == "user":
     return ChatCompletionUserMessage(role="user", content=message_content)
@@ -223,8 +225,8 @@ def _content_to_message_param(
     )
 
 
-def _get_content(
-    parts: Iterable[types.Part],
+async def _get_content(
+    parts: Iterable[types.Part], custom_llm_provider: str = None
 ) -> Union[OpenAIMessageContent, str]:
   """Converts a list of parts to litellm content.
 
@@ -251,6 +253,14 @@ def _get_content(
     ):
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
       data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
+      if custom_llm_provider in ["openai", "azure"]:
+        open_ai_file_object = await litellm.acreate_file(
+            file=part.inline_data.data,
+            purpose="assistants",
+            custom_llm_provider=custom_llm_provider,  # type: ignore
+        )
+      else:
+        open_ai_file_object = None
 
       if part.inline_data.mime_type.startswith("image"):
         # Use full MIME type (e.g., "image/png") for providers that validate it
@@ -273,12 +283,32 @@ def _get_content(
             "type": "audio_url",
             "audio_url": {"url": data_uri, "format": format_type},
         })
-      elif part.inline_data.mime_type == "application/pdf":
+      elif (
+          part.inline_data.mime_type.startswith("text/")
+          or part.inline_data.mime_type == "application/pdf"
+          or part.inline_data.mime_type == "application/msword"
+          or part.inline_data.mime_type == "application/json"
+          or part.inline_data.mime_type == "application/x-sh"
+          or part.inline_data.mime_type == "application/typescript"
+          or part.inline_data.mime_type
+          == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          or part.inline_data.mime_type
+          == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      ):
         format_type = part.inline_data.mime_type
-        content_objects.append({
-            "type": "file",
-            "file": {"file_data": data_uri, "format": format_type},
-        })
+        if open_ai_file_object:
+          content_objects.append({
+              "type": "file",
+              "file": {
+                  "file_id": open_ai_file_object.id,
+                  "format": format_type,
+              },
+          })
+        else:
+          content_objects.append({
+              "type": "file",
+              "file": {"file_data": data_uri, "format": format_type},
+          })
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
 
@@ -521,7 +551,7 @@ def _message_to_generate_content_response(
   )
 
 
-def _get_completion_inputs(
+async def _get_completion_inputs(
     llm_request: LlmRequest,
 ) -> Tuple[
     List[Message],
@@ -537,10 +567,24 @@ def _get_completion_inputs(
   Returns:
     The litellm inputs (message list, tool dictionary, response format and generation params).
   """
+  # 0. check custom_llm_provider
+  if llm_request.model is None:
+    custom_llm_provider = "UNK"
+  elif "gemini" in llm_request.model:
+    custom_llm_provider = "vertex_ai"
+  elif "azure" in llm_request.model:
+    custom_llm_provider = "azure"
+  elif "openai" in llm_request.model:
+    custom_llm_provider = "azure"
+  else:
+    custom_llm_provider = "UNK"
+
   # 1. Construct messages
   messages: List[Message] = []
   for content in llm_request.contents or []:
-    message_param_or_list = _content_to_message_param(content)
+    message_param_or_list = await _content_to_message_param(
+        content, custom_llm_provider
+    )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
     elif message_param_or_list:  # Ensure it's not None before appending
@@ -800,7 +844,7 @@ class LiteLlm(BaseLlm):
     logger.debug(_build_request_log(llm_request))
 
     messages, tools, response_format, generation_params = (
-        _get_completion_inputs(llm_request)
+        await _get_completion_inputs(llm_request)
     )
 
     if "functions" in self._additional_args:
