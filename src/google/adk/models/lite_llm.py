@@ -285,15 +285,16 @@ async def _get_content(
         })
       elif (
           part.inline_data.mime_type.startswith("text/")
-          or part.inline_data.mime_type == "application/pdf"
-          or part.inline_data.mime_type == "application/msword"
-          or part.inline_data.mime_type == "application/json"
-          or part.inline_data.mime_type == "application/x-sh"
-          or part.inline_data.mime_type == "application/typescript"
           or part.inline_data.mime_type
-          == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          or part.inline_data.mime_type
-          == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+          in {
+              "application/pdf",
+              "application/msword",
+              "application/json",
+              "application/x-sh",
+              "application/typescript",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          }
       ):
         format_type = part.inline_data.mime_type
         if open_ai_file_object:
