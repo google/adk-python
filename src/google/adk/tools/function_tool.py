@@ -42,9 +42,11 @@ class FunctionTool(BaseTool):
   def __init__(
       self,
       func: Callable[..., Any],
+      *,
       name: Optional[str] = None,
       description: Optional[str] = None,
       displayName: Optional[str] = None,
+      require_confirmation: bool = False,
   ):
     """Initializes the FunctionTool.
 
@@ -56,6 +58,8 @@ class FunctionTool(BaseTool):
         it's inferred from the function's docstring.
       displayName: Optional. A user-friendly name for display purposes. If
         None, the internal name might be used as a fallback by consumers.
+      require_confirmation: If true, the tool requires user's confirmation before
+        execution.
     """
     inferred_name = ''
     inferred_description = ''
@@ -87,7 +91,7 @@ class FunctionTool(BaseTool):
     self.func = func
     self.displayName = displayName
     self._ignore_params = ['tool_context', 'input_stream']
-    self._require_confirmation = False
+    self._require_confirmation = require_confirmation
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
