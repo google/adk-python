@@ -231,21 +231,26 @@ class StorageEvent(Base):
 
   invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
   author: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
+  actions: Mapped[MutableDict[str, Any]] = mapped_column(DynamicPickleType)
+  long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
+      Text, nullable=True
+  )
   branch: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
   )
   timestamp: Mapped[PreciseTimestamp] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
-  content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
-  actions: Mapped[MutableDict[str, Any]] = mapped_column(DynamicPickleType)
 
-  long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
-      Text, nullable=True
-  )
+  # === Fileds from llm_response.py ===
+  content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
   grounding_metadata: Mapped[dict[str, Any]] = mapped_column(
       DynamicJSON, nullable=True
   )
+  custom_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+
   partial: Mapped[bool] = mapped_column(Boolean, nullable=True)
   turn_complete: Mapped[bool] = mapped_column(Boolean, nullable=True)
   error_code: Mapped[str] = mapped_column(
@@ -309,6 +314,8 @@ class StorageEvent(Base):
       storage_event.grounding_metadata = event.grounding_metadata.model_dump(
           exclude_none=True, mode="json"
       )
+    if event.custom_metadata:
+      storage_event.custom_metadata = event.custom_metadata
     return storage_event
 
   def to_event(self) -> Event:
@@ -329,6 +336,7 @@ class StorageEvent(Base):
         grounding_metadata=_session_util.decode_grounding_metadata(
             self.grounding_metadata
         ),
+        custom_metadata=self.custom_metadata,
     )
 
 
@@ -403,7 +411,7 @@ class DatabaseSessionService(BaseSessionService):
 
     # Get the local timezone
     local_timezone = get_localzone()
-    logger.info(f"Local timezone: {local_timezone}")
+    logger.info("Local timezone: %s", local_timezone)
 
     self.db_engine: Engine = db_engine
     self.metadata: MetaData = MetaData()
