@@ -133,7 +133,7 @@ def _rearrange_events_for_latest_function_response(
 
   function_responses = events[-1].get_function_responses()
   if not function_responses:
-    # No need to process, since the latest event is not fuction_response.
+    # No need to process, since the latest event is not function_response.
     return events
 
   function_responses_ids = set()

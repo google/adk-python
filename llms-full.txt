@@ -15168,7 +15168,7 @@ Agent client received an event with long running function calls and check the st
                     return part.function_call
 
         def get_function_response(event: Event, function_call_id: str) -> types.FunctionResponse:
-            # Get the function response for the fuction call with specified id.
+            # Get the function response for the function call with specified id.
             if not event.content or not event.content.parts:
                 return
             for part in event.content.parts:
