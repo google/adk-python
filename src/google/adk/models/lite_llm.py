@@ -575,7 +575,7 @@ async def _get_completion_inputs(
   elif "azure" in llm_request.model:
     custom_llm_provider = "azure"
   elif "openai" in llm_request.model:
-    custom_llm_provider = "azure"
+    custom_llm_provider = "openai"
   else:
     custom_llm_provider = "UNK"
 
