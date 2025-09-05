@@ -1,25 +1,33 @@
 {
   "name": "security-agent-tests",
   "version": "1.0.0",
-  "description": "E2E tests for ADK Security Agent",
+  "description": "Comprehensive E2E tests for ADK Security Agent",
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",
     "test:debug": "playwright test --debug",
+    "test:coverage": "playwright test --reporter=html,json,junit",
+    "test:basic": "playwright test tests/e2e/security_agent_basic.spec.ts",
+    "test:comprehensive": "playwright test tests/e2e/security_agent_comprehensive.spec.ts",
+    "test:full": "playwright test tests/e2e/security_agent_full.spec.ts",
+    "test:streamlit": "playwright test tests/e2e/security_agent_streamlit.spec.ts",
+    "test:critical": "playwright test tests/e2e/security_agent_comprehensive.spec.ts -g 'Critical Path'",
     "test:dashboard": "playwright test --grep dashboard",
     "test:chat": "playwright test --grep chat",
     "test:security": "playwright test --grep security",
     "test:api": "playwright test --grep api",
     "test:smoke": "playwright test --grep smoke",
     "test:all": "playwright test --project=chromium --project=firefox --project=webkit",
+    "test:ci": "playwright test --reporter=junit,html --retries=2",
     "report": "playwright show-report",
-    "codegen": "playwright codegen http://localhost:8501"
+    "coverage:show": "open playwright-report/index.html",
+    "codegen": "playwright codegen http://localhost:8501",
+    "install:browsers": "playwright install",
+    "install:deps": "playwright install-deps"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
-    "@types/node": "^20.0.0"
-  },
-  "dependencies": {
-    "2": "^3.0.0"
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
   }
 }
