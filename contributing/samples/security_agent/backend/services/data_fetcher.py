@@ -360,7 +360,7 @@ class DataFetcher:
         
         # Process results
         for i, result in enumerate(fetch_results):
-            fetch_type = ["compute", "storage", "networks", "firewall", "iam", "databases", "findings", "assets", "secrets", "monitoring", "gke"][i]
+            fetch_type = ["compute", "storage", "networks", "firewall", "iam", "iam_policies", "databases", "findings", "assets", "secrets", "monitoring", "gke"][i]
             if isinstance(result, Exception):
                 logger.error(f"Error fetching {fetch_type}: {result}")
                 results["errors"].append(f"{fetch_type}: {str(result)}")
@@ -1254,7 +1254,7 @@ class DataFetcher:
                             "resource_type": result.resource.type,
                             "resource_name": result.resource.labels.get('instance_name', result.resource.labels.get('bucket_name', 'unknown')),
                             "metric_type": metric_type,
-                            "value": float(result.points[0].value.double_value) if result.points else 0.0,
+                            "value": float(result.points[0].value.double_value) if result.points and len(result.points) > 0 else 0.0,
                             "unit": result.metric.type,
                             "timestamp": now.isoformat(),
                             "labels": json.dumps(dict(result.resource.labels))
