@@ -27,8 +27,16 @@ def test_bigquery_tool_config_experimental_warning():
     BigQueryToolConfig()
 
 
+def test_bigquery_tool_config_invalid_property():
+  """Test BigQueryToolConfig raises exception when setting invalid property."""
+  with pytest.raises(
+      ValueError,
+  ):
+    BigQueryToolConfig(non_existent_field="some value")
+
+
 def test_bigquery_tool_config_invalid_application_name():
-  """Test BigQueryToolConfig with invalid application name."""
+  """Test BigQueryToolConfig raises exception with invalid application name."""
   with pytest.raises(
       ValueError,
       match="Application name should not contain spaces.",

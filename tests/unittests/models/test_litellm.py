@@ -16,6 +16,7 @@
 import json
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
+import warnings
 
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
@@ -1036,7 +1037,7 @@ def test_get_content_image():
       content[0]["image_url"]["url"]
       == "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
   )
-  assert content[0]["image_url"]["format"] == "png"
+  assert content[0]["image_url"]["format"] == "image/png"
 
 
 def test_get_content_video():
@@ -1049,7 +1050,33 @@ def test_get_content_video():
       content[0]["video_url"]["url"]
       == "data:video/mp4;base64,dGVzdF92aWRlb19kYXRh"
   )
-  assert content[0]["video_url"]["format"] == "mp4"
+  assert content[0]["video_url"]["format"] == "video/mp4"
+
+
+def test_get_content_pdf():
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "file"
+  assert (
+      content[0]["file"]["file_data"]
+      == "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ=="
+  )
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+def test_get_content_audio():
+  parts = [
+      types.Part.from_bytes(data=b"test_audio_data", mime_type="audio/mpeg")
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "audio_url"
+  assert (
+      content[0]["audio_url"]["url"]
+      == "data:audio/mpeg;base64,dGVzdF9hdWRpb19kYXRh"
+  )
+  assert content[0]["audio_url"]["format"] == "audio/mpeg"
 
 
 def test_to_litellm_role():
@@ -1548,3 +1575,51 @@ def test_get_completion_inputs_generation_params():
   # Should not include max_output_tokens
   assert "max_output_tokens" not in generation_params
   assert "stop_sequences" not in generation_params
+
+
+def test_gemini_via_litellm_warning(monkeypatch):
+  """Test that Gemini via LiteLLM shows warning."""
+  # Ensure environment variable is not set
+  monkeypatch.delenv("ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", raising=False)
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with Google AI Studio Gemini via LiteLLM
+    LiteLlm(model="gemini/gemini-2.5-pro-exp-03-25")
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[GEMINI_VIA_LITELLM]" in str(w[0].message)
+    assert "better performance" in str(w[0].message)
+    assert "gemini-2.5-pro-exp-03-25" in str(w[0].message)
+    assert "ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS" in str(w[0].message)
+
+
+def test_gemini_via_litellm_warning_vertex_ai(monkeypatch):
+  """Test that Vertex AI Gemini via LiteLLM shows warning."""
+  # Ensure environment variable is not set
+  monkeypatch.delenv("ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", raising=False)
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with Vertex AI Gemini via LiteLLM
+    LiteLlm(model="vertex_ai/gemini-1.5-flash")
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[GEMINI_VIA_LITELLM]" in str(w[0].message)
+    assert "vertex_ai/gemini-1.5-flash" in str(w[0].message)
+
+
+def test_gemini_via_litellm_warning_suppressed(monkeypatch):
+  """Test that Gemini via LiteLLM warning can be suppressed."""
+  monkeypatch.setenv("ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", "true")
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    LiteLlm(model="gemini/gemini-2.5-pro-exp-03-25")
+    assert len(w) == 0
+
+
+def test_non_gemini_litellm_no_warning():
+  """Test that non-Gemini models via LiteLLM don't show warning."""
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with non-Gemini model
+    LiteLlm(model="openai/gpt-4o")
+    assert len(w) == 0

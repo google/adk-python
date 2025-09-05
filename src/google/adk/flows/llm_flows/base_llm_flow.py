@@ -210,11 +210,11 @@ class BaseLlmFlow(ABC):
       except (ConnectionClosed, ConnectionClosedOK) as e:
         # when the session timeout, it will just close and not throw exception.
         # so this is for bad cases
-        logger.error(f'Connection closed: {e}.')
+        logger.error('Connection closed: %s.', e)
         raise
       except Exception as e:
         logger.error(
-            f'An unexpected error occurred in live flow: {e}', exc_info=True
+            'An unexpected error occurred in live flow: %s', e, exc_info=True
         )
         raise
 
@@ -637,6 +637,12 @@ class BaseLlmFlow(ABC):
       )
       if auth_event:
         yield auth_event
+
+      tool_confirmation_event = functions.generate_request_confirmation_event(
+          invocation_context, function_call_event, function_response_event
+      )
+      if tool_confirmation_event:
+        yield tool_confirmation_event
 
       # Always yield the function response event first
       yield function_response_event

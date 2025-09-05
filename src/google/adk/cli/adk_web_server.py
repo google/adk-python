@@ -50,10 +50,12 @@ from typing_extensions import override
 from watchdog.observers import Observer
 
 from . import agent_graph
+from ..agents.base_agent import BaseAgent
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..errors.not_found_error import NotFoundError
@@ -164,6 +166,23 @@ class RunAgentRequest(common.BaseModel):
   new_message: types.Content
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
+
+
+class CreateSessionRequest(common.BaseModel):
+  session_id: Optional[str] = Field(
+      default=None,
+      description=(
+          "The ID of the session to create. If not provided, a random session"
+          " ID will be generated."
+      ),
+  )
+  state: Optional[dict[str, Any]] = Field(
+      default=None, description="The initial state of the session."
+  )
+  events: Optional[list[Event]] = Field(
+      default=None,
+      description="A list of events to initialize the session with.",
+  )
 
 
 class AddSessionToEvalSetRequest(common.BaseModel):
@@ -305,10 +324,17 @@ class AdkWebServer:
     envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
     if app_name in self.runner_dict:
       return self.runner_dict[app_name]
-    root_agent = self.agent_loader.load_agent(app_name)
+    agent_or_app = self.agent_loader.load_agent(app_name)
+    agentic_app = None
+    if isinstance(agent_or_app, BaseAgent):
+      agentic_app = App(
+          name=app_name,
+          root_agent=agent_or_app,
+      )
+    else:
+      agentic_app = agent_or_app
     runner = Runner(
-        app_name=app_name,
-        agent=root_agent,
+        app=agentic_app,
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
@@ -452,6 +478,10 @@ class AdkWebServer:
           if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
       ]
 
+    @deprecated(
+        "Please use create_session instead. This will be removed in future"
+        " releases."
+    )
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
         response_model_exclude_none=True,
@@ -484,18 +514,24 @@ class AdkWebServer:
     async def create_session(
         app_name: str,
         user_id: str,
-        state: Optional[dict[str, Any]] = None,
-        events: Optional[list[Event]] = None,
+        req: Optional[CreateSessionRequest] = None,
     ) -> Session:
+      if not req:
+        return await self.session_service.create_session(
+            app_name=app_name, user_id=user_id
+        )
+
       session = await self.session_service.create_session(
-          app_name=app_name, user_id=user_id, state=state
+          app_name=app_name,
+          user_id=user_id,
+          state=req.state,
+          session_id=req.session_id,
       )
 
-      if events:
-        for event in events:
+      if req.events:
+        for event in req.events:
           await self.session_service.append_event(session=session, event=event)
 
-      logger.info("New session created")
       return session
 
     @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
@@ -597,9 +633,10 @@ class AdkWebServer:
       invocations = evals.convert_session_to_eval_invocations(session)
 
       # Populate the session with initial session state.
-      initial_session_state = create_empty_state(
-          self.agent_loader.load_agent(app_name)
-      )
+      agent_or_app = self.agent_loader.load_agent(app_name)
+      if isinstance(agent_or_app, App):
+        agent_or_app = agent_or_app.root_agent
+      initial_session_state = create_empty_state(agent_or_app)
 
       new_eval_case = EvalCase(
           eval_id=req.eval_id,
@@ -993,6 +1030,7 @@ class AdkWebServer:
               user_id=req.user_id,
               session_id=req.session_id,
               new_message=req.new_message,
+              state_delta=req.state_delta,
           )
       ) as agen:
         events = [event async for event in agen]

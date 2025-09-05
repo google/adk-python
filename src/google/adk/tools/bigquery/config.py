@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import field_validator
 
 from ...utils.feature_decorator import experimental
@@ -50,6 +51,9 @@ class WriteMode(Enum):
 class BigQueryToolConfig(BaseModel):
   """Configuration for BigQuery tools."""
 
+  # Forbid any fields not defined in the model
+  model_config = ConfigDict(extra='forbid')
+
   write_mode: WriteMode = WriteMode.BLOCKED
   """Write mode for BigQuery tools.
 
@@ -69,6 +73,13 @@ class BigQueryToolConfig(BaseModel):
   By default, no particular application name will be set in the BigQuery
   interaction. But if the the tool user (agent builder) wants to differentiate
   their application/agent for tracking or support purpose, they can set this field.
+  """
+
+  compute_project_id: Optional[str] = None
+  """GCP project ID to use for the BigQuery compute operations.
+
+  This can be set as a guardrail to ensure that the tools perform the compute
+  operations (such as query execution) in a specific project.
   """
 
   @field_validator('application_name')
