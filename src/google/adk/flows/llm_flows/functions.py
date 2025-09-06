@@ -65,7 +65,15 @@ def populate_client_function_call_id(model_response_event: Event) -> None:
       function_call.id = generate_client_function_call_id()
 
 
-def remove_client_function_call_id(content: types.Content) -> None:
+def remove_client_function_call_id(content: Optional[types.Content]) -> None:
+  """Removes ADK-generated function call IDs from content before sending to LLM.
+
+  Strips client-side function call/response IDs that start with 'adk-' prefix
+  to avoid sending internal tracking IDs to the model.
+
+  Args:
+    content: Content containing function calls/responses to clean.
+  """
   if content and content.parts:
     for part in content.parts:
       if (

@@ -329,7 +329,7 @@ async def run_evals(
       except Exception:
         # Catching the general exception, so that we don't block other eval
         # cases.
-        logger.exception(f"Eval failed for `{eval_set_id}:{eval_name}`")
+        logger.exception("Eval failed for `%s:%s`", eval_set_id, eval_name)
 
 
 def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:

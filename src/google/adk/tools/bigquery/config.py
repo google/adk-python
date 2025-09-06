@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import field_validator
 
 from ...utils.feature_decorator import experimental
@@ -49,6 +50,9 @@ class WriteMode(Enum):
 @experimental('Config defaults may have breaking change in the future.')
 class BigQueryToolConfig(BaseModel):
   """Configuration for BigQuery tools."""
+
+  # Forbid any fields not defined in the model
+  model_config = ConfigDict(extra='forbid')
 
   write_mode: WriteMode = WriteMode.BLOCKED
   """Write mode for BigQuery tools.

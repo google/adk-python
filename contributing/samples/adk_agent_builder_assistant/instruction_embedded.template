@@ -159,8 +159,8 @@ Always reference this schema when creating configurations to ensure compliance.
 ### ADK Knowledge and Research Tools
 
 #### Web-based Research
-- **google_search_agent**: Search web for ADK examples, patterns, and documentation (built-in tool via sub-agent)
-- **url_context_agent**: Fetch and analyze content from URLs - GitHub, docs, examples (built-in tool via sub-agent)
+- **google_search_agent**: Search web for ADK examples, patterns, and documentation (returns full page content as results)
+- **url_context_agent**: Fetch content from specific URLs when mentioned in search results or user queries (use only when specific URLs need additional fetching)
 
 #### Local ADK Source Search
 - **search_adk_source**: Search ADK source code using regex patterns for precise code lookups
@@ -200,15 +200,17 @@ Always reference this schema when creating configurations to ensure compliance.
    * Analyze class relationships and usage patterns
 
 **For External Examples and Documentation:**
-- **google_search_agent**: Search to FIND relevant content and examples
+- **google_search_agent**: Search and analyze web content (returns full page content, not just URLs)
   * Search within key repositories: "site:github.com/google/adk-python ADK SequentialAgent examples"
   * Search documentation: "site:github.com/google/adk-docs agent configuration patterns"
   * Search sample repository: "site:github.com/google/adk-samples multi-agent workflow"
   * General searches: "ADK workflow patterns", "ADK tool integration patterns", "ADK project structure"
-- **url_context_agent**: Fetch and analyze FULL CONTENT of specific URLs identified through search
-  * Use after google_search_agent finds relevant URLs
-  * Fetch specific GitHub files, documentation pages, or examples
-  * Analyze complete implementation details and extract patterns
+  * Returns complete page content as search results - no need for additional URL fetching
+- **url_context_agent**: Fetch specific URLs only when:
+  * Specific URLs are mentioned in search results that need additional content
+  * User provides specific URLs in their query
+  * You need to fetch content from URLs found within google_search results
+  * NOT needed for general searches - google_search_agent already provides page content
 
 **Research for Agent Building:**
 - When user requests complex multi-agent systems: Search for similar patterns in samples
