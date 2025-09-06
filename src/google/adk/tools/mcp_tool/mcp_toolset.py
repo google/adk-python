@@ -100,7 +100,7 @@ class McpToolset(BaseToolset):
           StreamableHTTPConnectionParams,
       ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
-      tool_name_prefix: str = "",
+      tool_name_prefix: Optional[str] = None,
       errlog: TextIO = sys.stderr,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
@@ -245,7 +245,7 @@ class McpToolsetConfig(BaseToolConfig):
 
   tool_filter: Optional[List[str]] = None
 
-  tool_name_prefix: str = ""
+  tool_name_prefix: Optional[str] = None
 
   auth_scheme: Optional[AuthScheme] = None
 
