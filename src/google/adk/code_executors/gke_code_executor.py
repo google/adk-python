@@ -17,14 +17,15 @@ from __future__ import annotations
 import logging
 import uuid
 
-from google.adk.agents.invocation_context import InvocationContext
-from google.adk.code_executors.base_code_executor import BaseCodeExecutor
-from google.adk.code_executors.code_execution_utils import CodeExecutionInput
-from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from kubernetes import client
 from kubernetes import config
 from kubernetes.client.rest import ApiException
 from kubernetes.watch import Watch
+
+from ..agents.invocation_context import InvocationContext
+from .base_code_executor import BaseCodeExecutor
+from .code_execution_utils import CodeExecutionInput
+from .code_execution_utils import CodeExecutionResult
 
 logger = logging.getLogger("google_adk." + __name__)
 
