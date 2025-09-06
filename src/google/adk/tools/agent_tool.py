@@ -132,6 +132,7 @@ class AgentTool(BaseTool):
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
         credential_service=tool_context._invocation_context.credential_service,
+        plugins=list(tool_context._invocation_context.plugin_manager.plugins),
     )
     session = await runner.session_service.create_session(
         app_name=self.agent.name,
