@@ -17,9 +17,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from kubernetes import client
-from kubernetes import config
-from kubernetes.client.rest import ApiException
+import kubernetes as k8s
 from kubernetes.watch import Watch
 
 from ..agents.invocation_context import InvocationContext
@@ -76,8 +74,8 @@ class GkeCodeExecutor(BaseCodeExecutor):
   kubeconfig_path: str | None = None
   kubeconfig_context: str | None = None
 
-  _batch_v1: client.BatchV1Api
-  _core_v1: client.CoreV1Api
+  _batch_v1: k8s.client.BatchV1Api
+  _core_v1: k8s.client.CoreV1Api
 
   def __init__(
       self,
@@ -99,10 +97,10 @@ class GkeCodeExecutor(BaseCodeExecutor):
     if self.kubeconfig_path:
       try:
         logger.info(f"Using explicit kubeconfig from '{self.kubeconfig_path}'.")
-        config.load_kube_config(
+        k8s.config.load_kube_config(
             config_file=self.kubeconfig_path, context=self.kubeconfig_context
         )
-      except config.ConfigException as e:
+      except k8s.config.ConfigException as e:
         logger.error(
             f"Failed to load explicit kubeconfig from {self.kubeconfig_path}",
             exc_info=True,
@@ -112,16 +110,16 @@ class GkeCodeExecutor(BaseCodeExecutor):
         ) from e
     else:
       try:
-        config.load_incluster_config()
+        k8s.config.load_incluster_config()
         logger.info("Using in-cluster Kubernetes configuration.")
-      except config.ConfigException:
+      except k8s.config.ConfigException:
         try:
           logger.info(
               "In-cluster config not found. Falling back to default local"
               " kubeconfig."
           )
-          config.load_kube_config()
-        except config.ConfigException as e:
+          k8s.config.load_kube_config()
+        except k8s.config.ConfigException as e:
           logger.error(
               "Could not configure Kubernetes client automatically.",
               exc_info=True,
@@ -130,8 +128,8 @@ class GkeCodeExecutor(BaseCodeExecutor):
               "Failed to find any valid Kubernetes configuration."
           ) from e
 
-    self._batch_v1 = client.BatchV1Api()
-    self._core_v1 = client.CoreV1Api()
+    self._batch_v1 = k8s.client.BatchV1Api()
+    self._core_v1 = k8s.client.CoreV1Api()
 
   def execute_code(
       self,
@@ -161,7 +159,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
       )
       return self._watch_job_completion(job_name)
 
-    except ApiException as e:
+    except k8s.client.exceptions.ApiException as e:
       logger.error(
           "A Kubernetes API error occurred during job"
           f" '{job_name}': {e.reason}",
@@ -187,44 +185,46 @@ class GkeCodeExecutor(BaseCodeExecutor):
       job_name: str,
       configmap_name: str,
       invocation_context: InvocationContext,
-  ) -> client.V1Job:
+  ) -> k8s.client.V1Job:
     """Creates the complete V1Job object with security best practices."""
     # Define the container that will run the code.
-    container = client.V1Container(
+    container = k8s.client.V1Container(
         name="code-runner",
         image=self.image,
         command=["python3", "/app/code.py"],
         volume_mounts=[
-            client.V1VolumeMount(name="code-volume", mount_path="/app")
+            k8s.client.V1VolumeMount(name="code-volume", mount_path="/app")
         ],
         # Enforce a strict security context.
-        security_context=client.V1SecurityContext(
+        security_context=k8s.client.V1SecurityContext(
             run_as_non_root=True,
             run_as_user=1001,
             allow_privilege_escalation=False,
             read_only_root_filesystem=True,
-            capabilities=client.V1Capabilities(drop=["ALL"]),
+            capabilities=k8s.client.V1Capabilities(drop=["ALL"]),
         ),
         # Set resource limits to prevent abuse.
-        resources=client.V1ResourceRequirements(
+        resources=k8s.client.V1ResourceRequirements(
             requests={"cpu": self.cpu_requested, "memory": self.mem_requested},
             limits={"cpu": self.cpu_limit, "memory": self.mem_limit},
         ),
     )
 
     # Use tolerations to request a gVisor node.
-    pod_spec = client.V1PodSpec(
+    pod_spec = k8s.client.V1PodSpec(
         restart_policy="Never",
         containers=[container],
         volumes=[
-            client.V1Volume(
+            k8s.client.V1Volume(
                 name="code-volume",
-                config_map=client.V1ConfigMapVolumeSource(name=configmap_name),
+                config_map=k8s.client.V1ConfigMapVolumeSource(
+                    name=configmap_name
+                ),
             )
         ],
         runtime_class_name="gvisor",  # Request the gVisor runtime.
         tolerations=[
-            client.V1Toleration(
+            k8s.client.V1Toleration(
                 key="sandbox.gke.io/runtime",
                 operator="Equal",
                 value="gvisor",
@@ -233,8 +233,8 @@ class GkeCodeExecutor(BaseCodeExecutor):
         ],
     )
 
-    job_spec = client.V1JobSpec(
-        template=client.V1PodTemplateSpec(spec=pod_spec),
+    job_spec = k8s.client.V1JobSpec(
+        template=k8s.client.V1PodTemplateSpec(spec=pod_spec),
         backoff_limit=0,  # Do not retry the Job on failure.
         # Kubernetes TTL controller will handle Job/Pod cleanup.
         ttl_seconds_after_finished=600,  # Garbage collect after 10 minutes.
@@ -244,10 +244,12 @@ class GkeCodeExecutor(BaseCodeExecutor):
     annotations = {
         "adk.agent.google.com/invocation-id": invocation_context.invocation_id
     }
-    return client.V1Job(
+    return k8s.client.V1Job(
         api_version="batch/v1",
         kind="Job",
-        metadata=client.V1ObjectMeta(name=job_name, annotations=annotations),
+        metadata=k8s.client.V1ObjectMeta(
+            name=job_name, annotations=annotations
+        ),
         spec=job_spec,
     )
 
@@ -301,25 +303,25 @@ class GkeCodeExecutor(BaseCodeExecutor):
       return self._core_v1.read_namespaced_pod_log(
           name=pod_name, namespace=self.namespace
       )
-    except ApiException as e:
+    except k8s.client.exceptions.ApiException as e:
       raise RuntimeError(
           f"API error retrieving logs for job '{job_name}': {e.reason}"
       ) from e
 
   def _create_code_configmap(self, name: str, code: str) -> None:
     """Creates a ConfigMap to hold the Python code."""
-    body = client.V1ConfigMap(
-        metadata=client.V1ObjectMeta(name=name), data={"code.py": code}
+    body = k8s.client.V1ConfigMap(
+        metadata=k8s.client.V1ObjectMeta(name=name), data={"code.py": code}
     )
     self._core_v1.create_namespaced_config_map(
         namespace=self.namespace, body=body
     )
 
   def _add_owner_reference(
-      self, owner_job: client.V1Job, configmap_name: str
+      self, owner_job: k8s.client.V1Job, configmap_name: str
   ) -> None:
     """Patches the ConfigMap to be owned by the Job for auto-cleanup."""
-    owner_reference = client.V1OwnerReference(
+    owner_reference = k8s.client.V1OwnerReference(
         api_version=owner_job.api_version,
         kind=owner_job.kind,
         name=owner_job.metadata.name,
@@ -338,7 +340,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
           f"Set Job '{owner_job.metadata.name}' as owner of ConfigMap"
           f" '{configmap_name}'."
       )
-    except ApiException as e:
+    except k8s.client.exceptions.ApiException as e:
       logger.warning(
           f"Failed to set ownerReference on ConfigMap '{configmap_name}'. "
           f"Manual cleanup is required. Reason: {e.reason}"
