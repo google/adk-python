@@ -19,8 +19,8 @@ from google.adk.code_executors import GkeCodeExecutor
 
 
 def gke_agent_system_instruction():
-    """Returns: The system instruction for the GKE-based coding agent."""
-    return """You are a helpful and capable AI agent that can write and execute Python code to answer questions and perform tasks.
+  """Returns: The system instruction for the GKE-based coding agent."""
+  return """You are a helpful and capable AI agent that can write and execute Python code to answer questions and perform tasks.
 
 When a user asks a question, follow these steps:
 1.  Analyze the request.
