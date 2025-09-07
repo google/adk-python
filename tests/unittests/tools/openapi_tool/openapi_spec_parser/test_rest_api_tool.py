@@ -33,6 +33,7 @@ from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import snak
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
+import httpx
 import pytest
 
 
@@ -193,7 +194,7 @@ class TestRestApiTool:
     assert isinstance(declaration.parameters, Schema)
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_success(
@@ -225,7 +226,7 @@ class TestRestApiTool:
     assert result == {"result": "success"}
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_auth_pending(

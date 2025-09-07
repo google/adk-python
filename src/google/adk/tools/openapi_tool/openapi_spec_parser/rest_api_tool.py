@@ -24,7 +24,7 @@ from typing import Union
 
 from fastapi.openapi.models import Operation
 from google.genai.types import FunctionDeclaration
-import requests
+import httpx
 from typing_extensions import override
 
 from ....auth.auth_credential import AuthCredential
@@ -240,7 +240,7 @@ class RestApiTool(BaseTool):
 
     Returns:
         A dictionary containing the  request parameters for the API call. This
-        initializes a requests.request() call.
+        initializes an httpx.AsyncClient.request() call.
 
     Example:
         self._prepare_request_params({"input_id": "test-id"})
@@ -395,13 +395,13 @@ class RestApiTool(BaseTool):
 
     # Got all parameters. Call the API.
     request_params = self._prepare_request_params(api_params, api_args)
-    response = requests.request(**request_params)
+    response = await _request(**request_params)
 
     # Parse API response
     try:
-      response.raise_for_status()  # Raise HTTPError for bad responses
+      response.raise_for_status()  # Raise HTTPStatusError for bad responses
       return response.json()  # Try to decode JSON
-    except requests.exceptions.HTTPError:
+    except httpx.HTTPStatusError:
       error_details = response.content.decode("utf-8")
       return {
           "error": (
@@ -427,3 +427,8 @@ class RestApiTool(BaseTool):
         f' auth_scheme="{self.auth_scheme}",'
         f' auth_credential="{self.auth_credential}")'
     )
+
+
+async def _request(**request_params) -> httpx.Response:
+  async with httpx.AsyncClient() as client:
+    return await client.request(**request_params)
