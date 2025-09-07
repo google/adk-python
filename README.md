@@ -64,7 +64,7 @@ You can install the latest stable version of ADK using `pip`:
 pip install google-adk
 ```
 
-The release cadence is weekly.
+The release cadence is roughly bi-weekly.
 
 This version is recommended for most users as it represents the most recent official release.
 

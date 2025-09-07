@@ -130,7 +130,7 @@ class VertexAiSessionService(BaseSessionService):
               reasoning_engine_id, session_id, api_client
           )
         except ClientError:
-          logger.info(f'Polling session resource')
+          logger.info('Polling session resource')
           return None
 
       try:
@@ -320,7 +320,7 @@ class VertexAiSessionService(BaseSessionService):
           request_dict={},
       )
     except Exception as e:
-      logger.error(f'Error deleting session {session_id}: {e}')
+      logger.error('Error deleting session %s: %s', session_id, e)
       raise e
 
   @override
