@@ -286,6 +286,11 @@ class SqliteMemoryService(BaseMemoryService):
 
     try:
       async with aiosqlite.connect(self._db_path) as db:
+        if user_id and not app_name:
+          raise ValueError(
+              'When clearing memory by user_id, app_name must also be provided.'
+          )
+
         if app_name and user_id:
           await db.execute(
               'DELETE FROM memory_entries WHERE app_name = ? AND user_id = ?',
