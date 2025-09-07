@@ -44,7 +44,7 @@ def _prepare_fts_query(query: str) -> str:
   # Remove special FTS5 characters and split into words
   import re
 
-  words = re.findall(r'[A-Za-z0-9]+', query.lower())
+  words = re.findall(r'\w+', query.lower())
   if not words:
     return ''
   # Join words with OR to match any of the words
