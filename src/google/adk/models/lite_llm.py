@@ -302,7 +302,6 @@ async def _get_content(
               "type": "file",
               "file": {
                   "file_id": open_ai_file_object.id,
-                  "format": format_type,
               },
           })
         else:
