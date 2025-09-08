@@ -19,6 +19,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from unittest import mock
+from urllib import parse
 
 from dateutil.parser import isoparse
 from google.adk.events.event import Event
@@ -107,6 +108,22 @@ MOCK_EVENT_JSON_3 = [
         'timestamp': '2024-12-12T12:12:12.123456Z',
     },
 ]
+MOCK_SESSION_JSON_PAGE1 = {
+    'name': (
+        'projects/test-project/locations/test-location/'
+        'reasoningEngines/123/sessions/page1'
+    ),
+    'updateTime': '2024-12-15T12:12:12.123456Z',
+    'userId': 'user_with_pages',
+}
+MOCK_SESSION_JSON_PAGE2 = {
+    'name': (
+        'projects/test-project/locations/test-location/'
+        'reasoningEngines/123/sessions/page2'
+    ),
+    'updateTime': '2024-12-16T12:12:12.123456Z',
+    'userId': 'user_with_pages',
+}
 
 MOCK_SESSION = Session(
     app_name='123',
@@ -157,9 +174,7 @@ MOCK_SESSION_2 = Session(
 
 
 SESSION_REGEX = r'^reasoningEngines/([^/]+)/sessions/([^/]+)$'
-SESSIONS_REGEX = (  # %22 represents double-quotes in a URL-encoded string
-    r'^reasoningEngines/([^/]+)/sessions\?filter=user_id=%22([^%]+)%22.*$'
-)
+SESSIONS_REGEX = r'^reasoningEngines/([^/]+)/sessions\?.*$'
 EVENTS_REGEX = (
     r'^reasoningEngines/([^/]+)/sessions/([^/]+)/events(?:\?pageToken=([^/]+))?'
 )
@@ -188,12 +203,28 @@ class MockApiClient:
           else:
             raise ValueError(f'Session not found: {session_id}')
       elif re.match(SESSIONS_REGEX, path):
-        match = re.match(SESSIONS_REGEX, path)
+        parsed_url = parse.urlparse(path)
+        query_params = parse.parse_qs(parsed_url.query)
+        filter_val = query_params.get('filter', [''])[0]
+        user_id_match = re.search(r'user_id="([^"]+)"', filter_val)
+        if not user_id_match:
+          raise ValueError(f'Could not find user_id in filter: {filter_val}')
+        user_id = user_id_match.group(1)
+
+        if user_id == 'user_with_pages':
+          page_token = query_params.get('pageToken', [None])[0]
+          if page_token == 'my_token':
+            return {'sessions': [MOCK_SESSION_JSON_PAGE2]}
+          else:
+            return {
+                'sessions': [MOCK_SESSION_JSON_PAGE1],
+                'nextPageToken': 'my_token',
+            }
         return {
             'sessions': [
                 session
                 for session in self.session_dict.values()
-                if session['userId'] == match.group(2)
+                if session['userId'] == user_id
             ],
         }
       elif re.match(EVENTS_REGEX, path):
@@ -271,6 +302,8 @@ def mock_get_api_client():
       '1': MOCK_SESSION_JSON_1,
       '2': MOCK_SESSION_JSON_2,
       '3': MOCK_SESSION_JSON_3,
+      'page1': MOCK_SESSION_JSON_PAGE1,
+      'page2': MOCK_SESSION_JSON_PAGE2,
   }
   api_client.event_dict = {
       '1': (MOCK_EVENT_JSON, None),
@@ -356,6 +389,18 @@ async def test_list_sessions():
   assert len(sessions.sessions) == 2
   assert sessions.sessions[0].id == '1'
   assert sessions.sessions[1].id == '2'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_list_sessions_with_pagination():
+  session_service = mock_vertex_ai_session_service()
+  sessions = await session_service.list_sessions(
+      app_name='123', user_id='user_with_pages'
+  )
+  assert len(sessions.sessions) == 2
+  assert sessions.sessions[0].id == 'page1'
+  assert sessions.sessions[1].id == 'page2'
 
 
 @pytest.mark.asyncio
