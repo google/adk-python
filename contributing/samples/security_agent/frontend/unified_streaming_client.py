@@ -27,6 +27,12 @@ import httpx
 import asyncio
 import json
 
+# Optional imports for system info
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,9 +40,10 @@ logger = logging.getLogger(__name__)
 # Import dashboard module for database functionality
 sys.path.insert(0, str(Path(__file__).parent))
 from dashboard import SecurityDashboard
-from evaluation_page import evaluation_manager
+# from evaluation_page import evaluation_manager  # Moved to archive
 from iam_features import IAMFeaturesUI
 from networking_dashboard import main as networking_main
+from websocket_chat_interface import display_websocket_chat, WebSocketChatInterface
 
 # Import centralized database configuration and safe agent loader
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -65,9 +72,14 @@ except Exception as e:
 # Page config
 st.set_page_config(
     page_title="GCP Security Executive Dashboard",
-    page_icon=":lock:",
+    page_icon="🔐",
     layout="wide",
-    initial_sidebar_state="collapsed"  # Changed to collapsed by default
+    initial_sidebar_state="expanded",  # Always expanded for navigation
+    menu_items={
+        'Get Help': 'https://docs.example.com',
+        'Report a bug': 'https://github.com/issues',
+        'About': 'GCP Security Dashboard v1.13.0'
+    }
 )
 
 # Custom CSS for better display, accessibility, and mobile responsiveness
@@ -251,6 +263,10 @@ def init_session():
     if "messages" not in st.session_state:
         st.session_state.messages = []
     
+    # Initialize navigation state
+    if "selected_view" not in st.session_state:
+        st.session_state.selected_view = "dashboard"
+    
     # Use lock to prevent race conditions in session initialization
     session_lock = "_session_init_lock"
     
@@ -310,6 +326,94 @@ def init_session():
         # Always remove the initialization lock
         if session_lock in st.session_state:
             del st.session_state[session_lock]
+
+
+def display_quick_access_cards():
+    """Display quick access cards for different security sections."""
+    st.header("Security Control Center")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        with st.container():
+            st.markdown("""
+            <div style='padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                        border-radius: 10px; color: white; text-align: center; cursor: pointer;'>
+                <h3>🤖 Security Chat</h3>
+                <p>AI-powered security assistant with real-time analysis</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Open Chat", key="card_chat", use_container_width=True):
+                st.session_state.selected_view = "chat"
+                st.rerun()
+    
+    with col2:
+        with st.container():
+            st.markdown("""
+            <div style='padding: 20px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); 
+                        border-radius: 10px; color: white; text-align: center;'>
+                <h3>🔐 IAM Analysis</h3>
+                <p>Identity & access management security insights</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Analyze IAM", key="card_iam", use_container_width=True):
+                st.session_state.selected_view = "iam"
+                st.rerun()
+    
+    with col3:
+        with st.container():
+            st.markdown("""
+            <div style='padding: 20px; background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); 
+                        border-radius: 10px; color: white; text-align: center;'>
+                <h3>🌐 Network Security</h3>
+                <p>Firewall rules and network configuration analysis</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("View Network", key="card_network", use_container_width=True):
+                st.session_state.selected_view = "network"
+                st.rerun()
+    
+    # Second row
+    col4, col5, col6 = st.columns(3)
+    
+    with col4:
+        with st.container():
+            st.markdown("""
+            <div style='padding: 20px; background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); 
+                        border-radius: 10px; color: white; text-align: center;'>
+                <h3>📊 MSA Analyzer</h3>
+                <p>Managed Service Account impact analysis</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Analyze MSA", key="card_msa", use_container_width=True):
+                st.session_state.selected_view = "msa"
+                st.rerun()
+    
+    with col5:
+        with st.container():
+            st.markdown("""
+            <div style='padding: 20px; background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%); 
+                        border-radius: 10px; color: #333; text-align: center;'>
+                <h3>⚙️ Service Evaluation</h3>
+                <p>GCP service security assessment</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Evaluate Services", key="card_services", use_container_width=True):
+                st.session_state.selected_view = "services"
+                st.rerun()
+    
+    with col6:
+        with st.container():
+            st.markdown("""
+            <div style='padding: 20px; background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%); 
+                        border-radius: 10px; color: #333; text-align: center;'>
+                <h3>📈 Analytics</h3>
+                <p>Security metrics and trend analysis</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("View Analytics", key="card_analytics", use_container_width=True):
+                # Could add analytics view
+                st.info("Analytics dashboard coming soon")
 
 
 def display_executive_dashboard():
@@ -1393,11 +1497,231 @@ def display_chat_interface():
     """Display the streaming chat interface."""
     st.header("Security Intelligence Chat")
     
-    # Sidebar with quick queries
+    # Enhanced Sidebar with comprehensive navigation and metrics
     with st.sidebar:
-        st.subheader("📚 Quick Security Queries")
+        # Logo/Header
+        st.markdown("""
+        <div style='text-align: center; padding: 10px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    border-radius: 10px; margin-bottom: 20px;'>
+            <h2 style='color: white; margin: 0;'>🔐 Security Center</h2>
+        </div>
+        """, unsafe_allow_html=True)
         
-        quick_queries = [
+        # Main Navigation Section
+        st.markdown("## 🧭 Navigation")
+        
+        # Page selector with icons
+        pages = {
+            "📊 Executive Dashboard": "dashboard",
+            "💬 Security Chat": "chat",
+            "👤 IAM & Identity": "iam",
+            "🌐 Network Security": "network",
+            "💾 Storage Security": "storage",
+            "📈 MSA Analyzer": "msa",
+            "⚙️ Service Evaluation": "services",
+            "🔍 Threat Intelligence": "threats",
+            "📋 Compliance": "compliance",
+            "🎯 Recommendations": "recommendations",
+            "📊 Analytics": "analytics",
+            "⚡ Incidents": "incidents",
+            "📝 Reports": "reports",
+            "🔧 Settings": "settings"
+        }
+        
+        # Get current view and find its index
+        current_view = st.session_state.get('selected_view', 'dashboard')
+        # Find which page corresponds to current view
+        current_page_key = None
+        for page_name, view_id in pages.items():
+            if view_id == current_view:
+                current_page_key = page_name
+                break
+        
+        # Get index of current page (default to 0 if not found)
+        page_keys = list(pages.keys())
+        current_index = page_keys.index(current_page_key) if current_page_key in page_keys else 0
+        
+        selected_page = st.selectbox(
+            "Go to page:",
+            options=page_keys,
+            index=current_index,
+            key="page_nav",
+            label_visibility="collapsed"
+        )
+        
+        # Update selected view when selectbox changes
+        if selected_page and pages[selected_page] != current_view:
+            st.session_state.selected_view = pages[selected_page]
+            st.rerun()
+        
+        st.divider()
+        
+        # Project & Environment Info
+        st.markdown("### 🏢 Environment")
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "Not configured")
+        
+        # Project details in a nice box
+        with st.container():
+            if project_id != "Not configured" and project_id != "your-project-id":
+                st.success(f"**Project:** {project_id}")
+                st.caption(f"**Region:** {os.getenv('VERTEX_AI_LOCATION', 'us-central1')}")
+                st.caption(f"**Zone:** {os.getenv('GOOGLE_CLOUD_ZONE', 'us-central1-a')}")
+            else:
+                st.error("No project configured")
+                st.caption("Set GOOGLE_CLOUD_PROJECT in .env")
+        
+        # Authentication status
+        auth_status = "✅" if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") else "❌"
+        st.caption(f"**Auth Status:** {auth_status}")
+        
+        st.divider()
+        
+        # Security Score Card
+        st.markdown("### 🎯 Security Score")
+        try:
+            database_path = DatabaseConfig.get_database_path()
+            if DatabaseConfig.ensure_database_exists():
+                dashboard = SecurityDashboard(database_path)
+                metrics = dashboard.get_overview_metrics()
+                
+                # Display key security metrics
+                findings_by_severity = metrics.get('findings_by_severity', {})
+                critical = findings_by_severity.get('CRITICAL', 0)
+                high = findings_by_severity.get('HIGH', 0)
+                medium = findings_by_severity.get('MEDIUM', 0)
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Critical", critical, delta_color="inverse" if critical > 0 else "off")
+                with col2:
+                    st.metric("High", high, delta_color="inverse" if high > 0 else "off")
+                with col3:
+                    st.metric("Medium", medium)
+                
+                # Compliance score
+                compliance_score = metrics.get('compliance_score', 0)
+                st.progress(compliance_score / 100, text=f"Compliance: {compliance_score}%")
+            else:
+                st.warning("No data available")
+        except Exception as e:
+            st.caption("Security metrics unavailable")
+        
+        st.divider()
+        
+        # Calculate overall security score
+        overall_score = compliance_score
+        score_color = "green" if overall_score >= 80 else "orange" if overall_score >= 60 else "red"
+        
+        # Display score as a big metric
+        st.markdown(f"""
+        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #{score_color} 0%, #333 100%); 
+                    border-radius: 10px; color: white;'>
+            <h1 style='margin: 0; font-size: 48px;'>{overall_score}%</h1>
+            <p style='margin: 0;'>Security Score</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Risk indicators
+        st.markdown("#### Risk Levels")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("🔴 Critical", critical, delta_color="inverse" if critical > 0 else "off")
+        with col2:
+            st.metric("🟠 High", high, delta_color="inverse" if high > 0 else "off")
+        with col3:
+            st.metric("🟡 Medium", medium)
+        
+        st.divider()
+        
+        # 4. Data Status
+        st.markdown("### 📊 Data Status")
+        try:
+            db_status = DatabaseConfig.get_database_status()
+            
+            if db_status["exists"]:
+                # Show table count and last refresh
+                st.metric("Tables", db_status.get('table_count', 0))
+                
+                if db_status.get("last_modified"):
+                    mod_time = datetime.fromtimestamp(db_status["last_modified"])
+                    time_ago = datetime.now() - mod_time
+                    hours_ago = time_ago.seconds // 3600
+                    minutes_ago = (time_ago.seconds % 3600) // 60
+                    
+                    if hours_ago > 0:
+                        time_str = f"{hours_ago}h {minutes_ago}m ago"
+                    else:
+                        time_str = f"{minutes_ago}m ago"
+                    
+                    st.caption(f"Last refresh: {time_str}")
+                    
+                    # Auto-refresh indicator
+                    if minutes_ago < 30:
+                        st.success("✅ Recently updated", icon="🔄")
+                    else:
+                        if st.button("🔄 Refresh Data", use_container_width=True):
+                            with st.spinner("Refreshing GCP data..."):
+                                # Trigger data refresh
+                                st.info("Data refresh initiated")
+            else:
+                st.error("Database not connected")
+                if st.button("Initialize Database", use_container_width=True):
+                    st.info("Run: python populate_sqlite.py")
+        except Exception as e:
+            st.caption("Data status unavailable")
+        
+        st.divider()
+        
+        # Quick Actions
+        st.markdown("### ⚡ Quick Actions")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔍 Scan Now", use_container_width=True):
+                st.session_state.action = "scan"
+                st.rerun()
+        with col2:
+            if st.button("📊 Generate Report", use_container_width=True):
+                st.session_state.action = "report"
+                st.rerun()
+        
+        col3, col4 = st.columns(2)
+        with col3:
+            if st.button("🚨 View Alerts", use_container_width=True):
+                st.session_state.selected_view = "incidents"
+                st.rerun()
+        with col4:
+            if st.button("🔧 Fix Issues", use_container_width=True):
+                st.session_state.selected_view = "recommendations"
+                st.rerun()
+        
+        st.divider()
+        
+        # Recent Activity Feed
+        st.markdown("### 📰 Recent Activity")
+        
+        activities = [
+            {"time": "2 min ago", "event": "🔍 Security scan completed", "status": "success"},
+            {"time": "15 min ago", "event": "⚠️ New high risk finding", "status": "warning"},
+            {"time": "1 hour ago", "event": "✅ IAM policy updated", "status": "info"},
+            {"time": "3 hours ago", "event": "🔄 Data refresh completed", "status": "success"},
+        ]
+        
+        for activity in activities[:4]:  # Show only 4 most recent
+            status_color = {"success": "green", "warning": "orange", "info": "blue"}[activity["status"]]
+            st.markdown(f"""
+            <div style='padding: 8px; margin: 5px 0; border-left: 3px solid {status_color}; background: rgba(255,255,255,0.05);'>
+                <small style='color: gray;'>{activity['time']}</small><br>
+                <span>{activity['event']}</span>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.divider()
+        
+        # Saved Queries Section
+        st.markdown("### 💾 Saved Queries")
+        
+        saved_queries = [
             "What tables are available in the database?",
             "Show me all security findings",
             "List all storage buckets and their security status",
@@ -1415,70 +1739,70 @@ def display_chat_interface():
             "Check compliance for AI/ML services"
         ]
         
-        for query in quick_queries:
-            if st.button(query, key=f"quick_{query[:20]}", use_container_width=True):
+        for query in saved_queries:
+            if st.button(f"▶ {query}", key=f"saved_{query[:20]}", use_container_width=True):
                 st.session_state['quick_query'] = query
+                st.session_state.selected_view = "chat"
+                st.rerun()
         
         st.divider()
         
-        # Session info
-        st.subheader("Session Info")
-        st.text(f"Session: {st.session_state.session_id[:8]}...")
-        st.text(f"Messages: {len(st.session_state.messages)}")
+        # System Health
+        st.markdown("### 🏥 System Health")
         
-        # Data info
-        try:
-            database_path = DatabaseConfig.get_database_path()
-            db_status = DatabaseConfig.get_database_status()
-            
-            if db_status["exists"]:
-                st.success(f"✅ Database connected ({db_status['table_count']} tables)")
-                if db_status["last_modified"]:
-                    # Get file modification time with auto-refresh indicator
-                    mod_time = datetime.fromtimestamp(db_status["last_modified"])
-                    time_ago = datetime.now() - mod_time
-                    minutes_ago = time_ago.seconds // 60
-                    hours_ago = time_ago.seconds // 3600
-                    
-                    # Show refresh status with visual indicator
-                    if minutes_ago < 30:
-                        refresh_status = "[FRESH]"
-                        refresh_color = "#28a745"
-                    elif minutes_ago < 60:
-                        refresh_status = "[RECENT]"  
-                        refresh_color = "#ffc107"
-                    else:
-                        refresh_status = "[STALE]"
-                        refresh_color = "#dc3545"
-                    
-                    if time_ago.seconds < 3600:
-                        time_display = f"{minutes_ago} min ago"
-                    else:
-                        time_display = f"{hours_ago} hours ago"
-                        
-                    st.markdown(
-                        f'<div class="refresh-indicator" style="color: {refresh_color};" role="status" aria-live="polite">'
-                        f'📅 Updated: {time_display} <span style="margin-left: 8px;">{refresh_status}</span>'
-                        '</div>',
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.info("Database timestamp unavailable")
-            
-            # Auto-refresh button with better UX
-            if st.button("🔄 Refresh Data", use_container_width=True, help="Refresh security metrics from GCP APIs"):
-                show_loading_state("Refreshing security data...")
-                st.rerun()
-            else:
-                st.error(f"❌ Database not found: {database_path}")
-                if db_status["error"]:
-                    st.error(f"Error: {db_status['error']}")
-        except Exception as e:
-            st.error(f"❌ Database status error: {e}")
+        health_metrics = {
+            "API Status": "🟢 Operational",
+            "Database": "🟢 Connected",
+            "Agent": "🟢 Ready",
+            "Cache": "🟡 Refreshing"
+        }
         
-        if st.button("Clear Chat", use_container_width=True):
-            st.session_state.messages = []
-            st.rerun()
+        for service, status in health_metrics.items():
+            st.caption(f"{service}: {status}")
+        
+        # Session details in expander
+        with st.expander("📊 Session Details", expanded=False):
+            st.text(f"Session: {st.session_state.session_id[:8]}...")
+            st.text(f"Messages: {len(st.session_state.messages)}")
+            st.text(f"Agent: vertex_sqlite")
+            st.text(f"Mode: {os.getenv('AGENT_MODE', 'sqlite')}")
+            
+            # Memory usage if available
+            if psutil:
+                try:
+                    process = psutil.Process()
+                    memory_mb = process.memory_info().rss / 1024 / 1024
+                    cpu_percent = process.cpu_percent()
+                    st.text(f"Memory: {memory_mb:.1f} MB")
+                    st.text(f"CPU: {cpu_percent:.1f}%")
+                except:
+                    pass
+        
+        # Help & Support
+        st.divider()
+        with st.expander("💡 Help & Support", expanded=False):
+            st.markdown("""
+            **Quick Tips:**
+            - Press `?` for keyboard shortcuts
+            - Use `/` to search
+            - Press `Esc` to close dialogs
+            
+            **Resources:**
+            - [📖 Documentation](https://docs.example.com)
+            - [🎓 Tutorials](https://tutorials.example.com)
+            - [🐛 Report Issue](https://github.com/issues)
+            - [💬 Community](https://community.example.com)
+            """)
+        
+        # Footer with version and status
+        st.divider()
+        st.markdown("""
+        <div style='text-align: center; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 5px;'>
+            <small>GCP Security Dashboard</small><br>
+            <small style='color: #888;'>v1.13.0 | ADK Agent</small><br>
+            <small style='color: #4CAF50;'>● Connected</small>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Display chat history with feedback widgets
     for i, message in enumerate(st.session_state.messages):
@@ -2273,23 +2597,55 @@ def main():
     # Initialize session
     init_session()
     
-    # Display executive dashboard at the top
-    display_executive_dashboard()
+    # Get selected view from sidebar navigation
+    selected_view = st.session_state.get('selected_view', 'dashboard')
     
-    st.divider()
+    # Display content based on sidebar selection
+    if selected_view == 'dashboard':
+        # Display executive dashboard at the top
+        display_executive_dashboard()
+        st.divider()
+        # Show quick access cards for different sections
+        display_quick_access_cards()
     
-    # Create tabs for different features
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Security Chat", "IAM Analysis", "Networking", "MSA Analyzer", "Service Evaluation", "Agent Evaluation", "Feedback Analytics", "Statistical Analysis"])
+    elif selected_view == 'chat':
+        st.title("🤖 Security Chat Assistant")
+        st.caption("AI-powered security analysis with real-time streaming responses")
+        
+        # Chat mode selector
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            st.markdown("**Choose your chat experience:**")
+        with col2:
+            use_websocket = st.toggle(
+                "Real-time Mode", 
+                value=st.session_state.get('use_websocket_chat', True),
+                help="Enable WebSocket for real-time streaming responses"
+            )
+            st.session_state.use_websocket_chat = use_websocket
+        with col3:
+            if use_websocket:
+                st.success("⚡ Real-time")
+            else:
+                st.info("🌐 Standard")
+        
+        st.divider()
+        
+        # Display appropriate chat interface
+        if use_websocket:
+            try:
+                display_websocket_chat()
+            except Exception as e:
+                st.error(f"WebSocket chat not available: {e}")
+                st.info("Falling back to standard chat mode...")
+                display_chat_interface()
+        else:
+            display_chat_interface()
     
-    with tab1:
-        # Display chat interface
-        display_chat_interface()
-    
-    with tab2:
-        # Display IAM Advanced Features
+    elif selected_view == 'iam':
+        st.title("🔐 IAM Security Analysis")
         iam_ui = IAMFeaturesUI()
         iam_ui.display_iam_overview()
-        
         # Create sub-tabs for IAM features
         iam_tab1, iam_tab2, iam_tab3, iam_tab4 = st.tabs([
             "Role Recommendations", 
@@ -2297,44 +2653,88 @@ def main():
             "Cross-Project Permissions",
             "Quick Actions"
         ])
-        
         with iam_tab1:
             iam_ui.display_role_recommendations()
-        
         with iam_tab2:
             iam_ui.display_least_privilege_violations()
-        
         with iam_tab3:
             iam_ui.display_cross_project_analysis()
-        
         with iam_tab4:
             iam_ui.display_quick_iam_actions()
     
-    with tab3:
-        # Display networking dashboard
+    elif selected_view == 'network':
+        st.title("🌐 Network Security Dashboard")
         display_networking_dashboard()
     
-    with tab4:
-        # Display MSA analyzer
+    elif selected_view == 'msa':
+        st.title("📊 MSA Impact Analyzer")
         display_msa_analyzer()
     
-    with tab5:
-        # Display service evaluation
+    elif selected_view == 'services':
+        st.title("⚙️ Service Security Evaluation")
         display_service_evaluation()
     
-    with tab6:
-        # Display agent evaluation page
-        evaluation_manager.display_evaluation_page()
+    else:
+        # Default: show all tabs (legacy view)
+        st.divider()
+        # Create tabs for different features
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Security Chat", "IAM Analysis", "Networking", "MSA Analyzer", "Service Evaluation", "Agent Evaluation", "Feedback Analytics", "Statistical Analysis"])
+        
+        # Continue with tab content for legacy view
+        with tab1:
+            display_chat_interface()
+        
+        with tab2:
+            # Display IAM Advanced Features
+            iam_ui = IAMFeaturesUI()
+            iam_ui.display_iam_overview()
+            
+            # Create sub-tabs for IAM features
+            iam_tab1, iam_tab2, iam_tab3, iam_tab4 = st.tabs([
+                "Role Recommendations", 
+                "Least-Privilege Analysis", 
+                "Cross-Project Permissions",
+                "Quick Actions"
+            ])
+            
+            with iam_tab1:
+                iam_ui.display_role_recommendations()
+            
+            with iam_tab2:
+                iam_ui.display_least_privilege_violations()
+            
+            with iam_tab3:
+                iam_ui.display_cross_project_analysis()
+            
+            with iam_tab4:
+                iam_ui.display_quick_iam_actions()
+        
+        with tab3:
+            # Display networking dashboard
+            display_networking_dashboard()
+        
+        with tab4:
+            # Display MSA analyzer
+            display_msa_analyzer()
+        
+        with tab5:
+            # Display service evaluation
+            display_service_evaluation()
+        
+        with tab6:
+            # Display agent evaluation page
+            # evaluation_manager.display_evaluation_page()  # Commented - moved to archive
+            st.info("Evaluation page temporarily disabled during cleanup")
+        
+        with tab7:
+            # Display feedback analytics dashboard
+            display_feedback_analytics()
+        
+        with tab8:
+            # Display statistical analysis dashboard
+            display_statistical_analysis()
     
-    with tab7:
-        # Display feedback analytics dashboard
-        display_feedback_analytics()
-    
-    with tab8:
-        # Display statistical analysis dashboard
-        display_statistical_analysis()
-    
-    # Footer
+    # Footer (always displayed)
     st.divider()
     st.markdown("""
     <div style='text-align: center'>

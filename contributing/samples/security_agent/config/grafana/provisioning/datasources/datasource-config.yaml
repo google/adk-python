@@ -1,0 +1,242 @@
+# Grafana Datasource Provisioning Configuration
+# Automatically configures datasources for monitoring
+
+apiVersion: 1
+
+datasources:
+  # Primary Prometheus datasource
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: '15s'
+      queryTimeout: '60s'
+      httpMethod: 'GET'
+      manageAlerts: true
+      alertManagerUid: 'alertmanager'
+      prometheusType: 'Prometheus'
+      prometheusVersion: '2.40.0'
+      cacheLevel: 'High'
+      incrementalQuerying: true
+      incrementalQueryOverlapWindow: '10m'
+      disableRecordingRules: false
+      customQueryParameters: ''
+      exemplarTraceIdDestinations:
+        - name: 'trace_id'
+          datasourceUid: 'jaeger'
+    basicAuth: false
+    withCredentials: false
+    version: 1
+
+  # Alertmanager datasource
+  - name: Alertmanager
+    type: alertmanager
+    uid: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    isDefault: false
+    editable: true
+    jsonData:
+      implementation: 'prometheus'
+      handleGrafanaManagedAlerts: true
+    version: 1
+
+  # Loki for log aggregation (optional)
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: false
+    editable: true
+    jsonData:
+      timeout: '60s'
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: 'jaeger'
+          matcherRegex: '(?:trace_id|traceID)=(\\w+)'
+          name: 'TraceID'
+          url: '$${__value.raw}'
+    version: 1
+
+  # Jaeger for distributed tracing (optional)
+  - name: Jaeger
+    type: jaeger
+    uid: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    isDefault: false
+    editable: true
+    jsonData:
+      tracesToLogs:
+        datasourceUid: 'loki'
+        tags: ['job', 'instance', 'pod', 'namespace']
+        mappedTags: [{'key': 'service.name', 'value': 'job'}]
+        mapTagNamesEnabled: false
+        spanStartTimeShift: '1h'
+        spanEndTimeShift: '1h'
+        filterByTraceID: false
+        filterBySpanID: false
+      tracesToMetrics:
+        datasourceUid: 'prometheus'
+        tags: [{'key': 'service.name', 'value': 'application'}, {'key': 'k8s.pod.name', 'value': 'pod'}]
+        queries:
+          - name: 'Sample query'
+            query: 'sum(rate(traces_spanmetrics_latency_bucket{}[5m]))'
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      spanBar:
+        type: 'Tag'
+        tag: 'http.path'
+    version: 1
+
+  # TestData datasource for development
+  - name: TestData
+    type: testdata
+    access: proxy
+    isDefault: false
+    editable: true
+    version: 1
+
+  # JSON API datasource for custom endpoints
+  - name: Security Agent API
+    type: grafana-infinity-datasource
+    access: proxy
+    url: http://security-agent:8080
+    isDefault: false
+    editable: true
+    jsonData:
+      auth_method: 'basicAuth'
+      allowedHosts: ['security-agent:8080']
+      timeout: '30s'
+    secureJsonData:
+      basicAuthUser: 'api_user'
+      basicAuthPassword: 'api_password'
+    version: 1
+
+  # CloudWatch datasource (if using AWS)
+  - name: CloudWatch
+    type: cloudwatch
+    access: proxy
+    isDefault: false
+    editable: true
+    jsonData:
+      authType: 'credentials'
+      defaultRegion: 'us-east-1'
+      customMetricsNamespaces: 'SecurityAgent,AWS/ApplicationELB,AWS/RDS'
+      assumeRoleArn: 'arn:aws:iam::ACCOUNT_ID:role/GrafanaCloudWatchRole'
+    secureJsonData:
+      accessKey: 'YOUR_ACCESS_KEY'
+      secretKey: 'YOUR_SECRET_KEY'
+    version: 1
+
+  # Google Cloud Monitoring (if using GCP)
+  - name: Google Cloud Monitoring
+    type: stackdriver
+    access: proxy
+    isDefault: false
+    editable: true
+    jsonData:
+      authType: 'jwt'
+      defaultProject: 'your-gcp-project-id'
+      clientEmail: 'grafana@your-project.iam.gserviceaccount.com'
+      tokenUri: 'https://oauth2.googleapis.com/token'
+    secureJsonData:
+      privateKey: 'YOUR_PRIVATE_KEY'
+    version: 1
+
+# Notification channels configuration
+notificationChannels:
+  - name: 'security-agent-slack'
+    type: 'slack'
+    uid: 'slack-security-agent'
+    settings:
+      url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+      username: 'Grafana'
+      channel: '#security-alerts'
+      iconEmoji: ':exclamation:'
+      iconUrl: ''
+      title: 'Security Agent Alert'
+      text: 'Alert from Security Agent monitoring'
+    isDefault: true
+
+  - name: 'security-agent-email'
+    type: 'email'
+    uid: 'email-security-agent'
+    settings:
+      addresses: 'alerts@yourdomain.com;security-team@yourdomain.com'
+      subject: 'Security Agent Alert - {{ .CommonLabels.alertname }}'
+      body: |
+        <h2>Alert Details</h2>
+        <p><strong>Alert:</strong> {{ .CommonLabels.alertname }}</p>
+        <p><strong>Summary:</strong> {{ .CommonAnnotations.summary }}</p>
+        <p><strong>Description:</strong> {{ .CommonAnnotations.description }}</p>
+        <p><strong>Severity:</strong> {{ .CommonLabels.severity }}</p>
+        <p><strong>Time:</strong> {{ .StartsAt }}</p>
+    isDefault: false
+
+  - name: 'security-agent-pagerduty'
+    type: 'pagerduty'
+    uid: 'pd-security-agent'
+    settings:
+      integrationKey: 'YOUR_PAGERDUTY_INTEGRATION_KEY'
+      autoResolve: true
+      messageInDetails: false
+    isDefault: false
+
+# Contact points for unified alerting
+contactPoints:
+  - orgId: 1
+    name: 'security-team'
+    receivers:
+      - uid: 'slack-contact'
+        type: 'slack'
+        settings:
+          url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+          username: 'Grafana Security Agent'
+          channel: '#security-alerts'
+          title: 'Security Agent Alert'
+          text: |
+            {{ range .Alerts }}
+            Alert: {{ .Annotations.summary }}
+            Description: {{ .Annotations.description }}
+            Severity: {{ .Labels.severity }}
+            {{ end }}
+      - uid: 'email-contact'
+        type: 'email'
+        settings:
+          addresses: ['security-team@yourdomain.com']
+          subject: 'Security Agent Alert'
+          body: |
+            {{ range .Alerts }}
+            Alert: {{ .Annotations.summary }}
+            Description: {{ .Annotations.description }}
+            Severity: {{ .Labels.severity }}
+            Time: {{ .StartsAt }}
+            {{ end }}
+
+# Notification policies
+notificationPolicies:
+  - orgId: 1
+    receiver: 'security-team'
+    group_by: ['alertname', 'cluster', 'service']
+    group_wait: '10s'
+    group_interval: '10s'
+    repeat_interval: '1h'
+    routes:
+      - receiver: 'security-team'
+        object_matchers:
+          - ['severity', '=', 'critical']
+        group_wait: '0s'
+        group_interval: '5m'
+        repeat_interval: '12h'
+      - receiver: 'security-team'
+        object_matchers:
+          - ['severity', '=', 'warning']
+        group_wait: '30s'
+        group_interval: '5m'
+        repeat_interval: '24h'

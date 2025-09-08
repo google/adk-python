@@ -13,16 +13,185 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import os
+from pathlib import Path
 
 class SecurityDashboard:
     """Executive dashboard for security metrics and analytics"""
     
-    def __init__(self, database_path: str):
-        self.database_path = database_path
+    def __init__(self, database_path: Optional[str] = None):
+        """Initialize SecurityDashboard.
+        
+        Args:
+            database_path: Path to SQLite database. If None, will use default path.
+        """
+        if database_path is None:
+            self.database_path = self._get_default_database_path()
+        else:
+            self.database_path = database_path
+            
+        # Validate database path
+        self._validate_database_path()
+    
+    def _get_default_database_path(self) -> str:
+        """Get default database path based on environment and project structure."""
+        # Try environment variable first
+        env_path = os.getenv("DATABASE_PATH")
+        if env_path and os.path.exists(env_path):
+            return env_path
+        
+        # Get default paths to try in order of preference
+        current_dir = Path(__file__).parent
+        
+        # Standard paths to check
+        potential_paths = [
+            # Environment variable path (even if file doesn't exist yet)
+            os.getenv("DATABASE_PATH", ""),
+            # Relative to frontend directory
+            current_dir.parent / 'backend' / 'cache' / 'gcp_data.db',
+            # Relative to project root
+            current_dir.parent.parent / 'backend' / 'cache' / 'gcp_data.db',
+            # Current directory fallback
+            current_dir / 'gcp_data.db',
+            # Default fallback
+            'backend/cache/gcp_data.db'
+        ]
+        
+        # Return first existing path, or first non-empty path as fallback
+        for path in potential_paths:
+            if path and Path(path).exists():
+                return str(path)
+        
+        # Return first non-empty path as fallback (may need to be created)
+        for path in potential_paths:
+            if path:
+                return str(path)
+        
+        # Final fallback
+        return 'backend/cache/gcp_data.db'
+    
+    def _validate_database_path(self):
+        """Validate and prepare database path."""
+        db_path = Path(self.database_path)
+        
+        # Create parent directories if they don't exist
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # If database doesn't exist, create an empty one with basic structure
+        if not db_path.exists():
+            self._create_empty_database()
+    
+    def _create_empty_database(self):
+        """Create empty database with basic table structure."""
+        try:
+            with sqlite3.connect(self.database_path) as conn:
+                cursor = conn.cursor()
+                
+                # Create basic tables to prevent errors
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS assets (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT,
+                        asset_type TEXT,
+                        create_time TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS security_findings (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT,
+                        category TEXT,
+                        severity TEXT,
+                        state TEXT,
+                        resource_name TEXT,
+                        description TEXT,
+                        recommendation TEXT,
+                        event_time TEXT,
+                        data TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS storage_buckets (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT,
+                        location TEXT,
+                        storage_class TEXT,
+                        public_access TEXT,
+                        uniform_bucket_level_access INTEGER,
+                        versioning_enabled INTEGER,
+                        encryption TEXT,
+                        labels TEXT,
+                        data TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS firewall_rules (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT,
+                        direction TEXT,
+                        priority INTEGER,
+                        source_ranges TEXT,
+                        destination_ranges TEXT,
+                        allowed TEXT,
+                        denied TEXT,
+                        disabled INTEGER,
+                        network TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS iam_accounts (
+                        id INTEGER PRIMARY KEY,
+                        email TEXT,
+                        account_type TEXT,
+                        display_name TEXT,
+                        disabled INTEGER,
+                        roles TEXT,
+                        permissions TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS compute_instances (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT,
+                        status TEXT,
+                        machine_type TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS networks (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS databases (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS secrets (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS fetch_status (
+                        id INTEGER PRIMARY KEY,
+                        completed_at TEXT,
+                        status TEXT
+                    );
+                """)
+                conn.commit()
+        except Exception as e:
+            # Log error but don't fail completely
+            print(f"Warning: Could not create empty database at {self.database_path}: {e}")
         
     def get_connection(self) -> sqlite3.Connection:
-        """Get database connection"""
-        return sqlite3.connect(self.database_path)
+        """Get database connection with error handling"""
+        try:
+            conn = sqlite3.connect(self.database_path)
+            # Enable foreign keys and other optimizations
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
+            return conn
+        except sqlite3.Error as e:
+            print(f"Database connection error: {e}")
+            # Try to create directory and retry once
+            db_path = Path(self.database_path)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._create_empty_database()
+            return sqlite3.connect(self.database_path)
     
     def get_overview_metrics(self) -> Dict:
         """Get high-level overview metrics"""
@@ -95,6 +264,10 @@ class SecurityDashboard:
             metrics['last_refresh'] = last_refresh
             
             return metrics
+    
+    def get_summary_metrics(self) -> Dict:
+        """Get summary metrics (alias for get_overview_metrics for compatibility)"""
+        return self.get_overview_metrics()
     
     def get_security_findings_analysis(self) -> pd.DataFrame:
         """Get detailed security findings analysis"""
@@ -572,14 +745,22 @@ def render_dashboard():
     st.title("🛡️ GCP Security Executive Dashboard")
     st.markdown("---")
     
-    # Initialize dashboard
-    database_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
-    
-    if not os.path.exists(database_path):
-        st.error(f"Database not found at {database_path}. Please run data population first.")
+    # Initialize dashboard with automatic path resolution
+    try:
+        dashboard = SecurityDashboard()  # Uses default path resolution
+    except Exception as e:
+        st.error(f"Failed to initialize dashboard: {e}")
+        st.info("Please ensure the backend has been set up and data has been populated.")
         return
     
-    dashboard = SecurityDashboard(database_path)
+    # Check if database has data
+    try:
+        metrics = dashboard.get_overview_metrics()
+        total_assets = metrics.get('total_assets', 0)
+        if total_assets == 0:
+            st.warning("No data found in database. Please run data population to see security metrics.")
+    except Exception:
+        st.warning("Database appears to be empty or not properly initialized. Some features may not work correctly.")
     
     # Sidebar navigation
     st.sidebar.title("📊 Dashboard Navigation")

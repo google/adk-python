@@ -1,0 +1,77 @@
+# Grafana Dashboard Provisioning Configuration
+# Automatically loads dashboards from specified directories
+
+apiVersion: 1
+
+providers:
+  # Security Agent Dashboards
+  - name: 'security-agent-dashboards'
+    orgId: 1
+    folder: 'Security Agent'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/security-agent
+      foldersFromFilesStructure: true
+
+  # Infrastructure Dashboards
+  - name: 'infrastructure-dashboards'
+    orgId: 1
+    folder: 'Infrastructure'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/infrastructure
+      foldersFromFilesStructure: true
+
+  # Application Performance Dashboards
+  - name: 'performance-dashboards'
+    orgId: 1
+    folder: 'Performance'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/performance
+      foldersFromFilesStructure: true
+
+  # Security Monitoring Dashboards
+  - name: 'security-dashboards'
+    orgId: 1
+    folder: 'Security'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/security
+      foldersFromFilesStructure: true
+
+  # Business Intelligence Dashboards
+  - name: 'business-dashboards'
+    orgId: 1
+    folder: 'Business Intelligence'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 120
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/business
+      foldersFromFilesStructure: true
+
+  # Custom Dashboards
+  - name: 'custom-dashboards'
+    orgId: 1
+    folder: 'Custom'
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 60
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/custom
+      foldersFromFilesStructure: true

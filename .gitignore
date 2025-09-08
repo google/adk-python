@@ -220,6 +220,8 @@ Thumbs.db
 .idea/
 *.sublime-*
 *.code-workspace
+CRUSH.md
+CLAUDE.md
 
 # Generated documentation
 _build/
@@ -317,7 +319,7 @@ pytest_cache/
 profile_*
 
 # =============================================================================
-# Cloud and Deployment Specific  
+# Cloud and Deployment Specific
 # =============================================================================
 # Terraform
 *.tfstate
@@ -601,6 +603,7 @@ tramp
 !docs/
 
 
+
 # Claude Flow generated files
 .claude/settings.local.json
 .mcp.json
@@ -625,6 +628,3 @@ claude-flow
 claude-flow.bat
 claude-flow.ps1
 hive-mind-prompt-*.txt
-
-contributing/samples/security_agent/.cspell.json
-.playwright-mcp
