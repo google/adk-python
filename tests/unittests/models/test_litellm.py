@@ -731,6 +731,23 @@ function_declaration_test_cases = [
             },
         },
     ),
+    (
+        "no_arguments_function",
+        types.FunctionDeclaration(
+            name="function_no_args"
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "function_no_args",
+                "description": "",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        },
+    )
 ]
 
 
