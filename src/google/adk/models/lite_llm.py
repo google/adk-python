@@ -307,7 +307,7 @@ async def _get_content(
         else:
           content_objects.append({
               "type": "file",
-              "file": {"file_data": data_uri, "format": format_type},
+              "file": {"file_data": data_uri},
           })
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")

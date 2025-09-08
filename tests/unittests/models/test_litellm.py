@@ -1688,7 +1688,7 @@ async def test_get_file_id_from_litellm_openai(
           {"type": "text", "text": "Test attach PDF file"},
           {
               "type": "file",
-              "file": {"file_id": "test_file_id", "format": "application/pdf"},
+              "file": {"file_id": "test_file_id"},
           },
       ],
   }]
