@@ -189,15 +189,17 @@ def _generate_files(
       lines.append("GOOGLE_GENAI_USE_VERTEXAI=0")
     elif google_cloud_project and google_cloud_region:
       lines.append("GOOGLE_GENAI_USE_VERTEXAI=1")
-    if google_api_key:
+    if google_api_key or google_cloud_project or google_cloud_region:
       click.secho(
-          "NOTE: For security, the GOOGLE_API_KEY was NOT written to `.env`. Please set it as an environment variable manually and do not check secrets into source control.",
+          "NOTE: For security, the GOOGLE_API_KEY, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION were NOT written to `.env`.\n"
+          "Please set them as environment variables manually and do not check secrets or sensitive configuration into source control.",
           fg="yellow",
       )
-    if google_cloud_project:
-      lines.append(f"GOOGLE_CLOUD_PROJECT={google_cloud_project}")
-    if google_cloud_region:
-      lines.append(f"GOOGLE_CLOUD_LOCATION={google_cloud_region}")
+    # Do not write project ID or location to .env; instruct user instead
+    # if google_cloud_project:
+    #   lines.append(f"GOOGLE_CLOUD_PROJECT={google_cloud_project}")
+    # if google_cloud_region:
+    #   lines.append(f"GOOGLE_CLOUD_LOCATION={google_cloud_region}")
     f.write("\n".join(lines))
 
   if type == "config":
