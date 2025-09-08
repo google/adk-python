@@ -392,7 +392,10 @@ def _function_declaration_to_tool_param(
       },
   }
 
-  if function_declaration.parameters.required:
+  if (
+      function_declaration.parameters
+      and function_declaration.parameters.required
+  ):
     tool_params["function"]["parameters"][
         "required"
     ] = function_declaration.parameters.required
@@ -596,8 +599,8 @@ def _get_completion_inputs(
         mapped_key = param_mapping.get(key, key)
         generation_params[mapped_key] = config_dict[key]
 
-      if not generation_params:
-        generation_params = None
+    if not generation_params:
+      generation_params = None
 
   return messages, tools, response_format, generation_params
 

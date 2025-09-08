@@ -88,6 +88,12 @@ a2a = [
   # go/keep-sorted end
 ]
 
+community = [
+  # go/keep-sorted start
+  "google-adk-community",
+  # go/keep-sorted end
+]
+
 eval = [
   # go/keep-sorted start
   "google-cloud-aiplatform[evaluation]>=1.100.0",

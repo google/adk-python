@@ -19,6 +19,7 @@ module containing utilities for conversion betwen A2A Part and Google GenAI Part
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 import json
 import logging
 from typing import Optional
@@ -49,6 +50,14 @@ A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = 'function_call'
 A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = 'function_response'
 A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = 'code_execution_result'
 A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
+
+
+A2APartToGenAIPartConverter = Callable[
+    [a2a_types.Part], Optional[genai_types.Part]
+]
+GenAIPartToA2APartConverter = Callable[
+    [genai_types.Part], Optional[a2a_types.Part]
+]
 
 
 @a2a_experimental
