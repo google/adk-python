@@ -36,6 +36,7 @@ from google.adk.runners import InMemoryRunner as AfInMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 from google.genai.types import Part
 from typing_extensions import override
@@ -161,19 +162,26 @@ class TestInMemoryRunner(AfInMemoryRunner):
       self, new_message: types.ContentUnion
   ) -> list[Event]:
 
-    session = await self.session_service.create_session(
-        app_name='InMemoryRunner', user_id='test_user'
-    )
-    collected_events = []
-
-    async for event in self.run_async(
-        user_id=session.user_id,
-        session_id=session.id,
-        new_message=get_user_content(new_message),
-    ):
+    collected_events: list[Event] = []
+    async for event in self.run_async_with_new_session_agen(new_message):
       collected_events.append(event)
 
     return collected_events
+
+  async def run_async_with_new_session_agen(
+      self, new_message: types.ContentUnion
+  ) -> AsyncGenerator[Event, None]:
+    session = await self.session_service.create_session(
+        app_name='InMemoryRunner', user_id='test_user'
+    )
+    agen = self.run_async(
+        user_id=session.user_id,
+        session_id=session.id,
+        new_message=get_user_content(new_message),
+    )
+    async with Aclosing(agen):
+      async for event in agen:
+        yield event
 
 
 class InMemoryRunner:
