@@ -94,20 +94,25 @@ class LoadArtifactsTool(BaseTool):
     if llm_request.contents and llm_request.contents[-1].parts:
       function_response = llm_request.contents[-1].parts[0].function_response
       if function_response and function_response.name == 'load_artifacts':
-        artifact_names = function_response.response['artifact_names']
-        for artifact_name in artifact_names:
-          artifact = await tool_context.load_artifact(artifact_name)
-          llm_request.contents.append(
-              types.Content(
-                  role='user',
-                  parts=[
-                      types.Part.from_text(
-                          text=f'Artifact {artifact_name} is:'
-                      ),
-                      artifact,
-                  ],
-              )
-          )
+      artifact_names = function_response.response.get('artifact_names')
+      if isinstance(artifact_names, str):
+        artifact_names = [artifact_names]
+      elif not isinstance(artifact_names, list):
+        return
+
+      for artifact_name in artifact_names:
+        artifact = await tool_context.load_artifact(artifact_name)
+        if not artifact:
+          continue
+        llm_request.contents.append(
+            types.Content(
+                role='user',
+                parts=[
+                  types.Part.from_text(text=f'Artifact {artifact_name} is:'),
+                  artifact,
+                ],
+            )
+        )
 
 
 load_artifacts_tool = LoadArtifactsTool()
