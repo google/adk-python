@@ -11,6 +11,7 @@ def mock_invocation_context():
   mock_context.invocation_id = "test-invocation-id"
   mock_context.agent.name = "test-agent-name"
   mock_context.session.state = {"key1": "value1", "key2": "value2"}
+  mock_context.user_id = "test-user-id"
   return mock_context
 
 
@@ -31,3 +32,8 @@ def test_state_content(mock_invocation_context):
   assert isinstance(state, MappingProxyType)
   assert state["key1"] == "value1"
   assert state["key2"] == "value2"
+
+
+def test_user_id(mock_invocation_context):
+  readonly_context = ReadonlyContext(mock_invocation_context)
+  assert readonly_context.user_id == "test-user-id"

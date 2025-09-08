@@ -52,3 +52,8 @@ class ReadonlyContext:
   def state(self) -> MappingProxyType[str, Any]:
     """The state of the current session. READONLY field."""
     return MappingProxyType(self._invocation_context.session.state)
+
+  @property
+  def user_id(self) -> str:
+    """The id of the user. READONLY field."""
+    return self._invocation_context.user_id
