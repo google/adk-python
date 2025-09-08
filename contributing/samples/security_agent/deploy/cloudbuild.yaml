@@ -42,6 +42,7 @@ substitutions:
   _IMAGE_NAME: 'security-agent'
   _SERVICE_NAME: 'security-agent'
   _TAG: 'latest'
+  _SERVICE_ACCOUNT_EMAIL: 'security-agent@${PROJECT_ID}.iam.gserviceaccount.com'
 
 options:
   logging: CLOUD_LOGGING_ONLY
