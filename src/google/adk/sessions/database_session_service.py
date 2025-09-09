@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import asyncio
 import copy
 from datetime import datetime
 from datetime import timezone
@@ -424,13 +425,20 @@ class DatabaseSessionService(BaseSessionService):
 
     # Flag to indicate if tables are created
     self._tables_created = False
+    # Lock to ensure thread-safe table creation
+    self._table_creation_lock = asyncio.Lock()
 
   async def _ensure_tables_created(self):
     """Ensure database tables are created. This is called lazily."""
-    if not self._tables_created:
-      async with self.db_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-      self._tables_created = True
+    if self._tables_created:
+      return
+
+    async with self._table_creation_lock:
+      # Double-check after acquiring the lock
+      if not self._tables_created:
+        async with self.db_engine.begin() as conn:
+          await conn.run_sync(Base.metadata.create_all)
+        self._tables_created = True
 
   @override
   async def create_session(
