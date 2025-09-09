@@ -112,6 +112,8 @@ class DynamicPickleType(TypeDecorator):
   impl = PickleType
 
   def load_dialect_impl(self, dialect):
+    if dialect.name == "mysql":
+      return dialect.type_descriptor(mysql.LONGBLOB)
     if dialect.name == "spanner+spanner":
       from google.cloud.sqlalchemy_spanner.sqlalchemy_spanner import SpannerPickleType
 
