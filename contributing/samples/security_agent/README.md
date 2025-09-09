@@ -1,11 +1,12 @@
-# 🛡️ GCP Security Agent
+# 🛡️ Micron IT Security Agent
 
 [![Version](https://img.shields.io/badge/version-1.13.0-blue.svg)](https://github.com/your-org/security-agent)
 [![UI Grade](https://img.shields.io/badge/UI%20Grade-A%20(95%2B%2F100)-brightgreen.svg)](docs/USER_GUIDE.md)
 [![Status](https://img.shields.io/badge/status-production%20ready-success.svg)](docs/DEPLOYMENT_GUIDE.md)
+[![MCP](https://img.shields.io/badge/MCP-enabled-4285f4.svg)](./mcp/README.md)
 [![ADK](https://img.shields.io/badge/powered%20by-Google%20ADK-4285f4.svg)](https://github.com/google/adk)
 
-An intelligent, AI-powered security analysis platform for Google Cloud Platform that provides comprehensive security insights, compliance monitoring, and actionable recommendations through an intuitive chat interface.
+**Enterprise-grade AI-powered security platform** with natural language interface through MCP discovery. Provides comprehensive security insights, compliance monitoring, and automated remediation for Google Cloud Platform environments.
 
 ![Security Agent Dashboard](docs/assets/dashboard-preview.png)
 
@@ -33,33 +34,41 @@ open http://localhost:8501
 
 ✅ **Prerequisites**: Python 3.8+, GCP project with billing enabled, service account with security roles
 
-## 🚀 MCP Discovery Integration
+## 🤖 AI-Native Security Operations
 
-### **AI-Powered Natural Language Interface**
+### **Natural Language Security Interface via MCP Discovery**
 
-The Security Agent is now **MCP-enabled**, allowing AI assistants like Claude Code to discover and interact with all security tools through natural language:
+**Revolutionary**: The Security Agent is **MCP-enabled**, making all security operations accessible through natural language. AI assistants like Claude Code can automatically discover and execute any security function without training or setup.
 
 ```bash
-# Discover security tools via MCP
+# Instant discovery of 30+ security tools
 curl http://localhost:8000/mcp/.well-known/mcp.json
 
-# Connect Claude Code
+# Connect any AI assistant
 claude-code connect http://localhost:8000/mcp
 
-# Use natural language
+# Natural language security operations
 "Scan our production environment for vulnerabilities"
-"Check IAM permissions for user john.doe"
-"Analyze our cloud security posture"
+"Check IAM permissions for user john.doe" 
+"Generate SOC2 compliance report"
+"Assess our Kubernetes security posture"
 ```
 
-**✨ Just 2 lines enabled MCP discovery:**
+**✨ Zero-configuration MCP integration** (just 2 lines of code):
 ```python
 from fastapi_mcp import FastApiMCP
 mcp = FastApiMCP(app)
-mcp.mount()
+mcp.mount()  # All 30+ endpoints instantly AI-discoverable
 ```
 
-All 30+ security endpoints are now automatically discoverable AI tools! See [mcp/README.md](./mcp/README.md) for details.
+### **Why This Changes Everything**
+
+- 🚀 **Zero Learning Curve**: Security teams use natural language instead of memorizing commands
+- 🔄 **Instant Integration**: Any AI tool can discover and use all security functions automatically  
+- 📈 **Massive Productivity**: Complex security workflows become simple conversations
+- 🛡️ **Enterprise Ready**: Full authentication, auditing, and compliance built-in
+
+See [mcp/README.md](./mcp/README.md) for complete MCP documentation and enterprise patterns.
 
 ## 🌟 Key Features
 

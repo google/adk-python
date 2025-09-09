@@ -1,6 +1,6 @@
-# 🚀 MCP Discovery for Micron Security Agent
+# 🤖 AI-Native Security Operations via MCP
 
-**Enterprise-Ready Model Control Protocol Integration**
+**Complete Model Control Protocol Integration for Enterprise Security**
 
 ## Overview
 
