@@ -28,3 +28,6 @@ pydantic>=2.0.0
 
 # Development
 python-dotenv
+# MCP Integration dependencies
+google-cloud-service-directory==1.8.0
+websockets==12.0

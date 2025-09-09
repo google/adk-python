@@ -72,15 +72,6 @@ except ImportError as e:
     RATE_LIMITER_AVAILABLE = False
     logger.warning(f"[WARNING] Rate limiting not available: {e}")
 
-# Import MCP integration wrapper
-try:
-    from mcp_wrapper import add_mcp_to_existing_app
-    MCP_AVAILABLE = True
-    logger.info("[OK] MCP integration loaded")
-except ImportError as e:
-    MCP_AVAILABLE = False
-    logger.warning(f"[WARNING] MCP integration not available: {e}")
-
 # Environment loading is now handled by centralized configuration above
 # This fallback code is kept for compatibility
 if 'EnvironmentConfig' not in globals():
@@ -234,11 +225,6 @@ app = FastAPI(
     description="Unified ADK Security Agent API",
     version="1.13.0"
 )
-
-# Enable MCP integration if available
-if MCP_AVAILABLE:
-    mcp_wrapper = add_mcp_to_existing_app(app)
-    logger.info("🚀 MCP protocol enabled for existing security agent")
 
 # Setup monitoring - temporarily disabled
 # setup_monitoring(app)
@@ -1422,18 +1408,9 @@ async def startup_event():
     logger.info("[OK] ADK-compliant session management enabled")
     logger.info(f"[SECURITY] Secret Manager: {'[OK] available' if SECRETMANAGER_AVAILABLE else '[WARNING] not configured'}")
     logger.info(f"[BLOCKED] Rate Limiting: {'[OK] enabled' if RATE_LIMITER_AVAILABLE else '[WARNING] disabled'}")
-    logger.info(f"[MCP] MCP Protocol: {'[OK] enabled' if MCP_AVAILABLE else '[WARNING] not available'}")
     logger.info("[REFRESH] All API endpoints operational with intelligent fallbacks")
     logger.info("[TARGET] System ready to handle requests even with missing dependencies")
     logger.info("[STATS] Monitoring endpoints available at /health, /metrics, /status")
-    
-    # Register with Service Directory if MCP is available
-    if MCP_AVAILABLE and 'mcp_wrapper' in globals():
-        try:
-            await mcp_wrapper.sd_manager.register_mcp_service()
-            logger.info("[MCP] ✅ Registered with Google Cloud Service Directory")
-        except Exception as e:
-            logger.warning(f"[MCP] ⚠️ Service Directory registration failed: {e}")
     
     # Perform internal healthcheck on startup
     logger.info("[HEALTH] Running startup healthcheck...")
