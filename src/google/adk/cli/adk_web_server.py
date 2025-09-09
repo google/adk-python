@@ -1031,6 +1031,7 @@ class AdkWebServer:
               session_id=req.session_id,
               new_message=req.new_message,
               state_delta=req.state_delta,
+              run_config=RunConfig(save_input_blobs_as_artifacts=True),
           )
       ) as agen:
         events = [event async for event in agen]
@@ -1060,7 +1061,10 @@ class AdkWebServer:
                   session_id=req.session_id,
                   new_message=req.new_message,
                   state_delta=req.state_delta,
-                  run_config=RunConfig(streaming_mode=stream_mode),
+                  run_config=RunConfig(
+                      streaming_mode=stream_mode,
+                      save_input_blobs_as_artifacts=True,
+                  ),
               )
           ) as agen:
             async for event in agen:
