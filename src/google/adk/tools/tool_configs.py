@@ -18,26 +18,26 @@ from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 
 
-@working_in_progress("BaseToolConfig is not ready for use.")
+@experimental
 class BaseToolConfig(BaseModel):
   """The base class for all tool configs."""
 
   model_config = ConfigDict(extra="forbid")
-  """Forbid extra fields."""
 
 
-@working_in_progress("ToolArgsConfig is not ready for use.")
+@experimental
 class ToolArgsConfig(BaseModel):
   """Config to host free key-value pairs for the args in ToolConfig."""
 
   model_config = ConfigDict(extra="allow")
 
 
-@working_in_progress("ToolConfig is not ready for use.")
+@experimental
 class ToolConfig(BaseModel):
   """The configuration for a tool.
 
@@ -114,15 +114,15 @@ class ToolConfig(BaseModel):
 
   model_config = ConfigDict(extra="forbid")
 
-  name: str
-  """The name of the tool.
+  name: str = Field(description="""\
+The name of the tool.
 
-  For ADK built-in tools, `name` is the name of the tool, e.g. `google_search`
-  or `AgentTool`.
+For ADK built-in tools, `name` is the name of the tool, e.g. `google_search`
+or `AgentTool`.
 
-  For user-defined tools, the name is the fully qualified path to the tool, e.g.
-  `my_package.my_module.my_tool`.
-  """
+For user-defined tools, the name is the fully qualified path to the tool, e.g.
+`my_package.my_module.my_tool`.""")
 
-  args: Optional[ToolArgsConfig] = None
-  """The args for the tool."""
+  args: Optional[ToolArgsConfig] = Field(
+      default=None, description="The args for the tool."
+  )

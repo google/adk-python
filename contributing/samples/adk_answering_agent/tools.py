@@ -125,11 +125,12 @@ def add_comment_to_discussion(
           }
         }
     """
-  comment_body = (
-      "**Response from ADK Answering Agent (experimental, answer may be"
-      " inaccurate)**\n\n"
-      + comment_body
-  )
+  if not comment_body.startswith("**Response from ADK Answering Agent"):
+    comment_body = (
+        "**Response from ADK Answering Agent (experimental, answer may be"
+        " inaccurate)**\n\n"
+        + comment_body
+    )
 
   variables = {"discussionId": discussion_id, "body": comment_body}
   try:

@@ -20,6 +20,7 @@ from typing import List
 from typing import Optional
 from typing import TextIO
 from typing import Union
+import warnings
 
 from pydantic import model_validator
 from typing_extensions import override
@@ -59,7 +60,7 @@ from .mcp_tool import MCPTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-class MCPToolset(BaseToolset):
+class McpToolset(BaseToolset):
   """Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
 
   This toolset manages the connection to an MCP server and provides tools
@@ -190,7 +191,7 @@ class MCPToolset(BaseToolset):
       cls: type[MCPToolset], config: ToolArgsConfig, config_abs_path: str
   ) -> MCPToolset:
     """Creates an MCPToolset from a configuration object."""
-    mcp_toolset_config = MCPToolsetConfig.model_validate(config.model_dump())
+    mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
 
     if mcp_toolset_config.stdio_server_params:
       connection_params = mcp_toolset_config.stdio_server_params
@@ -211,7 +212,19 @@ class MCPToolset(BaseToolset):
     )
 
 
-class MCPToolsetConfig(BaseToolConfig):
+class MCPToolset(McpToolset):
+  """Deprecated name, use `McpToolset` instead."""
+
+  def __init__(self, *args, **kwargs):
+    warnings.warn(
+        "MCPToolset class is deprecated, use `McpToolset` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    super().__init__(*args, **kwargs)
+
+
+class McpToolsetConfig(BaseToolConfig):
   """The config for MCPToolset."""
 
   stdio_server_params: Optional[StdioServerParameters] = None

@@ -32,6 +32,7 @@ LABEL_TO_OWNER = {
     "documentation": "polong-lin",
     "services": "DeanChensj",
     "tools": "seanzhou1023",
+    "mcp": "seanzhou1023",
     "eval": "ankursharmas",
     "live": "hangfei",
     "models": "genquan9",
@@ -267,6 +268,7 @@ root_agent = Agent(
       - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
       - If it's agent orchestration, agent definition, label it with "core".
+      - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with "mcp".
       - If you can't find a appropriate labels for the PR, follow the previous instruction that starts with "IMPORTANT:".
 
       Here is the contribution guidelines:

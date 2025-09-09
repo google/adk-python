@@ -24,6 +24,7 @@ from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
+from ..utils.context_utils import Aclosing
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .evaluator import EvaluationResult
@@ -109,21 +110,22 @@ class LlmAsJudge(Evaluator):
       num_samples = self._judge_model_options.num_samples
       invocation_result_samples = []
       for _ in range(num_samples):
-        async for llm_response in self._judge_model.generate_content_async(
-            llm_request
-        ):
-          # Non-streaming call, so there is only one response content.
-          score = self.convert_auto_rater_response_to_score(llm_response)
-          invocation_result_samples.append(
-              PerInvocationResult(
-                  actual_invocation=actual,
-                  expected_invocation=expected,
-                  score=score,
-                  eval_status=get_eval_status(
-                      score, self._eval_metric.threshold
-                  ),
-              )
-          )
+        async with Aclosing(
+            self._judge_model.generate_content_async(llm_request)
+        ) as agen:
+          async for llm_response in agen:
+            # Non-streaming call, so there is only one response content.
+            score = self.convert_auto_rater_response_to_score(llm_response)
+            invocation_result_samples.append(
+                PerInvocationResult(
+                    actual_invocation=actual,
+                    expected_invocation=expected,
+                    score=score,
+                    eval_status=get_eval_status(
+                        score, self._eval_metric.threshold
+                    ),
+                )
+            )
       if not invocation_result_samples:
         continue
       per_invocation_results.append(

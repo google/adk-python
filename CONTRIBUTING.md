@@ -49,8 +49,7 @@ This project follows
 
 ## Requirement for PRs
 
-- Each PR should only have one commit. Please squash it if there are multiple PRs.
-- All PRs, other than small documentation or typo fixes, should have a Issue assoicated. If not, please create one.
+- All PRs, other than small documentation or typo fixes, should have a Issue associated. If not, please create one.
 - Small, focused PRs. Keep changes minimal—one concern per PR.
 - For bug fixes or features, please provide logs or screenshot after the fix is applied to help reviewers better understand the fix.
 - Please include a `testing plan` section in your PR to talk about how you will test. This will save time for PR review. See `Testing Requirements` section for more details.

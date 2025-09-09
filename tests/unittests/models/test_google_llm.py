@@ -47,6 +47,9 @@ class MockAsyncIterator:
     except StopIteration as exc:
       raise StopAsyncIteration from exc
 
+  async def aclose(self):
+    pass
+
 
 @pytest.fixture
 def generate_content_response():

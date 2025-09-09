@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
+from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -174,11 +175,14 @@ class AgentEvaluator:
 
       failures.extend(failures_per_eval_case)
 
-    assert not failures, (
-        "Following are all the test failures. If you looking to get more"
-        " details on the failures, then please re-run this test with"
-        " `print_details` set to `True`.\n{}".format("\n".join(failures))
-    )
+    failure_message = "Following are all the test failures."
+    if not print_detailed_results:
+      failure_message += (
+          " If you looking to get more details on the failures, then please"
+          " re-run this test with `print_detailed_results` set to `True`."
+      )
+    failure_message += "\n" + "\n".join(failures)
+    assert not failures, failure_message
 
   @staticmethod
   async def evaluate(
@@ -187,6 +191,7 @@ class AgentEvaluator:
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
       initial_session_file: Optional[str] = None,
+      print_detailed_results: bool = True,
   ):
     """Evaluates an Agent given eval data.
 
@@ -203,6 +208,8 @@ class AgentEvaluator:
       agent_name: The name of the agent.
       initial_session_file: File that contains initial session state that is
         needed by all the evals in the eval dataset.
+      print_detailed_results: Whether to print detailed results for each metric
+        evaluation.
     """
     test_files = []
     if isinstance(eval_dataset_file_path_or_dir, str) and os.path.isdir(
@@ -229,6 +236,7 @@ class AgentEvaluator:
           criteria=criteria,
           num_runs=num_runs,
           agent_name=agent_name,
+          print_detailed_results=print_detailed_results,
       )
 
   @staticmethod
@@ -531,10 +539,11 @@ class AgentEvaluator:
     # Generate inferences
     inference_results = []
     for inference_request in inference_requests:
-      async for inference_result in eval_service.perform_inference(
-          inference_request=inference_request
-      ):
-        inference_results.append(inference_result)
+      async with Aclosing(
+          eval_service.perform_inference(inference_request=inference_request)
+      ) as agen:
+        async for inference_result in agen:
+          inference_results.append(inference_result)
 
     # Evaluate metrics
     # As we perform more than one run for an eval case, we collect eval results
@@ -544,14 +553,15 @@ class AgentEvaluator:
         inference_results=inference_results,
         evaluate_config=EvaluateConfig(eval_metrics=eval_metrics),
     )
-    async for eval_result in eval_service.evaluate(
-        evaluate_request=evaluate_request
-    ):
-      eval_id = eval_result.eval_id
-      if eval_id not in eval_results_by_eval_id:
-        eval_results_by_eval_id[eval_id] = []
+    async with Aclosing(
+        eval_service.evaluate(evaluate_request=evaluate_request)
+    ) as agen:
+      async for eval_result in agen:
+        eval_id = eval_result.eval_id
+        if eval_id not in eval_results_by_eval_id:
+          eval_results_by_eval_id[eval_id] = []
 
-      eval_results_by_eval_id[eval_id].append(eval_result)
+        eval_results_by_eval_id[eval_id].append(eval_result)
 
     return eval_results_by_eval_id
 

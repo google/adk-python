@@ -31,8 +31,6 @@ class TestAgentLoader:
     """Ensure sys.path is restored after each test."""
     original_path = sys.path.copy()
     original_env = os.environ.copy()
-    # Enable WIP features for YAML agent loading tests
-    os.environ["ADK_ALLOW_WIP_FEATURES"] = "true"
     yield
     sys.path[:] = original_path
     # Restore environment variables
@@ -572,3 +570,320 @@ class TestAgentLoader:
 
       # Should raise some form of YAML parsing error
       assert "Extra inputs are not permitted" in str(exc_info.value)
+
+  def create_special_agent_structure(
+      self, special_agents_dir: Path, agent_name: str, structure_type: str
+  ):
+    """Create special agent structures for testing.
+
+    Args:
+        special_agents_dir: The special agents directory to create the agent in
+        agent_name: Name of the agent (without double underscore prefix)
+        structure_type: One of 'module', 'package_with_agent_module'
+    """
+    if structure_type == "module":
+      # Structure: special_agents_dir/agent_name.py
+      agent_file = special_agents_dir / f"{agent_name}.py"
+      agent_file.write_text(dedent(f"""
+                import os
+                from google.adk.agents.base_agent import BaseAgent
+                from typing import Any
+
+                class Special{agent_name.title()}Agent(BaseAgent):
+                    agent_id: Any = None
+                    config: Any = None
+
+                    def __init__(self):
+                        super().__init__(name="special_{agent_name}")
+                        self.agent_id = id(self)
+                        self.config = os.environ.get("AGENT_CONFIG", "special_default")
+
+                root_agent = Special{agent_name.title()}Agent()
+            """))
+
+    elif structure_type == "package_with_agent_module":
+      # Structure: special_agents_dir/agent_name/agent.py
+      agent_dir = special_agents_dir / agent_name
+      agent_dir.mkdir()
+
+      # Create __init__.py
+      init_file = agent_dir / "__init__.py"
+      init_file.write_text("")
+
+      # Create agent.py with root_agent
+      agent_file = agent_dir / "agent.py"
+      agent_file.write_text(dedent(f"""
+                import os
+                from google.adk.agents.base_agent import BaseAgent
+                from typing import Any
+
+                class Special{agent_name.title()}Agent(BaseAgent):
+                    agent_id: Any = None
+                    config: Any = None
+
+                    def __init__(self):
+                        super().__init__(name="special_{agent_name}")
+                        self.agent_id = id(self)
+                        self.config = os.environ.get("AGENT_CONFIG", "special_default")
+
+                root_agent = Special{agent_name.title()}Agent()
+            """))
+
+  def test_load_special_agent_with_double_underscore(self):
+    """Test loading a special agent with double underscore prefix."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      # Create special agents directory structure
+      special_agents_dir = temp_path / "src" / "google" / "adk" / "assistants"
+      special_agents_dir.mkdir(parents=True)
+
+      # Create a special agent
+      self.create_special_agent_structure(
+          special_agents_dir, "helper", "package_with_agent_module"
+      )
+
+      # Mock the SPECIAL_AGENTS_DIR to point to our test directory
+      from google.adk.cli.utils import agent_loader
+
+      original_special_dir = agent_loader.SPECIAL_AGENTS_DIR
+
+      try:
+        agent_loader.SPECIAL_AGENTS_DIR = str(special_agents_dir)
+
+        # Create a regular agents directory (can be empty for this test)
+        regular_agents_dir = temp_path / "regular_agents"
+        regular_agents_dir.mkdir()
+
+        # Load the special agent
+        loader = AgentLoader(str(regular_agents_dir))
+        agent = loader.load_agent("__helper")
+
+        # Assert agent was loaded correctly
+        assert agent.name == "special_helper"
+        assert hasattr(agent, "agent_id")
+        assert agent.config == "special_default"
+
+      finally:
+        # Restore original SPECIAL_AGENTS_DIR
+        agent_loader.SPECIAL_AGENTS_DIR = original_special_dir
+
+  def test_special_agent_caching_returns_same_instance(self):
+    """Test that loading the same special agent twice returns the same instance."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      # Create special agents directory structure
+      special_agents_dir = temp_path / "src" / "google" / "adk" / "assistants"
+      special_agents_dir.mkdir(parents=True)
+
+      # Create a special agent
+      self.create_special_agent_structure(
+          special_agents_dir, "cached_helper", "module"
+      )
+
+      # Mock the SPECIAL_AGENTS_DIR to point to our test directory
+      from google.adk.cli.utils import agent_loader
+
+      original_special_dir = agent_loader.SPECIAL_AGENTS_DIR
+
+      try:
+        agent_loader.SPECIAL_AGENTS_DIR = str(special_agents_dir)
+
+        # Create a regular agents directory
+        regular_agents_dir = temp_path / "regular_agents"
+        regular_agents_dir.mkdir()
+
+        # Load the special agent twice
+        loader = AgentLoader(str(regular_agents_dir))
+        agent1 = loader.load_agent("__cached_helper")
+        agent2 = loader.load_agent("__cached_helper")
+
+        # Assert same instance is returned
+        assert agent1 is agent2
+        assert agent1.agent_id == agent2.agent_id
+        assert agent1.name == "special_cached_helper"
+
+      finally:
+        # Restore original SPECIAL_AGENTS_DIR
+        agent_loader.SPECIAL_AGENTS_DIR = original_special_dir
+
+  def test_special_agent_not_found_error(self):
+    """Test that appropriate error is raised when special agent is not found."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      # Create special agents directory (but empty)
+      special_agents_dir = temp_path / "special_agents"
+      special_agents_dir.mkdir()
+
+      # Create regular agents directory
+      regular_agents_dir = temp_path / "regular_agents"
+      regular_agents_dir.mkdir()
+
+      # Mock the SPECIAL_AGENTS_DIR to point to our test directory
+      from google.adk.cli.utils import agent_loader
+
+      original_special_dir = agent_loader.SPECIAL_AGENTS_DIR
+
+      try:
+        agent_loader.SPECIAL_AGENTS_DIR = str(special_agents_dir)
+
+        loader = AgentLoader(str(regular_agents_dir))
+
+        # Try to load non-existent special agent
+        with pytest.raises(ValueError) as exc_info:
+          loader.load_agent("__nonexistent_special")
+
+        expected_msg_part_1 = "No root_agent found for '__nonexistent_special'."
+        expected_msg_part_2 = (
+            "Searched in 'nonexistent_special.agent.root_agent',"
+            " 'nonexistent_special.root_agent' and"
+            " 'nonexistent_special/root_agent.yaml'."
+        )
+        expected_msg_part_3 = (
+            f"Ensure '{special_agents_dir}/nonexistent_special' is structured"
+            " correctly"
+        )
+
+        assert expected_msg_part_1 in str(exc_info.value)
+        assert expected_msg_part_2 in str(exc_info.value)
+        assert expected_msg_part_3 in str(exc_info.value)
+
+      finally:
+        # Restore original SPECIAL_AGENTS_DIR
+        agent_loader.SPECIAL_AGENTS_DIR = original_special_dir
+
+  def create_special_yaml_agent_structure(
+      self, special_agents_dir: Path, agent_name: str, yaml_content: str
+  ):
+    """Create a special agent structure with YAML configuration.
+
+    Args:
+        special_agents_dir: The special agents directory to create the agent in
+        agent_name: Name of the agent (without double underscore prefix)
+        yaml_content: YAML content for the root_agent.yaml file
+    """
+    agent_dir = special_agents_dir / agent_name
+    agent_dir.mkdir()
+
+    # Create root_agent.yaml file
+    yaml_file = agent_dir / "root_agent.yaml"
+    yaml_file.write_text(yaml_content)
+
+  def test_load_special_agent_from_yaml_config(self):
+    """Test loading a special agent from YAML configuration."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      # Create special agents directory
+      special_agents_dir = temp_path / "special_agents"
+      special_agents_dir.mkdir()
+      agent_name = "yaml_helper"
+
+      # Create YAML configuration for special agent
+      yaml_content = dedent("""
+        agent_class: LlmAgent
+        name: special_yaml_test_agent
+        model: gemini-2.0-flash
+        instruction: You are a special test agent loaded from YAML configuration.
+        description: A special test agent created from YAML config
+      """)
+
+      self.create_special_yaml_agent_structure(
+          special_agents_dir, agent_name, yaml_content
+      )
+
+      # Mock the SPECIAL_AGENTS_DIR to point to our test directory
+      from google.adk.cli.utils import agent_loader
+
+      original_special_dir = agent_loader.SPECIAL_AGENTS_DIR
+
+      try:
+        agent_loader.SPECIAL_AGENTS_DIR = str(special_agents_dir)
+
+        # Create regular agents directory
+        regular_agents_dir = temp_path / "regular_agents"
+        regular_agents_dir.mkdir()
+
+        # Load the special agent
+        loader = AgentLoader(str(regular_agents_dir))
+        agent = loader.load_agent("__yaml_helper")
+
+        # Assert agent was loaded correctly
+        assert agent.name == "special_yaml_test_agent"
+        # Check if it's an LlmAgent before accessing model and instruction
+        from google.adk.agents.llm_agent import LlmAgent
+
+        if isinstance(agent, LlmAgent):
+          assert agent.model == "gemini-2.0-flash"
+          # Handle instruction which can be string or InstructionProvider
+          instruction_text = str(agent.instruction)
+          assert "special test agent loaded from YAML" in instruction_text
+
+      finally:
+        # Restore original SPECIAL_AGENTS_DIR
+        agent_loader.SPECIAL_AGENTS_DIR = original_special_dir
+
+  def test_yaml_config_agents_dir_parameter(self):
+    """Test that _load_from_yaml_config respects the agents_dir parameter."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      # Create two different directories with the same agent name
+      regular_agents_dir = temp_path / "regular_agents"
+      regular_agents_dir.mkdir()
+      custom_agents_dir = temp_path / "custom_agents"
+      custom_agents_dir.mkdir()
+
+      agent_name = "param_test_agent"
+
+      # Create YAML agent in regular directory
+      regular_yaml_content = dedent("""
+        agent_class: LlmAgent
+        name: regular_yaml_agent
+        model: gemini-2.0-flash
+        instruction: Regular agent from default directory.
+      """)
+      self.create_yaml_agent_structure(
+          regular_agents_dir, agent_name, regular_yaml_content
+      )
+
+      # Create YAML agent in custom directory
+      custom_yaml_content = dedent("""
+        agent_class: LlmAgent
+        name: custom_yaml_agent
+        model: gemini-2.0-flash
+        instruction: Custom agent from custom directory.
+      """)
+      self.create_yaml_agent_structure(
+          custom_agents_dir, agent_name, custom_yaml_content
+      )
+
+      # Create loader pointing to regular directory
+      loader = AgentLoader(str(regular_agents_dir))
+
+      # Test 1: Call with regular agents_dir (should use self.agents_dir)
+      default_agent = loader._load_from_yaml_config(
+          agent_name, str(regular_agents_dir)
+      )
+      assert default_agent is not None
+      assert default_agent.name == "regular_yaml_agent"
+
+      # Test 2: Call with explicit custom agents_dir (should use custom directory)
+      custom_agent = loader._load_from_yaml_config(
+          agent_name, str(custom_agents_dir)
+      )
+      assert custom_agent is not None
+      assert custom_agent.name == "custom_yaml_agent"
+
+      # Test 3: Call with self.agents_dir explicitly (should be same as test 1)
+      explicit_agent = loader._load_from_yaml_config(
+          agent_name, loader.agents_dir
+      )
+      assert explicit_agent is not None
+      assert explicit_agent.name == "regular_yaml_agent"
+
+      # Verify they are different agents
+      assert default_agent.name != custom_agent.name
+      assert explicit_agent.name == default_agent.name

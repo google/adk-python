@@ -20,7 +20,7 @@ import pytest
 
 # Skip all tests in this module if Python version is less than 3.10
 pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A tool requires Python 3.10+"
+    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
 )
 
 # Import dependencies with version checking
@@ -32,17 +32,10 @@ try:
   from google.genai import types as genai_types
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    a2a_types = DummyTypes()
-    genai_types = DummyTypes()
-    RequestContext = DummyTypes()
-    RunConfig = DummyTypes()
-    _get_user_id = lambda x: None
-    convert_a2a_request_to_adk_run_args = lambda x: None
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 
@@ -153,10 +146,7 @@ class TestGetUserId:
 class TestConvertA2aRequestToAdkRunArgs:
   """Test cases for convert_a2a_request_to_adk_run_args function."""
 
-  @patch(
-      "google.adk.a2a.converters.request_converter.convert_a2a_part_to_genai_part"
-  )
-  def test_convert_a2a_request_basic(self, mock_convert_part):
+  def test_convert_a2a_request_basic(self):
     """Test basic conversion of A2A request to ADK run args."""
     # Arrange
     mock_part1 = Mock()
@@ -179,10 +169,11 @@ class TestConvertA2aRequestToAdkRunArgs:
     # Create proper genai_types.Part objects instead of mocks
     mock_genai_part1 = genai_types.Part(text="test part 1")
     mock_genai_part2 = genai_types.Part(text="test part 2")
+    mock_convert_part = Mock()
     mock_convert_part.side_effect = [mock_genai_part1, mock_genai_part2]
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request)
+    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
 
     # Assert
     assert result is not None
@@ -208,14 +199,12 @@ class TestConvertA2aRequestToAdkRunArgs:
     with pytest.raises(ValueError, match="Request message cannot be None"):
       convert_a2a_request_to_adk_run_args(request)
 
-  @patch(
-      "google.adk.a2a.converters.request_converter.convert_a2a_part_to_genai_part"
-  )
-  def test_convert_a2a_request_empty_parts(self, mock_convert_part):
+  def test_convert_a2a_request_empty_parts(self):
     """Test conversion with empty parts list."""
     # Arrange
     mock_message = Mock()
     mock_message.parts = []
+    mock_convert_part = Mock()
 
     request = Mock(spec=RequestContext)
     request.message = mock_message
@@ -223,7 +212,7 @@ class TestConvertA2aRequestToAdkRunArgs:
     request.call_context = None
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request)
+    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
 
     # Assert
     assert result is not None
@@ -237,10 +226,7 @@ class TestConvertA2aRequestToAdkRunArgs:
     # Verify convert_part wasn't called
     mock_convert_part.assert_not_called()
 
-  @patch(
-      "google.adk.a2a.converters.request_converter.convert_a2a_part_to_genai_part"
-  )
-  def test_convert_a2a_request_none_context_id(self, mock_convert_part):
+  def test_convert_a2a_request_none_context_id(self):
     """Test conversion when context_id is None."""
     # Arrange
     mock_part = Mock()
@@ -254,10 +240,11 @@ class TestConvertA2aRequestToAdkRunArgs:
 
     # Create proper genai_types.Part object instead of mock
     mock_genai_part = genai_types.Part(text="test part")
+    mock_convert_part = Mock()
     mock_convert_part.return_value = mock_genai_part
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request)
+    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
 
     # Assert
     assert result is not None
@@ -268,10 +255,7 @@ class TestConvertA2aRequestToAdkRunArgs:
     assert result["new_message"].parts == [mock_genai_part]
     assert isinstance(result["run_config"], RunConfig)
 
-  @patch(
-      "google.adk.a2a.converters.request_converter.convert_a2a_part_to_genai_part"
-  )
-  def test_convert_a2a_request_no_auth(self, mock_convert_part):
+  def test_convert_a2a_request_no_auth(self):
     """Test conversion when no authentication is available."""
     # Arrange
     mock_part = Mock()
@@ -285,10 +269,11 @@ class TestConvertA2aRequestToAdkRunArgs:
 
     # Create proper genai_types.Part object instead of mock
     mock_genai_part = genai_types.Part(text="test part")
+    mock_convert_part = Mock()
     mock_convert_part.return_value = mock_genai_part
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request)
+    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
 
     # Assert
     assert result is not None
@@ -303,10 +288,7 @@ class TestConvertA2aRequestToAdkRunArgs:
 class TestIntegration:
   """Integration test cases combining both functions."""
 
-  @patch(
-      "google.adk.a2a.converters.request_converter.convert_a2a_part_to_genai_part"
-  )
-  def test_end_to_end_conversion_with_auth_user(self, mock_convert_part):
+  def test_end_to_end_conversion_with_auth_user(self):
     """Test end-to-end conversion with authenticated user."""
     # Arrange
     mock_user = Mock()
@@ -326,10 +308,11 @@ class TestIntegration:
 
     # Create proper genai_types.Part object instead of mock
     mock_genai_part = genai_types.Part(text="test part")
+    mock_convert_part = Mock()
     mock_convert_part.return_value = mock_genai_part
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request)
+    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
 
     # Assert
     assert result is not None
@@ -340,10 +323,7 @@ class TestIntegration:
     assert result["new_message"].parts == [mock_genai_part]
     assert isinstance(result["run_config"], RunConfig)
 
-  @patch(
-      "google.adk.a2a.converters.request_converter.convert_a2a_part_to_genai_part"
-  )
-  def test_end_to_end_conversion_with_fallback_user(self, mock_convert_part):
+  def test_end_to_end_conversion_with_fallback_user(self):
     """Test end-to-end conversion with fallback user ID."""
     # Arrange
     mock_part = Mock()
@@ -357,10 +337,11 @@ class TestIntegration:
 
     # Create proper genai_types.Part object instead of mock
     mock_genai_part = genai_types.Part(text="test part")
+    mock_convert_part = Mock()
     mock_convert_part.return_value = mock_genai_part
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request)
+    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
 
     # Assert
     assert result is not None

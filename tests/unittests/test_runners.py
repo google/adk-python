@@ -17,6 +17,7 @@ from typing import Optional
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
@@ -426,6 +427,20 @@ class TestRunnerWithPlugins:
     modified_event_message = generated_event.content.parts[0].text
 
     assert modified_event_message == MockPlugin.ON_EVENT_CALLBACK_MSG
+
+  def test_runner_init_raises_error_with_app_and_app_name_and_agent(self):
+    """Test that ValueError is raised when app, app_name and agent are provided."""
+    with pytest.raises(
+        ValueError,
+        match="When app is provided, app_name should not be provided.",
+    ):
+      Runner(
+          app=App(name="test_app", root_agent=self.root_agent),
+          app_name="test_app",
+          agent=self.root_agent,
+          session_service=self.session_service,
+          artifact_service=self.artifact_service,
+      )
 
 
 if __name__ == "__main__":

@@ -45,14 +45,17 @@ from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
 from starlette.types import Lifespan
+from typing_extensions import deprecated
 from typing_extensions import override
 from watchdog.observers import Observer
 
 from . import agent_graph
+from ..agents.base_agent import BaseAgent
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..errors.not_found_error import NotFoundError
@@ -66,6 +69,7 @@ from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
+from ..evaluation.eval_set import EvalSet
 from ..evaluation.eval_set_results_manager import EvalSetResultsManager
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..events.event import Event
@@ -73,6 +77,7 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils.context_utils import Aclosing
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .cli_eval import EvalStatus
 from .utils import cleanup
@@ -86,6 +91,9 @@ from .utils.state import create_empty_state
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+
+TAG_DEBUG = "Debug"
+TAG_EVALUATION = "Evaluation"
 
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
@@ -151,13 +159,30 @@ class InMemoryExporter(export_lib.SpanExporter):
     self._spans.clear()
 
 
-class AgentRunRequest(common.BaseModel):
+class RunAgentRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
   new_message: types.Content
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
+
+
+class CreateSessionRequest(common.BaseModel):
+  session_id: Optional[str] = Field(
+      default=None,
+      description=(
+          "The ID of the session to create. If not provided, a random session"
+          " ID will be generated."
+      ),
+  )
+  state: Optional[dict[str, Any]] = Field(
+      default=None, description="The initial state of the session."
+  )
+  events: Optional[list[Event]] = Field(
+      default=None,
+      description="A list of events to initialize the session with.",
+  )
 
 
 class AddSessionToEvalSetRequest(common.BaseModel):
@@ -167,7 +192,18 @@ class AddSessionToEvalSetRequest(common.BaseModel):
 
 
 class RunEvalRequest(common.BaseModel):
-  eval_ids: list[str]  # if empty, then all evals in the eval set are run.
+  eval_ids: list[str] = Field(
+      deprecated=True,
+      default_factory=list,
+      description="This field is deprecated, use eval_case_ids instead.",
+  )
+  eval_case_ids: list[str] = Field(
+      default_factory=list,
+      description=(
+          "List of eval case ids to evaluate. if empty, then all eval cases in"
+          " the eval set are run."
+      ),
+  )
   eval_metrics: list[EvalMetric]
 
 
@@ -189,8 +225,36 @@ class RunEvalResult(common.BaseModel):
   session_id: str
 
 
+class RunEvalResponse(common.BaseModel):
+  run_eval_results: list[RunEvalResult]
+
+
 class GetEventGraphResult(common.BaseModel):
   dot_src: str
+
+
+class CreateEvalSetRequest(common.BaseModel):
+  eval_set: EvalSet
+
+
+class ListEvalSetsResponse(common.BaseModel):
+  eval_set_ids: list[str]
+
+
+class EvalResult(EvalSetResult):
+  """This class has no field intentionally.
+
+  The goal here is to just give a new name to the class to align with the API
+  endpoint.
+  """
+
+
+class ListEvalResultsResponse(common.BaseModel):
+  eval_result_ids: list[str]
+
+
+class ListMetricsInfoResponse(common.BaseModel):
+  metrics_info: list[MetricInfo]
 
 
 class AdkWebServer:
@@ -260,10 +324,17 @@ class AdkWebServer:
     envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
     if app_name in self.runner_dict:
       return self.runner_dict[app_name]
-    root_agent = self.agent_loader.load_agent(app_name)
+    agent_or_app = self.agent_loader.load_agent(app_name)
+    agentic_app = None
+    if isinstance(agent_or_app, BaseAgent):
+      agentic_app = App(
+          name=app_name,
+          root_agent=agent_or_app,
+      )
+    else:
+      agentic_app = agent_or_app
     runner = Runner(
-        app_name=app_name,
-        agent=root_agent,
+        app=agentic_app,
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
@@ -349,18 +420,18 @@ class AdkWebServer:
       )
 
     @app.get("/list-apps")
-    def list_apps() -> list[str]:
+    async def list_apps() -> list[str]:
       return self.agent_loader.list_agents()
 
-    @app.get("/debug/trace/{event_id}")
-    def get_trace_dict(event_id: str) -> Any:
+    @app.get("/debug/trace/{event_id}", tags=[TAG_DEBUG])
+    async def get_trace_dict(event_id: str) -> Any:
       event_dict = trace_dict.get(event_id, None)
       if event_dict is None:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
 
-    @app.get("/debug/trace/session/{session_id}")
-    def get_session_trace(session_id: str) -> Any:
+    @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
+    async def get_session_trace(session_id: str) -> Any:
       spans = memory_exporter.get_finished_spans(session_id)
       if not spans:
         return []
@@ -407,6 +478,10 @@ class AdkWebServer:
           if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
       ]
 
+    @deprecated(
+        "Please use create_session instead. This will be removed in future"
+        " releases."
+    )
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
         response_model_exclude_none=True,
@@ -439,52 +514,111 @@ class AdkWebServer:
     async def create_session(
         app_name: str,
         user_id: str,
-        state: Optional[dict[str, Any]] = None,
-        events: Optional[list[Event]] = None,
+        req: Optional[CreateSessionRequest] = None,
     ) -> Session:
+      if not req:
+        return await self.session_service.create_session(
+            app_name=app_name, user_id=user_id
+        )
+
       session = await self.session_service.create_session(
-          app_name=app_name, user_id=user_id, state=state
+          app_name=app_name,
+          user_id=user_id,
+          state=req.state,
+          session_id=req.session_id,
       )
 
-      if events:
-        for event in events:
+      if req.events:
+        for event in req.events:
           await self.session_service.append_event(session=session, event=event)
 
-      logger.info("New session created")
       return session
 
+    @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
+    async def delete_session(
+        app_name: str, user_id: str, session_id: str
+    ) -> None:
+      await self.session_service.delete_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+
     @app.post(
-        "/apps/{app_name}/eval_sets/{eval_set_id}",
+        "/apps/{app_name}/eval-sets",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def create_eval_set(
-        app_name: str,
-        eval_set_id: str,
-    ):
-      """Creates an eval set, given the id."""
+    async def create_eval_set(
+        app_name: str, create_eval_set_request: CreateEvalSetRequest
+    ) -> EvalSet:
       try:
-        self.eval_sets_manager.create_eval_set(app_name, eval_set_id)
+        return self.eval_sets_manager.create_eval_set(
+            app_name=app_name,
+            eval_set_id=create_eval_set_request.eval_set.eval_set_id,
+        )
       except ValueError as ve:
         raise HTTPException(
             status_code=400,
             detail=str(ve),
         ) from ve
 
+    @deprecated(
+        "Please use create_eval_set instead. This will be removed in future"
+        " releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def create_eval_set_legacy(
+        app_name: str,
+        eval_set_id: str,
+    ):
+      """Creates an eval set, given the id."""
+      await create_eval_set(
+          app_name=app_name,
+          create_eval_set_request=CreateEvalSetRequest(
+              eval_set=EvalSet(eval_set_id=eval_set_id, eval_cases=[])
+          ),
+      )
+
+    @app.get(
+        "/apps/{app_name}/eval-sets",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_sets(app_name: str) -> ListEvalSetsResponse:
+      """Lists all eval sets for the given app."""
+      eval_sets = []
+      try:
+        eval_sets = self.eval_sets_manager.list_eval_sets(app_name)
+      except NotFoundError as e:
+        logger.warning(e)
+
+      return ListEvalSetsResponse(eval_set_ids=eval_sets)
+
+    @deprecated(
+        "Please use list_eval_sets instead. This will be removed in future"
+        " releases."
+    )
     @app.get(
         "/apps/{app_name}/eval_sets",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def list_eval_sets(app_name: str) -> list[str]:
-      """Lists all eval sets for the given app."""
-      try:
-        return self.eval_sets_manager.list_eval_sets(app_name)
-      except NotFoundError as e:
-        logger.warning(e)
-        return []
+    async def list_eval_sets_legacy(app_name: str) -> list[str]:
+      list_eval_sets_response = await list_eval_sets(app_name)
+      return list_eval_sets_response.eval_set_ids
 
+    @app.post(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/add-session",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     async def add_session_to_eval_set(
         app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
@@ -499,9 +633,10 @@ class AdkWebServer:
       invocations = evals.convert_session_to_eval_invocations(session)
 
       # Populate the session with initial session state.
-      initial_session_state = create_empty_state(
-          self.agent_loader.load_agent(app_name)
-      )
+      agent_or_app = self.agent_loader.load_agent(app_name)
+      if isinstance(agent_or_app, App):
+        agent_or_app = agent_or_app.root_agent
+      initial_session_state = create_empty_state(agent_or_app)
 
       new_eval_case = EvalCase(
           eval_id=req.eval_id,
@@ -524,8 +659,9 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def list_evals_in_eval_set(
+    async def list_evals_in_eval_set(
         app_name: str,
         eval_set_id: str,
     ) -> list[str]:
@@ -540,10 +676,16 @@ class AdkWebServer:
       return sorted([x.eval_id for x in eval_set_data.eval_cases])
 
     @app.get(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    @app.get(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def get_eval(
+    async def get_eval(
         app_name: str, eval_set_id: str, eval_case_id: str
     ) -> EvalCase:
       """Gets an eval case in an eval set."""
@@ -562,10 +704,16 @@ class AdkWebServer:
       )
 
     @app.put(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    @app.put(
         "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def update_eval(
+    async def update_eval(
         app_name: str,
         eval_set_id: str,
         eval_case_id: str,
@@ -592,8 +740,17 @@ class AdkWebServer:
       except NotFoundError as nfe:
         raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
-    @app.delete("/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}")
-    def delete_eval(app_name: str, eval_set_id: str, eval_case_id: str):
+    @app.delete(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        tags=[TAG_EVALUATION],
+    )
+    @app.delete(
+        "/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+        tags=[TAG_EVALUATION],
+    )
+    async def delete_eval(
+        app_name: str, eval_set_id: str, eval_case_id: str
+    ) -> None:
       try:
         self.eval_sets_manager.delete_eval_case(
             app_name, eval_set_id, eval_case_id
@@ -601,13 +758,30 @@ class AdkWebServer:
       except NotFoundError as nfe:
         raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
+    @deprecated(
+        "Please use run_eval instead. This will be removed in future releases."
+    )
     @app.post(
         "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def run_eval_legacy(
+        app_name: str, eval_set_id: str, req: RunEvalRequest
+    ) -> list[RunEvalResult]:
+      run_eval_response = await run_eval(
+          app_name=app_name, eval_set_id=eval_set_id, req=req
+      )
+      return run_eval_response.run_eval_results
+
+    @app.post(
+        "/apps/{app_name}/eval-sets/{eval_set_id}/run",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
     async def run_eval(
         app_name: str, eval_set_id: str, req: RunEvalRequest
-    ) -> list[RunEvalResult]:
+    ) -> RunEvalResponse:
       """Runs an eval given the details in the eval request."""
       # Create a mapping from eval set file to all the evals that needed to be
       # run.
@@ -637,7 +811,7 @@ class AdkWebServer:
         inference_request = InferenceRequest(
             app_name=app_name,
             eval_set_id=eval_set.eval_set_id,
-            eval_case_ids=req.eval_ids,
+            eval_case_ids=req.eval_case_ids or req.eval_ids,
             inference_config=InferenceConfig(),
         )
         inference_results = await _collect_inferences(
@@ -670,17 +844,41 @@ class AdkWebServer:
             )
         )
 
-      return run_eval_results
+      return RunEvalResponse(run_eval_results=run_eval_results)
 
+    @app.get(
+        "/apps/{app_name}/eval-results/{eval_result_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def get_eval_result(
+        app_name: str,
+        eval_result_id: str,
+    ) -> EvalResult:
+      """Gets the eval result for the given eval id."""
+      try:
+        eval_set_result = self.eval_set_results_manager.get_eval_set_result(
+            app_name, eval_result_id
+        )
+        return EvalResult(**eval_set_result.model_dump())
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except ValidationError as ve:
+        raise HTTPException(status_code=500, detail=str(ve)) from ve
+
+    @deprecated(
+        "Please use get_eval_result instead. This will be removed in future"
+        " releases."
+    )
     @app.get(
         "/apps/{app_name}/eval_results/{eval_result_id}",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def get_eval_result(
+    async def get_eval_result_legacy(
         app_name: str,
         eval_result_id: str,
     ) -> EvalSetResult:
-      """Gets the eval result for the given eval id."""
       try:
         return self.eval_set_results_manager.get_eval_set_result(
             app_name, eval_result_id
@@ -691,36 +889,51 @@ class AdkWebServer:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 
     @app.get(
+        "/apps/{app_name}/eval-results",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_results(app_name: str) -> ListEvalResultsResponse:
+      """Lists all eval results for the given app."""
+      eval_result_ids = self.eval_set_results_manager.list_eval_set_results(
+          app_name
+      )
+      return ListEvalResultsResponse(eval_result_ids=eval_result_ids)
+
+    @deprecated(
+        "Please use list_eval_results instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
         "/apps/{app_name}/eval_results",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def list_eval_results(app_name: str) -> list[str]:
-      """Lists all eval results for the given app."""
-      return self.eval_set_results_manager.list_eval_set_results(app_name)
+    async def list_eval_results_legacy(app_name: str) -> list[str]:
+      list_eval_results_response = await list_eval_results(app_name)
+      return list_eval_results_response.eval_result_ids
 
     @app.get(
-        "/apps/{app_name}/eval_metrics",
+        "/apps/{app_name}/metrics-info",
         response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
     )
-    def list_eval_metrics(app_name: str) -> list[MetricInfo]:
+    async def list_metrics_info(app_name: str) -> ListMetricsInfoResponse:
       """Lists all eval metrics for the given app."""
       try:
         from ..evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 
         # Right now we ignore the app_name as eval metrics are not tied to the
         # app_name, but they could be moving forward.
-        return DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+        metrics_info = (
+            DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+        )
+        return ListMetricsInfoResponse(metrics_info=metrics_info)
       except ModuleNotFoundError as e:
         logger.exception("%s\n%s", MISSING_EVAL_DEPENDENCIES_MESSAGE, e)
         raise HTTPException(
             status_code=400, detail=MISSING_EVAL_DEPENDENCIES_MESSAGE
         ) from e
-
-    @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
-    async def delete_session(app_name: str, user_id: str, session_id: str):
-      await self.session_service.delete_session(
-          app_name=app_name, user_id=user_id, session_id=session_id
-      )
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
@@ -796,7 +1009,7 @@ class AdkWebServer:
     )
     async def delete_artifact(
         app_name: str, user_id: str, session_id: str, artifact_name: str
-    ):
+    ) -> None:
       await self.artifact_service.delete_artifact(
           app_name=app_name,
           user_id=user_id,
@@ -805,27 +1018,29 @@ class AdkWebServer:
       )
 
     @app.post("/run", response_model_exclude_none=True)
-    async def agent_run(req: AgentRunRequest) -> list[Event]:
+    async def run_agent(req: RunAgentRequest) -> list[Event]:
       session = await self.session_service.get_session(
           app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
       )
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
       runner = await self.get_runner_async(req.app_name)
-      events = [
-          event
-          async for event in runner.run_async(
+      async with Aclosing(
+          runner.run_async(
               user_id=req.user_id,
               session_id=req.session_id,
               new_message=req.new_message,
+              state_delta=req.state_delta,
+              run_config=RunConfig(save_input_blobs_as_artifacts=True),
           )
-      ]
+      ) as agen:
+        events = [event async for event in agen]
       logger.info("Generated %s events in agent run", len(events))
       logger.debug("Events generated: %s", events)
       return events
 
     @app.post("/run_sse")
-    async def agent_run_sse(req: AgentRunRequest) -> StreamingResponse:
+    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
       # SSE endpoint
       session = await self.session_service.get_session(
           app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
@@ -840,19 +1055,27 @@ class AdkWebServer:
               StreamingMode.SSE if req.streaming else StreamingMode.NONE
           )
           runner = await self.get_runner_async(req.app_name)
-          async for event in runner.run_async(
-              user_id=req.user_id,
-              session_id=req.session_id,
-              new_message=req.new_message,
-              state_delta=req.state_delta,
-              run_config=RunConfig(streaming_mode=stream_mode),
-          ):
-            # Format as SSE data
-            sse_event = event.model_dump_json(exclude_none=True, by_alias=True)
-            logger.debug(
-                "Generated event in agent run streaming: %s", sse_event
-            )
-            yield f"data: {sse_event}\n\n"
+          async with Aclosing(
+              runner.run_async(
+                  user_id=req.user_id,
+                  session_id=req.session_id,
+                  new_message=req.new_message,
+                  state_delta=req.state_delta,
+                  run_config=RunConfig(
+                      streaming_mode=stream_mode,
+                      save_input_blobs_as_artifacts=True,
+                  ),
+              )
+          ) as agen:
+            async for event in agen:
+              # Format as SSE data
+              sse_event = event.model_dump_json(
+                  exclude_none=True, by_alias=True
+              )
+              logger.debug(
+                  "Generated event in agent run streaming: %s", sse_event
+              )
+              yield f"data: {sse_event}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
           # You might want to yield an error event here
@@ -867,6 +1090,7 @@ class AdkWebServer:
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/events/{event_id}/graph",
         response_model_exclude_none=True,
+        tags=[TAG_DEBUG],
     )
     async def get_event_graph(
         app_name: str, user_id: str, session_id: str, event_id: str
@@ -913,7 +1137,7 @@ class AdkWebServer:
         return {}
 
     @app.websocket("/run_live")
-    async def agent_live_run(
+    async def run_agent_live(
         websocket: WebSocket,
         app_name: str,
         user_id: str,
@@ -937,12 +1161,15 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
-        async for event in runner.run_live(
-            session=session, live_request_queue=live_request_queue
-        ):
-          await websocket.send_text(
-              event.model_dump_json(exclude_none=True, by_alias=True)
-          )
+        async with Aclosing(
+            runner.run_live(
+                session=session, live_request_queue=live_request_queue
+            )
+        ) as agen:
+          async for event in agen:
+            await websocket.send_text(
+                event.model_dump_json(exclude_none=True, by_alias=True)
+            )
 
       async def process_messages():
         try:

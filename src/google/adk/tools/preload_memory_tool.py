@@ -29,6 +29,9 @@ if TYPE_CHECKING:
 class PreloadMemoryTool(BaseTool):
   """A tool that preloads the memory for the current user.
 
+  This tool will be automatically executed for each llm_request, and it won't be
+  called by the model.
+
   NOTE: Currently this tool only uses text part from the memory.
   """
 

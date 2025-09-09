@@ -25,6 +25,7 @@ from . import basic
 from . import contents
 from . import identity
 from . import instructions
+from . import request_confirmation
 from ...auth import auth_preprocessor
 from .base_llm_flow import BaseLlmFlow
 
@@ -43,6 +44,7 @@ class SingleFlow(BaseLlmFlow):
     self.request_processors += [
         basic.request_processor,
         auth_preprocessor.request_processor,
+        request_confirmation.request_processor,
         instructions.request_processor,
         identity.request_processor,
         contents.request_processor,

@@ -34,7 +34,7 @@ def execute_sql(
     project_id: str,
     query: str,
     credentials: Credentials,
-    config: BigQueryToolConfig,
+    settings: BigQueryToolConfig,
     tool_context: ToolContext,
 ) -> dict:
   """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
@@ -44,7 +44,7 @@ def execute_sql(
         executed.
       query (str): The BigQuery SQL query to be executed.
       credentials (Credentials): The credentials to use for the request.
-      config (BigQueryToolConfig): The configuration for the tool.
+      settings (BigQueryToolConfig): The settings for the tool.
       tool_context (ToolContext): The context for the tool.
 
   Returns:
@@ -77,17 +77,32 @@ def execute_sql(
             ]
           }
   """
-
   try:
+    # Validate compute project if applicable
+    if (
+        settings.compute_project_id
+        and project_id != settings.compute_project_id
+    ):
+      return {
+          "status": "ERROR",
+          "error_details": (
+              f"Cannot execute query in the project {project_id}, as the tool"
+              " is restricted to execute queries only in the project"
+              f" {settings.compute_project_id}."
+          ),
+      }
+
     # Get BigQuery client
     bq_client = client.get_bigquery_client(
-        project=project_id, credentials=credentials
+        project=project_id,
+        credentials=credentials,
+        user_agent=settings.application_name,
     )
 
     # BigQuery connection properties where applicable
     bq_connection_properties = None
 
-    if not config or config.write_mode == WriteMode.BLOCKED:
+    if not settings or settings.write_mode == WriteMode.BLOCKED:
       dry_run_query_job = bq_client.query(
           query,
           project=project_id,
@@ -98,7 +113,7 @@ def execute_sql(
             "status": "ERROR",
             "error_details": "Read-only mode only supports SELECT statements.",
         }
-    elif config.write_mode == WriteMode.PROTECTED:
+    elif settings.write_mode == WriteMode.PROTECTED:
       # In protected write mode, write operation only to a temporary artifact is
       # allowed. This artifact must have been created in a BigQuery session. In
       # such a scenario the session info (session id and the anonymous dataset
@@ -159,7 +174,7 @@ def execute_sql(
         query,
         job_config=job_config,
         project=project_id,
-        max_results=config.max_query_result_rows,
+        max_results=settings.max_query_result_rows,
     )
     rows = []
     for row in row_iterator:
@@ -175,8 +190,8 @@ def execute_sql(
 
     result = {"status": "SUCCESS", "rows": rows}
     if (
-        config.max_query_result_rows is not None
-        and len(rows) == config.max_query_result_rows
+        settings.max_query_result_rows is not None
+        and len(rows) == settings.max_query_result_rows
     ):
       result["result_is_likely_truncated"] = True
     return result
@@ -187,7 +202,47 @@ def execute_sql(
     }
 
 
-_execute_sql_write_examples = """
+def _execute_sql_write_mode(*args, **kwargs) -> dict:
+  """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      query (str): The BigQuery SQL query to be executed.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+
+  Returns:
+      dict: Dictionary representing the result of the query.
+            If the result contains the key "result_is_likely_truncated" with
+            value True, it means that there may be additional rows matching the
+            query not returned in the result.
+
+  Examples:
+      Fetch data or insights from a table:
+
+          >>> execute_sql("my_project",
+          ... "SELECT island, COUNT(*) AS population "
+          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          {
+            "status": "SUCCESS",
+            "rows": [
+                {
+                    "island": "Dream",
+                    "population": 124
+                },
+                {
+                    "island": "Biscoe",
+                    "population": 168
+                },
+                {
+                    "island": "Torgersen",
+                    "population": 52
+                }
+            ]
+          }
+
       Create a table with schema prescribed:
 
           >>> execute_sql("my_project",
@@ -326,9 +381,50 @@ _execute_sql_write_examples = """
           - Use "CREATE OR REPLACE MODEL" instead of "CREATE MODEL".
           - First run "DROP MODEL", followed by "CREATE MODEL".
   """
+  return execute_sql(*args, **kwargs)
 
 
-_execute_sql_protecetd_write_examples = """
+def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
+  """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      query (str): The BigQuery SQL query to be executed.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+
+  Returns:
+      dict: Dictionary representing the result of the query.
+            If the result contains the key "result_is_likely_truncated" with
+            value True, it means that there may be additional rows matching the
+            query not returned in the result.
+
+  Examples:
+      Fetch data or insights from a table:
+
+          >>> execute_sql("my_project",
+          ... "SELECT island, COUNT(*) AS population "
+          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          {
+            "status": "SUCCESS",
+            "rows": [
+                {
+                    "island": "Dream",
+                    "population": 124
+                },
+                {
+                    "island": "Biscoe",
+                    "population": 168
+                },
+                {
+                    "island": "Torgersen",
+                    "population": 52
+                }
+            ]
+          }
+
       Create a temporary table with schema prescribed:
 
           >>> execute_sql("my_project",
@@ -458,21 +554,22 @@ _execute_sql_protecetd_write_examples = """
       - Only temporary models can be created or deleted. Please do not try
       creating a permanent model (non-TEMP model) or deleting one.
   """
+  return execute_sql(*args, **kwargs)
 
 
-def get_execute_sql(config: BigQueryToolConfig) -> Callable[..., dict]:
-  """Get the execute_sql tool customized as per the given tool config.
+def get_execute_sql(settings: BigQueryToolConfig) -> Callable[..., dict]:
+  """Get the execute_sql tool customized as per the given tool settings.
 
   Args:
-      config: BigQuery tool configuration indicating the behavior of the
+      settings: BigQuery tool settings indicating the behavior of the
         execute_sql tool.
 
   Returns:
       callable[..., dict]: A version of the execute_sql tool respecting the tool
-      config.
+      settings.
   """
 
-  if not config or config.write_mode == WriteMode.BLOCKED:
+  if not settings or settings.write_mode == WriteMode.BLOCKED:
     return execute_sql
 
   # Create a new function object using the original function's code and globals.
@@ -493,9 +590,9 @@ def get_execute_sql(config: BigQueryToolConfig) -> Callable[..., dict]:
   functools.update_wrapper(execute_sql_wrapper, execute_sql)
 
   # Now, set the new docstring
-  if config.write_mode == WriteMode.PROTECTED:
-    execute_sql_wrapper.__doc__ += _execute_sql_protecetd_write_examples
+  if settings.write_mode == WriteMode.PROTECTED:
+    execute_sql_wrapper.__doc__ = _execute_sql_protected_write_mode.__doc__
   else:
-    execute_sql_wrapper.__doc__ += _execute_sql_write_examples
+    execute_sql_wrapper.__doc__ = _execute_sql_write_mode.__doc__
 
   return execute_sql_wrapper

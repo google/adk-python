@@ -30,6 +30,7 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
+from ..utils.context_utils import Aclosing
 from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -189,18 +190,25 @@ class EvaluationGenerator:
       tool_uses = []
       invocation_id = ""
 
-      async for event in runner.run_async(
-          user_id=user_id, session_id=session_id, new_message=user_content
-      ):
-        invocation_id = (
-            event.invocation_id if not invocation_id else invocation_id
-        )
+      async with Aclosing(
+          runner.run_async(
+              user_id=user_id, session_id=session_id, new_message=user_content
+          )
+      ) as agen:
+        async for event in agen:
+          invocation_id = (
+              event.invocation_id if not invocation_id else invocation_id
+          )
 
-        if event.is_final_response() and event.content and event.content.parts:
-          final_response = event.content
-        elif event.get_function_calls():
-          for call in event.get_function_calls():
-            tool_uses.append(call)
+          if (
+              event.is_final_response()
+              and event.content
+              and event.content.parts
+          ):
+            final_response = event.content
+          elif event.get_function_calls():
+            for call in event.get_function_calls():
+              tool_uses.append(call)
 
       response_invocations.append(
           Invocation(

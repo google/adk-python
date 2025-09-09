@@ -1,0 +1,5 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+name: summarizer_agent
+model: gemini-2.0-flash
+description: 'summarizer agent that can summarize text.'
+instruction: "Given a text, summarize it."

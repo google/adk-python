@@ -1,6 +1,7 @@
 # Agent Development Kit (ADK)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/google-adk)](https://pypi.org/project/google-adk/)
 [![Python Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/google/adk-python)
@@ -14,7 +15,7 @@
     </h3>
     <h3 align="center">
       Important Links:
-      <a href="https://google.github.io/adk-docs/">Docs</a>, 
+      <a href="https://google.github.io/adk-docs/">Docs</a>,
       <a href="https://github.com/google/adk-samples">Samples</a>,
       <a href="https://github.com/google/adk-java">Java ADK</a> &
       <a href="https://github.com/google/adk-web">ADK Web</a>.
@@ -25,6 +26,11 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 
 ---
+
+## ✨ What's new
+
+- **Agent Config**: Build agents without code. Check out the
+  [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
 
 ## ✨ Key Features
 
@@ -58,7 +64,7 @@ You can install the latest stable version of ADK using `pip`:
 pip install google-adk
 ```
 
-The release cadence is weekly.
+The release cadence is roughly bi-weekly.
 
 This version is recommended for most users as it represents the most recent official release.
 
