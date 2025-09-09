@@ -29,20 +29,21 @@ from sqlalchemy import Dialect
 from sqlalchemy import event
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
+from sqlalchemy import select
 from sqlalchemy import Text
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.engine import create_engine
-from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ArgumentError
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
-from sqlalchemy.orm import Session as DatabaseSessionFactory
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import MetaData
 from sqlalchemy.types import DateTime
 from sqlalchemy.types import PickleType
@@ -390,11 +391,11 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Create all tables based on schema
     # 3. Initialize all properties
     try:
-      db_engine = create_engine(db_url, **kwargs)
+      db_engine = create_async_engine(db_url, **kwargs)
 
       if db_engine.dialect.name == "sqlite":
         # Set sqlite pragma to enable foreign keys constraints
-        event.listen(db_engine, "connect", set_sqlite_pragma)
+        event.listen(db_engine.sync_engine, "connect", set_sqlite_pragma)
 
     except Exception as e:
       if isinstance(e, ArgumentError):
@@ -413,18 +414,23 @@ class DatabaseSessionService(BaseSessionService):
     local_timezone = get_localzone()
     logger.info("Local timezone: %s", local_timezone)
 
-    self.db_engine: Engine = db_engine
+    self.db_engine: AsyncEngine = db_engine
     self.metadata: MetaData = MetaData()
-    self.inspector = inspect(self.db_engine)
 
     # DB session factory method
-    self.database_session_factory: sessionmaker[DatabaseSessionFactory] = (
-        sessionmaker(bind=self.db_engine)
-    )
+    self.database_session_factory: async_sessionmaker[
+        DatabaseSessionFactory
+    ] = async_sessionmaker(bind=self.db_engine)
 
-    # Uncomment to recreate DB every time
-    # Base.metadata.drop_all(self.db_engine)
-    Base.metadata.create_all(self.db_engine)
+    # Flag to indicate if tables are created
+    self._tables_created = False
+
+  async def _ensure_tables_created(self):
+    """Ensure database tables are created. This is called lazily."""
+    if not self._tables_created:
+      async with self.db_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+      self._tables_created = True
 
   @override
   async def create_session(
@@ -440,12 +446,11 @@ class DatabaseSessionService(BaseSessionService):
     # 3. Add the object to the table
     # 4. Build the session object with generated id
     # 5. Return the session
-
-    with self.database_session_factory() as sql_session:
-
+    await self._ensure_tables_created()
+    async with self.database_session_factory() as sql_session:
       # Fetch app and user states from storage
-      storage_app_state = sql_session.get(StorageAppState, (app_name))
-      storage_user_state = sql_session.get(
+      storage_app_state = await sql_session.get(StorageAppState, (app_name))
+      storage_user_state = await sql_session.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -485,9 +490,9 @@ class DatabaseSessionService(BaseSessionService):
           state=session_state,
       )
       sql_session.add(storage_session)
-      sql_session.commit()
+      await sql_session.commit()
 
-      sql_session.refresh(storage_session)
+      await sql_session.refresh(storage_session)
 
       # Merge states for response
       merged_state = _merge_state(app_state, user_state, session_state)
@@ -503,11 +508,12 @@ class DatabaseSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
+    await self._ensure_tables_created()
     # 1. Get the storage session entry from session table
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
-    with self.database_session_factory() as sql_session:
-      storage_session = sql_session.get(
+    async with self.database_session_factory() as sql_session:
+      storage_session = await sql_session.get(
           StorageSession, (app_name, user_id, session_id)
       )
       if storage_session is None:
@@ -519,24 +525,24 @@ class DatabaseSessionService(BaseSessionService):
       else:
         timestamp_filter = True
 
-      storage_events = (
-          sql_session.query(StorageEvent)
+      stmt = (
+          select(StorageEvent)
           .filter(StorageEvent.app_name == app_name)
           .filter(StorageEvent.session_id == storage_session.id)
           .filter(StorageEvent.user_id == user_id)
           .filter(timestamp_filter)
           .order_by(StorageEvent.timestamp.desc())
-          .limit(
-              config.num_recent_events
-              if config and config.num_recent_events
-              else None
-          )
-          .all()
       )
 
+      if config and config.num_recent_events:
+        stmt = stmt.limit(config.num_recent_events)
+
+      result = await sql_session.execute(stmt)
+      storage_events = result.scalars().all()
+
       # Fetch states from storage
-      storage_app_state = sql_session.get(StorageAppState, (app_name))
-      storage_user_state = sql_session.get(
+      storage_app_state = await sql_session.get(StorageAppState, (app_name))
+      storage_user_state = await sql_session.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -556,17 +562,19 @@ class DatabaseSessionService(BaseSessionService):
   async def list_sessions(
       self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
-    with self.database_session_factory() as sql_session:
-      results = (
-          sql_session.query(StorageSession)
+    await self._ensure_tables_created()
+    async with self.database_session_factory() as sql_session:
+      stmt = (
+          select(StorageSession)
           .filter(StorageSession.app_name == app_name)
           .filter(StorageSession.user_id == user_id)
-          .all()
       )
+      result = await sql_session.execute(stmt)
+      results = result.scalars().all()
 
       # Fetch states from storage
-      storage_app_state = sql_session.get(StorageAppState, (app_name))
-      storage_user_state = sql_session.get(
+      storage_app_state = await sql_session.get(StorageAppState, (app_name))
+      storage_user_state = await sql_session.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -585,25 +593,27 @@ class DatabaseSessionService(BaseSessionService):
   async def delete_session(
       self, app_name: str, user_id: str, session_id: str
   ) -> None:
-    with self.database_session_factory() as sql_session:
+    await self._ensure_tables_created()
+    async with self.database_session_factory() as sql_session:
       stmt = delete(StorageSession).where(
           StorageSession.app_name == app_name,
           StorageSession.user_id == user_id,
           StorageSession.id == session_id,
       )
-      sql_session.execute(stmt)
-      sql_session.commit()
+      await sql_session.execute(stmt)
+      await sql_session.commit()
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
+    await self._ensure_tables_created()
     if event.partial:
       return event
 
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config
     # 3. Store event to table
-    with self.database_session_factory() as sql_session:
-      storage_session = sql_session.get(
+    async with self.database_session_factory() as sql_session:
+      storage_session = await sql_session.get(
           StorageSession, (session.app_name, session.user_id, session.id)
       )
 
@@ -617,8 +627,10 @@ class DatabaseSessionService(BaseSessionService):
         )
 
       # Fetch states from storage
-      storage_app_state = sql_session.get(StorageAppState, (session.app_name))
-      storage_user_state = sql_session.get(
+      storage_app_state = await sql_session.get(
+          StorageAppState, (session.app_name)
+      )
+      storage_user_state = await sql_session.get(
           StorageUserState, (session.app_name, session.user_id)
       )
 
@@ -649,8 +661,8 @@ class DatabaseSessionService(BaseSessionService):
 
       sql_session.add(StorageEvent.from_event(session, event))
 
-      sql_session.commit()
-      sql_session.refresh(storage_session)
+      await sql_session.commit()
+      await sql_session.refresh(storage_session)
 
       # Update timestamp with commit time
       session.last_update_time = storage_session.update_timestamp_tz

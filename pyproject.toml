@@ -106,10 +106,11 @@ eval = [
 test = [
   # go/keep-sorted start
   "a2a-sdk>=0.3.0,<0.4.0;python_version>='3.10'",
+  "aiosqlite>=0.21.0",                      # For database session service tests
   "anthropic>=0.43.0",                      # For anthropic model tests
   "kubernetes>=29.0.0",                     # For GkeCodeExecutor
   "langchain-community>=0.3.17",
-  "langgraph>=0.2.60, <= 0.4.10",            # For LangGraphAgent
+  "langgraph>=0.2.60, <= 0.4.10",           # For LangGraphAgent
   "litellm>=1.75.5, <2.0.0",                # For LiteLLM tests
   "llama-index-readers-file>=0.4.0",        # For retrieval tests
   "openai>=1.100.2",                        # For LiteLLM
