@@ -72,14 +72,14 @@ except ImportError as e:
     RATE_LIMITER_AVAILABLE = False
     logger.warning(f"[WARNING] Rate limiting not available: {e}")
 
-# Import MCP integration wrapper
+# Import fastapi_mcp library for MCP integration
 try:
-    from mcp_wrapper import add_mcp_to_existing_app
+    from fastapi_mcp import FastApiMCP
     MCP_AVAILABLE = True
-    logger.info("[OK] MCP integration loaded")
+    logger.info("[OK] FastAPI-MCP library loaded")
 except ImportError as e:
     MCP_AVAILABLE = False
-    logger.warning(f"[WARNING] MCP integration not available: {e}")
+    logger.warning(f"[WARNING] FastAPI-MCP not available: {e}")
 
 # Environment loading is now handled by centralized configuration above
 # This fallback code is kept for compatibility
@@ -237,8 +237,9 @@ app = FastAPI(
 
 # Enable MCP integration if available
 if MCP_AVAILABLE:
-    mcp_wrapper = add_mcp_to_existing_app(app)
-    logger.info("🚀 MCP protocol enabled for existing security agent")
+    mcp = FastApiMCP(app)
+    mcp.mount()  # Creates MCP server at /mcp endpoint
+    logger.info("🚀 FastAPI-MCP enabled - all endpoints now available as MCP tools!")
 
 # Setup monitoring - temporarily disabled
 # setup_monitoring(app)
@@ -1427,13 +1428,11 @@ async def startup_event():
     logger.info("[TARGET] System ready to handle requests even with missing dependencies")
     logger.info("[STATS] Monitoring endpoints available at /health, /metrics, /status")
     
-    # Register with Service Directory if MCP is available
-    if MCP_AVAILABLE and 'mcp_wrapper' in globals():
-        try:
-            await mcp_wrapper.sd_manager.register_mcp_service()
-            logger.info("[MCP] ✅ Registered with Google Cloud Service Directory")
-        except Exception as e:
-            logger.warning(f"[MCP] ⚠️ Service Directory registration failed: {e}")
+    # FastAPI-MCP automatically handles MCP protocol
+    if MCP_AVAILABLE:
+        logger.info("[MCP] ✅ FastAPI-MCP active - all FastAPI endpoints automatically available as MCP tools")
+        logger.info("[MCP] 📡 MCP Discovery: http://localhost:8000/mcp/.well-known/mcp.json")
+        logger.info("[MCP] 🔌 MCP Protocol: http://localhost:8000/mcp")
     
     # Perform internal healthcheck on startup
     logger.info("[HEALTH] Running startup healthcheck...")
