@@ -1,0 +1,267 @@
+# MCP Service Registry for Micron Security Agent
+# Configuration for service discovery and integration
+
+services:
+  # Primary Security Agent
+  - name: "security-agent-primary"
+    url: "http://localhost:8000"
+    description: "Main Micron Security Agent - IT Security and Compliance Tools"
+    category: "security"
+    health_check: "/health"
+    mcp_enabled: true
+    authentication:
+      type: "jwt"
+      required: true
+    capabilities:
+      - security_scanning
+      - vulnerability_assessment
+      - iam_analysis
+      - compliance_checking
+      - incident_response
+      - cloud_security
+    
+  # Development Instance
+  - name: "security-agent-dev"
+    url: "http://localhost:8001"
+    description: "Development Security Agent for testing"
+    category: "security"
+    health_check: "/health"
+    mcp_enabled: true
+    authentication:
+      type: "api_key"
+      required: false
+    
+  # Staging Instance
+  - name: "security-agent-staging"
+    url: "https://staging-security.company.com"
+    description: "Staging Security Agent - Pre-production testing"
+    category: "security"
+    health_check: "/api/health"
+    mcp_enabled: true
+    authentication:
+      type: "oauth2"
+      required: true
+      oauth_server: "https://auth.company.com"
+    
+  # Production Instance
+  - name: "security-agent-prod"
+    url: "https://security.company.com"
+    description: "Production Security Agent - Live environment"
+    category: "security"
+    health_check: "/api/health"
+    mcp_enabled: true
+    authentication:
+      type: "mtls"
+      required: true
+      ca_cert: "/etc/ssl/certs/company-ca.pem"
+
+# Related Services (for integration)
+related_services:
+  - name: "hr-agent"
+    url: "http://localhost:9000"
+    description: "HR and People Analytics Agent"
+    category: "hr"
+    mcp_enabled: false  # Not yet MCP-enabled
+    
+  - name: "finance-agent"
+    url: "http://localhost:9001"
+    description: "Financial Analysis Agent"
+    category: "finance"
+    mcp_enabled: false  # Not yet MCP-enabled
+    
+  - name: "compliance-db"
+    url: "http://localhost:9002"
+    description: "Compliance Database Service"
+    category: "data"
+    mcp_enabled: true
+
+# Discovery Configuration
+discovery:
+  # How often to refresh service discovery (seconds)
+  refresh_interval: 300  # 5 minutes
+  
+  # Timeout for discovery requests (seconds)
+  discovery_timeout: 10
+  
+  # Cache discovery results
+  cache_enabled: true
+  cache_ttl: 600  # 10 minutes
+  
+  # Retry configuration
+  max_retries: 3
+  retry_delay: 2  # seconds
+
+# Security Configuration
+security:
+  # Default authentication method
+  default_auth: "jwt"
+  
+  # JWT Configuration
+  jwt:
+    secret_key: "${JWT_SECRET_KEY}"  # From environment variable
+    algorithm: "HS256"
+    expires_hours: 24
+  
+  # OAuth Configuration
+  oauth:
+    client_id: "security-agent-mcp"
+    client_secret: "${OAUTH_CLIENT_SECRET}"  # From environment variable
+    scopes:
+      - "mcp:read"
+      - "mcp:execute"
+      - "security:scan"
+      - "iam:analyze"
+  
+  # mTLS Configuration
+  mtls:
+    client_cert: "/etc/ssl/certs/client-cert.pem"
+    client_key: "/etc/ssl/private/client-key.pem"
+    ca_cert: "/etc/ssl/certs/ca-cert.pem"
+  
+  # API Key Configuration
+  api_key:
+    header_name: "X-API-Key"
+    keys_file: "/etc/security-agent/api-keys.json"
+
+# Monitoring Configuration
+monitoring:
+  # Prometheus metrics
+  metrics_enabled: true
+  metrics_port: 9090
+  
+  # Logging
+  log_level: "INFO"
+  log_file: "/var/log/security-agent/mcp.log"
+  
+  # Tracing
+  tracing_enabled: true
+  jaeger_endpoint: "http://localhost:14268/api/traces"
+
+# Rate Limiting
+rate_limiting:
+  enabled: true
+  
+  # Default limits
+  default:
+    requests_per_minute: 60
+    requests_per_hour: 1000
+  
+  # Per-tool limits
+  tools:
+    security_scan:
+      requests_per_minute: 10
+      requests_per_hour: 100
+    vulnerability_check:
+      requests_per_minute: 20
+      requests_per_hour: 200
+    iam_analyze:
+      requests_per_minute: 30
+      requests_per_hour: 300
+
+# Workflows
+workflows:
+  - name: "daily_security_check"
+    description: "Daily comprehensive security check"
+    schedule: "0 9 * * *"  # 9 AM daily
+    steps:
+      - tool: "security_scan"
+        parameters:
+          scan_type: "comprehensive"
+      - tool: "vulnerability_check"
+        parameters:
+          include_cves: true
+      - tool: "compliance_check"
+        parameters:
+          frameworks: ["SOC2", "ISO27001"]
+  
+  - name: "incident_response"
+    description: "Automated incident response workflow"
+    trigger: "manual"
+    steps:
+      - tool: "threat_assessment"
+        parameters:
+          priority: "high"
+      - tool: "incident_response"
+        parameters:
+          auto_contain: true
+      - tool: "security_scan"
+        parameters:
+          scan_type: "targeted"
+  
+  - name: "cloud_security_audit"
+    description: "Cloud infrastructure security audit"
+    schedule: "0 0 * * 0"  # Weekly on Sunday
+    steps:
+      - tool: "cloud_security_posture"
+        parameters:
+          providers: ["aws", "azure", "gcp"]
+      - tool: "kubernetes_security"
+        parameters:
+          namespaces: "all"
+      - tool: "container_scan"
+        parameters:
+          registries: ["docker.io", "gcr.io"]
+
+# Integration Points
+integrations:
+  slack:
+    enabled: true
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    channels:
+      alerts: "#security-alerts"
+      reports: "#security-reports"
+  
+  servicenow:
+    enabled: true
+    instance: "company.service-now.com"
+    api_key: "${SERVICENOW_API_KEY}"
+    auto_create_tickets: true
+  
+  splunk:
+    enabled: true
+    hec_endpoint: "https://splunk.company.com:8088"
+    hec_token: "${SPLUNK_HEC_TOKEN}"
+  
+  pagerduty:
+    enabled: false
+    api_key: "${PAGERDUTY_API_KEY}"
+    service_id: "security-agent"
+
+# Feature Flags
+features:
+  mcp_discovery: true
+  auto_remediation: false
+  ai_powered_analysis: true
+  real_time_monitoring: true
+  predictive_threats: false
+
+# Environment-specific overrides
+environments:
+  development:
+    services:
+      - name: "security-agent-primary"
+        url: "http://localhost:8000"
+    security:
+      default_auth: "none"
+    monitoring:
+      log_level: "DEBUG"
+  
+  staging:
+    services:
+      - name: "security-agent-staging"
+        url: "https://staging-security.company.com"
+    security:
+      default_auth: "jwt"
+    monitoring:
+      log_level: "INFO"
+  
+  production:
+    services:
+      - name: "security-agent-prod"
+        url: "https://security.company.com"
+    security:
+      default_auth: "mtls"
+    monitoring:
+      log_level: "WARNING"
+    rate_limiting:
+      enabled: true

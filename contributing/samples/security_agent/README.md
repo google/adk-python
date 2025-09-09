@@ -33,6 +33,34 @@ open http://localhost:8501
 
 ✅ **Prerequisites**: Python 3.8+, GCP project with billing enabled, service account with security roles
 
+## 🚀 MCP Discovery Integration
+
+### **AI-Powered Natural Language Interface**
+
+The Security Agent is now **MCP-enabled**, allowing AI assistants like Claude Code to discover and interact with all security tools through natural language:
+
+```bash
+# Discover security tools via MCP
+curl http://localhost:8000/mcp/.well-known/mcp.json
+
+# Connect Claude Code
+claude-code connect http://localhost:8000/mcp
+
+# Use natural language
+"Scan our production environment for vulnerabilities"
+"Check IAM permissions for user john.doe"
+"Analyze our cloud security posture"
+```
+
+**✨ Just 2 lines enabled MCP discovery:**
+```python
+from fastapi_mcp import FastApiMCP
+mcp = FastApiMCP(app)
+mcp.mount()
+```
+
+All 30+ security endpoints are now automatically discoverable AI tools! See [mcp/README.md](./mcp/README.md) for details.
+
 ## 🌟 Key Features
 
 ### 🔍 **Intelligent Resource Discovery**
