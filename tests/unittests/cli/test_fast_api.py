@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 from typing import Any
+from typing import Optional
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -120,8 +121,9 @@ async def dummy_run_async(
     session_id,
     new_message,
     state_delta=None,
-    run_config: RunConfig = RunConfig(),
+    run_config: Optional[RunConfig] = None,
 ):
+  run_config = run_config or RunConfig()
   yield _event_1()
   await asyncio.sleep(0)
 
