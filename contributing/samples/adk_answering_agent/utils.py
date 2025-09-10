@@ -127,7 +127,7 @@ def convert_gcs_to_https(gcs_uri: str) -> Optional[str]:
       # Use the directory path if it is a index file
       final_path_segment = os.path.dirname(path_after_docs)
     else:
-      # Otherwise, use the file name without extension
+      # Otherwise, use the file name without extension and add a trailing slash
       final_path_segment = path_after_docs.removesuffix(".md")
 
     if final_path_segment and not final_path_segment.endswith("/"):
