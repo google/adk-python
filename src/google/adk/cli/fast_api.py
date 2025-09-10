@@ -60,6 +60,7 @@ def get_fast_api_app(
     session_db_kwargs: Optional[Mapping[str, Any]] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    memory_service: Optional[Any] = None,
     eval_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
@@ -107,7 +108,9 @@ def get_fast_api_app(
     return project, location, agent_engine_id
 
   # Build the Memory service
-  if memory_service_uri:
+  if memory_service:
+    pass
+  elif memory_service_uri:
     if memory_service_uri.startswith("rag://"):
       from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
 
