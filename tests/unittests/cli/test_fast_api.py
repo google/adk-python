@@ -840,6 +840,7 @@ def test_run_eval(test_app, create_test_eval_set):
             "threshold": 0.5,
             "score": 1.0,
             "evalStatus": 1,
+            "details": {},
         }],
     }
     for k, v in expected_eval_case_result.items():
