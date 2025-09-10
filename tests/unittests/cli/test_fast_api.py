@@ -1717,5 +1717,75 @@ def test_returns_404_without_auto_create(
   assert "Session not found" in response.json()["detail"]
 
 
+def test_get_fast_api_app_with_custom_memory_service(
+    mock_session_service,
+    mock_artifact_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Test that custom memory_service is used directly when provided."""
+  custom_memory_service = MagicMock()
+
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+      ) as mock_create_memory_service,
+      patch.object(
+          fast_api_module,
+          "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "load_services_module",
+          autospec=True,
+          return_value=None,
+      ),
+  ):
+    app = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        memory_service=custom_memory_service,
+        allow_origins=["*"],
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    mock_create_memory_service.assert_not_called()
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])

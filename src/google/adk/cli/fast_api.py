@@ -38,6 +38,9 @@ from watchdog.observers import Observer
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+from ..memory.base_memory_service import BaseMemoryService
+from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
 from ..runners import Runner
 from .adk_web_server import AdkWebServer
 from .service_registry import load_services_module
@@ -79,7 +82,7 @@ def get_fast_api_app(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
-    memory_service: Optional[Any] = None,
+    memory_service: Optional[BaseMemoryService] = None,
     eval_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
