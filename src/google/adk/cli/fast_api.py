@@ -79,6 +79,7 @@ def get_fast_api_app(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
+    memory_service: Optional[Any] = None,
     eval_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
@@ -161,13 +162,13 @@ def get_fast_api_app(
   load_services_module(agents_dir)
 
   # Build the Memory service
-  try:
+  if memory_service:
+    pass
+  else:
     memory_service = create_memory_service_from_options(
         base_dir=agents_dir,
         memory_service_uri=memory_service_uri,
     )
-  except ValueError as exc:
-    raise click.ClickException(str(exc)) from exc
 
   # Build the Session service
   session_service = create_session_service_from_options(
