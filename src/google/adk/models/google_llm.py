@@ -58,7 +58,7 @@ class Gemini(BaseLlm):
     model: The name of the Gemini model.
   """
 
-  model: str = 'gemini-1.5-flash'
+  model: str = 'gemini-2.5-flash'
 
   retry_options: Optional[types.HttpRetryOptions] = None
   """Allow Gemini to retry failed responses.
