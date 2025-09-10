@@ -38,6 +38,7 @@ from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+from ..memory.base_memory_service import BaseMemoryService
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
 from ..runners import Runner
@@ -60,7 +61,7 @@ def get_fast_api_app(
     session_db_kwargs: Optional[Mapping[str, Any]] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
-    memory_service: Optional[Any] = None,
+    memory_service: Optional[BaseMemoryService] = None,
     eval_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
