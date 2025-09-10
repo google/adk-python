@@ -295,7 +295,9 @@ async def test_function_declaration_to_tool_param(
 async def test_generate_content_async(
     claude_llm, llm_request, generate_content_response, generate_llm_response
 ):
-  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+  with mock.patch.object(
+      claude_llm, "_anthropic_client"
+  ) as mock_messages_client:
     with mock.patch.object(
         anthropic_llm,
         "message_to_generate_content_response",
@@ -306,7 +308,7 @@ async def test_generate_content_async(
         return generate_content_response
 
       # Assign the coroutine to the mocked method
-      mock_client.messages.create.return_value = mock_coro()
+      mock_messages_client.create.return_value = mock_coro()
 
       responses = [
           resp
@@ -324,7 +326,9 @@ async def test_generate_content_async_with_max_tokens(
     llm_request, generate_content_response, generate_llm_response
 ):
   claude_llm = Claude(model="claude-3-5-sonnet-v2@20241022", max_tokens=4096)
-  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+  with mock.patch.object(
+      claude_llm, "_anthropic_client"
+  ) as mock_messages_client:
     with mock.patch.object(
         anthropic_llm,
         "message_to_generate_content_response",
@@ -335,7 +339,7 @@ async def test_generate_content_async_with_max_tokens(
         return generate_content_response
 
       # Assign the coroutine to the mocked method
-      mock_client.messages.create.return_value = mock_coro()
+      mock_messages_client.create.return_value = mock_coro()
 
       _ = [
           resp
@@ -343,6 +347,6 @@ async def test_generate_content_async_with_max_tokens(
               llm_request, stream=False
           )
       ]
-      mock_client.messages.create.assert_called_once()
-      _, kwargs = mock_client.messages.create.call_args
+      mock_messages_client.create.assert_called_once()
+      _, kwargs = mock_messages_client.create.call_args
       assert kwargs["max_tokens"] == 4096

@@ -29,9 +29,11 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
-from anthropic import AnthropicVertex
+from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropicVertex
 from anthropic import NOT_GIVEN
 from anthropic import types as anthropic_types
+from anthropic.resources.messages import AsyncMessages
 from google.genai import types
 from pydantic import BaseModel
 from typing_extensions import override
@@ -244,8 +246,8 @@ def function_declaration_to_tool_param(
   )
 
 
-class Claude(BaseLlm):
-  """Integration with Claude models served from Vertex AI.
+class AnthropicClaude(BaseLlm):
+  """Integration with Claude models served from Anthropic.
 
   Attributes:
     model: The name of the Claude model.
@@ -284,7 +286,7 @@ class Claude(BaseLlm):
         else NOT_GIVEN
     )
     # TODO(b/421255973): Enable streaming for anthropic models.
-    message = self._anthropic_client.messages.create(
+    message = await self._anthropic_client.create(
         model=llm_request.model,
         system=llm_request.config.system_instruction,
         messages=messages,
@@ -295,7 +297,21 @@ class Claude(BaseLlm):
     yield message_to_generate_content_response(message)
 
   @cached_property
-  def _anthropic_client(self) -> AnthropicVertex:
+  def _anthropic_client(self) -> AsyncMessages:
+    return AsyncAnthropic().messages
+
+
+class Claude(AnthropicClaude):
+  """Integration with Claude models served from Vertex AI.
+
+  Attributes:
+    model: The name of the Claude model.
+    max_tokens: The maximum number of tokens to generate.
+  """
+
+  @cached_property
+  @override
+  def _anthropic_client(self) -> AsyncMessages:
     if (
         "GOOGLE_CLOUD_PROJECT" not in os.environ
         or "GOOGLE_CLOUD_LOCATION" not in os.environ
@@ -305,7 +321,7 @@ class Claude(BaseLlm):
           " Anthropic on Vertex."
       )
 
-    return AnthropicVertex(
+    return AsyncAnthropicVertex(
         project_id=os.environ["GOOGLE_CLOUD_PROJECT"],
         region=os.environ["GOOGLE_CLOUD_LOCATION"],
-    )
+    ).messages

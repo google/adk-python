@@ -20,17 +20,17 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    'model_name',
+    "model_name",
     [
-        'gemini-1.5-flash',
-        'gemini-1.5-flash-001',
-        'gemini-1.5-flash-002',
-        'gemini-1.5-pro',
-        'gemini-1.5-pro-001',
-        'gemini-1.5-pro-002',
-        'gemini-2.0-flash-exp',
-        'projects/123456/locations/us-central1/endpoints/123456',  # finetuned vertex gemini endpoint
-        'projects/123456/locations/us-central1/publishers/google/models/gemini-2.0-flash-exp',  # vertex gemini long name
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-flash-002",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-001",
+        "gemini-1.5-pro-002",
+        "gemini-2.0-flash-exp",
+        "projects/123456/locations/us-central1/endpoints/123456",  # finetuned vertex gemini endpoint
+        "projects/123456/locations/us-central1/publishers/google/models/gemini-2.0-flash-exp",  # vertex gemini long name
     ],
 )
 def test_match_gemini_family(model_name):
@@ -38,16 +38,16 @@ def test_match_gemini_family(model_name):
 
 
 @pytest.mark.parametrize(
-    'model_name',
+    "model_name",
     [
-        'claude-3-5-haiku@20241022',
-        'claude-3-5-sonnet-v2@20241022',
-        'claude-3-5-sonnet@20240620',
-        'claude-3-haiku@20240307',
-        'claude-3-opus@20240229',
-        'claude-3-sonnet@20240229',
-        'claude-sonnet-4@20250514',
-        'claude-opus-4@20250514',
+        "claude-3-5-haiku@20241022",
+        "claude-3-5-sonnet-v2@20241022",
+        "claude-3-5-sonnet@20240620",
+        "claude-3-haiku@20240307",
+        "claude-3-opus@20240229",
+        "claude-3-sonnet@20240229",
+        "claude-sonnet-4@20250514",
+        "claude-opus-4@20250514",
     ],
 )
 def test_match_claude_family(model_name):
@@ -58,5 +58,5 @@ def test_match_claude_family(model_name):
 
 def test_non_exist_model():
   with pytest.raises(ValueError) as e_info:
-    models.LLMRegistry.resolve('non-exist-model')
-  assert 'Model non-exist-model not found.' in str(e_info.value)
+    models.LLMRegistry.resolve("non-exist-model")
+  assert "Model non-exist-model not found." in str(e_info.value)
