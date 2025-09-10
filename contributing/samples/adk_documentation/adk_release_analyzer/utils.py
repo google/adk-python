@@ -17,6 +17,9 @@ from typing import Dict
 from typing import List
 
 from adk_release_analyzer.settings import GITHUB_TOKEN
+from google.adk.agents.run_config import RunConfig
+from google.adk.runners import Runner
+from google.genai import types
 import requests
 
 HEADERS = {
@@ -70,3 +73,26 @@ def patch_request(url: str, payload: Any) -> Dict[str, Any]:
   response = requests.patch(url, headers=HEADERS, json=payload, timeout=60)
   response.raise_for_status()
   return response.json()
+
+
+async def call_agent_async(
+    runner: Runner, user_id: str, session_id: str, prompt: str
+) -> str:
+  """Call the agent asynchronously with the user's prompt."""
+  content = types.Content(
+      role="user", parts=[types.Part.from_text(text=prompt)]
+  )
+
+  final_response_text = ""
+  async for event in runner.run_async(
+      user_id=user_id,
+      session_id=session_id,
+      new_message=content,
+      run_config=RunConfig(save_input_blobs_as_artifacts=False),
+  ):
+    if event.content and event.content.parts:
+      if text := "".join(part.text or "" for part in event.content.parts):
+        if event.author != "user":
+          final_response_text += text
+
+  return final_response_text
