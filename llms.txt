@@ -1,112 +1,38 @@
 # Agent Development Kit (ADK)
 
-> Agent Development Kit (ADK)
+Agent Development Kit (ADK)
 
 ## ADK Python Repository
 
 Agent Development Kit (ADK)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      An open-source, code-first Python toolkit for building, evaluating, and deploying sophisticated AI agents with flexibility and control.
-    
-
-
-
-      Important Links:
-      
-Docs
-, 
-      
-Samples
-,
-      
-Java ADK
- &
-      
-ADK Web
-.
-    
-
-
-
+An open-source, code-first Python toolkit for building, evaluating, and deploying sophisticated AI agents with flexibility and control.
 
 Agent Development Kit (ADK) is a flexible and modular framework for developing and deploying AI agents. While optimized for Gemini and the Google ecosystem, ADK is model-agnostic, deployment-agnostic, and is built for compatibility with other frameworks. ADK was designed to make agent development feel more like software development, to make it easier for developers to create, deploy, and orchestrate agentic architectures that range from simple tasks to complex workflows.
 
 
-
-
 ✨ Key Features
-
-
-
-
-
 
 Rich Tool Ecosystem
 : Utilize pre-built tools, custom functions,
   OpenAPI specs, or integrate existing tools to give agents diverse
   capabilities, all for tight integration with the Google ecosystem.
 
-
-
-
-
-
 Code-First Development
 : Define agent logic, tools, and orchestration
   directly in Python for ultimate flexibility, testability, and versioning.
-
-
-
-
-
 
 Modular Multi-Agent Systems
 : Design scalable applications by composing
   multiple specialized agents into flexible hierarchies.
 
-
-
-
-
-
 Deploy Anywhere
 : Easily containerize and deploy agents on Cloud Run or
   scale seamlessly with Vertex AI Agent Engine.
 
-
-
-
-
-
 🤖 Agent2Agent (A2A) Protocol and ADK Integration
 
-
-For remote agent-to-agent communication, ADK integrates with the
-
-A2A protocol
-.
-See this 
-example
-
-for how they can work together.
+For remote agent-to-agent communication, ADK integrates with the A2A protocol. See this  example for how they can work together.
 
 
 🚀 Installation
@@ -115,9 +41,7 @@ for how they can work together.
 Stable Release (Recommended)
 
 
-You can install the latest stable version of ADK using 
-pip
-:
+You can install the latest stable version of ADK using pip:
 
 
 pip install google-adk
@@ -233,9 +157,7 @@ Code Contributing Guidelines
 📄 License
 
 
-This project is licensed under the Apache 2.0 License - see the 
-LICENSE
- file for details.
+This project is licensed under the Apache 2.0 License - see the LICENSE file for details.
 
 
 

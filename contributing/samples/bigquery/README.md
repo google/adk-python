@@ -35,6 +35,11 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
   the official [Conversational Analytics API documentation](https://cloud.google.com/gemini/docs/conversational-analytics-api/overview)
   for instructions.
 
+1. `forecast`
+
+  Perform time series forecasting using BigQuery's `AI.FORECAST` function,
+  leveraging the TimesFM 2.0 model.
+
 ## How to use
 
 Set up environment variables in your `.env` file for using

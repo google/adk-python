@@ -12,5 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.14.0"
+from __future__ import annotations
+
+import pydantic
+from pydantic import alias_generators
+
+
+class EvalBaseModel(pydantic.BaseModel):
+  model_config = pydantic.ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+      extra='forbid',
+  )

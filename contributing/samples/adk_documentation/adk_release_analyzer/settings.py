@@ -12,5 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.14.0"
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
+GITHUB_BASE_URL = "https://api.github.com"
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+if not GITHUB_TOKEN:
+  raise ValueError("GITHUB_TOKEN environment variable not set")
+
+DOC_OWNER = os.getenv("DOC_OWNER", "google")
+CODE_OWNER = os.getenv("CODE_OWNER", "google")
+DOC_REPO = os.getenv("DOC_REPO", "adk-docs")
+CODE_REPO = os.getenv("CODE_REPO", "adk-python")
+LOCAL_REPOS_DIR_PATH = os.getenv("LOCAL_REPOS_DIR_PATH", "/tmp")
+
+IS_INTERACTIVE = os.getenv("INTERACTIVE", "1").lower() in ["true", "1"]
