@@ -1076,6 +1076,8 @@ class AdkWebServer:
                   "Generated event in agent run streaming: %s", sse_event
               )
               yield f"data: {sse_event}\n\n"
+            # Add done flag when all data has been sent
+            yield "data: {\"done\": true}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
           # You might want to yield an error event here
