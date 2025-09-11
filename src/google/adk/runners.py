@@ -41,6 +41,7 @@ from .auth.credential_service.base_credential_service import BaseCredentialServi
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .events.event import EventActions
+from .flows.llm_flows import contents
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
@@ -305,7 +306,12 @@ class Runner:
               yield event
 
         async with Aclosing(
-            self._exec_with_plugin(invocation_context, session, execute)
+            self._exec_with_plugin(
+                invocation_context=invocation_context,
+                session=session,
+                execute_fn=execute,
+                is_live_call=False,
+            )
         ) as agen:
           async for event in agen:
             yield event
@@ -314,11 +320,21 @@ class Runner:
       async for event in agen:
         yield event
 
+  def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
+    """Checks if an event should be appended to the session."""
+    # Don't append audio response from model in live mode to session.
+    # The data is appended to artifacts with a reference in file_data in the
+    # event.
+    if is_live_call and contents._is_live_model_audio_event(event):
+      return False
+    return True
+
   async def _exec_with_plugin(
       self,
       invocation_context: InvocationContext,
       session: Session,
       execute_fn: Callable[[InvocationContext], AsyncGenerator[Event, None]],
+      is_live_call: bool = False,
   ) -> AsyncGenerator[Event, None]:
     """Wraps execution with plugin callbacks.
 
@@ -343,19 +359,21 @@ class Runner:
           author='model',
           content=early_exit_result,
       )
-      await self.session_service.append_event(
-          session=session,
-          event=early_exit_event,
-      )
+      if self._should_append_event(early_exit_event, is_live_call):
+        await self.session_service.append_event(
+            session=session,
+            event=early_exit_event,
+        )
       yield early_exit_event
     else:
       # Step 2: Otherwise continue with normal execution
       async with Aclosing(execute_fn(invocation_context)) as agen:
         async for event in agen:
           if not event.partial:
-            await self.session_service.append_event(
-                session=session, event=event
-            )
+            if self._should_append_event(event, is_live_call):
+              await self.session_service.append_event(
+                  session=session, event=event
+              )
           # Step 3: Run the on_event callbacks to optionally modify the event.
           modified_event = await plugin_manager.run_on_event_callback(
               invocation_context=invocation_context, event=event
@@ -526,7 +544,12 @@ class Runner:
           yield event
 
     async with Aclosing(
-        self._exec_with_plugin(invocation_context, session, execute)
+        self._exec_with_plugin(
+            invocation_context=invocation_context,
+            session=session,
+            execute_fn=execute,
+            is_live_call=True,
+        )
     ) as agen:
       async for event in agen:
         yield event
