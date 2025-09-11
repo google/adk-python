@@ -1072,12 +1072,13 @@ class AdkWebServer:
               sse_event = event.model_dump_json(
                   exclude_none=True, by_alias=True
               )
+              SSE_DONE_MESSAGE = 'data: {"done": true}\n\n'
               logger.debug(
                   "Generated event in agent run streaming: %s", sse_event
               )
               yield f"data: {sse_event}\n\n"
             # Add done flag when all data has been sent
-            yield "data: {\"done\": true}\n\n"
+            yield SSE_DONE_MESSAGE
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
           # You might want to yield an error event here
