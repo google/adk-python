@@ -78,7 +78,7 @@ Here are the steps to help answer GitHub discussions:
 5. **Post the response**:
    * If you can find relevant information, use the `add_comment_to_discussion`
      tool to add a comment to the discussion.
-   * If you post a comment, add the label {BOT_RESPONSE_LABEL} to the discussion
+   * If you post a comment, add the label "{BOT_RESPONSE_LABEL}" to the discussion
      using the `add_label_to_discussion` tool.
 
 IMPORTANT:
