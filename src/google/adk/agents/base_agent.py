@@ -504,7 +504,7 @@ class BaseAgent(BaseModel):
 
   @field_validator('name', mode='after')
   @classmethod
-  def __validate_name(cls, value: str):
+  def validate_name(cls, value: str):
     if not value.isidentifier():
       raise ValueError(
           f'Found invalid agent name: `{value}`.'
@@ -565,7 +565,7 @@ class BaseAgent(BaseModel):
   ) -> Dict[str, Any]:
     """Parses the config and returns updated kwargs to construct the agent.
 
-    Sub-classes should override this method to use a custome agent config class.
+    Sub-classes should override this method to use a custom agent config class.
 
     Args:
       config: The config to parse.

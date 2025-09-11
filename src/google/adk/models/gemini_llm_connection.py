@@ -144,6 +144,8 @@ class GeminiLlmConnection(BaseLlmConnection):
 
     text = ''
     async with Aclosing(self._gemini_session.receive()) as agen:
+      # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
+      # partial content and emit responses as needed.
       async for message in agen:
         logger.debug('Got LLM Live message: %s', message)
         if message.server_content:
@@ -164,8 +166,14 @@ class GeminiLlmConnection(BaseLlmConnection):
               message.server_content.input_transcription
               and message.server_content.input_transcription.text
           ):
+            user_text = message.server_content.input_transcription.text
+            parts = [
+                types.Part.from_text(
+                    text=user_text,
+                )
+            ]
             llm_response = LlmResponse(
-                input_transcription=message.server_content.input_transcription,
+                content=types.Content(role='user', parts=parts)
             )
             yield llm_response
           if (
@@ -180,8 +188,13 @@ class GeminiLlmConnection(BaseLlmConnection):
             # We rely on other control signals to determine when to yield the
             # full text response(turn_complete, interrupted, or tool_call).
             text += message.server_content.output_transcription.text
+            parts = [
+                types.Part.from_text(
+                    text=message.server_content.output_transcription.text
+                )
+            ]
             llm_response = LlmResponse(
-                output_transcription=message.server_content.output_transcription
+                content=types.Content(role='model', parts=parts), partial=True
             )
             yield llm_response
 

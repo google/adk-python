@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 from typing import Any
+from typing import Optional
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -34,6 +35,7 @@ from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.genai import types
@@ -94,6 +96,14 @@ def _event_3():
   )
 
 
+def _event_state_delta(state_delta: dict[str, Any]):
+  return Event(
+      author="dummy agent",
+      invocation_id="invocation_id",
+      actions=EventActions(state_delta=state_delta),
+  )
+
+
 # Define mocked async generator functions for the Runner
 async def dummy_run_live(self, session, live_request_queue):
   yield _event_1()
@@ -110,8 +120,10 @@ async def dummy_run_async(
     user_id,
     session_id,
     new_message,
-    run_config: RunConfig = RunConfig(),
+    state_delta=None,
+    run_config: Optional[RunConfig] = None,
 ):
+  run_config = run_config or RunConfig()
   yield _event_1()
   await asyncio.sleep(0)
 
@@ -119,6 +131,10 @@ async def dummy_run_async(
   await asyncio.sleep(0)
 
   yield _event_3()
+  await asyncio.sleep(0)
+
+  if state_delta is not None:
+    yield _event_state_delta(state_delta)
 
 
 # Define a local mock for EvalCaseResult specific to fast_api tests
@@ -744,6 +760,29 @@ def test_agent_run(test_app, create_test_session):
   logger.info("Agent run test completed successfully")
 
 
+def test_agent_run_passes_state_delta(test_app, create_test_session):
+  """Test /run forwards state_delta and surfaces it in events."""
+  info = create_test_session
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+      "state_delta": {"k": "v", "count": 1},
+  }
+
+  # Verify the response
+  response = test_app.post("/run", json=payload)
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, list)
+  assert len(data) == 4
+
+  # Verify we got the expected event
+  assert data[3]["actions"]["stateDelta"] == payload["state_delta"]
+
+
 def test_list_artifact_names(test_app, create_test_session):
   """Test listing artifact names for a session."""
   info = create_test_session
@@ -801,6 +840,7 @@ def test_run_eval(test_app, create_test_eval_set):
             "threshold": 0.5,
             "score": 1.0,
             "evalStatus": 1,
+            "details": {},
         }],
     }
     for k, v in expected_eval_case_result.items():
@@ -845,18 +885,20 @@ def test_run_eval(test_app, create_test_eval_set):
   assert data == [f"{info['app_name']}_test_eval_set_id_eval_result"]
 
 
-def test_list_eval_metrics(test_app):
-  """Test listing eval metrics."""
-  url = "/apps/test_app/eval_metrics"
+def test_list_metrics_info(test_app):
+  """Test listing metrics info."""
+  url = "/apps/test_app/metrics-info"
   response = test_app.get(url)
 
   # Verify the response
   assert response.status_code == 200
   data = response.json()
-  assert isinstance(data, list)
+  metrics_info_key = "metricsInfo"
+  assert metrics_info_key in data
+  assert isinstance(data[metrics_info_key], list)
   # Add more assertions based on the expected metrics
-  assert len(data) > 0
-  for metric in data:
+  assert len(data[metrics_info_key]) > 0
+  for metric in data[metrics_info_key]:
     assert "metricName" in metric
     assert "description" in metric
     assert "metricValueInfo" in metric

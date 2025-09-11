@@ -382,24 +382,16 @@ def cli_eval(
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import get_eval_metrics_from_config
     from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  evaluation_criteria = get_evaluation_criteria_or_default(config_file_path)
-  eval_metrics = []
-  for metric_name, threshold in evaluation_criteria.items():
-    eval_metrics.append(
-        EvalMetric(
-            metric_name=metric_name,
-            threshold=threshold,
-            judge_model_options=JudgeModelOptions(),
-        )
-    )
-
-  print(f"Using evaluation criteria: {evaluation_criteria}")
+  eval_config = get_evaluation_criteria_or_default(config_file_path)
+  print(f"Using evaluation criteria: {eval_config}")
+  eval_metrics = get_eval_metrics_from_config(eval_config)
 
   root_agent = get_root_agent(agent_module_file_path)
   app_name = os.path.basename(agent_module_file_path)
@@ -500,7 +492,9 @@ def cli_eval(
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  print("*********************************************************************")
+  click.echo(
+      "*********************************************************************"
+  )
   eval_run_summary = {}
 
   for eval_result in eval_results:
@@ -513,9 +507,9 @@ def cli_eval(
       eval_run_summary[eval_result.eval_set_id][0] += 1
     else:
       eval_run_summary[eval_result.eval_set_id][1] += 1
-  print("Eval Run Summary")
+  click.echo("Eval Run Summary")
   for eval_set_id, pass_fail_count in eval_run_summary.items():
-    print(
+    click.echo(
         f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
         f" failed: {pass_fail_count[1]}"
     )
@@ -523,10 +517,17 @@ def cli_eval(
   if print_detailed_results:
     for eval_result in eval_results:
       eval_result: EvalCaseResult
-      print(
+      click.echo(
           "*********************************************************************"
       )
-      print(eval_result.model_dump_json(indent=2))
+      click.echo(
+          eval_result.model_dump_json(
+              indent=2,
+              exclude_unset=True,
+              exclude_defaults=True,
+              exclude_none=True,
+          )
+      )
 
 
 def adk_services_options():
@@ -858,7 +859,13 @@ def cli_api_server(
   server.run()
 
 
-@deploy.command("cloud_run")
+@deploy.command(
+    "cloud_run",
+    context_settings={
+        "allow_extra_args": True,
+        "allow_interspersed_args": False,
+    },
+)
 @click.option(
     "--project",
     type=str,
@@ -971,7 +978,9 @@ def cli_api_server(
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
 @adk_services_options()
 @deprecated_adk_services_options()
+@click.pass_context
 def cli_deploy_cloud_run(
+    ctx,
     agent: str,
     project: Optional[str],
     region: Optional[str],
@@ -996,9 +1005,14 @@ def cli_deploy_cloud_run(
 
   AGENT: The path to the agent source code folder.
 
-  Example:
+  Use '--' to separate gcloud arguments from adk arguments.
+
+  Examples:
 
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
+
+    adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
+      -- --no-allow-unauthenticated --min-instances=2
   """
   if verbosity:
     click.secho(
@@ -1010,6 +1024,36 @@ def cli_deploy_cloud_run(
 
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
+
+  # Parse arguments to separate gcloud args (after --) from regular args
+  gcloud_args = []
+  if "--" in ctx.args:
+    separator_index = ctx.args.index("--")
+    gcloud_args = ctx.args[separator_index + 1 :]
+    regular_args = ctx.args[:separator_index]
+
+    # If there are regular args before --, that's an error
+    if regular_args:
+      click.secho(
+          "Error: Unexpected arguments after agent path and before '--':"
+          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
+          " to gcloud.",
+          fg="red",
+          err=True,
+      )
+      ctx.exit(2)
+  else:
+    # No -- separator, treat all args as an error to enforce the new behavior
+    if ctx.args:
+      click.secho(
+          f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
+          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
+          " agent_path -- --min-instances=2",
+          fg="red",
+          err=True,
+      )
+      ctx.exit(2)
+
   try:
     cli_deploy.to_cloud_run(
         agent_folder=agent,
@@ -1029,6 +1073,7 @@ def cli_deploy_cloud_run(
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         a2a=a2a,
+        extra_gcloud_args=tuple(gcloud_args),
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
@@ -1141,6 +1186,17 @@ def cli_deploy_cloud_run(
         " NOTE: This flag is temporary and will be removed in the future."
     ),
 )
+@click.option(
+    "--agent_engine_config_file",
+    type=str,
+    default="",
+    help=(
+        "Optional. The filepath to the `.agent_engine_config.json` file to use."
+        " The values in this file will be overriden by the values set by other"
+        " flags. (default: the `.agent_engine_config.json` file in the `agent`"
+        " directory, if any.)"
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1161,13 +1217,15 @@ def cli_deploy_agent_engine(
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
+    agent_engine_config_file: str,
 ):
   """Deploys an agent to Agent Engine.
 
   Example:
 
     adk deploy agent_engine --project=[project] --region=[region]
-      --staging_bucket=[staging_bucket] --display_name=[app_name] path/to/my_agent
+      --staging_bucket=[staging_bucket] --display_name=[app_name]
+      path/to/my_agent
   """
   try:
     cli_deploy.to_agent_engine(
@@ -1184,6 +1242,7 @@ def cli_deploy_agent_engine(
         env_file=env_file,
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
+        agent_engine_config_file=agent_engine_config_file,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
@@ -1311,7 +1370,8 @@ def cli_deploy_gke(
 
   Example:
 
-    adk deploy gke --project=[project] --region=[region] --cluster_name=[cluster_name] path/to/my_agent
+    adk deploy gke --project=[project] --region=[region]
+      --cluster_name=[cluster_name] path/to/my_agent
   """
   try:
     cli_deploy.to_gke(

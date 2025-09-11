@@ -16,6 +16,7 @@
 import json
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
+import warnings
 
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
@@ -730,6 +731,52 @@ function_declaration_test_cases = [
             },
         },
     ),
+    (
+        "no_parameters",
+        types.FunctionDeclaration(
+            name="test_function_no_params",
+            description="Test function with no parameters",
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "test_function_no_params",
+                "description": "Test function with no parameters",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        },
+    ),
+    (
+        "parameters_without_required",
+        types.FunctionDeclaration(
+            name="test_function_no_required",
+            description="Test function with parameters but no required field",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "optional_arg": types.Schema(type=types.Type.STRING),
+                },
+            ),
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "test_function_no_required",
+                "description": (
+                    "Test function with parameters but no required field"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "optional_arg": {"type": "string"},
+                    },
+                },
+            },
+        },
+    ),
 ]
 
 
@@ -1036,7 +1083,7 @@ def test_get_content_image():
       content[0]["image_url"]["url"]
       == "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
   )
-  assert content[0]["image_url"]["format"] == "png"
+  assert content[0]["image_url"]["format"] == "image/png"
 
 
 def test_get_content_video():
@@ -1049,7 +1096,33 @@ def test_get_content_video():
       content[0]["video_url"]["url"]
       == "data:video/mp4;base64,dGVzdF92aWRlb19kYXRh"
   )
-  assert content[0]["video_url"]["format"] == "mp4"
+  assert content[0]["video_url"]["format"] == "video/mp4"
+
+
+def test_get_content_pdf():
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "file"
+  assert (
+      content[0]["file"]["file_data"]
+      == "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ=="
+  )
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+def test_get_content_audio():
+  parts = [
+      types.Part.from_bytes(data=b"test_audio_data", mime_type="audio/mpeg")
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "audio_url"
+  assert (
+      content[0]["audio_url"]["url"]
+      == "data:audio/mpeg;base64,dGVzdF9hdWRpb19kYXRh"
+  )
+  assert content[0]["audio_url"]["format"] == "audio/mpeg"
 
 
 def test_to_litellm_role():
@@ -1548,3 +1621,132 @@ def test_get_completion_inputs_generation_params():
   # Should not include max_output_tokens
   assert "max_output_tokens" not in generation_params
   assert "stop_sequences" not in generation_params
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_empty_generation_params():
+  # Test that generation_params is None when no generation parameters are set
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_minimal_config():
+  # Test that generation_params is None when config has no generation parameters
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          system_instruction="test instruction"  # Non-generation parameter
+      ),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_partial_generation_params():
+  # Test that generation_params is correctly built even with only some parameters
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          # Only temperature is set, others are None/default
+      ),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params is not None
+  assert generation_params["temperature"] == 0.7
+  # Should only contain the temperature parameter
+  assert len(generation_params) == 1
+
+
+def test_function_declaration_to_tool_param_edge_cases():
+  """Test edge cases for function declaration conversion that caused the original bug."""
+  from google.adk.models.lite_llm import _function_declaration_to_tool_param
+
+  # Test function with None parameters (the original bug scenario)
+  func_decl = types.FunctionDeclaration(
+      name="test_function_none_params",
+      description="Function with None parameters",
+      parameters=None,
+  )
+  result = _function_declaration_to_tool_param(func_decl)
+  expected = {
+      "type": "function",
+      "function": {
+          "name": "test_function_none_params",
+          "description": "Function with None parameters",
+          "parameters": {
+              "type": "object",
+              "properties": {},
+          },
+      },
+  }
+  assert result == expected
+
+  # Verify no 'required' field is added when parameters is None
+  assert "required" not in result["function"]["parameters"]
+
+
+def test_gemini_via_litellm_warning(monkeypatch):
+  """Test that Gemini via LiteLLM shows warning."""
+  # Ensure environment variable is not set
+  monkeypatch.delenv("ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", raising=False)
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with Google AI Studio Gemini via LiteLLM
+    LiteLlm(model="gemini/gemini-2.5-pro-exp-03-25")
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[GEMINI_VIA_LITELLM]" in str(w[0].message)
+    assert "better performance" in str(w[0].message)
+    assert "gemini-2.5-pro-exp-03-25" in str(w[0].message)
+    assert "ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS" in str(w[0].message)
+
+
+def test_gemini_via_litellm_warning_vertex_ai(monkeypatch):
+  """Test that Vertex AI Gemini via LiteLLM shows warning."""
+  # Ensure environment variable is not set
+  monkeypatch.delenv("ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", raising=False)
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with Vertex AI Gemini via LiteLLM
+    LiteLlm(model="vertex_ai/gemini-1.5-flash")
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[GEMINI_VIA_LITELLM]" in str(w[0].message)
+    assert "vertex_ai/gemini-1.5-flash" in str(w[0].message)
+
+
+def test_gemini_via_litellm_warning_suppressed(monkeypatch):
+  """Test that Gemini via LiteLLM warning can be suppressed."""
+  monkeypatch.setenv("ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", "true")
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    LiteLlm(model="gemini/gemini-2.5-pro-exp-03-25")
+    assert len(w) == 0
+
+
+def test_non_gemini_litellm_no_warning():
+  """Test that non-Gemini models via LiteLLM don't show warning."""
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with non-Gemini model
+    LiteLlm(model="openai/gpt-4o")
+    assert len(w) == 0

@@ -141,7 +141,6 @@ class AudioCacheManager:
     Returns:
       True if the cache was successfully flushed, False otherwise.
     """
-    print('flush cache')
     if not invocation_context.artifact_service or not audio_cache:
       logger.debug('Skipping cache flush: no artifact service or empty cache')
       return False

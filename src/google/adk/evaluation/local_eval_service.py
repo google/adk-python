@@ -68,14 +68,19 @@ class LocalEvalService(BaseEvalService):
       self,
       root_agent: BaseAgent,
       eval_sets_manager: EvalSetsManager,
-      metric_evaluator_registry: MetricEvaluatorRegistry = DEFAULT_METRIC_EVALUATOR_REGISTRY,
-      session_service: BaseSessionService = InMemorySessionService(),
-      artifact_service: BaseArtifactService = InMemoryArtifactService(),
+      metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
+      session_service: Optional[BaseSessionService] = None,
+      artifact_service: Optional[BaseArtifactService] = None,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       session_id_supplier: Callable[[], str] = _get_session_id,
   ):
     self._root_agent = root_agent
     self._eval_sets_manager = eval_sets_manager
+    metric_evaluator_registry = (
+        metric_evaluator_registry or DEFAULT_METRIC_EVALUATOR_REGISTRY
+    )
+    session_service = session_service or InMemorySessionService()
+    artifact_service = artifact_service or InMemoryArtifactService()
     self._metric_evaluator_registry = metric_evaluator_registry
     self._session_service = session_service
     self._artifact_service = artifact_service

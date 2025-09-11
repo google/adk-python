@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import sys
 from typing import Optional
+from typing import Union
 
 from pydantic import ValidationError
 from typing_extensions import override
@@ -27,10 +28,16 @@ from typing_extensions import override
 from . import envs
 from ...agents import config_agent_utils
 from ...agents.base_agent import BaseAgent
+from ...apps.app import App
 from ...utils.feature_decorator import experimental
 from .base_agent_loader import BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Special agents directory for agents with names starting with double underscore
+SPECIAL_AGENTS_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "..", "built_in_agents"
+)
 
 
 class AgentLoader(BaseAgentLoader):
@@ -50,19 +57,25 @@ class AgentLoader(BaseAgentLoader):
   def __init__(self, agents_dir: str):
     self.agents_dir = agents_dir.rstrip("/")
     self._original_sys_path = None
-    self._agent_cache: dict[str, BaseAgent] = {}
+    self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
 
   def _load_from_module_or_package(
       self, agent_name: str
-  ) -> Optional[BaseAgent]:
+  ) -> Optional[Union[BaseAgent, App]]:
     # Load for case: Import "{agent_name}" (as a package or module)
     # Covers structures:
     #   a) agents_dir/{agent_name}.py (with root_agent in the module)
     #   b) agents_dir/{agent_name}/__init__.py (with root_agent in the package)
     try:
       module_candidate = importlib.import_module(agent_name)
+      # Check for "app" first, then "root_agent"
+      if hasattr(module_candidate, "app") and isinstance(
+          module_candidate.app, App
+      ):
+        logger.debug("Found app in %s", agent_name)
+        return module_candidate.app
       # Check for "root_agent" directly in "{agent_name}" module/package
-      if hasattr(module_candidate, "root_agent"):
+      elif hasattr(module_candidate, "root_agent"):
         logger.debug("Found root_agent directly in %s", agent_name)
         if isinstance(module_candidate.root_agent, BaseAgent):
           return module_candidate.root_agent
@@ -96,12 +109,20 @@ class AgentLoader(BaseAgentLoader):
 
     return None
 
-  def _load_from_submodule(self, agent_name: str) -> Optional[BaseAgent]:
+  def _load_from_submodule(
+      self, agent_name: str
+  ) -> Optional[Union[BaseAgent], App]:
     # Load for case: Import "{agent_name}.agent" and look for "root_agent"
     # Covers structure: agents_dir/{agent_name}/agent.py (with root_agent defined in the module)
     try:
       module_candidate = importlib.import_module(f"{agent_name}.agent")
-      if hasattr(module_candidate, "root_agent"):
+      # Check for "app" first, then "root_agent"
+      if hasattr(module_candidate, "app") and isinstance(
+          module_candidate.app, App
+      ):
+        logger.debug("Found app in %s.agent", agent_name)
+        return module_candidate.app
+      elif hasattr(module_candidate, "root_agent"):
         logger.info("Found root_agent in %s.agent", agent_name)
         if isinstance(module_candidate.root_agent, BaseAgent):
           return module_candidate.root_agent
@@ -139,9 +160,11 @@ class AgentLoader(BaseAgentLoader):
     return None
 
   @experimental
-  def _load_from_yaml_config(self, agent_name: str) -> Optional[BaseAgent]:
+  def _load_from_yaml_config(
+      self, agent_name: str, agents_dir: str
+  ) -> Optional[BaseAgent]:
     # Load from the config file at agents_dir/{agent_name}/root_agent.yaml
-    config_path = os.path.join(self.agents_dir, agent_name, "root_agent.yaml")
+    config_path = os.path.join(agents_dir, agent_name, "root_agent.yaml")
     try:
       agent = config_agent_utils.from_config(config_path)
       logger.info("Loaded root agent for %s from %s", agent_name, config_path)
@@ -161,47 +184,56 @@ class AgentLoader(BaseAgentLoader):
       ) + e.args[1:]
       raise e
 
-  def _perform_load(self, agent_name: str) -> BaseAgent:
+  def _perform_load(self, agent_name: str) -> Union[BaseAgent, App]:
     """Internal logic to load an agent"""
-    # Add self.agents_dir to sys.path
-    if self.agents_dir not in sys.path:
-      sys.path.insert(0, self.agents_dir)
+    # Determine the directory to use for loading
+    if agent_name.startswith("__"):
+      # Special agent: use special agents directory
+      agents_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
+      # Remove the double underscore prefix for the actual agent name
+      actual_agent_name = agent_name[2:]
+    else:
+      # Regular agent: use the configured agents directory
+      agents_dir = self.agents_dir
+      actual_agent_name = agent_name
 
-    logger.debug(
-        "Loading .env for agent %s from %s", agent_name, self.agents_dir
-    )
-    envs.load_dotenv_for_agent(agent_name, str(self.agents_dir))
+    # Add agents_dir to sys.path
+    if agents_dir not in sys.path:
+      sys.path.insert(0, agents_dir)
 
-    if root_agent := self._load_from_module_or_package(agent_name):
+    logger.debug("Loading .env for agent %s from %s", agent_name, agents_dir)
+    envs.load_dotenv_for_agent(actual_agent_name, str(agents_dir))
+
+    if root_agent := self._load_from_module_or_package(actual_agent_name):
       return root_agent
 
-    if root_agent := self._load_from_submodule(agent_name):
+    if root_agent := self._load_from_submodule(actual_agent_name):
       return root_agent
 
-    if root_agent := self._load_from_yaml_config(agent_name):
+    if root_agent := self._load_from_yaml_config(actual_agent_name, agents_dir):
       return root_agent
 
     # If no root_agent was found by any pattern
     raise ValueError(
         f"No root_agent found for '{agent_name}'. Searched in"
-        f" '{agent_name}.agent.root_agent', '{agent_name}.root_agent' and"
-        f" '{agent_name}/root_agent.yaml'."
-        f" Ensure '{self.agents_dir}/{agent_name}' is structured correctly,"
-        " an .env file can be loaded if present, and a root_agent is"
-        " exposed."
+        f" '{actual_agent_name}.agent.root_agent',"
+        f" '{actual_agent_name}.root_agent' and"
+        f" '{actual_agent_name}/root_agent.yaml'. Ensure"
+        f" '{agents_dir}/{actual_agent_name}' is structured correctly, an .env"
+        " file can be loaded if present, and a root_agent is exposed."
     )
 
   @override
-  def load_agent(self, agent_name: str) -> BaseAgent:
+  def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:
     """Load an agent module (with caching & .env) and return its root_agent."""
     if agent_name in self._agent_cache:
       logger.debug("Returning cached agent for %s (async)", agent_name)
       return self._agent_cache[agent_name]
 
     logger.debug("Loading agent %s - not in cache.", agent_name)
-    agent = self._perform_load(agent_name)
-    self._agent_cache[agent_name] = agent
-    return agent
+    agent_or_app = self._perform_load(agent_name)
+    self._agent_cache[agent_name] = agent_or_app
+    return agent_or_app
 
   @override
   def list_agents(self) -> list[str]:
