@@ -65,6 +65,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
     )
     self._eval_sets[app_name][eval_set_id] = new_eval_set
     self._eval_cases[app_name][eval_set_id] = {}
+    return new_eval_set
 
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:

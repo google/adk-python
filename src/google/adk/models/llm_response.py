@@ -40,6 +40,8 @@ class LlmResponse(BaseModel):
     interrupted: Flag indicating that LLM was interrupted when generating the
       content. Usually it's due to user interruption during a bidi streaming.
     custom_metadata: The custom metadata of the LlmResponse.
+    input_transcription: Audio transcription of user input.
+    output_transcription: Audio transcription of model output.
   """
 
   model_config = ConfigDict(
@@ -50,7 +52,11 @@ class LlmResponse(BaseModel):
   """The pydantic model config."""
 
   content: Optional[types.Content] = None
-  """The content of the response."""
+  """The generative content of the response.
+
+  This should only contain content from the user or the model, and not any
+  framework or system-generated data.
+  """
 
   grounding_metadata: Optional[types.GroundingMetadata] = None
   """The grounding metadata of the response."""
@@ -96,6 +102,12 @@ class LlmResponse(BaseModel):
       types.LiveServerSessionResumptionUpdate
   ] = None
   """The session resumption update of the LlmResponse"""
+
+  input_transcription: Optional[types.Transcription] = None
+  """Audio transcription of user input."""
+
+  output_transcription: Optional[types.Transcription] = None
+  """Audio transcription of model output."""
 
   @staticmethod
   def create(

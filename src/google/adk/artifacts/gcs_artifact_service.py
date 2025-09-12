@@ -180,10 +180,17 @@ class GcsArtifactService(BaseArtifactService):
     )
     blob = self.bucket.blob(blob_name)
 
-    blob.upload_from_string(
-        data=artifact.inline_data.data,
-        content_type=artifact.inline_data.mime_type,
-    )
+    if artifact.inline_data:
+      blob.upload_from_string(
+          data=artifact.inline_data.data,
+          content_type=artifact.inline_data.mime_type,
+      )
+    elif artifact.text:
+      blob.upload_from_string(
+          data=artifact.text,
+      )
+    else:
+      raise ValueError("Artifact must have either inline_data or text.")
 
     return version
 

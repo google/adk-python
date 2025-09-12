@@ -181,6 +181,18 @@ class BaseAgent(BaseModel):
 
     cloned_agent = self.model_copy(update=update)
 
+    # If any field is stored as list and not provided in the update, need to
+    # shallow copy it for the cloned agent to avoid sharing the same list object
+    # with the original agent.
+    for field_name in cloned_agent.__class__.model_fields:
+      if field_name == 'sub_agents':
+        continue
+      if update is not None and field_name in update:
+        continue
+      field = getattr(cloned_agent, field_name)
+      if isinstance(field, list):
+        setattr(cloned_agent, field_name, field.copy())
+
     if update is None or 'sub_agents' not in update:
       # If `sub_agents` is not provided in the update, need to recursively clone
       # the sub-agents to avoid sharing the sub-agents with the original agent.
@@ -492,7 +504,7 @@ class BaseAgent(BaseModel):
 
   @field_validator('name', mode='after')
   @classmethod
-  def __validate_name(cls, value: str):
+  def validate_name(cls, value: str):
     if not value.isidentifier():
       raise ValueError(
           f'Found invalid agent name: `{value}`.'
@@ -553,7 +565,7 @@ class BaseAgent(BaseModel):
   ) -> Dict[str, Any]:
     """Parses the config and returns updated kwargs to construct the agent.
 
-    Sub-classes should override this method to use a custome agent config class.
+    Sub-classes should override this method to use a custom agent config class.
 
     Args:
       config: The config to parse.

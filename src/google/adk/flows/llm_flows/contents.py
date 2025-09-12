@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import copy
 from typing import AsyncGenerator
-from typing import Generator
 from typing import Optional
 
 from google.genai import types
@@ -27,6 +26,7 @@ from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import remove_client_function_call_id
+from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
 
@@ -133,7 +133,7 @@ def _rearrange_events_for_latest_function_response(
 
   function_responses = events[-1].get_function_responses()
   if not function_responses:
-    # No need to process, since the latest event is not fuction_response.
+    # No need to process, since the latest event is not function_response.
     return events
 
   function_responses_ids = set()
@@ -202,6 +202,26 @@ def _rearrange_events_for_latest_function_response(
   return result_events
 
 
+def _contains_empty_content(event: Event) -> bool:
+  """Check if an event should be skipped due to missing or empty content.
+
+  This can happen to the evnets that only changed session state.
+  When both content and transcriptions are empty, the event will be considered as empty.
+
+  Args:
+    event: The event to check.
+
+  Returns:
+    True if the event should be skipped, False otherwise.
+  """
+  return (
+      not event.content
+      or not event.content.role
+      or not event.content.parts
+      or event.content.parts[0].text == ''
+  ) and (not event.output_transcription and not event.input_transcription)
+
+
 def _get_contents(
     current_branch: Optional[str], events: list[Event], agent_name: str = ''
 ) -> list[types.Content]:
@@ -217,20 +237,14 @@ def _get_contents(
   Returns:
     A list of processed contents.
   """
-  filtered_events = []
+  accumulated_input_transcription = ''
+  accumulated_output_transcription = ''
+
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
+  raw_filtered_events = []
   for event in events:
-    if (
-        not event.content
-        or not event.content.role
-        or not event.content.parts
-        or event.content.parts[0].text == ''
-    ):
-      # Skip events without content, or generated neither by user nor by model
-      # or has empty text.
-      # E.g. events purely for mutating session states.
-
+    if _contains_empty_content(event):
       continue
     if not _is_event_belongs_to_branch(current_branch, event):
       # Skip events not belong to current branch.
@@ -238,11 +252,54 @@ def _get_contents(
     if _is_auth_event(event):
       # Skip auth events.
       continue
-    filtered_events.append(
-        _convert_foreign_event(event)
-        if _is_other_agent_reply(agent_name, event)
-        else event
-    )
+    if _is_request_confirmation_event(event):
+      # Skip request confirmation events.
+      continue
+
+    raw_filtered_events.append(event)
+
+  filtered_events = []
+  # aggregate transcription events
+  for i in range(len(raw_filtered_events)):
+    event = raw_filtered_events[i]
+    if not event.content:
+      # Convert transcription into normal event
+      if event.input_transcription and event.input_transcription.text:
+        accumulated_input_transcription += event.input_transcription.text
+        if (
+            i != len(raw_filtered_events) - 1
+            and raw_filtered_events[i + 1].input_transcription
+            and raw_filtered_events[i + 1].input_transcription.text
+        ):
+          continue
+        event = event.model_copy(deep=True)
+        event.input_transcription = None
+        event.content = types.Content(
+            role='user',
+            parts=[types.Part(text=accumulated_input_transcription)],
+        )
+        accumulated_input_transcription = ''
+      elif event.output_transcription and event.output_transcription.text:
+        accumulated_output_transcription += event.output_transcription.text
+        if (
+            i != len(raw_filtered_events) - 1
+            and raw_filtered_events[i + 1].output_transcription
+            and raw_filtered_events[i + 1].output_transcription.text
+        ):
+          continue
+        event = event.model_copy(deep=True)
+        event.output_transcription = None
+        event.content = types.Content(
+            role='model',
+            parts=[types.Part(text=accumulated_output_transcription)],
+        )
+        accumulated_output_transcription = ''
+
+    if _is_other_agent_reply(agent_name, event):
+      if converted_event := _present_other_agent_message(event):
+        filtered_events.append(converted_event)
+    else:
+      filtered_events.append(event)
 
   # Rearrange events for proper function call/response pairing
   result_events = _rearrange_events_for_latest_function_response(
@@ -301,19 +358,18 @@ def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
   )
 
 
-def _convert_foreign_event(event: Event) -> Event:
-  """Converts an event authored by another agent as a user-content event.
+def _present_other_agent_message(event: Event) -> Optional[Event]:
+  """Presents another agent's message as user context for the current agent.
 
-  This is to provide another agent's output as context to the current agent, so
-  that current agent can continue to respond, such as summarizing previous
-  agent's reply, etc.
+  Reformats the event with role='user' and adds '[agent_name] said:' prefix
+  to provide context without confusion about authorship.
 
   Args:
-    event: The event to convert.
+    event: The event from another agent to present as context.
 
   Returns:
-    The converted event.
-
+    Event reformatted as user-role context with agent attribution, or None
+    if no meaningful content remains after filtering.
   """
   if not event.content or not event.content.parts:
     return event
@@ -322,8 +378,10 @@ def _convert_foreign_event(event: Event) -> Event:
   content.role = 'user'
   content.parts = [types.Part(text='For context:')]
   for part in event.content.parts:
-    # Exclude thoughts from the context.
-    if part.text and not part.thought:
+    if part.thought:
+      # Exclude thoughts from the context.
+      continue
+    elif part.text:
       content.parts.append(
           types.Part(text=f'[{event.author}] said: {part.text}')
       )
@@ -349,6 +407,10 @@ def _convert_foreign_event(event: Event) -> Event:
     # Fallback to the original part for non-text and non-functionCall parts.
     else:
       content.parts.append(part)
+
+  # If no meaningful parts were added (only "For context:" remains), return None
+  if len(content.parts) == 1:
+    return None
 
   return Event(
       timestamp=event.timestamp,
@@ -425,24 +487,73 @@ def _merge_function_response_events(
 def _is_event_belongs_to_branch(
     invocation_branch: Optional[str], event: Event
 ) -> bool:
-  """Event belongs to a branch, when event.branch is prefix of the invocation branch."""
+  """Check if an event belongs to the current branch.
+
+  This is for event context segration between agents. E.g. agent A shouldn't
+  see output of agent B.
+  """
   if not invocation_branch or not event.branch:
     return True
   return invocation_branch.startswith(event.branch)
 
 
-def _is_auth_event(event: Event) -> bool:
-  if not event.content.parts:
+def _is_function_call_event(event: Event, function_name: str) -> bool:
+  """Checks if an event is a function call/response for a given function name."""
+  if not event.content or not event.content.parts:
     return False
   for part in event.content.parts:
-    if (
-        part.function_call
-        and part.function_call.name == REQUEST_EUC_FUNCTION_CALL_NAME
-    ):
+    if part.function_call and part.function_call.name == function_name:
       return True
-    if (
-        part.function_response
-        and part.function_response.name == REQUEST_EUC_FUNCTION_CALL_NAME
-    ):
+    if part.function_response and part.function_response.name == function_name:
+      return True
+  return False
+
+
+def _is_auth_event(event: Event) -> bool:
+  """Checks if the event is an authentication event."""
+  return _is_function_call_event(event, REQUEST_EUC_FUNCTION_CALL_NAME)
+
+
+def _is_request_confirmation_event(event: Event) -> bool:
+  """Checks if the event is a request confirmation event."""
+  return _is_function_call_event(event, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+
+
+def _is_live_model_audio_event(event: Event) -> bool:
+  """Check if the event is an audio event produced by live/bidi models
+
+  There are two possible cases:
+  content=Content(
+    parts=[
+      Part(
+        file_data=FileData(
+          file_uri='artifact://live_bidi_streaming_multi_agent/user/cccf0b8b-4a30-449a-890e-e8b8deb661a1/_adk_live/adk_live_audio_storage_input_audio_1756092402277.pcm#1',
+          mime_type='audio/pcm'
+        )
+      ),
+    ],
+    role='user'
+  )
+  content=Content(
+    parts=[
+      Part(
+        inline_data=Blob(
+          data=b'\x01\x00\x00...',
+          mime_type='audio/pcm'
+        )
+      ),
+    ],
+    role='model'
+  ) grounding_metadata=None partial=None turn_complete=None finish_reason=None error_code=None error_message=None ...
+  """
+  if not event.content:
+    return False
+  if not event.content.parts:
+    return False
+  # If it's audio data, then one event only has one part of audio.
+  for part in event.content.parts:
+    if part.inline_data and part.inline_data.mime_type == 'audio/pcm':
+      return True
+    if part.file_data and part.file_data.mime_type == 'audio/pcm':
       return True
   return False

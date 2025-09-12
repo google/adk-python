@@ -505,7 +505,7 @@ class LlmAgent(BaseAgent):
 
   @field_validator('generate_content_config', mode='after')
   @classmethod
-  def __validate_generate_content_config(
+  def validate_generate_content_config(
       cls, generate_content_config: Optional[types.GenerateContentConfig]
   ) -> types.GenerateContentConfig:
     if not generate_content_config:

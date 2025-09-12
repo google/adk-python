@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 
 from pydantic import alias_generators
@@ -22,6 +23,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from ..auth.auth_tool import AuthConfig
+from ..tools.tool_confirmation import ToolConfirmation
 
 
 class EventActions(BaseModel):
@@ -64,3 +66,9 @@ class EventActions(BaseModel):
   identify the function call.
   - Values: The requested auth config.
   """
+
+  requested_tool_confirmations: dict[str, ToolConfirmation] = Field(
+      default_factory=dict
+  )
+  """A dict of tool confirmation requested by this event, keyed by
+  function call id."""

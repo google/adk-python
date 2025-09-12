@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import ClassVar
 from typing import Optional
 
 from typing_extensions import override
@@ -24,11 +25,12 @@ from ..models.llm_response import LlmResponse
 from ..utils.feature_decorator import experimental
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
+from .eval_metrics import EvalStatus
 from .eval_metrics import Interval
+from .eval_metrics import LlmAsAJudgeCriterion
 from .eval_metrics import MetricInfo
 from .eval_metrics import MetricValueInfo
 from .eval_metrics import PrebuiltMetrics
-from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
 from .llm_as_judge import LlmAsJudge
@@ -78,8 +80,6 @@ The answer should be a json alone which follows the json structure below:
 }}
 Answer with assertiveness:
 """
-
-_DEFAULT_NUM_SAMPLES = 5
 
 
 def _parse_critique(response: str) -> Label:
@@ -140,15 +140,14 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
   score indicate better final response performance of the agent.
   """
 
+  criterion_type: ClassVar[type[LlmAsAJudgeCriterion]] = LlmAsAJudgeCriterion
+
   def __init__(
       self,
       eval_metric: EvalMetric,
   ):
-    super().__init__(eval_metric)
+    super().__init__(eval_metric, FinalResponseMatchV2Evaluator.criterion_type)
     self._auto_rater_prompt_template = _FINAL_RESPONSE_MATCH_V2_PROMPT
-    assert self._eval_metric.judge_model_options is not None
-    if self._eval_metric.judge_model_options.num_samples is None:
-      self._eval_metric.judge_model_options.num_samples = _DEFAULT_NUM_SAMPLES
 
   @staticmethod
   def get_metric_info() -> MetricInfo:
@@ -241,7 +240,7 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
     return EvaluationResult(
         overall_score=overall_score,
         overall_eval_status=get_eval_status(
-            overall_score, self._eval_metric.threshold
+            overall_score, self._criterion.threshold
         ),
         per_invocation_results=per_invocation_results,
     )
