@@ -27,10 +27,12 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 ---
 
-## ✨ What's new
+## 🔥 What's new
 
 - **Agent Config**: Build agents without code. Check out the
   [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+
+- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input
 
 ## ✨ Key Features
 
