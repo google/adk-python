@@ -565,7 +565,7 @@ class BaseAgent(BaseModel):
   ) -> Dict[str, Any]:
     """Parses the config and returns updated kwargs to construct the agent.
 
-    Sub-classes should override this method to use a custome agent config class.
+    Sub-classes should override this method to use a custom agent config class.
 
     Args:
       config: The config to parse.

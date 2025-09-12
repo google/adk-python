@@ -2,7 +2,7 @@
 agent_class: LlmAgent
 model: gemini-2.5-flash
 name: root_agent
-description: Iterative writing pipeline agent.
+description: Coordinator agent to greet users.
 # global_instruction: You are DicePrimeBot, ready to roll dice and check prime numbers.
 instruction: |
   You are a helpful assistant that can roll dice and check if numbers are prime.

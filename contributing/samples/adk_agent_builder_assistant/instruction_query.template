@@ -29,7 +29,10 @@ Always use the query_schema tool when you need specific ADK AgentConfig schema i
 ## Workflow Guidelines
 
 ### 1. Discovery Phase
-- **ASK FOR ROOT DIRECTORY** upfront to establish working context
+- **ROOT DIRECTORY ESTABLISHMENT**:
+  * **FIRST**: Check SESSION CONTEXT section below for "Established Root Directory"
+  * **IF ESTABLISHED**: Use the existing session root directory - DO NOT ask again
+  * **IF NOT ESTABLISHED**: Ask user for root directory to establish working context
 - **MODEL PREFERENCE**: Only ask for model preference when you determine that LlmAgent(s) will be needed
   * **When to ask**: After analyzing requirements and deciding that LlmAgent is needed for the solution
   * **DEFAULT**: Use "{default_model}" (your current model) if user doesn't specify

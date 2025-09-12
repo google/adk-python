@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-sandbox
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: adk-agent-sa
+  namespace: agent-sandbox
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: adk-agent-role
+  namespace: agent-sandbox
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  # create: Needed for _batch_v1.create_namespaced_job().
+  # watch: Needed for watch.stream(self._batch_v1.list_namespaced_job, ...) to wait for completion
+  # list/get: Required for the watch to initialize and to get job details.
+  verbs: ["create", "get", "watch", "list", "delete"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  # create: Needed mount the agent's code into the Job's Pod.
+  # delete: Needed for cleanup in the finally block
+  verbs: ["create", "get", "list", "delete"]
+- apiGroups: [""]
+  resources: ["pods"]
+  # list: Needed to find the correct Pod _core_v1.list_namespaced_pod(label_selector=...)
+  verbs: ["get", "list", "delete"]
+- apiGroups: [""]
+  # get: Needed for _core_v1.read_namespaced_pod_log() to get the code execution results and logs.
+  resources: ["pods/log"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: adk-agent-binding
+  namespace: agent-sandbox
+subjects:
+- kind: ServiceAccount
+  name: adk-agent-sa
+  namespace: agent-sandbox
+roleRef:
+  kind: Role
+  name: adk-agent-role
+  apiGroup: rbac.authorization.k8s.io

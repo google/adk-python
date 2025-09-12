@@ -20,7 +20,6 @@ from ..errors.not_found_error import NotFoundError
 from ..utils.feature_decorator import experimental
 from .eval_metrics import EvalMetric
 from .eval_metrics import MetricInfo
-from .eval_metrics import MetricName
 from .eval_metrics import PrebuiltMetrics
 from .evaluator import Evaluator
 from .final_response_match_v2 import FinalResponseMatchV2Evaluator

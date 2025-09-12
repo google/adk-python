@@ -41,7 +41,7 @@ async def test_bigquery_toolset_tools_default():
   tools = await toolset.get_tools()
   assert tools is not None
 
-  assert len(tools) == 6
+  assert len(tools) == 7
   assert all([isinstance(tool, GoogleTool) for tool in tools])
 
   expected_tool_names = set([
@@ -51,6 +51,7 @@ async def test_bigquery_toolset_tools_default():
       "get_table_info",
       "execute_sql",
       "ask_data_insights",
+      "forecast",
   ])
   actual_tool_names = set([tool.name for tool in tools])
   assert actual_tool_names == expected_tool_names

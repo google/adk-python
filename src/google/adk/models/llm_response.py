@@ -52,7 +52,11 @@ class LlmResponse(BaseModel):
   """The pydantic model config."""
 
   content: Optional[types.Content] = None
-  """The content of the response."""
+  """The generative content of the response.
+
+  This should only contain content from the user or the model, and not any
+  framework or system-generated data.
+  """
 
   grounding_metadata: Optional[types.GroundingMetadata] = None
   """The grounding metadata of the response."""
