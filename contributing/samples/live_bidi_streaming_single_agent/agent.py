@@ -14,7 +14,7 @@
 
 import random
 
-from google.adk import Agent
+from google.adk.agents.agent import Agent
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
@@ -67,14 +67,14 @@ async def check_prime(nums: list[int]) -> str:
 root_agent = Agent(
     # model='gemini-2.0-flash-live-preview-04-09',  # for Vertex project
     model='gemini-2.0-flash-live-001',  # for AI studio key
-    name='hello_world_agent',
+    name='roll_dice_agent',
     description=(
-        'hello world agent that can roll a dice of 8 sides and check prime'
+        'hello world agent that can roll a dice of 6 sides and check prime'
         ' numbers.'
     ),
     instruction="""
       You roll dice and answer questions about the outcome of the dice rolls.
-      You can roll dice of different sizes.
+      You can roll dice of different sizes. When the user doesn't specify the number of sides, you should assume 6 sides.
       You can use multiple tools in parallel by calling functions in parallel(in one request and in one round).
       It is ok to discuss previous dice roles, and comment on the dice rolls.
       When you are asked to roll a die, you must call the roll_die tool with the number of sides. Be sure to pass in an integer. Do not pass in a string.
