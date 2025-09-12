@@ -132,6 +132,13 @@ def process_arguments():
       help="Answer a discussion using provided JSON data from GitHub event.",
   )
 
+  group.add_argument(
+      "--discussion-file",
+      type=str,
+      metavar="FILE",
+      help="Answer a discussion using JSON data from a file.",
+  )
+
   return parser.parse_args()
 
 
@@ -155,9 +162,18 @@ async def main():
       )
       return
     discussion_numbers = [discussion_number]
-  elif args.discussion:
+  elif args.discussion or args.discussion_file:
     try:
-      discussion_data = json.loads(args.discussion)
+      # Load discussion data from either argument or file
+      if args.discussion:
+        discussion_data = json.loads(args.discussion)
+        source_desc = "--discussion argument"
+      else:  # args.discussion_file
+        with open(args.discussion_file, "r", encoding="utf-8") as f:
+          discussion_data = json.load(f)
+        source_desc = f"file {args.discussion_file}"
+
+      # Common validation and processing
       discussion_number = discussion_data.get("number")
       if not discussion_number:
         print("Error: Discussion JSON missing 'number' field.", file=sys.stderr)
@@ -165,10 +181,12 @@ async def main():
       discussion_numbers = [discussion_number]
       # Store the discussion data for later use
       discussion_json_data = discussion_data
+
+    except FileNotFoundError:
+      print(f"Error: File not found: {args.discussion_file}", file=sys.stderr)
+      return
     except json.JSONDecodeError as e:
-      print(
-          f"Error: Invalid JSON in --discussion argument: {e}", file=sys.stderr
-      )
+      print(f"Error: Invalid JSON in {source_desc}: {e}", file=sys.stderr)
       return
 
   print(f"Will try to answer discussions: {discussion_numbers}...")
@@ -189,16 +207,14 @@ async def main():
 
     # If we have discussion JSON data, include it in the prompt
     # to avoid API call
-    if args.discussion and discussion_json_data:
-      title = discussion_json_data.get("title", "No title")
-      body = discussion_json_data.get("body", "No body")
-      author = discussion_json_data.get("author", {}).get("login", "Unknown")
+    if discussion_json_data:
+      discussion_json_str = json.dumps(discussion_json_data, indent=2)
       prompt = (
-          f"Please help answer this GitHub discussion #{discussion_number}:\n\n"
-          f"Title: {title}\n\n"
-          f"Author: {author}\n\n"
-          f"Body: {body}\n\n"
-          "Please provide a helpful response based on your knowledge of ADK."
+          f"Please help answer this GitHub discussion #{discussion_number}."
+          " Here is the complete discussion"
+          f" data:\n\n```json\n{discussion_json_str}\n```\n\nPlease analyze"
+          " this discussion and provide a helpful response based on your"
+          " knowledge of ADK."
       )
     else:
       prompt = (

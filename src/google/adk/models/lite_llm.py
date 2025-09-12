@@ -683,7 +683,7 @@ def _is_litellm_gemini_model(model_string: str) -> bool:
 
   Args:
     model_string: A LiteLLM model string (e.g., "gemini/gemini-2.5-pro" or
-      "vertex_ai/gemini-1.5-flash")
+      "vertex_ai/gemini-2.5-flash")
 
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise

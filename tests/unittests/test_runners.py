@@ -442,6 +442,30 @@ class TestRunnerWithPlugins:
           artifact_service=self.artifact_service,
       )
 
+  def test_runner_init_raises_error_without_app_and_app_name(self):
+    """Test ValueError is raised when app is not provided and app_name is missing."""
+    with pytest.raises(
+        ValueError,
+        match="Either app or both app_name and agent must be provided.",
+    ):
+      Runner(
+          agent=self.root_agent,
+          session_service=self.session_service,
+          artifact_service=self.artifact_service,
+      )
+
+  def test_runner_init_raises_error_without_app_and_agent(self):
+    """Test ValueError is raised when app is not provided and agent is missing."""
+    with pytest.raises(
+        ValueError,
+        match="Either app or both app_name and agent must be provided.",
+    ):
+      Runner(
+          app_name="test_app",
+          session_service=self.session_service,
+          artifact_service=self.artifact_service,
+      )
+
 
 if __name__ == "__main__":
   pytest.main([__file__])

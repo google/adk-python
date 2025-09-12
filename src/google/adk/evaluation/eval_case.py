@@ -23,6 +23,8 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from .eval_rubrics import Rubric
+
 
 class EvalBaseModel(BaseModel):
   model_config = ConfigDict(
@@ -55,7 +57,7 @@ class IntermediateData(EvalBaseModel):
 class Invocation(EvalBaseModel):
   """Represents a single invocation."""
 
-  invocation_id: str = ''
+  invocation_id: str = ""
   """Unique identifier for the invocation."""
 
   user_content: genai_types.Content
@@ -73,6 +75,11 @@ class Invocation(EvalBaseModel):
 
   creation_timestamp: float = 0.0
   """Timestamp for the current invocation, primarily intended for debugging purposes."""
+
+  rubrics: Optional[list[Rubric]] = Field(
+      default=None,
+  )
+  """A list of rubrics that are applicable to only this invocation."""
 
 
 class SessionInput(EvalBaseModel):
@@ -105,3 +112,8 @@ class EvalCase(EvalBaseModel):
 
   creation_timestamp: float = 0.0
   """The time at which this eval case was created."""
+
+  rubrics: Optional[list[Rubric]] = Field(
+      default=None,
+  )
+  """A list of rubrics that are applicable to all the invocations in the conversation of this eval case."""

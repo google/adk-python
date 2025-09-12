@@ -479,8 +479,6 @@ class RemoteA2aAgent(BaseAgent):
           context_id=context_id,
       )
 
-    logger.debug(build_a2a_request_log(a2a_request))
-
     try:
       async for a2a_response in self._a2a_client.send_message(
           request=a2a_request

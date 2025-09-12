@@ -32,7 +32,7 @@ class BaseLlm(BaseModel):
   """The BaseLLM class.
 
   Attributes:
-    model: The name of the LLM, e.g. gemini-1.5-flash or gemini-1.5-flash-001.
+    model: The name of the LLM, e.g. gemini-2.5-flash or gemini-2.5-pro.
   """
 
   model_config = ConfigDict(
@@ -42,7 +42,7 @@ class BaseLlm(BaseModel):
   """The pydantic model config."""
 
   model: str
-  """The name of the LLM, e.g. gemini-1.5-flash or gemini-1.5-flash-001."""
+  """The name of the LLM, e.g. gemini-2.5-flash or gemini-2.5-pro."""
 
   @classmethod
   def supported_models(cls) -> list[str]:

@@ -11,20 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from abc import ABC
-from enum import Enum
+from typing import ClassVar
 from typing import Optional
 
 from pydantic import BaseModel
+from typing_extensions import TypeAlias
 
 from .eval_case import Invocation
+from .eval_metrics import BaseCriterion
+from .eval_metrics import EvalStatus
 
-
-class EvalStatus(Enum):
-  PASSED = 1
-  FAILED = 2
-  NOT_EVALUATED = 3
+# Redefining the type here for backward compatibility.
+EvalStatus: TypeAlias = EvalStatus
 
 
 class PerInvocationResult(BaseModel):
@@ -48,6 +49,8 @@ class EvaluationResult(BaseModel):
 
 class Evaluator(ABC):
   """A merics evaluator interface."""
+
+  criterion_type: ClassVar[type[BaseCriterion]] = BaseCriterion
 
   def evaluate_invocations(
       self,

@@ -62,7 +62,7 @@ bigtable_toolset = BigtableToolset(
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI
 root_agent = LlmAgent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="bigtable_agent",
     description=(
         "Agent to answer questions about Bigtable database tables and"
