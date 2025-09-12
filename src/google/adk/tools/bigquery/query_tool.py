@@ -97,6 +97,7 @@ def execute_sql(
     bq_client = client.get_bigquery_client(
         project=project_id,
         credentials=credentials,
+        location=settings.location,
         user_agent=settings.application_name,
     )
 
