@@ -69,42 +69,6 @@ DEFAULT_TASK_COMPLETION_DELAY = 1.0
 DEFAULT_ENABLE_CACHE_STATISTICS = False
 
 
-def _get_audio_transcription_from_session(
-    invocation_context: InvocationContext,
-) -> list[types.Content]:
-  """Get audio and transcription content from session events.
-
-  Collects audio file references and transcription text from session events
-  to reconstruct the conversation history including multimodal content.
-  Args:
-    invocation_context: The invocation context containing session data.
-  Returns:
-    A list of Content objects containing audio files and transcriptions.
-  """
-  contents = []
-
-  for event in invocation_context.session.events:
-    # Collect transcription text events
-    if hasattr(event, 'input_transcription') and event.input_transcription:
-      contents.append(
-          types.Content(
-              role='user',
-              parts=[types.Part.from_text(text=event.input_transcription.text)],
-          )
-      )
-
-    if hasattr(event, 'output_transcription') and event.output_transcription:
-      contents.append(
-          types.Content(
-              role='model',
-              parts=[
-                  types.Part.from_text(text=event.output_transcription.text)
-              ],
-          )
-      )
-  return contents
-
-
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
 
