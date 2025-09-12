@@ -19,12 +19,12 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-from adk_release_analyzer.settings import GITHUB_BASE_URL
-from adk_release_analyzer.utils import error_response
-from adk_release_analyzer.utils import get_paginated_request
-from adk_release_analyzer.utils import get_request
-from adk_release_analyzer.utils import patch_request
-from adk_release_analyzer.utils import post_request
+from adk_documentation.settings import GITHUB_BASE_URL
+from adk_documentation.utils import error_response
+from adk_documentation.utils import get_paginated_request
+from adk_documentation.utils import get_request
+from adk_documentation.utils import patch_request
+from adk_documentation.utils import post_request
 import requests
 
 
@@ -133,7 +133,7 @@ def clone_or_pull_repo(
       A dictionary indicating the status of the operation, output message, and
       the head commit hash.
   """
-  repo_url = f"https://github.com/{repo_owner}/{repo_name}.git"
+  repo_url = f"git@github.com:{repo_owner}/{repo_name}.git"
 
   try:
     # Check local path and decide to clone or pull
@@ -246,8 +246,8 @@ def list_directory_contents(directory_path: str) -> Dict[str, Any]:
 def search_local_git_repo(
     directory_path: str,
     pattern: str,
-    extensions: Optional[List[str]],
-    ignored_dirs: Optional[List[str]],
+    extensions: Optional[List[str]] = None,
+    ignored_dirs: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
   """Searches a local Git repository for a pattern.
 

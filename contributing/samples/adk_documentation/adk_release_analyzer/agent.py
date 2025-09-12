@@ -12,19 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from adk_release_analyzer.settings import CODE_OWNER
-from adk_release_analyzer.settings import CODE_REPO
-from adk_release_analyzer.settings import DOC_OWNER
-from adk_release_analyzer.settings import DOC_REPO
-from adk_release_analyzer.settings import IS_INTERACTIVE
-from adk_release_analyzer.settings import LOCAL_REPOS_DIR_PATH
-from adk_release_analyzer.tools import clone_or_pull_repo
-from adk_release_analyzer.tools import create_issue
-from adk_release_analyzer.tools import get_changed_files_between_releases
-from adk_release_analyzer.tools import list_directory_contents
-from adk_release_analyzer.tools import list_releases
-from adk_release_analyzer.tools import read_local_git_repo_file_content
-from adk_release_analyzer.tools import search_local_git_repo
+import os
+import sys
+
+SAMPLES_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+if SAMPLES_DIR not in sys.path:
+  sys.path.append(SAMPLES_DIR)
+
+from adk_documentation.settings import CODE_OWNER
+from adk_documentation.settings import CODE_REPO
+from adk_documentation.settings import DOC_OWNER
+from adk_documentation.settings import DOC_REPO
+from adk_documentation.settings import IS_INTERACTIVE
+from adk_documentation.settings import LOCAL_REPOS_DIR_PATH
+from adk_documentation.tools import clone_or_pull_repo
+from adk_documentation.tools import create_issue
+from adk_documentation.tools import get_changed_files_between_releases
+from adk_documentation.tools import list_directory_contents
+from adk_documentation.tools import list_releases
+from adk_documentation.tools import read_local_git_repo_file_content
+from adk_documentation.tools import search_local_git_repo
 from google.adk import Agent
 
 if IS_INTERACTIVE:
