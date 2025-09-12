@@ -30,6 +30,7 @@ class SimpleModel(BaseModel):
   active: bool
   finish_reason: Optional[types.FinishReason] = None
   multiline_text: Optional[str] = None
+  items: Optional[list[str]] = None
 
 
 def test_yaml_file_generation(tmp_path: Path):
@@ -77,3 +78,48 @@ multiline_text: |-
   and should be formatted with pipe style
 name: Test
 """
+
+
+def test_list_indentation(tmp_path: Path):
+  """Test that lists in mappings are properly indented."""
+  model = SimpleModel(
+      name="Test",
+      age=25,
+      active=True,
+      items=["item1", "item2", "item3"],
+  )
+  yaml_file = tmp_path / "test.yaml"
+
+  dump_pydantic_to_yaml(model, yaml_file)
+
+  expected = """\
+active: true
+age: 25
+items:
+  - item1
+  - item2
+  - item3
+name: Test
+"""
+  assert yaml_file.read_text(encoding="utf-8") == expected
+
+
+def test_empty_list_formatting(tmp_path: Path):
+  """Test that empty lists are formatted properly."""
+  model = SimpleModel(
+      name="Test",
+      age=25,
+      active=True,
+      items=[],
+  )
+  yaml_file = tmp_path / "test.yaml"
+
+  dump_pydantic_to_yaml(model, yaml_file)
+
+  expected = """\
+active: true
+age: 25
+items: []
+name: Test
+"""
+  assert yaml_file.read_text(encoding="utf-8") == expected

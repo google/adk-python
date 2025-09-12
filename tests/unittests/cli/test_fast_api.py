@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 from typing import Any
+from typing import Optional
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -120,8 +121,9 @@ async def dummy_run_async(
     session_id,
     new_message,
     state_delta=None,
-    run_config: RunConfig = RunConfig(),
+    run_config: Optional[RunConfig] = None,
 ):
+  run_config = run_config or RunConfig()
   yield _event_1()
   await asyncio.sleep(0)
 
@@ -838,6 +840,7 @@ def test_run_eval(test_app, create_test_eval_set):
             "threshold": 0.5,
             "score": 1.0,
             "evalStatus": 1,
+            "details": {},
         }],
     }
     for k, v in expected_eval_case_result.items():

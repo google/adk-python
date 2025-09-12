@@ -6,6 +6,7 @@ on:
 
 jobs:
   agent-triage-pull-request:
+    if: "!contains(github.event.pull_request.labels.*.name, 'bot triaged') && !contains(github.event.pull_request.labels.*.name, 'google-contributor')"
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write

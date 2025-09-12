@@ -37,6 +37,8 @@ from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.base_eval_service import InferenceResult
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import EvalCase
+from ..evaluation.eval_config import BaseCriterion
+from ..evaluation.eval_config import EvalConfig
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
@@ -64,6 +66,10 @@ DEFAULT_CRITERIA = {
     RESPONSE_MATCH_SCORE_KEY: 0.8,
 }
 
+_DEFAULT_EVAL_CONFIG = EvalConfig(
+    criteria={"tool_trajectory_avg_score": 1.0, "response_match_score": 0.8}
+)
+
 
 def _import_from_path(module_name, file_path):
   spec = importlib.util.spec_from_file_location(module_name, file_path)
@@ -81,27 +87,48 @@ def _get_agent_module(agent_module_file_path: str):
 
 def get_evaluation_criteria_or_default(
     eval_config_file_path: str,
-) -> dict[str, float]:
-  """Returns evaluation criteria from the config file, if present.
+) -> EvalConfig:
+  """Returns EvalConfig read from the config file, if present.
 
   Otherwise a default one is returned.
   """
   if eval_config_file_path:
     with open(eval_config_file_path, "r", encoding="utf-8") as f:
-      config_data = json.load(f)
+      content = f.read()
+      return EvalConfig.model_validate_json(content)
 
-    if "criteria" in config_data and isinstance(config_data["criteria"], dict):
-      evaluation_criteria = config_data["criteria"]
-    else:
-      raise ValueError(
-          f"Invalid format for test_config.json at {eval_config_file_path}."
-          " Expected a 'criteria' dictionary."
-      )
-  else:
-    logger.info("No config file supplied. Using default criteria.")
-    evaluation_criteria = DEFAULT_CRITERIA
+  logger.info("No config file supplied. Using default criteria.")
+  return _DEFAULT_EVAL_CONFIG
 
-  return evaluation_criteria
+
+def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
+  """Returns a list of EvalMetrics mapped from the EvalConfig."""
+  eval_metric_list = []
+  if eval_config.criteria:
+    for metric_name, criterion in eval_config.criteria.items():
+      if isinstance(criterion, float):
+        eval_metric_list.append(
+            EvalMetric(
+                metric_name=metric_name,
+                threshold=criterion,
+                criterion=BaseCriterion(threshold=criterion),
+            )
+        )
+      elif isinstance(criterion, BaseCriterion):
+        eval_metric_list.append(
+            EvalMetric(
+                metric_name=metric_name,
+                threshold=criterion.threshold,
+                criterion=criterion,
+            )
+        )
+      else:
+        raise ValueError(
+            f"Unexpected criterion type. {type(criterion).__name__} not"
+            " supported."
+        )
+
+  return eval_metric_list
 
 
 def get_root_agent(agent_module_file_path: str) -> Agent:
