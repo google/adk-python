@@ -39,21 +39,17 @@ def extract_agent_engine_id(agent_engine_resource_name: str) -> str:
         raise ValueError(f"Resource name must be string, got {type(agent_engine_resource_name)}")
     
     # Extract the last segment of the path
-    try:
-        agent_id = agent_engine_resource_name.split("/")[-1]
-        
-        if not agent_id:
-            raise ValueError(f"Could not extract agent ID from resource name: {agent_engine_resource_name}")
-        
-        # Validate format - should be alphanumeric
-        if not re.match(r'^[a-zA-Z0-9]+$', agent_id):
-            logger.warning(f"Agent ID '{agent_id}' contains non-alphanumeric characters")
-        
-        logger.info(f"Successfully extracted Agent ID: {agent_id}")
-        return agent_id
-        
-    except Exception as e:
-        raise ValueError(f"Failed to extract agent ID from '{agent_engine_resource_name}': {str(e)}")
+    agent_id = agent_engine_resource_name.split("/")[-1]
+
+    if not agent_id:
+        raise ValueError(f"Could not extract agent ID from resource name: {agent_engine_resource_name}")
+
+    # Validate format - should be alphanumeric with hyphens
+    if not re.match(r'^[a-zA-Z0-9\-]+$', agent_id):
+        logger.warning(f"Agent ID '{agent_id}' contains non-standard characters")
+
+    logger.info(f"Successfully extracted Agent ID: {agent_id}")
+    return agent_id
 
 def validate_agent_engine_resource_name(resource_name: str) -> bool:
     """
@@ -89,6 +85,6 @@ def get_location_from_resource_name(resource_name: str) -> Optional[str]:
         parts = resource_name.split("/")
         if len(parts) >= 4 and parts[2] == "locations":
             return parts[3]
-    except:
+    except Exception:
         pass
     return None

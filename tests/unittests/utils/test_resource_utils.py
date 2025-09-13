@@ -47,6 +47,7 @@ class TestResourceUtils:
         valid_names = [
             "projects/test/locations/us-central1/reasoningEngines/123abc",
             "projects/my-project-123/locations/europe-west1/reasoningEngines/abc123def",
+            "projects/test/locations/us-central1/agentEngines/123abc",  # Both patterns
         ]
         
         for name in valid_names:
@@ -77,3 +78,24 @@ class TestResourceUtils:
         assert "projects/" not in agent_id
         assert "locations/" not in agent_id
         assert "reasoningEngines/" not in agent_id
+
+    def test_get_project_from_resource_name(self):
+        """Test extracting project ID from resource name."""
+        resource_name = "projects/my-test-project/locations/us-central1/reasoningEngines/123"
+        result = get_project_from_resource_name(resource_name)
+        assert result == "my-test-project"
+        
+        # Test invalid format
+        assert get_project_from_resource_name("invalid-format") is None
+        assert get_project_from_resource_name("") is None
+
+    def test_get_location_from_resource_name(self):
+        """Test extracting location from resource name."""
+        resource_name = "projects/test/locations/europe-west1/reasoningEngines/456"
+        result = get_location_from_resource_name(resource_name)
+        assert result == "europe-west1"
+        
+        # Test invalid format  
+        assert get_location_from_resource_name("invalid-format") is None
+        assert get_location_from_resource_name("") is None
+
