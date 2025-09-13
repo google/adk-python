@@ -75,7 +75,7 @@ def get_project_from_resource_name(resource_name: str) -> Optional[str]:
         parts = resource_name.split("/")
         if len(parts) >= 2 and parts[0] == "projects":
             return parts[1]
-    except:
+    except Exception:
         pass
     return None
 
