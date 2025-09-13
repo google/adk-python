@@ -21,7 +21,7 @@ from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 import google.adk as adk
 
 # Import our utility function
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from google.adk.utils.resource_utils import extract_agent_engine_id, validate_agent_engine_resource_name
 
 # Setup logging
