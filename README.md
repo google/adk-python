@@ -27,10 +27,12 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 ---
 
-## ✨ What's new
+## 🔥 What's new
 
 - **Agent Config**: Build agents without code. Check out the
   [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+
+- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input
 
 ## ✨ Key Features
 
@@ -94,7 +96,7 @@ from google.adk.tools import google_search
 
 root_agent = Agent(
     name="search_assistant",
-    model="gemini-2.0-flash", # Or your preferred Gemini model
+    model="gemini-2.5-flash", # Or your preferred Gemini model
     instruction="You are a helpful assistant. Answer user questions using Google Search when needed.",
     description="An assistant that can search the web.",
     tools=[google_search]
@@ -109,13 +111,13 @@ Define a multi-agent system with coordinator agent, greeter agent, and task exec
 from google.adk.agents import LlmAgent, BaseAgent
 
 # Define individual agents
-greeter = LlmAgent(name="greeter", model="gemini-2.0-flash", ...)
-task_executor = LlmAgent(name="task_executor", model="gemini-2.0-flash", ...)
+greeter = LlmAgent(name="greeter", model="gemini-2.5-flash", ...)
+task_executor = LlmAgent(name="task_executor", model="gemini-2.5-flash", ...)
 
 # Create parent agent and assign children via sub_agents
 coordinator = LlmAgent(
     name="Coordinator",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description="I coordinate greetings and tasks.",
     sub_agents=[ # Assign sub_agents here
         greeter,

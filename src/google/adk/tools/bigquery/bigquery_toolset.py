@@ -81,6 +81,7 @@ class BigQueryToolset(BaseToolset):
             metadata_tool.list_dataset_ids,
             metadata_tool.list_table_ids,
             query_tool.get_execute_sql(self._tool_settings),
+            query_tool.forecast,
             data_insights_tool.ask_data_insights,
         ]
     ]

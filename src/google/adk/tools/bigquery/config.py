@@ -82,6 +82,15 @@ class BigQueryToolConfig(BaseModel):
   operations (such as query execution) in a specific project.
   """
 
+  location: Optional[str] = None
+  """BigQuery location to use for the data and compute.
+
+  This can be set if the BigQuery tools are expected to process data in a
+  particular BigQuery location. If not set, then location would be automatically
+  determined based on the data location in the query. For all supported
+  locations, see https://cloud.google.com/bigquery/docs/locations.
+  """
+
   @field_validator('application_name')
   @classmethod
   def validate_application_name(cls, v):

@@ -275,36 +275,47 @@ class VertexAiSessionService(BaseSessionService):
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     api_client = self._get_api_client()
 
-    path = f'reasoningEngines/{reasoning_engine_id}/sessions'
-    if user_id:
-      parsed_user_id = urllib.parse.quote(f'''"{user_id}"''', safe='')
-      path = path + f'?filter=user_id={parsed_user_id}'
-
-    list_sessions_api_response = await api_client.async_request(
-        http_method='GET',
-        path=path,
-        request_dict={},
-    )
-    list_sessions_api_response = _convert_api_response(
-        list_sessions_api_response
-    )
-
-    # Handles empty response case
-    if not list_sessions_api_response or list_sessions_api_response.get(
-        'httpHeaders', None
-    ):
-      return ListSessionsResponse()
-
+    base_path = f'reasoningEngines/{reasoning_engine_id}/sessions'
     sessions = []
-    for api_session in list_sessions_api_response['sessions']:
-      session = Session(
-          app_name=app_name,
-          user_id=user_id,
-          id=api_session['name'].split('/')[-1],
-          state=api_session.get('sessionState', {}),
-          last_update_time=isoparse(api_session['updateTime']).timestamp(),
+    page_token = None
+    while True:
+      path = base_path
+      query_params = {}
+      if user_id:
+        query_params['filter'] = f'user_id="{user_id}"'
+      if page_token:
+        query_params['pageToken'] = page_token
+
+      if query_params:
+        path = f'{path}?{urllib.parse.urlencode(query_params)}'
+
+      list_sessions_api_response = await api_client.async_request(
+          http_method='GET',
+          path=path,
+          request_dict={},
       )
-      sessions.append(session)
+      converted_api_response = _convert_api_response(list_sessions_api_response)
+
+      # Handles empty response case
+      if not converted_api_response or converted_api_response.get(
+          'httpHeaders', None
+      ):
+        break
+
+      for api_session in converted_api_response.get('sessions', []):
+        session = Session(
+            app_name=app_name,
+            user_id=user_id,
+            id=api_session['name'].split('/')[-1],
+            state=api_session.get('sessionState', {}),
+            last_update_time=isoparse(api_session['updateTime']).timestamp(),
+        )
+        sessions.append(session)
+
+      page_token = converted_api_response.get('nextPageToken')
+      if not page_token:
+        break
+
     return ListSessionsResponse(sessions=sessions)
 
   async def delete_session(
