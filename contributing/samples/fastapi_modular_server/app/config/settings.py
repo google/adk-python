@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
   )
 
   # CORS
-  allow_origins: List[str] = Field(
+  allow_origins: list[str] = Field(
       default=["*"], description="CORS allowed origins"
   )
 

@@ -1,1 +1,1 @@
-from app.agents.greetings_agent.greeting_agent import root_agent
+from app.agents.greetings_agent.greetings_agent import root_agent

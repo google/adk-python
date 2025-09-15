@@ -1,7 +1,6 @@
 # dependencies.py - Improved version
 import logging
 from functools import lru_cache
-from typing import Dict
 
 from app.config.settings import Settings
 from app.core.mapping.sse_event_mapper import SSEEventMapper
@@ -99,7 +98,7 @@ def _create_adk_services_impl(settings: Settings) -> ADKServices:
 
 
 # Cache based on settings identity to ensure singleton behavior
-_adk_services_cache: Dict[int, ADKServices] = {}
+_adk_services_cache: dict[int, ADKServices] = {}
 
 
 def get_adk_services(settings: Settings = Depends(get_settings)) -> ADKServices:

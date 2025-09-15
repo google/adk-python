@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from app.api.custom_adk_server import CustomAdkWebServer
+
 import json
 import logging
 import time
@@ -20,7 +25,7 @@ logger = logging.getLogger(__name__)
 class AgentRouter:
   """Agent-related endpoints router."""
 
-  def __init__(self, web_server_instance):
+  def __init__(self, web_server_instance: "CustomAdkWebServer"):
     self.web_server = web_server_instance
     self.router = APIRouter()
     self._setup_routes()

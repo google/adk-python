@@ -1,8 +1,13 @@
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from app.config.settings import Settings
+
 import logging
 import sys
 
 
-def setup_logging(settings) -> None:
+def setup_logging(settings: Settings) -> None:
   """Configure application logging."""
   logging.basicConfig(
       level=getattr(logging, settings.log_level.upper()),
