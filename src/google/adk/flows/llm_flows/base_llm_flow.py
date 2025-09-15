@@ -41,9 +41,9 @@ from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
-from ...telemetry import trace_call_llm
-from ...telemetry import trace_send_data
-from ...telemetry import tracer
+from ...telemetry.tracing import trace_call_llm
+from ...telemetry.tracing import trace_send_data
+from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing

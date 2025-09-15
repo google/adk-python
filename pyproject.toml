@@ -41,9 +41,12 @@ dependencies = [
   "google-genai>=1.21.1, <2.0.0",                           # Google GenAI SDK
   "graphviz>=0.20.2, <1.0.0",                               # Graphviz for graph rendering
   "mcp>=1.8.0, <2.0.0;python_version>='3.10'",              # For MCP Toolset
-  "opentelemetry-api>=1.31.0, <2.0.0",                      # OpenTelemetry
+  "opentelemetry-api>=1.31.0, <=1.37.0",                    # OpenTelemetry - limit upper version for sdk and api to not risk breaking changes from unstable _logs package.
+  "opentelemetry-exporter-gcp-logging>=1.9.0a0, <2.0.0",
+  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0, <2.0.0",
   "opentelemetry-exporter-gcp-trace>=1.9.0, <2.0.0",
-  "opentelemetry-sdk>=1.31.0, <2.0.0",
+  "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
+  "opentelemetry-sdk>=1.31.0, <=1.37.0",
   "pydantic>=2.0, <3.0.0",                                  # For data validation/models
   "python-dateutil>=2.9.0.post0, <3.0.0",                   # For Vertext AI Session Service
   "python-dotenv>=1.0.0, <2.0.0",                           # To manage environment variables
@@ -145,6 +148,13 @@ extensions = [
   "llama-index-embeddings-google-genai>=0.3.0",# For files retrieval using LlamaIndex.
   "lxml>=5.3.0",                               # For load_web_page tool.
   "toolbox-core>=0.1.0",                       # For tools.toolbox_toolset.ToolboxToolset
+]
+
+otel-gcp = [
+  "opentelemetry-exporter-gcp-logging>=1.9.0a0, <2.0.0",
+  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0, <2.0.0",
+  "opentelemetry-exporter-gcp-trace>=1.9.0, <2.0.0",
+  "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
 ]
 
 

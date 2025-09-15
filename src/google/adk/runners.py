@@ -51,7 +51,7 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
-from .telemetry import tracer
+from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
 from .utils.context_utils import Aclosing
 

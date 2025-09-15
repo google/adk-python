@@ -656,6 +656,17 @@ def fast_api_common_options():
         help="Optional. Whether to enable cloud trace for telemetry.",
     )
     @click.option(
+        "--otel_to_cloud",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help=(
+            "EXPERIMENTAL Optional. Whether to write OTel data to Google Cloud"
+            " Observability services - Cloud Trace, Cloud Monitoring and Cloud"
+            " Logging."
+        ),
+    )
+    @click.option(
         "--reload/--no-reload",
         default=True,
         help=(
@@ -723,6 +734,7 @@ def cli_web(
     host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     reload: bool = True,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -776,6 +788,7 @@ def cli_web(
       allow_origins=allow_origins,
       web=True,
       trace_to_cloud=trace_to_cloud,
+      otel_to_cloud=otel_to_cloud,
       lifespan=_lifespan,
       a2a=a2a,
       host=host,
@@ -814,6 +827,7 @@ def cli_api_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     reload: bool = True,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -846,6 +860,7 @@ def cli_api_server(
           allow_origins=allow_origins,
           web=False,
           trace_to_cloud=trace_to_cloud,
+          otel_to_cloud=otel_to_cloud,
           a2a=a2a,
           host=host,
           port=port,
