@@ -59,9 +59,8 @@ class AgentRouter:
     """Generate SSE events for the agent run."""
     try:
       yield (
-          'data: {"status": "Starting custom SSE process.", "timestamp": "'
-          + str(time.time())
-          + '"}\n\n'
+          "data:"
+          f" {json.dumps({'status': 'Starting custom SSE process.', 'timestamp': time.time()})}\n\n"
       )
 
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE

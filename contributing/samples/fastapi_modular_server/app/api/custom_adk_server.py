@@ -38,8 +38,6 @@ class CustomAdkWebServer(AdkWebServer):
         settings: Application settings
         adk_services: Container with all ADK services
         agents_dir: Directory containing agents
-        *args: Additional arguments for parent class
-        **kwargs: Additional keyword arguments for parent class
     """
     self.settings = settings
     self.adk_services = adk_services
@@ -58,10 +56,6 @@ class CustomAdkWebServer(AdkWebServer):
         eval_set_results_manager=self.adk_services.eval_set_results_manager,
         agents_dir=str(self.agents_root),
     )
-
-    # App specific routers
-    self._routers: List[Dict[str, Any]] = []
-    self._health_checks: List[callable] = []
 
     # Modular routers
     self.agent_router: AgentRouter | None = None
@@ -134,7 +128,7 @@ class CustomAdkWebServer(AdkWebServer):
     if self.settings.serve_web_interface:
       try:
         web_assets_dir = str(files("google.adk.cli.browser").joinpath(""))
-      except Exception:
+      except ModuleNotFoundError:
         logger.warning(
             "Could not locate ADK web assets. UI will not be served."
         )

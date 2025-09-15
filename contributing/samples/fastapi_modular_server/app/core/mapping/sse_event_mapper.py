@@ -44,10 +44,11 @@ class SSEEventMapper:
 
     # Extract text content if available
     if event.content and event.content.parts:
-      text_parts = []
-      for part in event.content.parts:
-        if hasattr(part, "text") and part.text:
-          text_parts.append(part.text)
+      text_parts = [
+          part.text
+          for part in event.content.parts
+          if hasattr(part, "text") and part.text
+      ]
       if text_parts:
         payload["text"] = " ".join(text_parts)
 
