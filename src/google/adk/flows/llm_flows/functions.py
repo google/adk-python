@@ -35,9 +35,9 @@ from ...agents.invocation_context import InvocationContext
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
-from ...telemetry import trace_merged_tool_calls
-from ...telemetry import trace_tool_call
-from ...telemetry import tracer
+from ...telemetry.tracing import trace_merged_tool_calls
+from ...telemetry.tracing import trace_tool_call
+from ...telemetry.tracing import tracer
 from ...tools.base_tool import BaseTool
 from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
