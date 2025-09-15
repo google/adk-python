@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from importlib.resources import files
 from pathlib import Path
@@ -201,14 +202,14 @@ class CustomAdkWebServer(AdkWebServer):
         return {
             "status": "healthy" if all_healthy else "degraded",
             "checks": checks,
-            "timestamp": __import__("time").time(),
+            "timestamp": time.time(),
         }
       except Exception as e:
         logger.error(f"Health check failed: {e}")
         return {
             "status": "unhealthy",
             "error": str(e),
-            "timestamp": __import__("time").time(),
+            "timestamp": time.time(),
         }
 
     @app.get("/", include_in_schema=False)

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
+import time
 from typing import AsyncGenerator
 
-from app.core.dependencies import ADKServices, get_sse_event_mapper
+from app.core.dependencies import get_sse_event_mapper
 from app.core.mapping.sse_event_mapper import SSEEventMapper
 from app.models.streaming_request import RunAgentRequestOptimized
 from fastapi import APIRouter, Depends, HTTPException
@@ -58,7 +60,7 @@ class AgentRouter:
     try:
       yield (
           'data: {"status": "Starting custom SSE process.", "timestamp": "'
-          + str(__import__("time").time())
+          + str(time.time())
           + '"}\n\n'
       )
 
@@ -85,7 +87,7 @@ class AgentRouter:
 
     except Exception as e:
       logger.error(f"Error in SSE handler: {str(e)}", exc_info=True)
-      yield f'data: {{"error": "An error occurred: {str(e)}"}}'
+      yield f'data: {json.dumps({"error": f"An error occurred: {str(e)}"})}\n\n'
 
   def get_router(self) -> APIRouter:
     """Returns the configured FastAPI router."""

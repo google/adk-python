@@ -79,7 +79,7 @@ vim .env
 
 ```
 
-### 3. **Run the Server**
+### 2. **Run the Server**
 ```bash
 # Development mode with hot-reload
 python main.py
@@ -158,7 +158,7 @@ def _register_modular_routers(self, app: FastAPI):
         app.routes.remove(route)
 ```
 
-#### **Method 3: Middleware Interception**
+#### **Method 2: Middleware Interception**
 
 For more complex overrides, use middleware:
 
@@ -190,7 +190,7 @@ class AgentRouter:
         session = await self.web_server.session_service.list_sessions()
         
         # Access runners through web server
-        runner = await self.web_server.runner_dict...
+         runner = await self.web_server.get_runner_async("your_app_name")
         
         # Access other web server properties
         runners_cache = self.web_server.runners_to_clean
@@ -205,6 +205,15 @@ class AgentRouter:
 Extend the SSE mapper for more sophisticated filtering:
 
 ```python
+# app/models/streaming_request.py
+class OptimizationLevel(str, Enum):
+  """Enumeration for the available SSE optimization levels."""
+
+  MINIMAL = "minimal"
+  BALANCED = "balanced"
+  FULL_COMPAT = "full_compat"
+  ULTRA_MINIMAL = "ultra_minimal"
+
 # app/core/mapping/sse_mapper.py
 class AdvancedSSEEventMapper(SSEEventMapper):
     def map_event_to_sse_message(self, event: Event, optimization_level: OptimizationLevel) -> Optional[str]:
@@ -280,30 +289,6 @@ class DedupSSEMapper(SSEEventMapper):
             
         self._last_payloads[session_key] = payload
         return payload
-```
-
-### **Advanced Configuration**
-
-#### **Environment-Specific Settings**
-
-```python
-# app/config/settings.py
-class Settings(BaseSettings):
-    # SSE Optimization
-    sse_batch_size: int = Field(default=1, description="SSE batch size")
-    sse_compression: bool = Field(default=False, description="Enable SSE compression")
-    sse_dedupe: bool = Field(default=True, description="Enable event deduplication")
-    
-    # Performance
-    max_concurrent_sessions: int = Field(default=100)
-    session_timeout: int = Field(default=3600)
-    
-    # Custom features
-    enable_custom_auth: bool = Field(default=False)
-    custom_middleware: List[str] = Field(default=[])
-    
-    class Config:
-        env_prefix = "ADK_"  # Environment variables like ADK_SSE_BATCH_SIZE
 ```
 
 
