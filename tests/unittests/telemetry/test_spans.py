@@ -23,9 +23,9 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.telemetry import trace_call_llm
-from google.adk.telemetry import trace_merged_tool_calls
-from google.adk.telemetry import trace_tool_call
+from google.adk.telemetry.tracing import trace_call_llm
+from google.adk.telemetry.tracing import trace_merged_tool_calls
+from google.adk.telemetry.tracing import trace_tool_call
 from google.adk.tools.base_tool import BaseTool
 from google.genai import types
 import pytest

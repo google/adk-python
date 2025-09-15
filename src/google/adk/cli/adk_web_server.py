@@ -41,6 +41,7 @@ import graphviz
 from opentelemetry import trace
 from opentelemetry.sdk.trace import export as export_lib
 from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
@@ -257,6 +258,59 @@ class ListMetricsInfoResponse(common.BaseModel):
   metrics_info: list[MetricInfo]
 
 
+def _setup_telemetry(
+    otel_to_cloud: bool = False,
+    internal_exporters: Optional[list[SpanProcessor]] = None,
+):
+  # TODO - remove the condition and else branch here once
+  # maybe_set_otel_providers is no longer experimental.
+  if otel_to_cloud:
+    _setup_telemetry_experimental(
+        otel_to_cloud=otel_to_cloud, internal_exporters=internal_exporters
+    )
+  else:
+    # Old logic - to be removed when above leaves experimental.
+    tracer_provider = TracerProvider()
+    for exporter in internal_exporters:
+      tracer_provider.add_span_processor(exporter)
+    trace.set_tracer_provider(tracer_provider=tracer_provider)
+
+
+def _setup_telemetry_experimental(
+    otel_to_cloud: bool = False,
+    internal_exporters: list[SpanProcessor] = None,
+):
+  from ..telemetry.setup import maybe_set_otel_providers
+
+  otel_hooks_to_add = []
+  otel_resource = None
+
+  if internal_exporters:
+    from ..telemetry.setup import OTelHooks
+
+    # Register ADK-specific exporters in trace provider.
+    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
+
+  if otel_to_cloud:
+    from ..telemetry.google_cloud import get_gcp_exporters
+    from ..telemetry.google_cloud import get_gcp_resource
+
+    otel_hooks_to_add.append(
+        get_gcp_exporters(
+            # TODO - use trace_to_cloud here as well once otel_to_cloud is no
+            # longer experimental.
+            enable_cloud_tracing=True,
+            enable_cloud_metrics=True,
+            enable_cloud_logging=True,
+        )
+    )
+    otel_resource = get_gcp_resource()
+
+  maybe_set_otel_providers(
+      otel_hooks_to_setup=otel_hooks_to_add, otel_resource=otel_resource
+  )
+
+
 class AdkWebServer:
   """Helper class for setting up and running the ADK web server on FastAPI.
 
@@ -355,6 +409,7 @@ class AdkWebServer:
           [Observer, "AdkWebServer"], None
       ] = lambda o, s: None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
+      otel_to_cloud: bool = False,
   ):
     """Creates a FastAPI app for the ADK web server.
 
@@ -371,6 +426,8 @@ class AdkWebServer:
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
+      otel_to_cloud: EXPERIMENTAL. Whether to enable Cloud Trace,
+      Cloud Monitoring and Cloud Logging integrations.
 
     Returns:
       A FastAPI app instance.
@@ -395,17 +452,20 @@ class AdkWebServer:
         # Create tasks for all runner closures to run concurrently
         await cleanup.close_runners(list(self.runner_dict.values()))
 
-    # Set up tracing in the FastAPI server.
-    provider = TracerProvider()
-    provider.add_span_processor(
-        export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict))
-    )
     memory_exporter = InMemoryExporter(session_trace_dict)
-    provider.add_span_processor(export_lib.SimpleSpanProcessor(memory_exporter))
 
-    register_processors(provider)
+    _setup_telemetry(
+        otel_to_cloud=otel_to_cloud,
+        internal_exporters=[
+            export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
+            export_lib.SimpleSpanProcessor(memory_exporter),
+        ],
+    )
 
-    trace.set_tracer_provider(provider)
+    # TODO - register_processors to be removed once --otel_to_cloud is no
+    # longer experimental.
+    tracer_provider = trace.get_tracer_provider()
+    register_processors(tracer_provider)
 
     # Run the FastAPI server.
     app = FastAPI(lifespan=internal_lifespan)
