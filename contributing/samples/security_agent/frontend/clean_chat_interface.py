@@ -33,7 +33,7 @@ from networking_dashboard import main as networking_main
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.database import DatabaseConfig
 
-# Import agent directly
+# Import agent and Vertex AI
 try:
     # Add agent path to sys.path
     agent_path = Path(__file__).parent.parent / "agents" / "gcp_security"
@@ -42,6 +42,23 @@ try:
 
     from vertex_sqlite_agent import root_agent
     logger.info("✅ Successfully imported vertex_sqlite agent")
+
+    # Import Vertex AI for LLM analysis
+    from vertexai.generative_models import GenerativeModel
+    import vertexai
+
+    # Initialize Vertex AI
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "mgm-digitalconcierge")
+    location = os.getenv("VERTEX_AI_LOCATION", "us-central1")
+    vertexai.init(project=project_id, location=location)
+
+    # Initialize Gemini model for analysis
+    gemini_model = GenerativeModel("gemini-1.5-flash")
+    logger.info("✅ Initialized Gemini for intelligent analysis")
+
+except ImportError as e:
+    logger.warning(f"⚠️ Vertex AI not available: {e}. Using direct responses.")
+    gemini_model = None
 except Exception as e:
     logger.error(f"❌ Failed to import vertex_sqlite_agent: {e}")
 
@@ -50,6 +67,7 @@ except Exception as e:
             yield "Error: Agent not available. Please check configuration."
 
     root_agent = DummyAgent()
+    gemini_model = None
     logger.warning("Using dummy agent as fallback")
 
 # Page configuration - Clean and minimal
@@ -174,6 +192,47 @@ def get_context_aware_prompt(prompt: str, context: str) -> str:
     prefix = context_prefixes.get(context, "")
     return f"{prefix}{prompt}" if prefix else prompt
 
+def analyze_with_llm(user_query: str, db_results: dict, context: str = "general") -> str:
+    """Use LLM to analyze database results and provide intelligent response."""
+    if not gemini_model:
+        return None
+
+    try:
+        # Build analysis prompt based on context
+        context_prompts = {
+            "dashboard": "As an executive security advisor, analyze this data and provide strategic insights.",
+            "iam": "As an IAM security specialist, analyze these identity and access management findings.",
+            "network": "As a network security expert, analyze these network-related security issues.",
+            "storage": "As a data security specialist, analyze these storage security findings.",
+            "compliance": "As a compliance officer, analyze these findings for regulatory implications.",
+            "general": "As a cloud security expert, analyze this data and provide actionable insights."
+        }
+
+        system_prompt = f"""You are a helpful GCP Security Assistant analyzing security data for the user.
+{context_prompts.get(context, context_prompts['general'])}
+
+User Query: {user_query}
+
+Database Results: {json.dumps(db_results, indent=2)}
+
+Instructions:
+- Provide a clear, concise analysis of the data
+- Highlight critical security issues if present
+- Offer actionable recommendations
+- Use markdown formatting for clarity
+- If the data shows security findings, prioritize by severity
+- Be specific about resources and issues found
+- If no concerning issues found, reassure the user appropriately
+"""
+
+        # Generate response using Gemini
+        response = gemini_model.generate_content(system_prompt)
+        return response.text
+
+    except Exception as e:
+        logger.error(f"LLM analysis error: {e}")
+        return None
+
 def stream_agent_response(prompt: str, context: str = "general"):
     """Stream response from agent with context awareness."""
     try:
@@ -190,57 +249,101 @@ def stream_agent_response(prompt: str, context: str = "general"):
             response = root_agent.run(contextualized_prompt)
             if isinstance(response, dict):
                 if response.get('success'):
-                    # Check if it's actual query results
-                    if 'data' in response and response.get('row_count', 0) > 0:
-                        # Format query results as a table
-                        data = response['data']
-                        if data:
-                            # Create a formatted table
-                            yield f"Found {response.get('row_count', len(data))} results:\n\n"
+                    # Try to analyze with LLM first
+                    llm_analysis = analyze_with_llm(prompt, response, context)
 
-                            # If it's a list of dictionaries, format as table
-                            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                                # Get column headers
-                                headers = list(data[0].keys())
-
-                                # Create markdown table
-                                yield "| " + " | ".join(headers) + " |\n"
-                                yield "| " + " | ".join(["---"] * len(headers)) + " |\n"
-
-                                # Add data rows (limit to first 10 for readability)
-                                for row in data[:10]:
-                                    values = [str(row.get(h, "")) for h in headers]
-                                    # Truncate long values
-                                    values = [v[:50] + "..." if len(v) > 50 else v for v in values]
-                                    yield "| " + " | ".join(values) + " |\n"
-
-                                if len(data) > 10:
-                                    yield f"\n*Showing first 10 of {len(data)} results*"
-                            else:
-                                # Fallback to JSON format
-                                yield f"```json\n{json.dumps(data, indent=2)}\n```"
-                    elif 'tables' in response:
-                        # Format table list nicely
-                        tables = response['tables']
-                        yield f"📊 **Available tables ({len(tables)}):**\n\n"
-                        for i, table in enumerate(tables, 1):
-                            yield f"{i}. `{table}`\n"
-                    elif 'stats' in response:
-                        yield f"📈 **Statistics:**\n```json\n{json.dumps(response['stats'], indent=2)}\n```"
-                    elif 'message' in response:
-                        # This is likely the help message - make it more user-friendly
-                        yield f"ℹ️ **{response.get('message', '')}**\n\n"
-                        if 'operations' in response:
-                            yield "**Available operations:**\n"
-                            for op in response['operations']:
-                                yield f"• {op}\n"
-                        if 'example_queries' in response:
-                            yield "\n**Example queries:**\n"
-                            for query in response['example_queries']:
-                                yield f"```sql\n{query}\n```\n"
+                    if llm_analysis:
+                        # Stream the LLM analysis
+                        yield llm_analysis
                     else:
-                        # Generic success response
-                        yield json.dumps(response, indent=2)
+                        # Fallback to direct data display if LLM not available
+                        # Check if it's actual query results
+                        if 'data' in response and response.get('row_count', 0) > 0:
+                            # Format query results as a table
+                            data = response['data']
+                            if data:
+                                # Create a formatted table
+                                yield f"Found {response.get('row_count', len(data))} results:\n\n"
+
+                                # If it's a list of dictionaries, format as table
+                                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                                    # Get column headers
+                                    headers = list(data[0].keys())
+
+                                    # Create markdown table
+                                    yield "| " + " | ".join(headers) + " |\n"
+                                    yield "| " + " | ".join(["---"] * len(headers)) + " |\n"
+
+                                    # Add data rows (limit to first 10 for readability)
+                                    for row in data[:10]:
+                                        values = [str(row.get(h, "")) for h in headers]
+                                        # Truncate long values
+                                        values = [v[:50] + "..." if len(v) > 50 else v for v in values]
+                                        yield "| " + " | ".join(values) + " |\n"
+
+                                    if len(data) > 10:
+                                        yield f"\n*Showing first 10 of {len(data)} results*"
+                                else:
+                                    # Fallback to JSON format
+                                    yield f"```json\n{json.dumps(data, indent=2)}\n```"
+                        elif 'tables' in response:
+                            # Try LLM analysis for table list too
+                            llm_analysis = analyze_with_llm(prompt, response, context)
+                            if llm_analysis:
+                                yield llm_analysis
+                            else:
+                                # Format table list nicely
+                                tables = response['tables']
+                                yield f"📊 **Available tables ({len(tables)}):**\n\n"
+                                for i, table in enumerate(tables, 1):
+                                    yield f"{i}. `{table}`\n"
+                        elif 'stats' in response:
+                            # Try LLM analysis for statistics
+                            llm_analysis = analyze_with_llm(prompt, response, context)
+                            if llm_analysis:
+                                yield llm_analysis
+                            else:
+                                yield f"📈 **Statistics:**\n```json\n{json.dumps(response['stats'], indent=2)}\n```"
+                        elif 'message' in response:
+                            # For help messages, try to provide intelligent assistance
+                            if 'example_queries' in response:
+                                # Provide helpful context-aware guidance
+                                llm_prompt = f"The user asked: {prompt}. Provide helpful guidance based on their security context ({context}). Suggest relevant queries they could run."
+                                try:
+                                    if gemini_model:
+                                        help_response = gemini_model.generate_content(llm_prompt)
+                                        yield help_response.text
+                                    else:
+                                        # Fallback to formatted help
+                                        yield f"ℹ️ **{response.get('message', '')}**\n\n"
+                                        if 'operations' in response:
+                                            yield "**Available operations:**\n"
+                                            for op in response['operations']:
+                                                yield f"• {op}\n"
+                                        if 'example_queries' in response:
+                                            yield "\n**Example queries:**\n"
+                                            for query in response['example_queries']:
+                                                yield f"```sql\n{query}\n```\n"
+                                except:
+                                    # Fallback to formatted help
+                                    yield f"ℹ️ **{response.get('message', '')}**\n\n"
+                                    if 'operations' in response:
+                                        yield "**Available operations:**\n"
+                                        for op in response['operations']:
+                                            yield f"• {op}\n"
+                                    if 'example_queries' in response:
+                                        yield "\n**Example queries:**\n"
+                                        for query in response['example_queries']:
+                                            yield f"```sql\n{query}\n```\n"
+                            else:
+                                yield f"ℹ️ **{response.get('message', '')}**"
+                        else:
+                            # Generic success response - try LLM analysis
+                            llm_analysis = analyze_with_llm(prompt, response, context)
+                            if llm_analysis:
+                                yield llm_analysis
+                            else:
+                                yield json.dumps(response, indent=2)
                 elif response.get('error'):
                     yield f"❌ **Error:** {response.get('error', 'Unknown error')}"
                 else:
