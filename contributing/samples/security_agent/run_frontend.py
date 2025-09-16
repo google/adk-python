@@ -137,8 +137,8 @@ def run_local():
     frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
     os.chdir(frontend_dir)
     
-    # Use the unified streaming client with integrated dashboard
-    streamlit_file = "unified_streaming_client.py"
+    # Use the clean chat interface as the main frontend
+    streamlit_file = "clean_chat_interface.py"
     
     # Configure Streamlit based on environment
     if is_cloud_run:
