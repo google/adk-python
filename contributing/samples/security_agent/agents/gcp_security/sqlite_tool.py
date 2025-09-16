@@ -28,6 +28,9 @@ class SQLiteTool:
                 "DATABASE_PATH",
                 "/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/backend/cache/gcp_data.db"
             )
+        # Remove any quotes that might be in the environment variable
+        if db_path:
+            db_path = db_path.strip('"').strip("'")
         self.db_path = Path(db_path)
 
         if not self.db_path.exists():
