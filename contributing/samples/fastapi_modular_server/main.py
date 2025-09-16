@@ -1,12 +1,12 @@
 # main.py - Improved version
 import logging
 
-import uvicorn
 from app.api.custom_adk_server import CustomAdkWebServer
 from app.config.settings import settings
 from app.core.dependencies import get_adk_services
 from app.core.logging import setup_logging
 from fastapi import FastAPI
+import uvicorn
 
 logger = logging.getLogger(__name__)
 

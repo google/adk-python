@@ -13,11 +13,13 @@ from typing import AsyncGenerator
 from app.core.dependencies import get_sse_event_mapper
 from app.core.mapping.sse_event_mapper import SSEEventMapper
 from app.models.streaming_request import RunAgentRequestOptimized
-from fastapi import APIRouter, Depends, HTTPException
-from starlette.responses import StreamingResponse
-
-from google.adk.agents.run_config import RunConfig, StreamingMode
+from fastapi import APIRouter
+from fastapi import Depends
+from fastapi import HTTPException
+from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import StreamingMode
 from google.adk.utils.context_utils import Aclosing
+from starlette.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 

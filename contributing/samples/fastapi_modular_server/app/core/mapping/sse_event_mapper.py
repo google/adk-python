@@ -1,9 +1,10 @@
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
+from typing import Dict
+from typing import Optional
 
 from app.models.streaming_request import OptimizationLevel
-
 from google.adk.events.event import Event
 
 logger = logging.getLogger(__name__)

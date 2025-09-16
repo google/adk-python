@@ -1,9 +1,9 @@
-import logging
-import threading
-import time
 from contextlib import asynccontextmanager
 from importlib.resources import files
+import logging
 from pathlib import Path
+import threading
+import time
 from typing import Any
 
 # Import the new modular routers
@@ -11,12 +11,10 @@ from app.api.routers.agent_router import AgentRouter
 from app.config.settings import Settings
 from app.core.dependencies import ADKServices
 from fastapi import FastAPI
-
-# Import agent refresh capabilities
-from watchdog.observers import Observer
-
 from google.adk.cli.adk_web_server import AdkWebServer
 from google.adk.cli.utils.agent_change_handler import AgentChangeEventHandler
+# Import agent refresh capabilities
+from watchdog.observers import Observer
 
 # Configure logging
 logger = logging.getLogger(__name__)

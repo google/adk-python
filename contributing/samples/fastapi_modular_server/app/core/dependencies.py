@@ -1,26 +1,19 @@
 # dependencies.py - Improved version
-import logging
 from functools import lru_cache
+import logging
 
 from app.config.settings import Settings
 from app.core.mapping.sse_event_mapper import SSEEventMapper
 from fastapi import Depends
-
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-from google.adk.auth.credential_service.in_memory_credential_service import (
-    InMemoryCredentialService,
-)
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.cli.utils.agent_loader import AgentLoader
-from google.adk.evaluation.local_eval_set_results_manager import (
-    LocalEvalSetResultsManager,
-)
+from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from google.adk.memory import InMemoryMemoryService
-from google.adk.sessions import (
-    BaseSessionService,
-    DatabaseSessionService,
-    InMemorySessionService,
-)
+from google.adk.sessions import BaseSessionService
+from google.adk.sessions import DatabaseSessionService
+from google.adk.sessions import InMemorySessionService
 
 logger = logging.getLogger(__name__)
 
