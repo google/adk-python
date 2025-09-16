@@ -28,6 +28,8 @@ from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
 from .session import Session
 from .state import State
+from ._session_copy_utils import safe_deepcopy_session
+from ._session_copy_utils import _filter_non_serializable_objects
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -93,11 +95,15 @@ class InMemorySessionService(BaseSessionService):
         if session_id and session_id.strip()
         else str(uuid.uuid4())
     )
+    
+    # Filter out non-serializable objects from the state before creating the session
+    filtered_state = _filter_non_serializable_objects(state or {}, "initial_state")
+    
     session = Session(
         app_name=app_name,
         user_id=user_id,
         id=session_id,
-        state=state or {},
+        state=filtered_state,
         last_update_time=time.time(),
     )
 
@@ -107,7 +113,7 @@ class InMemorySessionService(BaseSessionService):
       self.sessions[app_name][user_id] = {}
     self.sessions[app_name][user_id][session_id] = session
 
-    copied_session = copy.deepcopy(session)
+    copied_session = safe_deepcopy_session(session)
     return self._merge_state(app_name, user_id, copied_session)
 
   @override
@@ -158,7 +164,7 @@ class InMemorySessionService(BaseSessionService):
       return None
 
     session = self.sessions[app_name][user_id].get(session_id)
-    copied_session = copy.deepcopy(session)
+    copied_session = safe_deepcopy_session(session)
 
     if config:
       if config.num_recent_events:
@@ -222,7 +228,7 @@ class InMemorySessionService(BaseSessionService):
 
     sessions_without_events = []
     for session in self.sessions[app_name][user_id].values():
-      copied_session = copy.deepcopy(session)
+      copied_session = safe_deepcopy_session(session)
       copied_session.events = []
       copied_session = self._merge_state(app_name, user_id, copied_session)
       sessions_without_events.append(copied_session)
