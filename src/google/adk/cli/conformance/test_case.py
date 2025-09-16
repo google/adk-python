@@ -81,8 +81,8 @@ class Recording(BaseModel):
       extra="forbid",
   )
 
-  invocation_id: str
-  """Unique invocation identifier."""
+  user_message_index: int
+  """Index of the user message this recording belongs to (0-based)."""
 
   agent_name: str
   """Name of the agent."""
