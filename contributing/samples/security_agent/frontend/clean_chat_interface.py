@@ -32,11 +32,15 @@ from networking_dashboard import main as networking_main
 # Import centralized database configuration and agent
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.database import DatabaseConfig
-from utils.agent_loader import AgentLoader
 
-# Import agent
+# Import agent directly
 try:
-    root_agent = AgentLoader.load_agent("vertex_sqlite_agent")
+    # Add agent path to sys.path
+    agent_path = Path(__file__).parent.parent / "agents" / "gcp_security"
+    if str(agent_path) not in sys.path:
+        sys.path.insert(0, str(agent_path))
+
+    from vertex_sqlite_agent import root_agent
     logger.info("✅ Successfully imported vertex_sqlite agent")
 except Exception as e:
     logger.error(f"❌ Failed to import vertex_sqlite_agent: {e}")
