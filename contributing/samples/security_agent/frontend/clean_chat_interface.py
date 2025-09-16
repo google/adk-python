@@ -44,21 +44,55 @@ try:
     logger.info("✅ Successfully imported vertex_sqlite agent")
 
     # Import Vertex AI for LLM analysis
-    from vertexai.generative_models import GenerativeModel
-    import vertexai
+    try:
+        from google.oauth2 import service_account
+        from vertexai.generative_models import GenerativeModel
+        import vertexai
 
-    # Initialize Vertex AI
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "mgm-digitalconcierge")
-    location = os.getenv("VERTEX_AI_LOCATION", "us-central1")
-    vertexai.init(project=project_id, location=location)
+        # Try to use service account key file if specified
+        service_account_file = os.getenv("SERVICE_ACCOUNT_FILENAME")
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "mgm-digitalconcierge")
+        location = os.getenv("VERTEX_AI_LOCATION", "us-central1")
 
-    # Initialize Gemini model for analysis
-    gemini_model = GenerativeModel("gemini-1.5-flash")
-    logger.info("✅ Initialized Gemini for intelligent analysis")
+        # Look for service account key file
+        credentials = None
+        if service_account_file:
+            # Try various locations for the service account key
+            possible_paths = [
+                Path(__file__).parent.parent / service_account_file,
+                Path(__file__).parent.parent / "keys" / service_account_file,
+                Path(__file__).parent.parent / "config" / service_account_file,
+                Path.home() / ".config" / "gcloud" / service_account_file,
+                Path(service_account_file) if Path(service_account_file).is_absolute() else None
+            ]
 
-except ImportError as e:
-    logger.warning(f"⚠️ Vertex AI not available: {e}. Using direct responses.")
-    gemini_model = None
+            for key_path in possible_paths:
+                if key_path and key_path.exists():
+                    logger.info(f"🔑 Found service account key at: {key_path}")
+                    credentials = service_account.Credentials.from_service_account_file(
+                        str(key_path),
+                        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                    )
+                    break
+
+        if credentials:
+            # Initialize with service account credentials
+            vertexai.init(project=project_id, location=location, credentials=credentials)
+            logger.info(f"✅ Initialized Vertex AI with service account for project: {project_id}")
+        else:
+            # Try with default credentials (ADC)
+            vertexai.init(project=project_id, location=location)
+            logger.info(f"✅ Initialized Vertex AI with default credentials for project: {project_id}")
+
+        # Initialize Gemini model for analysis
+        gemini_model = GenerativeModel("gemini-1.5-flash")
+        logger.info("✅ Initialized Gemini for intelligent analysis")
+
+    except Exception as e:
+        logger.warning(f"⚠️ Vertex AI initialization failed: {e}")
+        logger.info("Falling back to direct database responses without AI analysis")
+        gemini_model = None
+
 except Exception as e:
     logger.error(f"❌ Failed to import vertex_sqlite_agent: {e}")
 
