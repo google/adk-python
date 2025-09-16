@@ -23,6 +23,9 @@ import json
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Global variables
+gemini_model = None
+
 # Import dashboard and other modules
 sys.path.insert(0, str(Path(__file__).parent))
 from dashboard import SecurityDashboard
@@ -85,12 +88,14 @@ try:
             logger.info(f"✅ Initialized Vertex AI with default credentials for project: {project_id}")
 
         # Initialize Gemini model for analysis
+        global gemini_model
         gemini_model = GenerativeModel("gemini-2.0-flash-exp")
         logger.info("✅ Initialized Gemini for intelligent analysis")
 
     except Exception as e:
         logger.warning(f"⚠️ Vertex AI initialization failed: {e}")
         logger.info("Falling back to direct database responses without AI analysis")
+        global gemini_model
         gemini_model = None
 
 except Exception as e:
