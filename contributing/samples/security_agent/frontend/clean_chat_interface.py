@@ -190,23 +190,68 @@ def stream_agent_response(prompt: str, context: str = "general"):
             response = root_agent.run(contextualized_prompt)
             if isinstance(response, dict):
                 if response.get('success'):
-                    # Format response data nicely
-                    if 'data' in response:
-                        yield f"```json\n{json.dumps(response['data'], indent=2)}\n```"
+                    # Check if it's actual query results
+                    if 'data' in response and response.get('row_count', 0) > 0:
+                        # Format query results as a table
+                        data = response['data']
+                        if data:
+                            # Create a formatted table
+                            yield f"Found {response.get('row_count', len(data))} results:\n\n"
+
+                            # If it's a list of dictionaries, format as table
+                            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                                # Get column headers
+                                headers = list(data[0].keys())
+
+                                # Create markdown table
+                                yield "| " + " | ".join(headers) + " |\n"
+                                yield "| " + " | ".join(["---"] * len(headers)) + " |\n"
+
+                                # Add data rows (limit to first 10 for readability)
+                                for row in data[:10]:
+                                    values = [str(row.get(h, "")) for h in headers]
+                                    # Truncate long values
+                                    values = [v[:50] + "..." if len(v) > 50 else v for v in values]
+                                    yield "| " + " | ".join(values) + " |\n"
+
+                                if len(data) > 10:
+                                    yield f"\n*Showing first 10 of {len(data)} results*"
+                            else:
+                                # Fallback to JSON format
+                                yield f"```json\n{json.dumps(data, indent=2)}\n```"
                     elif 'tables' in response:
-                        yield f"Available tables: {', '.join(response['tables'])}"
+                        # Format table list nicely
+                        tables = response['tables']
+                        yield f"📊 **Available tables ({len(tables)}):**\n\n"
+                        for i, table in enumerate(tables, 1):
+                            yield f"{i}. `{table}`\n"
                     elif 'stats' in response:
-                        yield f"Statistics:\n```json\n{json.dumps(response['stats'], indent=2)}\n```"
+                        yield f"📈 **Statistics:**\n```json\n{json.dumps(response['stats'], indent=2)}\n```"
+                    elif 'message' in response:
+                        # This is likely the help message - make it more user-friendly
+                        yield f"ℹ️ **{response.get('message', '')}**\n\n"
+                        if 'operations' in response:
+                            yield "**Available operations:**\n"
+                            for op in response['operations']:
+                                yield f"• {op}\n"
+                        if 'example_queries' in response:
+                            yield "\n**Example queries:**\n"
+                            for query in response['example_queries']:
+                                yield f"```sql\n{query}\n```\n"
                     else:
-                        yield str(response)
+                        # Generic success response
+                        yield json.dumps(response, indent=2)
+                elif response.get('error'):
+                    yield f"❌ **Error:** {response.get('error', 'Unknown error')}"
                 else:
-                    yield f"Error: {response.get('error', 'Unknown error')}"
+                    # Fallback for other response types
+                    yield str(response)
             else:
                 yield str(response)
         else:
             yield "Agent not configured properly."
     except Exception as e:
-        yield f"Error: {str(e)}"
+        yield f"❌ **Error:** {str(e)}"
 
 def display_context_metrics(context: str):
     """Display relevant metrics based on current context."""
