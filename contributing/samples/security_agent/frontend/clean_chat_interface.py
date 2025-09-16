@@ -85,7 +85,7 @@ try:
             logger.info(f"✅ Initialized Vertex AI with default credentials for project: {project_id}")
 
         # Initialize Gemini model for analysis
-        gemini_model = GenerativeModel("gemini-1.5-flash")
+        gemini_model = GenerativeModel("gemini-2.0-flash-exp")
         logger.info("✅ Initialized Gemini for intelligent analysis")
 
     except Exception as e:
