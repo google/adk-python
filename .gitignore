@@ -83,6 +83,8 @@ pytest.ini
 # Virtual Environments
 # =============================================================================
 venv/
+*/venv/
+**/venv/
 ENV/
 env/
 .env
