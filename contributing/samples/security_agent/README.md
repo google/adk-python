@@ -1,9 +1,9 @@
-# 🛡️ Micron IT Security Agent
+# 🛡️ Enterprise Security Agent
 
 [![Version](https://img.shields.io/badge/version-1.13.0-blue.svg)](https://github.com/your-org/security-agent)
 [![UI Grade](https://img.shields.io/badge/UI%20Grade-A%20(95%2B%2F100)-brightgreen.svg)](docs/USER_GUIDE.md)
 [![Status](https://img.shields.io/badge/status-production%20ready-success.svg)](docs/DEPLOYMENT_GUIDE.md)
-[![MCP](https://img.shields.io/badge/MCP-enabled-4285f4.svg)](./mcp/README.md)
+[![MCP](https://img.shields.io/badge/MCP-enabled-4285f4.svg)](./MCP_INTEGRATION.md)
 [![ADK](https://img.shields.io/badge/powered%20by-Google%20ADK-4285f4.svg)](https://github.com/google/adk)
 
 **Enterprise-grade AI-powered security platform** with natural language interface through MCP discovery. Provides comprehensive security insights, compliance monitoring, and automated remediation for Google Cloud Platform environments.
@@ -68,7 +68,7 @@ mcp.mount()  # All 30+ endpoints instantly AI-discoverable
 - 📈 **Massive Productivity**: Complex security workflows become simple conversations
 - 🛡️ **Enterprise Ready**: Full authentication, auditing, and compliance built-in
 
-See [mcp/README.md](./mcp/README.md) for complete MCP documentation and enterprise patterns.
+See [MCP_INTEGRATION.md](./MCP_INTEGRATION.md) for MCP integration details.
 
 ## 🌟 Key Features
 
