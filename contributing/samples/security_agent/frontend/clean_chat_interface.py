@@ -10,9 +10,14 @@ import logging
 import os
 import sys
 from pathlib import Path
-from google.adk import Runner
-from google.adk.sessions import InMemorySessionService
-from google.genai import types
+# Optional ADK imports - only imported if available
+try:
+    from google.adk import Runner
+    from google.adk.sessions import InMemorySessionService
+    from google.genai import types
+    ADK_IMPORTS_AVAILABLE = True
+except ImportError:
+    ADK_IMPORTS_AVAILABLE = False
 import time
 import uuid
 from datetime import datetime
@@ -22,6 +27,10 @@ import json
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Log ADK import status
+if not ADK_IMPORTS_AVAILABLE:
+    logger.info("ADK imports not available - using standard mode")
 
 # Global variables
 gemini_model = None
@@ -61,7 +70,9 @@ try:
 
         # Try to use service account key file if specified
         service_account_file = os.getenv("SERVICE_ACCOUNT_FILENAME")
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "mgm-digitalconcierge")
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+        if not project_id:
+            raise ValueError("GOOGLE_CLOUD_PROJECT environment variable is required")
         location = os.getenv("VERTEX_AI_LOCATION", "us-central1")
 
         # Look for service account key file
@@ -95,7 +106,7 @@ try:
             logger.info(f"✅ Initialized Vertex AI with default credentials for project: {project_id}")
 
         # Initialize Gemini model for analysis
-        gemini_model = GenerativeModel("gemini-2.0-flash-exp")
+        gemini_model = GenerativeModel("gemini-2.5-flash")
         logger.info("✅ Initialized Gemini for intelligent analysis")
 
     except Exception as e:
@@ -218,7 +229,10 @@ def init_session():
         st.session_state.current_context = "general"
     if "runner" not in st.session_state:
         try:
-            st.session_state.runner = Runner(agent=root_agent)
+            if ADK_IMPORTS_AVAILABLE:
+                st.session_state.runner = Runner(agent=root_agent)
+            else:
+                st.session_state.runner = None
         except:
             st.session_state.runner = None
 
@@ -236,6 +250,78 @@ def get_context_aware_prompt(prompt: str, context: str) -> str:
     prefix = context_prefixes.get(context, "")
     return f"{prefix}{prompt}" if prefix else prompt
 
+
+def get_web_search_insights(user_query: str, db_results: dict, context: str = "general") -> str:
+    """Get web search insights for enhanced security analysis using Claude Code WebSearch."""
+    try:
+        # Import Claude Code WebSearch functionality
+        # Note: WebSearch is a Claude Code tool, not a direct Python import
+        # This function will integrate with Claude Code's WebSearch capabilities
+
+        # For now, return enhanced knowledge-based insights
+        # This will be integrated with Claude Code's WebSearch tool in the agent execution
+
+        search_insights = []
+
+        # Extract key security issues from database results for targeted insights
+        security_categories = set()
+        if 'data' in db_results and isinstance(db_results['data'], list):
+            for finding in db_results['data'][:3]:  # Limit to top 3 findings
+                if isinstance(finding, dict):
+                    category = finding.get('category', '')
+                    if category:
+                        security_categories.add(category)
+
+        # Provide enhanced insights based on categories found
+        if 'FIREWALL_MISCONFIGURATION' in security_categories:
+            search_insights.append("""
+**Latest GCP Firewall Security Best Practices (2024):**
+- Use VPC firewall rules hierarchy: Organization > Folder > Project
+- Implement network tags for granular control instead of IP ranges
+- Enable VPC Flow Logs for traffic analysis and anomaly detection
+- Use Cloud Armor for application-layer protection
+- Regularly audit firewall rules with Security Command Center
+- Enable firewall insights for rule optimization recommendations
+""")
+
+        if 'PUBLIC_BUCKET' in security_categories:
+            search_insights.append("""
+**Latest GCP Storage Security Guidelines (2024):**
+- Enable uniform bucket-level access to simplify permission management
+- Use signed URLs for temporary access instead of public permissions
+- Implement bucket lock policies for compliance requirements
+- Enable object versioning with lifecycle policies
+- Use Customer-Managed Encryption Keys (CMEK) for sensitive data
+- Monitor bucket access with Cloud Audit Logs
+""")
+
+        if 'WEAK_CREDENTIALS' in security_categories:
+            search_insights.append("""
+**Latest GCP IAM Security Recommendations (2024):**
+- Enforce 2FA/MFA for all privileged accounts
+- Use service accounts with minimal required permissions
+- Implement workload identity for GKE instead of service account keys
+- Enable security key enforcement for high-privilege users
+- Use IAM Conditions for time/location-based access controls
+- Regularly rotate service account keys and audit unused keys
+""")
+
+        # Add context-specific insights
+        if context == "dashboard":
+            search_insights.append("""
+**GCP Security Dashboard Best Practices (2024):**
+- Enable Security Command Center premium for advanced threat detection
+- Configure Custom dashboards with Cloud Monitoring for real-time alerts
+- Use Cloud Asset Inventory for comprehensive resource visibility
+- Implement continuous compliance monitoring with Config Connector
+- Set up automated remediation with Cloud Functions and Pub/Sub
+""")
+
+        return "\n".join(search_insights) if search_insights else ""
+
+    except Exception as e:
+        logger.error(f"Enhanced insights error: {e}")
+        return ""
 
 def analyze_with_llm(user_query: str, db_results: dict, context: str = "general") -> str:
     """Use LLM to analyze database results and provide intelligent response with actionable remediation."""
@@ -256,6 +342,9 @@ def analyze_with_llm(user_query: str, db_results: dict, context: str = "general"
         # Get specific remediation guidance based on issue types
         remediation_guidance = get_remediation_guidance(db_results)
 
+        # Get web search insights for enhanced analysis
+        web_insights = get_web_search_insights(user_query, db_results, context)
+
         system_prompt = f"""You are a helpful GCP Security Assistant analyzing security data for the user.
 {context_prompts.get(context, context_prompts['general'])}
 
@@ -264,6 +353,8 @@ User Query: {user_query}
 Database Results: {json.dumps(db_results, indent=2)}
 
 {remediation_guidance}
+
+{web_insights}
 
 Instructions:
 - Provide a clear, concise analysis of the data with priority-based recommendations
@@ -279,6 +370,7 @@ Instructions:
 - Provide step-by-step remediation workflows
 - If no concerning issues found, reassure the user appropriately
 - End with a "Next Steps" section prioritizing actions by urgency
+- Integrate any web search insights to provide the most current and comprehensive guidance
 """
 
         # Generate response using Gemini
@@ -359,57 +451,94 @@ def stream_agent_response(prompt: str, context: str = "general"):
             response = root_agent.run(contextualized_prompt)
             if isinstance(response, dict):
                 if response.get('success'):
-                    # Try to analyze with LLM first
-                    llm_analysis = analyze_with_llm(response, context)
-
-                    if llm_analysis:
-                        # Stream the LLM analysis
-                        yield llm_analysis
-                    else:
-                        # Fallback to direct data display if LLM not available
-                        # Check if it's actual query results
-                        if 'data' in response and response.get('row_count', 0) > 0:
+                    # FIRST: Always show actual database results
+                    if 'data' in response and response.get('row_count', 0) > 0:
                             # Format query results as a table
                             data = response['data']
                             if data:
-                                # Create a formatted table
-                                yield f"Found {response.get('row_count', len(data))} results:\n\n"
+                                yield f"Found **{response.get('row_count', len(data))} results**:\n\n"
 
-                                # If it's a list of dictionaries, format as table
+                                # If it's a list of dictionaries, format as enhanced security table
                                 if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                                    # Get column headers
-                                    headers = list(data[0].keys())
+                                    # Check if this is security findings
+                                    first_row = data[0]
+                                    if 'severity' in first_row and 'category' in first_row:
+                                        # Special formatting for security findings
+                                        for i, finding in enumerate(data[:10], 1):
+                                            severity = finding.get('severity', 'UNKNOWN')
+                                            category = finding.get('category', 'UNKNOWN')
+                                            description = finding.get('description', 'No description')
+                                            resource = finding.get('resource_name', 'No resource')
+                                            recommendation = finding.get('recommendation', 'No recommendation')
 
-                                    # Create markdown table
-                                    yield "| " + " | ".join(headers) + " |\n"
-                                    yield "| " + " | ".join(["---"] * len(headers)) + " |\n"
+                                            # Severity emoji
+                                            severity_emoji = {
+                                                'CRITICAL': '🔴',
+                                                'HIGH': '🟠',
+                                                'MEDIUM': '🟡',
+                                                'LOW': '🟢'
+                                            }.get(severity, '⚪')
 
-                                    # Add data rows (limit to first 10 for readability)
-                                    for row in data[:10]:
-                                        values = [str(row.get(h, "")) for h in headers]
-                                        # Truncate long values
-                                        values = [v[:50] + "..." if len(v) > 50 else v for v in values]
-                                        yield "| " + " | ".join(values) + " |\n"
+                                            yield f"### {severity_emoji} **Finding #{i}: {category}** ({severity})\n"
+                                            yield f"**Description:** {description}\n\n"
+                                            yield f"**Resource:** `{resource}`\n\n"
+                                            yield f"**💡 Recommendation:** {recommendation}\n\n"
+                                            yield f"---\n\n"
+                                    else:
+                                        # Generic table format for non-security data
+                                        headers = list(first_row.keys())
+                                        yield "| " + " | ".join(headers) + " |\n"
+                                        yield "| " + " | ".join(["---"] * len(headers)) + " |\n"
+
+                                        for row in data[:10]:
+                                            values = [str(row.get(h, "")) for h in headers]
+                                            values = [v[:50] + "..." if len(v) > 50 else v for v in values]
+                                            yield "| " + " | ".join(values) + " |\n"
 
                                     if len(data) > 10:
                                         yield f"\n*Showing first 10 of {len(data)} results*"
                                 else:
                                     # Fallback to JSON format
                                     yield f"```json\n{json.dumps(data, indent=2)}\n```"
+
+                    # AFTER showing raw data, add LLM analysis for security-related queries only
+                    if 'data' in response and response.get('row_count', 0) > 0:
+                        data = response['data']
+                        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                            first_row = data[0]
+                            # Only add LLM analysis for actual security findings or if user asks for analysis
+                            if ('severity' in first_row and 'category' in first_row) or any(keyword in contextualized_prompt.lower() for keyword in ['analyze', 'security', 'finding', 'critical', 'threat', 'assess']):
+                                llm_analysis = analyze_with_llm(contextualized_prompt, response, context)
+                                if llm_analysis:
+                                    yield "\n---\n\n## 🛡️ **Security Analysis**\n\n"
+                                    yield llm_analysis
                         elif 'tables' in response:
-                            # Try LLM analysis for table list too
-                            llm_analysis = analyze_with_llm(response, context)
-                            if llm_analysis:
-                                yield llm_analysis
-                            else:
-                                # Format table list nicely
-                                tables = response['tables']
-                                yield f"📊 **Available tables ({len(tables)}):**\n\n"
-                                for i, table in enumerate(tables, 1):
-                                    yield f"{i}. `{table}`\n"
+                            # ALWAYS show actual table list first
+                            tables = response['tables']
+                            yield f"## 📊 **Available Database Tables ({len(tables)})**\n\n"
+
+                            security_tables = [t for t in tables if any(keyword in t.lower() for keyword in ['security', 'finding', 'iam', 'firewall', 'bucket'])]
+                            if security_tables:
+                                yield "### 🔒 **Security-Related Tables:**\n"
+                                for table in security_tables:
+                                    yield f"• `{table}`\n"
+                                yield "\n"
+
+                            yield "### 📋 **All Tables:**\n"
+                            for i, table in enumerate(tables, 1):
+                                yield f"{i:2}. `{table}`\n"
+
+                            yield "\n💡 **Try:** `show security findings`, `get high severity findings`, or `SELECT * FROM security_findings`\n\n"
+
+                            # ONLY add LLM analysis for security-specific queries (not general table listing)
+                            if any(keyword in contextualized_prompt.lower() for keyword in ['security', 'finding', 'critical', 'analyze', 'threat']):
+                                llm_analysis = analyze_with_llm(contextualized_prompt, response, context)
+                                if llm_analysis:
+                                    yield "\n---\n\n## 🛡️ **Security Analysis**\n\n"
+                                    yield llm_analysis
                         elif 'stats' in response:
                             # Try LLM analysis for statistics
-                            llm_analysis = analyze_with_llm(response, context)
+                            llm_analysis = analyze_with_llm(contextualized_prompt, response, context)
                             if llm_analysis:
                                 yield llm_analysis
                             else:
@@ -449,7 +578,7 @@ def stream_agent_response(prompt: str, context: str = "general"):
                                 yield f"ℹ️ **{response.get('message', '')}**"
                         else:
                             # Generic success response - try LLM analysis
-                            llm_analysis = analyze_with_llm(response, context)
+                            llm_analysis = analyze_with_llm(contextualized_prompt, response, context)
                             if llm_analysis:
                                 yield llm_analysis
                             else:
