@@ -231,8 +231,36 @@ def get_context_aware_prompt(prompt: str, context: str) -> str:
     prefix = context_prefixes.get(context, "")
     return f"{prefix}{prompt}" if prefix else prompt
 
+def search_gcp_remediation(issue_type: str, severity: str = "") -> str:
+    """Search for specific GCP security remediation steps."""
+    try:
+        from googlesearch import search
+
+        # Build search query for specific remediation steps
+        search_queries = {
+            "FIREWALL_MISCONFIGURATION": f"GCP firewall rules best practices {severity} security remediation steps",
+            "PUBLIC_BUCKET": f"GCP Cloud Storage bucket public access {severity} fix remediation",
+            "WEAK_CREDENTIALS": f"GCP strong password policy IAM {severity} security remediation",
+            "IAM_OVERPRIVILEGED": f"GCP IAM least privilege {severity} remediation best practices",
+            "UNENCRYPTED_STORAGE": f"GCP Cloud Storage encryption {severity} security remediation"
+        }
+
+        query = search_queries.get(issue_type, f"GCP {issue_type} {severity} security remediation steps")
+
+        # Search for recent documentation
+        search_results = []
+        for url in search(query, num_results=3, lang="en", advanced=True):
+            if any(domain in url for domain in ["cloud.google.com", "security.googleblog.com", "googleapis.com"]):
+                search_results.append(url)
+
+        return search_results[:2]  # Return top 2 official results
+
+    except Exception as e:
+        logger.warning(f"Search failed: {e}")
+        return []
+
 def analyze_with_llm(user_query: str, db_results: dict, context: str = "general") -> str:
-    """Use LLM to analyze database results and provide intelligent response."""
+    """Use LLM to analyze database results and provide intelligent response with real-time remediation."""
     if not gemini_model:
         return None
 
@@ -247,20 +275,49 @@ def analyze_with_llm(user_query: str, db_results: dict, context: str = "general"
             "general": "As a cloud security expert, analyze this data and provide actionable insights."
         }
 
+        # Extract security findings to search for specific remediation
+        remediation_links = []
+        if 'category_breakdown' in db_results:
+            for category_item in db_results['category_breakdown']:
+                if isinstance(category_item, dict) and 'category' in category_item:
+                    category = category_item['category']
+                    # Get severity if available
+                    severity = ""
+                    if 'severity_breakdown' in db_results and db_results['severity_breakdown']:
+                        severity = db_results['severity_breakdown'][0].get('severity', '')
+
+                    # Search for remediation steps
+                    links = search_gcp_remediation(category, severity)
+                    remediation_links.extend(links)
+
+        # Build enhanced prompt with search results
+        remediation_section = ""
+        if remediation_links:
+            remediation_section = f"""
+
+REAL-TIME REMEDIATION RESOURCES:
+{chr(10).join([f"- {link}" for link in remediation_links[:3]])}
+
+Use these official Google Cloud resources to provide specific, up-to-date remediation steps.
+"""
+
         system_prompt = f"""You are a helpful GCP Security Assistant analyzing security data for the user.
 {context_prompts.get(context, context_prompts['general'])}
 
 User Query: {user_query}
 
 Database Results: {json.dumps(db_results, indent=2)}
+{remediation_section}
 
 Instructions:
 - Provide a clear, concise analysis of the data
 - Highlight critical security issues if present
-- Offer actionable recommendations
+- Offer actionable recommendations with specific GCP console steps
 - Use markdown formatting for clarity
 - If the data shows security findings, prioritize by severity
 - Be specific about resources and issues found
+- Include links to official GCP documentation when available
+- Provide exact gcloud commands or console navigation steps
 - If no concerning issues found, reassure the user appropriately
 """
 
