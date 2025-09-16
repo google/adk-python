@@ -38,13 +38,20 @@ from config.database import DatabaseConfig
 
 # Import agent and Vertex AI
 try:
-    # Add agent path to sys.path
-    agent_path = Path(__file__).parent.parent / "agents" / "gcp_security"
-    if str(agent_path) not in sys.path:
-        sys.path.insert(0, str(agent_path))
+    # Add agent path to sys.path - robust path resolution
+    current_file = Path(__file__).resolve()
+    project_root = current_file.parent.parent
+    agent_path = project_root / "agents" / "gcp_security"
+
+    # Ensure paths are absolute and add to sys.path
+    if str(agent_path.resolve()) not in sys.path:
+        sys.path.insert(0, str(agent_path.resolve()))
+    if str(project_root.resolve()) not in sys.path:
+        sys.path.insert(0, str(project_root.resolve()))
 
     from vertex_sqlite_agent import root_agent
-    logger.info("✅ Successfully imported vertex_sqlite agent")
+    logger.info(f"✅ Successfully imported vertex_sqlite agent from {agent_path}")
+    logger.info(f"Agent type: {type(root_agent)}, has run: {hasattr(root_agent, 'run')}, has run_async: {hasattr(root_agent, 'run_async')}")
 
     # Import Vertex AI for LLM analysis
     try:
@@ -353,7 +360,7 @@ def stream_agent_response(prompt: str, context: str = "general"):
             if isinstance(response, dict):
                 if response.get('success'):
                     # Try to analyze with LLM first
-                    llm_analysis = analyze_with_llm(prompt, response, context)
+                    llm_analysis = analyze_with_llm(response, context)
 
                     if llm_analysis:
                         # Stream the LLM analysis
@@ -391,7 +398,7 @@ def stream_agent_response(prompt: str, context: str = "general"):
                                     yield f"```json\n{json.dumps(data, indent=2)}\n```"
                         elif 'tables' in response:
                             # Try LLM analysis for table list too
-                            llm_analysis = analyze_with_llm(prompt, response, context)
+                            llm_analysis = analyze_with_llm(response, context)
                             if llm_analysis:
                                 yield llm_analysis
                             else:
@@ -402,7 +409,7 @@ def stream_agent_response(prompt: str, context: str = "general"):
                                     yield f"{i}. `{table}`\n"
                         elif 'stats' in response:
                             # Try LLM analysis for statistics
-                            llm_analysis = analyze_with_llm(prompt, response, context)
+                            llm_analysis = analyze_with_llm(response, context)
                             if llm_analysis:
                                 yield llm_analysis
                             else:
@@ -442,7 +449,7 @@ def stream_agent_response(prompt: str, context: str = "general"):
                                 yield f"ℹ️ **{response.get('message', '')}**"
                         else:
                             # Generic success response - try LLM analysis
-                            llm_analysis = analyze_with_llm(prompt, response, context)
+                            llm_analysis = analyze_with_llm(response, context)
                             if llm_analysis:
                                 yield llm_analysis
                             else:
