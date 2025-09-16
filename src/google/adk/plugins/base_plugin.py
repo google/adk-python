@@ -173,7 +173,7 @@ class BasePlugin(ABC):
 
   async def after_run_callback(
       self, *, invocation_context: InvocationContext
-  ) -> Optional[None]:
+  ) -> None:
     """Callback executed after an ADK runner run has completed.
 
     This is the final callback in the ADK lifecycle, suitable for cleanup, final

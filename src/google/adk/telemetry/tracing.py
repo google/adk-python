@@ -29,11 +29,11 @@ from typing import Any
 from google.genai import types
 from opentelemetry import trace
 
-from .agents.invocation_context import InvocationContext
-from .events.event import Event
-from .models.llm_request import LlmRequest
-from .models.llm_response import LlmResponse
-from .tools.base_tool import BaseTool
+from ..agents.invocation_context import InvocationContext
+from ..events.event import Event
+from ..models.llm_request import LlmRequest
+from ..models.llm_response import LlmResponse
+from ..tools.base_tool import BaseTool
 
 tracer = trace.get_tracer('gcp.vertex.agent')
 
