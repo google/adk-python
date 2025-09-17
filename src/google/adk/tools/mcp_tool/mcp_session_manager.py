@@ -29,7 +29,8 @@ from typing import TextIO
 from typing import Union
 
 import anyio
-from pydantic import BaseModel
+import httpx
+from pydantic import BaseModel, ConfigDict
 
 try:
   from mcp import ClientSession
@@ -99,13 +100,16 @@ class StreamableHTTPConnectionParams(BaseModel):
         Streamable HTTP server.
       terminate_on_close: Whether to terminate the MCP Streamable HTTP server
         when the connection is closed.
+      httpx_client: httpx.AsyncClient to use for the connection.
   """
-
+  
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
+  httpx_client: httpx.AsyncClient | None = None
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 def retry_on_closed_resource(func):
@@ -277,15 +281,28 @@ class MCPSessionManager:
           sse_read_timeout=self._connection_params.sse_read_timeout,
       )
     elif isinstance(self._connection_params, StreamableHTTPConnectionParams):
-      client = streamablehttp_client(
-          url=self._connection_params.url,
-          headers=merged_headers,
-          timeout=timedelta(seconds=self._connection_params.timeout),
-          sse_read_timeout=timedelta(
-              seconds=self._connection_params.sse_read_timeout
-          ),
-          terminate_on_close=self._connection_params.terminate_on_close,
-      )
+      if self._connection_params.httpx_client:
+        client = streamablehttp_client(
+            url=self._connection_params.url,
+            headers=merged_headers,
+            timeout=timedelta(seconds=self._connection_params.timeout),
+            sse_read_timeout=timedelta(
+                seconds=self._connection_params.sse_read_timeout
+            ),
+            terminate_on_close=self._connection_params.terminate_on_close,
+            httpx_client_factory=self._connection_params.httpx_client,
+        )
+      else:
+        client = streamablehttp_client(
+            url=self._connection_params.url,
+            headers=merged_headers,
+            timeout=timedelta(seconds=self._connection_params.timeout),
+            sse_read_timeout=timedelta(
+                seconds=self._connection_params.sse_read_timeout
+            ),
+            terminate_on_close=self._connection_params.terminate_on_close,
+        )
+      
     else:
       raise ValueError(
           'Unable to initialize connection. Connection should be'

@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 # Skip all tests in this module if Python version is less than 3.10
@@ -143,6 +144,18 @@ class TestMCPSessionManager:
     manager = MCPSessionManager(http_params)
 
     assert manager._connection_params == http_params
+    assert manager._connection_params.httpx_client is None
+  
+  def test_init_with_streamable_http_params_with_httpx_client(self):
+    """Test initialization with StreamableHTTPConnectionParams."""
+    client = httpx.AsyncClient()
+    http_params = StreamableHTTPConnectionParams(
+        url="https://example.com/mcp", timeout=15.0, httpx_client=client
+    )
+    manager = MCPSessionManager(http_params)
+
+    assert manager._connection_params == http_params
+    assert manager._connection_params.httpx_client == client
 
   def test_generate_session_key_stdio(self):
     """Test session key generation for stdio connections."""
