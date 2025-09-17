@@ -146,6 +146,18 @@ async def populate_database():
             days_old INTEGER
         )
         """)
+
+        # Service accounts table (simplified view for agent tools)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS service_accounts (
+            email TEXT PRIMARY KEY,
+            display_name TEXT,
+            project_id TEXT,
+            creation_date TEXT,
+            status TEXT,
+            last_used TEXT
+        )
+        """)
         
         print("✅ Database tables created")
         
@@ -182,7 +194,7 @@ async def populate_database():
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        tables = ['assets', 'security_findings', 'storage_buckets', 'iam_service_accounts', 'iam_service_account_keys']
+        tables = ['assets', 'security_findings', 'storage_buckets', 'iam_service_accounts', 'iam_service_account_keys', 'service_accounts']
         
         print(f"\n📊 Final Data Summary:")
         total_records = 0

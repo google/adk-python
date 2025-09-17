@@ -17,15 +17,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Import page modules
 from pages import (
     dashboard,
-    iam_analysis, 
+    iam_analysis,
     asset_inventory,
     security_findings,
     network_security,
     compliance,
-    chat_interface,
     settings
 )
 from components.navigation import NavigationComponent
+from .utils.session_state import initialize_session_state
 
 # Page configuration
 st.set_page_config(
@@ -39,26 +39,6 @@ st.set_page_config(
         'About': 'GCP Security Dashboard v1.13.0'
     }
 )
-
-def initialize_session_state():
-    """Initialize session state variables for cross-page data."""
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = True
-        st.session_state.current_page = 'Dashboard'
-        st.session_state.user_settings = {
-            'theme': 'auto',
-            'refresh_interval': 300,
-            'notifications_enabled': True,
-            'auto_refresh': False
-        }
-        st.session_state.dashboard_data = {}
-        st.session_state.chat_history = []
-        st.session_state.selected_project = None
-        st.session_state.filters = {
-            'severity': 'all',
-            'resource_type': 'all',
-            'time_range': '7d'
-        }
 
 def main():
     """Main application entry point with page navigation."""
@@ -79,7 +59,6 @@ def main():
         'Security Findings': security_findings.show_page,
         'Network Security': network_security.show_page,
         'Compliance': compliance.show_page,
-        'AI Chat': chat_interface.show_page,
         'Settings': settings.show_page
     }
     

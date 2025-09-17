@@ -277,7 +277,7 @@ async def process_chat_query(query: str, session_id: str, user_id: str, connecti
         import sys
         import os
         sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        from agent import agent
+        from agents.adk_agent import security_agent
         
         # Get conversation context if available
         enhanced_query = query

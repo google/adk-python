@@ -281,28 +281,28 @@ class ComponentAvailabilityHealthCheck(ComponentHealthCheck):
             
             # Check middleware
             try:
-                from backend.middleware.validation import InputValidationMiddleware
+                from .middleware.validation import InputValidationMiddleware
                 components["input_validation"] = {"status": "available", "critical": True}
             except ImportError:
                 components["input_validation"] = {"status": "unavailable", "critical": True}
             
             try:
-                from backend.middleware.rate_limiter import RateLimitMiddleware
+                from .middleware.rate_limiter import RateLimitMiddleware
                 components["rate_limiting"] = {"status": "available", "critical": False}
             except ImportError:
                 components["rate_limiting"] = {"status": "unavailable", "critical": False}
             
             # Check API routers
             routers_to_check = [
-                ("sessions", "backend.api.sessions", False),
-                ("security", "backend.api.security", True),
-                ("iam", "backend.api.iam", True),
-                ("gcp", "backend.api.gcp", False),
-                ("monitoring", "backend.api.monitoring", False),
-                ("storage", "backend.api.storage", False),
-                ("asset_inventory", "backend.api.asset_inventory", True),
-                ("keys", "backend.api.keys", False),
-                ("recommendations", "backend.api.recommendations", False)
+                ("sessions", ".api.sessions", False),
+                ("security", ".api.security", True),
+                ("iam", ".api.iam", True),
+                ("gcp", ".api.gcp", False),
+                                ("monitoring", ".api.monitoring", False),
+                                ("storage", ".api.storage", False),
+                ("asset_inventory", ".api.asset_inventory", True),
+                ("keys", ".api.keys", False),
+                ("recommendations", ".api.recommendations", False)
             ]
             
             for router_name, module_path, critical in routers_to_check:

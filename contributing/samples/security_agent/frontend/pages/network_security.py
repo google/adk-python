@@ -15,61 +15,76 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from components.page_header import PageHeader, AlertBanner
-from components.charts import SecurityCharts, MetricCharts
-from components.cards import DataTableCard, InfoCard, StatusCard
-from components.utils import SessionManager, FilterUtils
+from frontend.components.page_header import PageHeader, AlertBanner
+from frontend.components.charts import SecurityCharts, MetricCharts
+from frontend.components.cards import DataTableCard, InfoCard, StatusCard
+from frontend.components.utils import SessionManager, FilterUtils
+from frontend.components.chat_widget import ChatWidget
+from frontend.utils.session_state import initialize_session_state
 
 def show_page():
     """Render the network security page."""
-    # Page header
-    header = PageHeader(
-        title="Network Security",
-        subtitle="VPC networks, firewall rules, and network traffic analysis",
-        breadcrumbs=["Home", "Network Security"],
-        actions=[
-            {
-                'label': '🔍 Network Scan',
-                'key': 'network_scan',
-                'type': 'primary',
-                'callback': lambda: _initiate_network_scan()
-            },
-            {
-                'label': '🛡️ Firewall Audit',
-                'key': 'firewall_audit',
-                'type': 'secondary',
-                'callback': lambda: _run_firewall_audit()
-            }
-        ]
-    )
-    header.render()
-    
-    # Network security alerts
-    _show_network_alerts()
-    
-    # Network security tabs
-    tabs = st.tabs([
-        "🌐 Network Overview",
-        "🛡️ Firewall Rules",
-        "🔒 VPC Security",
-        "📊 Traffic Analysis",
-        "🔍 Threat Detection"
-    ])
-    
+    # 1. HEADER
+    st.markdown("## 🌐 Network Security")
+    st.caption("VPC networks, firewall rules, and network traffic analysis")
+
+    # 2. TABS
+    tabs = st.tabs(["🌐 Networks", "🔥 Firewalls", "🔒 Security"])
+
     with tabs[0]:
-        _render_network_overview()
-    
+        # Network metrics
+        cols = st.columns(4)
+        with cols[0]:
+            st.metric("VPC Networks", "12", delta="1")
+        with cols[1]:
+            st.metric("Firewall Rules", "89", delta="-3")
+        with cols[2]:
+            st.metric("Open Ports", "23", delta="-5")
+        with cols[3]:
+            st.metric("Traffic Anomalies", "7", delta="2", delta_color="inverse")
+
     with tabs[1]:
-        _render_firewall_rules()
-    
+        st.markdown("**Firewall Rules**")
+        st.info("89 active firewall rules across all networks")
+
     with tabs[2]:
-        _render_vpc_security()
-    
-    with tabs[3]:
-        _render_traffic_analysis()
-    
-    with tabs[4]:
-        _render_threat_detection()
+        st.markdown("**Network Security**")
+        st.warning("23 open ports detected requiring review")
+
+    # 3. CHARTS
+    st.markdown("### 📊 Network Distribution")
+    network_data = [
+        {'type': 'VPC Networks', 'count': 12},
+        {'type': 'Subnets', 'count': 45},
+        {'type': 'Load Balancers', 'count': 8},
+        {'type': 'NAT Gateways', 'count': 6}
+    ]
+    fig = SecurityCharts.render_severity_distribution(
+        [{'severity': item['type'], 'count': item['count']} for item in network_data]
+    )
+    fig.update_layout(title="Network Resource Distribution", height=250, margin=dict(t=30, b=30, l=30, r=30))
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+    # Sidebar for admin controls
+    with st.sidebar:
+        st.markdown("### ⚙️ Admin Controls")
+        if st.button("🔄 Refresh Data", key="network_refresh", help="Refresh all security data"):
+            st.rerun()
+        if st.button("📥 Export All Data", key="network_export", help="Export complete security report"):
+            st.success("Export initiated...")
+        st.markdown("#### 📡 System Status")
+        st.success("🟢 ADK Agent: Online")
+        st.success("🟢 Database: Connected")
+        st.info("🔵 Last Updated: Just now")
+
+    # 4. SIMPLE CHAT (at bottom)
+    st.markdown("---")
+    st.markdown("### 💬 Security Assistant")
+    st.markdown("Ask questions about network security or get help with analysis.")
+
+    # Simple chat using ChatWidget
+    chat_widget = ChatWidget(context="network", height=300)
+    chat_widget.render()
 
 def _show_network_alerts():
     """Show network security alerts."""
@@ -103,44 +118,27 @@ def _render_network_overview():
     with cols[3]:
         st.metric("Load Balancers", "8", delta="2")
     
-    # Network topology visualization
-    st.subheader("🗺️ Network Topology")
-    
-    topology_data = [
-        {'name': 'Internet', 'x': 0, 'y': 4, 'color': 'gray', 'connections': ['Load Balancer']},
-        {'name': 'Load Balancer', 'x': 0, 'y': 3, 'color': 'blue', 'connections': ['DMZ Subnet']},
-        {'name': 'DMZ Subnet', 'x': 0, 'y': 2, 'color': 'orange', 'connections': ['App Subnet', 'Web Servers']},
-        {'name': 'Web Servers', 'x': -2, 'y': 1, 'color': 'green', 'connections': []},
-        {'name': 'App Subnet', 'x': 2, 'y': 1, 'color': 'orange', 'connections': ['DB Subnet']},
-        {'name': 'DB Subnet', 'x': 2, 'y': 0, 'color': 'red', 'connections': []}
-    ]
-    
-    fig = SecurityCharts.render_network_topology(topology_data)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Network security posture
+    # Essential network visualization - keep only 2 charts
     col1, col2 = st.columns(2)
-    
+
     with col1:
-        st.subheader("🛡️ Security Posture")
-        
-        security_metrics = [
-            {'label': 'Network Security Score', 'value': '82', 'delta': '+3'},
-            {'label': 'Segmentation Score', 'value': '78', 'delta': '+5'},
-            {'label': 'Access Control Score', 'value': '85', 'delta': '-2'},
-            {'label': 'Monitoring Coverage', 'value': '92%', 'delta': '+8%'}
+        st.subheader("🗺️ Network Topology")
+
+        topology_data = [
+            {'name': 'Internet', 'x': 0, 'y': 4, 'color': 'gray', 'connections': ['Load Balancer']},
+            {'name': 'Load Balancer', 'x': 0, 'y': 3, 'color': 'blue', 'connections': ['DMZ Subnet']},
+            {'name': 'DMZ Subnet', 'x': 0, 'y': 2, 'color': 'orange', 'connections': ['App Subnet', 'Web Servers']},
+            {'name': 'Web Servers', 'x': -2, 'y': 1, 'color': 'green', 'connections': []},
+            {'name': 'App Subnet', 'x': 2, 'y': 1, 'color': 'orange', 'connections': ['DB Subnet']},
+            {'name': 'DB Subnet', 'x': 2, 'y': 0, 'color': 'red', 'connections': []}
         ]
-        
-        for metric in security_metrics:
-            st.metric(
-                metric['label'],
-                metric['value'],
-                delta=metric['delta']
-            )
-    
+
+        fig = SecurityCharts.render_network_topology(topology_data)
+        st.plotly_chart(fig, use_container_width=True)
+
     with col2:
         st.subheader("📈 Traffic Volume (24h)")
-        
+
         # Sample traffic data
         traffic_data = []
         for i in range(24):
@@ -150,14 +148,14 @@ def _render_network_overview():
                 'inbound_gb': 45 + (i % 20),
                 'outbound_gb': 32 + (i % 15)
             })
-        
+
         chart_data = []
         for item in traffic_data:
             chart_data.extend([
                 {'hour': item['hour'], 'direction': 'Inbound', 'volume': item['inbound_gb']},
                 {'hour': item['hour'], 'direction': 'Outbound', 'volume': item['outbound_gb']}
             ])
-        
+
         fig = MetricCharts.render_multi_series_timeline(
             chart_data,
             series_col='direction',
@@ -166,6 +164,10 @@ def _render_network_overview():
             title='Hourly Traffic Volume (GB)'
         )
         st.plotly_chart(fig, use_container_width=True)
+
+    # Chat section - make it prominent
+    st.subheader("💬 Network Security Assistant")
+    st.markdown("Ask questions about network configuration, firewall rules, traffic analysis, or get network security recommendations.")
 
 def _render_firewall_rules():
     """Render firewall rules analysis."""
@@ -397,33 +399,9 @@ def _render_traffic_analysis():
         for geo in geo_data[:5]:
             st.markdown(f"- **{geo['country']}**: {geo['requests']:,} requests ({geo['percentage']}%)")
     
-    # Traffic timeline
-    st.markdown("### ⏰ Traffic Timeline (Last 7 Days)")
-    
-    timeline_data = []
-    for i in range(7):
-        date = datetime.now() - timedelta(days=i)
-        timeline_data.append({
-            'date': date,
-            'requests': 500000 + (i * 25000) + (hash(date.strftime('%Y-%m-%d')) % 100000),
-            'blocked': 15000 + (i * 500) + (hash(date.strftime('%Y-%m-%d')) % 5000)
-        })
-    
-    chart_data = []
-    for item in timeline_data:
-        chart_data.extend([
-            {'date': item['date'], 'type': 'Total Requests', 'count': item['requests'] // 1000},  # Scale to thousands
-            {'date': item['date'], 'type': 'Blocked', 'count': item['blocked'] // 100}  # Scale for visibility
-        ])
-    
-    fig = MetricCharts.render_multi_series_timeline(
-        chart_data,
-        series_col='type',
-        x_col='date',
-        y_col='count',
-        title='Daily Traffic (Scaled)'
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    # Remove excessive visualizations
+
+# Remove this function - too many visualizations
 
 def _render_threat_detection():
     """Render threat detection section."""
@@ -577,6 +555,7 @@ def _resolve_threat(threat_id):
 
 # Entry point for Streamlit multi-page app
 if __name__ == "__main__":
+    initialize_session_state()
     show_page()
 else:
     # When imported as a module, also call show_page() for Streamlit pages

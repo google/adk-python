@@ -23,7 +23,7 @@ try:
 except ImportError:
     try:
         # Fallback for when running from backend directory directly
-        from services.data_fetcher import DataFetcher, fetch_all_project_data
+        from ..services.data_fetcher import DataFetcher, fetch_all_project_data
         DATA_FETCHER_AVAILABLE = True
     except ImportError:
         DATA_FETCHER_AVAILABLE = False

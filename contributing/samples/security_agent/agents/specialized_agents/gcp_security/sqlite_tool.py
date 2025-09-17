@@ -26,7 +26,7 @@ class SQLiteTool:
         if db_path is None:
             db_path = os.getenv(
                 "DATABASE_PATH",
-                "/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/backend/cache/gcp_data.db"
+                "backend/cache/gcp_data.db"
             )
         # Remove any quotes that might be in the environment variable
         if db_path:

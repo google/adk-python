@@ -131,7 +131,7 @@ class TestRecommenderService:
                 mock_creds.return_value = Mock()
                 mock_client.return_value = Mock()
                 
-                service = RecommenderService(project_id="test-project", credentials_path="/path/to/creds.json")
+                service = RecommenderService(project_id="test-project", credentials_path="test-creds.json")
                 
                 mock_creds.assert_called_once_with("/path/to/creds.json")
                 mock_client.assert_called_once()
@@ -157,7 +157,7 @@ class TestRecommenderService:
                     mock_client.side_effect = [Exception("Connection failed"), Exception("Still failing"), Mock()]
                     mock_creds.return_value = Mock()
                     
-                    service = RecommenderService(project_id="test-project", credentials_path="/path/to/creds.json")
+                    service = RecommenderService(project_id="test-project", credentials_path="test-creds.json")
                     
                     assert mock_client.call_count == 3
                     assert mock_sleep.call_count == 2

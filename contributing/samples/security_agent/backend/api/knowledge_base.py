@@ -110,17 +110,8 @@ def get_db_connection():
     from pathlib import Path
     
     # Try different paths to find the database
-    db_paths = [
-        Path(__file__).parent.parent / "cache" / "knowledge_base.db",  # Relative to api folder
-        Path("backend/cache/knowledge_base.db"),  # From project root
-        Path("cache/knowledge_base.db"),  # From backend folder
-    ]
-    
-    db_path = None
-    for path in db_paths:
-        if path.exists():
-            db_path = path
-            break
+    db_path = os.getenv("KNOWLEDGE_BASE_DB_PATH", "backend/cache/knowledge_base.db")
+    db_path = Path(db_path)
     
     if not db_path:
         # Create the database if it doesn't exist

@@ -78,7 +78,7 @@ def mock_environment():
     """Fixture to mock environment variables"""
     with patch.dict(os.environ, {
         'GOOGLE_CLOUD_PROJECT': 'test-project',
-        'GOOGLE_APPLICATION_CREDENTIALS': '/path/to/test-credentials.json'
+        'GOOGLE_APPLICATION_CREDENTIALS': 'test-credentials.json'
     }):
         yield
 

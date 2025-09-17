@@ -121,7 +121,7 @@ def run_local():
         print(f"⚠️ Failed to set database path: {e}")
         # Fallback to absolute path
         fallback_path = os.path.join(
-            os.path.dirname(__file__), 'backend', 'cache', 'gcp_data.db'
+            os.path.dirname(os.path.dirname(__file__)), 'backend', 'cache', 'gcp_data.db'
         )
         os.environ['DATABASE_PATH'] = os.path.abspath(fallback_path)
         print(f"Using fallback database path: {os.environ['DATABASE_PATH']}")
@@ -137,8 +137,8 @@ def run_local():
     frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
     os.chdir(frontend_dir)
     
-    # Use the clean chat interface as the main frontend
-    streamlit_file = "clean_chat_interface.py"
+    # Use the main app as the frontend entry point
+    streamlit_file = "app.py"
     
     # Configure Streamlit based on environment
     if is_cloud_run:
@@ -168,7 +168,7 @@ def run_local():
         print(f"📂 Working directory: {os.getcwd()}")
         print(f"🔧 Command: {' '.join(cmd)}")
         print(f"🗄️ Database: {os.environ.get('DATABASE_PATH')}")
-        print(f"🤖 Using: vertex_sqlite agent with Gemini 2.0 Flash")
+        print(f"🤖 Using: ADK Agent with Google ADK Framework")
         print(f"⚙️ Config: {'Valid' if config_summary['is_valid'] else 'Issues Detected'} ({config_summary['valid_count']} vars)")
         print(f"📅 Project: {config_summary['project_id']}")
         print("=" * 50)
@@ -178,7 +178,7 @@ def run_local():
         print(f"📂 Working directory: {os.getcwd()}")
         print(f"🔧 Command: {' '.join(cmd)}")
         print(f"🗄️ Database: {os.environ.get('DATABASE_PATH')}")
-        print(f"🤖 Using: vertex_sqlite agent with Gemini 2.0 Flash")
+        print(f"🤖 Using: ADK Agent with Google ADK Framework")
         print(f"⚙️ Config: Fallback Mode")
         print("=" * 50)
     

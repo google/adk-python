@@ -755,35 +755,7 @@ const result = await client.chat('Show me my GCP resources');
 const assets = await client.getAssets('my-project');
 ```
 
-## Prometheus Metrics
 
-### GET /metrics
-Prometheus-compatible metrics endpoint.
-
-**Response Format:**
-```
-# HELP adk_security_agent_up Whether the service is up
-# TYPE adk_security_agent_up gauge
-adk_security_agent_up 1
-
-# HELP http_requests_total Total HTTP requests
-# TYPE http_requests_total counter
-http_requests_total 1245
-
-# HELP system_cpu_usage_percent CPU usage percentage  
-# TYPE system_cpu_usage_percent gauge
-system_cpu_usage_percent 23.5
-```
-
-### Available Metrics
-
-- `adk_security_agent_up` - Service availability (1 = up, 0 = down)
-- `adk_security_agent_uptime_seconds` - Service uptime in seconds
-- `http_requests_total` - Total HTTP requests processed
-- `http_errors_total` - Total HTTP errors encountered
-- `system_cpu_usage_percent` - CPU usage percentage
-- `system_memory_usage_percent` - Memory usage percentage
-- `system_disk_usage_percent` - Disk usage percentage
 
 ## Deployment Configuration
 

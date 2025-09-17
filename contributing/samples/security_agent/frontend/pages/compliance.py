@@ -15,62 +15,80 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from components.page_header import PageHeader
-from components.charts import SecurityCharts, MetricCharts
-from components.cards import DataTableCard, ComplianceCard, MetricCard
-from components.utils import SessionManager, DataFormatter
+from frontend.components.page_header import PageHeader
+from frontend.components.charts import SecurityCharts, MetricCharts
+from frontend.components.cards import DataTableCard, ComplianceCard, MetricCard
+from frontend.components.utils import SessionManager, DataFormatter
+from frontend.components.chat_widget import ChatWidget
+from frontend.utils.session_state import initialize_session_state
 
 def show_page():
     """Render the compliance assessment page."""
-    # Page header
-    header = PageHeader(
-        title="Compliance Assessment",
-        subtitle="Multi-framework compliance monitoring and reporting",
-        breadcrumbs=["Home", "Compliance"],
-        actions=[
-            {
-                'label': '🔍 Run Assessment',
-                'key': 'compliance_assessment',
-                'type': 'primary',
-                'callback': lambda: _run_compliance_assessment()
-            },
-            {
-                'label': '📊 Generate Report',
-                'key': 'compliance_report',
-                'type': 'secondary',
-                'callback': lambda: _generate_compliance_report()
-            }
-        ]
-    )
-    header.render()
-    
-    # Compliance tabs
-    tabs = st.tabs([
-        "📊 Overview",
-        "🔒 CIS Controls",
-        "🏛️ NIST Framework",
-        "🌐 ISO 27001",
-        "💳 SOC 2",
-        "📋 Custom Frameworks"
-    ])
-    
+    # 1. HEADER
+    st.markdown("## 📋 Compliance Assessment")
+    st.caption("Multi-framework compliance monitoring and reporting")
+
+    # 2. TABS
+    tabs = st.tabs(["📊 Overview", "🔒 CIS", "🏛️ NIST", "🌐 ISO 27001"])
+
     with tabs[0]:
-        _render_compliance_overview()
-    
+        # Overview metrics
+        cols = st.columns(4)
+        with cols[0]:
+            st.metric("Overall Score", "84.7%", delta="+2.3%")
+        with cols[1]:
+            st.metric("Frameworks", "5", delta="0")
+        with cols[2]:
+            st.metric("Controls Passed", "127", delta="+8")
+        with cols[3]:
+            st.metric("Open Issues", "18", delta="-4")
+
     with tabs[1]:
-        _render_cis_controls()
-    
+        st.markdown("**CIS Controls**")
+        st.info("88% compliance with CIS Critical Security Controls")
+
     with tabs[2]:
-        _render_nist_framework()
-    
+        st.markdown("**NIST Framework**")
+        st.warning("82% implementation across all functions")
+
     with tabs[3]:
-        _render_iso_27001()
-    
-    with tabs[4]:
-        _render_soc2()
-    
-    with tabs[5]:
-        _render_custom_frameworks()
+        st.markdown("**ISO 27001**")
+        st.success("90% compliance with information security controls")
+
+    # 3. CHARTS
+    st.markdown("### 📊 Compliance Overview")
+    framework_data = [
+        {'framework': 'CIS', 'score': 88},
+        {'framework': 'NIST', 'score': 82},
+        {'framework': 'ISO 27001', 'score': 90},
+        {'framework': 'SOC 2', 'score': 85}
+    ]
+    fig = SecurityCharts.render_severity_distribution(
+        [{'severity': item['framework'], 'count': item['score']} for item in framework_data]
+    )
+    fig.update_layout(title="Framework Compliance Scores", height=250, margin=dict(t=30, b=30, l=30, r=30))
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+    # Sidebar for admin controls
+    with st.sidebar:
+        st.markdown("### ⚙️ Admin Controls")
+        if st.button("🔄 Refresh Data", key="compliance_refresh", help="Refresh all security data"):
+            st.rerun()
+        if st.button("📥 Export All Data", key="compliance_export", help="Export complete security report"):
+            st.success("Export initiated...")
+        st.markdown("#### 📡 System Status")
+        st.success("🟢 ADK Agent: Online")
+        st.success("🟢 Database: Connected")
+        st.info("🔵 Last Updated: Just now")
+
+    # 4. SIMPLE CHAT (at bottom)
+    st.markdown("---")
+    st.markdown("### 💬 Security Assistant")
+    st.markdown("Ask questions about compliance or get help with analysis.")
+
+    # Simple chat using ChatWidget
+    chat_widget = ChatWidget(context="compliance", height=300)
+    chat_widget.render()
 
 def _render_compliance_overview():
     """Render compliance overview section."""
@@ -128,12 +146,12 @@ def _render_compliance_overview():
             'score_change': framework['score_change']
         })
     
-    # Compliance trends
+    # Essential compliance visualization - keep only 2 charts
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.subheader("📈 Compliance Trends")
-        
+
         # Generate trend data
         trend_data = []
         for i in range(30):
@@ -144,7 +162,7 @@ def _render_compliance_overview():
                 'cis_score': 88 + (hash(date.strftime('%Y-%m-%d')) % 8) - 4,
                 'nist_score': 82 + (hash(date.strftime('%Y-%m-%d')) % 12) - 6
             })
-        
+
         chart_data = []
         for item in trend_data:
             chart_data.extend([
@@ -152,7 +170,7 @@ def _render_compliance_overview():
                 {'date': item['date'], 'framework': 'CIS', 'score': item['cis_score']},
                 {'date': item['date'], 'framework': 'NIST', 'score': item['nist_score']}
             ])
-        
+
         fig = MetricCharts.render_multi_series_timeline(
             chart_data,
             series_col='framework',
@@ -161,39 +179,26 @@ def _render_compliance_overview():
             title='30-Day Compliance Trends'
         )
         st.plotly_chart(fig, use_container_width=True)
-    
+
     with col2:
         st.subheader("🔍 Control Status Distribution")
-        
+
         control_status = [
             {'status': 'Passing', 'count': 267},
             {'status': 'Failing', 'count': 48},
             {'status': 'Not Assessed', 'count': 23},
             {'status': 'Not Applicable', 'count': 15}
         ]
-        
+
         fig = SecurityCharts.render_severity_distribution(
             [{'severity': item['status'], 'count': item['count']} for item in control_status]
         )
         fig.update_layout(title="Control Status Across All Frameworks")
         st.plotly_chart(fig, use_container_width=True)
-    
-    # Recent compliance changes
-    st.subheader("📋 Recent Compliance Changes")
-    
-    recent_changes = pd.DataFrame([
-        {'control': 'CIS-5.1.1', 'framework': 'CIS', 'change': 'Pass → Fail', 'date': '2024-01-14', 'reason': 'Password policy updated'},
-        {'control': 'NIST-AC-2', 'framework': 'NIST', 'change': 'Fail → Pass', 'date': '2024-01-13', 'reason': 'Account management improved'},
-        {'control': 'ISO-A.9.1.1', 'framework': 'ISO 27001', 'change': 'Pass → Pass', 'date': '2024-01-12', 'reason': 'Regular review'},
-        {'control': 'SOC2-CC6.1', 'framework': 'SOC 2', 'change': 'Fail → Pass', 'date': '2024-01-11', 'reason': 'Logical access controls updated'},
-    ])
-    
-    DataTableCard.render(
-        title="Recent Control Status Changes",
-        data=recent_changes,
-        searchable=True,
-        paginated=False
-    )
+
+    # Chat section - make it prominent
+    st.subheader("💬 Compliance Assistant")
+    st.markdown("Ask questions about compliance frameworks, control requirements, or get guidance on improving your compliance posture.")
 
 def _render_cis_controls():
     """Render CIS Controls assessment."""
@@ -423,28 +428,30 @@ def _render_custom_frameworks():
     if st.button("➕ Add Custom Framework"):
         _add_custom_framework()
 
+# Remove this function - too many visualizations
+
 def _add_custom_framework():
     """Add new custom framework dialog."""
     with st.form("add_framework"):
         st.markdown("### Add New Compliance Framework")
-        
+
         framework_name = st.text_input("Framework Name")
         framework_description = st.text_area("Description")
-        
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             framework_type = st.selectbox(
                 "Framework Type",
                 ["Regulatory", "Industry Standard", "Internal Policy", "Best Practice"]
             )
-        
+
         with col2:
             assessment_frequency = st.selectbox(
-                "Assessment Frequency", 
+                "Assessment Frequency",
                 ["Daily", "Weekly", "Monthly", "Quarterly", "Annually"]
             )
-        
+
         if st.form_submit_button("Create Framework"):
             if framework_name and framework_description:
                 st.success(f"Custom framework '{framework_name}' created successfully!")
@@ -491,7 +498,5 @@ def _generate_compliance_report():
 
 # Entry point for Streamlit multi-page app
 if __name__ == "__main__":
-    show_page()
-else:
-    # When imported as a module, also call show_page() for Streamlit pages
+    initialize_session_state()
     show_page()

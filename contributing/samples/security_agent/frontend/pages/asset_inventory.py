@@ -15,62 +15,75 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from components.page_header import PageHeader
-from components.charts import SecurityCharts, MetricCharts
-from components.cards import DataTableCard, ResourceCard, MetricCard
-from components.utils import SessionManager, FilterUtils, DataFormatter
+from frontend.components.page_header import PageHeader
+from frontend.components.charts import SecurityCharts, MetricCharts
+from frontend.components.cards import DataTableCard, ResourceCard, MetricCard
+from frontend.components.utils import SessionManager, FilterUtils, DataFormatter
+from frontend.components.chat_widget import ChatWidget
+from frontend.utils.session_state import initialize_session_state
 
 def show_page():
     """Render the asset inventory page."""
-    # Page header
-    header = PageHeader(
-        title="Asset Inventory",
-        subtitle="Comprehensive GCP resource discovery and security assessment",
-        breadcrumbs=["Home", "Asset Inventory"],
-        actions=[
-            {
-                'label': '🔄 Discover Assets',
-                'key': 'discover_assets',
-                'type': 'primary',
-                'callback': lambda: _discover_assets()
-            },
-            {
-                'label': '📊 Export Inventory',
-                'key': 'export_inventory',
-                'type': 'secondary',
-                'callback': lambda: _export_inventory()
-            }
-        ]
-    )
-    header.render()
-    
-    # Asset inventory tabs
-    tabs = st.tabs([
-        "📦 All Resources",
-        "☁️ Compute", 
-        "💾 Storage",
-        "🌐 Network",
-        "🗄️ Databases",
-        "📊 Analytics"
-    ])
-    
+    # 1. HEADER
+    st.markdown("## 📦 Asset Inventory")
+    st.caption("Resource discovery and security assessment")
+
+    # 2. TABS
+    tabs = st.tabs(["📦 Resources", "🔒 Security", "📊 Analytics"])
+
     with tabs[0]:
-        _render_all_resources()
-    
+        # Resource metrics
+        cols = st.columns(3)
+        with cols[0]:
+            st.metric("Total Resources", "1,534", delta="+45")
+        with cols[1]:
+            st.metric("Security Issues", "89", delta="-12")
+        with cols[2]:
+            st.metric("Unmonitored Assets", "23", delta="-5")
+
     with tabs[1]:
-        _render_compute_resources()
-    
+        st.markdown("**Asset Security**")
+        st.info("156 resources require security review")
+
     with tabs[2]:
-        _render_storage_resources()
-    
-    with tabs[3]:
-        _render_network_resources()
-    
-    with tabs[4]:
-        _render_database_resources()
-    
-    with tabs[5]:
-        _render_analytics_resources()
+        st.markdown("**Resource Analytics**")
+        st.warning("23 assets are unmonitored")
+
+    # 3. CHARTS
+    st.markdown("### 📊 Asset Distribution")
+    # Asset distribution chart
+    resource_data = [
+        {'resource_type': 'Compute Engine', 'count': 456},
+        {'resource_type': 'Cloud Storage', 'count': 234},
+        {'resource_type': 'Cloud SQL', 'count': 123},
+        {'resource_type': 'VPC Networks', 'count': 89}
+    ]
+    fig = SecurityCharts.render_severity_distribution(
+        [{'severity': item['resource_type'], 'count': item['count']} for item in resource_data]
+    )
+    fig.update_layout(title="Resource Distribution by Type", height=250, margin=dict(t=30, b=30, l=30, r=30))
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+    # Sidebar for admin controls
+    with st.sidebar:
+        st.markdown("### ⚙️ Admin Controls")
+        if st.button("🔄 Refresh Data", key="asset_refresh", help="Refresh all security data"):
+            st.rerun()
+        if st.button("📥 Export All Data", key="asset_export", help="Export complete security report"):
+            st.success("Export initiated...")
+        st.markdown("#### 📡 System Status")
+        st.success("🟢 ADK Agent: Online")
+        st.success("🟢 Database: Connected")
+        st.info("🔵 Last Updated: Just now")
+
+    # 4. SIMPLE CHAT (at bottom)
+    st.markdown("---")
+    st.markdown("### 💬 Security Assistant")
+    st.markdown("Ask questions about asset inventory or get help with analysis.")
+
+    # Simple chat using ChatWidget
+    chat_widget = ChatWidget(context="assets", height=300)
+    chat_widget.render()
 
 def _render_all_resources():
     """Render all resources overview."""
@@ -115,10 +128,11 @@ def _render_all_resources():
             help_text="Average security score across all resources"
         )
     
-    # Resource type distribution
+    # Essential asset visualization - keep only 2 charts
     col1, col2 = st.columns(2)
-    
+
     with col1:
+        st.subheader("📈 Resource Distribution")
         resource_distribution = [
             {'resource_type': 'Compute Engine', 'count': 456},
             {'resource_type': 'Cloud Storage', 'count': 234},
@@ -127,14 +141,15 @@ def _render_all_resources():
             {'resource_type': 'Cloud Functions', 'count': 234},
             {'resource_type': 'GKE Clusters', 'count': 67}
         ]
-        
+
         fig = SecurityCharts.render_severity_distribution(
             [{'severity': item['resource_type'], 'count': item['count']} for item in resource_distribution]
         )
         fig.update_layout(title="Resource Distribution by Type")
         st.plotly_chart(fig, use_container_width=True)
-    
+
     with col2:
+        st.subheader("🔒 Security Compliance")
         # Resource security scores
         security_data = [
             {'resource_type': 'Compute', 'compliant': 380, 'non_compliant': 76},
@@ -142,38 +157,14 @@ def _render_all_resources():
             {'resource_type': 'Database', 'compliant': 98, 'non_compliant': 25},
             {'resource_type': 'Network', 'compliant': 67, 'non_compliant': 22}
         ]
-        
+
         fig = SecurityCharts.render_resource_compliance_chart(security_data)
         st.plotly_chart(fig, use_container_width=True)
-    
-    # Asset discovery timeline
-    st.subheader("📈 Asset Discovery Timeline")
-    
-    timeline_data = []
-    for i in range(30):
-        date = datetime.now() - timedelta(days=i)
-        timeline_data.append({
-            'date': date,
-            'discovered': 45 + (i % 10),
-            'modified': 23 + (i % 7)
-        })
-    
-    chart_data = []
-    for item in timeline_data:
-        chart_data.extend([
-            {'date': item['date'], 'type': 'Discovered', 'count': item['discovered']},
-            {'date': item['date'], 'type': 'Modified', 'count': item['modified']}
-        ])
-    
-    fig = MetricCharts.render_multi_series_timeline(
-        chart_data,
-        series_col='type',
-        x_col='date',
-        y_col='count',
-        title='Daily Asset Activity'
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
+
+    # Chat section - make it prominent
+    st.subheader("💬 Asset Management Assistant")
+    st.markdown("Ask questions about your cloud resources, security status, or get recommendations for asset management.")
+
     # All resources table with advanced filtering
     _render_resources_table()
 
@@ -518,6 +509,8 @@ def _bulk_security_scan():
     st.info("Initiating bulk security scan for selected resources...")
     SessionManager.set('bulk_scan_requested', True)
 
+# Remove this function - too many visualizations
+
 def _export_filtered_resources(filtered_data):
     """Export filtered resources."""
     csv_data = filtered_data.to_csv(index=False)
@@ -530,6 +523,7 @@ def _export_filtered_resources(filtered_data):
 
 # Entry point for Streamlit multi-page app
 if __name__ == "__main__":
+    initialize_session_state()
     show_page()
 else:
     # When imported as a module, also call show_page() for Streamlit pages

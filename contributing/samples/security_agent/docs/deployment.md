@@ -299,24 +299,10 @@ kubectl apply -f k8s-deployment.yaml
 ### Health Check Endpoints
 
 - `/health` - Basic health check
-- `/metrics` - Prometheus metrics
+- `/metrics` - Application metrics
 - `/status` - Detailed status
 
-### Monitoring Setup
 
-For production deployments, set up monitoring:
-
-```bash
-# Prometheus configuration
-global:
-  scrape_interval: 30s
-
-scrape_configs:
-  - job_name: 'security-agent'
-    static_configs:
-      - targets: ['backend:8000']
-    metrics_path: '/metrics'
-```
 
 ## Security Considerations
 

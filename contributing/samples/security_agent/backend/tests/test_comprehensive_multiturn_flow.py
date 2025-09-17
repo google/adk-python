@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from backend.main import app
 from backend.api.sessions import Session
 from backend.services.agent_cache_wrapper import AgentCacheWrapper
-import agent
+import agents.adk_agent as agent
 
 @pytest.fixture
 def client():

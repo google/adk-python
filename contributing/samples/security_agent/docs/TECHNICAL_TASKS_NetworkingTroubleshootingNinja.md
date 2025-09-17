@@ -738,7 +738,7 @@
 - **Development Environment**: GCP project with all services enabled
 - **Staging Environment**: Production-like environment for testing
 - **CI/CD Pipeline**: GitHub Actions or similar
-- **Monitoring**: Prometheus, Grafana, or Google Cloud Monitoring
+- **Monitoring**: Google Cloud Monitoring
 - **Storage**: PostgreSQL for production, BigQuery for analytics
 
 ---

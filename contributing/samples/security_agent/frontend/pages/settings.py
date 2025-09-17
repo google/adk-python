@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from components.page_header import PageHeader
 from components.cards import InfoCard, StatusCard
 from components.utils import SessionManager, ValidationUtils
+from frontend.utils.session_state import initialize_session_state
 
 def show_page():
     """Render the settings page."""
@@ -761,6 +762,7 @@ def _reset_to_defaults():
 
 # Entry point for Streamlit multi-page app
 if __name__ == "__main__":
+    initialize_session_state()
     show_page()
 else:
     # When imported as a module, also call show_page() for Streamlit pages

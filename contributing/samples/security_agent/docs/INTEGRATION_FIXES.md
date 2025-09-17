@@ -433,22 +433,7 @@ kubectl rollout undo deployment/security-agent
    - Cache size: `cache_size_bytes`
    - Cache refresh frequency: `cache_refresh_frequency`
 
-### Recommended Alerts
 
-```yaml
-# Prometheus alerts
-- alert: WebSocketConnectionsHigh
-  expr: websocket_active_connections > 100
-  for: 5m
-  
-- alert: DataRefreshJobFailing
-  expr: data_refresh_failures_total > 5
-  for: 2m
-
-- alert: CacheHitRateLow  
-  expr: cache_hit_rate < 0.8
-  for: 10m
-```
 
 ## Support and Troubleshooting
 

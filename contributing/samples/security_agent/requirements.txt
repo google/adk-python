@@ -30,3 +30,9 @@ pydantic>=2.0.0
 python-dotenv
 # MCP Integration dependencies
 fastapi-mcp
+
+# Vertex AI for Gemini models
+google-cloud-aiplatform
+
+# Google Generative AI (fallback)
+google-generativeai

@@ -15,61 +15,74 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from components.page_header import PageHeader, AlertBanner
-from components.charts import SecurityCharts, MetricCharts
-from components.cards import SecurityFindingCard, DataTableCard, AlertCard
-from components.utils import SessionManager, FilterUtils, DataFormatter
+from frontend.components.page_header import PageHeader, AlertBanner
+from frontend.components.charts import SecurityCharts, MetricCharts
+from frontend.components.cards import SecurityFindingCard, DataTableCard, AlertCard
+from frontend.components.utils import SessionManager, FilterUtils, DataFormatter
+from frontend.components.chat_widget import ChatWidget
+from frontend.utils.session_state import initialize_session_state
 
 def show_page():
     """Render the security findings page."""
-    # Page header
-    header = PageHeader(
-        title="Security Findings",
-        subtitle="Vulnerability management and remediation tracking",
-        breadcrumbs=["Home", "Security Findings"],
-        actions=[
-            {
-                'label': '🔍 New Scan',
-                'key': 'new_security_scan',
-                'type': 'primary',
-                'callback': lambda: _initiate_security_scan()
-            },
-            {
-                'label': '📊 Generate Report',
-                'key': 'generate_findings_report',
-                'type': 'secondary',
-                'callback': lambda: _generate_findings_report()
-            }
-        ]
-    )
-    header.render()
-    
-    # Critical alerts
-    _show_critical_findings_alerts()
-    
-    # Security findings tabs
-    tabs = st.tabs([
-        "🚨 Critical Findings",
-        "📊 All Findings", 
-        "📈 Trends",
-        "🔧 Remediation",
-        "📋 Compliance"
-    ])
-    
+    # 1. HEADER
+    st.markdown("## 🚨 Security Findings")
+    st.caption("Vulnerability management and remediation tracking")
+
+    # 2. TABS
+    tabs = st.tabs(["🚨 Critical", "⚠️ All Findings", "🔧 Remediation"])
+
     with tabs[0]:
-        _render_critical_findings()
-    
+        # Critical findings metrics
+        cols = st.columns(4)
+        with cols[0]:
+            st.metric("Critical", "5", delta="-2")
+        with cols[1]:
+            st.metric("High", "23", delta="+3", delta_color="inverse")
+        with cols[2]:
+            st.metric("Medium", "45", delta="-8")
+        with cols[3]:
+            st.metric("Low", "78", delta="+12")
+
     with tabs[1]:
-        _render_all_findings()
-    
+        st.markdown("**All Security Findings**")
+        st.info("151 total findings across all severity levels")
+
     with tabs[2]:
-        _render_findings_trends()
-    
-    with tabs[3]:
-        _render_remediation_tracking()
-    
-    with tabs[4]:
-        _render_compliance_findings()
+        st.markdown("**Remediation Status**")
+        st.warning("28 findings require immediate action")
+
+    # 3. CHARTS
+    st.markdown("### 📊 Findings Distribution")
+    severity_data = [
+        {'severity': 'Critical', 'count': 5},
+        {'severity': 'High', 'count': 23},
+        {'severity': 'Medium', 'count': 45},
+        {'severity': 'Low', 'count': 78}
+    ]
+    fig = SecurityCharts.render_severity_distribution(severity_data)
+    fig.update_layout(height=250, margin=dict(t=30, b=30, l=30, r=30))
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="severity_distribution_chart")
+
+    # Sidebar for admin controls
+    with st.sidebar:
+        st.markdown("### ⚙️ Admin Controls")
+        if st.button("🔄 Refresh Data", key="findings_refresh", help="Refresh all security data"):
+            st.rerun()
+        if st.button("📥 Export All Data", key="findings_export", help="Export complete security report"):
+            st.success("Export initiated...")
+        st.markdown("#### 📡 System Status")
+        st.success("🟢 ADK Agent: Online")
+        st.success("🟢 Database: Connected")
+        st.info("🔵 Last Updated: Just now")
+
+    # 4. SIMPLE CHAT (at bottom)
+    st.markdown("---")
+    st.markdown("### 💬 Security Assistant")
+    st.markdown("Ask questions about security findings or get help with analysis.")
+
+    # Simple chat using ChatWidget
+    chat_widget = ChatWidget(context="findings", height=300)
+    chat_widget.render()
 
 def _show_critical_findings_alerts():
     """Show critical findings alerts."""
@@ -219,10 +232,11 @@ def _render_findings_trends():
     """Render findings trends and analytics."""
     st.subheader("📈 Security Findings Trends")
     
-    # Findings over time
+    # Essential findings visualization - keep only 2 charts
     col1, col2 = st.columns(2)
-    
+
     with col1:
+        st.subheader("📈 Findings Trends")
         # Generate trend data
         trend_data = []
         for i in range(30):
@@ -233,7 +247,7 @@ def _render_findings_trends():
                 'resolved': 12 + (i % 6),
                 'critical': 2 + (i % 3)
             })
-        
+
         chart_data = []
         for item in trend_data:
             chart_data.extend([
@@ -241,7 +255,7 @@ def _render_findings_trends():
                 {'date': item['date'], 'type': 'Resolved', 'count': item['resolved']},
                 {'date': item['date'], 'type': 'Critical', 'count': item['critical']}
             ])
-        
+
         fig = MetricCharts.render_multi_series_timeline(
             chart_data,
             series_col='type',
@@ -249,9 +263,10 @@ def _render_findings_trends():
             y_col='count',
             title='Daily Findings Activity'
         )
-        st.plotly_chart(fig, use_container_width=True)
-    
+        st.plotly_chart(fig, use_container_width=True, key="findings_timeline_chart")
+
     with col2:
+        st.subheader("🗒️ Findings by Category")
         # Findings by category
         category_data = [
             {'category': 'IAM Security', 'count': 78},
@@ -260,35 +275,18 @@ def _render_findings_trends():
             {'category': 'Compute', 'count': 67},
             {'category': 'Compliance', 'count': 89}
         ]
-        
+
         fig = SecurityCharts.render_severity_distribution(
             [{'severity': item['category'], 'count': item['count']} for item in category_data]
         )
         fig.update_layout(title="Findings by Category")
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Mean Time to Resolution (MTTR)
-    st.subheader("⏱️ Mean Time to Resolution")
-    
-    mttr_data = pd.DataFrame([
-        {'severity': 'Critical', 'mttr_hours': 4.2, 'target_hours': 4.0},
-        {'severity': 'High', 'mttr_hours': 24.5, 'target_hours': 24.0},
-        {'severity': 'Medium', 'mttr_hours': 120.3, 'target_hours': 168.0},
-        {'severity': 'Low', 'mttr_hours': 336.0, 'target_hours': 720.0}
-    ])
-    
-    cols = st.columns(4)
-    for i, row in mttr_data.iterrows():
-        with cols[i]:
-            delta_hours = row['mttr_hours'] - row['target_hours']
-            delta_color = 'inverse' if delta_hours > 0 else 'normal'
-            
-            st.metric(
-                f"{row['severity']} MTTR",
-                f"{row['mttr_hours']:.1f}h",
-                delta=f"{delta_hours:+.1f}h vs target",
-                delta_color=delta_color
-            )
+        st.plotly_chart(fig, use_container_width=True, key="findings_by_category_chart")
+
+    # Chat section - make it prominent
+    st.subheader("💬 Security Findings Assistant")
+    st.markdown("Ask questions about security findings, get remediation guidance, or request analysis of specific vulnerabilities.")
+
+# Remove this function - too many visualizations
 
 def _render_remediation_tracking():
     """Render remediation tracking section."""
@@ -530,6 +528,7 @@ def _generate_compliance_report(framework):
 
 # Entry point for Streamlit multi-page app
 if __name__ == "__main__":
+    initialize_session_state()
     show_page()
 else:
     # When imported as a module, also call show_page() for Streamlit pages

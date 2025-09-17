@@ -27,7 +27,7 @@ def main():
     
     try:
         # Import agent and run tests
-        import agent
+        import agents.adk_agent as agent
         
         # The agent module will automatically load .env and log configuration
         # when imported, so we'll see that output first

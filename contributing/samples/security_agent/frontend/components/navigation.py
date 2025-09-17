@@ -44,11 +44,6 @@ class NavigationComponent:
                 'description': 'Compliance assessment',
                 'badge': None
             },
-            'AI Chat': {
-                'icon': '💬',
-                'description': 'Security AI assistant',
-                'badge': None
-            },
             'Settings': {
                 'icon': '⚙️',
                 'description': 'Configuration & preferences',

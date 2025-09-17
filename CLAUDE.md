@@ -45,6 +45,27 @@
 - `/scripts` - Utility scripts
 - `/examples` - Example code
 
+## 🚫 ADK Architecture Rules
+
+**CRITICAL ADK IMPLEMENTATION PATTERNS:**
+1. **Frontend MUST call Backend API** - Never run agents locally in frontend
+2. **Backend hosts ADK agent with tools** - All ADK logic lives in backend
+3. **Use proper API endpoints** - Frontend should call `/api/v1/chat/message` or `/api/v1/chat/stream`
+4. **No local agent fallbacks** - Frontend should ONLY display API responses
+5. **Tools are backend-only** - Database and search tools execute on backend
+
+**WRONG Pattern (DO NOT DO THIS):**
+- Frontend imports and runs vertex_sqlite_agent locally
+- Frontend tries to initialize its own Gemini/Vertex AI
+- Frontend accesses database directly
+- "Agent not configured properly" errors from frontend
+
+**CORRECT Pattern:**
+- Frontend sends queries to backend API endpoints
+- Backend ADK agent processes with registered tools
+- Backend returns formatted responses with tool usage info
+- Frontend displays streaming or complete responses
+
 ## Project Overview
 
 This project uses SPARC (Specification, Pseudocode, Architecture, Refinement, Completion) methodology with Claude-Flow orchestration for systematic Test-Driven Development.
