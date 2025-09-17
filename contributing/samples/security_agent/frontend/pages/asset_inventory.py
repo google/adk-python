@@ -527,3 +527,10 @@ def _export_filtered_resources(filtered_data):
         "filtered_resources.csv",
         "text/csv"
     )
+
+# Entry point for Streamlit multi-page app
+if __name__ == "__main__":
+    show_page()
+else:
+    # When imported as a module, also call show_page() for Streamlit pages
+    show_page()

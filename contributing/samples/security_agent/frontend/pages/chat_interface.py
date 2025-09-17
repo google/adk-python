@@ -532,3 +532,10 @@ def _export_chat_history():
         )
     else:
         st.warning("No chat history to export.")
+
+# Entry point for Streamlit multi-page app
+if __name__ == "__main__":
+    show_page()
+else:
+    # When imported as a module, also call show_page() for Streamlit pages
+    show_page()

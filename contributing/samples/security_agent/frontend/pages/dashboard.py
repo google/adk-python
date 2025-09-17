@@ -308,3 +308,10 @@ def _export_dashboard_report():
     # This would generate and download a comprehensive report
     st.info("Dashboard report export functionality will be implemented.")
     SessionManager.set('export_requested', True)
+
+# Entry point for Streamlit multi-page app
+if __name__ == "__main__":
+    show_page()
+else:
+    # When imported as a module, also call show_page() for Streamlit pages
+    show_page()

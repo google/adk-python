@@ -397,3 +397,10 @@ def _generate_iam_report():
     """Generate IAM security report."""
     st.info("Generating comprehensive IAM security report...")
     SessionManager.set('iam_report_requested', True)
+
+# Entry point for Streamlit multi-page app
+if __name__ == "__main__":
+    show_page()
+else:
+    # When imported as a module, also call show_page() for Streamlit pages
+    show_page()

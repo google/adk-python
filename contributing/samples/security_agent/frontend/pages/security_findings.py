@@ -527,3 +527,10 @@ def _export_findings(data):
 def _generate_compliance_report(framework):
     """Generate compliance report."""
     st.info(f"Generating {framework} compliance report...")
+
+# Entry point for Streamlit multi-page app
+if __name__ == "__main__":
+    show_page()
+else:
+    # When imported as a module, also call show_page() for Streamlit pages
+    show_page()

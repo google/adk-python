@@ -758,3 +758,10 @@ def _reset_to_defaults():
                 st.rerun()
     else:
         st.warning("Please confirm you want to reset all settings.")
+
+# Entry point for Streamlit multi-page app
+if __name__ == "__main__":
+    show_page()
+else:
+    # When imported as a module, also call show_page() for Streamlit pages
+    show_page()

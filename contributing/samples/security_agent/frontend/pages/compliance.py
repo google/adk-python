@@ -488,3 +488,10 @@ def _generate_compliance_report():
                 file_name=f"compliance_report_{datetime.now().strftime('%Y%m%d')}.{report_format.lower()}",
                 mime=f"application/{report_format.lower()}"
             )
+
+# Entry point for Streamlit multi-page app
+if __name__ == "__main__":
+    show_page()
+else:
+    # When imported as a module, also call show_page() for Streamlit pages
+    show_page()
