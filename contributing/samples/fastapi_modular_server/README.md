@@ -121,7 +121,7 @@ class MyCustomRouter:
 Register it in the custom server:
 
 ```python
-# In app/api/server.py - CustomAdkWebServer class
+# In app/api/custom_adk_server.py - CustomAdkWebServer class
 def _initialize_routers(self):
     try:
         self.agent_router = AgentRouter(self)
@@ -149,7 +149,8 @@ def _register_modular_routers(self, app: FastAPI):
     for route in app.routes:
         if route.path in [
             "/run_sse", 
-            "/apps/{app_name}/users/{user_id}/sessions"
+            # You could add additional ADK routes here if you want to override them,
+            # e.g., "/apps/{app_name}/users/{user_id}/sessions"
         ] and hasattr(route, 'methods') and 'POST' in route.methods:
             routes_to_remove.append(route)
     
@@ -196,8 +197,6 @@ class AgentRouter:
         runners_cache = self.web_server.runners_to_clean
 ```
 
-
-
 ### **Optimizing SSE Streaming**
 
 #### **Custom Event Filtering**
@@ -243,55 +242,6 @@ class AdvancedSSEEventMapper(SSEEventMapper):
         return super()._create_minimal_payload(event)
 ```
 
-#### **Streaming Performance Optimizations**
-
-1. **Batch Events**: Combine multiple streaming events (single chunk) into a single SSE message to reduce overhead.
-```python
-async def _generate_events_batched(self, req, sse_mapper, adk_services):
-    batch = []
-    batch_size = 5
-    
-    async for event in self._get_events():
-        batch.append(event)
-        
-        if len(batch) >= batch_size:
-            # Process batch
-            combined_payload = self._combine_events(batch)
-            yield f"data: {json.dumps(combined_payload)}\n\n"
-            batch.clear()
-```
-
-2. **Compression**:
-```python
-import gzip
-import json
-
-def _create_compressed_sse(self, payload):
-    json_str = json.dumps(payload, separators=(',', ':'))
-    compressed = gzip.compress(json_str.encode())
-    # Use binary SSE or base64 encoding
-    return f"data: {base64.b64encode(compressed).decode()}\n\n"
-```
-
-3. **Event Deduplication**:
-```python
-class DedupSSEMapper(SSEEventMapper):
-    def __init__(self):
-        self._last_payloads = {}
-    
-    def map_event_to_sse_message(self, event, level):
-        payload = super().map_event_to_sse_message(event, level)
-        
-        # Skip if identical to last payload for this session
-        session_key = f"{event.session_id}_{event.author}"
-        if self._last_payloads.get(session_key) == payload:
-            return None
-            
-        self._last_payloads[session_key] = payload
-        return payload
-```
-
-
 ## 🤝 Contributing
 
 This template is designed to be extended and customized for your specific needs. Key extension points:
@@ -308,7 +258,3 @@ This template is designed to be extended and customized for your specific needs.
 - **FastAPI Documentation**: https://fastapi.tiangolo.com/
 - **Pydantic Settings**: https://docs.pydantic.dev/latest/concepts/pydantic_settings/
 - **Server-Sent Events**: https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events
-
----
-
-**Happy coding!** 🚀 This template provides a solid foundation for building production-ready ADK extensions with modern Python patterns and performance optimizations.
