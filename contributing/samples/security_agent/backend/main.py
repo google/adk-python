@@ -574,49 +574,85 @@ async def chat_message(request: Dict[str, Any]):
         # Import the proper ADK Agent for localhost development
         from agents.adk_agent import security_agent
 
-        # For localhost development, demonstrate proper ADK framework usage
         logger.info(f"[ADK] Executing query with proper Google ADK Agent: {query[:50]}...")
 
-        # Demonstrate that the proper ADK agent is loaded and responding
-        response_text = f"""🔐 **ADK Security Agent Response**
+        # Actually run the agent with the query
+        try:
+            # Add context prefix if provided
+            full_query = f"[Context: {context}] {query}" if context else query
 
-**Query:** {query}
+            # Execute the agent synchronously (ADK handles async internally)
+            response = security_agent.run(full_query)
 
-**Analysis:**
-✅ Successfully upgraded to proper Google ADK Agent framework
-✅ LLM-based reasoning enabled (model: {security_agent.model})
-✅ Integrated tools: {len(security_agent.tools)} available
-✅ Database tool: query_security_database
-✅ Google Search integration
-✅ Intelligent tool selection based on query
+            # Extract the response text
+            if hasattr(response, 'text'):
+                response_text = response.text
+            elif hasattr(response, 'content'):
+                response_text = response.content
+            else:
+                response_text = str(response)
 
-**Agent Configuration:**
-- **Model:** {security_agent.model}
-- **Description:** {security_agent.description}
-- **Tools:** {[tool.__name__ if hasattr(tool, '__name__') else str(tool) for tool in security_agent.tools]}
+            logger.info(f"[ADK] Query processed successfully with actual database results")
 
-**Framework Upgrade Complete:**
-The system has been successfully migrated from custom agent implementation to Google's official ADK framework, providing:
-- Proper LLM reasoning
-- Standardized tool integration
-- Professional agent architecture
-- Enhanced security analysis capabilities
+            return {
+                "response": response_text,
+                "success": True,
+                "tools_used": ["query_security_data"],
+                "agent": "ADK Security Agent (Google Framework)",
+                "context": context,
+                "session_id": session_id,
+                "reasoning": "LLM-based tool selection and analysis",
+                "framework": "Google ADK",
+                "model": getattr(security_agent, 'model', 'gemini-1.5-flash')
+            }
 
-**Note:** This demonstrates successful ADK integration. Full async execution with run_async can be implemented when needed."""
+        except Exception as agent_error:
+            logger.warning(f"[ADK] Agent execution error, falling back to direct database query: {agent_error}")
 
-        logger.info(f"[ADK] Query processed successfully with proper ADK framework")
+            # Fallback to direct database query if agent fails
+            from agents.adk_agent import query_security_data
 
-        return {
-            "response": response_text,
-            "success": True,
-            "tools_used": ["query_security_database", "google_search"],
-            "agent": "ADK Security Agent (Google Framework)",
-            "context": context,
-            "session_id": session_id,
-            "reasoning": "LLM-based tool selection and analysis",
-            "framework": "Google ADK",
-            "model": security_agent.model
-        }
+            # Determine query type from the query
+            query_lower = query.lower()
+            if 'bucket' in query_lower or 'storage' in query_lower:
+                query_type = 'storage_buckets'
+            elif 'service account' in query_lower:
+                query_type = 'service_accounts'
+            elif 'finding' in query_lower or 'security' in query_lower:
+                query_type = 'security_findings'
+            else:
+                query_type = 'statistics'
+
+            # Execute the database query directly
+            result = query_security_data(query_type=query_type, limit=10)
+
+            # Format the response
+            if query_type == 'storage_buckets':
+                response_text = f"Found {result.get('count', 0)} storage buckets:\n\n"
+                for bucket in result.get('storage_buckets', []):
+                    response_text += f"• **{bucket.get('name', 'N/A')}**\n"
+                    response_text += f"  - Location: {bucket.get('location', 'N/A')}\n"
+                    response_text += f"  - Storage Class: {bucket.get('storage_class', 'N/A')}\n"
+                    response_text += f"  - Public: {'Yes' if bucket.get('is_public') else 'No'}\n\n"
+
+                if result.get('security_analysis', {}).get('security_issues'):
+                    response_text += "\n⚠️ **Security Issues Found:**\n"
+                    for issue in result['security_analysis']['security_issues']:
+                        response_text += f"• {issue.get('description', '')}\n"
+            else:
+                response_text = f"Database query result:\n{json.dumps(result, indent=2)}"
+
+            return {
+                "response": response_text,
+                "success": True,
+                "tools_used": ["query_security_data (direct)"],
+                "agent": "ADK Security Agent (Fallback Mode)",
+                "context": context,
+                "session_id": session_id,
+                "reasoning": "Direct database query",
+                "framework": "Google ADK",
+                "model": "N/A (fallback)"
+            }
 
     except Exception as e:
         logger.error(f"[ADK] Error processing query: {e}")
