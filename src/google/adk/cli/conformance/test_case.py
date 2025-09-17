@@ -14,15 +14,8 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
-from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
-from pydantic import Field
-
-from ...models.llm_request import LlmRequest
-from ...models.llm_response import LlmResponse
 
 
 class TestSpec(BaseModel):
@@ -44,64 +37,3 @@ class TestSpec(BaseModel):
 
   user_messages: list[str]
   """Sequence of user messages to send to the agent during test execution."""
-
-
-class LlmRecording(BaseModel):
-  """Paired LLM request and response."""
-
-  model_config = ConfigDict(
-      extra="forbid",
-  )
-
-  llm_request: LlmRequest
-  """The LLM request."""
-
-  llm_response: LlmResponse
-  """The LLM response."""
-
-
-class ToolRecording(BaseModel):
-  """Paired tool call and response."""
-
-  model_config = ConfigDict(
-      extra="forbid",
-  )
-
-  tool_call: types.FunctionCall
-  """The tool call."""
-
-  tool_response: types.FunctionResponse
-  """The tool response."""
-
-
-class Recording(BaseModel):
-  """Single interaction recording, ordered by request timestamp."""
-
-  model_config = ConfigDict(
-      extra="forbid",
-  )
-
-  user_message_index: int
-  """Index of the user message this recording belongs to (0-based)."""
-
-  agent_name: str
-  """Name of the agent."""
-
-  # oneof fields - start
-  llm_recording: Optional[LlmRecording] = None
-  """LLM request-response pair."""
-
-  tool_recording: Optional[ToolRecording] = None
-  """Tool call-response pair."""
-  # oneof fields - end
-
-
-class Recordings(BaseModel):
-  """All recordings in chronological order."""
-
-  model_config = ConfigDict(
-      extra="forbid",
-  )
-
-  recordings: list[Recording] = Field(default_factory=list)
-  """Chronological list of all recordings."""
