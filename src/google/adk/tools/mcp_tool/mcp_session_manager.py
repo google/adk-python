@@ -282,27 +282,18 @@ class MCPSessionManager:
           sse_read_timeout=self._connection_params.sse_read_timeout,
       )
     elif isinstance(self._connection_params, StreamableHTTPConnectionParams):
+      kwargs = {
+          'url': self._connection_params.url,
+          'headers': merged_headers,
+          'timeout': timedelta(seconds=self._connection_params.timeout),
+          'sse_read_timeout': timedelta(
+              seconds=self._connection_params.sse_read_timeout
+          ),
+          'terminate_on_close': self._connection_params.terminate_on_close,
+      }
       if self._connection_params.httpx_client:
-        client = streamablehttp_client(
-            url=self._connection_params.url,
-            headers=merged_headers,
-            timeout=timedelta(seconds=self._connection_params.timeout),
-            sse_read_timeout=timedelta(
-                seconds=self._connection_params.sse_read_timeout
-            ),
-            terminate_on_close=self._connection_params.terminate_on_close,
-            httpx_client_factory=self._connection_params.httpx_client,
-        )
-      else:
-        client = streamablehttp_client(
-            url=self._connection_params.url,
-            headers=merged_headers,
-            timeout=timedelta(seconds=self._connection_params.timeout),
-            sse_read_timeout=timedelta(
-                seconds=self._connection_params.sse_read_timeout
-            ),
-            terminate_on_close=self._connection_params.terminate_on_close,
-        )
+        kwargs['httpx_client_factory'] = self._connection_params.httpx_client
+      client = streamablehttp_client(**kwargs)
 
     else:
       raise ValueError(

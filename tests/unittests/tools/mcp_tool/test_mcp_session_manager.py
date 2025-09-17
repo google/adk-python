@@ -147,7 +147,7 @@ class TestMCPSessionManager:
     assert manager._connection_params.httpx_client is None
 
   def test_init_with_streamable_http_params_with_httpx_client(self):
-    """Test initialization with StreamableHTTPConnectionParams."""
+    """Test initialization with StreamableHTTPConnectionParams with httpx client."""
     client = httpx.AsyncClient()
     http_params = StreamableHTTPConnectionParams(
         url="https://example.com/mcp", timeout=15.0, httpx_client=client
