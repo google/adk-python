@@ -30,7 +30,8 @@ from typing import Union
 
 import anyio
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
 try:
   from mcp import ClientSession
@@ -102,7 +103,7 @@ class StreamableHTTPConnectionParams(BaseModel):
         when the connection is closed.
       httpx_client: httpx.AsyncClient to use for the connection.
   """
-  
+
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
@@ -302,7 +303,7 @@ class MCPSessionManager:
             ),
             terminate_on_close=self._connection_params.terminate_on_close,
         )
-      
+
     else:
       raise ValueError(
           'Unable to initialize connection. Connection should be'
