@@ -12,6 +12,9 @@ import subprocess
 import sys
 import os
 import argparse
+import signal
+import time
+import socket
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -93,12 +96,64 @@ def deploy_to_cloud(project_id, extra_args=None):
         print(f"❌ Deployment failed: {e}")
         sys.exit(1)
 
+def kill_existing_process(port):
+    """Kill any existing processes on the specified port."""
+    print(f"[CHECK] Checking for existing processes on port {port}...")
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(('localhost', int(port)))
+        sock.close()
+        
+        if result == 0:
+            print(f"[WARNING] Port {port} is already in use.")
+            try:
+                result = subprocess.run(['lsof', '-ti', f':{port}'], capture_output=True, text=True)
+                if result.stdout:
+                    pids = result.stdout.strip().split('\n')
+                    for pid in pids:
+                        if pid:
+                            print(f"[KILL] Killing process {pid} on port {port}")
+                            os.kill(int(pid), signal.SIGKILL)
+                    time.sleep(2)
+                    print(f"[SUCCESS] Cleared port {port}")
+            except Exception as e:
+                print(f"[WARNING] Could not kill processes: {e}")
+        else:
+            print(f"[OK] Port {port} is free")
+    except Exception as e:
+        print(f"[ERROR] Error checking port: {e}")
+
 def run_local():
     """Start the Streamlit frontend with token streaming."""
+    # Check if we should use venv
+    from pathlib import Path
+    venv_path = Path(__file__).parent / 'venv'
+    if venv_path.exists():
+        # Use venv Python if available
+        python_executable = str(venv_path / 'bin' / 'python')
+        print(f"[VENV] Using virtual environment: {venv_path}")
+        print(f"[PYTHON] Python executable: {python_executable}")
+
+        # Set VIRTUAL_ENV environment variable to ensure venv is used
+        os.environ['VIRTUAL_ENV'] = str(venv_path)
+        # Update PATH to prioritize venv binaries
+        venv_bin = str(venv_path / 'bin')
+        current_path = os.environ.get('PATH', '')
+        if venv_bin not in current_path:
+            os.environ['PATH'] = f"{venv_bin}:{current_path}"
+            print(f"[VENV] Updated PATH to include: {venv_bin}")
+    else:
+        python_executable = sys.executable
+        print(f"[PYTHON] Using system Python: {python_executable}")
+        print("[WARNING] Virtual environment not found - install dependencies with: python -m venv venv && source venv/bin/activate && pip install -r requirements_frontend.txt")
+
     # Detect if running in Cloud Run
     is_cloud_run = os.environ.get('K_SERVICE') is not None
     port = os.environ.get('FRONTEND_PORT', os.environ.get('PORT', '8501'))
-    
+
+    if not is_cloud_run:
+        kill_existing_process(port)
+
     print("🚀 Starting GCP Security Executive Dashboard")
     print("=" * 50)
     print("✨ Unified Features:")
@@ -108,11 +163,15 @@ def run_local():
     print("  • SQLite database integration")
     print("  • Consolidated security views")
     print("=" * 50)
-    
+
+    # Add frontend directory to Python path BEFORE changing directories
+    # This allows proper imports from the frontend module
+    frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
+    sys.path.insert(0, frontend_dir)
+    sys.path.insert(0, os.path.dirname(__file__))  # Also add project root
+
     # Set critical environment variables with absolute path
     try:
-        import sys
-        sys.path.insert(0, os.path.dirname(__file__))
         from config.database import DatabaseConfig
         database_path = DatabaseConfig.get_database_path()
         os.environ['DATABASE_PATH'] = database_path
@@ -121,20 +180,20 @@ def run_local():
         print(f"⚠️ Failed to set database path: {e}")
         # Fallback to absolute path
         fallback_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), 'backend', 'cache', 'gcp_data.db'
+            os.path.dirname(__file__), 'backend', 'cache', 'gcp_data.db'
         )
         os.environ['DATABASE_PATH'] = os.path.abspath(fallback_path)
         print(f"Using fallback database path: {os.environ['DATABASE_PATH']}")
-    
-    os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'TRUE'
-    
+
+    # CRITICAL: Use '1' not 'TRUE' for GOOGLE_GENAI_USE_VERTEXAI
+    os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = '1'
+
     if is_cloud_run:
         print("☁️  Running in Cloud Run environment")
     else:
         print("💻 Running in local development mode")
-    
-    # Change to frontend directory
-    frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
+
+    # Change to frontend directory AFTER setting up sys.path
     os.chdir(frontend_dir)
     
     # Use the main app as the frontend entry point
@@ -154,7 +213,7 @@ def run_local():
     else:
         # Local development configuration
         cmd = [
-            sys.executable, "-m", "streamlit", "run",
+            python_executable, "-m", "streamlit", "run",
             streamlit_file,
             "--server.port", port,
             "--server.address", "localhost"

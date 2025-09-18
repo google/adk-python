@@ -1,0 +1,124 @@
+# Spec and Testing Framework Files
+.specify/
+*.spec.ts
+*.spec.js
+**/tests/e2e/*.spec.*
+**/tests/playwright/*.spec.*
+test-results/
+playwright-report/
+playwright/.auth/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment Variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Logs
+*.log
+logs/
+backend_logs.txt
+frontend_logs.txt
+backend_test.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+backend/cache/*.db
+
+# Cache and Temp Files
+.cache/
+.tmp/
+tmp/
+.temp/
+temp/
+
+# Service Account Keys (Security)
+*.json
+!package*.json
+!tsconfig*.json
+!**/config/template*.json
+config/*.json
+config/secrets/
+credentials/
+keys/
+
+# Node.js (if any)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Operating System
+.DS_Store
+Thumbs.db
+
+# Application Specific
+backend/cache/
+frontend/.streamlit/
+.streamlit/
+
+# Deployment
+deploy/secrets/
+deploy/*.json
+!deploy/cloudbuild*.yaml
+!deploy/Dockerfile*
+
+# Documentation Build
+docs/_build/

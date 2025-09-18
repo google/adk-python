@@ -12,6 +12,14 @@ import subprocess
 import sys
 import os
 import argparse
+from dotenv import load_dotenv
+from pathlib import Path
+
+# CRITICAL: Load environment variables from .env file FIRST
+# This ensures all modules, especially the genai library,
+# are initialized with the correct settings.
+env_path = Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
 import signal
 import time
 import socket
@@ -177,6 +185,28 @@ def kill_existing_backend(port='8000'):
 
 def run_local():
     """Start the FastAPI backend server locally."""
+    # Check if we should use venv
+    from pathlib import Path
+    venv_path = Path(__file__).parent / 'venv'
+    if venv_path.exists():
+        # Use venv Python if available
+        python_executable = str(venv_path / 'bin' / 'python')
+        print(f"[VENV] Using virtual environment: {venv_path}")
+        print(f"[PYTHON] Python executable: {python_executable}")
+
+        # Set VIRTUAL_ENV environment variable to ensure venv is used
+        os.environ['VIRTUAL_ENV'] = str(venv_path)
+        # Update PATH to prioritize venv binaries
+        venv_bin = str(venv_path / 'bin')
+        current_path = os.environ.get('PATH', '')
+        if venv_bin not in current_path:
+            os.environ['PATH'] = f"{venv_bin}:{current_path}"
+            print(f"[VENV] Updated PATH to include: {venv_bin}")
+    else:
+        python_executable = sys.executable
+        print(f"[PYTHON] Using system Python: {python_executable}")
+        print("[WARNING] Virtual environment not found - install dependencies with: python -m venv venv && source venv/bin/activate && pip install -r requirements.txt")
+
     # Detect if running in Cloud Run
     is_cloud_run = os.environ.get('K_SERVICE') is not None
     port = os.environ.get('BACKEND_PORT', os.environ.get('PORT', '8000'))
@@ -253,11 +283,10 @@ def run_local():
             "--port", port
         ]
     else:
-        # Local development configuration - with reload
+        # Local development configuration - with reload disabled for stability
         cmd = [
-            sys.executable, "-m", "uvicorn",
+            python_executable, "-m", "uvicorn",
             "main:app",
-            "--reload",
             "--host", "0.0.0.0",
             "--port", port
         ]

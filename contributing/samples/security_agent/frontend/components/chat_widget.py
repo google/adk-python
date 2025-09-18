@@ -1,378 +1,233 @@
 """
-Chat Widget Component
-====================
-
-Reusable chat widget that can be embedded in any page for consistent
-chat functionality across the application.
+Chat widget component for the Streamlit frontend.
 """
 
 import streamlit as st
-import requests
-import json
-from typing import Optional, List, Dict, Any
-from datetime import datetime
+import uuid # Import uuid
+import logging
+from frontend.services import adk_service
+from frontend.services.agent_service import process_user_query
+from frontend.utils.config import FrontendConfig
+
+logger = logging.getLogger(__name__)
+
+def create_chat_widget(context="dashboard", height=300):
+    """
+    Helper function to create and render a chat widget.
+
+    Args:
+        context: Context for the chat (e.g., "iam", "dashboard", "security_findings")
+        height: Height of the chat widget in pixels
+
+    Returns:
+        A ChatWidget instance that has been rendered
+    """
+    widget = ChatWidget(context=context, height=height)
+    widget.render()
+    return widget
 
 class ChatWidget:
-    """Reusable chat widget component."""
-
-    def __init__(self,
-                 backend_url: str = "http://localhost:8000",
-                 context: str = "general",
-                 height: int = 400):
-        """
-        Initialize chat widget.
-
-        Args:
-            backend_url: Backend API URL
-            context: Chat context for domain-specific responses
-            height: Widget height in pixels
-        """
-        self.backend_url = backend_url
+    def __init__(self, context="dashboard", height=300):
         self.context = context
         self.height = height
-
-    def render(self, placeholder_text: Optional[str] = None) -> None:
-        """
-        Render the chat widget.
-
-        Args:
-            placeholder_text: Custom placeholder text for chat input
-        """
-
-        # Initialize chat_history if it doesn't exist
-        if 'chat_history' not in st.session_state:
-            st.session_state.chat_history = []
-
-        if placeholder_text is None:
-            placeholder_text = f"Ask about {self.context} security..." if self.context != "general" else "Ask me anything about security..."
-
-        # Display chat history
-        for i, message in enumerate(st.session_state.chat_history):
-            with st.chat_message(message["role"]):
-                if message["role"] == "assistant" and self.context != "general":
-                    st.markdown(f'<span class="context-badge context-{self.context}">{self.context.upper()}</span>',
-                              unsafe_allow_html=True)
-                st.markdown(message["content"])
-
-        # Chat input
-        if prompt := st.chat_input(placeholder_text, key="chat_input"):
-            # Add user message
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
-
-            # Get response from backend
-            response = self._get_chat_response(prompt)
-
-            # Add assistant response
-            if response:
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
-
-            # Rerun to update display
-            st.rerun()
-
-    def render_sidebar(self, title: str = "💬 Quick Chat") -> None:
-        """
-        Render a compact chat widget in the sidebar.
-
-        Args:
-            title: Title for the sidebar chat section
-        """
-        with st.sidebar:
-            st.markdown(f"### {title}")
-
-            # Compact chat display
-            recent_messages = st.session_state.chat_history[-3:] if st.session_state.chat_history else []
-
-            for message in recent_messages:
-                if message["role"] == "user":
-                    st.markdown(f"**You:** {message['content'][:50]}...")
-                else:
-                    st.markdown(f"**Assistant:** {message['content'][:50]}...")
-
-            # Chat input
-            if prompt := st.text_input("Quick question:", key="sidebar_chat_input"):
-                if st.button("Send", key="sidebar_chat_send"):
-                    # Add user message
-                    st.session_state.chat_history.append({"role": "user", "content": prompt})
-
-                    # Get response
-                    response = self._get_chat_response(prompt)
-
-                    # Add assistant response
-                    if response:
-                        st.session_state.chat_history.append({"role": "assistant", "content": response})
-
-                    st.rerun()
-
-            # Link to full chat
-            if st.button("Open Full Chat", key="open_full_chat"):
-                st.switch_page("pages/chat_interface.py")
-
-            # Chat input
-            if prompt := st.chat_input(placeholder_text, key=f"{self.key_prefix}_input"):
-                # Add user message
-                st.session_state.chat_history.append({"role": "user", "content": prompt})
-
-                # Get response from backend
-                response = self._get_chat_response(prompt)
-
-                # Add assistant response
-                if response:
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
-
-                # Rerun to update display
-                st.rerun()
-
-    def render_sidebar(self, title: str = "💬 Quick Chat") -> None:
-        """
-        Render a compact chat widget in the sidebar.
-
-        Args:
-            title: Title for the sidebar chat section
-        """
-        with st.sidebar:
-            st.markdown(f"### {title}")
-
-            # Compact chat display
-            recent_messages = st.session_state.chat_history[-3:] if st.session_state.chat_history else []
-
-            for message in recent_messages:
-                if message["role"] == "user":
-                    st.markdown(f"**You:** {message['content'][:50]}...")
-                else:
-                    st.markdown(f"**Assistant:** {message['content'][:50]}...")
-
-            # Chat input
-            if prompt := st.text_input("Quick question:", key=f"{self.key_prefix}_sidebar_input"):
-                if st.button("Send", key=f"{self.key_prefix}_sidebar_send"):
-                    # Add user message
-                    st.session_state.chat_history.append({"role": "user", "content": prompt})
-
-                    # Get response
-                    response = self._get_chat_response(prompt)
-
-                    # Add assistant response
-                    if response:
-                        st.session_state.chat_history.append({"role": "assistant", "content": response})
-
-                    st.rerun()
-
-            # Link to full chat
-            if st.button("Open Full Chat", key=f"{self.key_prefix}_open_full"):
-                st.switch_page("pages/chat_interface.py")
-
-    def _get_chat_response(self, prompt: str) -> Optional[str]:
-        """
-        Get response from backend API.
-
-        Args:
-            prompt: User input prompt
-
-        Returns:
-            Assistant response or None if error
-        """
-        try:
-            # Add context to prompt
-            contextualized_prompt = f"[Context: {self.context}] {prompt}" if self.context != "general" else prompt
-
-            # Try streaming endpoint first
-            try:
-                response = requests.post(
-                    f"{self.backend_url}/api/v1/chat/stream",
-                    json={"query": contextualized_prompt, "context": self.context},
-                    headers={"Content-Type": "application/json"},
-                    stream=True,
-                    timeout=30
-                )
-
-                if response.status_code == 200:
-                    # Collect streaming response
-                    full_response = ""
-                    for line in response.iter_lines():
-                        if line and line.startswith(b'data: '):
-                            try:
-                                data = json.loads(line[6:])
-                                if data.get('type') == 'content' and 'chunk' in data:
-                                    full_response += data['chunk']
-                                elif data.get('type') == 'complete':
-                                    break
-                            except json.JSONDecodeError:
-                                continue
-                    return full_response
-
-            except requests.exceptions.RequestException:
-                pass  # Fall back to regular endpoint
-
-            # Fallback to regular endpoint
-            response = requests.post(
-                f"{self.backend_url}/api/v1/chat/message",
-                json={"query": contextualized_prompt, "context": self.context},
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-
-                # Prepare response text
-                response_text = ""
-
-                # Show tools used if available
-                if 'tools_used' in data and data['tools_used']:
-                    response_text += f"🔧 **Tools Used:** {', '.join(data['tools_used'])}\n\n"
-
-                # Add main response
-                if 'response' in data:
-                    response_text += data['response']
-                elif 'message' in data:
-                    response_text += data['message']
-                else:
-                    response_text += "No response received from backend."
-
-                return response_text
-            else:
-                return f"⚠️ Backend API error (status {response.status_code})"
-
-        except requests.exceptions.Timeout:
-            return "⚠️ Request timed out. Please try again."
-        except requests.exceptions.ConnectionError:
-            return "⚠️ Cannot connect to backend. Please ensure the API server is running."
-        except Exception as e:
-            return f"⚠️ Error: {str(e)}"
-
-    def clear_chat(self) -> None:
-        """Clear chat history for this widget."""
-        st.session_state.chat_history = []
-
-    def get_chat_history(self) -> List[Dict[str, str]]:
-        """Get chat history for this widget."""
-        return st.session_state.chat_history.copy()
-
-    def export_chat(self) -> str:
-        """Export chat history as JSON string."""
-        messages = self.get_chat_history()
-        export_data = {
-            "context": self.context,
-            "timestamp": datetime.now().isoformat(),
-            "messages": messages
-        }
-        return json.dumps(export_data, indent=2)
-
-class ChatFloatingWidget:
-    """Floating chat widget that can be toggled on/off."""
-
-    def __init__(self, backend_url: str = "http://localhost:8000", context: str = "general"):
-        self.backend_url = backend_url
-        self.context = context
-        if "floating_chat_open" not in st.session_state:
-            st.session_state.floating_chat_open = False
+        self.config = FrontendConfig()
+        self.use_frontend_agents = FrontendConfig.is_frontend_agent_enabled()
 
     def render(self):
-        """Render floating chat widget."""
-        # Chat toggle button (always visible)
-        if st.button("💬", key="floating_chat_toggle", help="Open Chat Assistant"):
-            st.session_state.floating_chat_open = not st.session_state.floating_chat_open
+        """
+        Renders the chat widget and handles user interaction.
+        """
+        # Initialize session_id if not already set
+        if "session_id" not in st.session_state:
+            st.session_state.session_id = str(uuid.uuid4())
+        
+        st.subheader("Chat with the Security Agent")
 
-        # Floating chat window
-        if st.session_state.floating_chat_open:
-            with st.container():
-                st.markdown("""
-                <div style="
-                    position: fixed;
-                    bottom: 80px;
-                    right: 20px;
-                    width: 300px;
-                    height: 400px;
-                    background: white;
-                    border: 1px solid #ccc;
-                    border-radius: 10px;
-                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                    z-index: 1000;
-                    padding: 10px;
-                ">
-                    <h4>💬 Security Assistant</h4>
-                </div>
-                """, unsafe_allow_html=True)
+        # Initialize chat history
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
 
-                # Create chat widget inside floating window
-                chat_widget = ChatWidget(
-                    backend_url=self.backend_url,
-                    context=self.context,
-                    height=300
-                )
-                chat_widget.render()
-
-# Utility functions for easy integration
-def add_chat_to_page(context: str = "general",
-                    sidebar: bool = True,
-                    main_area: bool = False,
-                    height: int = 400) -> ChatWidget:
-    """
-    Easy function to add chat functionality to any page.
-
-    Args:
-        context: Security context for the chat
-        sidebar: Whether to show chat in sidebar
-        main_area: Whether to show chat in main area
-        height: Height of chat widget
-
-    Returns:
-        ChatWidget instance for further customization
-    """
-    chat_widget = ChatWidget(context=context, height=height)
-
-    if sidebar:
-        chat_widget.render_sidebar()
-
-    if main_area:
-        st.markdown("---")
-        st.markdown("### 💬 Security Assistant")
-        st.markdown(f"Ask questions about {context} security or get help with analysis.")
-
-        # Chat input at the top (this will render at the bottom of the page)
-        placeholder_text = f"Ask about {context} security..." if context != "general" else "Ask me anything about security..."
-        if prompt := st.chat_input(placeholder_text, key=f"page_{context}_input"):
-            # Add user message
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
-
-            # Get response from backend (simplified)
-            try:
-                import requests
-                response = requests.post(
-                    "http://localhost:8000/api/v1/chat/message",
-                    json={"query": f"[Context: {context}] {prompt}", "context": context},
-                    headers={"Content-Type": "application/json"},
-                    timeout=30
-                )
-
-                if response.status_code == 200:
-                    data = response.json()
-                    response_text = data.get('response', data.get('message', 'No response received'))
-                else:
-                    response_text = f"⚠️ Backend API error (status {response.status_code})"
-            except:
-                response_text = "⚠️ Cannot connect to backend. Please ensure the API server is running."
-
-            # Add assistant response
-            st.session_state.chat_history.append({"role": "assistant", "content": response_text})
-            st.rerun()
-
-        # Display chat history AFTER the input (proper top-to-bottom flow)
-        for message in st.session_state.chat_history:
+        # Display chat messages from history on app rerun
+        for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-    return chat_widget
+        # Accept user input - use unique key based on context to avoid duplicate element IDs
+        if prompt := st.chat_input("Ask a question about your GCP security posture...", key=f"chat_input_{self.context}"):
+            # Add user message to chat history
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            # Display user message in chat message container
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-def add_floating_chat(context: str = "general") -> ChatFloatingWidget:
-    """
-    Add a floating chat widget to the page.
+            # Display assistant response in chat message container
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
 
-    Args:
-        context: Security context for the chat
+                # Show different spinner text based on whether we're using frontend agents
+                spinner_text = "Analyzing query..." if self.use_frontend_agents else "Thinking..."
 
-    Returns:
-        ChatFloatingWidget instance
-    """
-    floating_chat = ChatFloatingWidget(context=context)
-    floating_chat.render()
-    return floating_chat
+                with st.spinner(spinner_text):
+                    if self.use_frontend_agents:
+                        # Use frontend agent service for intelligent preprocessing
+                        try:
+                            # Get conversation history for context (last few messages)
+                            conversation_context = self._get_conversation_context()
+
+                            # Process query through frontend agents
+                            agent_response = process_user_query(
+                                user_query=prompt,
+                                conversation_history=conversation_context,
+                                session_id=st.session_state.session_id
+                            )
+
+                            if agent_response["success"]:
+                                full_response = agent_response["response"]
+
+                                # Show metadata in debug mode
+                                if self.config.should_log_agent_activity() and 'metadata' in agent_response:
+                                    with st.expander("🔍 Query Processing Details", expanded=False):
+                                        metadata = agent_response['metadata']
+                                        if metadata.get('enhanced', False):
+                                            st.info("✨ Query was enhanced for better results")
+                                        if metadata.get('cache_hit', False):
+                                            st.success("⚡ Response served from local cache")
+                                        if metadata.get('analysis'):
+                                            analysis = metadata['analysis']
+                                            st.json({
+                                                "query_type": analysis.get('query_type'),
+                                                "confidence": analysis.get('confidence'),
+                                                "suggested_tool": analysis.get('suggested_tool')
+                                            })
+
+                                message_placeholder.markdown(full_response)
+                            else:
+                                error_message = agent_response.get("error", "Frontend agent processing failed.")
+                                enhanced_error = (
+                                    "🤖 **Agent Processing Error**\n\n"
+                                    "The AI agent encountered an issue while processing your query. "
+                                    "Falling back to direct database access...\n\n"
+                                    f"Technical details: {error_message}"
+                                )
+                                full_response = enhanced_error
+                                message_placeholder.warning(full_response)
+
+                                # Try fallback automatically
+                                try:
+                                    api_response = adk_service.send_message(prompt, session_id=st.session_state.session_id)
+                                    if api_response["success"]:
+                                        full_response = f"**Fallback Response:**\n\n{api_response['response']}"
+                                        message_placeholder.markdown(full_response)
+                                    else:
+                                        fallback_error = api_response.get("error", "Fallback also failed.")
+                                        full_response = f"**Both AI agent and fallback failed:**\n\n{fallback_error}"
+                                        message_placeholder.error(full_response)
+                                except Exception as fallback_e:
+                                    full_response = f"**Complete failure:** Both AI agent and fallback failed.\n\nAgent: {error_message}\nFallback: {str(fallback_e)}"
+                                    message_placeholder.error(full_response)
+
+                        except Exception as e:
+                            logger.error(f"Frontend agent error: {e}")
+                            # Fallback to direct backend call
+                            st.warning("Frontend agents unavailable, using direct backend connection...")
+                            api_response = adk_service.send_message(prompt, session_id=st.session_state.session_id)
+
+                            if api_response["success"]:
+                                full_response = api_response["response"]
+                                message_placeholder.markdown(full_response)
+                            else:
+                                error_message = api_response.get("error", "An unknown error occurred.")
+
+                                # Same enhanced error handling for fallback path
+                                if "database" in error_message.lower():
+                                    enhanced_error = (
+                                        "📁 **Database Connection Issue**\n\n"
+                                        "The security database appears to be unavailable. "
+                                        "Please ensure the database is populated by running:\n\n"
+                                        "`python populate_sqlite.py`\n\n"
+                                        f"Technical details: {error_message}"
+                                    )
+                                elif "session" in error_message.lower():
+                                    enhanced_error = (
+                                        "🔄 **Session Issue**\n\n"
+                                        "There was a session management issue. Try refreshing the page or starting a new session.\n\n"
+                                        f"Technical details: {error_message}"
+                                    )
+                                elif "timeout" in error_message.lower():
+                                    enhanced_error = (
+                                        "⏰ **Request Timeout**\n\n"
+                                        "Your query took too long to process. Try a simpler question or check if the backend is overloaded.\n\n"
+                                        f"Technical details: {error_message}"
+                                    )
+                                else:
+                                    enhanced_error = (
+                                        "❌ **Backend Connection Error**\n\n"
+                                        "Could not connect to the backend service. Please ensure the backend is running on port 8000.\n\n"
+                                        f"Technical details: {error_message}"
+                                    )
+
+                                full_response = enhanced_error
+                                message_placeholder.error(full_response)
+                    else:
+                        # Direct backend call (original behavior)
+                        api_response = adk_service.send_message(prompt, session_id=st.session_state.session_id)
+
+                        if api_response["success"]:
+                            full_response = api_response["response"]
+                            message_placeholder.markdown(full_response)
+                        else:
+                            error_message = api_response.get("error", "An unknown error occurred.")
+
+                            # Enhanced error messages based on error type
+                            if "database" in error_message.lower():
+                                enhanced_error = (
+                                    "📁 **Database Connection Issue**\n\n"
+                                    "The security database appears to be unavailable. "
+                                    "Please ensure the database is populated by running:\n\n"
+                                    "`python populate_sqlite.py`\n\n"
+                                    f"Technical details: {error_message}"
+                                )
+                            elif "session" in error_message.lower():
+                                enhanced_error = (
+                                    "🔄 **Session Issue**\n\n"
+                                    "There was a session management issue. Try refreshing the page or starting a new session.\n\n"
+                                    f"Technical details: {error_message}"
+                                )
+                            elif "timeout" in error_message.lower():
+                                enhanced_error = (
+                                    "⏰ **Request Timeout**\n\n"
+                                    "Your query took too long to process. Try a simpler question or check if the backend is overloaded.\n\n"
+                                    f"Technical details: {error_message}"
+                                )
+                            elif "tool" in error_message.lower():
+                                enhanced_error = (
+                                    "🔧 **Tool Execution Issue**\n\n"
+                                    "The security analysis tool encountered an issue. The database may need to be refreshed.\n\n"
+                                    f"Technical details: {error_message}"
+                                )
+                            else:
+                                enhanced_error = (
+                                    "❌ **Processing Error**\n\n"
+                                    "I encountered an issue processing your request. Please try again or contact support if the issue persists.\n\n"
+                                    f"Technical details: {error_message}"
+                                )
+
+                            full_response = enhanced_error
+                            message_placeholder.error(full_response)
+
+                # Add assistant response to chat history
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+    def _get_conversation_context(self):
+        """
+        Get recent conversation context for frontend agents.
+
+        Returns:
+            List of recent messages for context
+        """
+        if not hasattr(st.session_state, 'messages') or not st.session_state.messages:
+            return []
+
+        # Return last 4 messages (excluding the current one we're processing)
+        # This gives context without the message we're currently answering
+        return st.session_state.messages[-4:]

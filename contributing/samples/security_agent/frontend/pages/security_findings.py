@@ -19,8 +19,8 @@ from frontend.components.page_header import PageHeader, AlertBanner
 from frontend.components.charts import SecurityCharts, MetricCharts
 from frontend.components.cards import SecurityFindingCard, DataTableCard, AlertCard
 from frontend.components.utils import SessionManager, FilterUtils, DataFormatter
-from frontend.components.chat_widget import ChatWidget
 from frontend.utils.session_state import initialize_session_state
+from frontend.components.chat_widget import create_chat_widget
 
 def show_page():
     """Render the security findings page."""
@@ -81,7 +81,7 @@ def show_page():
     st.markdown("Ask questions about security findings or get help with analysis.")
 
     # Simple chat using ChatWidget
-    chat_widget = ChatWidget(context="findings", height=300)
+    chat_widget = create_chat_widget(context="findings", height=300)
     chat_widget.render()
 
 def _show_critical_findings_alerts():
@@ -530,6 +530,4 @@ def _generate_compliance_report(framework):
 if __name__ == "__main__":
     initialize_session_state()
     show_page()
-else:
-    # When imported as a module, also call show_page() for Streamlit pages
     show_page()

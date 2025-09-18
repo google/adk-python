@@ -12,13 +12,18 @@ import json
 # GCP SDK imports
 try:
     from google.cloud import storage
-    from google.cloud import resource_manager_v3
-    from google.cloud import asset_v1
     from google.oauth2 import service_account
-    from googleapiclient.discovery import build
     GCP_AVAILABLE = True
 except ImportError:
     GCP_AVAILABLE = False
+
+# Optional imports for advanced features
+try:
+    from google.cloud import resource_manager_v3
+    from google.cloud import asset_v1
+    from googleapiclient.discovery import build
+except ImportError:
+    pass  # These are optional for storage functionality
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +44,23 @@ class GCPLiveDataTool:
         if not self.project_id:
             logger.warning("GOOGLE_CLOUD_PROJECT not set - using fallback data")
 
+        # Debug logging
+        logger.info(f"🔍 GCP Live Tool Debug:")
+        logger.info(f"  GCP_AVAILABLE: {GCP_AVAILABLE}")
+        logger.info(f"  project_id: {self.project_id}")
+        logger.info(f"  credentials_path: {self.credentials_path}")
+        logger.info(f"  credentials_exists: {os.path.exists(self.credentials_path) if self.credentials_path else False}")
+
         if GCP_AVAILABLE and self.credentials_path and os.path.exists(self.credentials_path):
             try:
                 self.storage_client = storage.Client(project=self.project_id)
-                self.asset_client = asset_v1.AssetServiceClient()
+                # Try to initialize asset client if available
+                try:
+                    self.asset_client = asset_v1.AssetServiceClient()
+                except (NameError, AttributeError):
+                    self.asset_client = None
+                    logger.info("Asset API not available - storage functionality will still work")
+
                 self.project_name = f"projects/{self.project_id}"
                 logger.info("✅ GCP Live Data Tool initialized successfully")
             except Exception as e:

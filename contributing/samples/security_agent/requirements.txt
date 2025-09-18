@@ -36,3 +36,5 @@ google-cloud-aiplatform
 
 # Google Generative AI (fallback)
 google-generativeai
+
+aiohttp

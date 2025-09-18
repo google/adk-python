@@ -19,8 +19,8 @@ from frontend.components.page_header import PageHeader
 from frontend.components.charts import SecurityCharts, MetricCharts
 from frontend.components.cards import DataTableCard, ComplianceCard, MetricCard
 from frontend.components.utils import SessionManager, DataFormatter
-from frontend.components.chat_widget import ChatWidget
 from frontend.utils.session_state import initialize_session_state
+from frontend.components.chat_widget import create_chat_widget
 
 def show_page():
     """Render the compliance assessment page."""
@@ -87,7 +87,7 @@ def show_page():
     st.markdown("Ask questions about compliance or get help with analysis.")
 
     # Simple chat using ChatWidget
-    chat_widget = ChatWidget(context="compliance", height=300)
+    chat_widget = create_chat_widget(context="compliance", height=300)
     chat_widget.render()
 
 def _render_compliance_overview():
@@ -318,185 +318,3 @@ def _render_nist_framework():
     for i, desc in enumerate(tier_descriptions, 1):
         if i <= current_tier:
             st.markdown(f"✅ **Tier {i}**: {desc}")
-        else:
-            st.markdown(f"⭕ **Tier {i}**: {desc}")
-    
-    st.info(f"Current Implementation Tier: **{current_tier}** - Target: **4**")
-
-def _render_iso_27001():
-    """Render ISO 27001 assessment."""
-    st.subheader("🌐 ISO 27001 Information Security")
-    
-    # ISO domains
-    iso_domains = [
-        {'domain': 'A.5 Information Security Policies', 'controls': '2/2', 'score': 100},
-        {'domain': 'A.6 Organization of Information Security', 'controls': '7/7', 'score': 100},
-        {'domain': 'A.7 Human Resource Security', 'controls': '6/6', 'score': 100},
-        {'domain': 'A.8 Asset Management', 'controls': '10/10', 'score': 100},
-        {'domain': 'A.9 Access Control', 'controls': '14/14', 'score': 100},
-        {'domain': 'A.10 Cryptography', 'controls': '2/2', 'score': 100},
-        {'domain': 'A.11 Physical Security', 'controls': '15/15', 'score': 100},
-        {'domain': 'A.12 Operations Security', 'controls': '14/14', 'score': 100},
-        {'domain': 'A.13 Communications Security', 'controls': '7/7', 'score': 100},
-        {'domain': 'A.14 System Development', 'controls': '13/13', 'score': 100}
-    ]
-    
-    # Display first 5 domains
-    for domain in iso_domains[:5]:
-        cols = st.columns([3, 1, 1])
-        
-        with cols[0]:
-            st.markdown(f"**{domain['domain']}**")
-        
-        with cols[1]:
-            st.markdown(f"Controls: {domain['controls']}")
-        
-        with cols[2]:
-            st.markdown(f"Score: {domain['score']}%")
-
-def _render_soc2():
-    """Render SOC 2 assessment."""
-    st.subheader("💳 SOC 2 Trust Principles")
-    
-    # SOC 2 principles
-    soc2_principles = [
-        {'principle': 'Security', 'score': 88, 'required': True, 'controls': '20/23'},
-        {'principle': 'Availability', 'score': 92, 'required': False, 'controls': '8/8'},
-        {'principle': 'Processing Integrity', 'score': 85, 'required': False, 'controls': '6/7'},
-        {'principle': 'Confidentiality', 'score': 90, 'required': False, 'controls': '9/10'},
-        {'principle': 'Privacy', 'score': 78, 'required': False, 'controls': '7/9'}
-    ]
-    
-    for principle in soc2_principles:
-        required_badge = "📍 Required" if principle['required'] else "📄 Optional"
-        
-        with st.expander(f"{principle['principle']} - {principle['score']}% ({required_badge})"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown(f"**Score:** {principle['score']}%")
-            
-            with col2:
-                st.markdown(f"**Controls:** {principle['controls']}")
-            
-            with col3:
-                st.markdown(f"**Status:** {'Required' if principle['required'] else 'Optional'}")
-
-def _render_custom_frameworks():
-    """Render custom compliance frameworks."""
-    st.subheader("📋 Custom Compliance Frameworks")
-    
-    # Custom frameworks
-    custom_frameworks = [
-        {'name': 'Company Security Policy', 'controls': 45, 'score': 92, 'last_updated': '2024-01-10'},
-        {'name': 'Industry Best Practices', 'controls': 78, 'score': 85, 'last_updated': '2024-01-08'},
-        {'name': 'Regulatory Requirements', 'controls': 34, 'score': 88, 'last_updated': '2024-01-05'}
-    ]
-    
-    if not custom_frameworks:
-        st.info("No custom frameworks configured. Click 'Add Framework' to create one.")
-    
-    for framework in custom_frameworks:
-        with st.expander(f"📊 {framework['name']} - {framework['score']}%"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown(f"**Controls:** {framework['controls']}")
-            
-            with col2:
-                st.markdown(f"**Score:** {framework['score']}%")
-            
-            with col3:
-                st.markdown(f"**Updated:** {framework['last_updated']}")
-            
-            # Framework actions
-            action_col1, action_col2, action_col3 = st.columns(3)
-            
-            with action_col1:
-                if st.button("Edit", key=f"edit_{framework['name']}"):
-                    st.info(f"Editing framework: {framework['name']}")
-            
-            with action_col2:
-                if st.button("Assess", key=f"assess_{framework['name']}"):
-                    st.info(f"Running assessment for: {framework['name']}")
-            
-            with action_col3:
-                if st.button("Export", key=f"export_{framework['name']}"):
-                    st.info(f"Exporting framework: {framework['name']}")
-    
-    # Add new framework
-    if st.button("➕ Add Custom Framework"):
-        _add_custom_framework()
-
-# Remove this function - too many visualizations
-
-def _add_custom_framework():
-    """Add new custom framework dialog."""
-    with st.form("add_framework"):
-        st.markdown("### Add New Compliance Framework")
-
-        framework_name = st.text_input("Framework Name")
-        framework_description = st.text_area("Description")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            framework_type = st.selectbox(
-                "Framework Type",
-                ["Regulatory", "Industry Standard", "Internal Policy", "Best Practice"]
-            )
-
-        with col2:
-            assessment_frequency = st.selectbox(
-                "Assessment Frequency",
-                ["Daily", "Weekly", "Monthly", "Quarterly", "Annually"]
-            )
-
-        if st.form_submit_button("Create Framework"):
-            if framework_name and framework_description:
-                st.success(f"Custom framework '{framework_name}' created successfully!")
-                SessionManager.set('new_framework_added', True)
-                st.rerun()
-            else:
-                st.error("Please fill in all required fields.")
-
-def _run_compliance_assessment():
-    """Run comprehensive compliance assessment."""
-    with st.spinner("Running comprehensive compliance assessment..."):
-        import time
-        time.sleep(4)
-        
-        st.success("Compliance assessment completed! Updated scores for all frameworks.")
-        SessionManager.set('last_compliance_assessment', datetime.now())
-        st.rerun()
-
-def _generate_compliance_report():
-    """Generate compliance report."""
-    frameworks = st.multiselect(
-        "Select frameworks to include in report:",
-        ["CIS", "NIST", "ISO 27001", "SOC 2", "Custom Frameworks"],
-        default=["CIS", "NIST"]
-    )
-    
-    report_format = st.selectbox(
-        "Report Format",
-        ["PDF", "Excel", "CSV", "JSON"]
-    )
-    
-    if st.button("Generate Report"):
-        with st.spinner("Generating compliance report..."):
-            import time
-            time.sleep(3)
-            
-            st.success(f"Compliance report generated! Including {len(frameworks)} frameworks in {report_format} format.")
-            st.download_button(
-                "📥 Download Report",
-                data="Sample compliance report data",
-                file_name=f"compliance_report_{datetime.now().strftime('%Y%m%d')}.{report_format.lower()}",
-                mime=f"application/{report_format.lower()}"
-            )
-
-# Entry point for Streamlit multi-page app
-if __name__ == "__main__":
-    initialize_session_state()
-    show_page()

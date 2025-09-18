@@ -60,9 +60,6 @@ class NavigationComponent:
         """Render navigation menu and return selected page."""
         st.sidebar.title("🔐 Security Dashboard")
         
-        # Add project selector
-        self._render_project_selector()
-        
         st.sidebar.markdown("---")
         st.sidebar.markdown("### Navigation")
         
@@ -90,74 +87,4 @@ class NavigationComponent:
             ):
                 selected_page = page_name
         
-        # Add status indicators
-        st.sidebar.markdown("---")
-        self._render_status_indicators()
-        
-        # Add quick actions
-        self._render_quick_actions()
-        
         return selected_page
-    
-    def _render_project_selector(self):
-        """Render GCP project selector."""
-        projects = self._get_available_projects()
-        
-        if projects:
-            selected_project = st.sidebar.selectbox(
-                "Select Project",
-                options=projects,
-                index=0 if not st.session_state.selected_project else 
-                       projects.index(st.session_state.selected_project) 
-                       if st.session_state.selected_project in projects else 0,
-                key="project_selector"
-            )
-            st.session_state.selected_project = selected_project
-        else:
-            st.sidebar.warning("No projects available")
-    
-    def _get_available_projects(self) -> List[str]:
-        """Get list of available GCP projects."""
-        # This would typically query the GCP API or database
-        return st.session_state.get('available_projects', [
-            'my-security-project',
-            'production-env',
-            'staging-env'
-        ])
-    
-    def _render_status_indicators(self):
-        """Render system status indicators."""
-        st.sidebar.markdown("### System Status")
-        
-        # Connection status
-        connection_status = st.session_state.get('connection_status', 'connected')
-        status_color = "🟢" if connection_status == 'connected' else "🔴"
-        st.sidebar.markdown(f"{status_color} **Connection:** {connection_status.title()}")
-        
-        # Last refresh time
-        last_refresh = st.session_state.get('last_refresh', 'Never')
-        st.sidebar.markdown(f"🔄 **Last Refresh:** {last_refresh}")
-        
-        # Data freshness
-        data_age = st.session_state.get('data_age', 'Unknown')
-        st.sidebar.markdown(f"📅 **Data Age:** {data_age}")
-    
-    def _render_quick_actions(self):
-        """Render quick action buttons."""
-        st.sidebar.markdown("### Quick Actions")
-        
-        col1, col2 = st.sidebar.columns(2)
-        
-        with col1:
-            if st.button("🔄 Refresh", use_container_width=True, key="quick_refresh"):
-                st.session_state.refresh_requested = True
-                st.rerun()
-        
-        with col2:
-            if st.button("📊 Export", use_container_width=True, key="quick_export"):
-                st.session_state.export_requested = True
-        
-        # Emergency actions
-        if st.sidebar.button("🚨 Emergency Scan", type="secondary", use_container_width=True):
-            st.session_state.emergency_scan_requested = True
-            st.success("Emergency security scan initiated!")

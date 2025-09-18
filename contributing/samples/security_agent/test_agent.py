@@ -1,51 +1,38 @@
 #!/usr/bin/env python3
-"""Test the ADK agent with database connection"""
+"""
+Direct test of the ADK agent to verify it works
+"""
 
-import sys
 import os
-import asyncio
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sys
+from pathlib import Path
 
-# Set the database path
-os.environ["DATABASE_PATH"] = "backend/cache/gcp_data.db"
+# Add the agents directory to the path
+sys.path.insert(0, str(Path(__file__).parent / "agents"))
 
-from backend.adk_agent import security_agent
-from google.adk.agents import InvocationContext
+# Set environment variables
+os.environ["GOOGLE_CLOUD_PROJECT"] = "mgm-digitalconcierge"
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(Path(__file__).parent / "config" / "mgm-digitalconcierge-8e6bb83a7e22.json")
+os.environ["GOOGLE_CLOUD_LOCATION"] = "us-central1"
+os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "1"
+os.environ["DATABASE_PATH"] = str(Path(__file__).parent / "backend" / "cache" / "gcp_data.db")
+os.environ["ADK_AGENT_MODEL"] = "gemini-2.0-flash-exp"
 
-async def test_agent():
-    # Test queries
-    queries = [
-        "Show me all storage buckets in the project",
-        "What security findings do you have?",
-        "List the service accounts"
-    ]
+# Import and test the agent
+from adk_agent import agent
 
-    for query in queries:
-        print(f"\n{'='*60}")
-        print(f"Query: {query}")
-        print('='*60)
+print("Agent loaded successfully!")
+print(f"Agent name: {agent.name}")
+print(f"Agent description: {agent.description}")
+print(f"Agent tools: {[tool.name for tool in agent.tools]}")
 
-        try:
-            # Create an invocation context
-            adk_context = InvocationContext(
-                text_input=query,
-                session_id="test-session"
-            )
+# Test a simple query
+print("\n" + "="*50)
+print("Testing agent with query: 'How many security findings are there?'")
+print("="*50)
 
-            # Run the agent asynchronously
-            response_text = ""
-            async for event in security_agent.run_async(adk_context):
-                if hasattr(event, 'content') and event.content:
-                    content = str(event.content)
-                    response_text += content
-                    print(content, end="", flush=True)
-
-            print()  # New line after response
-
-        except Exception as e:
-            print(f"Error: {e}")
-            import traceback
-            traceback.print_exc()
-
-if __name__ == "__main__":
-    asyncio.run(test_agent())
+try:
+    response = agent.say("How many security findings are there?")
+    print(f"\nAgent response: {response}")
+except Exception as e:
+    print(f"\nError: {e}")

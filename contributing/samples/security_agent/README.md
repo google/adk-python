@@ -1,53 +1,89 @@
-# 🛡️ Enterprise Security Agent
+# GCP Security Agent with ADK Integration
 
-[![Version](https://img.shields.io/badge/version-1.13.0-blue.svg)](https://github.com/your-org/security-agent)
-[![UI Grade](https://img.shields.io/badge/UI%20Grade-A%20(95%2B%2F100)-brightgreen.svg)](docs/USER_GUIDE.md)
-[![Status](https://img.shields.io/badge/status-production%20ready-success.svg)](docs/DEPLOYMENT_GUIDE.md)
-[![MCP](https://img.shields.io/badge/MCP-enabled-4285f4.svg)](./MCP_INTEGRATION.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/your-org/security-agent)
+[![Status](https://img.shields.io/badge/status-production%20ready-success.svg)](./ADK_INTEGRATION_GUIDE.md)
 [![ADK](https://img.shields.io/badge/powered%20by-Google%20ADK-4285f4.svg)](https://github.com/google/adk)
 
-**Enterprise-grade AI-powered security platform** with natural language interface through MCP discovery. Provides comprehensive security insights, compliance monitoring, and automated remediation for Google Cloud Platform environments.
-
-![Security Agent Dashboard](docs/assets/dashboard-preview.png)
+A production-ready security analysis agent powered by Google's ADK (Agent Development Kit) that provides real-time insights into your Google Cloud Platform security posture.
 
 ## 🚀 Quick Start
 
-Get up and running in 5 minutes:
+### Prerequisites
+- Python 3.11+
+- Google Cloud Project with active billing
+- Service account with appropriate permissions
+- Virtual environment with ADK installed
 
+### Installation
+
+1. **Clone and setup**:
 ```bash
-# 1. Clone and setup
-git clone <repository-url>
+# Clone the repository
+git clone [repository-url]
 cd security_agent
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install google-adk
 pip install -r requirements.txt
-
-# 2. Configure environment
-export GOOGLE_CLOUD_PROJECT=your-project-id
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
-
-# 3. Start services
-python run_backend.py &   # Terminal 1
-python run_frontend.py    # Terminal 2
-
-# 4. Access the application
-open http://localhost:8501
 ```
 
-✅ **Prerequisites**: Python 3.8+, GCP project with billing enabled, service account with security roles
+2. **Configure environment**:
+Create `.env` file in project root:
+```env
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=config/your-service-account.json
+GOOGLE_GENAI_USE_VERTEXAI=1
+DATABASE_PATH=backend/cache/gcp_data.db
+```
 
-## 🤖 AI-Native Security Operations
-
-### **Natural Language Security Interface via MCP Discovery**
-
-**Revolutionary**: The Security Agent is **MCP-enabled**, making all security operations accessible through natural language. AI assistants like Claude Code can automatically discover and execute any security function without training or setup.
-
+3. **Add service account**:
 ```bash
-# Instant discovery of 30+ security tools
-curl http://localhost:8000/mcp/.well-known/mcp.json
+mkdir -p config
+cp /path/to/your-service-account.json config/
+```
 
-# Connect any AI assistant
-claude-code connect http://localhost:8000/mcp
+4. **Initialize database**:
+```bash
+# Add test data
+python add_test_data.py
 
-# Natural language security operations
+# Or populate with real GCP data (requires permissions)
+python populate_sqlite.py
+```
+
+5. **Start the backend**:
+```bash
+python run_backend.py
+# Backend will be available at http://localhost:8000
+```
+
+6. **Start the frontend** (optional):
+```bash
+python run_frontend.py
+# Frontend will be available at http://localhost:8501
+```
+
+## 🎯 Features
+
+### Security Analysis Capabilities
+- **Security Findings**: Detect and prioritize security vulnerabilities
+- **Storage Security**: Analyze bucket permissions and public access
+- **IAM Analysis**: Review service accounts and permissions
+- **Network Security**: Examine firewall rules and network configurations
+- **Compliance Monitoring**: Track security posture over time
+
+### Technical Features
+- ✅ **ADK Integration**: Powered by Google's Agent Development Kit
+- ✅ **Vertex AI**: Uses gemini-2.5-flash model for intelligent analysis
+- ✅ **SQLite Cache**: Fast local database for offline analysis
+- ✅ **REST API**: FastAPI backend with OpenAPI documentation
+- ✅ **Streaming UI**: Streamlit frontend with real-time updates
+- ✅ **Virtual Environment**: Automatic venv detection and usage
 "Scan our production environment for vulnerabilities"
 "Check IAM permissions for user john.doe" 
 "Generate SOC2 compliance report"
@@ -120,12 +156,7 @@ The GCP Security Agent follows a clean, scalable architecture:
                                │ HTTP/WebSocket
 ┌─────────────────────────────────────────────────────────────┐
 │                     Backend (FastAPI)                      │
-│  20+ API Modules - Rate Limited & Validated                │
-└─────────────────────────────────────────────────────────────┘
-                               │
-┌─────────────────────────────────────────────────────────────┐
-│                   ADK Agent Integration                     │
-│  Google ADK - Streaming Chat & Tool Functions              │
+│  ADK Agent Integration - MCP Enabled & 20+ API Modules     │
 └─────────────────────────────────────────────────────────────┘
                                │
 ┌─────────────────────────────────────────────────────────────┐

@@ -10,10 +10,21 @@ with real data from the mgm-digitalconcierge project.
 import asyncio
 import sys
 import os
-sys.path.append('backend')
+from pathlib import Path
+from dotenv import load_dotenv
 
-from services.data_fetcher import DataFetcher
-from services.cache_manager import get_cache_manager
+# Load environment variables from .env
+env_path = Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
+
+# Add the project root to sys.path to ensure all modules are discoverable
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+# Import GCPDataFetcher and DatabasePopulator from populate_database.py
+from populate_database import GCPDataFetcher, DatabasePopulator
+# Assuming cache_manager is still needed and is in src/
+from src.cache_manager import cache
 import logging
 
 # Configure logging
@@ -34,36 +45,31 @@ async def main():
     
     try:
         # Initialize data fetcher
-        data_fetcher = DataFetcher(project_id)
-        print("✅ DataFetcher initialized")
+        data_fetcher = GCPDataFetcher(project_id)
+        print("✅ GCPDataFetcher initialized")
         
         # Initialize cache manager
-        cache_manager = get_cache_manager()
+        cache_manager = cache
         print("✅ CacheManager initialized")
         
-        # Fetch all data from GCP APIs
-        print("\n📡 Fetching data from GCP APIs...")
+        # Define DATABASE_PATH for this script
+        DATABASE_PATH = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
+
+        # Fetch data from GCP APIs and populate database
+        print("\n📡 Fetching data from GCP APIs and populating database...")
         print("-" * 40)
-        
-        results = await data_fetcher.fetch_all_data()
-        
-        print(f"\n✅ Data fetch completed!")
-        print(f"Duration: {results.get('duration_seconds', 0):.2f} seconds")
-        print(f"Success: {results.get('success', False)}")
-        
-        if results.get('errors'):
-            print(f"⚠️ Errors encountered: {len(results['errors'])}")
-            for error in results['errors']:
-                print(f"  - {error}")
-        
-        if results.get('stats'):
-            print(f"\n📊 Data Statistics:")
-            print("-" * 20)
-            for category, stats in results['stats'].items():
-                if isinstance(stats, dict) and 'count' in stats:
-                    print(f"  {category}: {stats['count']} records")
-                else:
-                    print(f"  {category}: {stats}")
+
+        # Initialize DatabasePopulator
+        db_populator = DatabasePopulator(DATABASE_PATH)
+        db_populator.ensure_database_exists()
+
+        # Populate data
+        db_populator.populate_data(data_fetcher)
+
+        # Verify data
+        db_populator.verify_data()
+
+        print(f"\n🎉 Data population completed!")
         
         # Verify data in SQLite
         print(f"\n🔍 Verifying SQLite Database...")

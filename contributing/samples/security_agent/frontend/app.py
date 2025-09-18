@@ -1,31 +1,36 @@
 """
-GCP Security Executive Dashboard - Multi-Page Application
-========================================================
+GCP Security Executive Dashboard - Main Application
+=================================================
 
-Main entry point for the multi-page Streamlit security dashboard.
-Uses Streamlit's native navigation with clean page routing and state management.
+Main entry point for the Streamlit security dashboard.
+This file handles page routing, layout, and core components.
 """
 
 import streamlit as st
 import sys
+import logging
 from pathlib import Path
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Import page modules
-from pages import (
-    dashboard,
-    iam_analysis,
-    asset_inventory,
-    security_findings,
-    network_security,
-    compliance,
-    settings
-)
-from components.navigation import NavigationComponent
-from .utils.session_state import initialize_session_state
+# Import page modules and components
+try:
+    from pages import PAGES
+    from components.navigation import NavigationComponent
+    from components.chat_widget import ChatWidget
+    from components.charts import SecurityCharts
+    from utils.session_state import initialize_session_state
+except ImportError:
+    from frontend.pages import PAGES
+    from frontend.components.navigation import NavigationComponent
+    from frontend.components.chat_widget import ChatWidget
+    from frontend.components.charts import SecurityCharts
+    from frontend.utils.session_state import initialize_session_state
 
 # Page configuration
 st.set_page_config(
@@ -33,44 +38,48 @@ st.set_page_config(
     page_icon="🔐",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={
-        'Get Help': 'https://cloud.google.com/security',
-        'Report a bug': 'https://github.com/GoogleCloudPlatform/security-agent/issues',
-        'About': 'GCP Security Dashboard v1.13.0'
-    }
 )
 
+def render_dashboard():
+    """Renders the main dashboard content."""
+    st.markdown("## 🛡️ Security Dashboard")
+    st.caption("Essential security overview")
+
+    tabs = st.tabs(["📊 Overview", "📈 Trends", "🚨 Alerts"])
+    with tabs[0]:
+        cols = st.columns(3)
+        cols[0].metric("Security Score", "78.5", delta="2.3")
+        cols[1].metric("Active Findings", "275", delta="-12")
+        cols[2].metric("Resources Monitored", "1,534", delta="45")
+
+        st.markdown("### 📊 Security Findings Distribution")
+        severity_data = [
+            {'severity': 'Critical', 'count': 5},
+            {'severity': 'High', 'count': 23},
+            {'severity': 'Medium', 'count': 45},
+            {'severity': 'Low', 'count': 78}
+        ]
+        fig = SecurityCharts.render_severity_distribution(severity_data)
+        fig.update_layout(height=250, margin=dict(t=30, b=30, l=30, r=30))
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
 def main():
-    """Main application entry point with page navigation."""
+    """Main application entry point."""
     initialize_session_state()
     
-    # Navigation component in sidebar
     nav_component = NavigationComponent()
     selected_page = nav_component.render()
     
-    # Update current page in session state
     st.session_state.current_page = selected_page
     
-    # Page routing
-    page_functions = {
-        'Dashboard': dashboard.show_page,
-        'IAM Analysis': iam_analysis.show_page,
-        'Asset Inventory': asset_inventory.show_page,
-        'Security Findings': security_findings.show_page,
-        'Network Security': network_security.show_page,
-        'Compliance': compliance.show_page,
-        'Settings': settings.show_page
-    }
-    
-    # Render selected page
-    if selected_page in page_functions:
-        try:
-            page_functions[selected_page]()
-        except Exception as e:
-            st.error(f"Error loading page '{selected_page}': {str(e)}")
-            st.info("Please try refreshing the page or contact support if the issue persists.")
+    if selected_page == 'Dashboard':
+        render_dashboard()
+    elif selected_page in PAGES:
+        PAGES[selected_page]()
     else:
         st.error(f"Page '{selected_page}' not found.")
+
+    ChatWidget().render()
 
 if __name__ == "__main__":
     main()

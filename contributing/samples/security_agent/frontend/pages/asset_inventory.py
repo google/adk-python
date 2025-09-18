@@ -19,8 +19,8 @@ from frontend.components.page_header import PageHeader
 from frontend.components.charts import SecurityCharts, MetricCharts
 from frontend.components.cards import DataTableCard, ResourceCard, MetricCard
 from frontend.components.utils import SessionManager, FilterUtils, DataFormatter
-from frontend.components.chat_widget import ChatWidget
 from frontend.utils.session_state import initialize_session_state
+from frontend.components.chat_widget import create_chat_widget
 
 def show_page():
     """Render the asset inventory page."""
@@ -82,7 +82,7 @@ def show_page():
     st.markdown("Ask questions about asset inventory or get help with analysis.")
 
     # Simple chat using ChatWidget
-    chat_widget = ChatWidget(context="assets", height=300)
+    chat_widget = create_chat_widget(context="assets", height=300)
     chat_widget.render()
 
 def _render_all_resources():
@@ -525,6 +525,4 @@ def _export_filtered_resources(filtered_data):
 if __name__ == "__main__":
     initialize_session_state()
     show_page()
-else:
-    # When imported as a module, also call show_page() for Streamlit pages
     show_page()
