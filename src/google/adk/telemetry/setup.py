@@ -18,9 +18,11 @@ from dataclasses import dataclass
 from dataclasses import field
 from typing import Optional
 
+from opentelemetry import _events
 from opentelemetry import _logs
 from opentelemetry import metrics
 from opentelemetry import trace
+from opentelemetry.sdk._events import EventLoggerProvider
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs import LogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -104,6 +106,9 @@ def maybe_set_otel_providers(
     for exporter in log_record_processors:
       new_logger_provider.add_log_record_processor(exporter)
     _logs.set_logger_provider(new_logger_provider)
+    # Add event provider to logger provider to support gen_ai events.
+    event_logger_provider = EventLoggerProvider(new_logger_provider)
+    _events.set_event_logger_provider(event_logger_provider)
 
 
 def _get_otel_resource() -> Resource:

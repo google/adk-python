@@ -267,9 +267,7 @@ def _setup_telemetry(
   # TODO - remove the condition and else branch here once
   # maybe_set_otel_providers is no longer experimental.
   if otel_to_cloud:
-    _setup_telemetry_experimental(
-        otel_to_cloud=otel_to_cloud, internal_exporters=internal_exporters
-    )
+    _setup_telemetry_experimental(internal_exporters=internal_exporters)
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = TracerProvider()
@@ -279,7 +277,6 @@ def _setup_telemetry(
 
 
 def _setup_telemetry_experimental(
-    otel_to_cloud: bool = False,
     internal_exporters: list[SpanProcessor] = None,
 ):
   from ..telemetry.setup import maybe_set_otel_providers
@@ -293,24 +290,36 @@ def _setup_telemetry_experimental(
     # Register ADK-specific exporters in trace provider.
     otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
 
-  if otel_to_cloud:
-    from ..telemetry.google_cloud import get_gcp_exporters
-    from ..telemetry.google_cloud import get_gcp_resource
+  from ..telemetry.google_cloud import get_gcp_exporters
+  from ..telemetry.google_cloud import get_gcp_resource
 
-    otel_hooks_to_add.append(
-        get_gcp_exporters(
-            # TODO - use trace_to_cloud here as well once otel_to_cloud is no
-            # longer experimental.
-            enable_cloud_tracing=True,
-            enable_cloud_metrics=True,
-            enable_cloud_logging=True,
-        )
-    )
-    otel_resource = get_gcp_resource()
+  otel_hooks_to_add.append(
+      get_gcp_exporters(
+          # TODO - use trace_to_cloud here as well once otel_to_cloud is no
+          # longer experimental.
+          enable_cloud_tracing=True,
+          enable_cloud_metrics=True,
+          enable_cloud_logging=True,
+      )
+  )
+  otel_resource = get_gcp_resource()
 
   maybe_set_otel_providers(
       otel_hooks_to_setup=otel_hooks_to_add, otel_resource=otel_resource
   )
+
+  # Set instrumentation to enable emitting OTel data from GenAISDK
+  # Currently the instrumentation lib is in extras dependencies, make sure to
+  # warn the user if it's not installed.
+  try:
+    from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
+
+    GoogleGenAiSdkInstrumentor().instrument()
+  except ImportError:
+    logger.warning(
+        "Unable to import GoogleGenAiSdkInstrumentor - some"
+        " telemetry will be disabled. Make sure to install google-adk[otel-gcp]"
+    )
 
 
 class AdkWebServer:

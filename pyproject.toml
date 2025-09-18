@@ -151,10 +151,7 @@ extensions = [
 ]
 
 otel-gcp = [
-  "opentelemetry-exporter-gcp-logging>=1.9.0a0, <2.0.0",
-  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0, <2.0.0",
-  "opentelemetry-exporter-gcp-trace>=1.9.0, <2.0.0",
-  "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
+  "opentelemetry-instrumentation-google-genai>=0.3b0, <1.0.0",
 ]
 
 
