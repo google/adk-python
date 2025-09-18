@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
-from typing import Any
 from typing import Optional
 
+from google.genai.types import Content
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -24,6 +24,23 @@ from pydantic import Field
 
 from ..auth.auth_tool import AuthConfig
 from ..tools.tool_confirmation import ToolConfirmation
+
+
+class EventCompaction(BaseModel):
+  """The compaction of the events."""
+
+  model_config = ConfigDict(
+      extra='forbid',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+  """The pydantic model config."""
+
+  compaction_range: Optional[tuple[float, float]] = None
+  """The sequence ID range of the events that are summarized, in the form(start_sequence_id, end_sequence_id)`"""
+
+  compacted_content: Content
+  """The summarized content of the events."""
 
 
 class EventActions(BaseModel):
@@ -72,3 +89,6 @@ class EventActions(BaseModel):
   )
   """A dict of tool confirmation requested by this event, keyed by
   function call id."""
+
+  compaction: Optional[EventCompaction] = None
+  """The compaction of the events."""
