@@ -1,0 +1,297 @@
+openapi: 3.0.0
+info:
+  title: GCP Security Agent API
+  description: API for SQLite database connection and chat interface
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://security-agent.run.app
+    description: Cloud Run production
+
+paths:
+  /api/v1/chat/message:
+    post:
+      summary: Send chat message
+      description: Process a chat message and return agent response with database data
+      operationId: sendChatMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageRequest'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMessageResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/chat/stream:
+    get:
+      summary: Stream chat response
+      description: Stream agent response as Server-Sent Events
+      operationId: streamChatResponse
+      parameters:
+        - name: message
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: session_id
+          in: query
+          schema:
+            type: string
+            default: default
+        - name: user_id
+          in: query
+          schema:
+            type: string
+            default: user
+      responses:
+        '200':
+          description: Streaming response
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: Invalid request
+        '500':
+          description: Server error
+
+  /health/database:
+    get:
+      summary: Check database connectivity
+      description: Verify SQLite database connection and status
+      operationId: checkDatabaseHealth
+      responses:
+        '200':
+          description: Database healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatabaseHealthResponse'
+        '503':
+          description: Database unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatabaseHealthResponse'
+
+  /api/v1/database/test:
+    post:
+      summary: Test database query
+      description: Execute a test query against the database
+      operationId: testDatabaseQuery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestQueryRequest'
+      responses:
+        '200':
+          description: Query successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestQueryResponse'
+        '400':
+          description: Invalid query
+        '500':
+          description: Database error
+
+components:
+  schemas:
+    ChatMessageRequest:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Natural language query from user
+          minLength: 1
+          maxLength: 10000
+          example: "Show me high severity security findings"
+        session_id:
+          type: string
+          description: Session identifier for conversation context
+          default: default
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        user_id:
+          type: string
+          description: User identifier
+          default: user
+          example: "user123"
+        stream:
+          type: boolean
+          description: Whether to stream the response
+          default: false
+
+    ChatMessageResponse:
+      type: object
+      required:
+        - response
+        - success
+      properties:
+        response:
+          type: string
+          description: Agent response with database query results
+          example: "Found 5 high severity security findings..."
+        success:
+          type: boolean
+          description: Whether the query was successful
+        tool_usage:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+        execution_time:
+          type: number
+          format: float
+          description: Query execution time in seconds
+          example: 1.23
+        agent_used:
+          type: boolean
+          description: Whether ADK agent was used
+        model:
+          type: string
+          description: Model used for response
+          example: "gemini-1.5-flash"
+        session_id:
+          type: string
+          description: Session ID for context
+        data_source:
+          type: string
+          enum: [database, cache, fallback]
+          description: Source of the response data
+
+    ToolCall:
+      type: object
+      required:
+        - tool_name
+        - success
+      properties:
+        tool_name:
+          type: string
+          description: Name of the tool invoked
+          example: "query_security_data"
+        parameters:
+          type: object
+          description: Parameters passed to the tool
+        result:
+          type: object
+          description: Tool execution result
+        duration:
+          type: number
+          description: Execution time in milliseconds
+        success:
+          type: boolean
+          description: Whether tool execution succeeded
+
+    DatabaseHealthResponse:
+      type: object
+      required:
+        - status
+        - database_path
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unavailable]
+        database_path:
+          type: string
+          description: Absolute path to database file
+          example: "/app/backend/cache/gcp_data.db"
+        exists:
+          type: boolean
+          description: Whether database file exists
+        readable:
+          type: boolean
+          description: Whether database is readable
+        table_count:
+          type: integer
+          description: Number of tables in database
+        total_records:
+          type: integer
+          description: Approximate total records across all tables
+        last_updated:
+          type: string
+          format: date-time
+          description: Last database update timestamp
+        error:
+          type: string
+          description: Error message if unhealthy
+
+    TestQueryRequest:
+      type: object
+      required:
+        - query_type
+      properties:
+        query_type:
+          type: string
+          description: Type of query to test
+          example: "security_findings"
+        parameters:
+          type: object
+          description: Query parameters
+          example:
+            severity: "HIGH"
+            limit: 5
+
+    TestQueryResponse:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+        row_count:
+          type: integer
+          description: Number of rows returned
+        execution_time:
+          type: number
+          format: float
+          description: Query time in seconds
+        sample_data:
+          type: array
+          items:
+            type: object
+          description: Sample of returned data
+        error:
+          type: string
+          description: Error if query failed
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Error code
+          example: "DATABASE_CONNECTION_ERROR"
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: object
+          description: Additional error details
+        timestamp:
+          type: string
+          format: date-time

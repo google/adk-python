@@ -365,6 +365,58 @@ Message 4: Write "file.js"
 
 Remember: **Claude Flow coordinates, Claude Code creates!**
 
+## Current Focus: SQLite Database Connection Fix (Branch: 001-review-the-project)
+
+### Problem Context
+The chat frontend cannot properly connect to the SQLite database through the ADK agent chain. Users receive empty responses or errors instead of actual security data.
+
+### Key Implementation Patterns for Fix
+
+#### Database Path Resolution
+```python
+# Always use absolute paths for database
+import os
+from pathlib import Path
+
+def get_database_path():
+    db_path = os.getenv("DATABASE_PATH", "backend/cache/gcp_data.db")
+    return Path(db_path).resolve()
+```
+
+#### ADK Session Management
+- Use singleton InMemorySessionService instance
+- Maintain session context across requests
+- Proper error propagation through the stack
+
+#### Critical Connection Points
+1. **SQLite Tool** → Database file access
+2. **ADK Agent** → Tool invocation with FunctionTool
+3. **Backend API** → Agent runner execution
+4. **Frontend Service** → API client requests
+5. **Chat Widget** → User interface display
+
+#### Environment Variables Required
+```bash
+DATABASE_PATH="backend/cache/gcp_data.db"
+GOOGLE_APPLICATION_CREDENTIALS="config/service-account.json"
+GOOGLE_CLOUD_PROJECT="your-project-id"
+ADK_AGENT_MODEL="gemini-1.5-flash"
+```
+
+### Testing the Fix
+```bash
+# Test direct connection
+python test_adk_query.py
+
+# Test API endpoint
+curl http://localhost:8000/health/database
+
+# Test full stack
+python run_backend.py  # Terminal 1
+python run_frontend.py # Terminal 2
+# Navigate to http://localhost:8501 and test chat
+```
+
 # important-instruction-reminders
 Do what has been asked; nothing more, nothing less.
 NEVER create files unless they're absolutely necessary for achieving your goal.

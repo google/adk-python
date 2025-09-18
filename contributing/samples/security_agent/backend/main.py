@@ -234,13 +234,83 @@ async def run_agent_query(message: str, session_id: str = "default", user_id: st
 
             # Collect the response from async generator
             response_text = ""
+            tool_used = False
+
             async for event in events:
+                # Check if any tool was called
+                if hasattr(event, 'tool_calls') and event.tool_calls:
+                    tool_used = True
+                    logger.info(f"[ADK] Tool called: {[tc.name for tc in event.tool_calls]}")
+
                 if hasattr(event, 'content') and event.content and hasattr(event.content, 'parts'):
                     for part in event.content.parts:
                         if hasattr(part, 'text'):
                             response_text += part.text
                 elif hasattr(event, 'text'):
                     response_text += event.text
+
+            # NUCLEAR OPTION: If agent didn't call tools, force a tool call
+            if not tool_used and response_text:
+                logger.warning(f"[ADK] Agent responded without calling tools! Forcing tool call...")
+
+                # Import tool locally
+                from agents.tools.sqlite_tool import query_security_data
+
+                # Determine query type from message
+                message_lower = message.lower()
+                if any(word in message_lower for word in ["risk", "problem", "issue", "security", "biggest"]):
+                    query_type = "security_summary"
+                elif any(word in message_lower for word in ["bucket", "storage"]):
+                    query_type = "storage_buckets"
+                elif any(word in message_lower for word in ["finding", "vulnerability"]):
+                    query_type = "security_findings"
+                else:
+                    query_type = "security_summary"
+
+                # Call tool directly
+                tool_result = query_security_data(query_type, limit=10)
+
+                # Create LLM analysis of tool result
+                if tool_result.get("success"):
+                    data = tool_result.get("data", [])
+
+                    # Create analysis prompt
+                    analysis_prompt = f"""
+Based on this security data for the query "{message}":
+
+{json.dumps(data, indent=2)}
+
+Provide a comprehensive security analysis with:
+1. Risk prioritization and severity assessment
+2. Specific actionable recommendations
+3. Business impact explanation
+4. Step-by-step remediation guidance
+
+Focus on insights and analysis, not raw data formatting.
+"""
+
+                    # Send analysis request to LLM directly
+                    try:
+                        import google.genai as genai
+
+                        analysis_content = genai.types.Content(parts=[genai.types.Part(text=analysis_prompt)])
+
+                        # Create simple LLM client for analysis
+                        model = genai.GenerativeModel('gemini-2.5-flash')
+                        analysis_response = model.generate_content(analysis_content)
+
+                        if analysis_response and analysis_response.text:
+                            response_text = analysis_response.text
+                            logger.info(f"[ADK] Generated LLM analysis from tool data")
+                        else:
+                            response_text = f"Analysis of {len(data)} security items found. Please review the findings for critical risks that need immediate attention."
+
+                    except Exception as e:
+                        logger.error(f"[ADK] Error generating analysis: {e}")
+                        response_text = f"Found {len(data)} security items. Please review for critical risks requiring immediate attention."
+
+                else:
+                    response_text = "Unable to retrieve security data for analysis. Please check database connectivity."
 
             response = response_text if response_text else "No response generated"
             return {
