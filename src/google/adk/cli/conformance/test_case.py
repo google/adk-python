@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -37,3 +40,13 @@ class TestSpec(BaseModel):
 
   user_messages: list[str]
   """Sequence of user messages to send to the agent during test execution."""
+
+
+@dataclass
+class TestCase:
+  """Represents a single conformance test case."""
+
+  category: str
+  name: str
+  dir: Path
+  test_spec: TestSpec
