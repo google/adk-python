@@ -1,40 +1,47 @@
-# ADK Core
-google-adk
+# ADK Core - Latest from GitHub
+google-adk @ git+https://github.com/google/adk-python.git
 
-# Google Cloud APIs
-google-cloud-asset
-google-cloud-storage
-google-cloud-securitycenter
-google-cloud-monitoring
-google-cloud-logging
-google-cloud-iam
-google-cloud-service-usage
-google-auth
-google-cloud-resource-manager
-google-cloud-api-keys
-google-cloud-advisorynotifications
-google-cloud-billing
-google-cloud-billing-budgets
-google-cloud-access-context-manager
+# Google Cloud APIs with specific versions
+google-cloud-asset==3.30.1
+google-cloud-storage==2.19.0
+google-cloud-securitycenter==1.39.0
+google-cloud-monitoring==2.27.2
+google-cloud-logging==3.11.3
+google-cloud-iam==2.19.1
+google-cloud-service-usage==1.13.1
+google-auth==2.40.3
+google-cloud-resource-manager==1.14.2
+google-cloud-api-keys==0.5.17
+google-cloud-advisorynotifications==0.3.16
+google-cloud-billing==1.14.1
+google-cloud-billing-budgets==1.16.1
+google-cloud-access-context-manager==0.2.2
 
 # Backend API Integration
-httpx>=0.24.0
-asyncio
+httpx==0.28.1
+asyncio  # Built-in, no version needed
 
-# FastAPI Backend (optional, for running backend locally)
-fastapi>=0.100.0
-uvicorn>=0.23.0
-pydantic>=2.0.0
+# FastAPI Backend (for running backend locally)
+fastapi==0.116.1
+uvicorn==0.35.0
+pydantic==2.11.7
 
 # Development
-python-dotenv
+python-dotenv==1.1.1
+
 # MCP Integration dependencies
-fastapi-mcp
+fastapi-mcp==0.6.2
 
 # Vertex AI for Gemini models
-google-cloud-aiplatform
+google-cloud-aiplatform==1.71.1
 
 # Google Generative AI (fallback)
-google-generativeai
+google-generativeai==0.8.3
 
-aiohttp
+# HTTP client for async operations
+aiohttp==3.12.15
+
+# Testing dependencies (optional)
+pytest==8.3.4
+pytest-asyncio==0.25.2
+requests==2.32.3
