@@ -36,11 +36,14 @@ class EventCompaction(BaseModel):
   )
   """The pydantic model config."""
 
-  compaction_range: Optional[tuple[float, float]] = None
-  """The sequence ID range of the events that are summarized, in the form(start_sequence_id, end_sequence_id)`"""
+  start_timestamp: float
+  """The start timestamp of the compacted events, in seconds."""
+
+  end_timestamp: float
+  """The end timestamp of the compacted events, in seconds."""
 
   compacted_content: Content
-  """The summarized content of the events."""
+  """The compacted content of the events."""
 
 
 class EventActions(BaseModel):
