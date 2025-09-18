@@ -725,12 +725,34 @@ class Runner:
         logger.info('Successfully closed toolset: %s', type(toolset).__name__)
       except asyncio.TimeoutError:
         logger.warning('Toolset %s cleanup timed out', type(toolset).__name__)
+      except asyncio.CancelledError as e:
+        # Handle cancel scope issues in Python 3.10 and 3.11 with anyio
+        #
+        # Root cause: MCP library uses anyio.CancelScope() in RequestResponder.__enter__()
+        # and __exit__() methods. When asyncio.wait_for() creates a new task for cleanup,
+        # the cancel scope is entered in one task context but exited in another.
+        #
+        # Python 3.12+ fixes: Enhanced task context management (Task.get_context()),
+        # improved context propagation across task boundaries, and better cancellation
+        # handling prevent the cross-task cancel scope violation.
+        logger.warning(
+            'Toolset %s cleanup cancelled: %s', type(toolset).__name__, e
+        )
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
   async def close(self):
     """Closes the runner."""
     await self._cleanup_toolsets(self._collect_toolset(self.agent))
+
+  async def __aenter__(self):
+    """Async context manager entry."""
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    """Async context manager exit."""
+    await self.close()
+    return False  # Don't suppress exceptions from the async with block
 
 
 class InMemoryRunner(Runner):
