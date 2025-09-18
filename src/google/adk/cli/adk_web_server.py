@@ -31,6 +31,7 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
+from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
@@ -208,6 +209,13 @@ class RunEvalRequest(common.BaseModel):
       ),
   )
   eval_metrics: list[EvalMetric]
+
+
+class UpdateMemoryRequest(common.BaseModel):
+  """Request to add a session to the memory service."""
+
+  session_id: str
+  """The ID of the session to add to memory."""
 
 
 class RunEvalResult(common.BaseModel):
@@ -1143,6 +1151,41 @@ class AdkWebServer:
           session_id=session_id,
           filename=artifact_name,
       )
+
+    @app.patch("/apps/{app_name}/users/{user_id}/memory")
+    async def patch_memory(
+        app_name: str, user_id: str, update_memory_request: UpdateMemoryRequest
+    ) -> None:
+      """Adds all events from a given session to the memory service.
+
+      Args:
+          app_name: The name of the application.
+          user_id: The ID of the user.
+          update_memory_request: The memory request for the update
+
+      Raises:
+          HTTPException: If the memory service is not configured or the request is invalid.
+      """
+      if not self.memory_service:
+        raise HTTPException(
+            status_code=400, detail="Memory service is not configured."
+        )
+      if (
+          update_memory_request is None
+          or update_memory_request.session_id is None
+      ):
+        raise HTTPException(
+            status_code=400, detail="Update memory request is invalid."
+        )
+
+      session = await self.session_service.get_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=update_memory_request.session_id,
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+      await self.memory_service.add_session_to_memory(session)
 
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:

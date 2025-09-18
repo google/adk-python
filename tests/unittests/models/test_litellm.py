@@ -267,6 +267,77 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
 ]
 
 
+STREAM_WITH_EMPTY_CHUNK = [
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id="call_abc",
+                            function=Function(
+                                name="test_function",
+                                arguments='{"test_arg":',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments=' "value"}',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    # This is the problematic empty chunk that should be ignored.
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments="",
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+    ),
+]
+
+
 @pytest.fixture
 def mock_response():
   return ModelResponse(
@@ -1589,6 +1660,34 @@ async def test_generate_content_async_non_compliant_multiple_function_calls(
   assert final_response.content.parts[1].function_call.name == "function_2"
   assert final_response.content.parts[1].function_call.id == "1"
   assert final_response.content.parts[1].function_call.args == {"arg": "value2"}
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_empty_chunk(
+    mock_completion, lite_llm_instance
+):
+  """Tests that empty tool call chunks in a stream are ignored."""
+  mock_completion.return_value = iter(STREAM_WITH_EMPTY_CHUNK)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  final_response = responses[0]
+  assert final_response.content.role == "model"
+
+  # Crucially, assert that only ONE tool call was generated,
+  # proving the empty chunk was ignored.
+  assert len(final_response.content.parts) == 1
+
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.id == "call_abc"
+  assert function_call.args == {"test_arg": "value"}
 
 
 @pytest.mark.asyncio

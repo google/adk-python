@@ -51,6 +51,12 @@ class ReplayVerificationError(Exception):
   pass
 
 
+class ReplayConfigError(Exception):
+  """Exception raised when replay configuration is invalid or missing."""
+
+  pass
+
+
 class _InvocationReplayState(BaseModel):
   """Per-invocation replay state to isolate concurrent runs."""
 
@@ -93,7 +99,7 @@ class ReplayPlugin(BasePlugin):
       return None
 
     if (state := self._get_invocation_state(callback_context)) is None:
-      raise ValueError(
+      raise ReplayConfigError(
           "Replay state not initialized. Ensure before_run created it."
       )
 
@@ -122,7 +128,7 @@ class ReplayPlugin(BasePlugin):
       return None
 
     if (state := self._get_invocation_state(tool_context)) is None:
-      raise ValueError(
+      raise ReplayConfigError(
           "Replay state not initialized. Ensure before_run created it."
       )
 
@@ -188,20 +194,24 @@ class ReplayPlugin(BasePlugin):
     msg_index = config.get("user_message_index")
 
     if not case_dir or msg_index is None:
-      raise ValueError("Replay parameters are missing from session state")
+      raise ReplayConfigError(
+          "Replay parameters are missing from session state"
+      )
 
     # Load recordings
     recordings_file = Path(case_dir) / "generated-recordings.yaml"
 
     if not recordings_file.exists():
-      raise ValueError(f"Recordings file not found: {recordings_file}")
+      raise ReplayConfigError(f"Recordings file not found: {recordings_file}")
 
     try:
       with recordings_file.open("r", encoding="utf-8") as f:
         recordings_data = yaml.safe_load(f)
       recordings = Recordings.model_validate(recordings_data)
     except Exception as e:
-      raise ValueError(f"Failed to load recordings from {recordings_file}: {e}")
+      raise ReplayConfigError(
+          f"Failed to load recordings from {recordings_file}: {e}"
+      ) from e
 
     # Load and store invocation state
     state = _InvocationReplayState(
@@ -320,62 +330,28 @@ class ReplayPlugin(BasePlugin):
       agent_index: int,
   ) -> None:
     """Verify that the current LLM request exactly matches the recorded one."""
-    self._verify_config_match(
-        recorded_request, current_request, agent_name, agent_index
-    )
-    handled_fields: set[str] = {"config"}
-    ignored_fields: set[str] = {"live_connect_config"}
-    exclude_fields = handled_fields | ignored_fields
-    if not self._compare_fields(
-        recorded_request, current_request, exclude_fields=exclude_fields
-    ):
-      raise ValueError(
-          f"LLM request mismatch for agent '{agent_name}' (index"
-          f" {agent_index}): "
-          "recorded:"
-          f" {recorded_request.model_dump(exclude_none=True, exclude=exclude_fields)},"
-          " current:"
-          f" {current_request.model_dump(exclude_none=True, exclude=exclude_fields)}"
-      )
-
-  def _compare_fields(
-      self,
-      obj1: BaseModel,
-      obj2: BaseModel,
-      *,
-      exclude_fields: Optional[set[str]] = None,
-  ) -> bool:
-    """Compare two Pydantic models excluding specified fields."""
-    exclude_fields = exclude_fields or set()
-    dict1 = obj1.model_dump(exclude_none=True, exclude=exclude_fields)
-    dict2 = obj2.model_dump(exclude_none=True, exclude=exclude_fields)
-    return dict1 == dict2
-
-  def _verify_config_match(
-      self,
-      recorded_request: LlmRequest,
-      current_request: LlmRequest,
-      agent_name: str,
-      agent_index: int,
-  ) -> None:
-    """Verify that the config matches between recorded and current requests."""
-    # Fields to ignore when comparing GenerateContentConfig (denylist approach)
-    ignored_fields: set[str] = {
-        "http_options",
-        "labels",
+    # Comprehensive exclude dict for all fields that can differ between runs
+    excluded_fields = {
+        "live_connect_config": True,
+        "config": {  # some config fields can vary per run
+            "http_options": True,
+            "labels": True,
+        },
     }
 
-    if not self._compare_fields(
-        recorded_request.config,
-        current_request.config,
-        exclude_fields=ignored_fields,
-    ):
-      raise ValueError(
-          f"Config mismatch for agent '{agent_name}' (index {agent_index}): "
-          "recorded:"
-          f" {recorded_request.config.model_dump(exclude_none=True, exclude=ignored_fields)},"
-          " current:"
-          f" {current_request.config.model_dump(exclude_none=True, exclude=ignored_fields)}"
+    # Compare using model dumps with nested exclude dict
+    recorded_dict = recorded_request.model_dump(
+        exclude_none=True, exclude=excluded_fields, exclude_defaults=True
+    )
+    current_dict = current_request.model_dump(
+        exclude_none=True, exclude=excluded_fields, exclude_defaults=True
+    )
+
+    if recorded_dict != current_dict:
+      raise ReplayVerificationError(
+          f"""LLM request mismatch for agent '{agent_name}' (index {agent_index}):
+recorded: {recorded_dict}
+current: {current_dict}"""
       )
 
   def _verify_tool_call_match(
@@ -389,12 +365,14 @@ class ReplayPlugin(BasePlugin):
     """Verify that the current tool call exactly matches the recorded one."""
     if recorded_call.name != tool_name:
       raise ReplayVerificationError(
-          f"Tool name mismatch for agent '{agent_name}' at index {agent_index}:"
-          f" recorded='{recorded_call.name}', current='{tool_name}'"
+          f"""Tool name mismatch for agent '{agent_name}' at index {agent_index}:
+recorded: '{recorded_call.name}'
+current: '{tool_name}'"""
       )
 
     if recorded_call.args != tool_args:
       raise ReplayVerificationError(
-          f"Tool args mismatch for agent '{agent_name}' at index {agent_index}:"
-          f" recorded={recorded_call.args}, current={tool_args}"
+          f"""Tool args mismatch for agent '{agent_name}' at index {agent_index}:
+recorded: {recorded_call.args}
+current: {tool_args}"""
       )
