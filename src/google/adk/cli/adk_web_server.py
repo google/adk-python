@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import importlib
 import logging
 import os
 import time
@@ -75,6 +76,7 @@ from ..evaluation.eval_set_results_manager import EvalSetResultsManager
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
+from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -265,9 +267,7 @@ def _setup_telemetry(
   # TODO - remove the condition and else branch here once
   # maybe_set_otel_providers is no longer experimental.
   if otel_to_cloud:
-    _setup_telemetry_experimental(
-        otel_to_cloud=otel_to_cloud, internal_exporters=internal_exporters
-    )
+    _setup_telemetry_experimental(internal_exporters=internal_exporters)
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = TracerProvider()
@@ -277,7 +277,6 @@ def _setup_telemetry(
 
 
 def _setup_telemetry_experimental(
-    otel_to_cloud: bool = False,
     internal_exporters: list[SpanProcessor] = None,
 ):
   from ..telemetry.setup import maybe_set_otel_providers
@@ -291,24 +290,36 @@ def _setup_telemetry_experimental(
     # Register ADK-specific exporters in trace provider.
     otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
 
-  if otel_to_cloud:
-    from ..telemetry.google_cloud import get_gcp_exporters
-    from ..telemetry.google_cloud import get_gcp_resource
+  from ..telemetry.google_cloud import get_gcp_exporters
+  from ..telemetry.google_cloud import get_gcp_resource
 
-    otel_hooks_to_add.append(
-        get_gcp_exporters(
-            # TODO - use trace_to_cloud here as well once otel_to_cloud is no
-            # longer experimental.
-            enable_cloud_tracing=True,
-            enable_cloud_metrics=True,
-            enable_cloud_logging=True,
-        )
-    )
-    otel_resource = get_gcp_resource()
+  otel_hooks_to_add.append(
+      get_gcp_exporters(
+          # TODO - use trace_to_cloud here as well once otel_to_cloud is no
+          # longer experimental.
+          enable_cloud_tracing=True,
+          enable_cloud_metrics=True,
+          enable_cloud_logging=True,
+      )
+  )
+  otel_resource = get_gcp_resource()
 
   maybe_set_otel_providers(
       otel_hooks_to_setup=otel_hooks_to_add, otel_resource=otel_resource
   )
+
+  # Set instrumentation to enable emitting OTel data from GenAISDK
+  # Currently the instrumentation lib is in extras dependencies, make sure to
+  # warn the user if it's not installed.
+  try:
+    from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
+
+    GoogleGenAiSdkInstrumentor().instrument()
+  except ImportError:
+    logger.warning(
+        "Unable to import GoogleGenAiSdkInstrumentor - some"
+        " telemetry will be disabled. Make sure to install google-adk[otel-gcp]"
+    )
 
 
 class AdkWebServer:
@@ -354,6 +365,7 @@ class AdkWebServer:
       eval_sets_manager: EvalSetsManager,
       eval_set_results_manager: EvalSetResultsManager,
       agents_dir: str,
+      extra_plugins: Optional[list[str]] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -363,39 +375,94 @@ class AdkWebServer:
     self.eval_sets_manager = eval_sets_manager
     self.eval_set_results_manager = eval_set_results_manager
     self.agents_dir = agents_dir
+    self.extra_plugins = extra_plugins or []
     # Internal propeties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
 
   async def get_runner_async(self, app_name: str) -> Runner:
-    """Returns the runner for the given app."""
+    """Returns the cached runner for the given app."""
+    # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
       runner = self.runner_dict.pop(app_name, None)
       await cleanup.close_runners(list([runner]))
 
-    envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
+    # Return cached runner if exists
     if app_name in self.runner_dict:
       return self.runner_dict[app_name]
+
+    # Create new runner
+    envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
     agent_or_app = self.agent_loader.load_agent(app_name)
-    agentic_app = None
+
+    # Instantiate extra plugins if configured
+    extra_plugins_instances = self._instantiate_extra_plugins()
+
     if isinstance(agent_or_app, BaseAgent):
       agentic_app = App(
           name=app_name,
           root_agent=agent_or_app,
+          plugins=extra_plugins_instances,
       )
     else:
-      agentic_app = agent_or_app
-    runner = Runner(
+      # Combine existing plugins with extra plugins
+      all_plugins = (agent_or_app.plugins or []) + extra_plugins_instances
+      agentic_app = App(
+          name=agent_or_app.name,
+          root_agent=agent_or_app.root_agent,
+          plugins=all_plugins,
+      )
+
+    runner = self._create_runner(agentic_app)
+    self.runner_dict[app_name] = runner
+    return runner
+
+  def _create_runner(self, agentic_app: App) -> Runner:
+    """Create a runner with common services."""
+    return Runner(
         app=agentic_app,
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
     )
-    self.runner_dict[app_name] = runner
-    return runner
+
+  def _instantiate_extra_plugins(self) -> list[BasePlugin]:
+    """Instantiate extra plugins from the configured list.
+
+    Returns:
+      List of instantiated BasePlugin objects.
+    """
+    extra_plugins_instances = []
+    for qualified_name in self.extra_plugins:
+      try:
+        plugin_obj = self._import_plugin_object(qualified_name)
+        if isinstance(plugin_obj, BasePlugin):
+          extra_plugins_instances.append(plugin_obj)
+        elif issubclass(plugin_obj, BasePlugin):
+          extra_plugins_instances.append(plugin_obj(name=qualified_name))
+      except Exception as e:
+        logger.error("Failed to load plugin %s: %s", qualified_name, e)
+    return extra_plugins_instances
+
+  def _import_plugin_object(self, qualified_name: str) -> Any:
+    """Import a plugin object (class or instance) from a fully qualified name.
+
+    Args:
+      qualified_name: Fully qualified name (e.g., 'my_package.my_plugin.MyPlugin')
+
+    Returns:
+      The imported object, which can be either a class or an instance.
+
+    Raises:
+      ImportError: If the module cannot be imported.
+      AttributeError: If the object doesn't exist in the module.
+    """
+    module_name, obj_name = qualified_name.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, obj_name)
 
   def get_fast_api_app(
       self,

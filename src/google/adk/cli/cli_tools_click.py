@@ -15,12 +15,12 @@
 from __future__ import annotations
 
 import asyncio
-import collections
 from contextlib import asynccontextmanager
 from datetime import datetime
 import functools
 import logging
 import os
+from pathlib import Path
 import tempfile
 from typing import Optional
 
@@ -117,6 +117,66 @@ def main():
 def deploy():
   """Deploys agent to hosted environments."""
   pass
+
+
+@main.group()
+def conformance():
+  """Conformance testing tools for ADK."""
+  pass
+
+
+@conformance.command("create", cls=HelpfulCommand)
+@click.argument(
+    "paths",
+    nargs=-1,
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.pass_context
+def cli_conformance_create(
+    ctx,
+    paths: tuple[str, ...],
+):
+  """Generate ADK conformance test YAML files from TestCaseInput specifications.
+
+  NOTE: this is work in progress.
+
+  This command reads TestCaseInput specifications from input.yaml files,
+  executes the specified test cases against agents, and generates conformance
+  test files with recorded agent interactions as test.yaml files.
+
+  Expected directory structure:
+  category/name/input.yaml (TestCaseInput) -> category/name/test.yaml (TestCase)
+
+  PATHS: One or more directories containing test case specifications.
+  If no paths are provided, defaults to 'tests/' directory.
+
+  Examples:
+
+  Use default directory: adk conformance create
+
+  Custom directories: adk conformance create tests/core tests/tools
+  """
+
+  try:
+    from .conformance.cli_create import run_conformance_create
+  except ImportError as e:
+    click.secho(
+        f"Error: Missing conformance testing dependencies: {e}",
+        fg="red",
+        err=True,
+    )
+    click.secho(
+        "Please install the required conformance testing package dependencies.",
+        fg="yellow",
+        err=True,
+    )
+    ctx.exit(1)
+
+  # Default to tests/ directory if no paths provided
+  test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
+  asyncio.run(run_conformance_create(test_paths))
 
 
 @main.command("create", cls=HelpfulCommand)
@@ -697,6 +757,15 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--extra_plugins",
+        help=(
+            "Optional. Comma-separated list of extra plugin classes or"
+            " instances to enable (e.g., my.module.MyPluginClass or"
+            " my.module.my_plugin_instance)."
+        ),
+        multiple=True,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -743,6 +812,7 @@ def cli_web(
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
+    extra_plugins: Optional[list[str]] = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -794,6 +864,7 @@ def cli_web(
       host=host,
       port=port,
       reload_agents=reload_agents,
+      extra_plugins=extra_plugins,
   )
   config = uvicorn.Config(
       app,
@@ -836,6 +907,7 @@ def cli_api_server(
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
+    extra_plugins: Optional[list[str]] = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -865,6 +937,7 @@ def cli_api_server(
           host=host,
           port=port,
           reload_agents=reload_agents,
+          extra_plugins=extra_plugins,
       ),
       host=host,
       port=port,
