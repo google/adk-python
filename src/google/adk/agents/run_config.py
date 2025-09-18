@@ -22,6 +22,7 @@ from typing import Optional
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 from pydantic import field_validator
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -64,10 +65,14 @@ class RunConfig(BaseModel):
   streaming_mode: StreamingMode = StreamingMode.NONE
   """Streaming mode, None or StreamingMode.SSE or StreamingMode.BIDI."""
 
-  output_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
+  output_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+      default_factory=types.AudioTranscriptionConfig
+  )
   """Output transcription for live agents with audio response."""
 
-  input_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
+  input_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+      default_factory=types.AudioTranscriptionConfig
+  )
   """Input transcription for live agents with audio input from user."""
 
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
@@ -81,6 +86,12 @@ class RunConfig(BaseModel):
 
   session_resumption: Optional[types.SessionResumptionConfig] = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
+
+  save_live_audio: bool = False
+  """Saves live video and audio data to session and artifact service.
+
+  Right now, only audio is supported.
+  """
 
   max_llm_calls: int = 500
   """

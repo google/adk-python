@@ -16,12 +16,12 @@ import asyncio
 import logging
 import time
 
-from adk_release_analyzer import agent
-from adk_release_analyzer.settings import CODE_OWNER
-from adk_release_analyzer.settings import CODE_REPO
-from adk_release_analyzer.settings import DOC_OWNER
-from adk_release_analyzer.settings import DOC_REPO
-from adk_release_analyzer.utils import call_agent_async
+from adk_documentation.adk_release_analyzer import agent
+from adk_documentation.settings import CODE_OWNER
+from adk_documentation.settings import CODE_REPO
+from adk_documentation.settings import DOC_OWNER
+from adk_documentation.settings import DOC_REPO
+from adk_documentation.utils import call_agent_async
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 

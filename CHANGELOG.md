@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.14.1](https://github.com/google/adk-python/compare/v1.14.0...v1.14.1) (2025-09-12)
+
+### Bug Fixes
+
+* Fix logging issues with RemoteA2aAgent [0c1f1fa](https://github.com/google/adk-python/commit/0c1f1fadeb5a6357af9cad0eff5d5e7103fc88b0)
+
 ## [1.14.0](https://github.com/google/adk-python/compare/v1.13.0...v1.14.0) (2025-09-10)
 
 ### Features

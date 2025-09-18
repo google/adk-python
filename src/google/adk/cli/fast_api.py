@@ -67,8 +67,10 @@ def get_fast_api_app(
     host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     reload_agents: bool = False,
     lifespan: Optional[Lifespan[FastAPI]] = None,
+    extra_plugins: Optional[list[str]] = None,
 ) -> FastAPI:
   # Set up eval managers.
   if eval_storage_uri:
@@ -186,12 +188,15 @@ def get_fast_api_app(
       eval_sets_manager=eval_sets_manager,
       eval_set_results_manager=eval_set_results_manager,
       agents_dir=agents_dir,
+      extra_plugins=extra_plugins,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance
   extra_fast_api_args = {}
 
-  if trace_to_cloud:
+  # TODO - Remove separate trace_to_cloud logic once otel_to_cloud stops being
+  # EXPERIMENTAL.
+  if trace_to_cloud and not otel_to_cloud:
     from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 
     def register_processors(provider: TracerProvider) -> None:
@@ -241,6 +246,7 @@ def get_fast_api_app(
   app = adk_web_server.get_fast_api_app(
       lifespan=lifespan,
       allow_origins=allow_origins,
+      otel_to_cloud=otel_to_cloud,
       **extra_fast_api_args,
   )
 

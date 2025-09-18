@@ -166,38 +166,18 @@ class GeminiLlmConnection(BaseLlmConnection):
               message.server_content.input_transcription
               and message.server_content.input_transcription.text
           ):
-            user_text = message.server_content.input_transcription.text
-            parts = [
-                types.Part.from_text(
-                    text=user_text,
-                )
-            ]
             llm_response = LlmResponse(
-                content=types.Content(role='user', parts=parts)
+                input_transcription=message.server_content.input_transcription,
             )
             yield llm_response
           if (
               message.server_content.output_transcription
               and message.server_content.output_transcription.text
           ):
-            # TODO: Right now, we just support output_transcription without
-            # changing interface and data protocol. Later, we can consider to
-            # support output_transcription as a separate field in LlmResponse.
-
-            # Transcription is always considered as partial event
-            # We rely on other control signals to determine when to yield the
-            # full text response(turn_complete, interrupted, or tool_call).
-            text += message.server_content.output_transcription.text
-            parts = [
-                types.Part.from_text(
-                    text=message.server_content.output_transcription.text
-                )
-            ]
             llm_response = LlmResponse(
-                content=types.Content(role='model', parts=parts), partial=True
+                output_transcription=message.server_content.output_transcription
             )
             yield llm_response
-
           if message.server_content.turn_complete:
             if text:
               yield self.__build_full_text_response(text)

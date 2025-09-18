@@ -188,12 +188,16 @@ class RemoteA2aAgent(BaseAgent):
       )
       self._httpx_client_needs_cleanup = True
       if self._a2a_client_factory:
+        registry = self._a2a_client_factory._registry
         self._a2a_client_factory = A2AClientFactory(
             config=dataclasses.replace(
                 self._a2a_client_factory._config,
                 httpx_client=self._httpx_client,
-            )
+            ),
+            consumers=self._a2a_client_factory._consumers,
         )
+        for label, generator in registry.items():
+          self._a2a_client_factory.register(label, generator)
     if not self._a2a_client_factory:
       client_config = A2AClientConfig(
           httpx_client=self._httpx_client,
@@ -494,9 +498,16 @@ class RemoteA2aAgent(BaseAgent):
         event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
             a2a_request.model_dump(exclude_none=True, by_alias=True)
         )
-        event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-            a2a_response.model_dump(exclude_none=True, by_alias=True)
-        )
+        # If the response is a ClientEvent, record the task state, otherwise
+        # record the message object.
+        if isinstance(a2a_response, tuple):
+          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+              a2a_response[0].model_dump(exclude_none=True, by_alias=True)
+          )
+        else:
+          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+              a2a_response.model_dump(exclude_none=True, by_alias=True)
+          )
 
         yield event
 
