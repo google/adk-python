@@ -1,31 +1,21 @@
 #!/usr/bin/env python3
 """
-GCP Security Agent for ADK Web Interface
-========================================
+Hybrid Security Search Tool - Database + Web Search
+===================================================
 
-This agent provides intelligent analysis of GCP security data,
-including storage buckets, security findings, IAM accounts, and more.
-It combines database queries with LLM-powered insights.
+This tool provides unified search capability for both:
+1. Internal security data from SQLite database
+2. External security intelligence via web search
+
+Works around Gemini's limitation that multiple tools must all be search tools.
 """
 
-import os
-import sys
-import json
 import sqlite3
-import logging
+import json
+import os
+import requests
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-from google.adk.agents import Agent
-
-# Add the project root to the Python path so we can import our tools
-current_dir = Path(__file__).parent
-project_root = current_dir.parent.parent
-sys.path.insert(0, str(project_root))
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 def search_security_information(query: str, search_type: str = "auto") -> str:
     """
@@ -41,6 +31,9 @@ def search_security_information(query: str, search_type: str = "auto") -> str:
 
     def get_database_path() -> str:
         """Get the path to the SQLite database."""
+        current_dir = Path(__file__).parent
+        project_root = current_dir.parent.parent.parent
+
         possible_paths = [
             "/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/backend/cache/gcp_data.db",
             str(project_root / "backend/cache/gcp_data.db"),
@@ -173,68 +166,3 @@ def search_security_information(query: str, search_type: str = "auto") -> str:
             "success": False,
             "error": f"Search failed: {str(e)}"
         }, indent=2)
-
-
-# Create the main security agent - pass the function directly to tools
-root_agent = Agent(
-    name="security_agent",
-    model="gemini-2.0-flash",
-    instruction="""
-SYSTEM BEHAVIOR: You are a GCP Security Agent with UNIFIED SEARCH CAPABILITY:
-1. Use search_security_information tool for ALL queries
-2. Tool automatically handles database searches, web searches, or combined analysis
-
-CORE OPERATING PROCEDURE:
-1. Receive user query
-2. IMMEDIATELY call search_security_information tool
-3. Tool determines search strategy (database/web/combined)
-4. Wait for comprehensive search results
-5. Analyze data and provide insights
-
-YOU ARE A TOOL-CALLING AGENT FIRST, CONVERSATIONAL AGENT SECOND.
-
-UNIFIED SEARCH LOGIC:
-🔍 **Internal Security Analysis** (automatically triggered):
-- "What are my biggest security risks?" → database search for security summary
-- "Analyze my storage buckets" → database search for bucket data
-- "Show my security findings" → database search for findings
-- Queries containing: "my", "analyze my", "show my", "security summary"
-
-🌐 **External Threat Intelligence** (automatically triggered):
-- "Latest GCP security threats" → web search for current threats
-- "Best practices for..." → web search for guidelines
-- "Recent vulnerabilities" → web search for bulletins
-- Queries containing: "latest", "current", "new", "recent", "threat", "vulnerability"
-
-🔄 **Combined Analysis** (for complex queries):
-- Tool automatically provides both internal + external data
-- Correlates environment status with threat landscape
-- Comprehensive security intelligence
-
-TOOL USAGE:
-✅ ALWAYS call search_security_information(query="user's question")
-✅ Let the tool determine search strategy automatically
-✅ Tool returns structured JSON with database/web/combined results
-
-PROHIBITED RESPONSES:
-❌ "Please tell me what you'd like to investigate..."
-❌ "I can help you with various security tasks..."
-❌ Generic responses without tool usage
-
-REQUIRED RESPONSES:
-✅ "Based on analysis of your security environment and current threat intelligence..."
-✅ "After searching your database and external sources..."
-✅ Data-driven analysis with comprehensive context
-
-RESPONSE FORMAT:
-1. **IMMEDIATE TOOL CALL** search_security_information(query="...")
-2. **Comprehensive Analysis** (parse JSON results from tool)
-3. **Risk Prioritization** (internal findings + external threats)
-4. **Actionable Recommendations** (specific to your environment)
-5. **Implementation Guidance** (step-by-step remediation)
-
-REMEMBER: The tool combines real internal data with current threat intelligence automatically.
-""",
-    description="GCP Security Analysis Agent that provides intelligent insights based on real security data",
-    tools=[search_security_information]  # Hybrid search: database + web intelligence
-)
