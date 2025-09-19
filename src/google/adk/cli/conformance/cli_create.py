@@ -91,9 +91,15 @@ async def _create_conformance_test_files(
     dump_pydantic_to_yaml(
         updated_session,
         generated_session_file,
-        indent=2,
-        sort_keys=False,
-        exclude_none=True,
+        sort_keys=False,  # Output keys in the declaration order.
+        exclude={
+            "state": {"_adk_recordings_config": True},
+            "events": {
+                "__all__": {
+                    "actions": {"state_delta": {"_adk_recordings_config": True}}
+                }
+            },
+        },
     )
 
     return generated_session_file
