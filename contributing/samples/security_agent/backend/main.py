@@ -456,6 +456,134 @@ async def health_check():
         "database": "connected"
     }
 
+@app.get("/.well-known/mcp")
+async def mcp_discovery():
+    """
+    MCP Discovery endpoint - exposes the security agent for consumption by other services.
+    This follows the MCP (Model Context Protocol) specification for service discovery.
+    """
+    # Get all available query types from the security tool
+    available_query_types = [
+        "security_summary", "assets", "security_findings", "iam_analysis",
+        "storage_buckets", "firewall_rules", "networks", "compute_instances",
+        "gke_clusters", "databases", "iam_accounts", "secrets", "monitoring",
+        "logs", "service_evaluation", "recommendations", "org_policies",
+        "service_usage", "cache_status", "statistics", "msa_analysis",
+        "vpc_error_analysis", "support_tickets", "vpcsc_dry_run",
+        "vpcsc_readiness", "asset_inventory", "configuration_drift",
+        "asset_report", "msa_impact", "msa_permissions", "context_aware_analysis",
+        "cross_impact_analysis", "coding_standards", "enterprise_policies",
+        "best_practices", "compliance", "search_docs"
+    ]
+
+    return {
+        "version": "1.0",
+        "server_info": {
+            "name": "GCP Security Agent MCP Server",
+            "version": "1.0.0",
+            "description": "Micron IT Security Agent - Comprehensive GCP security analysis and compliance checking"
+        },
+        "capabilities": {
+            "tools": True,
+            "prompts": False,
+            "resources": True,
+            "logging": True
+        },
+        "tools": [
+            {
+                "name": "query_security_data",
+                "description": "Query GCP security data and perform security analysis across multiple domains",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query_type": {
+                            "type": "string",
+                            "enum": available_query_types,
+                            "description": "Type of security data to query"
+                        },
+                        "severity": {
+                            "type": "string",
+                            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                            "description": "Filter by severity level (optional)"
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Filter by category (optional)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": 10,
+                            "description": "Maximum number of results to return"
+                        },
+                        "service_name": {
+                            "type": "string",
+                            "description": "For service_evaluation queries - name of GCP service to evaluate"
+                        },
+                        "force_live_update": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Force live GCP API data instead of cached data"
+                        }
+                    },
+                    "required": ["query_type"]
+                }
+            },
+            {
+                "name": "get_agent_capabilities",
+                "description": "Get detailed information about the security agent's capabilities and available tools",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "health_check",
+                "description": "Check the health and status of the security agent and its dependencies",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        ],
+        "endpoints": {
+            "tool_call": "/api/v1/tools/call",
+            "health": "/health",
+            "metrics": "/api/v1/performance",
+            "documentation": "/docs"
+        },
+        "authentication": {
+            "type": "bearer",
+            "required": False,
+            "description": "Bearer token authentication optional for basic queries"
+        },
+        "contact": {
+            "team": "Micron IT Security Team",
+            "documentation": "http://localhost:8501/Security_Agent_MCP_Integration",
+            "support": "security-team@micron.com"
+        },
+        "usage": {
+            "example_queries": [
+                {
+                    "description": "Get storage bucket security analysis",
+                    "tool": "query_security_data",
+                    "parameters": {"query_type": "storage_buckets"}
+                },
+                {
+                    "description": "Check critical security findings",
+                    "tool": "query_security_data",
+                    "parameters": {"query_type": "security_findings", "severity": "CRITICAL"}
+                },
+                {
+                    "description": "Evaluate security risks for new GCP service",
+                    "tool": "query_security_data",
+                    "parameters": {"query_type": "service_evaluation", "service_name": "Cloud Functions"}
+                }
+            ]
+        }
+    }
+
 @app.get("/list-apps")
 async def list_apps():
     """List available ADK apps endpoint (for frontend compatibility)."""
@@ -688,11 +816,73 @@ async def direct_query(request: QueryRequest):
 @app.post("/api/v1/tools/call")
 async def call_tool(request: ToolCallRequest):
     """
-    Direct tool calling endpoint.
+    MCP-compatible tool calling endpoint.
+    Supports all tools exposed in the .well-known/mcp discovery endpoint.
     """
     try:
         if request.tool_name == "query_security_data":
             result = query_security_data(**request.parameters)
+        elif request.tool_name == "get_agent_capabilities":
+            # Return detailed agent capabilities
+            result = {
+                "agent_name": "GCP Security Agent",
+                "model": os.getenv("ADK_AGENT_MODEL", "gemini-2.5-flash"),
+                "capabilities": [
+                    "GCP Security Analysis",
+                    "Storage Bucket Security Assessment",
+                    "IAM Policy Analysis",
+                    "Network Security Review",
+                    "Compliance Checking",
+                    "Service Risk Evaluation",
+                    "Real-time Security Monitoring"
+                ],
+                "query_types": [
+                    {"name": "storage_buckets", "description": "Analyze GCS bucket security configurations"},
+                    {"name": "security_findings", "description": "Get security vulnerabilities and compliance issues"},
+                    {"name": "iam_analysis", "description": "Review IAM policies and access patterns"},
+                    {"name": "firewall_rules", "description": "Analyze network firewall configurations"},
+                    {"name": "compute_instances", "description": "Review VM security configurations"},
+                    {"name": "service_evaluation", "description": "Assess security risks for new GCP services"}
+                ],
+                "data_sources": [
+                    "Google Cloud Asset Inventory",
+                    "Google Cloud Security Command Center",
+                    "Cloud Storage API",
+                    "Compute Engine API",
+                    "IAM API"
+                ],
+                "features": {
+                    "real_time_analysis": True,
+                    "cached_results": True,
+                    "streaming_responses": True,
+                    "authentication": "optional",
+                    "rate_limiting": False
+                }
+            }
+        elif request.tool_name == "health_check":
+            # Return comprehensive health status
+            db_status = "healthy"
+            try:
+                # Try a simple database query
+                test_result = query_security_data("statistics")
+                if not test_result.get("success"):
+                    db_status = "degraded"
+            except:
+                db_status = "unhealthy"
+
+            result = {
+                "status": "healthy",
+                "timestamp": datetime.now().isoformat(),
+                "components": {
+                    "adk_agent": "ready" if agent_runner else "unavailable",
+                    "database": db_status,
+                    "security_tools": "operational",
+                    "api_server": "healthy"
+                },
+                "version": "1.0.0",
+                "uptime": "running",
+                "model": os.getenv("ADK_AGENT_MODEL", "gemini-2.5-flash") if ADK_AVAILABLE else "unavailable"
+            }
         else:
             raise ValueError(f"Unknown tool: {request.tool_name}")
 
@@ -705,7 +895,15 @@ async def call_tool(request: ToolCallRequest):
 
     except Exception as e:
         logger.error(f"Tool call error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e),
+                "tool": request.tool_name,
+                "timestamp": datetime.now().isoformat()
+            }
+        )
 
 @app.get("/api/v1/tools")
 async def list_tools():
