@@ -16,28 +16,34 @@ import sys
 from typing import Any
 
 from adk_pr_triaging_agent.settings import GITHUB_GRAPHQL_URL
-from adk_pr_triaging_agent.settings import GITHUB_TOKEN
+from adk_pr_triaging_agent.settings import get_github_token
 from google.adk.agents.run_config import RunConfig
 from google.adk.runners import Runner
 from google.genai import types
 import requests
 
-headers = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json",
-}
+def get_headers():
+  """Get headers with GitHub token."""
+  token = get_github_token()
+  return {
+      "Authorization": f"token {token}",
+      "Accept": "application/vnd.github.v3+json",
+  }
 
-diff_headers = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3.diff",
-}
+def get_diff_headers():
+  """Get diff headers with GitHub token."""
+  token = get_github_token()
+  return {
+      "Authorization": f"token {token}",
+      "Accept": "application/vnd.github.v3.diff",
+  }
 
 
 def run_graphql_query(query: str, variables: dict[str, Any]) -> dict[str, Any]:
   """Executes a GraphQL query."""
   payload = {"query": query, "variables": variables}
   response = requests.post(
-      GITHUB_GRAPHQL_URL, headers=headers, json=payload, timeout=60
+      GITHUB_GRAPHQL_URL, headers=get_headers(), json=payload, timeout=60
   )
   response.raise_for_status()
   return response.json()
@@ -47,21 +53,21 @@ def get_request(url: str, params: dict[str, Any] | None = None) -> Any:
   """Executes a GET request."""
   if params is None:
     params = {}
-  response = requests.get(url, headers=headers, params=params, timeout=60)
+  response = requests.get(url, headers=get_headers(), params=params, timeout=60)
   response.raise_for_status()
   return response.json()
 
 
 def get_diff(url: str) -> str:
   """Executes a GET request for a diff."""
-  response = requests.get(url, headers=diff_headers)
+  response = requests.get(url, headers=get_diff_headers())
   response.raise_for_status()
   return response.text
 
 
 def post_request(url: str, payload: Any) -> dict[str, Any]:
   """Executes a POST request."""
-  response = requests.post(url, headers=headers, json=payload, timeout=60)
+  response = requests.post(url, headers=get_headers(), json=payload, timeout=60)
   response.raise_for_status()
   return response.json()
 
