@@ -456,6 +456,20 @@ async def health_check():
         "database": "connected"
     }
 
+@app.get("/list-apps")
+async def list_apps():
+    """List available ADK apps endpoint (for frontend compatibility)."""
+    return [
+        {
+            "id": "agents",
+            "name": "GCP Security Agent",
+            "description": "ADK-powered GCP security analysis agent",
+            "status": "ready" if ADK_AVAILABLE else "not_available",
+            "model": os.getenv("ADK_AGENT_MODEL", "gemini-2.5-flash") if ADK_AVAILABLE else None,
+            "version": "1.0.0"
+        }
+    ]
+
 @app.get("/health/database")
 async def database_health():
     """Database health check endpoint."""

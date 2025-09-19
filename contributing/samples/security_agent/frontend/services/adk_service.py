@@ -16,12 +16,12 @@ logger = logging.getLogger(__name__)
 BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "http://localhost:8000")
 # ADK-specific endpoints (correct for ADK framework)
 SESSIONS_ENDPOINT = f"{BACKEND_API_URL}/apps/agents/users/user/sessions"
-HEALTH_ENDPOINT = f"{BACKEND_API_URL}/list-apps"  # ADK health check equivalent
-DATABASE_HEALTH_ENDPOINT = f"{BACKEND_API_URL}/apps/agents/users/user/sessions"  # Session creation as DB test
+HEALTH_ENDPOINT = f"{BACKEND_API_URL}/list-apps"  # Use existing ADK endpoint
+DATABASE_HEALTH_ENDPOINT = f"{BACKEND_API_URL}/apps/agents/users/user/sessions"  # Test session creation
 
 def check_backend_health() -> Dict[str, Any]:
     """
-    Check if the backend service is running and healthy.
+    Check if the backend service is running and healthy by testing the list-apps endpoint.
 
     Returns:
         Dict with health status information
@@ -30,11 +30,19 @@ def check_backend_health() -> Dict[str, Any]:
         response = requests.get(HEALTH_ENDPOINT, timeout=5)
         if response.status_code == 200:
             health_data = response.json()
-            return {
-                "success": True,
-                "status": "healthy",
-                "details": health_data
-            }
+            # Verify it returns a list (expected from list-apps)
+            if isinstance(health_data, list):
+                return {
+                    "success": True,
+                    "status": "healthy",
+                    "details": {"apps_available": len(health_data), "apps": health_data}
+                }
+            else:
+                return {
+                    "success": True,
+                    "status": "healthy",
+                    "details": health_data
+                }
         else:
             return {
                 "success": False,
@@ -63,21 +71,30 @@ def check_database_health() -> Dict[str, Any]:
         Dict with database health information
     """
     try:
-        # Test database health by attempting to get sessions list (requires DB connectivity)
-        response = requests.get(DATABASE_HEALTH_ENDPOINT, timeout=10)
+        # Test database health by attempting to create a test session (requires DB connectivity)
+        test_payload = {"app_name": "agents"}
+        response = requests.post(DATABASE_HEALTH_ENDPOINT, json=test_payload, timeout=10)
         if response.status_code == 200:
-            db_data = response.json()
-            return {
-                "success": True,
-                "status": "healthy",
-                "details": {"message": "ADK sessions endpoint accessible", "sessions": len(db_data) if isinstance(db_data, list) else "available"}
-            }
+            session_data = response.json()
+            if "id" in session_data and "appName" in session_data:
+                return {
+                    "success": True,
+                    "status": "healthy",
+                    "details": {"message": "ADK session creation successful", "session_id": session_data["id"]}
+                }
+            else:
+                return {
+                    "success": False,
+                    "status": "unhealthy",
+                    "error": "Session creation returned unexpected format",
+                    "details": session_data
+                }
         else:
             db_data = response.json() if response.content else {}
             return {
                 "success": False,
                 "status": "unhealthy",
-                "error": db_data.get("error", f"ADK sessions check returned status {response.status_code}"),
+                "error": db_data.get("error", f"ADK session creation returned status {response.status_code}"),
                 "details": db_data
             }
     except Exception as e:
