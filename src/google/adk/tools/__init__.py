@@ -23,6 +23,7 @@ from .example_tool import ExampleTool
 from .exit_loop_tool import exit_loop
 from .function_tool import FunctionTool
 from .get_user_choice_tool import get_user_choice_tool as get_user_choice
+from .google_maps_grounding_tool import google_maps_grounding
 from .google_search_tool import google_search
 from .load_artifacts_tool import load_artifacts_tool as load_artifacts
 from .load_memory_tool import load_memory_tool as load_memory
@@ -39,6 +40,7 @@ __all__ = [
     'AuthToolArguments',
     'BaseTool',
     'enterprise_web_search',
+    'google_maps_grounding',
     'google_search',
     'url_context',
     'VertexAiSearchTool',

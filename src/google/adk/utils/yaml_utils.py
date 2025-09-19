@@ -28,6 +28,7 @@ def dump_pydantic_to_yaml(
     indent: int = 2,
     sort_keys: bool = True,
     exclude_none: bool = True,
+    exclude_defaults: bool = True,
 ) -> None:
   """Dump a Pydantic model to a YAML file with multiline strings using | style.
 
@@ -38,7 +39,11 @@ def dump_pydantic_to_yaml(
     sort_keys: Whether to sort dictionary keys (default: True).
     exclude_none: Exclude fields with None values (default: True).
   """
-  model_dict = model.model_dump(exclude_none=exclude_none, mode='json')
+  model_dict = model.model_dump(
+      exclude_none=exclude_none,
+      exclude_defaults=exclude_defaults,
+      mode='json',
+  )
 
   file_path = Path(file_path)
   file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +60,7 @@ def dump_pydantic_to_yaml(
       return super(_MultilineDumper, self).increase_indent(flow, False)
 
   def multiline_str_representer(dumper, data):
-    if '\n' in data:
+    if '\n' in data or '"' in data or "'" in data:
       return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
     return dumper.represent_scalar('tag:yaml.org,2002:str', data)
 
@@ -70,4 +75,5 @@ def dump_pydantic_to_yaml(
         indent=indent,
         sort_keys=sort_keys,
         default_flow_style=False,
+        width=1000000,  # Essentially disable text wraps
     )

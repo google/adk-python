@@ -107,7 +107,7 @@ def get_structured_model_response(function_response_event: Event) -> str | None:
   for func_response in function_response_event.get_function_responses():
     if func_response.name == 'set_model_response':
       # Convert dict to JSON string
-      return json.dumps(func_response.response)
+      return json.dumps(func_response.response, ensure_ascii=False)
 
   return None
 
