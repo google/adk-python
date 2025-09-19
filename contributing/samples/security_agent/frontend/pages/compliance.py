@@ -21,28 +21,36 @@ from frontend.components.cards import DataTableCard, ComplianceCard, MetricCard
 from frontend.components.utils import SessionManager, DataFormatter
 from frontend.utils.session_state import initialize_session_state
 from frontend.components.chat_widget import create_chat_widget
+from frontend.services.metrics_service import MetricsService
 
 def show_page():
     """Render the compliance assessment page."""
-    # 1. HEADER
-    st.markdown("## 📋 Compliance Assessment")
+    # Clean header without competing elements
+    st.markdown("# 📋 Compliance Assessment")
     st.caption("Multi-framework compliance monitoring and reporting")
 
     # 2. TABS
     tabs = st.tabs(["📊 Overview", "🔒 CIS", "🏛️ NIST", "🌐 ISO 27001"])
 
     with tabs[0]:
-        # Overview metrics
-        cols = st.columns(4)
-        with cols[0]:
-            st.metric("Overall Score", "84.7%", delta="+2.3%")
-        with cols[1]:
-            st.metric("Frameworks", "5", delta="0")
-        with cols[2]:
-            st.metric("Controls Passed", "127", delta="+8")
-        with cols[3]:
-            st.metric("Open Issues", "18", delta="-4")
+        # Key metrics section - no extra header
+        st.markdown("**📊 Key Performance Metrics**")
 
+        # Fetch real metrics from database
+        metrics_service = MetricsService()
+        metrics = metrics_service.get_compliance_metrics()
+
+        # Display metrics in 4 columns
+        cols = st.columns(4)
+        for i, (key, data) in enumerate(metrics.items()):
+            if i < 4:  # Only show first 4 metrics
+                with cols[i]:
+                    st.metric(
+                        label=key.replace("_", " ").title(),
+                        value=data["value"],
+                        delta=data["delta"],
+                        help=data["help"]
+                    )
     with tabs[1]:
         st.markdown("**CIS Controls**")
         st.info("88% compliance with CIS Critical Security Controls")
@@ -55,8 +63,8 @@ def show_page():
         st.markdown("**ISO 27001**")
         st.success("90% compliance with information security controls")
 
-    # 3. CHARTS
-    st.markdown("### 📊 Compliance Overview")
+    # Charts section
+    st.markdown("**📊 Compliance Overview**")
     framework_data = [
         {'framework': 'CIS', 'score': 88},
         {'framework': 'NIST', 'score': 82},
@@ -67,28 +75,28 @@ def show_page():
         [{'severity': item['framework'], 'count': item['score']} for item in framework_data]
     )
     fig.update_layout(title="Framework Compliance Scores", height=250, margin=dict(t=30, b=30, l=30, r=30))
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="compliance_framework_scores_chart_main")
 
-    # Sidebar for admin controls
-    with st.sidebar:
-        st.markdown("### ⚙️ Admin Controls")
+    # Admin controls inline
+    st.markdown("---")
+    st.markdown("**⚙️ Admin Controls**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
         if st.button("🔄 Refresh Data", key="compliance_refresh", help="Refresh all security data"):
             st.rerun()
+    with col2:
         if st.button("📥 Export All Data", key="compliance_export", help="Export complete security report"):
             st.success("Export initiated...")
-        st.markdown("#### 📡 System Status")
-        st.success("🟢 ADK Agent: Online")
-        st.success("🟢 Database: Connected")
-        st.info("🔵 Last Updated: Just now")
+    with col3:
+        st.markdown("**Status:** 🟢 Online")
 
-    # 4. SIMPLE CHAT (at bottom)
+    # Simple chat at bottom
     st.markdown("---")
-    st.markdown("### 💬 Security Assistant")
+    st.markdown("**💬 Security Assistant**")
     st.markdown("Ask questions about compliance or get help with analysis.")
 
     # Simple chat using ChatWidget
-    chat_widget = create_chat_widget(context="compliance", height=300)
-    chat_widget.render()
+    create_chat_widget(context="compliance", height=300)
 
 def _render_compliance_overview():
     """Render compliance overview section."""
@@ -178,7 +186,7 @@ def _render_compliance_overview():
             y_col='score',
             title='30-Day Compliance Trends'
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="compliance_trends_chart")
 
     with col2:
         st.subheader("🔍 Control Status Distribution")
@@ -194,7 +202,7 @@ def _render_compliance_overview():
             [{'severity': item['status'], 'count': item['count']} for item in control_status]
         )
         fig.update_layout(title="Control Status Across All Frameworks")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="compliance_control_status_chart")
 
     # Chat section - make it prominent
     st.subheader("💬 Compliance Assistant")

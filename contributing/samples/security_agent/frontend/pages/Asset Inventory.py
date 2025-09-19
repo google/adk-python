@@ -21,69 +21,79 @@ from frontend.components.cards import DataTableCard, ResourceCard, MetricCard
 from frontend.components.utils import SessionManager, FilterUtils, DataFormatter
 from frontend.utils.session_state import initialize_session_state
 from frontend.components.chat_widget import create_chat_widget
+from frontend.services.metrics_service import MetricsService
 
 def show_page():
     """Render the asset inventory page."""
-    # 1. HEADER
-    st.markdown("## 📦 Asset Inventory")
+    # Clean header without competing elements
+    st.markdown("# 📦 Asset Inventory")
     st.caption("Resource discovery and security assessment")
 
-    # 2. TABS
-    tabs = st.tabs(["📦 Resources", "🔒 Security", "📊 Analytics"])
+    # Key metrics section - no extra header
+    st.markdown("**📊 Key Performance Metrics**")
 
-    with tabs[0]:
-        # Resource metrics
-        cols = st.columns(3)
-        with cols[0]:
-            st.metric("Total Resources", "1,534", delta="+45")
-        with cols[1]:
-            st.metric("Security Issues", "89", delta="-12")
-        with cols[2]:
-            st.metric("Unmonitored Assets", "23", delta="-5")
+    # Fetch real metrics from database
+    metrics_service = MetricsService()
+    metrics = metrics_service.get_asset_metrics()
 
-    with tabs[1]:
-        st.markdown("**Asset Security**")
-        st.info("156 resources require security review")
+    # Display metrics in 4 columns (reduced from 5)
+    cols = st.columns(4)
+    for i, (key, data) in enumerate(metrics.items()):
+        if i < 4:  # Only show first 4 metrics
+            with cols[i]:
+                st.metric(
+                    label=key.replace("_", " ").title(),
+                    value=data["value"],
+                    delta=data["delta"],
+                    help=data["help"]
+                )
 
-    with tabs[2]:
-        st.markdown("**Resource Analytics**")
-        st.warning("23 assets are unmonitored")
+    # Charts section with simpler layout
+    st.markdown("---")
+    st.markdown("**📊 Asset Analytics**")
 
-    # 3. CHARTS
-    st.markdown("### 📊 Asset Distribution")
-    # Asset distribution chart
-    resource_data = [
-        {'resource_type': 'Compute Engine', 'count': 456},
-        {'resource_type': 'Cloud Storage', 'count': 234},
-        {'resource_type': 'Cloud SQL', 'count': 123},
-        {'resource_type': 'VPC Networks', 'count': 89}
-    ]
-    fig = SecurityCharts.render_severity_distribution(
-        [{'severity': item['resource_type'], 'count': item['count']} for item in resource_data]
-    )
-    fig.update_layout(title="Resource Distribution by Type", height=250, margin=dict(t=30, b=30, l=30, r=30))
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    # Two column layout for charts
+    chart_col1, chart_col2 = st.columns(2)
 
-    # Sidebar for admin controls
-    with st.sidebar:
-        st.markdown("### ⚙️ Admin Controls")
+    with chart_col1:
+        st.markdown("**Resource Distribution**")
+        # Fetch chart data from database
+        resource_data = metrics_service.get_chart_data("asset_types")
+        # Convert to format expected by SecurityCharts
+        chart_data = [{'severity': item.get('type', item.get('name', 'Unknown')), 'count': item.get('count', 0)} for item in resource_data]
+        fig = SecurityCharts.render_severity_distribution(chart_data)
+        fig.update_layout(title="", height=250, margin=dict(t=10, b=30, l=30, r=30))
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="asset_resource_distribution_chart_main")
+
+    with chart_col2:
+        st.markdown("**Resource Growth Trend**")
+        # Generate trend data for resources
+        trend_data = MetricCharts.generate_trend_data(days=30, base_value=300)
+        fig2 = MetricCharts.render_trend_chart(trend_data, title="")
+        fig2.update_layout(height=250, margin=dict(t=10, b=30, l=30, r=30))
+        st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False}, key="asset_growth_trend_chart")
+
+    # Simple admin controls (no sidebar)
+    st.markdown("---")
+    admin_col1, admin_col2, admin_col3 = st.columns(3)
+
+    with admin_col1:
         if st.button("🔄 Refresh Data", key="asset_refresh", help="Refresh all security data"):
             st.rerun()
-        if st.button("📥 Export All Data", key="asset_export", help="Export complete security report"):
-            st.success("Export initiated...")
-        st.markdown("#### 📡 System Status")
-        st.success("🟢 ADK Agent: Online")
-        st.success("🟢 Database: Connected")
-        st.info("🔵 Last Updated: Just now")
 
-    # 4. SIMPLE CHAT (at bottom)
+    with admin_col2:
+        if st.button("📥 Export Data", key="asset_export", help="Export security report"):
+            st.success("Export initiated...")
+
+    with admin_col3:
+        st.success("🟢 System Online")
+
+    # Chat section (simplified)
     st.markdown("---")
-    st.markdown("### 💬 Security Assistant")
-    st.markdown("Ask questions about asset inventory or get help with analysis.")
+    st.markdown("**💬 Security Assistant**")
 
     # Simple chat using ChatWidget
-    chat_widget = create_chat_widget(context="assets", height=300)
-    chat_widget.render()
+    create_chat_widget(context="assets", height=300)
 
 def _render_all_resources():
     """Render all resources overview."""
@@ -146,7 +156,7 @@ def _render_all_resources():
             [{'severity': item['resource_type'], 'count': item['count']} for item in resource_distribution]
         )
         fig.update_layout(title="Resource Distribution by Type")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="asset_all_resources_distribution_chart")
 
     with col2:
         st.subheader("🔒 Security Compliance")
@@ -159,7 +169,7 @@ def _render_all_resources():
         ]
 
         fig = SecurityCharts.render_resource_compliance_chart(security_data)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="asset_security_compliance_chart")
 
     # Chat section - make it prominent
     st.subheader("💬 Asset Management Assistant")
@@ -257,7 +267,7 @@ def _render_network_resources():
     ]
     
     fig = SecurityCharts.render_network_topology(network_topology)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="asset_network_topology_chart")
     
     # Network security metrics
     cols = st.columns(3)
@@ -524,5 +534,4 @@ def _export_filtered_resources(filtered_data):
 # Entry point for Streamlit multi-page app
 if __name__ == "__main__":
     initialize_session_state()
-    show_page()
     show_page()

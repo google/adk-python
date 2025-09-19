@@ -21,25 +21,38 @@ from frontend.components.cards import DataTableCard, InfoCard, AlertCard
 from frontend.components.utils import SessionManager, FilterUtils
 from frontend.utils.session_state import initialize_session_state
 from frontend.components.chat_widget import create_chat_widget
+from frontend.services.metrics_service import MetricsService
 
 def show_page():
     """Render the IAM analysis page."""
-    # 1. HEADER
-    st.markdown("## 🔑 IAM Analysis")
+    # Clean header without competing elements
+    st.markdown("# 🔑 IAM Analysis")
     st.caption("Identity and Access Management overview")
 
     # 2. TABS
     tabs = st.tabs(["👥 Users", "🔑 Roles", "🛡️ Policies"])
 
     with tabs[0]:
-        # User metrics
-        cols = st.columns(3)
-        with cols[0]:
-            st.metric("Total Users", "89", delta="3")
-        with cols[1]:
-            st.metric("Privileged Users", "15", delta="-1")
-        with cols[2]:
-            st.metric("External Users", "12", delta="1", delta_color="inverse")
+        # Key metrics section - no extra header
+        st.markdown("**📊 Key Performance Metrics**")
+
+        # Fetch real metrics from database
+        metrics_service = MetricsService()
+        metrics = metrics_service.get_iam_metrics()
+
+        # Display metrics in 4 columns
+        cols = st.columns(4)
+        for i, (key, data) in enumerate(metrics.items()):
+            if i < 4:  # Only show first 4 metrics
+                with cols[i]:
+                    delta_color = "inverse" if key == "external_users" else "normal"
+                    st.metric(
+                        label=key.replace("_", " ").title(),
+                        value=data["value"],
+                        delta=data["delta"],
+                        delta_color=delta_color,
+                        help=data["help"]
+                    )
 
     with tabs[1]:
         st.markdown("**IAM Roles**")
@@ -49,38 +62,57 @@ def show_page():
         st.markdown("**IAM Policies**")
         st.warning("8 overprivileged roles detected")
 
-    # 3. CHARTS
-    st.markdown("### 📊 User Distribution by Role")
-    role_data = [
-        {'severity': 'Admin', 'count': 15},
-        {'severity': 'Editor', 'count': 45},
-        {'severity': 'Viewer', 'count': 120},
-        {'severity': 'Service Account', 'count': 34}
-    ]
-    fig = SecurityCharts.render_severity_distribution(role_data)
-    fig.update_layout(title="User Distribution by Role Type", height=250, margin=dict(t=30, b=30, l=30, r=30))
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    # Enhanced charts section
+    st.markdown("**📊 IAM Analytics Dashboard**")
 
-    # Sidebar for admin controls
-    with st.sidebar:
-        st.markdown("### ⚙️ Admin Controls")
+    # Two column layout for charts
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown("#### User Distribution by Role")
+        # Fetch chart data from database
+        role_data = metrics_service.get_chart_data("iam_roles")
+        # Convert to format expected by SecurityCharts
+        chart_data = [{'severity': item.get('name', item.get('severity', 'Unknown')), 'count': item.get('count', 0)} for item in role_data]
+        fig = SecurityCharts.render_severity_distribution(chart_data)
+        fig.update_layout(title="", height=250, margin=dict(t=10, b=30, l=30, r=30))
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="iam_users_role_chart_main")
+
+    with chart_col2:
+        st.markdown("#### Permission Risk Analysis")
+        # Fetch risk data from database
+        risk_data = metrics_service.get_chart_data("iam_risk")
+        fig2 = SecurityCharts.render_severity_distribution(risk_data)
+        fig2.update_layout(title="", height=250, margin=dict(t=10, b=30, l=30, r=30))
+        st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False}, key="iam_permission_risk_chart_main")
+
+    # Time series chart for access patterns
+    st.markdown("#### 📈 User Access Trends (30 Days)")
+    trend_data = MetricCharts.generate_trend_data(days=30, base_value=85)
+    fig3 = MetricCharts.render_trend_chart(trend_data, title="Daily Active Users")
+    fig3.update_layout(height=200, margin=dict(t=10, b=30, l=30, r=30))
+    st.plotly_chart(fig3, use_container_width=True, config={'displayModeBar': False}, key="iam_access_trends_chart_main")
+
+    # Admin controls inline
+    st.markdown("---")
+    st.markdown("**⚙️ Admin Controls**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
         if st.button("🔄 Refresh Data", key="iam_refresh", help="Refresh all security data"):
             st.rerun()
+    with col2:
         if st.button("📥 Export All Data", key="iam_export", help="Export complete security report"):
             st.success("Export initiated...")
-        st.markdown("#### 📡 System Status")
-        st.success("🟢 ADK Agent: Online")
-        st.success("🟢 Database: Connected")
-        st.info("🔵 Last Updated: Just now")
+    with col3:
+        st.markdown("**Status:** 🟢 Online")
 
-    # 4. SIMPLE CHAT (at bottom)
+    # Simple chat at bottom
     st.markdown("---")
-    st.markdown("### 💬 Security Assistant")
+    st.markdown("**💬 Security Assistant**")
     st.markdown("Ask questions about IAM security or get help with analysis.")
 
     # Simple chat using ChatWidget
-    chat_widget = create_chat_widget(context="iam", height=300)
-    chat_widget.render()
+    create_chat_widget(context="iam", height=300)
 
 def _render_role_analysis():
     """Render IAM role analysis section."""
@@ -198,7 +230,7 @@ def _render_user_access_analysis():
         [{'severity': item['role'], 'count': item['count']} for item in role_access_data]
     )
     fig.update_layout(title="User Distribution by Role Type", height=200, margin=dict(t=30, b=30, l=30, r=30))
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="iam_user_distribution_chart")
 
     # Chat section - compact
     st.markdown("#### 💬 IAM Security Assistant")
@@ -259,7 +291,7 @@ def _render_risk_assessment():
     
     with col1:
         fig = SecurityCharts.render_security_score_gauge(risk_score, "IAM Risk Score")
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="iam_risk_gauge_chart")
     
     with col2:
         # Risk categories
@@ -399,7 +431,7 @@ def _render_role_hierarchy():
     ]
     
     fig = SecurityCharts.render_network_topology(hierarchy_data)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="iam_role_hierarchy_chart")
 
 def _run_iam_analysis():
     """Run comprehensive IAM analysis."""
@@ -419,5 +451,4 @@ def _generate_iam_report():
 # Entry point for Streamlit multi-page app
 if __name__ == "__main__":
     initialize_session_state()
-    show_page()
     show_page()

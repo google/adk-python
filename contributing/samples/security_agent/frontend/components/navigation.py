@@ -16,7 +16,7 @@ class NavigationComponent:
         self.pages = {
             'Dashboard': {
                 'icon': '📊',
-                'description': 'Executive security overview',
+                'description': 'Executive Security Overview',
                 'badge': None
             },
             'IAM Analysis': {
@@ -26,27 +26,32 @@ class NavigationComponent:
             },
             'Asset Inventory': {
                 'icon': '📦',
-                'description': 'Resource discovery & inventory',
+                'description': 'Resource Discovery & Inventory',
                 'badge': None
             },
             'Security Findings': {
                 'icon': '🔍',
-                'description': 'Security vulnerabilities',
+                'description': 'Security Vulnerabilities',
                 'badge': 'alerts' if self._has_critical_findings() else None
             },
             'Network Security': {
                 'icon': '🌐',
-                'description': 'Network & VPC security',
+                'description': 'Network & VPC Security',
                 'badge': None
             },
             'Compliance': {
                 'icon': '✅',
-                'description': 'Compliance assessment',
+                'description': 'Compliance Assessment',
+                'badge': None
+            },
+            'Service Onboarding': {
+                'icon': '🚀',
+                'description': 'New Service Evaluation',
                 'badge': None
             },
             'Settings': {
                 'icon': '⚙️',
-                'description': 'Configuration & preferences',
+                'description': 'Configuration & Preferences',
                 'badge': None
             }
         }

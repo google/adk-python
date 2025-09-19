@@ -53,7 +53,7 @@ class ChatWidget:
                 st.markdown(message["content"])
 
         # Accept user input - use unique key based on context to avoid duplicate element IDs
-        if prompt := st.chat_input("Ask a question about your GCP security posture...", key=f"chat_input_{self.context}"):
+        if prompt := st.chat_input("Ask me about your security... (e.g., 'show me storage buckets')", key=f"chat_input_{self.context}"):
             # Add user message to chat history
             st.session_state.messages.append({"role": "user", "content": prompt})
             # Display user message in chat message container

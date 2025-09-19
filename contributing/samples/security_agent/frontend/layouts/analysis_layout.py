@@ -246,7 +246,7 @@ class AnalysisLayout(ResponsiveLayout):
                     color_discrete_map=risk_colors
                 )
                 fig.update_layout(showlegend=False, height=300)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key="analysis_risk_distribution_chart")
                 
                 # Detailed risk list
                 for risk_level, risks in risk_data.items():
@@ -311,7 +311,7 @@ class AnalysisLayout(ResponsiveLayout):
                     hover_data=['title', 'description'],
                     height=400
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key="analysis_events_timeline_chart")
             
             # Detailed events list
             for event in events:

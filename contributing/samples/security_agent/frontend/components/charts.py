@@ -258,6 +258,61 @@ class MetricCharts:
         
         return fig
 
+    @staticmethod
+    def generate_trend_data(days: int = 30, base_value: float = 85, metric_name: str = "Security Score") -> List[Dict]:
+        """Generate trend data for charts."""
+        import random
+        from datetime import datetime, timedelta
+
+        trend_data = []
+        current_date = datetime.now() - timedelta(days=days)
+        current_value = base_value
+
+        for i in range(days):
+            # Add some realistic variation (-5 to +5)
+            variation = random.uniform(-5, 5)
+            current_value = max(0, min(100, current_value + variation))
+
+            trend_data.append({
+                'date': current_date.strftime('%Y-%m-%d'),
+                'value': round(current_value, 1),
+                'metric': metric_name
+            })
+
+            current_date += timedelta(days=1)
+
+        return trend_data
+
+    @staticmethod
+    def render_trend_chart(data: List[Dict],
+                          title: str = "Trend Analysis",
+                          x_col: str = 'date',
+                          y_col: str = 'value') -> go.Figure:
+        """Render trend chart for time series data."""
+        df = pd.DataFrame(data)
+
+        fig = px.line(
+            df,
+            x=x_col,
+            y=y_col,
+            title=title,
+            markers=True
+        )
+
+        fig.update_traces(
+            line=dict(width=3),
+            marker=dict(size=8)
+        )
+
+        fig.update_layout(
+            height=400,
+            margin=dict(t=50, b=50, l=50, r=50),
+            xaxis_title="Date",
+            yaxis_title="Value"
+        )
+
+        return fig
+
 class InteractiveCharts:
     """Interactive chart components with user controls."""
     

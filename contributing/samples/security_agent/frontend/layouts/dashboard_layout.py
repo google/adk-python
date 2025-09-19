@@ -171,7 +171,7 @@ class DashboardLayout(ResponsiveLayout):
                     title_font_size=12
                 )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="dashboard_layout_chart")
             
         except Exception as e:
             st.error(f"Error creating chart: {str(e)}")

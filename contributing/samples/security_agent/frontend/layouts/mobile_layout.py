@@ -444,7 +444,7 @@ class MobileLayout(ResponsiveLayout):
                 yaxis_title_font_size=10,
             )
             
-            st.plotly_chart(fig, use_container_width=True, config=mobile_config)
+            st.plotly_chart(fig, use_container_width=True, config=mobile_config, key="mobile_touch_friendly_chart")
             
         except Exception as e:
             st.error(f"Error creating mobile chart: {str(e)}")

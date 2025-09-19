@@ -28,8 +28,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'backend'))
 
 # Import backend components
-from backend.main import app, health_check, background_cache_refresh
-from backend.main import setup_service_account_from_secret
+from backend.main import app, health_check
 
 
 class TestBackendInitialization:

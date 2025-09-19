@@ -387,7 +387,7 @@ class LayoutUtils:
                         margin=dict(l=40, r=40, t=60, b=40)
                     )
                 
-                st.plotly_chart(fig, use_container_width=True, config=config)
+                st.plotly_chart(fig, use_container_width=True, config=config, key="layout_responsive_chart")
             else:
                 st.error("Could not create chart with provided data")
         

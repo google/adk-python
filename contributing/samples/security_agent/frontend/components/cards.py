@@ -93,7 +93,7 @@ class MetricCard:
                         showlegend=False
                     )
                     
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True, key="metric_card_sparkline")
 
 class SecurityFindingCard:
     """Card component for displaying security findings."""

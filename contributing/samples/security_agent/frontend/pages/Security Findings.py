@@ -21,38 +21,44 @@ from frontend.components.cards import SecurityFindingCard, DataTableCard, AlertC
 from frontend.components.utils import SessionManager, FilterUtils, DataFormatter
 from frontend.utils.session_state import initialize_session_state
 from frontend.components.chat_widget import create_chat_widget
+from frontend.services.metrics_service import MetricsService
 
 def show_page():
     """Render the security findings page."""
-    # 1. HEADER
-    st.markdown("## 🚨 Security Findings")
+    # Clean header without competing elements
+    st.markdown("# 🚨 Security Findings")
     st.caption("Vulnerability management and remediation tracking")
 
-    # 2. TABS
-    tabs = st.tabs(["🚨 Critical", "⚠️ All Findings", "🔧 Remediation"])
+    # Key metrics section - no extra header
+    st.markdown("**📊 Key Performance Metrics**")
 
-    with tabs[0]:
-        # Critical findings metrics
-        cols = st.columns(4)
-        with cols[0]:
-            st.metric("Critical", "5", delta="-2")
-        with cols[1]:
-            st.metric("High", "23", delta="+3", delta_color="inverse")
-        with cols[2]:
-            st.metric("Medium", "45", delta="-8")
-        with cols[3]:
-            st.metric("Low", "78", delta="+12")
+        # Fetch real metrics from database
+        metrics_service = MetricsService()
+        metrics = metrics_service.get_security_findings_metrics()
 
-    with tabs[1]:
-        st.markdown("**All Security Findings**")
-        st.info("151 total findings across all severity levels")
+    # Display metrics in 4 columns (reduced from 5)
+    cols = st.columns(4)
+    for i, (key, data) in enumerate(metrics.items()):
+        if i < 4:  # Only show first 4 metrics
+            with cols[i]:
+                st.metric(
+                    label=key.replace("_", " ").title(),
+                    value=data["value"],
+                    delta=data["delta"],
+                    help=data["help"]
+                )
 
-    with tabs[2]:
-        st.markdown("**Remediation Status**")
-        st.warning("28 findings require immediate action")
+    # Status summary section
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("📊 151 total findings across all severity levels")
+    with col2:
+        st.warning("⚠️ 28 findings require immediate action")
 
-    # 3. CHARTS
-    st.markdown("### 📊 Findings Distribution")
+    # Charts section with simpler layout
+    st.markdown("---")
+    st.markdown("**📊 Findings Distribution**")
     severity_data = [
         {'severity': 'Critical', 'count': 5},
         {'severity': 'High', 'count': 23},
@@ -61,28 +67,29 @@ def show_page():
     ]
     fig = SecurityCharts.render_severity_distribution(severity_data)
     fig.update_layout(height=250, margin=dict(t=30, b=30, l=30, r=30))
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="severity_distribution_chart")
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="findings_severity_distribution_chart_main")
 
-    # Sidebar for admin controls
-    with st.sidebar:
-        st.markdown("### ⚙️ Admin Controls")
+    # Simple admin controls (no sidebar)
+    st.markdown("---")
+    admin_col1, admin_col2, admin_col3 = st.columns(3)
+
+    with admin_col1:
         if st.button("🔄 Refresh Data", key="findings_refresh", help="Refresh all security data"):
             st.rerun()
-        if st.button("📥 Export All Data", key="findings_export", help="Export complete security report"):
-            st.success("Export initiated...")
-        st.markdown("#### 📡 System Status")
-        st.success("🟢 ADK Agent: Online")
-        st.success("🟢 Database: Connected")
-        st.info("🔵 Last Updated: Just now")
 
-    # 4. SIMPLE CHAT (at bottom)
+    with admin_col2:
+        if st.button("📥 Export Data", key="findings_export", help="Export security report"):
+            st.success("Export initiated...")
+
+    with admin_col3:
+        st.success("🟢 System Online")
+
+    # Chat section (simplified)
     st.markdown("---")
-    st.markdown("### 💬 Security Assistant")
-    st.markdown("Ask questions about security findings or get help with analysis.")
+    st.markdown("**💬 Security Assistant**")
 
     # Simple chat using ChatWidget
-    chat_widget = create_chat_widget(context="findings", height=300)
-    chat_widget.render()
+    create_chat_widget(context="findings", height=300)
 
 def _show_critical_findings_alerts():
     """Show critical findings alerts."""
@@ -263,7 +270,7 @@ def _render_findings_trends():
             y_col='count',
             title='Daily Findings Activity'
         )
-        st.plotly_chart(fig, use_container_width=True, key="findings_timeline_chart")
+        st.plotly_chart(fig, use_container_width=True, key="findings_trends_timeline_chart")
 
     with col2:
         st.subheader("🗒️ Findings by Category")
@@ -280,7 +287,7 @@ def _render_findings_trends():
             [{'severity': item['category'], 'count': item['count']} for item in category_data]
         )
         fig.update_layout(title="Findings by Category")
-        st.plotly_chart(fig, use_container_width=True, key="findings_by_category_chart")
+        st.plotly_chart(fig, use_container_width=True, key="findings_category_distribution_chart")
 
     # Chat section - make it prominent
     st.subheader("💬 Security Findings Assistant")
