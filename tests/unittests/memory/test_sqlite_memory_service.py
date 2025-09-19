@@ -437,7 +437,9 @@ class TestSqliteMemoryService:
     assert 'error' in stats
     assert stats['total_entries'] == 0
 
-  async def test_clear_memory_by_user_without_app_name_raises_error(self, sqlite_service):
+  async def test_clear_memory_by_user_without_app_name_raises_error(
+      self, sqlite_service
+  ):
     """Test that clearing memory by user_id without app_name raises ValueError."""
     with pytest.raises(ValueError, match='app_name must also be provided'):
       await sqlite_service.clear_memory(user_id='user1')
