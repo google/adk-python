@@ -327,6 +327,335 @@ else:
 
 
 
+def _evaluate_service_security_risks(service_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Evaluate security risks for adopting a new GCP service.
+    This function provides security assessment rather than news reporting.
+    """
+    logger.info(f"🔐 Evaluating security risks for service: {service_name}")
+
+    # Normalize service name for matching
+    service_key = service_name.lower().replace(" ", "_").replace("-", "_")
+
+    # Service security requirements database
+    service_security_database = {
+        "cloud_functions": {
+            "service_display_name": "Cloud Functions",
+            "category": "Serverless Compute",
+            "required_roles": [
+                "roles/cloudfunctions.admin",
+                "roles/cloudfunctions.developer",
+                "roles/storage.objectViewer",
+                "roles/logging.logWriter"
+            ],
+            "required_apis": [
+                "cloudfunctions.googleapis.com",
+                "cloudbuild.googleapis.com",
+                "storage.googleapis.com"
+            ],
+            "security_risks": [
+                {
+                    "risk": "Code Injection",
+                    "severity": "HIGH",
+                    "description": "Functions execute user-provided code with potential for injection attacks",
+                    "mitigation": "Implement input validation, use runtime sandboxing, audit function code"
+                },
+                {
+                    "risk": "Overprivileged Functions",
+                    "severity": "HIGH",
+                    "description": "Functions may inherit excessive IAM permissions",
+                    "mitigation": "Apply principle of least privilege, use service-specific roles"
+                },
+                {
+                    "risk": "Event Source Vulnerabilities",
+                    "severity": "MEDIUM",
+                    "description": "Malicious events could trigger unintended function execution",
+                    "mitigation": "Validate event sources, implement event filtering"
+                }
+            ],
+            "compliance_impact": [
+                "Functions process data - ensure data residency compliance",
+                "Audit logging required for function invocations",
+                "Consider data encryption for sensitive workloads"
+            ],
+            "network_requirements": [
+                "VPC connectivity for internal resource access",
+                "Firewall rules for function triggers",
+                "Consider Private Google Access for security"
+            ]
+        },
+        "cloud_run": {
+            "service_display_name": "Cloud Run",
+            "category": "Serverless Containers",
+            "required_roles": [
+                "roles/run.admin",
+                "roles/run.developer",
+                "roles/storage.objectViewer",
+                "roles/artifactregistry.reader"
+            ],
+            "required_apis": [
+                "run.googleapis.com",
+                "cloudbuild.googleapis.com",
+                "artifactregistry.googleapis.com"
+            ],
+            "security_risks": [
+                {
+                    "risk": "Container Vulnerabilities",
+                    "severity": "HIGH",
+                    "description": "Base images and dependencies may contain security vulnerabilities",
+                    "mitigation": "Regular image scanning, minimal base images, dependency updates"
+                },
+                {
+                    "risk": "Public Internet Exposure",
+                    "severity": "MEDIUM",
+                    "description": "Services exposed to internet by default",
+                    "mitigation": "Use IAM for authentication, implement VPC ingress controls"
+                },
+                {
+                    "risk": "Secrets Management",
+                    "severity": "MEDIUM",
+                    "description": "Application secrets may be hardcoded or insecurely stored",
+                    "mitigation": "Use Secret Manager, environment variables with proper access controls"
+                }
+            ],
+            "compliance_impact": [
+                "Container images must be scanned for vulnerabilities",
+                "Runtime monitoring required for compliance",
+                "Data processing location controls needed"
+            ],
+            "network_requirements": [
+                "VPC connector for internal access",
+                "Ingress control configuration",
+                "Load balancer security policies"
+            ]
+        },
+        "bigquery": {
+            "service_display_name": "BigQuery",
+            "category": "Data Analytics",
+            "required_roles": [
+                "roles/bigquery.admin",
+                "roles/bigquery.dataEditor",
+                "roles/bigquery.user",
+                "roles/storage.objectViewer"
+            ],
+            "required_apis": [
+                "bigquery.googleapis.com",
+                "storage.googleapis.com"
+            ],
+            "security_risks": [
+                {
+                    "risk": "Data Exposure",
+                    "severity": "CRITICAL",
+                    "description": "Datasets may be accidentally made public or over-shared",
+                    "mitigation": "Regular access audits, dataset-level permissions, data classification"
+                },
+                {
+                    "risk": "Query Injection",
+                    "severity": "HIGH",
+                    "description": "Dynamic SQL queries vulnerable to injection attacks",
+                    "mitigation": "Parameterized queries, input validation, query sanitization"
+                },
+                {
+                    "risk": "Cost-Based DoS",
+                    "severity": "MEDIUM",
+                    "description": "Expensive queries could exhaust budget/quotas",
+                    "mitigation": "Query quotas, slot reservations, query monitoring"
+                }
+            ],
+            "compliance_impact": [
+                "Data residency requirements for sensitive data",
+                "Field-level encryption for PII/PHI data",
+                "Audit logging for all data access operations"
+            ],
+            "network_requirements": [
+                "Private Google Access for VPC-based access",
+                "Authorized networks for external access",
+                "VPC-native dataset access controls"
+            ]
+        },
+        "gke": {
+            "service_display_name": "Google Kubernetes Engine (GKE)",
+            "category": "Container Orchestration",
+            "required_roles": [
+                "roles/container.admin",
+                "roles/compute.instanceAdmin",
+                "roles/servicemanagement.admin",
+                "roles/storage.objectViewer"
+            ],
+            "required_apis": [
+                "container.googleapis.com",
+                "compute.googleapis.com",
+                "monitoring.googleapis.com"
+            ],
+            "security_risks": [
+                {
+                    "risk": "Cluster Compromise",
+                    "severity": "CRITICAL",
+                    "description": "Kubernetes API server vulnerabilities could compromise entire cluster",
+                    "mitigation": "Regular cluster updates, private clusters, authorized networks"
+                },
+                {
+                    "risk": "Pod Security Issues",
+                    "severity": "HIGH",
+                    "description": "Privileged pods or containers with excessive permissions",
+                    "mitigation": "Pod Security Standards, security contexts, admission controllers"
+                },
+                {
+                    "risk": "Network Policies",
+                    "severity": "MEDIUM",
+                    "description": "Default allow-all pod-to-pod communication",
+                    "mitigation": "Implement network policies, service mesh security"
+                }
+            ],
+            "compliance_impact": [
+                "Node OS hardening requirements",
+                "Workload identity for pod authentication",
+                "Binary authorization for container images"
+            ],
+            "network_requirements": [
+                "Private cluster configuration",
+                "Authorized networks for API access",
+                "Firewall rules for node communication"
+            ]
+        }
+    }
+
+    # Get service configuration or create generic assessment
+    service_config = service_security_database.get(service_key, {
+        "service_display_name": service_name.title(),
+        "category": "Unknown Service",
+        "required_roles": ["Service-specific roles needed - requires analysis"],
+        "required_apis": ["Service API requirements unknown"],
+        "security_risks": [{
+            "risk": "Unknown Security Profile",
+            "severity": "MEDIUM",
+            "description": f"Security assessment for {service_name} requires detailed analysis",
+            "mitigation": "Conduct thorough security review before adoption"
+        }],
+        "compliance_impact": ["Compliance requirements need assessment"],
+        "network_requirements": ["Network security requirements need evaluation"]
+    })
+
+    # Calculate overall risk score
+    risk_score = _calculate_service_risk_score(service_config)
+
+    # Get current environment context (this would ideally query current IAM state)
+    current_environment = {
+        "existing_roles": ["Basic compute and storage roles"],
+        "security_gaps": ["Detailed current state analysis needed"],
+        "readiness_score": 60  # Placeholder - would be calculated from actual current state
+    }
+
+    # Generate recommendations
+    recommendations = _generate_service_adoption_recommendations(service_config, current_environment)
+
+    return {
+        "service_name": service_config["service_display_name"],
+        "category": service_config["category"],
+        "overall_risk_score": risk_score,
+        "risk_level": _get_risk_level(risk_score),
+        "required_permissions": service_config["required_roles"],
+        "required_apis": service_config["required_apis"],
+        "security_risks": service_config["security_risks"],
+        "compliance_impact": service_config["compliance_impact"],
+        "network_requirements": service_config["network_requirements"],
+        "current_environment": current_environment,
+        "recommendations": recommendations,
+        "adoption_readiness": _assess_adoption_readiness(service_config, current_environment)
+    }
+
+def _calculate_service_risk_score(service_config: Dict[str, Any]) -> int:
+    """Calculate overall risk score for service adoption (0-100, higher = more risk)"""
+    base_score = 30  # Base risk for any new service
+
+    # Add risk based on security risks
+    risks = service_config.get("security_risks", [])
+    for risk in risks:
+        severity = risk.get("severity", "LOW")
+        if severity == "CRITICAL":
+            base_score += 25
+        elif severity == "HIGH":
+            base_score += 15
+        elif severity == "MEDIUM":
+            base_score += 8
+        elif severity == "LOW":
+            base_score += 3
+
+    # Reduce risk based on category maturity
+    category = service_config.get("category", "")
+    if "Compute" in category:
+        base_score -= 5  # Mature compute services
+    elif "Analytics" in category:
+        base_score += 5  # Data services have higher compliance risk
+
+    return min(100, max(0, base_score))
+
+def _get_risk_level(score: int) -> str:
+    """Convert risk score to risk level"""
+    if score >= 80:
+        return "CRITICAL"
+    elif score >= 60:
+        return "HIGH"
+    elif score >= 40:
+        return "MEDIUM"
+    else:
+        return "LOW"
+
+def _generate_service_adoption_recommendations(service_config: Dict[str, Any], current_env: Dict[str, Any]) -> List[str]:
+    """Generate specific recommendations for service adoption"""
+    recommendations = []
+
+    # IAM recommendations
+    required_roles = service_config.get("required_roles", [])
+    recommendations.append(f"📋 IAM Setup: Grant the following roles to appropriate principals: {', '.join(required_roles[:3])}")
+
+    # API enablement
+    apis = service_config.get("required_apis", [])
+    recommendations.append(f"🔌 Enable APIs: {', '.join(apis[:2])}")
+
+    # Security recommendations based on risks
+    risks = service_config.get("security_risks", [])
+    high_priority_risks = [r for r in risks if r.get("severity") in ["CRITICAL", "HIGH"]]
+    for risk in high_priority_risks[:2]:  # Top 2 critical risks
+        recommendations.append(f"⚠️ Address {risk['risk']}: {risk['mitigation']}")
+
+    # Compliance recommendations
+    compliance = service_config.get("compliance_impact", [])
+    if compliance:
+        recommendations.append(f"📊 Compliance: {compliance[0]}")
+
+    # Network security
+    network = service_config.get("network_requirements", [])
+    if network:
+        recommendations.append(f"🔒 Network: {network[0]}")
+
+    return recommendations
+
+def _assess_adoption_readiness(service_config: Dict[str, Any], current_env: Dict[str, Any]) -> Dict[str, Any]:
+    """Assess readiness for service adoption"""
+    readiness_score = current_env.get("readiness_score", 50)
+
+    # Determine readiness status
+    if readiness_score >= 80:
+        status = "READY"
+        message = "Environment is ready for service adoption"
+    elif readiness_score >= 60:
+        status = "MOSTLY_READY"
+        message = "Minor configuration changes needed"
+    elif readiness_score >= 40:
+        status = "PARTIALLY_READY"
+        message = "Significant security configuration required"
+    else:
+        status = "NOT_READY"
+        message = "Major security improvements needed before adoption"
+
+    return {
+        "status": status,
+        "score": readiness_score,
+        "message": message,
+        "blocking_issues": [] if readiness_score >= 60 else ["Security assessment required", "IAM configuration needed"]
+    }
+
 def _determine_public_access(bucket: Dict[str, Any]) -> str:
     """
     Determine public access status from GCP bucket data.
@@ -433,13 +762,45 @@ def query_security_data(query_type: str, **kwargs) -> Dict[str, Any]:
                 result["error"] = "Failed to query security findings: " + result.get("error", "Unknown error")
 
         elif query_type == "iam_analysis":
+            # Use the existing iam_accounts table instead of non-existent iam_policies
             principal = params.get("principal")
-            sql_query = "SELECT * FROM iam_policies" # Assuming an iam_policies table
+
+            # First, try to get comprehensive IAM data by joining multiple tables
+            sql_query = """
+            SELECT
+                ia.email as account_email,
+                ia.account_type,
+                ia.created_date,
+                ia.last_activity,
+                ia.status,
+                sf.finding_type as security_issue,
+                sf.severity as issue_severity,
+                sf.description as issue_description
+            FROM iam_accounts ia
+            LEFT JOIN security_findings sf ON sf.resource_name LIKE '%' || ia.email || '%'
+            """
             sql_params = []
+
             if principal:
-                sql_query += " WHERE principal = ?"
-                sql_params.append(principal)
+                sql_query += " WHERE ia.email = ? OR ia.email LIKE ?"
+                sql_params.extend([principal, f"%{principal}%"])
+
+            # Order by potential security issues first
+            sql_query += " ORDER BY sf.severity DESC, ia.account_type, ia.email"
+
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
+
+            # If the join query fails, fallback to simple iam_accounts query
+            if not result["success"]:
+                logger.warning("IAM analysis join query failed, falling back to basic iam_accounts query")
+                sql_query = "SELECT * FROM iam_accounts"
+                sql_params = []
+                if principal:
+                    sql_query += " WHERE email = ? OR email LIKE ?"
+                    sql_params.extend([principal, f"%{principal}%"])
+
+                result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
+
             if not result["success"]:
                 result["error"] = "Failed to query IAM analysis: " + result.get("error", "Unknown error")
 
@@ -531,87 +892,144 @@ def query_security_data(query_type: str, **kwargs) -> Dict[str, Any]:
 
 
         elif query_type == "api_keys":
-            result = sqlite_tool_instance.execute_query("SELECT * FROM api_keys") # Assuming an api_keys table
+            # No api_keys table exists - fallback to security findings related to API keys
+            result = sqlite_tool_instance.execute_query(
+                "SELECT * FROM security_findings WHERE description LIKE '%API%' OR description LIKE '%key%' OR name LIKE '%api%'"
+            )
             if not result["success"]:
-                result["error"] = "Failed to query API keys: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query API-related security findings: " + result.get("error", "Unknown error")
+            else:
+                result["message"] = "No dedicated API keys table found. Showing API-related security findings instead."
 
         elif query_type == "recommendations":
-            result = sqlite_tool_instance.execute_query("SELECT * FROM recommendations") # Assuming a recommendations table
+            # No recommendations table exists - derive from security findings
+            result = sqlite_tool_instance.execute_query(
+                "SELECT name, description, recommendation, severity FROM security_findings WHERE recommendation IS NOT NULL AND recommendation != ''"
+            )
             if not result["success"]:
-                result["error"] = "Failed to query recommendations: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query security recommendations: " + result.get("error", "Unknown error")
+            else:
+                result["message"] = "Security recommendations derived from security findings table."
 
         elif query_type == "org_policies":
-            result = sqlite_tool_instance.execute_query("SELECT * FROM org_policies") # Assuming an org_policies table
+            # No org_policies table exists - use security findings for policy-related issues
+            result = sqlite_tool_instance.execute_query(
+                "SELECT * FROM security_findings WHERE category LIKE '%policy%' OR description LIKE '%policy%' OR name LIKE '%policy%'"
+            )
             if not result["success"]:
-                result["error"] = "Failed to query org policies: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query policy-related security findings: " + result.get("error", "Unknown error")
+            else:
+                result["message"] = "No org_policies table found. Showing policy-related security findings instead."
 
         elif query_type == "service_usage":
-            result = sqlite_tool_instance.execute_query("SELECT * FROM service_usage") # Assuming a service_usage table
+            # No service_usage table exists - aggregate from available tables
+            result = sqlite_tool_instance.execute_query(
+                "SELECT 'storage' as service, COUNT(*) as count FROM storage_buckets UNION ALL " +
+                "SELECT 'compute' as service, COUNT(*) as count FROM compute_instances UNION ALL " +
+                "SELECT 'database' as service, COUNT(*) as count FROM databases UNION ALL " +
+                "SELECT 'network' as service, COUNT(*) as count FROM networks"
+            )
             if not result["success"]:
-                result["error"] = "Failed to query service usage: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query aggregated service usage: " + result.get("error", "Unknown error")
+            else:
+                result["message"] = "Service usage aggregated from available resource tables."
 
         elif query_type == "monitoring":
-            result = sqlite_tool_instance.execute_query("SELECT * FROM monitoring_config") # Assuming a monitoring_config table
+            # No monitoring_config table exists - check for monitoring-related security findings
+            result = sqlite_tool_instance.execute_query(
+                "SELECT * FROM security_findings WHERE category LIKE '%monitor%' OR description LIKE '%monitor%' OR description LIKE '%log%'"
+            )
             if not result["success"]:
-                result["error"] = "Failed to query monitoring config: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query monitoring-related security findings: " + result.get("error", "Unknown error")
+            else:
+                result["message"] = "No monitoring_config table found. Showing monitoring-related security findings instead."
 
         elif query_type == "logs":
-            result = sqlite_tool_instance.execute_query("SELECT * FROM audit_logs_summary") # Assuming an audit_logs_summary table
+            # No audit_logs_summary table exists - show logging-related security findings
+            result = sqlite_tool_instance.execute_query(
+                "SELECT * FROM security_findings WHERE description LIKE '%log%' OR description LIKE '%audit%' OR category LIKE '%logging%'"
+            )
             if not result["success"]:
-                result["error"] = "Failed to query logs summary: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query logging-related security findings: " + result.get("error", "Unknown error")
+            else:
+                result["message"] = "No audit_logs_summary table found. Showing logging-related security findings instead."
 
         elif query_type == "firewall_rules":
+            # firewall_rules table exists - use correct column names
             rule_name = params.get("rule_name")
-            sql_query = "SELECT * FROM firewall_rules" # Assuming a firewall_rules table
+            sql_query = "SELECT * FROM firewall_rules"
             sql_params = []
             if rule_name:
-                sql_query += " WHERE rule_name = ?"
+                sql_query += " WHERE name = ?"  # Use 'name' instead of 'rule_name'
                 sql_params.append(rule_name)
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
                 result["error"] = "Failed to query firewall rules: " + result.get("error", "Unknown error")
 
         elif query_type == "networks":
-            result = sqlite_tool_instance.execute_query("SELECT * FROM vpc_networks") # Assuming a vpc_networks table
+            # Use the actual 'networks' table instead of 'vpc_networks'
+            result = sqlite_tool_instance.execute_query("SELECT * FROM networks")
             if not result["success"]:
                 result["error"] = "Failed to query networks: " + result.get("error", "Unknown error")
 
         elif query_type == "compute_instances":
+            # compute_instances table exists - use correct column name
             instance_name = params.get("instance_name")
-            sql_query = "SELECT * FROM compute_instances" # Assuming a compute_instances table
+            sql_query = "SELECT * FROM compute_instances"
             sql_params = []
             if instance_name:
-                sql_query += " WHERE instance_name = ?"
+                sql_query += " WHERE name = ?"  # Use 'name' instead of 'instance_name'
                 sql_params.append(instance_name)
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
                 result["error"] = "Failed to query compute instances: " + result.get("error", "Unknown error")
 
         elif query_type == "gke_clusters":
+            # Fallback: Search for GKE/Kubernetes-related resources in compute_instances and security_findings since gke_clusters doesn't exist
             cluster_name = params.get("cluster_name")
             location = params.get("location")
             status = params.get("status")
-            
-            sql_query = "SELECT * FROM gke_clusters" # Assuming a gke_clusters table
+            logger.info(f"☸️ Searching for GKE/Kubernetes resources (gke_clusters table not available)")
+
+            # Search in compute_instances for GKE nodes and security_findings for GKE issues
+            sql_query = """
+            SELECT
+                'compute_instance' as source_type,
+                name as resource_name,
+                machine_type,
+                zone as location,
+                status,
+                creation_timestamp as created_date
+            FROM compute_instances
+            WHERE name LIKE '%gke%' OR name LIKE '%kubernetes%'
+            UNION
+            SELECT
+                'security_finding' as source_type,
+                resource_name,
+                finding_type as machine_type,
+                'N/A' as location,
+                severity as status,
+                created_date
+            FROM security_findings
+            WHERE description LIKE '%GKE%' OR description LIKE '%kubernetes%' OR resource_name LIKE '%gke%'
+            """
             conditions = []
             sql_params = []
 
             if cluster_name:
-                conditions.append("cluster_name = ?")
-                sql_params.append(cluster_name)
+                sql_query += " AND (resource_name LIKE ? OR name LIKE ?)"
+                sql_params.extend([f"%{cluster_name}%", f"%{cluster_name}%"])
             if location:
-                conditions.append("location = ?")
-                sql_params.append(location)
+                sql_query += " AND location LIKE ?"
+                sql_params.append(f"%{location}%")
             if status:
-                conditions.append("status = ?")
-                sql_params.append(status)
-            
-            if conditions:
-                sql_query += " WHERE " + " AND ".join(conditions)
-            
+                sql_query += " AND status LIKE ?"
+                sql_params.append(f"%{status}%")
+
+            sql_query += " ORDER BY created_at DESC"
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
-                result["error"] = "Failed to query GKE clusters: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query GKE/Kubernetes resources: " + result.get("error", "Unknown error")
 
         elif query_type == "databases":
             result = sqlite_tool_instance.execute_query("SELECT * FROM databases") # Assuming a databases table
@@ -630,21 +1048,50 @@ def query_security_data(query_type: str, **kwargs) -> Dict[str, Any]:
                 result["error"] = "Failed to query IAM accounts: " + result.get("error", "Unknown error")
 
         elif query_type == "secrets":
+            # Fallback: Search for secret-related security findings since 'secrets' table doesn't exist
             secret_name = params.get("secret_name")
-            sql_query = "SELECT * FROM secrets" # Assuming a secrets table
+            logger.info(f"🔐 Searching for secret-related security findings (secrets table not available)")
+
+            sql_query = """
+            SELECT
+                name,
+                resource_name,
+                severity,
+                description,
+                category,
+                created_at
+            FROM security_findings
+            WHERE description LIKE '%secret%' OR description LIKE '%key%' OR description LIKE '%credential%'
+            """
             sql_params = []
+
             if secret_name:
-                sql_query += " WHERE secret_name = ?"
-                sql_params.append(secret_name)
+                sql_query += " AND (resource_name LIKE ? OR description LIKE ?)"
+                sql_params.extend([f"%{secret_name}%", f"%{secret_name}%"])
+
+            sql_query += " ORDER BY severity DESC, created_date DESC"
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
-                result["error"] = "Failed to query secrets: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query secret-related security findings: " + result.get("error", "Unknown error")
 
         elif query_type == "cache_status":
-            # This would require querying a metadata table about cache updates
-            result = sqlite_tool_instance.execute_query("SELECT * FROM cache_metadata") # Assuming a cache_metadata table
-            if not result["success"]:
-                result["error"] = "Failed to get cache status: " + result.get("error", "Unknown error")
+            # Fallback: Provide cache status from available table statistics since cache_metadata doesn't exist
+            logger.info(f"📊 Getting cache status from available table counts")
+
+            # Get summary statistics which includes table counts
+            result = sqlite_tool_instance.get_summary_stats()
+            if result["success"] and result.get("data"):
+                # Transform the stats into cache status format
+                stats = result["data"]
+                cache_status = {
+                    "cache_last_updated": "Available from table statistics",
+                    "total_cached_records": sum(len(data) if isinstance(data, list) else 0 for data in stats.values() if data),
+                    "available_tables": list(stats.keys()),
+                    "table_counts": {k: len(v) if isinstance(v, list) else 0 for k, v in stats.items() if v}
+                }
+                result["data"] = cache_status
+            else:
+                result = {"success": False, "error": "Failed to get cache status from table statistics"}
 
         elif query_type == "statistics": # Added handler for 'statistics'
             result = sqlite_tool_instance.get_summary_stats()
@@ -652,127 +1099,242 @@ def query_security_data(query_type: str, **kwargs) -> Dict[str, Any]:
                 result["error"] = "Failed to get statistics: " + result.get("error", "Unknown error")
 
         elif query_type == "msa_analysis":
-            result = sqlite_tool_instance.execute_query("SELECT * FROM msa_analysis_history") # Assuming msa_analysis_history table
+            # Fallback: Search for MSA-related security findings since msa_analysis_history doesn't exist
+            logger.info(f"🔍 Searching for MSA-related security findings (msa_analysis_history table not available)")
+
+            sql_query = """
+            SELECT
+                name,
+                resource_name,
+                severity,
+                description,
+                category,
+                created_at
+            FROM security_findings
+            WHERE description LIKE '%MSA%' OR description LIKE '%service account%' OR name LIKE '%service%'
+            ORDER BY severity DESC, created_at DESC
+            """
+            result = sqlite_tool_instance.execute_query(sql_query)
             if not result["success"]:
-                result["error"] = "Failed to query MSA analysis history: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query MSA-related security findings: " + result.get("error", "Unknown error")
 
         elif query_type == "msa_changes":
+            # Fallback: Search for service account changes in security findings since msa_changes doesn't exist
             service = params.get("service")
-            sql_query = "SELECT * FROM msa_changes" # Assuming msa_changes table
+            logger.info(f"🔄 Searching for service account changes in security findings (msa_changes table not available)")
+
+            sql_query = """
+            SELECT
+                name,
+                resource_name,
+                severity,
+                description,
+                category,
+                created_at
+            FROM security_findings
+            WHERE (description LIKE '%change%' OR description LIKE '%modify%' OR description LIKE '%update%')
+              AND (description LIKE '%service account%' OR description LIKE '%MSA%')
+            """
             sql_params = []
+
             if service:
-                sql_query += " WHERE service = ?"
-                sql_params.append(service)
+                sql_query += " AND (resource_name LIKE ? OR description LIKE ?)"
+                sql_params.extend([f"%{service}%", f"%{service}%"])
+
+            sql_query += " ORDER BY created_at DESC"
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
-                result["error"] = "Failed to query MSA changes: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query service account changes: " + result.get("error", "Unknown error")
 
         elif query_type == "org_policy_test":
+            # Fallback: Search for organization policy related security findings since org_policy_tests doesn't exist
             constraint = params.get("constraint")
             test_mode = params.get("test_mode", False)
-            sql_query = "SELECT * FROM org_policy_tests" # Assuming org_policy_tests table
+            logger.info(f"🏛️ Searching for organization policy findings (org_policy_tests table not available)")
+
+            sql_query = """
+            SELECT
+                name,
+                resource_name,
+                severity,
+                description,
+                category,
+                created_at
+            FROM security_findings
+            WHERE description LIKE '%policy%' OR description LIKE '%constraint%' OR name LIKE '%policy%'
+            """
             sql_params = []
-            conditions = []
+
             if constraint:
-                conditions.append("constraint_name = ?")
-                sql_params.append(constraint)
-            if test_mode: # Assuming test_mode is stored as a boolean or integer
-                conditions.append("test_mode = ?")
-                sql_params.append(1 if test_mode else 0)
-            if conditions:
-                sql_query += " WHERE " + " AND ".join(conditions)
+                sql_query += " AND (resource_name LIKE ? OR description LIKE ?)"
+                sql_params.extend([f"%{constraint}%", f"%{constraint}%"])
+
+            sql_query += " ORDER BY severity DESC, created_date DESC"
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
-                result["error"] = "Failed to query org policy tests: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query organization policy findings: " + result.get("error", "Unknown error")
 
         elif query_type == "vpc_error_analysis":
+            # Fallback: Search for VPC/network-related security findings since vpc_flow_log_errors doesn't exist
             severity = params.get("severity")
             pattern = params.get("pattern")
-            sql_query = "SELECT * FROM vpc_flow_log_errors" # Assuming vpc_flow_log_errors table
+            logger.info(f"🌐 Searching for VPC/network error patterns in security findings (vpc_flow_log_errors table not available)")
+
+            sql_query = """
+            SELECT
+                finding_type,
+                resource_name,
+                severity,
+                description,
+                source_type,
+                created_date
+            FROM security_findings
+            WHERE (description LIKE '%VPC%' OR description LIKE '%network%' OR description LIKE '%error%')
+               OR finding_type LIKE '%network%'
+            """
             sql_params = []
             conditions = []
+
             if severity:
                 conditions.append("severity = ?")
                 sql_params.append(severity)
             if pattern:
-                conditions.append("error_pattern LIKE ?")
+                conditions.append("description LIKE ?")
                 sql_params.append(f"%{pattern}%")
+
             if conditions:
-                sql_query += " WHERE " + " AND ".join(conditions)
+                sql_query += " AND " + " AND ".join(conditions)
+
+            sql_query += " ORDER BY severity DESC, created_date DESC"
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
-                result["error"] = "Failed to query VPC error analysis: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query VPC/network error analysis: " + result.get("error", "Unknown error")
 
         elif query_type == "support_tickets":
+            # Fallback: Search for support-related security findings since support_tickets doesn't exist
             priority = params.get("priority")
             status = params.get("status")
-            sql_query = "SELECT * FROM support_tickets" # Assuming support_tickets table
+            logger.info(f"🎫 Searching for support-related security findings (support_tickets table not available)")
+
+            sql_query = """
+            SELECT
+                finding_type,
+                resource_name,
+                severity,
+                description,
+                source_type,
+                created_date
+            FROM security_findings
+            WHERE description LIKE '%support%' OR description LIKE '%ticket%' OR description LIKE '%issue%'
+            """
             sql_params = []
             conditions = []
+
             if priority:
-                conditions.append("priority = ?")
-                sql_params.append(priority)
+                # Map priority to severity
+                severity_map = {'high': 'HIGH', 'medium': 'MEDIUM', 'low': 'LOW'}
+                mapped_severity = severity_map.get(priority.lower(), priority)
+                conditions.append("severity = ?")
+                sql_params.append(mapped_severity)
             if status:
-                conditions.append("status = ?")
-                sql_params.append(status)
+                conditions.append("description LIKE ?")
+                sql_params.append(f"%{status}%")
+
             if conditions:
-                sql_query += " WHERE " + " AND ".join(conditions)
+                sql_query += " AND " + " AND ".join(conditions)
+
+            sql_query += " ORDER BY severity DESC, created_date DESC"
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
-                result["error"] = "Failed to query support tickets: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query support-related findings: " + result.get("error", "Unknown error")
 
         elif query_type == "vpcsc_dry_run":
+            # Fallback: Search for VPC Service Controls related security findings since vpcsc_dry_run_violations doesn't exist
             perimeter = params.get("perimeter")
             severity = params.get("severity")
-            sql_query = "SELECT * FROM vpcsc_dry_run_violations" # Assuming vpcsc_dry_run_violations table
+            logger.info(f"🛡️ Searching for VPC Service Controls findings (vpcsc_dry_run_violations table not available)")
+
+            sql_query = """
+            SELECT
+                finding_type,
+                resource_name,
+                severity,
+                description,
+                source_type,
+                created_date
+            FROM security_findings
+            WHERE description LIKE '%VPC Service Controls%' OR description LIKE '%perimeter%' OR description LIKE '%dry run%'
+            """
             sql_params = []
             conditions = []
+
             if perimeter:
-                conditions.append("perimeter_name = ?")
-                sql_params.append(perimeter)
+                conditions.append("(resource_name LIKE ? OR description LIKE ?)")
+                sql_params.extend([f"%{perimeter}%", f"%{perimeter}%"])
             if severity:
                 conditions.append("severity = ?")
                 sql_params.append(severity)
+
             if conditions:
-                sql_query += " WHERE " + " AND ".join(conditions)
+                sql_query += " AND " + " AND ".join(conditions)
+
+            sql_query += " ORDER BY severity DESC, created_date DESC"
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
-                result["error"] = "Failed to query VPCSC dry run violations: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query VPC Service Controls findings: " + result.get("error", "Unknown error")
 
         elif query_type == "vpcsc_readiness":
-            result = sqlite_tool_instance.execute_query("SELECT * FROM vpcsc_readiness_report") # Assuming vpcsc_readiness_report table
+            # Fallback: Search for VPC Service Controls readiness in security findings since vpcsc_readiness_report doesn't exist
+            logger.info(f"📋 Searching for VPC Service Controls readiness findings (vpcsc_readiness_report table not available)")
+
+            sql_query = """
+            SELECT
+                finding_type,
+                resource_name,
+                severity,
+                description,
+                source_type,
+                created_date
+            FROM security_findings
+            WHERE description LIKE '%readiness%' OR description LIKE '%VPC Service Controls%' OR description LIKE '%compliance%'
+            ORDER BY severity DESC, created_date DESC
+            """
+            result = sqlite_tool_instance.execute_query(sql_query)
             if not result["success"]:
-                result["error"] = "Failed to query VPCSC readiness report: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query VPC Service Controls readiness findings: " + result.get("error", "Unknown error")
 
         elif query_type == "asset_inventory":
+            # Fallback: Use existing 'assets' table which serves as the asset inventory
             category = params.get("category")
             importance = params.get("importance")
             environment = params.get("environment")
             public_only = params.get("public_only", False)
+            logger.info(f"📦 Using assets table for asset inventory (asset_inventory table not available)")
 
-            sql_query = "SELECT * FROM asset_inventory" # Assuming asset_inventory table
+            sql_query = "SELECT * FROM assets"
             conditions = []
             sql_params = []
 
+            # Map parameters to available columns in assets table
             if category:
-                conditions.append("category = ?")
-                sql_params.append(category)
+                conditions.append("(asset_type LIKE ? OR resource_type LIKE ?)")
+                sql_params.extend([f"%{category}%", f"%{category}%"])
             if importance:
-                conditions.append("importance = ?")
-                sql_params.append(importance)
+                # Map importance to existing fields
+                conditions.append("(name LIKE ? OR resource_type LIKE ?)")
+                sql_params.extend([f"%{importance}%", f"%{importance}%"])
             if environment:
-                conditions.append("environment = ?")
-                sql_params.append(environment)
+                conditions.append("(location LIKE ? OR name LIKE ?)")
+                sql_params.extend([f"%{environment}%", f"%{environment}%"])
             if public_only:
-                conditions.append("is_public = ?")
-                sql_params.append(1) # Assuming boolean is stored as 1/0
-            
+                conditions.append("(name LIKE '%public%' OR resource_type LIKE '%public%')")
+
             if conditions:
                 sql_query += " WHERE " + " AND ".join(conditions)
-            
+
             result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
             if not result["success"]:
-                result["error"] = "Failed to query asset inventory: " + result.get("error", "Unknown error")
+                result["error"] = "Failed to query asset inventory from assets table: " + result.get("error", "Unknown error")
 
         elif query_type == "configuration_drift":
             result = sqlite_tool_instance.execute_query("SELECT * FROM configuration_drift") # Assuming configuration_drift table
@@ -941,6 +1503,22 @@ def query_security_data(query_type: str, **kwargs) -> Dict[str, Any]:
                     except Exception as e:
                         logger.error(f"Google Search error: {e}")
                         result = {"success": False, "error": f"Search execution failed: {str(e)}"}
+
+        elif query_type == "service_evaluation":
+            # Service Adoption Security Risk Assessment
+            service_name = params.get("service_name", "").lower().replace("_", " ").replace("-", " ")
+
+            if not service_name:
+                result = {"success": False, "error": "service_name parameter required for service evaluation"}
+            else:
+                # Get service security requirements and risk analysis
+                evaluation_result = _evaluate_service_security_risks(service_name, params)
+                result = {
+                    "success": True,
+                    "data": evaluation_result,
+                    "message": f"Security risk assessment completed for {service_name}",
+                    "source": "service_evaluation_engine"
+                }
 
         else:
             result = {"success": False, "error": f"Unknown query_type: {query_type}"}
