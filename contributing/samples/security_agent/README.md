@@ -6,30 +6,35 @@
 
 A production-ready security analysis agent powered by Google's ADK (Agent Development Kit) that provides real-time insights into your Google Cloud Platform security posture.
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Clean Slate Installation)
 
 ### Prerequisites
-- Python 3.11+
-- Google Cloud Project with active billing
-- Service account with appropriate permissions
-- Virtual environment with ADK installed
+- Python 3.9+
+- Google Cloud Project with appropriate APIs enabled
+- Service account JSON key file
 
-### Installation
+### Automated Setup (Recommended)
 
 1. **Clone and setup**:
 ```bash
 # Clone the repository
-git clone [repository-url]
-cd security_agent
+git clone https://github.com/stuagano/adk-python.git
+cd adk-python/contributing/samples/security_agent
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Make scripts executable
+chmod +x setup.sh stop.sh status.sh
 
-# Install dependencies
-pip install google-adk
-pip install -r requirements.txt
+# Run clean setup (handles everything automatically)
+./setup.sh
 ```
+
+This setup script will:
+- ✅ Clean up any existing processes
+- ✅ Create and activate virtual environment
+- ✅ Install all dependencies including ADK
+- ✅ Initialize the SQLite database
+- ✅ Start backend (port 8000) and frontend (port 8501)
+- ✅ Ensure ONLY ONE instance of each service runs
 
 2. **Configure environment**:
 Create `.env` file in project root:
