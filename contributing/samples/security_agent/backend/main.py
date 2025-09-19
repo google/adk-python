@@ -50,8 +50,8 @@ print(f"  GOOGLE_APPLICATION_CREDENTIALS: {os.getenv('GOOGLE_APPLICATION_CREDENT
 
 # Import the ADK agent
 try:
-    from agents.adk_agent import root_agent as security_agent
-    from agents.tools.sqlite_tool import query_security_data # Corrected import path
+    from agents.agent import root_agent as security_agent
+    from agents._tools.sqlite_tool import query_security_data # Corrected import path
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
@@ -254,7 +254,7 @@ async def run_agent_query(message: str, session_id: str = "default", user_id: st
                 logger.warning(f"[ADK] Agent responded without calling tools! Forcing tool call...")
 
                 # Import tool locally
-                from agents.tools.sqlite_tool import query_security_data
+                from agents._tools.sqlite_tool import query_security_data
 
                 # Determine query type from message
                 message_lower = message.lower()
@@ -334,7 +334,7 @@ async def fallback_query(message: str) -> Dict[str, Any]:
     """
     # Import locally to avoid issues when ADK not available
     try:
-        from agents.tools.sqlite_tool import query_security_data
+        from agents._tools.sqlite_tool import query_security_data
     except ImportError:
         return {
             "success": False,

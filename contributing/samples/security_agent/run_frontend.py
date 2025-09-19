@@ -15,14 +15,16 @@ import argparse
 import signal
 import time
 import socket
+import json
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+env_path = Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 def get_service_account_email():
     """Extract service account email from the key file."""
-    import json
     
     creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
     if not creds_path:
@@ -171,19 +173,12 @@ def run_local():
     sys.path.insert(0, os.path.dirname(__file__))  # Also add project root
 
     # Set critical environment variables with absolute path
-    try:
-        from config.database import DatabaseConfig
-        database_path = DatabaseConfig.get_database_path()
-        os.environ['DATABASE_PATH'] = database_path
-        print(f"✅ Database path set to: {database_path}")
-    except Exception as e:
-        print(f"⚠️ Failed to set database path: {e}")
-        # Fallback to absolute path
-        fallback_path = os.path.join(
-            os.path.dirname(__file__), 'backend', 'cache', 'gcp_data.db'
-        )
-        os.environ['DATABASE_PATH'] = os.path.abspath(fallback_path)
-        print(f"Using fallback database path: {os.environ['DATABASE_PATH']}")
+    # Use absolute path for database - no need to import from config
+    database_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), 'backend', 'cache', 'gcp_data.db'
+    ))
+    os.environ['DATABASE_PATH'] = database_path
+    print(f"✅ Database path set to: {database_path}")
 
     # CRITICAL: Use '1' not 'TRUE' for GOOGLE_GENAI_USE_VERTEXAI
     os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = '1'
@@ -220,26 +215,12 @@ def run_local():
         ]
     
     # Display configuration summary
-    try:
-        from config.environment import EnvironmentConfig
-        config_summary = EnvironmentConfig.get_configuration_summary()
-        
-        print(f"📂 Working directory: {os.getcwd()}")
-        print(f"🔧 Command: {' '.join(cmd)}")
-        print(f"🗄️ Database: {os.environ.get('DATABASE_PATH')}")
-        print(f"🤖 Using: ADK Agent with Google ADK Framework")
-        print(f"⚙️ Config: {'Valid' if config_summary['is_valid'] else 'Issues Detected'} ({config_summary['valid_count']} vars)")
-        print(f"📅 Project: {config_summary['project_id']}")
-        print("=" * 50)
-        
-    except Exception:
-        # Fallback to basic display
-        print(f"📂 Working directory: {os.getcwd()}")
-        print(f"🔧 Command: {' '.join(cmd)}")
-        print(f"🗄️ Database: {os.environ.get('DATABASE_PATH')}")
-        print(f"🤖 Using: ADK Agent with Google ADK Framework")
-        print(f"⚙️ Config: Fallback Mode")
-        print("=" * 50)
+    print(f"📂 Working directory: {os.getcwd()}")
+    print(f"🔧 Command: {' '.join(cmd)}")
+    print(f"🗄️ Database: {os.environ.get('DATABASE_PATH')}")
+    print(f"🤖 Using: ADK Agent with Google ADK Framework")
+    print(f"📅 Project: {os.environ.get('GOOGLE_CLOUD_PROJECT', 'Not Set')}")
+    print("=" * 50)
     
     if is_cloud_run:
         print(f"Frontend listening on port: {port}")

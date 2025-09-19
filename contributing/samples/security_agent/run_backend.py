@@ -14,20 +14,19 @@ import os
 import argparse
 from dotenv import load_dotenv
 from pathlib import Path
+import signal
+import time
+import socket
+import json
 
 # CRITICAL: Load environment variables from .env file FIRST
 # This ensures all modules, especially the genai library,
 # are initialized with the correct settings.
 env_path = Path(__file__).parent / '.env'
 load_dotenv(dotenv_path=env_path)
-import signal
-import time
-import socket
-import json
 
 def get_service_account_email():
     """Extract service account email from the key file."""
-    import json
     
     creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
     if not creds_path:
@@ -264,21 +263,16 @@ def run_local():
         else:
             print("[WARNING] Service account directory not found, will use default credentials")
     
-    # Change to backend directory - IMPORTANT for correct imports
-    backend_dir = os.path.join(os.path.dirname(__file__), "backend")
-    if os.path.exists(backend_dir):
-        os.chdir(backend_dir)
-        print(f"[DIR] Changed to backend directory: {os.getcwd()}")
-    else:
-        print(f"[WARNING] Backend directory not found at {backend_dir}")
-        print(f"[DIR] Current directory: {os.getcwd()}")
-    
+    # Stay in the project root directory to preserve import paths
+    # This allows backend/main.py to import from agents/ directory
+    print(f"[DIR] Working directory: {os.getcwd()}")
+
     # Configure uvicorn based on environment
     if is_cloud_run:
         # Cloud Run configuration - no reload, bind to PORT env var
         cmd = [
             sys.executable, "-m", "uvicorn",
-            "main:app",
+            "backend.main:app",  # Use module path from project root
             "--host", "0.0.0.0",
             "--port", port
         ]
@@ -286,7 +280,7 @@ def run_local():
         # Local development configuration - with reload disabled for stability
         cmd = [
             python_executable, "-m", "uvicorn",
-            "main:app",
+            "backend.main:app",  # Use module path from project root
             "--host", "0.0.0.0",
             "--port", port
         ]
