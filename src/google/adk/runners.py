@@ -269,7 +269,7 @@ class Runner:
     run_config = run_config or RunConfig()
 
     if not new_message.role:
-      new_message.role = "user"
+      new_message.role = 'user'
 
     async def _run_with_trace(
         new_message: types.Content,
