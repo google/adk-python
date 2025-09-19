@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+import os
 from typing import Optional
 
 from opentelemetry import _events
@@ -25,12 +26,16 @@ from opentelemetry import trace
 from opentelemetry.sdk._events import EventLoggerProvider
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs import LogRecordProcessor
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+import opentelemetry.sdk.environment_variables as otel_env
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import MetricReader
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import OTELResourceDetector
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from ..utils.feature_decorator import experimental
 
@@ -50,6 +55,14 @@ def maybe_set_otel_providers(
   """Sets up OTel providers if hooks for a given telemetry type were
   passed.
 
+  Additionally adds generic OTLP exporters based on following env variables:
+  OTEL_EXPORTER_OTLP_ENDPOINT
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+  OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+  OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+  See https://opentelemetry.io/docs/languages/sdk-configuration/otlp-exporter/
+  for how they are used.
+
   If a provider for a specific telemetry type was already globally set -
   this function will not override it or register more exporters.
 
@@ -64,6 +77,9 @@ def maybe_set_otel_providers(
     otel_hooks_to_setup = []
   if otel_resource is None:
     otel_resource = _get_otel_resource()
+
+  # Add generic OTel exporters based on OTel env variables.
+  otel_hooks_to_setup.append(_get_otel_exporters())
 
   span_processors = []
   metric_readers = []
@@ -115,3 +131,47 @@ def _get_otel_resource() -> Resource:
   # The OTELResourceDetector populates resource labels from
   # environment variables like OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES.
   return OTELResourceDetector().detect()
+
+
+def _get_otel_exporters() -> OTelHooks:
+  span_processors = []
+  if os.getenv(otel_env.OTEL_EXPORTER_OTLP_ENDPOINT) or os.getenv(
+      otel_env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+  ):
+    span_processors.append(_get_otel_span_exporter())
+
+  metric_readers = []
+  if os.getenv(otel_env.OTEL_EXPORTER_OTLP_ENDPOINT) or os.getenv(
+      otel_env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+  ):
+    metric_readers.append(_get_otel_metrics_exporter())
+
+  log_record_processors = []
+  if os.getenv(otel_env.OTEL_EXPORTER_OTLP_ENDPOINT) or os.getenv(
+      otel_env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+  ):
+    log_record_processors.append(_get_otel_logs_exporter())
+
+  return OTelHooks(
+      span_processors=span_processors,
+      metric_readers=metric_readers,
+      log_record_processors=log_record_processors,
+  )
+
+
+def _get_otel_span_exporter() -> SpanProcessor:
+  from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+  return BatchSpanProcessor(OTLPSpanExporter())
+
+
+def _get_otel_metrics_exporter() -> MetricReader:
+  from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+
+  return PeriodicExportingMetricReader(OTLPMetricExporter())
+
+
+def _get_otel_logs_exporter() -> LogRecordProcessor:
+  from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+
+  return BatchLogRecordProcessor(OTLPLogExporter())

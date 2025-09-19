@@ -15,6 +15,7 @@
 from typing import Optional
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
@@ -465,6 +466,192 @@ class TestRunnerWithPlugins:
           session_service=self.session_service,
           artifact_service=self.artifact_service,
       )
+
+
+class TestRunnerCacheConfig:
+  """Tests for Runner cache config extraction and handling."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+
+  def test_runner_extracts_cache_config_from_app(self):
+    """Test that Runner extracts cache config from App."""
+    cache_config = ContextCacheConfig(
+        cache_intervals=15, ttl_seconds=3600, min_tokens=1024
+    )
+
+    app = App(
+        name="test_app",
+        root_agent=self.root_agent,
+        context_cache_config=cache_config,
+    )
+
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    assert runner.context_cache_config == cache_config
+    assert runner.context_cache_config.cache_intervals == 15
+    assert runner.context_cache_config.ttl_seconds == 3600
+    assert runner.context_cache_config.min_tokens == 1024
+
+  def test_runner_with_app_without_cache_config(self):
+    """Test Runner with App that has no cache config."""
+    app = App(
+        name="test_app", root_agent=self.root_agent, context_cache_config=None
+    )
+
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    assert runner.context_cache_config is None
+
+  def test_runner_without_app_has_no_cache_config(self):
+    """Test Runner created without App has no cache config."""
+    runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    assert runner.context_cache_config is None
+
+  def test_runner_cache_config_passed_to_invocation_context(self):
+    """Test that cache config is passed to InvocationContext."""
+    cache_config = ContextCacheConfig(
+        cache_intervals=20, ttl_seconds=7200, min_tokens=2048
+    )
+
+    app = App(
+        name="test_app",
+        root_agent=self.root_agent,
+        context_cache_config=cache_config,
+    )
+
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Create a mock session
+    mock_session = Session(
+        id=TEST_SESSION_ID,
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        events=[],
+    )
+
+    # Create invocation context using runner's method
+    invocation_context = runner._new_invocation_context(mock_session)
+
+    assert invocation_context.context_cache_config == cache_config
+    assert invocation_context.context_cache_config.cache_intervals == 20
+
+  def test_runner_validate_params_return_order(self):
+    """Test that _validate_runner_params returns values in correct order."""
+    cache_config = ContextCacheConfig(cache_intervals=25)
+
+    app = App(
+        name="order_test_app",
+        root_agent=self.root_agent,
+        context_cache_config=cache_config,
+    )
+
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Test the validation method directly
+    app_name, agent, context_cache_config, plugins = (
+        runner._validate_runner_params(app, None, None, None)
+    )
+
+    assert app_name == "order_test_app"
+    assert agent == self.root_agent
+    assert context_cache_config == cache_config
+    assert context_cache_config.cache_intervals == 25
+    assert plugins == []
+
+  def test_runner_validate_params_without_app(self):
+    """Test _validate_runner_params without App returns None for cache config."""
+    runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    app_name, agent, context_cache_config, plugins = (
+        runner._validate_runner_params(None, "test_app", self.root_agent, None)
+    )
+
+    assert app_name == "test_app"
+    assert agent == self.root_agent
+    assert context_cache_config is None
+    assert plugins is None
+
+  def test_runner_app_name_and_agent_extracted_correctly(self):
+    """Test that app_name and agent are correctly extracted from App."""
+    cache_config = ContextCacheConfig()
+
+    app = App(
+        name="extracted_app",
+        root_agent=self.root_agent,
+        context_cache_config=cache_config,
+    )
+
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    assert runner.app_name == "extracted_app"
+    assert runner.agent == self.root_agent
+    assert runner.context_cache_config == cache_config
+
+  def test_runner_realistic_cache_config_scenario(self):
+    """Test realistic scenario with production-like cache config."""
+    # Production cache config
+    production_cache_config = ContextCacheConfig(
+        cache_intervals=30, ttl_seconds=14400, min_tokens=4096  # 4 hours
+    )
+
+    app = App(
+        name="production_app",
+        root_agent=self.root_agent,
+        context_cache_config=production_cache_config,
+    )
+
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Verify all settings are preserved
+    assert runner.context_cache_config.cache_intervals == 30
+    assert runner.context_cache_config.ttl_seconds == 14400
+    assert runner.context_cache_config.ttl_string == "14400s"
+    assert runner.context_cache_config.min_tokens == 4096
+
+    # Verify string representation
+    expected_str = (
+        "ContextCacheConfig(cache_intervals=30, ttl=14400s, min_tokens=4096)"
+    )
+    assert str(runner.context_cache_config) == expected_str
 
 
 if __name__ == "__main__":

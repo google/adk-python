@@ -45,6 +45,7 @@ dependencies = [
   "opentelemetry-exporter-gcp-logging>=1.9.0a0, <2.0.0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0, <2.0.0",
   "opentelemetry-exporter-gcp-trace>=1.9.0, <2.0.0",
+  "opentelemetry-exporter-otlp-proto-http>=1.36.0",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
   "opentelemetry-sdk>=1.31.0, <=1.37.0",
   "pydantic>=2.0, <3.0.0",                                  # For data validation/models

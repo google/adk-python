@@ -58,6 +58,11 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           agent.name,
       )
 
+    # Add dynamic instructions to the last user content if static instructions exist
+    await _add_dynamic_instructions_to_user_content(
+        invocation_context, llm_request
+    )
+
     # Maintain async generator behavior
     if False:  # Ensures it behaves as a generator
       yield  # This is a no-op but maintains generator structure
@@ -557,3 +562,49 @@ def _is_live_model_audio_event(event: Event) -> bool:
     if part.file_data and part.file_data.mime_type == 'audio/pcm':
       return True
   return False
+
+
+async def _add_dynamic_instructions_to_user_content(
+    invocation_context: InvocationContext, llm_request: LlmRequest
+) -> None:
+  """Add dynamic instructions to the last user content when static instructions exist."""
+  from ...agents.readonly_context import ReadonlyContext
+  from ...utils import instructions_utils
+
+  agent = invocation_context.agent
+
+  dynamic_instructions = []
+
+  # Handle agent dynamic instructions if static instruction exists
+  if agent.static_instruction and agent.instruction:
+    # Static instruction exists, so add dynamic instruction to content
+    raw_si, bypass_state_injection = await agent.canonical_instruction(
+        ReadonlyContext(invocation_context)
+    )
+    si = raw_si
+    if not bypass_state_injection:
+      si = await instructions_utils.inject_session_state(
+          raw_si, ReadonlyContext(invocation_context)
+      )
+    if si:  # Only add if not empty
+      dynamic_instructions.append(si)
+
+  if not dynamic_instructions:
+    return
+
+  # Find the start of the last continuous batch of user content
+  # Walk backwards to find the first non-user content, then insert before next user content
+  insert_index = len(llm_request.contents)
+  for i in range(len(llm_request.contents) - 1, -1, -1):
+    if llm_request.contents[i].role != 'user':
+      insert_index = i + 1
+      break
+    elif i == 0:
+      # All content from start is user content
+      insert_index = 0
+      break
+
+  # Create new user content with dynamic instructions
+  instruction_parts = [types.Part(text=instr) for instr in dynamic_instructions]
+  new_content = types.Content(role='user', parts=instruction_parts)
+  llm_request.contents.insert(insert_index, new_content)
