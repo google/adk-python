@@ -18,6 +18,8 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Any
+from typing import Dict
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -309,7 +311,7 @@ class SqliteMemoryService(BaseMemoryService):
       logger.error(f'Database error clearing memory: {e}')
       raise
 
-  async def get_memory_stats(self) -> dict:
+  async def get_memory_stats(self) -> Dict[str, Any]:
     """Returns statistics about the memory database.
 
     Returns:
