@@ -815,8 +815,7 @@ def fast_api_common_options():
         default=False,
         help=(
             "EXPERIMENTAL Optional. Whether to write OTel data to Google Cloud"
-            " Observability services - Cloud Trace, Cloud Monitoring and Cloud"
-            " Logging."
+            " Observability services - Cloud Trace and Cloud Logging."
         ),
     )
     @click.option(

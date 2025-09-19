@@ -41,6 +41,7 @@ from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
 import graphviz
 from opentelemetry import trace
+import opentelemetry.sdk.environment_variables as otel_env
 from opentelemetry.sdk.trace import export as export_lib
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import SpanProcessor
@@ -272,10 +273,14 @@ def _setup_telemetry(
     otel_to_cloud: bool = False,
     internal_exporters: Optional[list[SpanProcessor]] = None,
 ):
-  # TODO - remove the condition and else branch here once
-  # maybe_set_otel_providers is no longer experimental.
+  # TODO - remove the else branch here once maybe_set_otel_providers is no
+  # longer experimental.
   if otel_to_cloud:
-    _setup_telemetry_experimental(internal_exporters=internal_exporters)
+    _setup_gcp_telemetry_experimental(internal_exporters=internal_exporters)
+  elif _otel_env_vars_enabled():
+    _setup_telemetry_from_env_experimental(
+        internal_exporters=internal_exporters
+    )
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = TracerProvider()
@@ -284,7 +289,19 @@ def _setup_telemetry(
     trace.set_tracer_provider(tracer_provider=tracer_provider)
 
 
-def _setup_telemetry_experimental(
+def _otel_env_vars_enabled() -> bool:
+  return any([
+      os.getenv(endpoint_var)
+      for endpoint_var in [
+          otel_env.OTEL_EXPORTER_OTLP_ENDPOINT,
+          otel_env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+          otel_env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+          otel_env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
+      ]
+  ])
+
+
+def _setup_gcp_telemetry_experimental(
     internal_exporters: list[SpanProcessor] = None,
 ):
   from ..telemetry.setup import maybe_set_otel_providers
@@ -306,7 +323,8 @@ def _setup_telemetry_experimental(
           # TODO - use trace_to_cloud here as well once otel_to_cloud is no
           # longer experimental.
           enable_cloud_tracing=True,
-          enable_cloud_metrics=True,
+          # TODO - reenable metrics once errors during shutdown are fixed.
+          enable_cloud_metrics=False,
           enable_cloud_logging=True,
       )
   )
@@ -315,7 +333,27 @@ def _setup_telemetry_experimental(
   maybe_set_otel_providers(
       otel_hooks_to_setup=otel_hooks_to_add, otel_resource=otel_resource
   )
+  _setup_instrumentation_lib_if_installed()
 
+
+def _setup_telemetry_from_env_experimental(
+    internal_exporters: list[SpanProcessor] = None,
+):
+  from ..telemetry.setup import maybe_set_otel_providers
+
+  otel_hooks_to_add = []
+
+  if internal_exporters:
+    from ..telemetry.setup import OTelHooks
+
+    # Register ADK-specific exporters in trace provider.
+    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
+
+  maybe_set_otel_providers(otel_hooks_to_setup=otel_hooks_to_add)
+  _setup_instrumentation_lib_if_installed()
+
+
+def _setup_instrumentation_lib_if_installed():
   # Set instrumentation to enable emitting OTel data from GenAISDK
   # Currently the instrumentation lib is in extras dependencies, make sure to
   # warn the user if it's not installed.
@@ -501,8 +539,8 @@ class AdkWebServer:
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
-      otel_to_cloud: EXPERIMENTAL. Whether to enable Cloud Trace,
-      Cloud Monitoring and Cloud Logging integrations.
+      otel_to_cloud: EXPERIMENTAL. Whether to enable Cloud Trace
+      and Cloud Logging integrations.
 
     Returns:
       A FastAPI app instance.

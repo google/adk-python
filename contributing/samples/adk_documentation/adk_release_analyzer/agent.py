@@ -100,13 +100,13 @@ root_agent = Agent(
              Explanation of why this change is necessary.
 
              **Reference**:
-             Reference to the code change (e.g. https://github.com/google/adk-python/commit/b3b70035c432670a5f0b5cdd1e9467f43b80495c).
              Reference to the code file (e.g. src/google/adk/tools/spanner/metadata_tool.py).
           ```
         - When referncing doc file, use the full relative path of the doc file in the ADK Docs repository (e.g. docs/sessions/memory.md).
       9. Create or recommend to create a Github issue in the Github Repository {DOC_REPO} with the instructions using the `create_issue` tool.
         - The title of the issue should be "Found docs updates needed from ADK python release <start_tag> to <end_tag>", where start_tag and end_tag are the release tags.
         - The body of the issue should be the instructions about how to update the ADK docs.
+          - Include the compare link between the two ADK releases in the issue body, e.g. https://github.com/google/adk-python/compare/v1.14.0...v1.14.1.
         - **{APPROVAL_INSTRUCTION}**
 
       # 4. Guidelines & Rules
