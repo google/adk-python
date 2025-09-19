@@ -50,6 +50,7 @@ def list_dataset_ids(
     bq_client = client.get_bigquery_client(
         project=project_id,
         credentials=credentials,
+        location=settings.location,
         user_agent=settings.application_name,
     )
 
@@ -121,6 +122,7 @@ def get_dataset_info(
     bq_client = client.get_bigquery_client(
         project=project_id,
         credentials=credentials,
+        location=settings.location,
         user_agent=settings.application_name,
     )
     dataset = bq_client.get_dataset(
@@ -159,6 +161,7 @@ def list_table_ids(
     bq_client = client.get_bigquery_client(
         project=project_id,
         credentials=credentials,
+        location=settings.location,
         user_agent=settings.application_name,
     )
 
@@ -281,6 +284,7 @@ def get_table_info(
     bq_client = client.get_bigquery_client(
         project=project_id,
         credentials=credentials,
+        location=settings.location,
         user_agent=settings.application_name,
     )
     return bq_client.get_table(

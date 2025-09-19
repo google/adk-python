@@ -1,3 +1,5 @@
+"""ADK Answering Agent main script."""
+
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,10 +16,11 @@
 
 import argparse
 import asyncio
+import json
 import logging
-import os
 import sys
 import time
+from typing import Union
 
 from adk_answering_agent import agent
 from adk_answering_agent.settings import OWNER
@@ -35,7 +38,9 @@ USER_ID = "adk_answering_user"
 logs.setup_adk_logger(level=logging.DEBUG)
 
 
-async def list_most_recent_discussions(count: int = 1) -> list[int] | None:
+async def list_most_recent_discussions(
+    count: int = 1,
+) -> Union[list[int], None]:
   """Fetches a specified number of the most recently updated discussions.
 
   Args:
@@ -98,6 +103,8 @@ def process_arguments():
           "Example usage: \n"
           "\tpython -m adk_answering_agent.main --recent 10\n"
           "\tpython -m adk_answering_agent.main --discussion_number 21\n"
+          "\tpython -m adk_answering_agent.main --discussion "
+          '\'{"number": 21, "title": "...", "body": "..."}\'\n'
       ),
       formatter_class=argparse.RawTextHelpFormatter,
   )
@@ -118,12 +125,27 @@ def process_arguments():
       help="Answer a specific discussion number.",
   )
 
+  group.add_argument(
+      "--discussion",
+      type=str,
+      metavar="JSON",
+      help="Answer a discussion using provided JSON data from GitHub event.",
+  )
+
+  group.add_argument(
+      "--discussion-file",
+      type=str,
+      metavar="FILE",
+      help="Answer a discussion using JSON data from a file.",
+  )
+
   return parser.parse_args()
 
 
 async def main():
   args = process_arguments()
   discussion_numbers = []
+  discussion_json_data = None
 
   if args.recent:
     fetched_numbers = await list_most_recent_discussions(count=args.recent)
@@ -140,6 +162,32 @@ async def main():
       )
       return
     discussion_numbers = [discussion_number]
+  elif args.discussion or args.discussion_file:
+    try:
+      # Load discussion data from either argument or file
+      if args.discussion:
+        discussion_data = json.loads(args.discussion)
+        source_desc = "--discussion argument"
+      else:  # args.discussion_file
+        with open(args.discussion_file, "r", encoding="utf-8") as f:
+          discussion_data = json.load(f)
+        source_desc = f"file {args.discussion_file}"
+
+      # Common validation and processing
+      discussion_number = discussion_data.get("number")
+      if not discussion_number:
+        print("Error: Discussion JSON missing 'number' field.", file=sys.stderr)
+        return
+      discussion_numbers = [discussion_number]
+      # Store the discussion data for later use
+      discussion_json_data = discussion_data
+
+    except FileNotFoundError:
+      print(f"Error: File not found: {args.discussion_file}", file=sys.stderr)
+      return
+    except json.JSONDecodeError as e:
+      print(f"Error: Invalid JSON in {source_desc}: {e}", file=sys.stderr)
+      return
 
   print(f"Will try to answer discussions: {discussion_numbers}...")
 
@@ -156,10 +204,24 @@ async def main():
     session = await runner.session_service.create_session(
         app_name=APP_NAME, user_id=USER_ID
     )
-    prompt = (
-        f"Please check discussion #{discussion_number} see if you can help"
-        " answer the question or provide some information!"
-    )
+
+    # If we have discussion JSON data, include it in the prompt
+    # to avoid API call
+    if discussion_json_data:
+      discussion_json_str = json.dumps(discussion_json_data, indent=2)
+      prompt = (
+          f"Please help answer this GitHub discussion #{discussion_number}."
+          " Here is the complete discussion"
+          f" data:\n\n```json\n{discussion_json_str}\n```\n\nPlease analyze"
+          " this discussion and provide a helpful response based on your"
+          " knowledge of ADK."
+      )
+    else:
+      prompt = (
+          f"Please check discussion #{discussion_number} see if you can help"
+          " answer the question or provide some information!"
+      )
+
     response = await call_agent_async(runner, USER_ID, session.id, prompt)
     print(f"<<<< Agent Final Output: {response}\n")
 

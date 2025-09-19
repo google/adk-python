@@ -21,6 +21,8 @@ import sys
 import tempfile
 import time
 from typing import Any
+from typing import Optional
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -34,6 +36,7 @@ from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.genai import types
@@ -94,6 +97,14 @@ def _event_3():
   )
 
 
+def _event_state_delta(state_delta: dict[str, Any]):
+  return Event(
+      author="dummy agent",
+      invocation_id="invocation_id",
+      actions=EventActions(state_delta=state_delta),
+  )
+
+
 # Define mocked async generator functions for the Runner
 async def dummy_run_live(self, session, live_request_queue):
   yield _event_1()
@@ -110,8 +121,10 @@ async def dummy_run_async(
     user_id,
     session_id,
     new_message,
-    run_config: RunConfig = RunConfig(),
+    state_delta=None,
+    run_config: Optional[RunConfig] = None,
 ):
+  run_config = run_config or RunConfig()
   yield _event_1()
   await asyncio.sleep(0)
 
@@ -119,6 +132,10 @@ async def dummy_run_async(
   await asyncio.sleep(0)
 
   yield _event_3()
+  await asyncio.sleep(0)
+
+  if state_delta is not None:
+    yield _event_state_delta(state_delta)
 
 
 # Define a local mock for EvalCaseResult specific to fast_api tests
@@ -328,7 +345,7 @@ def mock_artifact_service():
 @pytest.fixture
 def mock_memory_service():
   """Create a mock memory service."""
-  return MagicMock()
+  return AsyncMock()
 
 
 @pytest.fixture
@@ -744,6 +761,29 @@ def test_agent_run(test_app, create_test_session):
   logger.info("Agent run test completed successfully")
 
 
+def test_agent_run_passes_state_delta(test_app, create_test_session):
+  """Test /run forwards state_delta and surfaces it in events."""
+  info = create_test_session
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+      "state_delta": {"k": "v", "count": 1},
+  }
+
+  # Verify the response
+  response = test_app.post("/run", json=payload)
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, list)
+  assert len(data) == 4
+
+  # Verify we got the expected event
+  assert data[3]["actions"]["stateDelta"] == payload["state_delta"]
+
+
 def test_list_artifact_names(test_app, create_test_session):
   """Test listing artifact names for a session."""
   info = create_test_session
@@ -801,6 +841,7 @@ def test_run_eval(test_app, create_test_eval_set):
             "threshold": 0.5,
             "score": 1.0,
             "evalStatus": 1,
+            "details": {},
         }],
     }
     for k, v in expected_eval_case_result.items():
@@ -897,6 +938,19 @@ def test_a2a_disabled_by_default(test_app):
   response = test_app.get("/list-apps")
   assert response.status_code == 200
   logger.info("A2A disabled by default test passed")
+
+
+def test_patch_memory(test_app, create_test_session, mock_memory_service):
+  """Test adding a session to memory."""
+  info = create_test_session
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/memory"
+  payload = {"session_id": info["session_id"]}
+  response = test_app.patch(url, json=payload)
+
+  # Verify the response
+  assert response.status_code == 200
+  mock_memory_service.add_session_to_memory.assert_called_once()
+  logger.info("Add session to memory test completed successfully")
 
 
 if __name__ == "__main__":

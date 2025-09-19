@@ -42,6 +42,8 @@ class LlmResponse(BaseModel):
     custom_metadata: The custom metadata of the LlmResponse.
     input_transcription: Audio transcription of user input.
     output_transcription: Audio transcription of model output.
+    avg_logprobs: Average log probability of the generated tokens.
+    logprobs_result: Detailed log probabilities for chosen and top candidate tokens.
   """
 
   model_config = ConfigDict(
@@ -52,7 +54,11 @@ class LlmResponse(BaseModel):
   """The pydantic model config."""
 
   content: Optional[types.Content] = None
-  """The content of the response."""
+  """The generative content of the response.
+
+  This should only contain content from the user or the model, and not any
+  framework or system-generated data.
+  """
 
   grounding_metadata: Optional[types.GroundingMetadata] = None
   """The grounding metadata of the response."""
@@ -105,6 +111,12 @@ class LlmResponse(BaseModel):
   output_transcription: Optional[types.Transcription] = None
   """Audio transcription of model output."""
 
+  avg_logprobs: Optional[float] = None
+  """Average log probability of the generated tokens."""
+
+  logprobs_result: Optional[types.LogprobsResult] = None
+  """Detailed log probabilities for chosen and top candidate tokens."""
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
@@ -127,6 +139,8 @@ class LlmResponse(BaseModel):
             grounding_metadata=candidate.grounding_metadata,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
+            avg_logprobs=candidate.avg_logprobs,
+            logprobs_result=candidate.logprobs_result,
         )
       else:
         return LlmResponse(
@@ -134,6 +148,8 @@ class LlmResponse(BaseModel):
             error_message=candidate.finish_message,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
+            avg_logprobs=candidate.avg_logprobs,
+            logprobs_result=candidate.logprobs_result,
         )
     else:
       if generate_content_response.prompt_feedback:

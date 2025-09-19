@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
+from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import PerInvocationResult
@@ -60,15 +61,19 @@ class MockLlmAsJudge(LlmAsJudge):
 @pytest.fixture
 def mock_llm_as_judge():
   return MockLlmAsJudge(
-      EvalMetric(
+      eval_metric=EvalMetric(
           metric_name="test_metric",
           threshold=0.5,
-          judge_model_options=JudgeModelOptions(
-              judge_model="gemini-2.5-flash",
-              judge_model_config=genai_types.GenerateContentConfig(),
-              num_samples=3,
+          criterion=LlmAsAJudgeCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  judge_model_config=genai_types.GenerateContentConfig(),
+                  num_samples=3,
+              ),
           ),
       ),
+      criterion_type=LlmAsAJudgeCriterion,
   )
 
 
@@ -94,10 +99,11 @@ def test_get_eval_status():
   assert get_eval_status(score=None, threshold=0.8) == EvalStatus.NOT_EVALUATED
 
 
-def test_llm_as_judge_init_missing_judge_model_options():
+def test_llm_as_judge_init_missing_criterion():
   with pytest.raises(ValueError):
     MockLlmAsJudge(
         EvalMetric(metric_name="test_metric", threshold=0.8),
+        criterion_type=LlmAsAJudgeCriterion,
     )
 
 
@@ -107,10 +113,16 @@ def test_llm_as_judge_init_unregistered_model():
         EvalMetric(
             metric_name="test_metric",
             threshold=0.8,
-            judge_model_options=JudgeModelOptions(
-                judge_model="unregistered_model",
+            criterion=LlmAsAJudgeCriterion(
+                threshold=0.5,
+                judge_model_options=JudgeModelOptions(
+                    judge_model="unregistered_model",
+                    judge_model_config=genai_types.GenerateContentConfig(),
+                    num_samples=3,
+                ),
             ),
         ),
+        criterion_type=LlmAsAJudgeCriterion,
     )
 
 

@@ -34,12 +34,14 @@ from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
 from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
+from .apps.app import App
 from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .events.event import EventActions
+from .flows.llm_flows import contents
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
@@ -49,7 +51,7 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
-from .telemetry import tracer
+from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
 from .utils.context_utils import Aclosing
 
@@ -91,8 +93,9 @@ class Runner:
   def __init__(
       self,
       *,
-      app_name: str,
-      agent: BaseAgent,
+      app: Optional[App] = None,
+      app_name: Optional[str] = None,
+      agent: Optional[BaseAgent] = None,
       plugins: Optional[List[BasePlugin]] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       session_service: BaseSessionService,
@@ -101,22 +104,84 @@ class Runner:
   ):
     """Initializes the Runner.
 
+    Developers should provide either an `app` instance or both `app_name` and
+    `agent`. Providing a mix of `app` and `app_name`/`agent` will result in a
+    `ValueError`. Providing `app` is the recommended way to create a runner.
+
     Args:
-        app_name: The application name of the runner.
-        agent: The root agent to run.
-        plugins: A list of plugins for the runner.
+        app_name: The application name of the runner. Required if `app` is not
+          provided.
+        agent: The root agent to run. Required if `app` is not provided.
+        app: An optional `App` instance. If provided, `app_name` and `agent`
+          should not be specified.
+        plugins: Deprecated. A list of plugins for the runner. Please use the
+          `app` argument to provide plugins instead.
         artifact_service: The artifact service for the runner.
         session_service: The session service for the runner.
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
+
+    Raises:
+        ValueError: If `app` is provided along with `app_name` or `plugins`, or
+          if `app` is not provided but either `app_name` or `agent` is missing.
     """
-    self.app_name = app_name
-    self.agent = agent
+    self.app_name, self.agent, plugins = self._validate_runner_params(
+        app, app_name, agent, plugins
+    )
     self.artifact_service = artifact_service
     self.session_service = session_service
     self.memory_service = memory_service
     self.credential_service = credential_service
     self.plugin_manager = PluginManager(plugins=plugins)
+
+  def _validate_runner_params(
+      self,
+      app: Optional[App],
+      app_name: Optional[str],
+      agent: Optional[BaseAgent],
+      plugins: Optional[List[BasePlugin]],
+  ) -> tuple[str, BaseAgent, Optional[List[BasePlugin]]]:
+    """Validates and extracts runner parameters.
+
+    Args:
+        app: An optional `App` instance.
+        app_name: The application name of the runner.
+        agent: The root agent to run.
+        plugins: A list of plugins for the runner.
+
+    Returns:
+        A tuple containing (app_name, agent, plugins).
+
+    Raises:
+        ValueError: If parameters are invalid.
+    """
+    if app:
+      if app_name:
+        raise ValueError(
+            'When app is provided, app_name should not be provided.'
+        )
+      if agent:
+        raise ValueError('When app is provided, agent should not be provided.')
+      if plugins:
+        raise ValueError(
+            'When app is provided, plugins should not be provided and should be'
+            ' provided in the app instead.'
+        )
+      app_name = app.name
+      agent = app.root_agent
+      plugins = app.plugins
+    elif not app_name or not agent:
+      raise ValueError(
+          'Either app or both app_name and agent must be provided.'
+      )
+
+    if plugins:
+      warnings.warn(
+          'The `plugins` argument is deprecated. Please use the `app` argument'
+          ' to provide plugins instead.',
+          DeprecationWarning,
+      )
+    return app_name, agent, plugins
 
   def run(
       self,
@@ -124,7 +189,7 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: types.Content,
-      run_config: RunConfig = RunConfig(),
+      run_config: Optional[RunConfig] = None,
   ) -> Generator[Event, None, None]:
     """Runs the agent.
 
@@ -141,6 +206,7 @@ class Runner:
     Yields:
       The events generated by the agent.
     """
+    run_config = run_config or RunConfig()
     event_queue = queue.Queue()
 
     async def _invoke_run_async():
@@ -184,7 +250,7 @@ class Runner:
       session_id: str,
       new_message: types.Content,
       state_delta: Optional[dict[str, Any]] = None,
-      run_config: RunConfig = RunConfig(),
+      run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
 
@@ -202,6 +268,7 @@ class Runner:
         parts.
       ValueError: If the session is not found.
     """
+    run_config = run_config or RunConfig()
 
     if new_message.role != 'user':
       raise ValueError(
@@ -249,7 +316,12 @@ class Runner:
               yield event
 
         async with Aclosing(
-            self._exec_with_plugin(invocation_context, session, execute)
+            self._exec_with_plugin(
+                invocation_context=invocation_context,
+                session=session,
+                execute_fn=execute,
+                is_live_call=False,
+            )
         ) as agen:
           async for event in agen:
             yield event
@@ -258,11 +330,21 @@ class Runner:
       async for event in agen:
         yield event
 
+  def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
+    """Checks if an event should be appended to the session."""
+    # Don't append audio response from model in live mode to session.
+    # The data is appended to artifacts with a reference in file_data in the
+    # event.
+    if is_live_call and contents._is_live_model_audio_event(event):
+      return False
+    return True
+
   async def _exec_with_plugin(
       self,
       invocation_context: InvocationContext,
       session: Session,
       execute_fn: Callable[[InvocationContext], AsyncGenerator[Event, None]],
+      is_live_call: bool = False,
   ) -> AsyncGenerator[Event, None]:
     """Wraps execution with plugin callbacks.
 
@@ -287,26 +369,30 @@ class Runner:
           author='model',
           content=early_exit_result,
       )
-      await self.session_service.append_event(
-          session=session,
-          event=early_exit_event,
-      )
+      if self._should_append_event(early_exit_event, is_live_call):
+        await self.session_service.append_event(
+            session=session,
+            event=early_exit_event,
+        )
       yield early_exit_event
     else:
       # Step 2: Otherwise continue with normal execution
       async with Aclosing(execute_fn(invocation_context)) as agen:
         async for event in agen:
           if not event.partial:
-            await self.session_service.append_event(
-                session=session, event=event
-            )
+            if self._should_append_event(event, is_live_call):
+              await self.session_service.append_event(
+                  session=session, event=event
+              )
           # Step 3: Run the on_event callbacks to optionally modify the event.
           modified_event = await plugin_manager.run_on_event_callback(
               invocation_context=invocation_context, event=event
           )
           yield (modified_event if modified_event else event)
 
-    # Step 4: Run the after_run callbacks to optionally modify the context.
+    # Step 4: Run the after_run callbacks to perform global cleanup tasks or
+    # finalizing logs and metrics data.
+    # This does NOT emit any event.
     await plugin_manager.run_after_run_callback(
         invocation_context=invocation_context
     )
@@ -370,7 +456,7 @@ class Runner:
       user_id: Optional[str] = None,
       session_id: Optional[str] = None,
       live_request_queue: LiveRequestQueue,
-      run_config: RunConfig = RunConfig(),
+      run_config: Optional[RunConfig] = None,
       session: Optional[Session] = None,
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent in live mode (experimental feature).
@@ -396,6 +482,7 @@ class Runner:
     .. NOTE::
         Either `session` or both `user_id` and `session_id` must be provided.
     """
+    run_config = run_config or RunConfig()
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
@@ -467,7 +554,12 @@ class Runner:
           yield event
 
     async with Aclosing(
-        self._exec_with_plugin(invocation_context, session, execute)
+        self._exec_with_plugin(
+            invocation_context=invocation_context,
+            session=session,
+            execute_fn=execute,
+            is_live_call=True,
+        )
     ) as agen:
       async for event in agen:
         yield event
@@ -545,7 +637,7 @@ class Runner:
       *,
       new_message: Optional[types.Content] = None,
       live_request_queue: Optional[LiveRequestQueue] = None,
-      run_config: RunConfig = RunConfig(),
+      run_config: Optional[RunConfig] = None,
   ) -> InvocationContext:
     """Creates a new invocation context.
 
@@ -558,6 +650,7 @@ class Runner:
     Returns:
         The new invocation context.
     """
+    run_config = run_config or RunConfig()
     invocation_id = new_invocation_context_id()
 
     if run_config.support_cfc and isinstance(self.agent, LlmAgent):
@@ -589,9 +682,10 @@ class Runner:
       session: Session,
       *,
       live_request_queue: Optional[LiveRequestQueue] = None,
-      run_config: RunConfig = RunConfig(),
+      run_config: Optional[RunConfig] = None,
   ) -> InvocationContext:
     """Creates a new invocation context for live multi-agent."""
+    run_config = run_config or RunConfig()
 
     # For live multi-agent, we need model's text transcription as context for
     # next agent.
@@ -641,12 +735,34 @@ class Runner:
         logger.info('Successfully closed toolset: %s', type(toolset).__name__)
       except asyncio.TimeoutError:
         logger.warning('Toolset %s cleanup timed out', type(toolset).__name__)
+      except asyncio.CancelledError as e:
+        # Handle cancel scope issues in Python 3.10 and 3.11 with anyio
+        #
+        # Root cause: MCP library uses anyio.CancelScope() in RequestResponder.__enter__()
+        # and __exit__() methods. When asyncio.wait_for() creates a new task for cleanup,
+        # the cancel scope is entered in one task context but exited in another.
+        #
+        # Python 3.12+ fixes: Enhanced task context management (Task.get_context()),
+        # improved context propagation across task boundaries, and better cancellation
+        # handling prevent the cross-task cancel scope violation.
+        logger.warning(
+            'Toolset %s cleanup cancelled: %s', type(toolset).__name__, e
+        )
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
   async def close(self):
     """Closes the runner."""
     await self._cleanup_toolsets(self._collect_toolset(self.agent))
+
+  async def __aenter__(self):
+    """Async context manager entry."""
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    """Async context manager exit."""
+    await self.close()
+    return False  # Don't suppress exceptions from the async with block
 
 
 class InMemoryRunner(Runner):
@@ -660,16 +776,15 @@ class InMemoryRunner(Runner):
       agent: The root agent to run.
       app_name: The application name of the runner. Defaults to
         'InMemoryRunner'.
-      _in_memory_session_service: Deprecated. Please don't use. The in-memory
-        session service for the runner.
   """
 
   def __init__(
       self,
-      agent: BaseAgent,
+      agent: Optional[BaseAgent] = None,
       *,
-      app_name: str = 'InMemoryRunner',
+      app_name: Optional[str] = 'InMemoryRunner',
       plugins: Optional[list[BasePlugin]] = None,
+      app: Optional[App] = None,
   ):
     """Initializes the InMemoryRunner.
 
@@ -678,12 +793,12 @@ class InMemoryRunner(Runner):
         app_name: The application name of the runner. Defaults to
           'InMemoryRunner'.
     """
-    self._in_memory_session_service = InMemorySessionService()
     super().__init__(
         app_name=app_name,
         agent=agent,
         artifact_service=InMemoryArtifactService(),
         plugins=plugins,
-        session_service=self._in_memory_session_service,
+        app=app,
+        session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
     )

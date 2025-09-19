@@ -66,7 +66,7 @@ class SequentialAgent(BaseAgent):
       # add tool
       def task_completed():
         """
-        Signals that the model has successfully completed the user's question
+        Signals that the agent has successfully completed the user's question
         or task.
         """
         return 'Task completion signaled.'

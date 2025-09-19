@@ -56,7 +56,12 @@ class TestA2aAgentExecutor:
     self.mock_runner._new_invocation_context = Mock()
     self.mock_runner.run_async = AsyncMock()
 
-    self.mock_config = Mock(spec=A2aAgentExecutorConfig)
+    self.mock_a2a_part_converter = Mock()
+    self.mock_gen_ai_part_converter = Mock()
+    self.mock_config = A2aAgentExecutorConfig(
+        a2a_part_converter=self.mock_a2a_part_converter,
+        gen_ai_part_converter=self.mock_gen_ai_part_converter,
+    )
     self.executor = A2aAgentExecutor(
         runner=self.mock_runner, config=self.mock_config
     )

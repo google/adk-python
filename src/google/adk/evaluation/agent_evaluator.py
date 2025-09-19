@@ -569,7 +569,7 @@ class AgentEvaluator:
   def _get_eval_metric_results_with_invocation(
       eval_results_per_eval_id: list[EvalCaseResult],
   ) -> dict[str, list[_EvalMetricResultWithInvocation]]:
-    """Retruns _EvalMetricResultWithInvocation grouped by metric.
+    """Returns _EvalMetricResultWithInvocation grouped by metric.
 
     EvalCaseResult contain results for each metric per invocation.
 

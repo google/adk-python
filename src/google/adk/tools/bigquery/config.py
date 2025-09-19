@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import field_validator
 
 from ...utils.feature_decorator import experimental
@@ -50,6 +51,9 @@ class WriteMode(Enum):
 class BigQueryToolConfig(BaseModel):
   """Configuration for BigQuery tools."""
 
+  # Forbid any fields not defined in the model
+  model_config = ConfigDict(extra='forbid')
+
   write_mode: WriteMode = WriteMode.BLOCKED
   """Write mode for BigQuery tools.
 
@@ -76,6 +80,15 @@ class BigQueryToolConfig(BaseModel):
 
   This can be set as a guardrail to ensure that the tools perform the compute
   operations (such as query execution) in a specific project.
+  """
+
+  location: Optional[str] = None
+  """BigQuery location to use for the data and compute.
+
+  This can be set if the BigQuery tools are expected to process data in a
+  particular BigQuery location. If not set, then location would be automatically
+  determined based on the data location in the query. For all supported
+  locations, see https://cloud.google.com/bigquery/docs/locations.
   """
 
   @field_validator('application_name')

@@ -267,6 +267,77 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
 ]
 
 
+STREAM_WITH_EMPTY_CHUNK = [
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id="call_abc",
+                            function=Function(
+                                name="test_function",
+                                arguments='{"test_arg":',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments=' "value"}',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    # This is the problematic empty chunk that should be ignored.
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments="",
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+    ),
+]
+
+
 @pytest.fixture
 def mock_response():
   return ModelResponse(
@@ -726,6 +797,52 @@ function_declaration_test_cases = [
                             },
                             "type": "array",
                         },
+                    },
+                },
+            },
+        },
+    ),
+    (
+        "no_parameters",
+        types.FunctionDeclaration(
+            name="test_function_no_params",
+            description="Test function with no parameters",
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "test_function_no_params",
+                "description": "Test function with no parameters",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        },
+    ),
+    (
+        "parameters_without_required",
+        types.FunctionDeclaration(
+            name="test_function_no_required",
+            description="Test function with parameters but no required field",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "optional_arg": types.Schema(type=types.Type.STRING),
+                },
+            ),
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "test_function_no_required",
+                "description": (
+                    "Test function with parameters but no required field"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "optional_arg": {"type": "string"},
                     },
                 },
             },
@@ -1546,6 +1663,34 @@ async def test_generate_content_async_non_compliant_multiple_function_calls(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_with_empty_chunk(
+    mock_completion, lite_llm_instance
+):
+  """Tests that empty tool call chunks in a stream are ignored."""
+  mock_completion.return_value = iter(STREAM_WITH_EMPTY_CHUNK)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  final_response = responses[0]
+  assert final_response.content.role == "model"
+
+  # Crucially, assert that only ONE tool call was generated,
+  # proving the empty chunk was ignored.
+  assert len(final_response.content.parts) == 1
+
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.id == "call_abc"
+  assert function_call.args == {"test_arg": "value"}
+
+
+@pytest.mark.asyncio
 def test_get_completion_inputs_generation_params():
   # Test that generation_params are extracted and mapped correctly
   req = LlmRequest(
@@ -1575,6 +1720,87 @@ def test_get_completion_inputs_generation_params():
   # Should not include max_output_tokens
   assert "max_output_tokens" not in generation_params
   assert "stop_sequences" not in generation_params
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_empty_generation_params():
+  # Test that generation_params is None when no generation parameters are set
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_minimal_config():
+  # Test that generation_params is None when config has no generation parameters
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          system_instruction="test instruction"  # Non-generation parameter
+      ),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_partial_generation_params():
+  # Test that generation_params is correctly built even with only some parameters
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          # Only temperature is set, others are None/default
+      ),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params is not None
+  assert generation_params["temperature"] == 0.7
+  # Should only contain the temperature parameter
+  assert len(generation_params) == 1
+
+
+def test_function_declaration_to_tool_param_edge_cases():
+  """Test edge cases for function declaration conversion that caused the original bug."""
+  from google.adk.models.lite_llm import _function_declaration_to_tool_param
+
+  # Test function with None parameters (the original bug scenario)
+  func_decl = types.FunctionDeclaration(
+      name="test_function_none_params",
+      description="Function with None parameters",
+      parameters=None,
+  )
+  result = _function_declaration_to_tool_param(func_decl)
+  expected = {
+      "type": "function",
+      "function": {
+          "name": "test_function_none_params",
+          "description": "Function with None parameters",
+          "parameters": {
+              "type": "object",
+              "properties": {},
+          },
+      },
+  }
+  assert result == expected
+
+  # Verify no 'required' field is added when parameters is None
+  assert "required" not in result["function"]["parameters"]
 
 
 def test_gemini_via_litellm_warning(monkeypatch):

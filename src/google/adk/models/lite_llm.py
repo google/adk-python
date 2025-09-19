@@ -392,7 +392,10 @@ def _function_declaration_to_tool_param(
       },
   }
 
-  if function_declaration.parameters.required:
+  if (
+      function_declaration.parameters
+      and function_declaration.parameters.required
+  ):
     tool_params["function"]["parameters"][
         "required"
     ] = function_declaration.parameters.required
@@ -434,10 +437,17 @@ def _model_response_to_chunk(
       for tool_call in message.get("tool_calls"):
         # aggregate tool_call
         if tool_call.type == "function":
+          func_name = tool_call.function.name
+          func_args = tool_call.function.arguments
+
+          # Ignore empty chunks that don't carry any information.
+          if not func_name and not func_args:
+            continue
+
           yield FunctionChunk(
               id=tool_call.id,
-              name=tool_call.function.name,
-              args=tool_call.function.arguments,
+              name=func_name,
+              args=func_args,
               index=tool_call.index,
           ), finish_reason
 
@@ -596,8 +606,8 @@ def _get_completion_inputs(
         mapped_key = param_mapping.get(key, key)
         generation_params[mapped_key] = config_dict[key]
 
-      if not generation_params:
-        generation_params = None
+    if not generation_params:
+      generation_params = None
 
   return messages, tools, response_format, generation_params
 
@@ -680,7 +690,7 @@ def _is_litellm_gemini_model(model_string: str) -> bool:
 
   Args:
     model_string: A LiteLLM model string (e.g., "gemini/gemini-2.5-pro" or
-      "vertex_ai/gemini-1.5-flash")
+      "vertex_ai/gemini-2.5-flash")
 
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise

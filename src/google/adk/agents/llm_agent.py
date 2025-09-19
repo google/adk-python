@@ -462,7 +462,9 @@ class LlmAgent(BaseAgent):
     ):
 
       result = ''.join(
-          [part.text if part.text else '' for part in event.content.parts]
+          part.text
+          for part in event.content.parts
+          if part.text and not part.thought
       )
       if self.output_schema:
         # If the result from the final chunk is just whitespace or empty,
@@ -505,7 +507,7 @@ class LlmAgent(BaseAgent):
 
   @field_validator('generate_content_config', mode='after')
   @classmethod
-  def __validate_generate_content_config(
+  def validate_generate_content_config(
       cls, generate_content_config: Optional[types.GenerateContentConfig]
   ) -> types.GenerateContentConfig:
     if not generate_content_config:

@@ -35,9 +35,9 @@ from ...agents.invocation_context import InvocationContext
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
-from ...telemetry import trace_merged_tool_calls
-from ...telemetry import trace_tool_call
-from ...telemetry import tracer
+from ...telemetry.tracing import trace_merged_tool_calls
+from ...telemetry.tracing import trace_tool_call
+from ...telemetry.tracing import tracer
 from ...tools.base_tool import BaseTool
 from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
@@ -65,7 +65,15 @@ def populate_client_function_call_id(model_response_event: Event) -> None:
       function_call.id = generate_client_function_call_id()
 
 
-def remove_client_function_call_id(content: types.Content) -> None:
+def remove_client_function_call_id(content: Optional[types.Content]) -> None:
+  """Removes ADK-generated function call IDs from content before sending to LLM.
+
+  Strips client-side function call/response IDs that start with 'adk-' prefix
+  to avoid sending internal tracking IDs to the model.
+
+  Args:
+    content: Content containing function calls/responses to clean.
+  """
   if content and content.parts:
     for part in content.parts:
       if (
