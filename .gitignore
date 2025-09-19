@@ -112,6 +112,8 @@ test_runtime_compatibility.py
 test_py39_docker.py
 test_simple_py39.py
 test_core_py39.py
+test_sqlite_docker.py
+test_real_sqlite_docker.py
 
 # Misc
 .DS_Store
