@@ -21,7 +21,9 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from ..agents.context_cache_config import ContextCacheConfig
 from ..tools.base_tool import BaseTool
+from .cache_metadata import CacheMetadata
 
 
 def _find_tool_with_function_declarations(
@@ -52,6 +54,8 @@ class LlmRequest(BaseModel):
     contents: The contents to send to the model.
     config: Additional config for the generate content request.
     tools_dict: The tools dictionary.
+    cache_config: Context cache configuration for this request.
+    cache_metadata: Cache metadata from previous requests, used for cache management.
   """
 
   model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -75,6 +79,12 @@ class LlmRequest(BaseModel):
   """
   tools_dict: dict[str, BaseTool] = Field(default_factory=dict, exclude=True)
   """The tools dictionary."""
+
+  cache_config: Optional[ContextCacheConfig] = None
+  """Context cache configuration for this request."""
+
+  cache_metadata: Optional[CacheMetadata] = None
+  """Cache metadata from previous requests, used for cache management."""
 
   def append_instructions(self, instructions: list[str]) -> None:
     """Appends instructions to the system instruction.

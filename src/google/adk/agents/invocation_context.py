@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from typing import TYPE_CHECKING
 import uuid
 
 from google.genai import types
@@ -33,6 +34,7 @@ from ..sessions.session import Session
 from ..utils.feature_decorator import working_in_progress
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
+from .context_cache_config import ContextCacheConfig
 from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
 from .transcription_entry import TranscriptionEntry
@@ -141,6 +143,7 @@ class InvocationContext(BaseModel):
   session_service: BaseSessionService
   memory_service: Optional[BaseMemoryService] = None
   credential_service: Optional[BaseCredentialService] = None
+  context_cache_config: Optional[ContextCacheConfig] = None
 
   invocation_id: str
   """The id of this invocation context. Readonly."""
