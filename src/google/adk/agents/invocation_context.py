@@ -25,10 +25,12 @@ from pydantic import PrivateAttr
 
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils.feature_decorator import working_in_progress
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .live_request_queue import LiveRequestQueue
@@ -214,6 +216,33 @@ class InvocationContext(BaseModel):
   @property
   def user_id(self) -> str:
     return self.session.user_id
+
+  @working_in_progress("incomplete feature, don't use yet")
+  def get_events(
+      self,
+      current_invocation: bool = False,
+      current_branch: bool = False,
+  ) -> list[Event]:
+    """Returns the events from the current session.
+
+    Args:
+      current_invocation: Whether to filter the events by the current
+        invocation.
+      current_branch: Whether to filter the events by the current branch.
+
+    Returns:
+      A list of events from the current session.
+    """
+    results = self.session.events
+    if current_invocation:
+      results = [
+          event
+          for event in results
+          if event.invocation_id == self.invocation_id
+      ]
+    if current_branch:
+      results = [event for event in results if event.branch == self.branch]
+    return results
 
 
 def new_invocation_context_id() -> str:
