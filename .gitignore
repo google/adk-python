@@ -106,6 +106,13 @@ claude_logs/
 memory.db
 agent_memory.db
 
+# Python compatibility testing files (development only)
+check_py39_compatibility.py
+test_runtime_compatibility.py
+test_py39_docker.py
+test_simple_py39.py
+test_core_py39.py
+
 # Misc
 .DS_Store
 Thumbs.db
