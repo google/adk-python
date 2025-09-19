@@ -73,12 +73,16 @@ class SqliteMemoryService(BaseMemoryService):
     """
     self._db_path = Path(db_path)
     self._initialized = False
-    self._init_lock = asyncio.Lock()
+    self._init_lock = None
 
   async def _ensure_initialized(self):
     """Ensures the database is initialized exactly once using lazy initialization."""
     if self._initialized:
       return
+
+    # Lazy creation of the lock to avoid event loop issues in Python 3.9
+    if self._init_lock is None:
+      self._init_lock = asyncio.Lock()
 
     async with self._init_lock:
       # Double-check after acquiring lock
