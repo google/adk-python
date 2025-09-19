@@ -306,7 +306,8 @@ def _setup_telemetry_experimental(
           # TODO - use trace_to_cloud here as well once otel_to_cloud is no
           # longer experimental.
           enable_cloud_tracing=True,
-          enable_cloud_metrics=True,
+          # TODO - reenable metrics once errors during shutdown are fixed.
+          enable_cloud_metrics=False,
           enable_cloud_logging=True,
       )
   )
@@ -501,8 +502,8 @@ class AdkWebServer:
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
-      otel_to_cloud: EXPERIMENTAL. Whether to enable Cloud Trace,
-      Cloud Monitoring and Cloud Logging integrations.
+      otel_to_cloud: EXPERIMENTAL. Whether to enable Cloud Trace
+      and Cloud Logging integrations.
 
     Returns:
       A FastAPI app instance.
