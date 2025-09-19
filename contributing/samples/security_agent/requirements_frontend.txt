@@ -1,7 +1,0 @@
-streamlit
-plotly
-pandas
-
-requests
-httpx
-asyncio

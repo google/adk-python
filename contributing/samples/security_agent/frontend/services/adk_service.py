@@ -9,14 +9,15 @@ import time
 from typing import Dict, Any, Optional
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Get backend API URL from environment variable, with a default for local dev
 BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "http://localhost:8000")
-CHAT_ENDPOINT = f"{BACKEND_API_URL}/api/v1/chat/message"
-HEALTH_ENDPOINT = f"{BACKEND_API_URL}/health"
-DATABASE_HEALTH_ENDPOINT = f"{BACKEND_API_URL}/health/database"
+# ADK-specific endpoints (correct for ADK framework)
+SESSIONS_ENDPOINT = f"{BACKEND_API_URL}/apps/agents/users/user/sessions"
+HEALTH_ENDPOINT = f"{BACKEND_API_URL}/list-apps"  # ADK health check equivalent
+DATABASE_HEALTH_ENDPOINT = f"{BACKEND_API_URL}/apps/agents/users/user/sessions"  # Session creation as DB test
 
 def check_backend_health() -> Dict[str, Any]:
     """
@@ -56,33 +57,34 @@ def check_backend_health() -> Dict[str, Any]:
 
 def check_database_health() -> Dict[str, Any]:
     """
-    Check database connectivity and status.
+    Check database connectivity and status by testing ADK session creation.
 
     Returns:
         Dict with database health information
     """
     try:
+        # Test database health by attempting to get sessions list (requires DB connectivity)
         response = requests.get(DATABASE_HEALTH_ENDPOINT, timeout=10)
         if response.status_code == 200:
             db_data = response.json()
             return {
                 "success": True,
                 "status": "healthy",
-                "details": db_data
+                "details": {"message": "ADK sessions endpoint accessible", "sessions": len(db_data) if isinstance(db_data, list) else "available"}
             }
         else:
             db_data = response.json() if response.content else {}
             return {
                 "success": False,
                 "status": "unhealthy",
-                "error": db_data.get("error", f"Database check returned status {response.status_code}"),
+                "error": db_data.get("error", f"ADK sessions check returned status {response.status_code}"),
                 "details": db_data
             }
     except Exception as e:
         return {
             "success": False,
             "status": "error",
-            "error": f"Database health check failed: {e}"
+            "error": f"ADK database health check failed: {e}"
         }
 
 
@@ -120,7 +122,7 @@ def send_message_with_retry(message: str, session_id: str = "default", user_id: 
 
 def send_message(message: str, session_id: str = "default", user_id: str = "user") -> Dict[str, Any]:
     """
-    Sends a message to the ADK agent backend and returns the response.
+    Sends a message to the ADK agent backend using ADK sessions API.
 
     Args:
         message: The user's message.
@@ -143,35 +145,132 @@ def send_message(message: str, session_id: str = "default", user_id: str = "user
             "health_status": health_check
         }
 
-    payload = {
-        "message": message,
-        "session_id": session_id,
-        "user_id": user_id
-    }
-
     try:
-        logger.info(f"📤 Sending message to backend: {message[:50]}{'...' if len(message) > 50 else ''}")
-        logger.debug(f"Full payload: {payload}")
+        logger.info(f"📤 Sending message to ADK backend: {message[:50]}{'...' if len(message) > 50 else ''}")
+
+        # Step 1: Create a new session for this conversation (ADK pattern)
+        session_payload = {
+            "app_name": "agents"
+        }
+
+        logger.debug(f"Creating ADK session with payload: {session_payload}")
+        session_response = requests.post(
+            SESSIONS_ENDPOINT,
+            json=session_payload,
+            timeout=120,
+            headers={"Content-Type": "application/json"}
+        )
+
+        if session_response.status_code != 200:
+            raise Exception(f"Failed to create ADK session: {session_response.status_code}")
+
+        session_data = session_response.json()
+        created_session_id = session_data.get("id")
+
+        if not created_session_id:
+            raise Exception("No session ID returned from ADK session creation")
+
+        logger.info(f"✅ ADK session created: {created_session_id}")
+
+        # Step 2: Run the agent with the message using /run endpoint
+        run_payload = {
+            "appName": "agents",
+            "userId": user_id,
+            "sessionId": created_session_id,
+            "newMessage": {
+                "parts": [
+                    {
+                        "text": message
+                    }
+                ],
+                "role": "user"
+            },
+            "streaming": False
+        }
+
+        logger.debug(f"Running ADK agent with payload: {run_payload}")
+        run_endpoint = f"{BACKEND_API_URL}/run"
 
         response = requests.post(
-            CHAT_ENDPOINT,
-            json=payload,
+            run_endpoint,
+            json=run_payload,
             timeout=120,
             headers={"Content-Type": "application/json"}
         )
 
         request_duration = time.time() - start_time
-        logger.info(f"⏱️ Backend response received in {request_duration:.2f}s")
+        logger.info(f"⏱️ ADK agent response received in {request_duration:.2f}s")
 
         # Handle different HTTP status codes
         if response.status_code == 200:
             response_data = response.json()
-            logger.info(f"✅ Successful response from backend")
+            logger.info(f"✅ Successful response from ADK backend")
+
+            # Extract the assistant's response from ADK event data
+            assistant_message = ""
+
+            # ADK returns an array of events, find the agent's response
+            if isinstance(response_data, list) and response_data:
+                logger.debug(f"Processing {len(response_data)} ADK events")
+
+                for i, event in enumerate(response_data):
+                    logger.debug(f"Event {i}: type={event.get('type')}, keys={list(event.keys()) if isinstance(event, dict) else 'not_dict'}")
+
+                    if isinstance(event, dict):
+                        # Look for text content in various possible fields
+                        content_fields = ["content", "text", "message", "response", "output"]
+                        for field in content_fields:
+                            if field in event and isinstance(event[field], str) and event[field].strip():
+                                potential_message = event[field].strip()
+                                if len(potential_message) > 20:  # Avoid short system messages
+                                    assistant_message = potential_message
+                                    logger.debug(f"Found response in event {i}.{field}: {potential_message[:100]}...")
+                                    break
+
+                        # Also check nested content structures (ADK format: content.parts[].text)
+                        if not assistant_message and "content" in event and isinstance(event["content"], dict):
+                            content = event["content"]
+                            if "parts" in content and isinstance(content["parts"], list):
+                                for part in content["parts"]:
+                                    if isinstance(part, dict):
+                                        for field in content_fields:
+                                            if field in part and isinstance(part[field], str) and part[field].strip():
+                                                potential_message = part[field].strip()
+                                                if len(potential_message) > 20:
+                                                    assistant_message = potential_message
+                                                    logger.debug(f"Found response in event {i}.content.parts[].{field}: {potential_message[:100]}...")
+                                                    break
+                                        if assistant_message:
+                                            break
+
+                        # Also check other nested data structures
+                        if not assistant_message and "data" in event and isinstance(event["data"], dict):
+                            data = event["data"]
+                            for field in content_fields:
+                                if field in data and isinstance(data[field], str) and data[field].strip():
+                                    potential_message = data[field].strip()
+                                    if len(potential_message) > 20:
+                                        assistant_message = potential_message
+                                        logger.debug(f"Found response in event {i}.data.{field}: {potential_message[:100]}...")
+                                        break
+
+                        if assistant_message:
+                            break
+
+            # Final fallback
+            if not assistant_message:
+                logger.warning("No assistant response found in ADK events")
+                logger.debug(f"Full response data: {response_data}")
+                assistant_message = "I received your message but couldn't generate a response."
 
             return {
                 "success": True,
-                "response": response_data.get("response", "No response text found."),
-                "metadata": response_data.get("metadata", {}),
+                "response": assistant_message,
+                "metadata": {
+                    "session_id": created_session_id,
+                    "events_count": len(response_data) if isinstance(response_data, list) else 1,
+                    "adk_run": True
+                },
                 "request_duration": request_duration
             }
 

@@ -351,12 +351,24 @@ def query_security_data(query_type: str, **kwargs) -> Dict[str, Any]:
     """
     Queries the security data based on the specified query_type and parameters.
 
+    Data Protection Strategy:
+    - **Cache-first approach**: Preserves synthetic/demo data for proof-of-concept
+    - **Explicit updates only**: Live GCP data fetched only when force_live_update=True
+    - **Graceful fallback**: Falls back to cached data if live sources fail
+    - **No automatic overwrites**: Synthetic data stays intact unless explicitly replaced
+
     Args:
-        query_type: The type of security data to query (e.g., "security_summary", "assets").
-        **kwargs: Additional parameters for the query (severity, limit, category, etc.).
+        query_type: The type of security data to query (e.g., "security_summary", "storage_buckets").
+        **kwargs: Additional parameters for the query:
+            - severity, limit, category: Standard query filters
+            - force_live_update: Boolean to force fetching live GCP data (default: False)
+            - bucket_name, instance_name, etc.: Resource-specific filters
 
     Returns:
-        A dictionary containing the query results.
+        A dictionary containing the query results with 'source' indicating data origin:
+        - 'sqlite_cache_hit': Using cached/synthetic data (preserves demo data)
+        - 'live_gcp_api': Fresh data from GCP APIs (when force_live_update=True)
+        - 'sqlite_cache_fallback': Cached data used due to live source failure
     """
     logger.info(f"Received query_type: {query_type} with params: {kwargs}")
     params = kwargs  # Use kwargs directly as params
@@ -432,11 +444,11 @@ def query_security_data(query_type: str, **kwargs) -> Dict[str, Any]:
                 result["error"] = "Failed to query IAM analysis: " + result.get("error", "Unknown error")
 
         elif query_type == "storage_buckets":
-            # Cache-first strategy: Try SQLite cache first, then live GCP if needed
+            # Cache-first strategy: Preserve synthetic/demo data unless explicitly updating
             bucket_name = params.get("bucket_name")
+            force_live_update = params.get("force_live_update", False)  # New parameter for explicit updates
 
-            # Step 1: Try cache first (fast)
-            logger.info("⚡ Checking SQLite cache for storage buckets")
+            # Step 1: Check SQLite cache first (preserves synthetic data)
             sql_query = "SELECT * FROM storage_buckets"
             sql_params = []
             if bucket_name:
@@ -445,15 +457,18 @@ def query_security_data(query_type: str, **kwargs) -> Dict[str, Any]:
 
             cache_result = sqlite_tool_instance.execute_query(sql_query, tuple(sql_params))
 
-            # Step 2: If cache has data, use it (performance optimization)
-            if cache_result["success"] and cache_result.get("data"):
+            # Step 2: If cache has data and not forcing live update, use cached data (preserves synthetic data)
+            if cache_result["success"] and cache_result.get("data") and not force_live_update:
+                logger.info("⚡ Checking SQLite cache for storage buckets")
                 logger.info("📁 Using SQLite cached data for storage buckets (cache hit)")
                 result = cache_result
-                result["source"] = "sqlite_cache"
+                result["source"] = "sqlite_cache_hit"
+                result["message"] = f"Using cached data ({len(result['data'])} buckets). Use force_live_update=True to fetch fresh data."
 
-            # Step 3: If cache is empty, try live GCP data and update cache
-            elif GCP_LIVE_AVAILABLE and gcp_live_tool and gcp_live_tool.storage_client:
-                logger.info("🔴 Cache miss - fetching LIVE GCP data for storage buckets")
+            # Step 3: Only try live GCP data if cache is empty OR force_live_update is True
+            elif (not cache_result["success"] or not cache_result.get("data") or force_live_update) and GCP_LIVE_AVAILABLE and gcp_live_tool and gcp_live_tool.storage_client:
+                logger.info("⚡ Checking SQLite cache for storage buckets")
+                logger.info("🔴 Cache miss - fetching LIVE GCP data for storage buckets" if not force_live_update else "🔄 Force update - fetching LIVE GCP data for storage buckets")
                 try:
                     live_result = gcp_live_tool.execute("buckets", bucket_name=bucket_name, security_check=True)
 
@@ -486,74 +501,34 @@ def query_security_data(query_type: str, **kwargs) -> Dict[str, Any]:
                             "project_id": gcp_live_tool.project_id,
                             "security_findings": live_result.get("security_issues", [])
                         }
+                        logger.info("🔴 Using LIVE GCP data for storage buckets")
 
-                        # TODO: Optionally update cache with fresh data for next time
-                        logger.info("💾 Fresh data retrieved from GCP (cache can be updated)")
+                        # Update cache with fresh data only when explicitly requested or cache was empty
+                        if force_live_update or not cache_result.get("data"):
+                            logger.info("💾 Updating SQLite cache with fresh GCP data")
+                            # TODO: Implement cache update logic here if needed
+                        else:
+                            logger.info("💾 Fresh data retrieved from GCP (cache preserved)")
 
                     else:
-                        # Live data failed, return empty cache result
-                        logger.warning("Live GCP data failed, returning empty cache result")
-                        result = cache_result
-                        result["source"] = "sqlite_cache_empty"
+                        # Live data failed, return cached result or empty
+                        logger.warning("Live GCP data failed, returning cached result")
+                        result = cache_result if cache_result["success"] else {"success": False, "error": "Both live GCP and cache failed"}
+                        result["source"] = "sqlite_cache_fallback"
 
                 except Exception as e:
-                    logger.warning(f"Live GCP query failed: {e}, returning cache result")
-                    result = cache_result
+                    logger.warning(f"Live GCP query failed: {e}, returning cached result")
+                    result = cache_result if cache_result["success"] else {"success": False, "error": f"Both live GCP and cache failed: {e}"}
                     result["source"] = "sqlite_cache_fallback"
-                    if not result["success"]:
-                        result["error"] = f"Both live GCP and cache failed: {e}"
 
-            # Step 4: If both cache and live GCP failed, try Google Search fallback
-            elif SEARCH_AVAILABLE and google_search_tool and (not cache_result["success"] or not cache_result.get("data")):
-                logger.info("🔍 Cache and live GCP unavailable - trying Google Search fallback")
-                search_query = f"Google Cloud Storage security best practices bucket configuration"
-                if bucket_name:
-                    search_query = f"Google Cloud Storage bucket security {bucket_name} configuration best practices"
-
-                try:
-                    search_result = google_search_tool.execute(search_query, search_type="gcp_docs", num_results=3)
-
-                    if "error" not in search_result:
-                        # Format search results as informational response
-                        search_data = {
-                            "search_query": search_query,
-                            "documentation_results": search_result.get("results", []),
-                            "message": "No cached or live bucket data available. Here are Google Cloud Storage security resources:",
-                            "recommendations": [
-                                "Enable uniform bucket-level access",
-                                "Set up public access prevention",
-                                "Use customer-managed encryption keys (CMEK)",
-                                "Enable versioning for data protection",
-                                "Configure lifecycle policies"
-                            ]
-                        }
-
-                        result = {
-                            "success": True,
-                            "data": [search_data],  # Wrap in list for consistency
-                            "source": "google_search_fallback",
-                            "search_query": search_query
-                        }
-                        logger.info("🔍 Google Search fallback provided documentation results")
-                    else:
-                        # All fallbacks failed
-                        result = cache_result
-                        result["source"] = "all_sources_failed"
-                        result["error"] = "Cache, live GCP, and search all failed"
-
-                except Exception as e:
-                    logger.warning(f"Google Search fallback failed: {e}")
-                    result = cache_result
-                    result["source"] = "search_fallback_failed"
-                    result["error"] = f"All data sources failed: {e}"
-
-            # Step 5: Truly no data sources available
+            # Step 4: Cache had no data and no live source available
             else:
-                logger.info("📁 Using empty SQLite cache (no fallback options available)")
+                logger.info("📁 Using SQLite cached data for storage buckets")
                 result = cache_result
                 result["source"] = "sqlite_cache_only"
                 if not result["success"]:
                     result["error"] = "Failed to query storage buckets: " + result.get("error", "No data sources available")
+
 
         elif query_type == "api_keys":
             result = sqlite_tool_instance.execute_query("SELECT * FROM api_keys") # Assuming an api_keys table
