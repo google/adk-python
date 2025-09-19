@@ -381,10 +381,10 @@ def similarity_search(
           f" {nearest_neighbors_algorithm}"
       )
 
-    # copy_bara:strip_begin(internal comment)
+    # copybara:strip_begin(internal comment)
     # TODO: Once Spanner supports ML.PREDICT in WITH CTE, we can execute
     # the embedding and the search in one query instead of two separate queries.
-    # copy_bara:strip_end
+    # copybara:strip_end
     embedding = _get_embedding_for_query(
         database,
         database.database_dialect,
