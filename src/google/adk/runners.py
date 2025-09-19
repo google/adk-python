@@ -270,10 +270,8 @@ class Runner:
     """
     run_config = run_config or RunConfig()
 
-    if new_message.role != 'user':
-      raise ValueError(
-          f'new_message must have a role of "user", got {new_message.role}'
-      )
+    if not new_message.role:
+      new_message.role = "user"
 
     async def _run_with_trace(
         new_message: types.Content,
