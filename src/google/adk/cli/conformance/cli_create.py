@@ -46,22 +46,33 @@ async def _create_conformance_test_files(
   async with AdkWebServerClient() as client:
     # Create a new session for the test
     session = await client.create_session(
-        app_name=test_case.test_spec.agent, user_id=user_id, state={}
+        app_name=test_case.test_spec.agent,
+        user_id=user_id,
+        state=test_case.test_spec.initial_state,
     )
 
     # Run the agent with the user messages
     for user_message_index, user_message in enumerate(
         test_case.test_spec.user_messages
     ):
-      content = types.Content(
-          parts=[types.Part(text=user_message)], role="user"
-      )
+      # Create content from UserMessage object
+      if user_message.content is not None:
+        content = user_message.content
+      elif user_message.text is not None:
+        content = types.UserContent(parts=[types.Part(text=user_message.text)])
+      else:
+        raise ValueError(
+            f"UserMessage at index {user_message_index} has neither text nor"
+            " content"
+        )
+
       async for _ in client.run_agent(
           RunAgentRequest(
               app_name=test_case.test_spec.agent,
               user_id=user_id,
               session_id=session.id,
               new_message=content,
+              state_delta=user_message.state_delta,
           ),
           mode="record",
           test_case_dir=str(test_case_dir),
@@ -80,9 +91,15 @@ async def _create_conformance_test_files(
     dump_pydantic_to_yaml(
         updated_session,
         generated_session_file,
-        indent=2,
-        sort_keys=False,
-        exclude_none=True,
+        sort_keys=False,  # Output keys in the declaration order.
+        exclude={
+            "state": {"_adk_recordings_config": True},
+            "events": {
+                "__all__": {
+                    "actions": {"state_delta": {"_adk_recordings_config": True}}
+                }
+            },
+        },
     )
 
     return generated_session_file
