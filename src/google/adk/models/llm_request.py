@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
+from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -86,17 +88,73 @@ class LlmRequest(BaseModel):
   cache_metadata: Optional[CacheMetadata] = None
   """Cache metadata from previous requests, used for cache management."""
 
-  def append_instructions(self, instructions: list[str]) -> None:
+  def append_instructions(
+      self, instructions: Union[list[str], types.Content]
+  ) -> None:
     """Appends instructions to the system instruction.
 
     Args:
-      instructions: The instructions to append.
+      instructions: The instructions to append. Can be:
+        - list[str]: Strings to append/concatenate to system instruction
+        - types.Content: Content object to append to system instruction
+
+    Note: Only text content is supported. Model API requires system_instruction
+    to be a string. Non-text parts in Content will be handled differently.
+
+    Behavior:
+      - list[str]: concatenates with existing system_instruction using \\n\\n
+      - types.Content: extracts text from parts and concatenates
     """
 
-    if self.config.system_instruction:
-      self.config.system_instruction += '\n\n' + '\n\n'.join(instructions)
-    else:
-      self.config.system_instruction = '\n\n'.join(instructions)
+    # Handle Content object - extract only text parts
+    if isinstance(instructions, types.Content):
+      # TODO: Handle non-text contents in instruction by putting non-text parts
+      # into llm_request.contents and adding a reference in the system instruction
+      # that references the contents.
+
+      # Extract text from all text parts
+      text_parts = [part.text for part in instructions.parts if part.text]
+
+      if not text_parts:
+        return  # No text content to append
+
+      new_text = "\n\n".join(text_parts)
+      if not self.config.system_instruction:
+        self.config.system_instruction = new_text
+      elif isinstance(self.config.system_instruction, str):
+        self.config.system_instruction += "\n\n" + new_text
+      else:
+        # Log warning for unsupported system_instruction types
+        logging.warning(
+            "Cannot append to system_instruction of unsupported type: %s. "
+            "Only string system_instruction is supported.",
+            type(self.config.system_instruction),
+        )
+      return
+
+    # Handle list of strings
+    if isinstance(instructions, list) and all(
+        isinstance(inst, str) for inst in instructions
+    ):
+      if not instructions:  # Handle empty list
+        return
+
+      new_text = "\n\n".join(instructions)
+      if not self.config.system_instruction:
+        self.config.system_instruction = new_text
+      elif isinstance(self.config.system_instruction, str):
+        self.config.system_instruction += "\n\n" + new_text
+      else:
+        # Log warning for unsupported system_instruction types
+        logging.warning(
+            "Cannot append to system_instruction of unsupported type: %s. "
+            "Only string system_instruction is supported.",
+            type(self.config.system_instruction),
+        )
+      return
+
+    # Invalid input
+    raise TypeError("instructions must be list[str] or types.Content")
 
   def append_tools(self, tools: list[BaseTool]) -> None:
     """Appends tools to the request.
@@ -138,4 +196,4 @@ class LlmRequest(BaseModel):
     """
 
     self.config.response_schema = base_model
-    self.config.response_mime_type = 'application/json'
+    self.config.response_mime_type = "application/json"
