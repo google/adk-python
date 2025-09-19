@@ -170,54 +170,53 @@ class EvaluationGenerator:
     if not artifact_service:
       artifact_service = InMemoryArtifactService()
 
-    runner = Runner(
-        app_name=app_name,
-        agent=root_agent,
-        artifact_service=artifact_service,
-        session_service=session_service,
-        memory_service=memory_service,
-    )
-
     # Reset agent state for each query
     if callable(reset_func):
       reset_func()
 
     response_invocations = []
 
-    for invocation in invocations:
-      final_response = None
-      user_content = invocation.user_content
-      tool_uses = []
-      invocation_id = ""
+    async with Runner(
+        app_name=app_name,
+        agent=root_agent,
+        artifact_service=artifact_service,
+        session_service=session_service,
+        memory_service=memory_service,
+    ) as runner:
+      for invocation in invocations:
+        final_response = None
+        user_content = invocation.user_content
+        tool_uses = []
+        invocation_id = ""
 
-      async with Aclosing(
-          runner.run_async(
-              user_id=user_id, session_id=session_id, new_message=user_content
-          )
-      ) as agen:
-        async for event in agen:
-          invocation_id = (
-              event.invocation_id if not invocation_id else invocation_id
-          )
+        async with Aclosing(
+            runner.run_async(
+                user_id=user_id, session_id=session_id, new_message=user_content
+            )
+        ) as agen:
+          async for event in agen:
+            invocation_id = (
+                event.invocation_id if not invocation_id else invocation_id
+            )
 
-          if (
-              event.is_final_response()
-              and event.content
-              and event.content.parts
-          ):
-            final_response = event.content
-          elif event.get_function_calls():
-            for call in event.get_function_calls():
-              tool_uses.append(call)
+            if (
+                event.is_final_response()
+                and event.content
+                and event.content.parts
+            ):
+              final_response = event.content
+            elif event.get_function_calls():
+              for call in event.get_function_calls():
+                tool_uses.append(call)
 
-      response_invocations.append(
-          Invocation(
-              invocation_id=invocation_id,
-              user_content=user_content,
-              final_response=final_response,
-              intermediate_data=IntermediateData(tool_uses=tool_uses),
-          )
-      )
+        response_invocations.append(
+            Invocation(
+                invocation_id=invocation_id,
+                user_content=user_content,
+                final_response=final_response,
+                intermediate_data=IntermediateData(tool_uses=tool_uses),
+            )
+        )
 
     return response_invocations
 

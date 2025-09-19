@@ -123,3 +123,32 @@ items: []
 name: Test
 """
   assert yaml_file.read_text(encoding="utf-8") == expected
+
+
+def test_non_ascii_character_preservation(tmp_path: Path):
+  """Test that non-ASCII characters are preserved in YAML output."""
+  model = SimpleModel(
+      name="你好世界",  # Chinese
+      age=30,
+      active=True,
+      multiline_text="🌍 Hello World 🌏\nこんにちは世界\nHola Mundo 🌎",
+      items=["Château", "naïve", "café", "🎉"],
+  )
+  yaml_file = tmp_path / "test.yaml"
+
+  dump_pydantic_to_yaml(model, yaml_file)
+
+  assert yaml_file.read_text(encoding="utf-8") == """\
+active: true
+age: 30
+items:
+  - Château
+  - naïve
+  - café
+  - 🎉
+multiline_text: |-
+  🌍 Hello World 🌏
+  こんにちは世界
+  Hola Mundo 🌎
+name: 你好世界
+"""

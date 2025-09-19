@@ -23,7 +23,7 @@ from typing import Dict
 from typing import Optional
 
 # Set up logger for ADK source utils
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 # Global cache for ADK AgentConfig schema to avoid repeated file reads
 _schema_cache: Optional[Dict[str, Any]] = None
@@ -49,7 +49,7 @@ def find_adk_source_folder(start_path: Optional[str] = None) -> Optional[str]:
       adk_path = find_adk_source_folder("/path/to/project")
   """
   if start_path is None:
-    start_path = os.getcwd()
+    start_path = os.path.dirname(__file__)
 
   current_path = Path(start_path).resolve()
 

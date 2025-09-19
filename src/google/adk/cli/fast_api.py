@@ -70,6 +70,7 @@ def get_fast_api_app(
     otel_to_cloud: bool = False,
     reload_agents: bool = False,
     lifespan: Optional[Lifespan[FastAPI]] = None,
+    extra_plugins: Optional[list[str]] = None,
 ) -> FastAPI:
   # Set up eval managers.
   if eval_storage_uri:
@@ -187,6 +188,7 @@ def get_fast_api_app(
       eval_sets_manager=eval_sets_manager,
       eval_set_results_manager=eval_set_results_manager,
       agents_dir=agents_dir,
+      extra_plugins=extra_plugins,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance

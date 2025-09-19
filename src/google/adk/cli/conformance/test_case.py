@@ -14,8 +14,29 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from typing import Optional
+
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
+
+
+class UserMessage(BaseModel):
+
+  # oneof fields - start
+  text: Optional[str] = None
+  """The user message in text."""
+
+  content: Optional[types.UserContent] = None
+  """The user message in types.Content."""
+  # oneof fields - end
+
+  state_delta: Optional[dict[str, Any]] = None
+  """The state changes when running this user message."""
 
 
 class TestSpec(BaseModel):
@@ -35,5 +56,18 @@ class TestSpec(BaseModel):
   agent: str
   """Name of the ADK agent to test against."""
 
-  user_messages: list[str]
+  initial_state: dict[str, Any] = Field(default_factory=dict)
+  """The initial state key-value pairs in the creation_session request."""
+
+  user_messages: list[UserMessage] = Field(default_factory=list)
   """Sequence of user messages to send to the agent during test execution."""
+
+
+@dataclass
+class TestCase:
+  """Represents a single conformance test case."""
+
+  category: str
+  name: str
+  dir: Path
+  test_spec: TestSpec
