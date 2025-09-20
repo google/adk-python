@@ -20,6 +20,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from ..agents.base_agent import BaseAgent
+from ..agents.context_cache_config import ContextCacheConfig
 from ..apps.base_events_compactor import BaseEventsCompactor
 from ..plugins.base_plugin import BasePlugin
 from ..utils.feature_decorator import experimental
@@ -53,3 +54,6 @@ class App(BaseModel):
 
   event_compactor: Optional[BaseEventsCompactor] = None
   """The event compactor strategy for the application."""
+
+  context_cache_config: Optional[ContextCacheConfig] = None
+  """Context cache configuration that applies to all LLM agents in the app."""

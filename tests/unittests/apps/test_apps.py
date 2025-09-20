@@ -15,6 +15,7 @@
 from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.apps.app import App
 from google.adk.plugins.base_plugin import BasePlugin
 
@@ -38,3 +39,82 @@ class TestApp:
     assert app.name == "test_app"
     assert app.root_agent == mock_agent
     assert app.plugins == [mock_plugin]
+
+  def test_app_initialization_without_cache_config(self):
+    """Test that the app is initialized correctly without context cache config."""
+    mock_agent = Mock(spec=BaseAgent)
+    app = App(name="test_app", root_agent=mock_agent)
+    assert app.name == "test_app"
+    assert app.root_agent == mock_agent
+    assert app.context_cache_config is None
+
+  def test_app_initialization_with_cache_config(self):
+    """Test that the app is initialized correctly with context cache config."""
+    mock_agent = Mock(spec=BaseAgent)
+    cache_config = ContextCacheConfig(
+        cache_intervals=15, ttl_seconds=3600, min_tokens=1024
+    )
+
+    app = App(
+        name="test_app",
+        root_agent=mock_agent,
+        context_cache_config=cache_config,
+    )
+
+    assert app.name == "test_app"
+    assert app.root_agent == mock_agent
+    assert app.context_cache_config == cache_config
+    assert app.context_cache_config.cache_intervals == 15
+    assert app.context_cache_config.ttl_seconds == 3600
+    assert app.context_cache_config.min_tokens == 1024
+
+  def test_app_with_all_components(self):
+    """Test app with all components: agent, plugins, and cache config."""
+    mock_agent = Mock(spec=BaseAgent)
+    mock_plugin = Mock(spec=BasePlugin)
+    cache_config = ContextCacheConfig(
+        cache_intervals=20, ttl_seconds=7200, min_tokens=2048
+    )
+
+    app = App(
+        name="full_test_app",
+        root_agent=mock_agent,
+        plugins=[mock_plugin],
+        context_cache_config=cache_config,
+    )
+
+    assert app.name == "full_test_app"
+    assert app.root_agent == mock_agent
+    assert app.plugins == [mock_plugin]
+    assert app.context_cache_config == cache_config
+
+  def test_app_cache_config_defaults(self):
+    """Test that cache config has proper defaults when created."""
+    mock_agent = Mock(spec=BaseAgent)
+    cache_config = ContextCacheConfig()  # Use defaults
+
+    app = App(
+        name="default_cache_app",
+        root_agent=mock_agent,
+        context_cache_config=cache_config,
+    )
+
+    assert app.context_cache_config.cache_intervals == 10  # Default
+    assert app.context_cache_config.ttl_seconds == 1800  # Default 30 minutes
+    assert app.context_cache_config.min_tokens == 0  # Default
+
+  def test_app_context_cache_config_is_optional(self):
+    """Test that context_cache_config is truly optional."""
+    mock_agent = Mock(spec=BaseAgent)
+
+    # Should work without context_cache_config
+    app = App(name="no_cache_app", root_agent=mock_agent)
+    assert app.context_cache_config is None
+
+    # Should work with explicit None
+    app = App(
+        name="explicit_none_app",
+        root_agent=mock_agent,
+        context_cache_config=None,
+    )
+    assert app.context_cache_config is None

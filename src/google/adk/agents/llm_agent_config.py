@@ -53,7 +53,25 @@ class LlmAgentConfig(BaseAgentConfig):
       ),
   )
 
-  instruction: str = Field(description='Required. LlmAgent.instruction.')
+  instruction: str = Field(
+      description=(
+          'Required. LlmAgent.instruction. Dynamic instructions with'
+          ' placeholder support. Behavior: if static_instruction is None, goes'
+          ' to system_instruction; if static_instruction is set, goes to user'
+          ' content after static content.'
+      )
+  )
+
+  static_instruction: Optional[types.Content] = Field(
+      default=None,
+      description=(
+          'Optional. LlmAgent.static_instruction. Static content sent literally'
+          ' at position 0 without placeholder processing. When set, changes'
+          ' instruction behavior to go to user content instead of'
+          ' system_instruction. Supports context caching and rich content'
+          ' (text, files, binaries).'
+      ),
+  )
 
   disallow_transfer_to_parent: Optional[bool] = Field(
       default=None,

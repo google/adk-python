@@ -28,7 +28,6 @@ from typing import Union
 
 from google.genai import Client
 from google.genai import types
-from google.genai.types import FinishReason
 from typing_extensions import override
 
 from .. import version
@@ -110,6 +109,16 @@ class Gemini(BaseLlm):
     """
     await self._preprocess_request(llm_request)
     self._maybe_append_user_content(llm_request)
+
+    # Handle context caching if configured
+    cache_metadata = None
+    cache_manager = None
+    if llm_request.cache_config:
+      from .gemini_context_cache_manager import GeminiContextCacheManager
+
+      cache_manager = GeminiContextCacheManager(self.api_client)
+      cache_metadata = await cache_manager.handle_context_caching(llm_request)
+
     logger.info(
         'Sending out request, model: %s, backend: %s, stream: %s',
         llm_request.model,
@@ -150,6 +159,11 @@ class Gemini(BaseLlm):
             async for llm_response in aggregator_gen:
               yield llm_response
       if (close_result := aggregator.close()) is not None:
+        # Populate cache metadata in the final aggregated response for streaming
+        if cache_metadata:
+          cache_manager.populate_cache_metadata_in_response(
+              close_result, cache_metadata
+          )
         yield close_result
 
     else:
@@ -160,7 +174,13 @@ class Gemini(BaseLlm):
       )
       logger.info('Response received from the model.')
       logger.debug(_build_response_log(response))
-      yield LlmResponse.create(response)
+
+      llm_response = LlmResponse.create(response)
+      if cache_metadata:
+        cache_manager.populate_cache_metadata_in_response(
+            llm_response, cache_metadata
+        )
+      yield llm_response
 
   @cached_property
   def api_client(self) -> Client:
