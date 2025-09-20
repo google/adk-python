@@ -125,9 +125,7 @@ class McpToolset(BaseToolset):
       auth_scheme: The auth scheme of the tool for tool calling
       auth_credential: The auth credential of the tool for tool calling
     """
-    super().__init__(
-        tool_filter=tool_filter, tool_name_prefix=tool_name_prefix
-    )
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
     if not connection_params:
       raise ValueError("Missing connection params in MCPToolset.")
