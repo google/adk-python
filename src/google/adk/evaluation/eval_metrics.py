@@ -25,8 +25,16 @@ from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import TypeAlias
 
+from .common import EvalBaseModel
 from .eval_case import Invocation
-from .evaluator import EvalStatus
+from .eval_rubrics import Rubric
+from .eval_rubrics import RubricScore
+
+
+class EvalStatus(Enum):
+  PASSED = 1
+  FAILED = 2
+  NOT_EVALUATED = 3
 
 
 class PrebuiltMetrics(Enum):
@@ -42,9 +50,10 @@ class PrebuiltMetrics(Enum):
 
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
+Threshold: TypeAlias = float
 
 
-class JudgeModelOptions(BaseModel):
+class JudgeModelOptions(EvalBaseModel):
   """Options for an eval metric's judge model."""
 
   judge_model: str = Field(
@@ -55,26 +64,68 @@ class JudgeModelOptions(BaseModel):
   )
 
   judge_model_config: Optional[genai_types.GenerateContentConfig] = Field(
-      default=None,
+      default=genai_types.GenerateContentConfig,
       description="The configuration for the judge model.",
   )
 
-  num_samples: Optional[int] = Field(
-      default=None,
+  num_samples: int = Field(
+      default=5,
       description=(
           "The number of times to sample the model for each invocation"
-          " evaluation."
+          " evaluation. Given that models tend to have certain degree of"
+          " unreliability to them, we repeatedly sample them with the same"
+          " data. These repeated invocation are them aggregated using some"
+          " strategy. From experimentation, we have found 5 to be a good"
+          " default."
       ),
   )
 
 
-class EvalMetric(BaseModel):
-  """A metric used to evaluate a particular aspect of an eval case."""
+class BaseCriterion(BaseModel):
+  """Base creterion to use for an Eval Metric."""
 
   model_config = ConfigDict(
       alias_generator=alias_generators.to_camel,
       populate_by_name=True,
+      extra="allow",
   )
+
+  threshold: Threshold = Field(
+      description="The threshold to be used by the metric.",
+  )
+
+
+class LlmAsAJudgeCriterion(BaseCriterion):
+  """Criterion when using LLM-As-A-Judge metric."""
+
+  judge_model_options: JudgeModelOptions = Field(
+      default_factory=JudgeModelOptions,
+      description="Options for the judge model.",
+  )
+
+
+class RubricsBasedCriterion(BaseCriterion):
+  """Criterion when using a rubric based metric."""
+
+  judge_model_options: JudgeModelOptions = Field(
+      default_factory=JudgeModelOptions,
+      description="Options for the judge model.",
+  )
+
+  rubrics: list[Rubric] = Field(
+      default_factory=list,
+      description=(
+          "Rubrics to be used by Metric. Not all metrics rely on rubrics, but"
+          " metrics like `rubric_based_final_response_quality_v1` do. Metrics"
+          " that don't use Rubrics, will just ignore this field, if specified."
+          " Metrics that do use rubrics will raise an execption, if they are"
+          " not specified."
+      ),
+  )
+
+
+class EvalMetric(EvalBaseModel):
+  """A metric used to evaluate a particular aspect of an eval case."""
 
   metric_name: str = Field(
       description="The name of the metric.",
@@ -88,18 +139,32 @@ class EvalMetric(BaseModel):
   )
 
   judge_model_options: Optional[JudgeModelOptions] = Field(
+      deprecated=True,
       default=None,
-      description="Options for the judge model.",
+      description=(
+          "[DEPRECATED] This field is deprecated in favor of `criterion`."
+          " Depending on the metric you may want to one of the sub-classes of"
+          " BaseCriterion."
+      ),
+  )
+
+  criterion: Optional[BaseCriterion] = Field(
+      default=None, description="""Evaluation criterion used by the metric."""
+  )
+
+
+class EvalMetricResultDetails(EvalBaseModel):
+  rubric_scores: Optional[list[RubricScore]] = Field(
+      default=None,
+      description=(
+          "The scores obtained after applying the rubrics to the Agent's"
+          " response."
+      ),
   )
 
 
 class EvalMetricResult(EvalMetric):
   """The actual computed score/value of a particular EvalMetric."""
-
-  model_config = ConfigDict(
-      alias_generator=alias_generators.to_camel,
-      populate_by_name=True,
-  )
 
   score: Optional[float] = Field(
       default=None,
@@ -108,16 +173,16 @@ class EvalMetricResult(EvalMetric):
           " might not have happened."
       ),
   )
+
   eval_status: EvalStatus = Field(description="The status of this evaluation.")
 
-
-class EvalMetricResultPerInvocation(BaseModel):
-  """Eval metric results per invocation."""
-
-  model_config = ConfigDict(
-      alias_generator=alias_generators.to_camel,
-      populate_by_name=True,
+  details: EvalMetricResultDetails = Field(
+      default_factory=EvalMetricResultDetails, description=""""""
   )
+
+
+class EvalMetricResultPerInvocation(EvalBaseModel):
+  """Eval metric results per invocation."""
 
   actual_invocation: Invocation = Field(
       description=(
@@ -137,7 +202,7 @@ class EvalMetricResultPerInvocation(BaseModel):
   )
 
 
-class Interval(BaseModel):
+class Interval(EvalBaseModel):
   """Represents a range of numeric values, e.g. [0 ,1] or (2,3) or [-1, 6)."""
 
   min_value: float = Field(description="The smaller end of the interval.")
@@ -161,7 +226,7 @@ class Interval(BaseModel):
   )
 
 
-class MetricValueInfo(BaseModel):
+class MetricValueInfo(EvalBaseModel):
   """Information about the type of metric value."""
 
   interval: Optional[Interval] = Field(
@@ -170,13 +235,8 @@ class MetricValueInfo(BaseModel):
   )
 
 
-class MetricInfo(BaseModel):
+class MetricInfo(EvalBaseModel):
   """Information about the metric that are used for Evals."""
-
-  model_config = ConfigDict(
-      alias_generator=alias_generators.to_camel,
-      populate_by_name=True,
-  )
 
   metric_name: str = Field(description="The name of the metric.")
 

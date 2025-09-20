@@ -37,7 +37,7 @@ async def test_spanner_toolset_tools_default():
   tools = await toolset.get_tools()
   assert tools is not None
 
-  assert len(tools) == 6
+  assert len(tools) == 7
   assert all([isinstance(tool, GoogleTool) for tool in tools])
 
   expected_tool_names = set([
@@ -47,6 +47,7 @@ async def test_spanner_toolset_tools_default():
       "list_named_schemas",
       "get_table_schema",
       "execute_sql",
+      "similarity_search",
   ])
   actual_tool_names = set([tool.name for tool in tools])
   assert actual_tool_names == expected_tool_names

@@ -41,9 +41,9 @@ from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
-from ...telemetry import trace_call_llm
-from ...telemetry import trace_send_data
-from ...telemetry import tracer
+from ...telemetry.tracing import trace_call_llm
+from ...telemetry.tracing import trace_send_data
+from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
@@ -129,25 +129,12 @@ class BaseLlmFlow(ABC):
           if llm_request.contents:
             # Sends the conversation history to the model.
             with tracer.start_as_current_span('send_data'):
-              if invocation_context.transcription_cache:
-                from . import audio_transcriber
-
-                audio_transcriber = audio_transcriber.AudioTranscriber(
-                    init_client=True
-                    if invocation_context.run_config.input_audio_transcription
-                    is None
-                    else False
-                )
-                contents = audio_transcriber.transcribe_file(invocation_context)
-                logger.debug('Sending history to model: %s', contents)
-                await llm_connection.send_history(contents)
-                invocation_context.transcription_cache = None
-                trace_send_data(invocation_context, event_id, contents)
-              else:
-                await llm_connection.send_history(llm_request.contents)
-                trace_send_data(
-                    invocation_context, event_id, llm_request.contents
-                )
+              # Combine regular contents with audio/transcription from session
+              logger.debug('Sending history to model: %s', llm_request.contents)
+              await llm_connection.send_history(llm_request.contents)
+              trace_send_data(
+                  invocation_context, event_id, llm_request.contents
+              )
 
           send_task = asyncio.create_task(
               self._send_to_model(llm_connection, invocation_context)
@@ -324,22 +311,6 @@ class BaseLlmFlow(ABC):
                 author=get_author_for_event(llm_response),
             )
 
-            # Handle transcription events ONCE per llm_response, outside the event loop
-            if llm_response.input_transcription:
-              await self.transcription_manager.handle_input_transcription(
-                  invocation_context, llm_response.input_transcription
-              )
-
-            if llm_response.output_transcription:
-              await self.transcription_manager.handle_output_transcription(
-                  invocation_context, llm_response.output_transcription
-              )
-
-            # Flush audio caches based on control events using configurable settings
-            await self._handle_control_event_flush(
-                invocation_context, llm_response
-            )
-
             async with Aclosing(
                 self._postprocess_live(
                     invocation_context,
@@ -349,28 +320,11 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
-                if (
-                    event.content
-                    and event.content.parts
-                    and event.content.parts[0].inline_data is None
-                    and not event.partial
-                ):
-                  # This can be either user data or transcription data.
-                  # when output transcription enabled, it will contain model's
-                  # transcription.
-                  # when input transcription enabled, it will contain user
-                  # transcription.
-                  if not invocation_context.transcription_cache:
-                    invocation_context.transcription_cache = []
-                  invocation_context.transcription_cache.append(
-                      TranscriptionEntry(
-                          role=event.content.role, data=event.content
-                      )
-                  )
                 # Cache output audio chunks from model responses
                 # TODO: support video data
                 if (
-                    event.content
+                    invocation_context.run_config.save_live_audio
+                    and event.content
                     and event.content.parts
                     and event.content.parts[0].inline_data
                     and event.content.parts[0].inline_data.mime_type.startswith(
@@ -577,6 +531,36 @@ class BaseLlmFlow(ABC):
         and not llm_response.output_transcription
     ):
       return
+
+    # Handle transcription events ONCE per llm_response, outside the event loop
+    if llm_response.input_transcription:
+      input_transcription_event = (
+          await self.transcription_manager.handle_input_transcription(
+              invocation_context, llm_response.input_transcription
+          )
+      )
+      yield input_transcription_event
+      return
+
+    if llm_response.output_transcription:
+      output_transcription_event = (
+          await self.transcription_manager.handle_output_transcription(
+              invocation_context, llm_response.output_transcription
+          )
+      )
+      yield output_transcription_event
+      return
+
+    # Flush audio caches based on control events using configurable settings
+    if invocation_context.run_config.save_live_audio:
+      _handle_control_event_flush_event = (
+          await self._handle_control_event_flush(
+              invocation_context, llm_response
+          )
+      )
+      if _handle_control_event_flush_event:
+        yield _handle_control_event_flush_event
+        return
 
     # Builds the event.
     model_response_event = self._finalize_model_response_event(
@@ -877,32 +861,33 @@ class BaseLlmFlow(ABC):
       invocation_context: The invocation context containing audio caches.
       llm_response: The LLM response containing control event information.
     """
+
+    # Log cache statistics if enabled
+    if DEFAULT_ENABLE_CACHE_STATISTICS:
+      stats = self.audio_cache_manager.get_cache_stats(invocation_context)
+      logger.debug('Audio cache stats: %s', stats)
+
     if llm_response.interrupted:
       # user interrupts so the model will stop. we can flush model audio here
-      await self.audio_cache_manager.flush_caches(
+      return await self.audio_cache_manager.flush_caches(
           invocation_context,
           flush_user_audio=False,
           flush_model_audio=True,
       )
     elif llm_response.turn_complete:
       # turn completes so we can flush both user and model
-      await self.audio_cache_manager.flush_caches(
+      return await self.audio_cache_manager.flush_caches(
           invocation_context,
           flush_user_audio=True,
           flush_model_audio=True,
       )
     elif getattr(llm_response, 'generation_complete', False):
       # model generation complete so we can flush model audio
-      await self.audio_cache_manager.flush_caches(
+      return await self.audio_cache_manager.flush_caches(
           invocation_context,
           flush_user_audio=False,
           flush_model_audio=True,
       )
-
-    # Log cache statistics if enabled
-    if DEFAULT_ENABLE_CACHE_STATISTICS:
-      stats = self.audio_cache_manager.get_cache_stats(invocation_context)
-      logger.debug('Audio cache stats: %s', stats)
 
   async def _run_and_handle_error(
       self,

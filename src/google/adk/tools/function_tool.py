@@ -19,6 +19,7 @@ import logging
 from typing import Any
 from typing import Callable
 from typing import Optional
+from typing import Union
 
 from google.genai import types
 from typing_extensions import override
@@ -40,13 +41,19 @@ class FunctionTool(BaseTool):
   """
 
   def __init__(
-      self, func: Callable[..., Any], *, require_confirmation: bool = False
+      self,
+      func: Callable[..., Any],
+      *,
+      require_confirmation: Union[bool, Callable[..., bool]] = False,
   ):
     """Initializes the FunctionTool. Extracts metadata from a callable object.
 
     Args:
       func: The function to wrap.
-      require_confirmation: Whether the tool call requires user confirmation.
+      require_confirmation: Wether this tool requires confirmation. A boolean or
+        a callable that takes the function's arguments and returns a boolean. If
+        the callable returns True, the tool will require confirmation from the
+        user.
     """
     name = ''
     doc = ''
@@ -118,7 +125,14 @@ class FunctionTool(BaseTool):
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
       return {'error': error_str}
 
-    if self._require_confirmation:
+    if isinstance(self._require_confirmation, Callable):
+      require_confirmation = await self._invoke_callable(
+          self._require_confirmation, args_to_call
+      )
+    else:
+      require_confirmation = bool(self._require_confirmation)
+
+    if require_confirmation:
       if not tool_context.tool_confirmation:
         args_to_show = args_to_call.copy()
         if 'tool_context' in args_to_show:
@@ -137,21 +151,27 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
                 ' reject.'
             )
         }
-      else:
-        if not tool_context.tool_confirmation.confirmed:
-          return {'error': 'This tool call is rejected.'}
+      elif not tool_context.tool_confirmation.confirmed:
+        return {'error': 'This tool call is rejected.'}
+
+    return await self._invoke_callable(self.func, args_to_call)
+
+  async def _invoke_callable(
+      self, target: Callable[..., Any], args_to_call: dict[str, Any]
+  ) -> Any:
+    """Invokes a callable, handling both sync and async cases."""
 
     # Functions are callable objects, but not all callable objects are functions
     # checking coroutine function is not enough. We also need to check whether
     # Callable's __call__ function is a coroutine funciton
-    if (
-        inspect.iscoroutinefunction(self.func)
-        or hasattr(self.func, '__call__')
-        and inspect.iscoroutinefunction(self.func.__call__)
-    ):
-      return await self.func(**args_to_call)
+    is_async = inspect.iscoroutinefunction(target) or (
+        hasattr(target, '__call__')
+        and inspect.iscoroutinefunction(target.__call__)
+    )
+    if is_async:
+      return await target(**args_to_call)
     else:
-      return self.func(**args_to_call)
+      return target(**args_to_call)
 
   # TODO(hangfei): fix call live for function stream.
   async def _call_live(

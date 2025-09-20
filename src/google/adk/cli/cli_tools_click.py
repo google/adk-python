@@ -15,12 +15,12 @@
 from __future__ import annotations
 
 import asyncio
-import collections
 from contextlib import asynccontextmanager
 from datetime import datetime
 import functools
 import logging
 import os
+from pathlib import Path
 import tempfile
 from typing import Optional
 
@@ -117,6 +117,159 @@ def main():
 def deploy():
   """Deploys agent to hosted environments."""
   pass
+
+
+@main.group()
+def conformance():
+  """Conformance testing tools for ADK."""
+  pass
+
+
+@conformance.command("create", cls=HelpfulCommand)
+@click.argument(
+    "paths",
+    nargs=-1,
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.pass_context
+def cli_conformance_create(
+    ctx,
+    paths: tuple[str, ...],
+):
+  """Generate ADK conformance test YAML files from TestCaseInput specifications.
+
+  NOTE: this is work in progress.
+
+  This command reads TestCaseInput specifications from input.yaml files,
+  executes the specified test cases against agents, and generates conformance
+  test files with recorded agent interactions as test.yaml files.
+
+  Expected directory structure:
+  category/name/input.yaml (TestCaseInput) -> category/name/test.yaml (TestCase)
+
+  PATHS: One or more directories containing test case specifications.
+  If no paths are provided, defaults to 'tests/' directory.
+
+  Examples:
+
+  Use default directory: adk conformance create
+
+  Custom directories: adk conformance create tests/core tests/tools
+  """
+
+  try:
+    from .conformance.cli_create import run_conformance_create
+  except ImportError as e:
+    click.secho(
+        f"Error: Missing conformance testing dependencies: {e}",
+        fg="red",
+        err=True,
+    )
+    click.secho(
+        "Please install the required conformance testing package dependencies.",
+        fg="yellow",
+        err=True,
+    )
+    ctx.exit(1)
+
+  # Default to tests/ directory if no paths provided
+  test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
+  asyncio.run(run_conformance_create(test_paths))
+
+
+@conformance.command("test", cls=HelpfulCommand)
+@click.argument(
+    "paths",
+    nargs=-1,
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.option(
+    "--mode",
+    type=click.Choice(["replay", "live"], case_sensitive=False),
+    default="replay",
+    show_default=True,
+    help=(
+        "Test mode: 'replay' verifies against recorded interactions, 'live'"
+        " runs evaluation-based verification."
+    ),
+)
+@click.pass_context
+def cli_conformance_test(
+    ctx,
+    paths: tuple[str, ...],
+    mode: str,
+):
+  """Run conformance tests to verify agent behavior consistency.
+
+  Validates that agents produce consistent outputs by comparing against recorded
+  interactions or evaluating live execution results.
+
+  PATHS can be any number of folder paths. Each folder can either:
+  - Contain a spec.yaml file directly (single test case)
+  - Contain subdirectories with spec.yaml files (multiple test cases)
+
+  If no paths are provided, defaults to searching the 'tests' folder.
+
+  TEST MODES:
+
+  \b
+  replay  : Verifies agent interactions match previously recorded behaviors
+            exactly. Compares LLM requests/responses and tool calls/results.
+  live    : Runs evaluation-based verification (not yet implemented)
+
+  DIRECTORY STRUCTURE:
+
+  Test cases must follow this structure:
+
+  \b
+  category/
+    test_name/
+      spec.yaml                    # Test specification
+      generated-recordings.yaml    # Recorded interactions (replay mode)
+      generated-session.yaml       # Session data (replay mode)
+
+  EXAMPLES:
+
+  \b
+  # Run all tests in current directory's 'tests' folder
+  adk conformance test
+
+  \b
+  # Run tests from specific folders
+  adk conformance test tests/core tests/tools
+
+  \b
+  # Run a single test case
+  adk conformance test tests/core/description_001
+
+  \b
+  # Run in live mode (when available)
+  adk conformance test --mode=live tests/core
+  """
+
+  try:
+    from .conformance.cli_test import run_conformance_test
+  except ImportError as e:
+    click.secho(
+        f"Error: Missing conformance testing dependencies: {e}",
+        fg="red",
+        err=True,
+    )
+    click.secho(
+        "Please install the required conformance testing package dependencies.",
+        fg="yellow",
+        err=True,
+    )
+    ctx.exit(1)
+
+  # Convert to Path objects, use default if empty (paths are already resolved by Click)
+  test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
+
+  asyncio.run(run_conformance_test(test_paths=test_paths, mode=mode.lower()))
 
 
 @main.command("create", cls=HelpfulCommand)
@@ -382,24 +535,16 @@ def cli_eval(
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import get_eval_metrics_from_config
     from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  evaluation_criteria = get_evaluation_criteria_or_default(config_file_path)
-  eval_metrics = []
-  for metric_name, threshold in evaluation_criteria.items():
-    eval_metrics.append(
-        EvalMetric(
-            metric_name=metric_name,
-            threshold=threshold,
-            judge_model_options=JudgeModelOptions(),
-        )
-    )
-
-  print(f"Using evaluation criteria: {evaluation_criteria}")
+  eval_config = get_evaluation_criteria_or_default(config_file_path)
+  print(f"Using evaluation criteria: {eval_config}")
+  eval_metrics = get_eval_metrics_from_config(eval_config)
 
   root_agent = get_root_agent(agent_module_file_path)
   app_name = os.path.basename(agent_module_file_path)
@@ -500,7 +645,9 @@ def cli_eval(
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  print("*********************************************************************")
+  click.echo(
+      "*********************************************************************"
+  )
   eval_run_summary = {}
 
   for eval_result in eval_results:
@@ -513,9 +660,9 @@ def cli_eval(
       eval_run_summary[eval_result.eval_set_id][0] += 1
     else:
       eval_run_summary[eval_result.eval_set_id][1] += 1
-  print("Eval Run Summary")
+  click.echo("Eval Run Summary")
   for eval_set_id, pass_fail_count in eval_run_summary.items():
-    print(
+    click.echo(
         f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
         f" failed: {pass_fail_count[1]}"
     )
@@ -523,10 +670,17 @@ def cli_eval(
   if print_detailed_results:
     for eval_result in eval_results:
       eval_result: EvalCaseResult
-      print(
+      click.echo(
           "*********************************************************************"
       )
-      print(eval_result.model_dump_json(indent=2))
+      click.echo(
+          eval_result.model_dump_json(
+              indent=2,
+              exclude_unset=True,
+              exclude_defaults=True,
+              exclude_none=True,
+          )
+      )
 
 
 def adk_services_options():
@@ -655,6 +809,16 @@ def fast_api_common_options():
         help="Optional. Whether to enable cloud trace for telemetry.",
     )
     @click.option(
+        "--otel_to_cloud",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help=(
+            "EXPERIMENTAL Optional. Whether to write OTel data to Google Cloud"
+            " Observability services - Cloud Trace and Cloud Logging."
+        ),
+    )
+    @click.option(
         "--reload/--no-reload",
         default=True,
         help=(
@@ -684,6 +848,15 @@ def fast_api_common_options():
             " supported URIs: gs://<bucket name>."
         ),
         default=None,
+    )
+    @click.option(
+        "--extra_plugins",
+        help=(
+            "Optional. Comma-separated list of extra plugin classes or"
+            " instances to enable (e.g., my.module.MyPluginClass or"
+            " my.module.my_plugin_instance)."
+        ),
+        multiple=True,
     )
     @functools.wraps(func)
     @click.pass_context
@@ -722,6 +895,7 @@ def cli_web(
     host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     reload: bool = True,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -730,6 +904,7 @@ def cli_web(
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
+    extra_plugins: Optional[list[str]] = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -775,11 +950,13 @@ def cli_web(
       allow_origins=allow_origins,
       web=True,
       trace_to_cloud=trace_to_cloud,
+      otel_to_cloud=otel_to_cloud,
       lifespan=_lifespan,
       a2a=a2a,
       host=host,
       port=port,
       reload_agents=reload_agents,
+      extra_plugins=extra_plugins,
   )
   config = uvicorn.Config(
       app,
@@ -813,6 +990,7 @@ def cli_api_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     reload: bool = True,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -821,6 +999,7 @@ def cli_api_server(
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
+    extra_plugins: Optional[list[str]] = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -845,10 +1024,12 @@ def cli_api_server(
           allow_origins=allow_origins,
           web=False,
           trace_to_cloud=trace_to_cloud,
+          otel_to_cloud=otel_to_cloud,
           a2a=a2a,
           host=host,
           port=port,
           reload_agents=reload_agents,
+          extra_plugins=extra_plugins,
       ),
       host=host,
       port=port,
@@ -1010,7 +1191,8 @@ def cli_deploy_cloud_run(
 
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
 
-    adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent -- --no-allow-unauthenticated --min-instances=2
+    adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
+      -- --no-allow-unauthenticated --min-instances=2
   """
   if verbosity:
     click.secho(
@@ -1222,7 +1404,8 @@ def cli_deploy_agent_engine(
   Example:
 
     adk deploy agent_engine --project=[project] --region=[region]
-      --staging_bucket=[staging_bucket] --display_name=[app_name] path/to/my_agent
+      --staging_bucket=[staging_bucket] --display_name=[app_name]
+      path/to/my_agent
   """
   try:
     cli_deploy.to_agent_engine(
@@ -1367,7 +1550,8 @@ def cli_deploy_gke(
 
   Example:
 
-    adk deploy gke --project=[project] --region=[region] --cluster_name=[cluster_name] path/to/my_agent
+    adk deploy gke --project=[project] --region=[region]
+      --cluster_name=[cluster_name] path/to/my_agent
   """
   try:
     cli_deploy.to_gke(

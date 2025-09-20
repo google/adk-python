@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
@@ -130,9 +131,8 @@ def _create_test_evaluator_gemini(
       EvalMetric(
           metric_name="final_response_match_v2",
           threshold=threshold,
-          judge_model_options=JudgeModelOptions(
-              judge_model="gemini-2.5-flash",
-              num_samples=3,
+          criterion=BaseCriterion(
+              threshold=0.5,
           ),
       ),
   )

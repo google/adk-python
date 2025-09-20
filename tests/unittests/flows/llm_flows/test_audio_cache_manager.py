@@ -251,7 +251,7 @@ class TestAudioCacheManager:
     assert saved_artifact.inline_data.mime_type == 'audio/pcm'
 
     # Verify session event was created
-    mock_session_service.append_event.assert_called_once()
+    mock_session_service.append_event.assert_not_called()
 
   def test_get_cache_stats_empty(self):
     """Test getting statistics for empty caches."""

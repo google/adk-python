@@ -13,7 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-from abc import ABC
 from typing import Optional
 
 from pydantic import BaseModel
@@ -21,6 +20,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from ..agents.base_agent import BaseAgent
+from ..apps.base_events_compactor import BaseEventsCompactor
 from ..plugins.base_plugin import BasePlugin
 from ..utils.feature_decorator import experimental
 
@@ -50,3 +50,6 @@ class App(BaseModel):
 
   plugins: list[BasePlugin] = Field(default_factory=list)
   """The plugins in the application."""
+
+  event_compactor: Optional[BaseEventsCompactor] = None
+  """The event compactor strategy for the application."""

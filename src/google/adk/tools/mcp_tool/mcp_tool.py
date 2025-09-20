@@ -111,6 +111,11 @@ class McpTool(BaseAuthenticatedTool):
     )
     return function_decl
 
+  @property
+  def raw_mcp_tool(self) -> McpBaseTool:
+    """Returns the raw MCP tool."""
+    return self._mcp_tool
+
   @retry_on_closed_resource
   @override
   async def _run_async_impl(

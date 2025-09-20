@@ -29,6 +29,7 @@ from google.adk.tools.bigquery import BigQueryToolset
 from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.bigquery.config import WriteMode
 from google.adk.tools.bigquery.query_tool import execute_sql
+from google.adk.tools.bigquery.query_tool import forecast
 from google.adk.tools.tool_context import ToolContext
 from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import bigquery
@@ -999,7 +1000,7 @@ def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
 
   execute_sql(project, query, credentials, tool_settings, tool_context)
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == project
   assert mock_get_bigquery_client.call_args.kwargs["credentials"] == credentials
   assert (
@@ -1028,3 +1029,103 @@ def test_execute_sql_unexpected_project_id():
           f" {compute_project_id}."
       ),
   }
+
+
+# AI.Forecast calls execute_sql with a specific query statement. We need to
+# test that the query is properly constructed and call execute_sql with the
+# correct parameters exactly once.
+@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
+def test_forecast_with_table_id(mock_execute_sql):
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig()
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  forecast(
+      project_id="test-project",
+      history_data="test-dataset.test-table",
+      timestamp_col="ts_col",
+      data_col="data_col",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      horizon=20,
+      id_cols=["id1", "id2"],
+  )
+
+  expected_query = """
+  SELECT * FROM AI.FORECAST(
+    TABLE `test-dataset.test-table`,
+    data_col => 'data_col',
+    timestamp_col => 'ts_col',
+    model => 'TimesFM 2.0',
+    id_cols => ['id1', 'id2'],
+    horizon => 20,
+    confidence_level => 0.95
+  )
+  """
+  mock_execute_sql.assert_called_once_with(
+      "test-project",
+      expected_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+
+
+# AI.Forecast calls execute_sql with a specific query statement. We need to
+# test that the query is properly constructed and call execute_sql with the
+# correct parameters exactly once.
+@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
+def test_forecast_with_query_statement(mock_execute_sql):
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig()
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  history_data_query = "SELECT * FROM `test-dataset.test-table`"
+  forecast(
+      project_id="test-project",
+      history_data=history_data_query,
+      timestamp_col="ts_col",
+      data_col="data_col",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  expected_query = f"""
+  SELECT * FROM AI.FORECAST(
+    ({history_data_query}),
+    data_col => 'data_col',
+    timestamp_col => 'ts_col',
+    model => 'TimesFM 2.0',
+    horizon => 10,
+    confidence_level => 0.95
+  )
+  """
+  mock_execute_sql.assert_called_once_with(
+      "test-project",
+      expected_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+
+
+def test_forecast_with_invalid_id_cols():
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig()
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  result = forecast(
+      project_id="test-project",
+      history_data="test-dataset.test-table",
+      timestamp_col="ts_col",
+      data_col="data_col",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      id_cols=["id1", 123],
+  )
+
+  assert result["status"] == "ERROR"
+  assert "All elements in id_cols must be strings." in result["error_details"]

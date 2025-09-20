@@ -17,6 +17,8 @@ Please refer to [ADK Project Overview and Architecture](https://github.com/googl
 - ADK live related configs are in [run_config.py](https://github.com/google/adk-python/blob/main/src/google/adk/agents/run_config.py).
 - ADK live under multi-agent scenario: we convert the audio into text. This text will be passed to next agent as context.
 - Most logics are in [base_llm_flow.py](https://github.com/google/adk-python/blob/main/src/google/adk/flows/llm_flows/base_llm_flow.py) and [gemini_llm_connection.py](https://github.com/google/adk-python/blob/main/src/google/adk/models/gemini_llm_connection.py).
+- Input transcription and output transcription should be added to session as Event.
+- User audio or model audio should be saved into artifacts with a reference in Event to it.
 - Tests are in [tests/unittests/streaming](https://github.com/google/adk-python/tree/main/tests/unittests/streaming).
 
 ## ADK: Style Guides

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -25,16 +26,17 @@ from urllib.parse import urlparse
 import uuid
 
 try:
-  from a2a.client import A2AClient
+  from a2a.client import Client as A2AClient
+  from a2a.client import ClientEvent as A2AClientEvent
   from a2a.client.card_resolver import A2ACardResolver
+  from a2a.client.client import ClientConfig as A2AClientConfig
+  from a2a.client.client_factory import ClientFactory as A2AClientFactory
+  from a2a.client.errors import A2AClientError
   from a2a.types import AgentCard
   from a2a.types import Message as A2AMessage
-  from a2a.types import MessageSendParams as A2AMessageSendParams
   from a2a.types import Part as A2APart
   from a2a.types import Role
-  from a2a.types import SendMessageRequest
-  from a2a.types import SendMessageSuccessResponse
-  from a2a.types import Task as A2ATask
+  from a2a.types import TransportProtocol as A2ATransport
 except ImportError as e:
   import sys
 
@@ -125,6 +127,7 @@ class RemoteA2aAgent(BaseAgent):
       timeout: float = DEFAULT_TIMEOUT,
       genai_part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
       a2a_part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
+      a2a_client_factory: Optional[A2AClientFactory] = None,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -133,8 +136,11 @@ class RemoteA2aAgent(BaseAgent):
       name: Agent name (must be unique identifier)
       agent_card: AgentCard object, URL string, or file path string
       description: Agent description (auto-populated from card if empty)
-      httpx_client: Optional shared HTTP client (will create own if not provided)
+      httpx_client: Optional shared HTTP client (will create own if not
+        provided) [deprecated] Use a2a_client_factory instead.
       timeout: HTTP timeout in seconds
+      a2a_client_factory: Optional A2AClientFactory object (will create own if
+        not provided)
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -148,14 +154,18 @@ class RemoteA2aAgent(BaseAgent):
 
     self._agent_card: Optional[AgentCard] = None
     self._agent_card_source: Optional[str] = None
-    self._rpc_url: Optional[str] = None
     self._a2a_client: Optional[A2AClient] = None
+    # This is stored to support backward compatible usage of class.
+    # In future, the client is expected to be present in the factory.
     self._httpx_client = httpx_client
-    self._httpx_client_needs_cleanup = httpx_client is None
+    if a2a_client_factory and a2a_client_factory._config.httpx_client:
+      self._httpx_client = a2a_client_factory._config.httpx_client
+    self._httpx_client_needs_cleanup = self._httpx_client is None
     self._timeout = timeout
     self._is_resolved = False
     self._genai_part_converter = genai_part_converter
     self._a2a_part_converter = a2a_part_converter
+    self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
 
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
@@ -177,6 +187,25 @@ class RemoteA2aAgent(BaseAgent):
           timeout=httpx.Timeout(timeout=self._timeout)
       )
       self._httpx_client_needs_cleanup = True
+      if self._a2a_client_factory:
+        registry = self._a2a_client_factory._registry
+        self._a2a_client_factory = A2AClientFactory(
+            config=dataclasses.replace(
+                self._a2a_client_factory._config,
+                httpx_client=self._httpx_client,
+            ),
+            consumers=self._a2a_client_factory._consumers,
+        )
+        for label, generator in registry.items():
+          self._a2a_client_factory.register(label, generator)
+    if not self._a2a_client_factory:
+      client_config = A2AClientConfig(
+          httpx_client=self._httpx_client,
+          streaming=False,
+          polling=False,
+          supported_transports=[A2ATransport.jsonrpc],
+      )
+      self._a2a_client_factory = A2AClientFactory(config=client_config)
     return self._httpx_client
 
   async def _resolve_agent_card_from_url(self, url: str) -> AgentCard:
@@ -251,32 +280,29 @@ class RemoteA2aAgent(BaseAgent):
 
   async def _ensure_resolved(self) -> None:
     """Ensures agent card is resolved, RPC URL is determined, and A2A client is initialized."""
-    if self._is_resolved:
+    if self._is_resolved and self._a2a_client:
       return
 
     try:
-      # Resolve agent card if needed
       if not self._agent_card:
-        self._agent_card = await self._resolve_agent_card()
 
-      # Validate agent card
-      await self._validate_agent_card(self._agent_card)
+        # Resolve agent card if needed
+        if not self._agent_card:
+          self._agent_card = await self._resolve_agent_card()
 
-      # Set RPC URL
-      self._rpc_url = str(self._agent_card.url)
+        # Validate agent card
+        await self._validate_agent_card(self._agent_card)
 
-      # Update description if empty
-      if not self.description and self._agent_card.description:
-        self.description = self._agent_card.description
+        # Update description if empty
+        if not self.description and self._agent_card.description:
+          self.description = self._agent_card.description
 
       # Initialize A2A client
       if not self._a2a_client:
-        httpx_client = await self._ensure_httpx_client()
-        self._a2a_client = A2AClient(
-            httpx_client=httpx_client,
-            agent_card=self._agent_card,
-            url=self._rpc_url,
-        )
+        await self._ensure_httpx_client()
+        # This should be assured via ensure_httpx_client
+        if self._a2a_client_factory:
+          self._a2a_client = self._a2a_client_factory.create(self._agent_card)
 
       self._is_resolved = True
       logger.info("Successfully resolved remote A2A agent: %s", self.name)
@@ -289,7 +315,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _create_a2a_request_for_user_function_response(
       self, ctx: InvocationContext
-  ) -> Optional[SendMessageRequest]:
+  ) -> Optional[A2AMessage]:
     """Create A2A request for user function response if applicable.
 
     Args:
@@ -323,12 +349,7 @@ class RemoteA2aAgent(BaseAgent):
           else None
       )
 
-    return SendMessageRequest(
-        id=str(uuid.uuid4()),
-        params=A2AMessageSendParams(
-            message=a2a_message,
-        ),
-    )
+    return a2a_message
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
@@ -371,7 +392,7 @@ class RemoteA2aAgent(BaseAgent):
     return message_parts[::-1], context_id
 
   async def _handle_a2a_response(
-      self, a2a_response: Any, ctx: InvocationContext
+      self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
   ) -> Event:
     """Handle A2A response and convert to Event.
 
@@ -383,63 +404,36 @@ class RemoteA2aAgent(BaseAgent):
       Event object representing the response
     """
     try:
-      if isinstance(a2a_response.root, SendMessageSuccessResponse):
-        if a2a_response.root.result:
-          if isinstance(a2a_response.root.result, A2ATask):
-            event = convert_a2a_task_to_event(
-                a2a_response.root.result,
-                self.name,
-                ctx,
-                self._a2a_part_converter,
-            )
-            event.custom_metadata = event.custom_metadata or {}
-            event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = (
-                a2a_response.root.result.id
-            )
+      if isinstance(a2a_response, tuple):
+        # ClientEvent is a tuple of the absolute Task state and the last update.
+        # We only need the Task state.
+        task = a2a_response[0]
+        event = convert_a2a_task_to_event(task, self.name, ctx)
+        event.custom_metadata = event.custom_metadata or {}
+        event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
+        if task.context_id:
+          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+              task.context_id
+          )
 
-          else:
-            event = convert_a2a_message_to_event(
-                a2a_response.root.result,
-                self.name,
-                ctx,
-                self._a2a_part_converter,
-            )
-            event.custom_metadata = event.custom_metadata or {}
-            if a2a_response.root.result.task_id:
-              event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = (
-                  a2a_response.root.result.task_id
-              )
+      # Otherwise, it's a regular A2AMessage.
+      elif isinstance(a2a_response, A2AMessage):
+        event = convert_a2a_message_to_event(a2a_response, self.name, ctx)
+        event.custom_metadata = event.custom_metadata or {}
 
-          if a2a_response.root.result.context_id:
-            event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
-                a2a_response.root.result.context_id
-            )
-
-        else:
-          logger.warning("A2A response has no result: %s", a2a_response.root)
-          event = Event(
-              author=self.name,
-              invocation_id=ctx.invocation_id,
-              branch=ctx.branch,
+        if a2a_response.context_id:
+          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+              a2a_response.context_id
           )
       else:
-        # Handle error response
-        error_response = a2a_response.root
-        logger.error(
-            "A2A request failed with error: %s, data: %s",
-            error_response.error.message,
-            error_response.error.data,
-        )
         event = Event(
             author=self.name,
-            error_message=error_response.error.message,
-            error_code=str(error_response.error.code),
+            error_message="Unknown A2A response type",
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
         )
-
       return event
-    except Exception as e:
+    except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)
       return Event(
           author=self.name,
@@ -482,36 +476,40 @@ class RemoteA2aAgent(BaseAgent):
         )
         return
 
-      a2a_request = SendMessageRequest(
-          id=str(uuid.uuid4()),
-          params=A2AMessageSendParams(
-              message=A2AMessage(
-                  message_id=str(uuid.uuid4()),
-                  parts=message_parts,
-                  role="user",
-                  context_id=context_id,
-              )
-          ),
+      a2a_request = A2AMessage(
+          message_id=str(uuid.uuid4()),
+          parts=message_parts,
+          role="user",
+          context_id=context_id,
       )
 
     logger.debug(build_a2a_request_log(a2a_request))
 
     try:
-      a2a_response = await self._a2a_client.send_message(request=a2a_request)
-      logger.debug(build_a2a_response_log(a2a_response))
+      async for a2a_response in self._a2a_client.send_message(
+          request=a2a_request
+      ):
+        logger.debug(build_a2a_response_log(a2a_response))
 
-      event = await self._handle_a2a_response(a2a_response, ctx)
+        event = await self._handle_a2a_response(a2a_response, ctx)
 
-      # Add metadata about the request and response
-      event.custom_metadata = event.custom_metadata or {}
-      event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
-          a2a_request.model_dump(exclude_none=True, by_alias=True)
-      )
-      event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-          a2a_response.root.model_dump(exclude_none=True, by_alias=True)
-      )
+        # Add metadata about the request and response
+        event.custom_metadata = event.custom_metadata or {}
+        event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
+            a2a_request.model_dump(exclude_none=True, by_alias=True)
+        )
+        # If the response is a ClientEvent, record the task state, otherwise
+        # record the message object.
+        if isinstance(a2a_response, tuple):
+          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+              a2a_response[0].model_dump(exclude_none=True, by_alias=True)
+          )
+        else:
+          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+              a2a_response.model_dump(exclude_none=True, by_alias=True)
+          )
 
-      yield event
+        yield event
 
     except Exception as e:
       error_message = f"A2A request failed: {e}"

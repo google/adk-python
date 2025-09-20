@@ -20,6 +20,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.apps import App
 from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.context_filter_plugin import ContextFilterPlugin
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
@@ -141,5 +142,8 @@ class CountInvocationPlugin(BasePlugin):
 app = App(
     name='hello_world_app',
     root_agent=root_agent,
-    plugins=[CountInvocationPlugin()],
+    plugins=[
+        CountInvocationPlugin(),
+        ContextFilterPlugin(num_invocations_to_keep=3),
+    ],
 )

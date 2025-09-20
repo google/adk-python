@@ -18,6 +18,7 @@ import functools
 import json
 import types
 from typing import Callable
+from typing import Optional
 
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
@@ -96,6 +97,7 @@ def execute_sql(
     bq_client = client.get_bigquery_client(
         project=project_id,
         credentials=credentials,
+        location=settings.location,
         user_agent=settings.application_name,
     )
 
@@ -596,3 +598,170 @@ def get_execute_sql(settings: BigQueryToolConfig) -> Callable[..., dict]:
     execute_sql_wrapper.__doc__ = _execute_sql_write_mode.__doc__
 
   return execute_sql_wrapper
+
+
+def forecast(
+    project_id: str,
+    history_data: str,
+    timestamp_col: str,
+    data_col: str,
+    horizon: int = 10,
+    id_cols: Optional[list[str]] = None,
+    *,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    tool_context: ToolContext,
+) -> dict:
+  """Run a BigQuery AI time series forecast using AI.FORECAST.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      history_data (str): The table id of the BigQuery table containing the
+        history time series data or a query statement that select the history
+        data.
+      timestamp_col (str): The name of the column containing the timestamp for
+        each data point.
+      data_col (str): The name of the column containing the numerical values to
+        be forecasted.
+      horizon (int, optional): The number of time steps to forecast into the
+        future. Defaults to 10.
+      id_cols (list, optional): The column names of the id columns to indicate
+        each time series when there are multiple time series in the table. All
+        elements must be strings. Defaults to None.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+
+  Returns:
+      dict: Dictionary representing the result of the forecast. The result
+            contains the forecasted values along with prediction intervals.
+
+  Examples:
+      Forecast daily sales for the next 7 days based on historical data from
+      a BigQuery table:
+
+          >>> forecast(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.my-sales-table",
+          ...     timestamp_col="sale_date",
+          ...     data_col="daily_sales",
+          ...     horizon=7
+          ... )
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "forecast_timestamp": "2025-01-08T00:00:00",
+                "forecast_value": 12345.67,
+                "confidence_level": 0.95,
+                "prediction_interval_lower_bound": 11000.0,
+                "prediction_interval_upper_bound": 13691.34,
+                "ai_forecast_status": ""
+              },
+              ...
+            ]
+          }
+
+      Forecast multiple time series using a SQL query as input:
+
+          >>> history_query = (
+          ...     "SELECT unique_id, timestamp, value "
+          ...     "FROM `my-project.my-dataset.my-timeseries-table` "
+          ...     "WHERE timestamp > '1980-01-01'"
+          ... )
+          >>> forecast(
+          ...     project_id="my-gcp-project",
+          ...     history_data=history_query,
+          ...     timestamp_col="timestamp",
+          ...     data_col="value",
+          ...     id_cols=["unique_id"],
+          ...     horizon=14
+          ... )
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "unique_id": "T1",
+                "forecast_timestamp": "1980-08-28T00:00:00",
+                "forecast_value": 1253218.75,
+                "confidence_level": 0.95,
+                "prediction_interval_lower_bound": 274252.51,
+                "prediction_interval_upper_bound": 2232184.99,
+                "ai_forecast_status": ""
+              },
+              ...
+            ]
+          }
+
+      Error Scenarios:
+          When an element in `id_cols` is not a string:
+
+          >>> forecast(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.my-sales-table",
+          ...     timestamp_col="sale_date",
+          ...     data_col="daily_sales",
+          ...     id_cols=["store_id", 123]
+          ... )
+          {
+            "status": "ERROR",
+            "error_details": "All elements in id_cols must be strings."
+          }
+
+          When `history_data` refers to a table that does not exist:
+
+          >>> forecast(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.non-existent-table",
+          ...     timestamp_col="sale_date",
+          ...     data_col="daily_sales"
+          ... )
+          {
+            "status": "ERROR",
+            "error_details": "Not found: Table
+            my-gcp-project:my-dataset.non-existent-table was not found in
+            location US"
+          }
+  """
+  model = "TimesFM 2.0"
+  confidence_level = 0.95
+  trimmed_upper_history_data = history_data.strip().upper()
+  if trimmed_upper_history_data.startswith(
+      "SELECT"
+  ) or trimmed_upper_history_data.startswith("WITH"):
+    history_data_source = f"({history_data})"
+  else:
+    history_data_source = f"TABLE `{history_data}`"
+
+  if id_cols:
+    if not all(isinstance(item, str) for item in id_cols):
+      return {
+          "status": "ERROR",
+          "error_details": "All elements in id_cols must be strings.",
+      }
+    id_cols_str = "[" + ", ".join([f"'{col}'" for col in id_cols]) + "]"
+
+    query = f"""
+  SELECT * FROM AI.FORECAST(
+    {history_data_source},
+    data_col => '{data_col}',
+    timestamp_col => '{timestamp_col}',
+    model => '{model}',
+    id_cols => {id_cols_str},
+    horizon => {horizon},
+    confidence_level => {confidence_level}
+  )
+  """
+  else:
+    query = f"""
+  SELECT * FROM AI.FORECAST(
+    {history_data_source},
+    data_col => '{data_col}',
+    timestamp_col => '{timestamp_col}',
+    model => '{model}',
+    horizon => {horizon},
+    confidence_level => {confidence_level}
+  )
+  """
+  return execute_sql(project_id, query, credentials, settings, tool_context)
