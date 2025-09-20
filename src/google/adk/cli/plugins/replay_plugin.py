@@ -138,8 +138,12 @@ class ReplayPlugin(BasePlugin):
     recording = self._verify_and_get_next_tool_recording_for_agent(
         state, agent_name, tool.name, tool_args
     )
-    # Execute the actual tool to get state updates.
-    await tool.run_async(args=tool_args, tool_context=tool_context)
+
+    from google.adk.tools.agent_tool import AgentTool
+
+    if not isinstance(tool, AgentTool):
+      # TODO: support replay requests and responses from AgentTool.
+      await tool.run_async(args=tool_args, tool_context=tool_context)
 
     logger.debug(
         "Verified and replaying tool response for agent %s: tool=%s",
