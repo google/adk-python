@@ -17,12 +17,15 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import logging
+import threading
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
+from typing import TYPE_CHECKING
 import uuid
 
 from google.genai import types
@@ -32,14 +35,20 @@ from ...agents.invocation_context import InvocationContext
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
-from ...telemetry import trace_merged_tool_calls
-from ...telemetry import trace_tool_call
-from ...telemetry import tracer
+from ...telemetry.tracing import trace_merged_tool_calls
+from ...telemetry.tracing import trace_tool_call
+from ...telemetry.tracing import tracer
 from ...tools.base_tool import BaseTool
+from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
+from ...utils.context_utils import Aclosing
+
+if TYPE_CHECKING:
+  from ...agents.llm_agent import LlmAgent
 
 AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
 REQUEST_EUC_FUNCTION_CALL_NAME = 'adk_request_credential'
+REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = 'adk_request_confirmation'
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -56,7 +65,15 @@ def populate_client_function_call_id(model_response_event: Event) -> None:
       function_call.id = generate_client_function_call_id()
 
 
-def remove_client_function_call_id(content: types.Content) -> None:
+def remove_client_function_call_id(content: Optional[types.Content]) -> None:
+  """Removes ADK-generated function call IDs from content before sending to LLM.
+
+  Strips client-side function call/response IDs that start with 'adk-' prefix
+  to avoid sending internal tracking IDs to the model.
+
+  Args:
+    content: Content containing function calls/responses to clean.
+  """
   if content and content.parts:
     for part in content.parts:
       if (
@@ -123,83 +140,119 @@ def generate_auth_event(
   )
 
 
+def generate_request_confirmation_event(
+    invocation_context: InvocationContext,
+    function_call_event: Event,
+    function_response_event: Event,
+) -> Optional[Event]:
+  """Generates a request confirmation event from a function response event."""
+  if not function_response_event.actions.requested_tool_confirmations:
+    return None
+  parts = []
+  long_running_tool_ids = set()
+  function_calls = function_call_event.get_function_calls()
+  for (
+      function_call_id,
+      tool_confirmation,
+  ) in function_response_event.actions.requested_tool_confirmations.items():
+    original_function_call = next(
+        (fc for fc in function_calls if fc.id == function_call_id), None
+    )
+    if not original_function_call:
+      continue
+    request_confirmation_function_call = types.FunctionCall(
+        name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+        args={
+            'originalFunctionCall': original_function_call.model_dump(
+                exclude_none=True, by_alias=True
+            ),
+            'toolConfirmation': tool_confirmation.model_dump(
+                by_alias=True, exclude_none=True
+            ),
+        },
+    )
+    request_confirmation_function_call.id = generate_client_function_call_id()
+    long_running_tool_ids.add(request_confirmation_function_call.id)
+    parts.append(types.Part(function_call=request_confirmation_function_call))
+
+  return Event(
+      invocation_id=invocation_context.invocation_id,
+      author=invocation_context.agent.name,
+      branch=invocation_context.branch,
+      content=types.Content(
+          parts=parts, role=function_response_event.content.role
+      ),
+      long_running_tool_ids=long_running_tool_ids,
+  )
+
+
 async def handle_function_calls_async(
     invocation_context: InvocationContext,
     function_call_event: Event,
     tools_dict: dict[str, BaseTool],
     filters: Optional[set[str]] = None,
+    tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
+) -> Optional[Event]:
+  """Calls the functions and returns the function response event."""
+  function_calls = function_call_event.get_function_calls()
+  return await handle_function_call_list_async(
+      invocation_context,
+      function_calls,
+      tools_dict,
+      filters,
+      tool_confirmation_dict,
+  )
+
+
+async def handle_function_call_list_async(
+    invocation_context: InvocationContext,
+    function_calls: list[types.FunctionCall],
+    tools_dict: dict[str, BaseTool],
+    filters: Optional[set[str]] = None,
+    tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
 ) -> Optional[Event]:
   """Calls the functions and returns the function response event."""
   from ...agents.llm_agent import LlmAgent
 
   agent = invocation_context.agent
   if not isinstance(agent, LlmAgent):
-    return
+    return None
 
-  function_calls = function_call_event.get_function_calls()
+  # Filter function calls
+  filtered_calls = [
+      fc for fc in function_calls if not filters or fc.id in filters
+  ]
 
-  function_response_events: list[Event] = []
-  for function_call in function_calls:
-    if filters and function_call.id not in filters:
-      continue
-    tool, tool_context = _get_tool_and_context(
-        invocation_context,
-        function_call_event,
-        function_call,
-        tools_dict,
-    )
+  if not filtered_calls:
+    return None
 
-    with tracer.start_as_current_span(f'execute_tool {tool.name}'):
-      # do not use "args" as the variable name, because it is a reserved keyword
-      # in python debugger.
-      function_args = function_call.args or {}
-      function_response: Optional[dict] = None
-
-      for callback in agent.canonical_before_tool_callbacks:
-        function_response = callback(
-            tool=tool, args=function_args, tool_context=tool_context
-        )
-        if inspect.isawaitable(function_response):
-          function_response = await function_response
-        if function_response:
-          break
-
-      if not function_response:
-        function_response = await __call_tool_async(
-            tool, args=function_args, tool_context=tool_context
-        )
-
-      for callback in agent.canonical_after_tool_callbacks:
-        altered_function_response = callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=function_response,
-        )
-        if inspect.isawaitable(altered_function_response):
-          altered_function_response = await altered_function_response
-        if altered_function_response is not None:
-          function_response = altered_function_response
-          break
-
-      if tool.is_long_running:
-        # Allow long running function to return None to not provide function response.
-        if not function_response:
-          continue
-
-      # Builds the function response event.
-      function_response_event = __build_response_event(
-          tool, function_response, tool_context, invocation_context
+  # Create tasks for parallel execution
+  tasks = [
+      asyncio.create_task(
+          _execute_single_function_call_async(
+              invocation_context,
+              function_call,
+              tools_dict,
+              agent,
+              tool_confirmation_dict[function_call.id]
+              if tool_confirmation_dict
+              else None,
+          )
       )
-      trace_tool_call(
-          tool=tool,
-          args=function_args,
-          function_response_event=function_response_event,
-      )
-      function_response_events.append(function_response_event)
+      for function_call in filtered_calls
+  ]
+
+  # Wait for all tasks to complete
+  function_response_events = await asyncio.gather(*tasks)
+
+  # Filter out None results
+  function_response_events = [
+      event for event in function_response_events if event is not None
+  ]
 
   if not function_response_events:
     return None
+
   merged_event = merge_parallel_function_response_events(
       function_response_events
   )
@@ -214,6 +267,122 @@ async def handle_function_calls_async(
           function_response_event=merged_event,
       )
   return merged_event
+
+
+async def _execute_single_function_call_async(
+    invocation_context: InvocationContext,
+    function_call: types.FunctionCall,
+    tools_dict: dict[str, BaseTool],
+    agent: LlmAgent,
+    tool_confirmation: Optional[ToolConfirmation] = None,
+) -> Optional[Event]:
+  """Execute a single function call with thread safety for state modifications."""
+  tool, tool_context = _get_tool_and_context(
+      invocation_context,
+      function_call,
+      tools_dict,
+      tool_confirmation,
+  )
+
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    # Do not use "args" as the variable name, because it is a reserved keyword
+    # in python debugger.
+    # Make a deep copy to avoid being modified.
+    function_args = (
+        copy.deepcopy(function_call.args) if function_call.args else {}
+    )
+
+    # Step 1: Check if plugin before_tool_callback overrides the function
+    # response.
+    function_response = (
+        await invocation_context.plugin_manager.run_before_tool_callback(
+            tool=tool, tool_args=function_args, tool_context=tool_context
+        )
+    )
+
+    # Step 2: If no overrides are provided from the plugins, further run the
+    # canonical callback.
+    if function_response is None:
+      for callback in agent.canonical_before_tool_callbacks:
+        function_response = callback(
+            tool=tool, args=function_args, tool_context=tool_context
+        )
+        if inspect.isawaitable(function_response):
+          function_response = await function_response
+        if function_response:
+          break
+
+    # Step 3: Otherwise, proceed calling the tool normally.
+    if function_response is None:
+      try:
+        function_response = await __call_tool_async(
+            tool, args=function_args, tool_context=tool_context
+        )
+      except Exception as tool_error:
+        error_response = (
+            await invocation_context.plugin_manager.run_on_tool_error_callback(
+                tool=tool,
+                tool_args=function_args,
+                tool_context=tool_context,
+                error=tool_error,
+            )
+        )
+        if error_response is not None:
+          function_response = error_response
+        else:
+          raise tool_error
+
+    # Step 4: Check if plugin after_tool_callback overrides the function
+    # response.
+    altered_function_response = (
+        await invocation_context.plugin_manager.run_after_tool_callback(
+            tool=tool,
+            tool_args=function_args,
+            tool_context=tool_context,
+            result=function_response,
+        )
+    )
+
+    # Step 5: If no overrides are provided from the plugins, further run the
+    # canonical after_tool_callbacks.
+    if altered_function_response is None:
+      for callback in agent.canonical_after_tool_callbacks:
+        altered_function_response = callback(
+            tool=tool,
+            args=function_args,
+            tool_context=tool_context,
+            tool_response=function_response,
+        )
+        if inspect.isawaitable(altered_function_response):
+          altered_function_response = await altered_function_response
+        if altered_function_response:
+          break
+
+    # Step 6: If alternative response exists from after_tool_callback, use it
+    # instead of the original function response.
+    if altered_function_response is not None:
+      function_response = altered_function_response
+
+    if tool.is_long_running:
+      # Allow long running function to return None to not provide function
+      # response.
+      if not function_response:
+        return None
+
+    # Note: State deltas are not applied here - they are collected in
+    # tool_context.actions.state_delta and applied later when the session
+    # service processes the events
+
+    # Builds the function response event.
+    function_response_event = __build_response_event(
+        tool, function_response, tool_context, invocation_context
+    )
+    trace_tool_call(
+        tool=tool,
+        args=function_args,
+        function_response_event=function_response_event,
+    )
+    return function_response_event
 
 
 async def handle_function_calls_live(
@@ -227,74 +396,37 @@ async def handle_function_calls_live(
   agent = cast(LlmAgent, invocation_context.agent)
   function_calls = function_call_event.get_function_calls()
 
-  function_response_events: list[Event] = []
-  for function_call in function_calls:
-    tool, tool_context = _get_tool_and_context(
-        invocation_context, function_call_event, function_call, tools_dict
-    )
-    with tracer.start_as_current_span(f'execute_tool {tool.name}'):
-      # do not use "args" as the variable name, because it is a reserved keyword
-      # in python debugger.
-      function_args = function_call.args or {}
-      function_response = None
-      # # Calls the tool if before_tool_callback does not exist or returns None.
-      # if agent.before_tool_callback:
-      #   function_response = agent.before_tool_callback(
-      #       tool, function_args, tool_context
-      #   )
-      if agent.before_tool_callback:
-        function_response = agent.before_tool_callback(
-            tool=tool, args=function_args, tool_context=tool_context
-        )
-        if inspect.isawaitable(function_response):
-          function_response = await function_response
+  if not function_calls:
+    return None
 
-      if not function_response:
-        function_response = await _process_function_live_helper(
-            tool, tool_context, function_call, function_args, invocation_context
-        )
+  # Create async lock for active_streaming_tools modifications
+  streaming_lock = asyncio.Lock()
 
-      # Calls after_tool_callback if it exists.
-      # if agent.after_tool_callback:
-      #   new_response = agent.after_tool_callback(
-      #       tool,
-      #       function_args,
-      #       tool_context,
-      #       function_response,
-      #   )
-      #   if new_response:
-      #     function_response = new_response
-      if agent.after_tool_callback:
-        altered_function_response = agent.after_tool_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=function_response,
-        )
-        if inspect.isawaitable(altered_function_response):
-          altered_function_response = await altered_function_response
-        if altered_function_response is not None:
-          function_response = altered_function_response
-
-      if tool.is_long_running:
-        # Allow async function to return None to not provide function response.
-        if not function_response:
-          continue
-
-      # Builds the function response event.
-      function_response_event = __build_response_event(
-          tool, function_response, tool_context, invocation_context
+  # Create tasks for parallel execution
+  tasks = [
+      asyncio.create_task(
+          _execute_single_function_call_live(
+              invocation_context,
+              function_call,
+              tools_dict,
+              agent,
+              streaming_lock,
+          )
       )
-      trace_tool_call(
-          tool=tool,
-          args=function_args,
-          response_event_id=function_response_event.id,
-          function_response=function_response,
-      )
-      function_response_events.append(function_response_event)
+      for function_call in function_calls
+  ]
+
+  # Wait for all tasks to complete
+  function_response_events = await asyncio.gather(*tasks)
+
+  # Filter out None results
+  function_response_events = [
+      event for event in function_response_events if event is not None
+  ]
 
   if not function_response_events:
     return None
+
   merged_event = merge_parallel_function_response_events(
       function_response_events
   )
@@ -310,8 +442,92 @@ async def handle_function_calls_live(
   return merged_event
 
 
+async def _execute_single_function_call_live(
+    invocation_context: InvocationContext,
+    function_call: types.FunctionCall,
+    tools_dict: dict[str, BaseTool],
+    agent: LlmAgent,
+    streaming_lock: asyncio.Lock,
+) -> Optional[Event]:
+  """Execute a single function call for live mode with thread safety."""
+  tool, tool_context = _get_tool_and_context(
+      invocation_context, function_call, tools_dict
+  )
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    # Do not use "args" as the variable name, because it is a reserved keyword
+    # in python debugger.
+    # Make a deep copy to avoid being modified.
+    function_args = (
+        copy.deepcopy(function_call.args) if function_call.args else {}
+    )
+    function_response = None
+
+    # Handle before_tool_callbacks - iterate through the canonical callback
+    # list
+    for callback in agent.canonical_before_tool_callbacks:
+      function_response = callback(
+          tool=tool, args=function_args, tool_context=tool_context
+      )
+      if inspect.isawaitable(function_response):
+        function_response = await function_response
+      if function_response:
+        break
+
+    if function_response is None:
+      function_response = await _process_function_live_helper(
+          tool,
+          tool_context,
+          function_call,
+          function_args,
+          invocation_context,
+          streaming_lock,
+      )
+
+    # Calls after_tool_callback if it exists.
+    altered_function_response = None
+    for callback in agent.canonical_after_tool_callbacks:
+      altered_function_response = callback(
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+          tool_response=function_response,
+      )
+      if inspect.isawaitable(altered_function_response):
+        altered_function_response = await altered_function_response
+      if altered_function_response:
+        break
+
+    if altered_function_response is not None:
+      function_response = altered_function_response
+
+    if tool.is_long_running:
+      # Allow async function to return None to not provide function response.
+      if not function_response:
+        return None
+
+    # Note: State deltas are not applied here - they are collected in
+    # tool_context.actions.state_delta and applied later when the session
+    # service processes the events
+
+    # Builds the function response event.
+    function_response_event = __build_response_event(
+        tool, function_response, tool_context, invocation_context
+    )
+    trace_tool_call(
+        tool=tool,
+        args=function_args,
+        function_response_event=function_response_event,
+    )
+    return function_response_event
+
+
 async def _process_function_live_helper(
-    tool, tool_context, function_call, function_args, invocation_context
+    tool,
+    tool_context,
+    function_call,
+    function_args,
+    invocation_context,
+    streaming_lock: asyncio.Lock,
 ):
   function_response = None
   # Check if this is a stop_streaming function call
@@ -320,13 +536,20 @@ async def _process_function_live_helper(
       and 'function_name' in function_args
   ):
     function_name = function_args['function_name']
-    active_tasks = invocation_context.active_streaming_tools
-    if (
-        function_name in active_tasks
-        and active_tasks[function_name].task
-        and not active_tasks[function_name].task.done()
-    ):
-      task = active_tasks[function_name].task
+    # Thread-safe access to active_streaming_tools
+    async with streaming_lock:
+      active_tasks = invocation_context.active_streaming_tools
+      if (
+          active_tasks
+          and function_name in active_tasks
+          and active_tasks[function_name].task
+          and not active_tasks[function_name].task.done()
+      ):
+        task = active_tasks[function_name].task
+      else:
+        task = None
+
+    if task:
       task.cancel()
       try:
         # Wait for the task to be cancelled
@@ -334,20 +557,25 @@ async def _process_function_live_helper(
       except (asyncio.CancelledError, asyncio.TimeoutError):
         # Log the specific condition
         if task.cancelled():
-          logging.info(f'Task {function_name} was cancelled successfully')
+          logging.info('Task %s was cancelled successfully', function_name)
         elif task.done():
-          logging.info(f'Task {function_name} completed during cancellation')
+          logging.info('Task %s completed during cancellation', function_name)
         else:
           logging.warning(
-              f'Task {function_name} might still be running after'
-              ' cancellation timeout'
+              'Task %s might still be running after cancellation timeout',
+              function_name,
           )
           function_response = {
               'status': f'The task is not cancelled yet for {function_name}.'
           }
       if not function_response:
-        # Clean up the reference
-        active_tasks[function_name].task = None
+        # Clean up the reference under lock
+        async with streaming_lock:
+          if (
+              invocation_context.active_streaming_tools
+              and function_name in invocation_context.active_streaming_tools
+          ):
+            invocation_context.active_streaming_tools[function_name].task = None
 
         function_response = {
             'status': f'Successfully stopped streaming function {function_name}'
@@ -361,35 +589,43 @@ async def _process_function_live_helper(
     # we require the function to be a async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
       try:
-        async for result in __call_tool_live(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            invocation_context=invocation_context,
-        ):
-          updated_content = types.Content(
-              role='user',
-              parts=[
-                  types.Part.from_text(
-                      text=f'Function {tool.name} returned: {result}'
-                  )
-              ],
-          )
-          invocation_context.live_request_queue.send_content(updated_content)
+        async with Aclosing(
+            __call_tool_live(
+                tool=tool,
+                args=function_args,
+                tool_context=tool_context,
+                invocation_context=invocation_context,
+            )
+        ) as agen:
+          async for result in agen:
+            updated_content = types.Content(
+                role='user',
+                parts=[
+                    types.Part.from_text(
+                        text=f'Function {tool.name} returned: {result}'
+                    )
+                ],
+            )
+            invocation_context.live_request_queue.send_content(updated_content)
       except asyncio.CancelledError:
         raise  # Re-raise to properly propagate the cancellation
 
     task = asyncio.create_task(
         run_tool_and_update_queue(tool, function_args, tool_context)
     )
-    if invocation_context.active_streaming_tools is None:
-      invocation_context.active_streaming_tools = {}
-    if tool.name in invocation_context.active_streaming_tools:
-      invocation_context.active_streaming_tools[tool.name].task = task
-    else:
-      invocation_context.active_streaming_tools[tool.name] = (
-          ActiveStreamingTool(task=task)
-      )
+
+    # Register streaming tool using original logic
+    async with streaming_lock:
+      if invocation_context.active_streaming_tools is None:
+        invocation_context.active_streaming_tools = {}
+
+      if tool.name in invocation_context.active_streaming_tools:
+        invocation_context.active_streaming_tools[tool.name].task = task
+      else:
+        invocation_context.active_streaming_tools[tool.name] = (
+            ActiveStreamingTool(task=task)
+        )
+
     # Immediately return a pending response.
     # This is required by current live model.
     function_response = {
@@ -407,9 +643,9 @@ async def _process_function_live_helper(
 
 def _get_tool_and_context(
     invocation_context: InvocationContext,
-    function_call_event: Event,
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
+    tool_confirmation: Optional[ToolConfirmation] = None,
 ):
   if function_call.name not in tools_dict:
     raise ValueError(
@@ -419,6 +655,7 @@ def _get_tool_and_context(
   tool_context = ToolContext(
       invocation_context=invocation_context,
       function_call_id=function_call.id,
+      tool_confirmation=tool_confirmation,
   )
 
   tool = tools_dict[function_call.name]
@@ -433,12 +670,15 @@ async def __call_tool_live(
     invocation_context: InvocationContext,
 ) -> AsyncGenerator[Event, None]:
   """Calls the tool asynchronously (awaiting the coroutine)."""
-  async for item in tool._call_live(
-      args=args,
-      tool_context=tool_context,
-      invocation_context=invocation_context,
-  ):
-    yield item
+  async with Aclosing(
+      tool._call_live(
+          args=args,
+          tool_context=tool_context,
+          invocation_context=invocation_context,
+      )
+  ) as agen:
+    async for item in agen:
+      yield item
 
 
 async def __call_tool_async(
@@ -481,6 +721,16 @@ def __build_response_event(
   return function_response_event
 
 
+def deep_merge_dicts(d1: dict, d2: dict) -> dict:
+  """Recursively merges d2 into d1."""
+  for key, value in d2.items():
+    if key in d1 and isinstance(d1[key], dict) and isinstance(value, dict):
+      d1[key] = deep_merge_dicts(d1[key], value)
+    else:
+      d1[key] = value
+  return d1
+
+
 def merge_parallel_function_response_events(
     function_response_events: list['Event'],
 ) -> 'Event':
@@ -499,18 +749,20 @@ def merge_parallel_function_response_events(
   base_event = function_response_events[0]
 
   # Merge actions from all events
-
-  merged_actions = EventActions()
-  merged_requested_auth_configs = {}
+  merged_actions_data: dict[str, Any] = {}
   for event in function_response_events:
-    merged_requested_auth_configs.update(event.actions.requested_auth_configs)
-    merged_actions = merged_actions.model_copy(
-        update=event.actions.model_dump()
-    )
-  merged_actions.requested_auth_configs = merged_requested_auth_configs
+    if event.actions:
+      # Use `by_alias=True` because it converts the model to a dictionary while respecting field aliases, ensuring that the enum fields are correctly handled without creating a duplicate.
+      merged_actions_data = deep_merge_dicts(
+          merged_actions_data,
+          event.actions.model_dump(exclude_none=True, by_alias=True),
+      )
+
+  merged_actions = EventActions.model_validate(merged_actions_data)
+
   # Create the new merged event
   merged_event = Event(
-      invocation_id=Event.new_id(),
+      invocation_id=base_event.invocation_id,
       author=base_event.author,
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),
@@ -520,3 +772,35 @@ def merge_parallel_function_response_events(
   # Use the base_event as the timestamp
   merged_event.timestamp = base_event.timestamp
   return merged_event
+
+
+def find_matching_function_call(
+    events: list[Event],
+) -> Optional[Event]:
+  """Finds the function call event that matches the function response id of the last event."""
+  if not events:
+    return None
+
+  last_event = events[-1]
+  if (
+      last_event.content
+      and last_event.content.parts
+      and any(part.function_response for part in last_event.content.parts)
+  ):
+
+    function_call_id = next(
+        part.function_response.id
+        for part in last_event.content.parts
+        if part.function_response
+    )
+    for i in range(len(events) - 2, -1, -1):
+      event = events[i]
+      # looking for the system long running request euc function call
+      function_calls = event.get_function_calls()
+      if not function_calls:
+        continue
+
+      for function_call in function_calls:
+        if function_call.id == function_call_id:
+          return event
+  return None

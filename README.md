@@ -1,8 +1,10 @@
 # Agent Development Kit (ADK)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/google-adk)](https://pypi.org/project/google-adk/)
 [![Python Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/google/adk-python)
 
 <html>
     <h2 align="center">
@@ -13,7 +15,7 @@
     </h3>
     <h3 align="center">
       Important Links:
-      <a href="https://google.github.io/adk-docs/">Docs</a>, 
+      <a href="https://google.github.io/adk-docs/">Docs</a>,
       <a href="https://github.com/google/adk-samples">Samples</a>,
       <a href="https://github.com/google/adk-java">Java ADK</a> &
       <a href="https://github.com/google/adk-web">ADK Web</a>.
@@ -24,6 +26,13 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 
 ---
+
+## 🔥 What's new
+
+- **Agent Config**: Build agents without code. Check out the
+  [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+
+- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input
 
 ## ✨ Key Features
 
@@ -44,7 +53,7 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 For remote agent-to-agent communication, ADK integrates with the
 [A2A protocol](https://github.com/google-a2a/A2A/).
-See this [example](https://github.com/google-a2a/a2a-samples/tree/main/samples/python/agents/google_adk)
+See this [example](https://github.com/a2aproject/a2a-samples/tree/main/samples/python/agents)
 for how they can work together.
 
 ## 🚀 Installation
@@ -57,7 +66,7 @@ You can install the latest stable version of ADK using `pip`:
 pip install google-adk
 ```
 
-The release cadence is weekly.
+The release cadence is roughly bi-weekly.
 
 This version is recommended for most users as it represents the most recent official release.
 
@@ -87,7 +96,7 @@ from google.adk.tools import google_search
 
 root_agent = Agent(
     name="search_assistant",
-    model="gemini-2.0-flash", # Or your preferred Gemini model
+    model="gemini-2.5-flash", # Or your preferred Gemini model
     instruction="You are a helpful assistant. Answer user questions using Google Search when needed.",
     description="An assistant that can search the web.",
     tools=[google_search]
@@ -102,13 +111,13 @@ Define a multi-agent system with coordinator agent, greeter agent, and task exec
 from google.adk.agents import LlmAgent, BaseAgent
 
 # Define individual agents
-greeter = LlmAgent(name="greeter", model="gemini-2.0-flash", ...)
-task_executor = LlmAgent(name="task_executor", model="gemini-2.0-flash", ...)
+greeter = LlmAgent(name="greeter", model="gemini-2.5-flash", ...)
+task_executor = LlmAgent(name="task_executor", model="gemini-2.5-flash", ...)
 
 # Create parent agent and assign children via sub_agents
 coordinator = LlmAgent(
     name="Coordinator",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description="I coordinate greetings and tasks.",
     sub_agents=[ # Assign sub_agents here
         greeter,
@@ -134,8 +143,12 @@ adk eval \
 ## 🤝 Contributing
 
 We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our
-- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/#questions).
+- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/).
 - Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
+
+## Vibe Coding
+
+If you are to develop agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to LLM. While the former one is a summarized one and the later one has the full information in case your LLM has big enough context window.
 
 ## 📄 License
 

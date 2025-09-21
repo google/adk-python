@@ -13,11 +13,7 @@
 # limitations under the License.
 
 from google.adk import Agent
-from google.adk.tools import google_search
-from google.genai import Client
-
-# Only Vertex AI supports image generation for now.
-client = Client()
+from google.adk.tools.google_search_tool import google_search
 
 root_agent = Agent(
     model='gemini-2.0-flash-001',

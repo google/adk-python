@@ -13,22 +13,21 @@
 # limitations under the License.
 
 from datetime import datetime
-import json
 import os
 
 from dotenv import load_dotenv
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
-from google.adk import Agent
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.auth import AuthConfig
-from google.adk.auth import AuthCredential
-from google.adk.auth import AuthCredentialTypes
-from google.adk.auth import OAuth2Auth
-from google.adk.tools import ToolContext
+from google.adk.agents.llm_agent import Agent
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
+from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
 from google.adk.tools.google_api_tool import CalendarToolset
-from google.auth.transport.requests import Request
+from google.adk.tools.tool_context import ToolContext
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -47,8 +46,24 @@ calendar_toolset = CalendarToolset(
     # google calendar tool by adding `calendar_events_list` in the filter list
     client_id=oauth_client_id,
     client_secret=oauth_client_secret,
-    tool_filter=["calendar_events_get"],
+    tool_filter=["calendar_events_get", "calendar_events_update"],
+    tool_name_prefix="google",
 )
+
+
+# this tool will be invoked right after google_calendar_events_get returns a
+# final response to test whether adk works correctly for subsequent function
+# call right after a function call that request auth
+# see https://github.com/google/adk-python/issues/1944 for details
+def redact_event_content(event_content: str) -> str:
+  """Redact confidential informaiton in the calendar event content
+  Args:
+      event_content: the content of the calendar event to redact
+
+  Returns:
+      str: redacted content of the calendar event
+  """
+  return event_content
 
 
 def list_calendar_events(
@@ -56,6 +71,7 @@ def list_calendar_events(
     end_time: str,
     limit: int,
     tool_context: ToolContext,
+    credential: AuthCredential,
 ) -> list[dict]:
   """Search for calendar events.
 
@@ -80,84 +96,11 @@ def list_calendar_events(
   Returns:
       list[dict]: A list of events that match the search criteria.
   """
-  creds = None
 
-  # Check if the tokes were already in the session state, which means the user
-  # has already gone through the OAuth flow and successfully authenticated and
-  # authorized the tool to access their calendar.
-  if "calendar_tool_tokens" in tool_context.state:
-    creds = Credentials.from_authorized_user_info(
-        tool_context.state["calendar_tool_tokens"], SCOPES
-    )
-  if not creds or not creds.valid:
-    # If the access token is expired, refresh it with the refresh token.
-    if creds and creds.expired and creds.refresh_token:
-      creds.refresh(Request())
-    else:
-      auth_scheme = OAuth2(
-          flows=OAuthFlows(
-              authorizationCode=OAuthFlowAuthorizationCode(
-                  authorizationUrl="https://accounts.google.com/o/oauth2/auth",
-                  tokenUrl="https://oauth2.googleapis.com/token",
-                  scopes={
-                      "https://www.googleapis.com/auth/calendar": (
-                          "See, edit, share, and permanently delete all the"
-                          " calendars you can access using Google Calendar"
-                      )
-                  },
-              )
-          )
-      )
-      auth_credential = AuthCredential(
-          auth_type=AuthCredentialTypes.OAUTH2,
-          oauth2=OAuth2Auth(
-              client_id=oauth_client_id, client_secret=oauth_client_secret
-          ),
-      )
-      # If the user has not gone through the OAuth flow before, or the refresh
-      # token also expired, we need to ask users to go through the OAuth flow.
-      # First we check whether the user has just gone through the OAuth flow and
-      # Oauth response is just passed back.
-      auth_response = tool_context.get_auth_response(
-          AuthConfig(
-              auth_scheme=auth_scheme, raw_auth_credential=auth_credential
-          )
-      )
-      if auth_response:
-        # ADK exchanged the access token already for us
-        access_token = auth_response.oauth2.access_token
-        refresh_token = auth_response.oauth2.refresh_token
-
-        creds = Credentials(
-            token=access_token,
-            refresh_token=refresh_token,
-            token_uri=auth_scheme.flows.authorizationCode.tokenUrl,
-            client_id=oauth_client_id,
-            client_secret=oauth_client_secret,
-            scopes=list(auth_scheme.flows.authorizationCode.scopes.keys()),
-        )
-      else:
-        # If there are no auth response which means the user has not gone
-        # through the OAuth flow yet, we need to ask users to go through the
-        # OAuth flow.
-        tool_context.request_credential(
-            AuthConfig(
-                auth_scheme=auth_scheme,
-                raw_auth_credential=auth_credential,
-            )
-        )
-        # The return value is optional and could be any dict object. It will be
-        # wrapped in a dict with key as 'result' and value as the return value
-        # if the object returned is not a dict. This response will be passed
-        # to LLM to generate a user friendly message. e.g. LLM will tell user:
-        # "I need your authorization to access your calendar. Please authorize
-        # me so I can check your meetings for today."
-        return "Need User Authorization to access their calendar."
-    # We store the access token and refresh token in the session state for the
-    # next runs. This is just an example. On production, a tool should store
-    # those credentials in some secure store or properly encrypt it before store
-    # it in the session state.
-    tool_context.state["calendar_tool_tokens"] = json.loads(creds.to_json())
+  creds = Credentials(
+      token=credential.oauth2.access_token,
+      refresh_token=credential.oauth2.refresh_token,
+  )
 
   service = build("calendar", "v3", credentials=creds)
   events_result = (
@@ -198,7 +141,17 @@ root_agent = Agent(
 
       Scenario2:
       User want to know the details of one of the listed calendar events.
-      Use get_calendar_event to get the details of a calendar event.
+      Use google_calendar_events_get to get the details of a calendar event and use redact_event_content to redact confidential information before sending the details to user
+
+      Scenario3:
+      User want to update calendar events.
+      Use google_calendar_events_update to update calendar events
+
+      IMPORTANT NOTE
+      Whenever you use google_calendar_events_get to the details of a calendar event ,
+      you MUST use format_calendar_redact_event_content to redact it and use the return value to reply the user.
+      This very important! Otherwise you run the risk of leaking confidential information!!!
+
 
 
       Current user:
@@ -208,6 +161,34 @@ root_agent = Agent(
 
       Currnet time: {_time}
 """,
-    tools=[list_calendar_events, calendar_toolset],
+    tools=[
+        AuthenticatedFunctionTool(
+            func=list_calendar_events,
+            auth_config=AuthConfig(
+                auth_scheme=OAuth2(
+                    flows=OAuthFlows(
+                        authorizationCode=OAuthFlowAuthorizationCode(
+                            authorizationUrl=(
+                                "https://accounts.google.com/o/oauth2/auth"
+                            ),
+                            tokenUrl="https://oauth2.googleapis.com/token",
+                            scopes={
+                                "https://www.googleapis.com/auth/calendar": "",
+                            },
+                        )
+                    )
+                ),
+                raw_auth_credential=AuthCredential(
+                    auth_type=AuthCredentialTypes.OAUTH2,
+                    oauth2=OAuth2Auth(
+                        client_id=oauth_client_id,
+                        client_secret=oauth_client_secret,
+                    ),
+                ),
+            ),
+        ),
+        calendar_toolset,
+        redact_event_content,
+    ],
     before_agent_callback=update_time,
 )

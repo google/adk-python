@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import logging
 import re
 
 from ..agents.readonly_context import ReadonlyContext
@@ -20,6 +23,8 @@ from ..sessions.state import State
 __all__ = [
     'inject_session_state',
 ]
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 async def inject_session_state(
@@ -34,12 +39,12 @@ async def inject_session_state(
   e.g.
   ```
   ...
-  from google.adk.utils import instructions_utils
+  from google.adk.utils.instructions_utils import inject_session_state
 
   async def build_instruction(
       readonly_context: ReadonlyContext,
   ) -> str:
-    return await instructions_utils.inject_session_state(
+    return await inject_session_state(
         'You can inject a state variable like {var_name} or an artifact '
         '{artifact.file_name} into the instruction template.',
         readonly_context,
@@ -89,16 +94,29 @@ async def inject_session_state(
           session_id=invocation_context.session.id,
           filename=var_name,
       )
-      if not var_name:
-        raise KeyError(f'Artifact {var_name} not found.')
+      if artifact is None:
+        if optional:
+          logger.debug(
+              'Artifact %s not found, replacing with empty string', var_name
+          )
+          return ''
+        else:
+          raise KeyError(f'Artifact {var_name} not found.')
       return str(artifact)
     else:
       if not _is_valid_state_name(var_name):
         return match.group()
       if var_name in invocation_context.session.state:
-        return str(invocation_context.session.state[var_name])
+        value = invocation_context.session.state[var_name]
+        if value is None:
+          return ''
+        return str(value)
       else:
         if optional:
+          logger.debug(
+              'Context variable %s not found, replacing with empty string',
+              var_name,
+          )
           return ''
         else:
           raise KeyError(f'Context variable not found: `{var_name}`.')

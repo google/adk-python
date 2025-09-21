@@ -95,7 +95,7 @@ def test_openapi_toolset_tool_existing(openapi_spec: Dict):
   assert tool.is_long_running is False
   assert tool.operation.operationId == "calendar.calendars.get"
   assert tool.operation.description == "Returns metadata for a calendar."
-  assert len(tool.operation.parameters) == 1
+  assert len(tool.operation.parameters) == 8
   assert tool.operation.parameters[0].name == "calendarId"
   assert tool.operation.parameters[0].in_ == ParameterInType.path
   assert tool.operation.parameters[0].required is True

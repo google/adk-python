@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.agents import LlmAgent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.langchain_tool import LangchainTool
-from langchain_community.tools import YouTubeSearchTool
+from langchain_community.tools.youtube.search import YouTubeSearchTool
 
 # Instantiate the tool
 langchain_yt_tool = YouTubeSearchTool()

@@ -1,0 +1,3 @@
+{
+  "contextFileName": "AGENTS.md"
+}

@@ -25,6 +25,21 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
 
   Runs a SQL query in BigQuery.
 
+1. `ask_data_insights`
+
+  Natural language-in, natural language-out tool that answers questions
+  about structured data in BigQuery. Provides a one-stop solution for generating
+  insights from data.
+
+  **Note**: This tool requires additional setup in your project. Please refer to
+  the official [Conversational Analytics API documentation](https://cloud.google.com/gemini/docs/conversational-analytics-api/overview)
+  for instructions.
+
+1. `forecast`
+
+  Perform time series forecasting using BigQuery's `AI.FORECAST` function,
+  leveraging the TimesFM 2.0 model.
+
 ## How to use
 
 Set up environment variables in your `.env` file for using
@@ -40,13 +55,28 @@ would set:
 ### With Application Default Credentials
 
 This mode is useful for quick development when the agent builder is the only
-user interacting with the agent. The tools are initialized with the default
-credentials present on the machine running the agent.
+user interacting with the agent. The tools are run with these credentials.
 
 1. Create application default credentials on the machine where the agent would
 be running by following https://cloud.google.com/docs/authentication/provide-credentials-adc.
 
-1. Set `RUN_WITH_ADC=True` in `agent.py` and run the agent
+1. Set `CREDENTIALS_TYPE=None` in `agent.py`
+
+1. Run the agent
+
+### With Service Account Keys
+
+This mode is useful for quick development when the agent builder wants to run
+the agent with service account credentials. The tools are run with these
+credentials.
+
+1. Create service account key by following https://cloud.google.com/iam/docs/service-account-creds#user-managed-keys.
+
+1. Set `CREDENTIALS_TYPE=AuthCredentialTypes.SERVICE_ACCOUNT` in `agent.py`
+
+1. Download the key file and replace `"service_account_key.json"` with the path
+
+1. Run the agent
 
 ### With Interactive OAuth
 
@@ -72,7 +102,7 @@ type.
   Note: don't create a separate .env, instead put it to the same .env file that
   stores your Vertex AI or Dev ML credentials
 
-1. Set `RUN_WITH_ADC=False` in `agent.py` and run the agent
+1. Set `CREDENTIALS_TYPE=AuthCredentialTypes.OAUTH2` in `agent.py` and run the agent
 
 ## Sample prompts
 

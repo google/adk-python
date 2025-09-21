@@ -14,12 +14,13 @@
 
 from unittest import mock
 
-from google.adk.auth import AuthCredential
-from google.adk.auth import AuthCredentialTypes
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.tools.application_integration_tool.integration_connector_tool import IntegrationConnectorTool
 from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
+from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import AuthPreparationResult
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
 from google.genai.types import Type
@@ -50,7 +51,9 @@ def mock_rest_api_tool():
       "required": ["user_id", "page_size", "filter", "connection_name"],
   }
   mock_tool._operation_parser = mock_parser
-  mock_tool.call.return_value = {"status": "success", "data": "mock_data"}
+  mock_tool.call = mock.AsyncMock(
+      return_value={"status": "success", "data": "mock_data"}
+  )
   return mock_tool
 
 
@@ -179,9 +182,6 @@ async def test_run_with_auth_async_none_token(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.ToolAuthHandler.from_tool_context"
   ) as mock_from_tool_context:
     mock_tool_auth_handler_instance = mock.MagicMock()
-    mock_tool_auth_handler_instance.prepare_auth_credentials.return_value.state = (
-        "done"
-    )
     # Simulate an AuthCredential that would cause _prepare_dynamic_euc to return None
     mock_auth_credential_without_token = AuthCredential(
         auth_type=AuthCredentialTypes.HTTP,
@@ -190,8 +190,12 @@ async def test_run_with_auth_async_none_token(
             credentials=HttpCredentials(token=None),  # Token is None
         ),
     )
-    mock_tool_auth_handler_instance.prepare_auth_credentials.return_value.auth_credential = (
-        mock_auth_credential_without_token
+    mock_tool_auth_handler_instance.prepare_auth_credentials = mock.AsyncMock(
+        return_value=(
+            AuthPreparationResult(
+                state="done", auth_credential=mock_auth_credential_without_token
+            )
+        )
     )
     mock_from_tool_context.return_value = mock_tool_auth_handler_instance
 
@@ -229,18 +233,18 @@ async def test_run_with_auth_async(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.ToolAuthHandler.from_tool_context"
   ) as mock_from_tool_context:
     mock_tool_auth_handler_instance = mock.MagicMock()
-    mock_tool_auth_handler_instance.prepare_auth_credentials.return_value.state = (
-        "done"
-    )
-    mock_tool_auth_handler_instance.prepare_auth_credentials.return_value.state = (
-        "done"
-    )
-    mock_tool_auth_handler_instance.prepare_auth_credentials.return_value.auth_credential = AuthCredential(
-        auth_type=AuthCredentialTypes.HTTP,
-        http=HttpAuth(
-            scheme="bearer",
-            credentials=HttpCredentials(token="mocked_token"),
-        ),
+
+    mock_tool_auth_handler_instance.prepare_auth_credentials = mock.AsyncMock(
+        return_value=AuthPreparationResult(
+            state="done",
+            auth_credential=AuthCredential(
+                auth_type=AuthCredentialTypes.HTTP,
+                http=HttpAuth(
+                    scheme="bearer",
+                    credentials=HttpCredentials(token="mocked_token"),
+                ),
+            ),
+        )
     )
     mock_from_tool_context.return_value = mock_tool_auth_handler_instance
     result = await integration_tool_with_auth.run_async(

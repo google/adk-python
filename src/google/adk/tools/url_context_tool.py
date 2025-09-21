@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from ..utils.model_name_utils import is_gemini_1_model
+from ..utils.model_name_utils import is_gemini_2_model
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -46,9 +48,9 @@ class UrlContextTool(BaseTool):
   ) -> None:
     llm_request.config = llm_request.config or types.GenerateContentConfig()
     llm_request.config.tools = llm_request.config.tools or []
-    if llm_request.model and 'gemini-1' in llm_request.model:
+    if is_gemini_1_model(llm_request.model):
       raise ValueError('Url context tool can not be used in Gemini 1.x.')
-    elif llm_request.model and 'gemini-2' in llm_request.model:
+    elif is_gemini_2_model(llm_request.model):
       llm_request.config.tools.append(
           types.Tool(url_context=types.UrlContext())
       )

@@ -20,18 +20,24 @@ from typing import List
 from typing import Optional
 from typing import TextIO
 from typing import Union
+import warnings
+
+from pydantic import model_validator
+from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
+from ...auth.auth_credential import AuthCredential
+from ...auth.auth_schemes import AuthScheme
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
+from ..tool_configs import BaseToolConfig
+from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
 from .mcp_session_manager import SseConnectionParams
-from .mcp_session_manager import SseServerParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
-from .mcp_session_manager import StreamableHTTPServerParams
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
@@ -54,35 +60,34 @@ from .mcp_tool import MCPTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-class MCPToolset(BaseToolset):
+class McpToolset(BaseToolset):
   """Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
 
   This toolset manages the connection to an MCP server and provides tools
   that can be used by an agent. It properly implements the BaseToolset
   interface for easy integration with the agent framework.
 
-  Usage:
-  ```python
-  toolset = MCPToolset(
-      connection_params=StdioServerParameters(
-          command='npx',
-          args=["-y", "@modelcontextprotocol/server-filesystem"],
-      ),
-      tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
-  )
+  Usage::
 
-  # Use in an agent
-  agent = LlmAgent(
-      model='gemini-2.0-flash',
-      name='enterprise_assistant',
-      instruction='Help user accessing their file systems',
-      tools=[toolset],
-  )
+    toolset = MCPToolset(
+        connection_params=StdioServerParameters(
+            command='npx',
+            args=["-y", "@modelcontextprotocol/server-filesystem"],
+        ),
+        tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
+    )
 
-  # Cleanup is handled automatically by the agent framework
-  # But you can also manually close if needed:
-  # await toolset.close()
-  ```
+    # Use in an agent
+    agent = LlmAgent(
+        model='gemini-2.0-flash',
+        name='enterprise_assistant',
+        instruction='Help user accessing their file systems',
+        tools=[toolset],
+    )
+
+    # Cleanup is handled automatically by the agent framework
+    # But you can also manually close if needed:
+    # await toolset.close()
   """
 
   def __init__(
@@ -96,22 +101,26 @@ class MCPToolset(BaseToolset):
       ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       errlog: TextIO = sys.stderr,
+      auth_scheme: Optional[AuthScheme] = None,
+      auth_credential: Optional[AuthCredential] = None,
   ):
     """Initializes the MCPToolset.
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
-        `StdioConnectionParams` for using local mcp server (e.g. using `npx` or
-        `python3`); or `SseConnectionParams` for a local/remote SSE server; or
-        `StreamableHTTPConnectionParams` for local/remote Streamable http
-        server. Note, `StdioServerParameters` is also supported for using local
-        mcp server (e.g. using `npx` or `python3` ), but it does not support
-        timeout, and we recommend to use `StdioConnectionParams` instead when
+        ``StdioConnectionParams`` for using local mcp server (e.g. using ``npx`` or
+        ``python3``); or ``SseConnectionParams`` for a local/remote SSE server; or
+        ``StreamableHTTPConnectionParams`` for local/remote Streamable http
+        server. Note, ``StdioServerParameters`` is also supported for using local
+        mcp server (e.g. using ``npx`` or ``python3`` ), but it does not support
+        timeout, and we recommend to use ``StdioConnectionParams`` instead when
         timeout is needed.
       tool_filter: Optional filter to select specific tools. Can be either: - A
         list of tool names to include - A ToolPredicate function for custom
         filtering logic
       errlog: TextIO stream for error logging.
+      auth_scheme: The auth scheme of the tool for tool calling
+      auth_credential: The auth credential of the tool for tool calling
     """
     super().__init__(tool_filter=tool_filter)
 
@@ -126,10 +135,10 @@ class MCPToolset(BaseToolset):
         connection_params=self._connection_params,
         errlog=self._errlog,
     )
+    self._auth_scheme = auth_scheme
+    self._auth_credential = auth_credential
 
-    self._session = None
-
-  @retry_on_closed_resource("_reinitialize_session")
+  @retry_on_closed_resource
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
@@ -144,11 +153,10 @@ class MCPToolset(BaseToolset):
         List[BaseTool]: A list of tools available under the specified context.
     """
     # Get session from session manager
-    if not self._session:
-      self._session = await self._mcp_session_manager.create_session()
+    session = await self._mcp_session_manager.create_session()
 
     # Fetch available tools from the MCP server
-    tools_response: ListToolsResult = await self._session.list_tools()
+    tools_response: ListToolsResult = await session.list_tools()
 
     # Apply filtering based on context and tool_filter
     tools = []
@@ -156,19 +164,13 @@ class MCPToolset(BaseToolset):
       mcp_tool = MCPTool(
           mcp_tool=tool,
           mcp_session_manager=self._mcp_session_manager,
+          auth_scheme=self._auth_scheme,
+          auth_credential=self._auth_credential,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
     return tools
-
-  async def _reinitialize_session(self):
-    """Reinitializes the session when connection is lost."""
-    # Close the old session and clear cache
-    await self._mcp_session_manager.close()
-    self._session = await self._mcp_session_manager.create_session()
-
-    # Tools will be reloaded on next get_tools call
 
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
@@ -182,7 +184,79 @@ class MCPToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
-    finally:
-      # Clear cached tools
-      self._tools_cache = None
-      self._tools_loaded = False
+
+  @override
+  @classmethod
+  def from_config(
+      cls: type[MCPToolset], config: ToolArgsConfig, config_abs_path: str
+  ) -> MCPToolset:
+    """Creates an MCPToolset from a configuration object."""
+    mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
+
+    if mcp_toolset_config.stdio_server_params:
+      connection_params = mcp_toolset_config.stdio_server_params
+    elif mcp_toolset_config.stdio_connection_params:
+      connection_params = mcp_toolset_config.stdio_connection_params
+    elif mcp_toolset_config.sse_connection_params:
+      connection_params = mcp_toolset_config.sse_connection_params
+    elif mcp_toolset_config.streamable_http_connection_params:
+      connection_params = mcp_toolset_config.streamable_http_connection_params
+    else:
+      raise ValueError("No connection params found in MCPToolsetConfig.")
+
+    return cls(
+        connection_params=connection_params,
+        tool_filter=mcp_toolset_config.tool_filter,
+        auth_scheme=mcp_toolset_config.auth_scheme,
+        auth_credential=mcp_toolset_config.auth_credential,
+    )
+
+
+class MCPToolset(McpToolset):
+  """Deprecated name, use `McpToolset` instead."""
+
+  def __init__(self, *args, **kwargs):
+    warnings.warn(
+        "MCPToolset class is deprecated, use `McpToolset` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    super().__init__(*args, **kwargs)
+
+
+class McpToolsetConfig(BaseToolConfig):
+  """The config for MCPToolset."""
+
+  stdio_server_params: Optional[StdioServerParameters] = None
+
+  stdio_connection_params: Optional[StdioConnectionParams] = None
+
+  sse_connection_params: Optional[SseConnectionParams] = None
+
+  streamable_http_connection_params: Optional[
+      StreamableHTTPConnectionParams
+  ] = None
+
+  tool_filter: Optional[List[str]] = None
+
+  auth_scheme: Optional[AuthScheme] = None
+
+  auth_credential: Optional[AuthCredential] = None
+
+  @model_validator(mode="after")
+  def _check_only_one_params_field(self):
+    param_fields = [
+        self.stdio_server_params,
+        self.stdio_connection_params,
+        self.sse_connection_params,
+        self.streamable_http_connection_params,
+    ]
+    populated_fields = [f for f in param_fields if f is not None]
+
+    if len(populated_fields) != 1:
+      raise ValueError(
+          "Exactly one of stdio_server_params, stdio_connection_params,"
+          " sse_connection_params, streamable_http_connection_params must be"
+          " set."
+      )
+    return self

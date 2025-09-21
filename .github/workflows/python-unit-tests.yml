@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
 
     steps:
     - name: Checkout code
@@ -36,18 +36,25 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: Install uv
-      run: curl -LsSf https://astral.sh/uv/install.sh | sh
+    - name: Install the latest version of uv
+      uses: astral-sh/setup-uv@v6
 
     - name: Install dependencies
       run: |
         uv venv .venv
         source .venv/bin/activate
-        uv sync --extra test --extra eval
+        uv sync --extra test --extra eval --extra a2a
 
     - name: Run unit tests with pytest
       run: |
         source .venv/bin/activate
-        pytest tests/unittests \
-          --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
-
+     
+        if [[ "${{ matrix.python-version }}" == "3.9" ]]; then
+          pytest tests/unittests \
+            --ignore=tests/unittests/a2a \
+            --ignore=tests/unittests/tools/mcp_tool \
+            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
+        else
+          pytest tests/unittests \
+            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
+        fi

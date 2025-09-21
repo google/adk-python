@@ -14,9 +14,9 @@
 
 from typing import Any
 
-from google.adk.agents import Agent
-from google.adk.tools import BaseTool
-from google.adk.tools import ToolContext
+from google.adk.agents.llm_agent import Agent
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel

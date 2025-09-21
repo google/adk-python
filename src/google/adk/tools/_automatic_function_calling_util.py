@@ -20,7 +20,6 @@ import typing
 from typing import Any
 from typing import Callable
 from typing import Dict
-from typing import Literal
 from typing import Optional
 from typing import Union
 
@@ -329,7 +328,43 @@ def from_function_with_options(
     return declaration
 
   return_annotation = inspect.signature(func).return_annotation
+
+  # Handle functions with no return annotation
   if return_annotation is inspect._empty:
+    # Functions with no return annotation can return any type
+    return_value = inspect.Parameter(
+        'return_value',
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        annotation=typing.Any,
+    )
+    declaration.response = (
+        _function_parameter_parse_util._parse_schema_from_parameter(
+            variant,
+            return_value,
+            func.__name__,
+        )
+    )
+    return declaration
+
+  # Handle functions that explicitly return None
+  if (
+      return_annotation is None
+      or return_annotation is type(None)
+      or (isinstance(return_annotation, str) and return_annotation == 'None')
+  ):
+    # Create a response schema for None/null return
+    return_value = inspect.Parameter(
+        'return_value',
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        annotation=None,
+    )
+    declaration.response = (
+        _function_parameter_parse_util._parse_schema_from_parameter(
+            variant,
+            return_value,
+            func.__name__,
+        )
+    )
     return declaration
 
   return_value = inspect.Parameter(

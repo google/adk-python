@@ -70,13 +70,12 @@ class RestApiTool(BaseTool):
   * Generates request params and body
   * Attaches auth credentials to API call.
 
-  Example:
-  ```
+  Example::
+
     # Each API operation in the spec will be turned into its own tool
     # Name of the tool is the operationId of that operation, in snake case
     operations = OperationGenerator().parse(openapi_spec_dict)
     tool = [RestApiTool.from_parsed_operation(o) for o in operations]
-  ```
   """
 
   def __init__(
@@ -92,13 +91,12 @@ class RestApiTool(BaseTool):
     """Initializes the RestApiTool with the given parameters.
 
     To generate RestApiTool from OpenAPI Specs, use OperationGenerator.
-    Example:
-    ```
+    Example::
+
       # Each API operation in the spec will be turned into its own tool
       # Name of the tool is the operationId of that operation, in snake case
       operations = OperationGenerator().parse(openapi_spec_dict)
       tool = [RestApiTool.from_parsed_operation(o) for o in operations]
-    ```
 
     Hint: Use google.adk.tools.openapi_tool.auth.auth_helpers to construct
     auth_scheme and auth_credential.
@@ -247,6 +245,7 @@ class RestApiTool(BaseTool):
     Example:
         self._prepare_request_params({"input_id": "test-id"})
     """
+
     method = self.endpoint.method.lower()
     if not method:
       raise ValueError("Operation method not found.")
@@ -255,6 +254,12 @@ class RestApiTool(BaseTool):
     query_params: Dict[str, Any] = {}
     header_params: Dict[str, Any] = {}
     cookie_params: Dict[str, Any] = {}
+
+    from ....version import __version__ as adk_version
+
+    # Set the custom User-Agent header
+    user_agent = f"google-adk/{adk_version} (tool: {self.name})"
+    header_params["User-Agent"] = user_agent
 
     params_map: Dict[str, ApiParameter] = {p.py_name: p for p in parameters}
 
@@ -345,9 +350,9 @@ class RestApiTool(BaseTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
   ) -> Dict[str, Any]:
-    return self.call(args=args, tool_context=tool_context)
+    return await self.call(args=args, tool_context=tool_context)
 
-  def call(
+  async def call(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
   ) -> Dict[str, Any]:
     """Executes the REST API call.
@@ -364,7 +369,7 @@ class RestApiTool(BaseTool):
     tool_auth_handler = ToolAuthHandler.from_tool_context(
         tool_context, self.auth_scheme, self.auth_credential
     )
-    auth_result = tool_auth_handler.prepare_auth_credentials()
+    auth_result = await tool_auth_handler.prepare_auth_credentials()
     auth_state, auth_scheme, auth_credential = (
         auth_result.state,
         auth_result.auth_scheme,

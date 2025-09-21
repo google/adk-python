@@ -14,6 +14,8 @@
 
 """Implementation of AutoFlow."""
 
+from __future__ import annotations
+
 from . import agent_transfer
 from .single_flow import SingleFlow
 
@@ -29,19 +31,12 @@ class AutoFlow(SingleFlow):
 
   For peer-agent transfers, it's only enabled when all below conditions are met:
 
-  - The parent agent is also of AutoFlow;
+  - The parent agent is also an LlmAgent.
   - `disallow_transfer_to_peer` option of this agent is False (default).
 
-  Depending on the target agent flow type, the transfer may be automatically
-  reversed. The condition is as below:
-
-  - If the flow type of the tranferee agent is also auto, transfee agent will
-    remain as the active agent. The transfee agent will respond to the user's
-    next message directly.
-  - If the flow type of the transfere agent is not auto, the active agent will
-    be reversed back to previous agent.
-
-  TODO: allow user to config auto-reverse function.
+  Depending on the target agent type, the transfer may be automatically
+  reversed. (see Runner._find_agent_to_run method for which agent will remain
+  active to handle next user message.)
   """
 
   def __init__(self):

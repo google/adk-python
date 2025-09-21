@@ -62,6 +62,7 @@ def test_generate_files_with_api_key(agent_folder: Path) -> None:
       str(agent_folder),
       google_api_key="dummy-key",
       model="gemini-2.0-flash-001",
+      type="code",
   )
 
   env_content = (agent_folder / ".env").read_text()
@@ -78,6 +79,7 @@ def test_generate_files_with_gcp(agent_folder: Path) -> None:
       google_cloud_project="proj",
       google_cloud_region="us-central1",
       model="gemini-2.0-flash-001",
+      type="code",
   )
 
   env_content = (agent_folder / ".env").read_text()
@@ -95,6 +97,7 @@ def test_generate_files_overwrite(agent_folder: Path) -> None:
       str(agent_folder),
       google_api_key="new-key",
       model="gemini-2.0-flash-001",
+      type="code",
   )
 
   assert "GOOGLE_API_KEY=new-key" in (agent_folder / ".env").read_text()
@@ -108,12 +111,16 @@ def test_generate_files_permission_error(
       os, "makedirs", lambda *a, **k: (_ for _ in ()).throw(PermissionError())
   )
   with pytest.raises(PermissionError):
-    cli_create._generate_files(str(agent_folder), model="gemini-2.0-flash-001")
+    cli_create._generate_files(
+        str(agent_folder), model="gemini-2.0-flash-001", type="code"
+    )
 
 
 def test_generate_files_no_params(agent_folder: Path) -> None:
   """No backend parameters → minimal .env file is generated."""
-  cli_create._generate_files(str(agent_folder), model="gemini-2.0-flash-001")
+  cli_create._generate_files(
+      str(agent_folder), model="gemini-2.0-flash-001", type="code"
+  )
 
   env_content = (agent_folder / ".env").read_text()
   for key in (
@@ -147,7 +154,51 @@ def test_run_cmd_overwrite_reject(
         google_api_key=None,
         google_cloud_project=None,
         google_cloud_region=None,
+        type="code",
     )
+
+
+def test_run_cmd_with_type_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """run_cmd with --type=config should generate YAML config file."""
+  agent_name = "test_agent"
+
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  monkeypatch.setattr(os.path, "exists", lambda _p: False)
+
+  cli_create.run_cmd(
+      agent_name,
+      model="gemini-2.0-flash-001",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="config",
+  )
+
+  agent_dir = tmp_path / agent_name
+  assert agent_dir.exists()
+
+  # Should create root_agent.yaml instead of agent.py
+  yaml_file = agent_dir / "root_agent.yaml"
+  assert yaml_file.exists()
+  assert not (agent_dir / "agent.py").exists()
+
+  # Check YAML content
+  yaml_content = yaml_file.read_text()
+  assert "name: root_agent" in yaml_content
+  assert "model: gemini-2.0-flash-001" in yaml_content
+  assert "description: A helpful assistant for user questions." in yaml_content
+
+  # Should create empty __init__.py
+  init_file = agent_dir / "__init__.py"
+  assert init_file.exists()
+  assert init_file.read_text().strip() == ""
+
+  # Should still create .env file
+  env_file = agent_dir / ".env"
+  assert env_file.exists()
+  assert "GOOGLE_API_KEY=test-key" in env_file.read_text()
 
 
 # Prompt helpers
@@ -174,7 +225,7 @@ def test_prompt_for_google_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_prompt_for_model_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
   """Selecting option '1' should return the default Gemini model string."""
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "1")
-  assert cli_create._prompt_for_model() == "gemini-2.0-flash-001"
+  assert cli_create._prompt_for_model() == "gemini-2.5-flash"
 
 
 def test_prompt_for_model_other(monkeypatch: pytest.MonkeyPatch) -> None:

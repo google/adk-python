@@ -24,6 +24,8 @@ from .readonly_context import ReadonlyContext
 if TYPE_CHECKING:
   from google.genai import types
 
+  from ..auth.auth_credential import AuthCredential
+  from ..auth.auth_tool import AuthConfig
   from ..events.event_actions import EventActions
   from ..sessions.state import State
   from .invocation_context import InvocationContext
@@ -105,3 +107,42 @@ class CallbackContext(ReadonlyContext):
     )
     self._event_actions.artifact_delta[filename] = version
     return version
+
+  async def list_artifacts(self) -> list[str]:
+    """Lists the filenames of the artifacts attached to the current session."""
+    if self._invocation_context.artifact_service is None:
+      raise ValueError("Artifact service is not initialized.")
+    return await self._invocation_context.artifact_service.list_artifact_keys(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        session_id=self._invocation_context.session.id,
+    )
+
+  async def save_credential(self, auth_config: AuthConfig) -> None:
+    """Saves a credential to the credential service.
+
+    Args:
+      auth_config: The authentication configuration containing the credential.
+    """
+    if self._invocation_context.credential_service is None:
+      raise ValueError("Credential service is not initialized.")
+    await self._invocation_context.credential_service.save_credential(
+        auth_config, self
+    )
+
+  async def load_credential(
+      self, auth_config: AuthConfig
+  ) -> Optional[AuthCredential]:
+    """Loads a credential from the credential service.
+
+    Args:
+      auth_config: The authentication configuration for the credential.
+
+    Returns:
+      The loaded credential, or None if not found.
+    """
+    if self._invocation_context.credential_service is None:
+      raise ValueError("Credential service is not initialized.")
+    return await self._invocation_context.credential_service.load_credential(
+        auth_config, self
+    )

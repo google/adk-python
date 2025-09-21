@@ -19,11 +19,11 @@ from typing import Union
 
 import graphviz
 
-from ..agents import BaseAgent
-from ..agents import LoopAgent
-from ..agents import ParallelAgent
-from ..agents import SequentialAgent
+from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import LlmAgent
+from ..agents.loop_agent import LoopAgent
+from ..agents.parallel_agent import ParallelAgent
+from ..agents.sequential_agent import SequentialAgent
 from ..tools.agent_tool import AgentTool
 from ..tools.base_tool import BaseTool
 from ..tools.function_tool import FunctionTool
@@ -284,7 +284,9 @@ async def build_graph(
 
 async def get_agent_graph(root_agent, highlights_pairs, image=False):
   print('build graph')
-  graph = graphviz.Digraph(graph_attr={'rankdir': 'LR', 'bgcolor': '#333537'})
+  graph = graphviz.Digraph(
+      graph_attr={'rankdir': 'LR', 'bgcolor': '#333537'}, strict=True
+  )
   await build_graph(graph, root_agent, highlights_pairs)
   if image:
     return graph.pipe(format='png')

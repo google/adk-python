@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import abc
 from typing import List
 
@@ -42,42 +44,35 @@ class BaseCodeExecutor(BaseModel):
   """
 
   optimize_data_file: bool = False
-  """
-  If true, extract and process data files from the model request
+  """If true, extract and process data files from the model request
   and attach them to the code executor.
-  Supported data file MimeTypes are [text/csv].
 
+  Supported data file MimeTypes are [text/csv].
   Default to False.
   """
 
   stateful: bool = False
-  """
-  Whether the code executor is stateful. Default to False.
-  """
+  """Whether the code executor is stateful. Default to False."""
 
   error_retry_attempts: int = 2
-  """
-  The number of attempts to retry on consecutive code execution errors. Default to 2.
-  """
+  """The number of attempts to retry on consecutive code execution errors. Default to 2."""
 
   code_block_delimiters: List[tuple[str, str]] = [
       ('```tool_code\n', '\n```'),
       ('```python\n', '\n```'),
   ]
-  """
-  The list of the enclosing delimiters to identify the code blocks.
-  For example, the delimiter ('```python\n', '\n```') can be
-  used to identify code blocks with the following format:
+  """The list of the enclosing delimiters to identify the code blocks.
 
-  ```python
-  print("hello")
-  ```
+  For example, the delimiter ('```python\\n', '\\n```') can be
+  used to identify code blocks with the following format::
+
+      ```python
+      print("hello")
+      ```
   """
 
   execution_result_delimiters: tuple[str, str] = ('```tool_output\n', '\n```')
-  """
-  The delimiters to format the code execution result.
-  """
+  """The delimiters to format the code execution result."""
 
   @abc.abstractmethod
   def execute_code(

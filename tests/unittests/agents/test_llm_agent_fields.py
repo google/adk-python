@@ -201,19 +201,18 @@ def test_output_schema_with_sub_agents_will_throw():
     )
 
 
-def test_output_schema_with_tools_will_throw():
+def test_output_schema_with_tools_will_not_throw():
   class Schema(BaseModel):
     pass
 
   def _a_tool():
     pass
 
-  with pytest.raises(ValueError):
-    _ = LlmAgent(
-        name='test_agent',
-        output_schema=Schema,
-        tools=[_a_tool],
-    )
+  LlmAgent(
+      name='test_agent',
+      output_schema=Schema,
+      tools=[_a_tool],
+  )
 
 
 def test_before_model_callback():

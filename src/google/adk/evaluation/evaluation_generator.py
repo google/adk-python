@@ -24,10 +24,13 @@ from pydantic import BaseModel
 from ..agents.llm_agent import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
+from ..memory.base_memory_service import BaseMemoryService
+from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
+from ..utils.context_utils import Aclosing
 from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -137,15 +140,19 @@ class EvaluationGenerator:
   async def _generate_inferences_from_root_agent(
       invocations: list[Invocation],
       root_agent: Agent,
-      reset_func: Any,
+      reset_func: Optional[Any] = None,
       initial_session: Optional[SessionInput] = None,
       session_id: Optional[str] = None,
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
+      memory_service: Optional[BaseMemoryService] = None,
   ) -> list[Invocation]:
     """Scrapes the root agent given the list of Invocations."""
     if not session_service:
       session_service = InMemorySessionService()
+
+    if not memory_service:
+      memory_service = InMemoryMemoryService()
 
     app_name = (
         initial_session.app_name if initial_session else "EvaluationGenerator"
@@ -163,46 +170,53 @@ class EvaluationGenerator:
     if not artifact_service:
       artifact_service = InMemoryArtifactService()
 
-    runner = Runner(
-        app_name=app_name,
-        agent=root_agent,
-        artifact_service=artifact_service,
-        session_service=session_service,
-    )
-
     # Reset agent state for each query
     if callable(reset_func):
       reset_func()
 
     response_invocations = []
 
-    for invocation in invocations:
-      final_response = None
-      user_content = invocation.user_content
-      tool_uses = []
-      invocation_id = ""
+    async with Runner(
+        app_name=app_name,
+        agent=root_agent,
+        artifact_service=artifact_service,
+        session_service=session_service,
+        memory_service=memory_service,
+    ) as runner:
+      for invocation in invocations:
+        final_response = None
+        user_content = invocation.user_content
+        tool_uses = []
+        invocation_id = ""
 
-      for event in runner.run(
-          user_id=user_id, session_id=session_id, new_message=user_content
-      ):
-        invocation_id = (
-            event.invocation_id if not invocation_id else invocation_id
+        async with Aclosing(
+            runner.run_async(
+                user_id=user_id, session_id=session_id, new_message=user_content
+            )
+        ) as agen:
+          async for event in agen:
+            invocation_id = (
+                event.invocation_id if not invocation_id else invocation_id
+            )
+
+            if (
+                event.is_final_response()
+                and event.content
+                and event.content.parts
+            ):
+              final_response = event.content
+            elif event.get_function_calls():
+              for call in event.get_function_calls():
+                tool_uses.append(call)
+
+        response_invocations.append(
+            Invocation(
+                invocation_id=invocation_id,
+                user_content=user_content,
+                final_response=final_response,
+                intermediate_data=IntermediateData(tool_uses=tool_uses),
+            )
         )
-
-        if event.is_final_response() and event.content and event.content.parts:
-          final_response = event.content
-        elif event.get_function_calls():
-          for call in event.get_function_calls():
-            tool_uses.append(call)
-
-      response_invocations.append(
-          Invocation(
-              invocation_id=invocation_id,
-              user_content=user_content,
-              final_response=final_response,
-              intermediate_data=IntermediateData(tool_uses=tool_uses),
-          )
-      )
 
     return response_invocations
 

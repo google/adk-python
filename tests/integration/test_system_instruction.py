@@ -17,8 +17,8 @@ import pytest
 # Skip until fixed.
 pytest.skip(allow_module_level=True)
 
-from google.adk.agents import InvocationContext
-from google.adk.sessions import Session
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.sessions.session import Session
 from google.genai import types
 
 from .fixture import context_variable_agent

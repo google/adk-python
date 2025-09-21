@@ -35,27 +35,25 @@ from .clients.apihub_client import APIHubClient
 class APIHubToolset(BaseToolset):
   """APIHubTool generates tools from a given API Hub resource.
 
-  Examples:
+  Examples::
 
-  ```
-  apihub_toolset = APIHubToolset(
-      apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
-      service_account_json="...",
-      tool_filter=lambda tool, ctx=None: tool.name in ('my_tool',
-      'my_other_tool')
-  )
+    apihub_toolset = APIHubToolset(
+        apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
+        service_account_json="...",
+        tool_filter=lambda tool, ctx=None: tool.name in ('my_tool',
+        'my_other_tool')
+    )
 
-  # Get all available tools
-  agent = LlmAgent(tools=apihub_toolset)
-
-  ```
+    # Get all available tools
+    agent = LlmAgent(tools=apihub_toolset)
 
   **apihub_resource_name** is the resource name from API Hub. It must include
-    API name, and can optionally include API version and spec name.
-    - If apihub_resource_name includes a spec resource name, the content of that
-      spec will be used for generating the tools.
-    - If apihub_resource_name includes only an api or a version name, the
-      first spec of the first version of that API will be used.
+  API name, and can optionally include API version and spec name.
+
+  - If apihub_resource_name includes a spec resource name, the content of that
+    spec will be used for generating the tools.
+  - If apihub_resource_name includes only an api or a version name, the
+    first spec of the first version of that API will be used.
   """
 
   def __init__(
@@ -78,44 +76,45 @@ class APIHubToolset(BaseToolset):
   ):
     """Initializes the APIHubTool with the given parameters.
 
-    Examples:
-    ```
-    apihub_toolset = APIHubToolset(
-        apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
-        service_account_json="...",
-    )
+    Examples::
 
-    # Get all available tools
-    agent = LlmAgent(tools=[apihub_toolset])
+      apihub_toolset = APIHubToolset(
+          apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
+          service_account_json="...",
+      )
 
-    apihub_toolset = APIHubToolset(
-        apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
-        service_account_json="...",
-        tool_filter = ['my_tool']
-    )
-    # Get a specific tool
-    agent = LlmAgent(tools=[
-        ...,
-        apihub_toolset,
-    ])
-    ```
+      # Get all available tools
+      agent = LlmAgent(tools=[apihub_toolset])
+
+      apihub_toolset = APIHubToolset(
+          apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
+          service_account_json="...",
+          tool_filter = ['my_tool']
+      )
+      # Get a specific tool
+      agent = LlmAgent(tools=[
+          ...,
+          apihub_toolset,
+      ])
 
     **apihub_resource_name** is the resource name from API Hub. It must include
     API name, and can optionally include API version and spec name.
+
     - If apihub_resource_name includes a spec resource name, the content of that
       spec will be used for generating the tools.
     - If apihub_resource_name includes only an api or a version name, the
       first spec of the first version of that API will be used.
 
     Example:
+
     * projects/xxx/locations/us-central1/apis/apiname/...
     * https://console.cloud.google.com/apigee/api-hub/apis/apiname?project=xxx
 
     Args:
         apihub_resource_name: The resource name of the API in API Hub.
-          Example: `projects/test-project/locations/us-central1/apis/test-api`.
-        access_token: Google Access token. Generate with gcloud cli `gcloud auth
-          auth print-access-token`. Used for fetching API Specs from API Hub.
+          Example: ``projects/test-project/locations/us-central1/apis/test-api``.
+        access_token: Google Access token. Generate with gcloud cli
+          ``gcloud auth auth print-access-token``. Used for fetching API Specs from API Hub.
         service_account_json: The service account config as a json string.
           Required if not using default service credential. It is used for
           creating the API Hub client and fetching the API Specs from API Hub.

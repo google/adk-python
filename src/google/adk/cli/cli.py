@@ -16,18 +16,24 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+from typing import Union
 
 import click
 from google.genai import types
 from pydantic import BaseModel
 
+from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import LlmAgent
-from ..artifacts import BaseArtifactService
-from ..artifacts import InMemoryArtifactService
+from ..apps.app import App
+from ..artifacts.base_artifact_service import BaseArtifactService
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
+from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
+from ..utils.context_utils import Aclosing
 from .utils import envs
 from .utils.agent_loader import AgentLoader
 
@@ -40,16 +46,22 @@ class InputFile(BaseModel):
 async def run_input_file(
     app_name: str,
     user_id: str,
-    root_agent: LlmAgent,
+    agent_or_app: Union[LlmAgent, App],
     artifact_service: BaseArtifactService,
     session_service: BaseSessionService,
+    credential_service: BaseCredentialService,
     input_path: str,
 ) -> Session:
+  app = (
+      agent_or_app
+      if isinstance(agent_or_app, App)
+      else App(name=app_name, root_agent=agent_or_app)
+  )
   runner = Runner(
-      app_name=app_name,
-      agent=root_agent,
+      app=app,
       artifact_service=artifact_service,
       session_service=session_service,
+      credential_service=credential_service,
   )
   with open(input_path, 'r', encoding='utf-8') as f:
     input_file = InputFile.model_validate_json(f.read())
@@ -61,26 +73,35 @@ async def run_input_file(
   for query in input_file.queries:
     click.echo(f'[user]: {query}')
     content = types.Content(role='user', parts=[types.Part(text=query)])
-    async for event in runner.run_async(
-        user_id=session.user_id, session_id=session.id, new_message=content
-    ):
-      if event.content and event.content.parts:
-        if text := ''.join(part.text or '' for part in event.content.parts):
-          click.echo(f'[{event.author}]: {text}')
+    async with Aclosing(
+        runner.run_async(
+            user_id=session.user_id, session_id=session.id, new_message=content
+        )
+    ) as agen:
+      async for event in agen:
+        if event.content and event.content.parts:
+          if text := ''.join(part.text or '' for part in event.content.parts):
+            click.echo(f'[{event.author}]: {text}')
   return session
 
 
 async def run_interactively(
-    root_agent: LlmAgent,
+    root_agent_or_app: Union[LlmAgent, App],
     artifact_service: BaseArtifactService,
     session: Session,
     session_service: BaseSessionService,
+    credential_service: BaseCredentialService,
 ) -> None:
+  app = (
+      root_agent_or_app
+      if isinstance(root_agent_or_app, App)
+      else App(name=session.app_name, root_agent=root_agent_or_app)
+  )
   runner = Runner(
-      app_name=session.app_name,
-      agent=root_agent,
+      app=app,
       artifact_service=artifact_service,
       session_service=session_service,
+      credential_service=credential_service,
   )
   while True:
     query = input('[user]: ')
@@ -88,14 +109,19 @@ async def run_interactively(
       continue
     if query == 'exit':
       break
-    async for event in runner.run_async(
-        user_id=session.user_id,
-        session_id=session.id,
-        new_message=types.Content(role='user', parts=[types.Part(text=query)]),
-    ):
-      if event.content and event.content.parts:
-        if text := ''.join(part.text or '' for part in event.content.parts):
-          click.echo(f'[{event.author}]: {text}')
+    async with Aclosing(
+        runner.run_async(
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=types.Content(
+                role='user', parts=[types.Part(text=query)]
+            ),
+        )
+    ) as agen:
+      async for event in agen:
+        if event.content and event.content.parts:
+          if text := ''.join(part.text or '' for part in event.content.parts):
+            click.echo(f'[{event.author}]: {text}')
   await runner.close()
 
 
@@ -125,6 +151,7 @@ async def run_cli(
 
   artifact_service = InMemoryArtifactService()
   session_service = InMemorySessionService()
+  credential_service = InMemoryCredentialService()
 
   user_id = 'test_user'
   session = await session_service.create_session(
@@ -138,9 +165,10 @@ async def run_cli(
     session = await run_input_file(
         app_name=agent_folder_name,
         user_id=user_id,
-        root_agent=root_agent,
+        agent_or_app=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
+        credential_service=credential_service,
         input_path=input_file,
     )
   elif saved_session_file:
@@ -163,6 +191,7 @@ async def run_cli(
         artifact_service,
         session,
         session_service,
+        credential_service,
     )
   else:
     click.echo(f'Running agent {root_agent.name}, type exit to exit.')
@@ -171,6 +200,7 @@ async def run_cli(
         artifact_service,
         session,
         session_service,
+        credential_service,
     )
 
   if save_session:

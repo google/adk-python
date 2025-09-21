@@ -17,28 +17,31 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
+import re
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Dict
 from typing import Generator
 from typing import Iterable
+from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Tuple
+from typing import TypedDict
 from typing import Union
+import warnings
 
 from google.genai import types
+import litellm
 from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
 from litellm import ChatCompletionDeveloperMessage
-from litellm import ChatCompletionImageUrlObject
 from litellm import ChatCompletionMessageToolCall
-from litellm import ChatCompletionTextObject
 from litellm import ChatCompletionToolMessage
 from litellm import ChatCompletionUserMessage
-from litellm import ChatCompletionVideoUrlObject
 from litellm import completion
 from litellm import CustomStreamWrapper
 from litellm import Function
@@ -53,10 +56,18 @@ from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
+# This will add functions to prompts if functions are provided.
+litellm.add_function_to_prompt = True
+
 logger = logging.getLogger("google_adk." + __name__)
 
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
+
+
+class ChatCompletionFileUrlObject(TypedDict):
+  file_data: str
+  format: str
 
 
 class FunctionChunk(BaseModel):
@@ -229,12 +240,10 @@ def _get_content(
     if part.text:
       if len(parts) == 1:
         return part.text
-      content_objects.append(
-          ChatCompletionTextObject(
-              type="text",
-              text=part.text,
-          )
-      )
+      content_objects.append({
+          "type": "text",
+          "text": part.text,
+      })
     elif (
         part.inline_data
         and part.inline_data.data
@@ -244,19 +253,32 @@ def _get_content(
       data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
 
       if part.inline_data.mime_type.startswith("image"):
-        content_objects.append(
-            ChatCompletionImageUrlObject(
-                type="image_url",
-                image_url=data_uri,
-            )
-        )
+        # Use full MIME type (e.g., "image/png") for providers that validate it
+        format_type = part.inline_data.mime_type
+        content_objects.append({
+            "type": "image_url",
+            "image_url": {"url": data_uri, "format": format_type},
+        })
       elif part.inline_data.mime_type.startswith("video"):
-        content_objects.append(
-            ChatCompletionVideoUrlObject(
-                type="video_url",
-                video_url=data_uri,
-            )
-        )
+        # Use full MIME type (e.g., "video/mp4") for providers that validate it
+        format_type = part.inline_data.mime_type
+        content_objects.append({
+            "type": "video_url",
+            "video_url": {"url": data_uri, "format": format_type},
+        })
+      elif part.inline_data.mime_type.startswith("audio"):
+        # Use full MIME type (e.g., "audio/mpeg") for providers that validate it
+        format_type = part.inline_data.mime_type
+        content_objects.append({
+            "type": "audio_url",
+            "audio_url": {"url": data_uri, "format": format_type},
+        })
+      elif part.inline_data.mime_type == "application/pdf":
+        format_type = part.inline_data.mime_type
+        content_objects.append({
+            "type": "file",
+            "file": {"file_data": data_uri, "format": format_type},
+        })
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
 
@@ -289,7 +311,9 @@ TYPE_LABELS = {
 
 
 def _schema_to_dict(schema: types.Schema) -> dict:
-  """Recursively converts a types.Schema to a dictionary.
+  """
+  Recursively converts a types.Schema to a pure-python dict
+  with all enum values written as lower-case strings.
 
   Args:
     schema: The schema to convert.
@@ -297,29 +321,40 @@ def _schema_to_dict(schema: types.Schema) -> dict:
   Returns:
     The dictionary representation of the schema.
   """
-
+  # Dump without json encoding so we still get Enum members
   schema_dict = schema.model_dump(exclude_none=True)
+
+  # ---- normalise this level ------------------------------------------------
   if "type" in schema_dict:
-    schema_dict["type"] = schema_dict["type"].lower()
+    # schema_dict["type"] can be an Enum or a str
+    t = schema_dict["type"]
+    schema_dict["type"] = (t.value if isinstance(t, types.Type) else t).lower()
+
+  # ---- recurse into `items` -----------------------------------------------
   if "items" in schema_dict:
-    if isinstance(schema_dict["items"], dict):
-      schema_dict["items"] = _schema_to_dict(
-          types.Schema.model_validate(schema_dict["items"])
-      )
-    elif isinstance(schema_dict["items"]["type"], types.Type):
-      schema_dict["items"]["type"] = TYPE_LABELS[
-          schema_dict["items"]["type"].value
-      ]
+    schema_dict["items"] = _schema_to_dict(
+        schema.items
+        if isinstance(schema.items, types.Schema)
+        else types.Schema.model_validate(schema_dict["items"])
+    )
+
+  # ---- recurse into `properties` ------------------------------------------
   if "properties" in schema_dict:
-    properties = {}
+    new_props = {}
     for key, value in schema_dict["properties"].items():
-      if isinstance(value, types.Schema):
-        properties[key] = _schema_to_dict(value)
+      # value is a dict → rebuild a Schema object and recurse
+      if isinstance(value, dict):
+        new_props[key] = _schema_to_dict(types.Schema.model_validate(value))
+      # value is already a Schema instance
+      elif isinstance(value, types.Schema):
+        new_props[key] = _schema_to_dict(value)
+      # plain dict without nested schemas
       else:
-        properties[key] = value
-        if "type" in properties[key]:
-          properties[key]["type"] = properties[key]["type"].lower()
-    schema_dict["properties"] = properties
+        new_props[key] = value
+        if "type" in new_props[key]:
+          new_props[key]["type"] = new_props[key]["type"].lower()
+    schema_dict["properties"] = new_props
+
   return schema_dict
 
 
@@ -345,7 +380,7 @@ def _function_declaration_to_tool_param(
     for key, value in function_declaration.parameters.properties.items():
       properties[key] = _schema_to_dict(value)
 
-  return {
+  tool_params = {
       "type": "function",
       "function": {
           "name": function_declaration.name,
@@ -356,6 +391,16 @@ def _function_declaration_to_tool_param(
           },
       },
   }
+
+  if (
+      function_declaration.parameters
+      and function_declaration.parameters.required
+  ):
+    tool_params["function"]["parameters"][
+        "required"
+    ] = function_declaration.parameters.required
+
+  return tool_params
 
 
 def _model_response_to_chunk(
@@ -392,10 +437,17 @@ def _model_response_to_chunk(
       for tool_call in message.get("tool_calls"):
         # aggregate tool_call
         if tool_call.type == "function":
+          func_name = tool_call.function.name
+          func_args = tool_call.function.arguments
+
+          # Ignore empty chunks that don't carry any information.
+          if not func_name and not func_args:
+            continue
+
           yield FunctionChunk(
               id=tool_call.id,
-              name=tool_call.function.name,
-              args=tool_call.function.arguments,
+              name=func_name,
+              args=func_args,
               index=tool_call.index,
           ), finish_reason
 
@@ -481,16 +533,22 @@ def _message_to_generate_content_response(
 
 def _get_completion_inputs(
     llm_request: LlmRequest,
-) -> tuple[Iterable[Message], Iterable[dict]]:
-  """Converts an LlmRequest to litellm inputs.
+) -> Tuple[
+    List[Message],
+    Optional[List[Dict]],
+    Optional[types.SchemaUnion],
+    Optional[Dict],
+]:
+  """Converts an LlmRequest to litellm inputs and extracts generation params.
 
   Args:
     llm_request: The LlmRequest to convert.
 
   Returns:
-    The litellm inputs (message list, tool dictionary and response format).
+    The litellm inputs (message list, tool dictionary, response format and generation params).
   """
-  messages = []
+  # 1. Construct messages
+  messages: List[Message] = []
   for content in llm_request.contents or []:
     message_param_or_list = _content_to_message_param(content)
     if isinstance(message_param_or_list, list):
@@ -507,7 +565,8 @@ def _get_completion_inputs(
         ),
     )
 
-  tools = None
+  # 2. Convert tool declarations
+  tools: Optional[List[Dict]] = None
   if (
       llm_request.config
       and llm_request.config.tools
@@ -518,12 +577,39 @@ def _get_completion_inputs(
         for tool in llm_request.config.tools[0].function_declarations
     ]
 
-  response_format = None
-
-  if llm_request.config.response_schema:
+  # 3. Handle response format
+  response_format: Optional[types.SchemaUnion] = None
+  if llm_request.config and llm_request.config.response_schema:
     response_format = llm_request.config.response_schema
 
-  return messages, tools, response_format
+  # 4. Extract generation parameters
+  generation_params: Optional[Dict] = None
+  if llm_request.config:
+    config_dict = llm_request.config.model_dump(exclude_none=True)
+    # Generate LiteLlm parameters here,
+    # Following https://docs.litellm.ai/docs/completion/input.
+    generation_params = {}
+    param_mapping = {
+        "max_output_tokens": "max_completion_tokens",
+        "stop_sequences": "stop",
+    }
+    for key in (
+        "temperature",
+        "max_output_tokens",
+        "top_p",
+        "top_k",
+        "stop_sequences",
+        "presence_penalty",
+        "frequency_penalty",
+    ):
+      if key in config_dict:
+        mapped_key = param_mapping.get(key, key)
+        generation_params[mapped_key] = config_dict[key]
+
+    if not generation_params:
+      generation_params = None
+
+  return messages, tools, response_format, generation_params
 
 
 def _build_function_declaration_log(
@@ -599,6 +685,67 @@ Functions:
 """
 
 
+def _is_litellm_gemini_model(model_string: str) -> bool:
+  """Check if the model is a Gemini model accessed via LiteLLM.
+
+  Args:
+    model_string: A LiteLLM model string (e.g., "gemini/gemini-2.5-pro" or
+      "vertex_ai/gemini-2.5-flash")
+
+  Returns:
+    True if it's a Gemini model accessed via LiteLLM, False otherwise
+  """
+  # Matches "gemini/gemini-*" (Google AI Studio) or "vertex_ai/gemini-*" (Vertex AI).
+  pattern = r"^(gemini|vertex_ai)/gemini-"
+  return bool(re.match(pattern, model_string))
+
+
+def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
+  """Extract the pure Gemini model name from a LiteLLM model string.
+
+  Args:
+    litellm_model: LiteLLM model string like "gemini/gemini-2.5-pro"
+
+  Returns:
+    Pure Gemini model name like "gemini-2.5-pro"
+  """
+  # Remove LiteLLM provider prefix
+  if "/" in litellm_model:
+    return litellm_model.split("/", 1)[1]
+  return litellm_model
+
+
+def _warn_gemini_via_litellm(model_string: str) -> None:
+  """Warn if Gemini is being used via LiteLLM.
+
+  This function logs a warning suggesting users use Gemini directly rather than
+  through LiteLLM for better performance and features.
+
+  Args:
+    model_string: The LiteLLM model string to check
+  """
+  if not _is_litellm_gemini_model(model_string):
+    return
+
+  # Check if warning should be suppressed via environment variable
+  if os.environ.get(
+      "ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", ""
+  ).strip().lower() in ("1", "true", "yes", "on"):
+    return
+
+  warnings.warn(
+      f"[GEMINI_VIA_LITELLM] {model_string}: You are using Gemini via LiteLLM."
+      " For better performance, reliability, and access to latest features,"
+      " consider using Gemini directly through ADK's native Gemini"
+      f" integration. Replace LiteLlm(model='{model_string}') with"
+      f" Gemini(model='{_extract_gemini_model_from_litellm(model_string)}')."
+      " Set ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS=true to suppress this"
+      " warning.",
+      category=UserWarning,
+      stacklevel=3,
+  )
+
+
 class LiteLlm(BaseLlm):
   """Wrapper around litellm.
 
@@ -635,6 +782,8 @@ class LiteLlm(BaseLlm):
       **kwargs: Additional arguments to pass to the litellm completion api.
     """
     super().__init__(model=model, **kwargs)
+    # Warn if using Gemini via LiteLLM
+    _warn_gemini_via_litellm(model)
     self._additional_args = kwargs
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
@@ -660,7 +809,13 @@ class LiteLlm(BaseLlm):
     self._maybe_append_user_content(llm_request)
     logger.debug(_build_request_log(llm_request))
 
-    messages, tools, response_format = _get_completion_inputs(llm_request)
+    messages, tools, response_format, generation_params = (
+        _get_completion_inputs(llm_request)
+    )
+
+    if "functions" in self._additional_args:
+      # LiteLLM does not support both tools and functions together.
+      tools = None
 
     completion_args = {
         "model": self.model,
@@ -669,6 +824,9 @@ class LiteLlm(BaseLlm):
         "response_format": response_format,
     }
     completion_args.update(self._additional_args)
+
+    if generation_params:
+      completion_args.update(generation_params)
 
     if stream:
       text = ""
@@ -679,7 +837,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
       fallback_index = 0
-      for part in self.llm_client.completion(**completion_args):
+      async for part in await self.llm_client.acompletion(**completion_args):
         for chunk, finish_reason in _model_response_to_chunk(part):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
@@ -739,11 +897,12 @@ class LiteLlm(BaseLlm):
                 _message_to_generate_content_response(
                     ChatCompletionAssistantMessage(
                         role="assistant",
-                        content="",
+                        content=text,
                         tool_calls=tool_calls,
                     )
                 )
             )
+            text = ""
             function_calls.clear()
           elif finish_reason == "stop" and text:
             aggregated_llm_response = _message_to_generate_content_response(
@@ -769,9 +928,9 @@ class LiteLlm(BaseLlm):
       response = await self.llm_client.acompletion(**completion_args)
       yield _model_response_to_generate_content_response(response)
 
-  @staticmethod
+  @classmethod
   @override
-  def supported_models() -> list[str]:
+  def supported_models(cls) -> list[str]:
     """Provides the list of supported models.
 
     LiteLlm supports all models supported by litellm. We do not keep track of

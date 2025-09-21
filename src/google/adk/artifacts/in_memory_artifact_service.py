@@ -11,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-"""An in-memory implementation of the artifact service."""
+from __future__ import annotations
 
 import logging
 from typing import Optional
@@ -28,7 +27,11 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 class InMemoryArtifactService(BaseArtifactService, BaseModel):
-  """An in-memory implementation of the artifact service."""
+  """An in-memory implementation of the artifact service.
+
+  It is not suitable for multi-threaded production environments. Use it for
+  testing and development only.
+  """
 
   artifacts: dict[str, list[types.Part]] = Field(default_factory=dict)
 

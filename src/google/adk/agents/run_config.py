@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from enum import Enum
 import logging
 import sys
@@ -20,6 +22,7 @@ from typing import Optional
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 from pydantic import field_validator
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -62,11 +65,33 @@ class RunConfig(BaseModel):
   streaming_mode: StreamingMode = StreamingMode.NONE
   """Streaming mode, None or StreamingMode.SSE or StreamingMode.BIDI."""
 
-  output_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
+  output_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+      default_factory=types.AudioTranscriptionConfig
+  )
   """Output transcription for live agents with audio response."""
 
-  input_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
+  input_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+      default_factory=types.AudioTranscriptionConfig
+  )
   """Input transcription for live agents with audio input from user."""
+
+  realtime_input_config: Optional[types.RealtimeInputConfig] = None
+  """Realtime input config for live agents with audio input from user."""
+
+  enable_affective_dialog: Optional[bool] = None
+  """If enabled, the model will detect emotions and adapt its responses accordingly."""
+
+  proactivity: Optional[types.ProactivityConfig] = None
+  """Configures the proactivity of the model. This allows the model to respond proactively to the input and to ignore irrelevant input."""
+
+  session_resumption: Optional[types.SessionResumptionConfig] = None
+  """Configures session resumption mechanism. Only support transparent session resumption mode now."""
+
+  save_live_audio: bool = False
+  """Saves live video and audio data to session and artifact service.
+
+  Right now, only audio is supported.
+  """
 
   max_llm_calls: int = 500
   """

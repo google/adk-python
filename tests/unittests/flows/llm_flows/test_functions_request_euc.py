@@ -18,14 +18,14 @@ from typing import Optional
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
-from google.adk.agents import Agent
-from google.adk.auth import AuthConfig
-from google.adk.auth import AuthCredential
-from google.adk.auth import AuthCredentialTypes
-from google.adk.auth import OAuth2Auth
+from google.adk.agents.llm_agent import Agent
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.flows.llm_flows import functions
-from google.adk.tools import AuthToolArguments
-from google.adk.tools import ToolContext
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 from ... import testing_utils
@@ -549,13 +549,13 @@ def test_function_get_auth_response_partial():
           ],
       ),
   )
-  # assert function_invoked == 4
+  assert function_invoked == 4
   assert len(mock_model.requests) == 4
   request = mock_model.requests[-1]
   content = request.contents[-1]
   parts = content.parts
   assert len(parts) == 2
   assert parts[0].function_response.name == 'call_external_api1'
-  assert parts[0].function_response.response == {'result': None}
+  assert parts[0].function_response.response == {'result': 1}
   assert parts[1].function_response.name == 'call_external_api2'
   assert parts[1].function_response.response == {'result': 2}

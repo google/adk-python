@@ -1,11 +1,18 @@
 # Toolbox Agent
 
-This agent is utilizing [mcp toolbox for database](https://googleapis.github.io/genai-toolbox/getting-started/introduction/) to assist end user based on the informaton stored in database.
-Follow below steps to run this agent
+This agent utilizes [MCP toolbox for database](https://googleapis.github.io/genai-toolbox/getting-started/introduction/) to assist end users based on information stored in a database.
 
-# Install toolbox
+Follow the steps below to run this agent.
 
-* Run below command:
+## Prerequisites
+
+Before starting, ensure you have Python installed on your system.
+
+## Installation Steps
+
+### 1. Install Toolbox
+
+Run the following command to download and install the toolbox:
 
 ```bash
 export OS="linux/amd64" # one of linux/amd64, darwin/arm64, darwin/amd64, or windows/amd64
@@ -13,20 +20,29 @@ curl -O https://storage.googleapis.com/genai-toolbox/v0.5.0/$OS/toolbox
 chmod +x toolbox
 ```
 
-# install SQLite
+### 2. Install SQLite
 
-* install sqlite from https://sqlite.org/
+Install SQLite from [https://sqlite.org/](https://sqlite.org/)
 
+### 3. Install Required Python Dependencies
 
-# Create DB (optional. The db instance is already attached in the folder)
+**Important**: The ADK's `ToolboxToolset` class requires the `toolbox-core` package, which is not automatically installed with the ADK. Install it using:
 
-* Run below command:
+```bash
+pip install toolbox-core
+```
+
+### 4. Create Database (Optional)
+
+*Note: A database instance is already included in the project folder. Skip this step if you want to use the existing database.*
+
+To create a new database:
 
 ```bash
 sqlite3 tool_box.db
 ```
 
-* Run below SQL:
+Run the following SQL commands to set up the hotels table:
 
 ```sql
 CREATE TABLE hotels(
@@ -38,7 +54,6 @@ CREATE TABLE hotels(
   checkout_date DATE    NOT NULL,
   booked        BIT     NOT NULL
 );
-
 
 INSERT INTO hotels(id, name, location, price_tier, checkin_date, checkout_date, booked)
 VALUES 
@@ -54,21 +69,27 @@ VALUES
   (10, 'Comfort Inn Bern', 'Bern', 'Midscale', '2024-04-04', '2024-04-16', 0);
 ```
 
-# create tools configurations
+### 5. Create Tools Configuration
 
-* Create a yaml file named "tools.yaml", see its contents in the agent folder.
+Create a YAML file named `tools.yaml`. See the contents in the agent folder for reference.
 
-# start toolbox server
+### 6. Start Toolbox Server
 
-* Run below commands in the agent folder
+Run the following command in the agent folder:
 
 ```bash
 toolbox --tools-file "tools.yaml"
 ```
 
-# start ADK web UI
+The server will start at `http://127.0.0.1:5000` by default.
 
-# send user query
+### 7. Start ADK Web UI
 
-* query 1: what can you do for me ?
-* query 2: could you let know the information about "Hilton Basel" hotel ? 
+Follow the ADK documentation to start the web user interface.
+
+## Testing the Agent
+
+Once everything is set up, you can test the agent with these sample queries:
+
+- **Query 1**: "What can you do for me?"
+- **Query 2**: "Could you let me know the information about 'Hilton Basel' hotel?"

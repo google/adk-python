@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.agents import Agent
-from google.adk.agents import SequentialAgent
+from typing import Optional
+
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.llm_agent import Agent
+from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.utils.variant_utils import GoogleLLMVariant
+from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
 from pytest import mark
@@ -71,6 +78,70 @@ def test_no_schema():
       ('root_agent', function_response_no_schema),
       ('root_agent', 'response2'),
   ]
+
+
+def test_use_plugins():
+  """The agent tool can use plugins from parent runner."""
+
+  class ModelResponseCapturePlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__('plugin')
+      self.model_responses = {}
+
+    async def after_model_callback(
+        self,
+        *,
+        callback_context: CallbackContext,
+        llm_response: LlmResponse,
+    ) -> Optional[LlmResponse]:
+      response_text = []
+      for part in llm_response.content.parts:
+        if not part.text:
+          continue
+        response_text.append(part.text)
+      if response_text:
+        if callback_context.agent_name not in self.model_responses:
+          self.model_responses[callback_context.agent_name] = []
+        self.model_responses[callback_context.agent_name].append(
+            ''.join(response_text)
+        )
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          'response1',
+          'response2',
+      ]
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=mock_model,
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  model_response_capture = ModelResponseCapturePlugin()
+  runner = testing_utils.InMemoryRunner(
+      root_agent, plugins=[model_response_capture]
+  )
+
+  assert testing_utils.simplify_events(runner.run('test1')) == [
+      ('root_agent', function_call_no_schema),
+      ('root_agent', function_response_no_schema),
+      ('root_agent', 'response2'),
+  ]
+
+  # should be able to capture response from both root and tool agent.
+  assert model_response_capture.model_responses == {
+      'tool_agent': ['response1'],
+      'root_agent': ['response2'],
+  }
 
 
 def test_update_state():
@@ -209,3 +280,147 @@ def test_custom_schema():
   # The second request is the tool agent request.
   assert mock_model.requests[1].config.response_schema == CustomOutput
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_response_schema_no_output_schema_vertex_ai():
+  """Test AgentTool with no output schema has string response schema for VERTEX_AI."""
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['test response']),
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.name == 'tool_agent'
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['request'].type == 'STRING'
+  # Should have string response schema for VERTEX_AI
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.STRING
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_response_schema_with_output_schema_vertex_ai():
+  """Test AgentTool with output schema has object response schema for VERTEX_AI."""
+
+  class CustomOutput(BaseModel):
+    custom_output: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      output_schema=CustomOutput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.name == 'tool_agent'
+  # Should have object response schema for VERTEX_AI when output_schema exists
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.OBJECT
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'GOOGLE_AI',  # Test GEMINI_API variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_response_schema_gemini_api():
+  """Test AgentTool with GEMINI_API variant has no response schema."""
+
+  class CustomOutput(BaseModel):
+    custom_output: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      output_schema=CustomOutput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.name == 'tool_agent'
+  # GEMINI_API should not have response schema
+  assert declaration.response is None
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_response_schema_with_input_schema_vertex_ai():
+  """Test AgentTool with input and output schemas for VERTEX_AI."""
+
+  class CustomInput(BaseModel):
+    custom_input: str
+
+  class CustomOutput(BaseModel):
+    custom_output: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      input_schema=CustomInput,
+      output_schema=CustomOutput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.name == 'tool_agent'
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['custom_input'].type == 'STRING'
+  # Should have object response schema for VERTEX_AI when output_schema exists
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.OBJECT
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_response_schema_with_input_schema_no_output_vertex_ai():
+  """Test AgentTool with input schema but no output schema for VERTEX_AI."""
+
+  class CustomInput(BaseModel):
+    custom_input: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      input_schema=CustomInput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.name == 'tool_agent'
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['custom_input'].type == 'STRING'
+  # Should have string response schema for VERTEX_AI when no output_schema
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.STRING

@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.flows.llm_flows import instructions
-from google.adk.models import LlmRequest
-from google.adk.sessions import Session
+from google.adk.models.llm_request import LlmRequest
+from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 

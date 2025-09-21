@@ -16,6 +16,7 @@
 
 import math
 
+from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
 import pytest
 
@@ -270,3 +271,13 @@ def test_are_tools_equal_one_empty_one_not():
   list_a = []
   list_b = [TOOL_GET_WEATHER]
   assert not TrajectoryEvaluator.are_tools_equal(list_a, list_b)
+
+
+def test_get_metric_info():
+  """Test get_metric_info function for tool trajectory avg metric."""
+  metric_info = TrajectoryEvaluator.get_metric_info()
+  assert (
+      metric_info.metric_name == PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value
+  )
+  assert metric_info.metric_value_info.interval.min_value == 0.0
+  assert metric_info.metric_value_info.interval.max_value == 1.0

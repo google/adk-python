@@ -15,18 +15,26 @@
 from __future__ import annotations
 
 from typing import Optional
+from typing import TYPE_CHECKING
 import uuid
 
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
+from pydantic import PrivateAttr
 
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
+from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils.feature_decorator import working_in_progress
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
+from .context_cache_config import ContextCacheConfig
 from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
 from .transcription_entry import TranscriptionEntry
@@ -34,6 +42,25 @@ from .transcription_entry import TranscriptionEntry
 
 class LlmCallsLimitExceededError(Exception):
   """Error thrown when the number of LLM calls exceed the limit."""
+
+
+class RealtimeCacheEntry(BaseModel):
+  """Store audio data chunks for caching before flushing."""
+
+  model_config = ConfigDict(
+      arbitrary_types_allowed=True,
+      extra="forbid",
+  )
+  """The pydantic model config."""
+
+  role: str
+  """The role that created this audio data, typically "user" or "model"."""
+
+  data: types.Blob
+  """The audio data chunk."""
+
+  timestamp: float
+  """Timestamp when the audio chunk was received."""
 
 
 class _InvocationCostManager(BaseModel):
@@ -115,6 +142,8 @@ class InvocationContext(BaseModel):
   artifact_service: Optional[BaseArtifactService] = None
   session_service: BaseSessionService
   memory_service: Optional[BaseMemoryService] = None
+  credential_service: Optional[BaseCredentialService] = None
+  context_cache_config: Optional[ContextCacheConfig] = None
 
   invocation_id: str
   """The id of this invocation context. Readonly."""
@@ -146,12 +175,26 @@ class InvocationContext(BaseModel):
   """The running streaming tools of this invocation."""
 
   transcription_cache: Optional[list[TranscriptionEntry]] = None
-  """Caches necessary, data audio or contents, that are needed by transcription."""
+  """Caches necessary data, audio or contents, that are needed by transcription."""
+
+  live_session_resumption_handle: Optional[str] = None
+  """The handle for live session resumption."""
+
+  input_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  """Caches input audio chunks before flushing to session and artifact services."""
+
+  output_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  """Caches output audio chunks before flushing to session and artifact services."""
 
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""
 
-  _invocation_cost_manager: _InvocationCostManager = _InvocationCostManager()
+  plugin_manager: PluginManager = Field(default_factory=PluginManager)
+  """The manager for keeping track of plugins in this invocation."""
+
+  _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
+      default_factory=_InvocationCostManager
+  )
   """A container to keep track of different kinds of costs incurred as a part
   of this invocation.
   """
@@ -176,6 +219,33 @@ class InvocationContext(BaseModel):
   @property
   def user_id(self) -> str:
     return self.session.user_id
+
+  @working_in_progress("incomplete feature, don't use yet")
+  def get_events(
+      self,
+      current_invocation: bool = False,
+      current_branch: bool = False,
+  ) -> list[Event]:
+    """Returns the events from the current session.
+
+    Args:
+      current_invocation: Whether to filter the events by the current
+        invocation.
+      current_branch: Whether to filter the events by the current branch.
+
+    Returns:
+      A list of events from the current session.
+    """
+    results = self.session.events
+    if current_invocation:
+      results = [
+          event
+          for event in results
+          if event.invocation_id == self.invocation_id
+      ]
+    if current_branch:
+      results = [event for event in results if event.branch == self.branch]
+    return results
 
 
 def new_invocation_context_id() -> str:

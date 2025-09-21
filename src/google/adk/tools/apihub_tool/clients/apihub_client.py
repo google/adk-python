@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from abc import ABC
 from abc import abstractmethod
 import base64
@@ -324,7 +326,9 @@ class APIHubClient(BaseAPIHubClient):
         raise ValueError(f"Invalid service account JSON: {e}") from e
     else:
       try:
-        credentials, _ = default_service_credential()
+        credentials, _ = default_service_credential(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
       except:
         credentials = None
 

@@ -14,6 +14,10 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
+from typing_extensions import deprecated
+
 from .auth_credential import AuthCredential
 from .auth_credential import BaseModelWithConfig
 from .auth_schemes import AuthScheme
@@ -27,12 +31,12 @@ class AuthConfig(BaseModelWithConfig):
 
   auth_scheme: AuthScheme
   """The auth scheme used to collect credentials"""
-  raw_auth_credential: AuthCredential = None
+  raw_auth_credential: Optional[AuthCredential] = None
   """The raw auth credential used to collect credentials. The raw auth
   credentials are used in some auth scheme that needs to exchange auth
   credentials. e.g. OAuth2 and OIDC. For other auth scheme, it could be None.
   """
-  exchanged_auth_credential: AuthCredential = None
+  exchanged_auth_credential: Optional[AuthCredential] = None
   """The exchanged auth credential used to collect credentials. adk and client
   will work together to fill it. For those auth scheme that doesn't need to
   exchange auth credentials, e.g. API key, service account etc. It's filled by
@@ -45,11 +49,23 @@ class AuthConfig(BaseModelWithConfig):
   this field to guide the user through the OAuth2 flow and fill auth response in
   this field"""
 
+  credential_key: Optional[str] = None
+  """A user specified key used to load and save this credential in a credential
+  service.
+  """
+
+  def __init__(self, **data):
+    super().__init__(**data)
+    if self.credential_key:
+      return
+    self.credential_key = self.get_credential_key()
+
+  @deprecated("This method is deprecated. Use credential_key instead.")
   def get_credential_key(self):
-    """Generates a hash key based on auth_scheme and raw_auth_credential. This
-    hash key can be used to store / retrieve exchanged_auth_credential in a
-    credentials store.
+    """Builds a hash key based on auth_scheme and raw_auth_credential used to
+    save / load this credential to / from a credentials service.
     """
+
     auth_scheme = self.auth_scheme
 
     if auth_scheme.model_extra:
@@ -62,7 +78,7 @@ class AuthConfig(BaseModelWithConfig):
     )
 
     auth_credential = self.raw_auth_credential
-    if auth_credential.model_extra:
+    if auth_credential and auth_credential.model_extra:
       auth_credential = auth_credential.model_copy(deep=True)
       auth_credential.model_extra.clear()
     credential_name = (

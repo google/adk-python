@@ -17,25 +17,34 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
+from typing import ClassVar
+from typing import Type
 
 from typing_extensions import override
 
-from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
+from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
+from .base_agent import BaseAgentConfig
+from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
+from .sequential_agent_config import SequentialAgentConfig
 
 
 class SequentialAgent(BaseAgent):
   """A shell agent that runs its sub-agents in sequence."""
+
+  config_type: ClassVar[Type[BaseAgentConfig]] = SequentialAgentConfig
+  """The config type for this agent."""
 
   @override
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     for sub_agent in self.sub_agents:
-      async for event in sub_agent.run_async(ctx):
-        yield event
+      async with Aclosing(sub_agent.run_async(ctx)) as agen:
+        async for event in agen:
+          yield event
 
   @override
   async def _run_live_impl(
@@ -57,10 +66,10 @@ class SequentialAgent(BaseAgent):
       # add tool
       def task_completed():
         """
-        Signals that the model has successfully completed the user's question
+        Signals that the agent has successfully completed the user's question
         or task.
         """
-        return "Task completion signaled."
+        return 'Task completion signaled.'
 
       if isinstance(sub_agent, LlmAgent):
         # Use function name to dedupe.
@@ -72,5 +81,6 @@ class SequentialAgent(BaseAgent):
           do not generate any text other than the function call."""
 
     for sub_agent in self.sub_agents:
-      async for event in sub_agent.run_live(ctx):
-        yield event
+      async with Aclosing(sub_agent.run_live(ctx)) as agen:
+        async for event in agen:
+          yield event

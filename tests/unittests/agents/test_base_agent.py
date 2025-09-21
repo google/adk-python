@@ -25,7 +25,9 @@ from unittest import mock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
+from google.adk.events.event import Event
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 import pytest
@@ -83,6 +85,35 @@ async def _async_after_agent_callback_append_agent_reply(
   )
 
 
+class MockPlugin(BasePlugin):
+  before_agent_text = 'before_agent_text from MockPlugin'
+  after_agent_text = 'after_agent_text from MockPlugin'
+
+  def __init__(self, name='mock_plugin'):
+    self.name = name
+    self.enable_before_agent_callback = False
+    self.enable_after_agent_callback = False
+
+  async def before_agent_callback(
+      self, *, agent: BaseAgent, callback_context: CallbackContext
+  ) -> Optional[types.Content]:
+    if not self.enable_before_agent_callback:
+      return None
+    return types.Content(parts=[types.Part(text=self.before_agent_text)])
+
+  async def after_agent_callback(
+      self, *, agent: BaseAgent, callback_context: CallbackContext
+  ) -> Optional[types.Content]:
+    if not self.enable_after_agent_callback:
+      return None
+    return types.Content(parts=[types.Part(text=self.after_agent_text)])
+
+
+@pytest.fixture
+def mock_plugin():
+  return MockPlugin()
+
+
 class _IncompleteAgent(BaseAgent):
   pass
 
@@ -113,7 +144,10 @@ class _TestingAgent(BaseAgent):
 
 
 async def _create_parent_invocation_context(
-    test_name: str, agent: BaseAgent, branch: Optional[str] = None
+    test_name: str,
+    agent: BaseAgent,
+    branch: Optional[str] = None,
+    plugins: list[BasePlugin] = [],
 ) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -125,6 +159,7 @@ async def _create_parent_invocation_context(
       agent=agent,
       session=session,
       session_service=session_service,
+      plugin_manager=PluginManager(plugins=plugins),
   )
 
 
@@ -188,6 +223,36 @@ async def test_run_async_before_agent_callback_noop(
   assert isinstance(kwargs['callback_context'], CallbackContext)
 
   spy_run_async_impl.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_run_async_before_agent_callback_use_plugin(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+    mock_plugin: MockPlugin,
+):
+  """Test that the before agent callback uses the plugin response if both plugin callback and canonical agent callbacks are present."""
+  # Arrange
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      before_agent_callback=_before_agent_callback_bypass_agent,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent, plugins=[mock_plugin]
+  )
+  mock_plugin.enable_before_agent_callback = True
+  spy_run_async_impl = mocker.spy(agent, BaseAgent._run_async_impl.__name__)
+  spy_before_agent_callback = mocker.spy(agent, 'before_agent_callback')
+
+  # Act
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  # Assert
+  spy_before_agent_callback.assert_not_called()
+  spy_run_async_impl.assert_not_called()
+
+  assert len(events) == 1
+  assert events[0].content.parts[0].text == MockPlugin.before_agent_text
 
 
 @pytest.mark.asyncio
@@ -487,6 +552,34 @@ async def test_after_agent_callbacks_chain(
 
 
 @pytest.mark.asyncio
+async def test_run_async_after_agent_callback_use_plugin(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+    mock_plugin: MockPlugin,
+):
+  # Arrange
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      after_agent_callback=_after_agent_callback_noop,
+  )
+  mock_plugin.enable_after_agent_callback = True
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent, plugins=[mock_plugin]
+  )
+  spy_after_agent_callback = mocker.spy(agent, 'after_agent_callback')
+
+  # Act
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  # Assert
+  spy_after_agent_callback.assert_not_called()
+  # The first event is regular model response, the second event is
+  # after_agent_callback response.
+  assert len(events) == 2
+  assert events[1].content.parts[0].text == mock_plugin.after_agent_text
+
+
+@pytest.mark.asyncio
 async def test_run_async_after_agent_callback_noop(
     request: pytest.FixtureRequest,
     mocker: pytest_mock.MockerFixture,
@@ -757,3 +850,7 @@ def test_set_parent_agent_for_sub_agent_twice(
         name=f'{request.function.__name__}_parent_2',
         sub_agents=[sub_agent],
     )
+
+
+if __name__ == '__main__':
+  pytest.main([__file__])

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -24,26 +25,37 @@ from typing import AsyncGenerator
 from typing import Optional
 import uuid
 
-from ..agents import Agent
+from typing_extensions import deprecated
+
+from ..agents.llm_agent import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..evaluation.base_eval_service import BaseEvalService
+from ..evaluation.base_eval_service import EvaluateConfig
+from ..evaluation.base_eval_service import EvaluateRequest
+from ..evaluation.base_eval_service import InferenceConfig
+from ..evaluation.base_eval_service import InferenceRequest
+from ..evaluation.base_eval_service import InferenceResult
+from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import EvalCase
+from ..evaluation.eval_config import BaseCriterion
+from ..evaluation.eval_config import EvalConfig
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
+from ..evaluation.eval_metrics import JudgeModelOptions
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.evaluator import EvalStatus
 from ..evaluation.evaluator import Evaluator
 from ..sessions.base_session_service import BaseSessionService
+from ..utils.context_utils import Aclosing
 
 logger = logging.getLogger("google_adk." + __name__)
 
 
-MISSING_EVAL_DEPENDENCIES_MESSAGE = (
-    "Eval module is not installed, please install via `pip install"
-    " google-adk[eval]`."
-)
 TOOL_TRAJECTORY_SCORE_KEY = "tool_trajectory_avg_score"
 RESPONSE_MATCH_SCORE_KEY = "response_match_score"
+SAFETY_V1_KEY = "safety_v1"
+FINAL_RESPONSE_MATCH_V2 = "final_response_match_v2"
 # This evaluation is not very stable.
 # This is always optional unless explicitly specified.
 RESPONSE_EVALUATION_SCORE_KEY = "response_evaluation_score"
@@ -53,6 +65,10 @@ DEFAULT_CRITERIA = {
     TOOL_TRAJECTORY_SCORE_KEY: 1.0,  # 1-point scale; 1.0 is perfect.
     RESPONSE_MATCH_SCORE_KEY: 0.8,
 }
+
+_DEFAULT_EVAL_CONFIG = EvalConfig(
+    criteria={"tool_trajectory_avg_score": 1.0, "response_match_score": 0.8}
+)
 
 
 def _import_from_path(module_name, file_path):
@@ -71,27 +87,48 @@ def _get_agent_module(agent_module_file_path: str):
 
 def get_evaluation_criteria_or_default(
     eval_config_file_path: str,
-) -> dict[str, float]:
-  """Returns evaluation criteria from the config file, if present.
+) -> EvalConfig:
+  """Returns EvalConfig read from the config file, if present.
 
   Otherwise a default one is returned.
   """
   if eval_config_file_path:
     with open(eval_config_file_path, "r", encoding="utf-8") as f:
-      config_data = json.load(f)
+      content = f.read()
+      return EvalConfig.model_validate_json(content)
 
-    if "criteria" in config_data and isinstance(config_data["criteria"], dict):
-      evaluation_criteria = config_data["criteria"]
-    else:
-      raise ValueError(
-          f"Invalid format for test_config.json at {eval_config_file_path}."
-          " Expected a 'criteria' dictionary."
-      )
-  else:
-    logger.info("No config file supplied. Using default criteria.")
-    evaluation_criteria = DEFAULT_CRITERIA
+  logger.info("No config file supplied. Using default criteria.")
+  return _DEFAULT_EVAL_CONFIG
 
-  return evaluation_criteria
+
+def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
+  """Returns a list of EvalMetrics mapped from the EvalConfig."""
+  eval_metric_list = []
+  if eval_config.criteria:
+    for metric_name, criterion in eval_config.criteria.items():
+      if isinstance(criterion, float):
+        eval_metric_list.append(
+            EvalMetric(
+                metric_name=metric_name,
+                threshold=criterion,
+                criterion=BaseCriterion(threshold=criterion),
+            )
+        )
+      elif isinstance(criterion, BaseCriterion):
+        eval_metric_list.append(
+            EvalMetric(
+                metric_name=metric_name,
+                threshold=criterion.threshold,
+                criterion=criterion,
+            )
+        )
+      else:
+        raise ValueError(
+            f"Unexpected criterion type. {type(criterion).__name__} not"
+            " supported."
+        )
+
+  return eval_metric_list
 
 
 def get_root_agent(agent_module_file_path: str) -> Agent:
@@ -109,26 +146,82 @@ def try_get_reset_func(agent_module_file_path: str) -> Any:
 
 
 def parse_and_get_evals_to_run(
-    eval_set_file_path: tuple[str],
+    evals_to_run_info: list[str],
 ) -> dict[str, list[str]]:
-  """Returns a dictionary of eval sets to evals that should be run."""
+  """Returns a dictionary of eval set info to evals that should be run.
+
+  Args:
+    evals_to_run_info: While the structure is quite simple, a list of string,
+      each string actually is formatted with the following convention:
+      <eval_set_file_path | eval_set_id>:[comma separated eval case ids]
+  """
   eval_set_to_evals = {}
-  for input_eval_set in eval_set_file_path:
+  for input_eval_set in evals_to_run_info:
     evals = []
     if ":" not in input_eval_set:
-      eval_set_file = input_eval_set
+      # We don't have any eval cases specified. This would be the case where the
+      # the user wants to run all eval cases in the eval set.
+      eval_set = input_eval_set
     else:
-      eval_set_file = input_eval_set.split(":")[0]
+      # There are eval cases that we need to parse. The user wants to run
+      # specific eval cases from the eval set.
+      eval_set = input_eval_set.split(":")[0]
       evals = input_eval_set.split(":")[1].split(",")
+      evals = [s for s in evals if s.strip()]
 
-    if eval_set_file not in eval_set_to_evals:
-      eval_set_to_evals[eval_set_file] = []
+    if eval_set not in eval_set_to_evals:
+      eval_set_to_evals[eval_set] = []
 
-    eval_set_to_evals[eval_set_file].extend(evals)
+    eval_set_to_evals[eval_set].extend(evals)
 
   return eval_set_to_evals
 
 
+async def _collect_inferences(
+    inference_requests: list[InferenceRequest],
+    eval_service: BaseEvalService,
+) -> list[InferenceResult]:
+  """Simple utility methods to collect inferences from an eval service.
+
+  The method is intentionally kept private to prevent general usage.
+  """
+  inference_results = []
+  for inference_request in inference_requests:
+    async with Aclosing(
+        eval_service.perform_inference(inference_request=inference_request)
+    ) as agen:
+      async for inference_result in agen:
+        inference_results.append(inference_result)
+  return inference_results
+
+
+async def _collect_eval_results(
+    inference_results: list[InferenceResult],
+    eval_service: BaseEvalService,
+    eval_metrics: list[EvalMetric],
+) -> list[EvalCaseResult]:
+  """Simple utility methods to collect eval results from an eval service.
+
+  The method is intentionally kept private to prevent general usage.
+  """
+  eval_results = []
+  evaluate_request = EvaluateRequest(
+      inference_results=inference_results,
+      evaluate_config=EvaluateConfig(eval_metrics=eval_metrics),
+  )
+  async with Aclosing(
+      eval_service.evaluate(evaluate_request=evaluate_request)
+  ) as agen:
+    async for eval_result in agen:
+      eval_results.append(eval_result)
+
+  return eval_results
+
+
+@deprecated(
+    "This method is deprecated and will be removed in fututre release. Please"
+    " use LocalEvalService to define your custom evals."
+)
 async def run_evals(
     eval_cases_by_eval_set_id: dict[str, list[EvalCase]],
     root_agent: Agent,
@@ -150,7 +243,7 @@ async def run_evals(
     artifact_service: The artifact service to use during inferencing.
   """
   try:
-    from ..evaluation.agent_evaluator import EvaluationGenerator
+    from ..evaluation.evaluation_generator import EvaluationGenerator
   except ModuleNotFoundError as e:
     raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
 
@@ -193,10 +286,16 @@ async def run_evals(
         for eval_metric in eval_metrics:
           metric_evaluator = _get_evaluator(eval_metric)
 
-          evaluation_result = metric_evaluator.evaluate_invocations(
-              actual_invocations=inference_result,
-              expected_invocations=eval_case.conversation,
-          )
+          if inspect.iscoroutinefunction(metric_evaluator.evaluate_invocations):
+            evaluation_result = await metric_evaluator.evaluate_invocations(
+                actual_invocations=inference_result,
+                expected_invocations=eval_case.conversation,
+            )
+          else:
+            evaluation_result = metric_evaluator.evaluate_invocations(
+                actual_invocations=inference_result,
+                expected_invocations=eval_case.conversation,
+            )
 
           overall_eval_metric_results.append(
               EvalMetricResult(
@@ -252,16 +351,19 @@ async def run_evals(
           result = "❌ Failed"
 
         print(f"Result: {result}\n")
-
+      except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
       except Exception:
         # Catching the general exception, so that we don't block other eval
         # cases.
-        logger.exception(f"Eval failed for `{eval_set_id}:{eval_name}`")
+        logger.exception("Eval failed for `%s:%s`", eval_set_id, eval_name)
 
 
 def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
   try:
+    from ..evaluation.final_response_match_v2 import FinalResponseMatchV2Evaluator
     from ..evaluation.response_evaluator import ResponseEvaluator
+    from ..evaluation.safety_evaluator import SafetyEvaluatorV1
     from ..evaluation.trajectory_evaluator import TrajectoryEvaluator
   except ModuleNotFoundError as e:
     raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
@@ -274,5 +376,10 @@ def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
     return ResponseEvaluator(
         threshold=eval_metric.threshold, metric_name=eval_metric.metric_name
     )
+  elif eval_metric.metric_name == SAFETY_V1_KEY:
+    return SafetyEvaluatorV1(eval_metric)
+  elif eval_metric.metric_name == FINAL_RESPONSE_MATCH_V2:
+    eval_metric.judge_model_options = JudgeModelOptions()
+    return FinalResponseMatchV2Evaluator(eval_metric)
 
   raise ValueError(f"Unsupported eval metric: {eval_metric}")

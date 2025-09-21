@@ -14,18 +14,15 @@
 
 from __future__ import annotations
 
-import inspect
-import os
-from typing import Any
 from typing import List
 from typing import Optional
-from typing import Type
 from typing import Union
 
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
-from ...auth import OpenIdConnectWithConfig
+from ...auth.auth_credential import ServiceAccount
+from ...auth.auth_schemes import OpenIdConnectWithConfig
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
 from ..openapi_tool import OpenAPIToolset
@@ -39,6 +36,15 @@ class GoogleApiToolset(BaseToolset):
   Usually one toolsets will contains tools only related to one Google API, e.g.
   Google Bigquery API toolset will contains tools only related to Google
   Bigquery API, like list dataset tool, list table tool etc.
+
+  Args:
+    api_name: The name of the Google API (e.g., "calendar", "gmail").
+    api_version: The version of the API (e.g., "v3", "v1").
+    client_id: OAuth2 client ID for authentication.
+    client_secret: OAuth2 client secret for authentication.
+    tool_filter: Optional filter to include only specific tools or use a predicate function.
+    service_account: Optional service account for authentication.
+    tool_name_prefix: Optional prefix to add to all tool names in this toolset.
   """
 
   def __init__(
@@ -48,23 +54,26 @@ class GoogleApiToolset(BaseToolset):
       client_id: Optional[str] = None,
       client_secret: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      service_account: Optional[ServiceAccount] = None,
+      tool_name_prefix: Optional[str] = None,
   ):
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self.api_name = api_name
     self.api_version = api_version
     self._client_id = client_id
     self._client_secret = client_secret
+    self._service_account = service_account
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
-    self.tool_filter = tool_filter
 
   @override
   async def get_tools(
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> List[GoogleApiTool]:
     """Get all tools in the toolset."""
-    tools = []
-
     return [
-        GoogleApiTool(tool, self._client_id, self._client_secret)
+        GoogleApiTool(
+            tool, self._client_id, self._client_secret, self._service_account
+        )
         for tool in await self._openapi_toolset.get_tools(readonly_context)
         if self._is_tool_selected(tool, readonly_context)
     ]
@@ -105,6 +114,9 @@ class GoogleApiToolset(BaseToolset):
   def configure_auth(self, client_id: str, client_secret: str):
     self._client_id = client_id
     self._client_secret = client_secret
+
+  def configure_sa_auth(self, service_account: ServiceAccount):
+    self._service_account = service_account
 
   @override
   async def close(self):

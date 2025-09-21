@@ -16,7 +16,7 @@ from typing import List
 from typing import Union
 
 from google.adk import Agent
-from google.adk.tools import ToolContext
+from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel
 
 
