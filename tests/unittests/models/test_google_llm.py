@@ -19,6 +19,8 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk import version as adk_version
+from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_TAG
@@ -81,6 +83,37 @@ def llm_request():
           response_modalities=[types.Modality.TEXT],
           system_instruction="You are a helpful assistant",
       ),
+  )
+
+
+@pytest.fixture
+def cache_metadata():
+  import time
+
+  return CacheMetadata(
+      cache_name="projects/test/locations/us-central1/cachedContents/test123",
+      expire_time=time.time() + 3600,
+      fingerprint="test_fingerprint",
+      invocations_used=2,
+      cached_contents_count=3,
+      created_at=time.time() - 600,
+  )
+
+
+@pytest.fixture
+def llm_request_with_cache(cache_metadata):
+  return LlmRequest(
+      model="gemini-1.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.1,
+          response_modalities=[types.Modality.TEXT],
+          system_instruction="You are a helpful assistant",
+      ),
+      cache_config=ContextCacheConfig(
+          cache_intervals=10, ttl_seconds=3600, min_tokens=100
+      ),
+      cache_metadata=cache_metadata,
   )
 
 
@@ -1600,3 +1633,96 @@ async def test_adapt_computer_use_tool_no_wait():
   # Verify tools_dict is unchanged
   assert llm_request.tools_dict == original_tools_dict
   assert "wait_5_seconds" not in llm_request.tools_dict
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_cache_metadata_integration(
+    gemini_llm, llm_request_with_cache, cache_metadata
+):
+  """Test integration between Google LLM and cache manager with proper parameter order.
+
+  This test specifically validates that the cache manager's populate_cache_metadata_in_response
+  method is called with the correct parameter order: (llm_response, cache_metadata).
+
+  This test would have caught the parameter order bug where cache_metadata and llm_response
+  were passed in the wrong order, causing 'CacheMetadata' object has no attribute 'usage_metadata' errors.
+  """
+
+  # Create a mock response with usage metadata including cached tokens
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=Content(
+                  role="model",
+                  parts=[Part.from_text(text="Hello, how can I help you?")],
+              ),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ],
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=1500,
+          candidates_token_count=150,
+          cached_content_token_count=800,  # This is the key field that was always 0 due to the bug
+          total_token_count=1650,
+      ),
+  )
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    # Create a mock coroutine that returns the generate_content_response
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    # Mock the cache manager module to verify correct method call
+    with mock.patch(
+        "google.adk.models.gemini_context_cache_manager.GeminiContextCacheManager"
+    ) as MockCacheManagerClass:
+      mock_cache_manager = MockCacheManagerClass.return_value
+      # Configure cache manager to handle context caching
+      mock_cache_manager.handle_context_caching = AsyncMock(
+          return_value=cache_metadata
+      )
+
+      responses = [
+          resp
+          async for resp in gemini_llm.generate_content_async(
+              llm_request_with_cache, stream=False
+          )
+      ]
+
+      # Verify the response was processed
+      assert len(responses) == 1
+      response = responses[0]
+      assert isinstance(response, LlmResponse)
+      assert response.content.parts[0].text == "Hello, how can I help you?"
+
+      # CRITICAL TEST: Verify populate_cache_metadata_in_response was called with correct parameter order
+      mock_cache_manager.populate_cache_metadata_in_response.assert_called_once()
+      call_args = (
+          mock_cache_manager.populate_cache_metadata_in_response.call_args
+      )
+
+      # The first argument should be the LlmResponse (not CacheMetadata)
+      first_arg = call_args[0][0]  # First positional argument
+      second_arg = call_args[0][1]  # Second positional argument
+
+      # Verify correct parameter order: (llm_response, cache_metadata)
+      assert isinstance(first_arg, LlmResponse), (
+          f"First parameter should be LlmResponse, got {type(first_arg)}. "
+          "This indicates parameters are in wrong order."
+      )
+      assert isinstance(second_arg, CacheMetadata), (
+          f"Second parameter should be CacheMetadata, got {type(second_arg)}. "
+          "This indicates parameters are in wrong order."
+      )
+
+      # Verify the LlmResponse has the expected usage metadata
+      assert first_arg.usage_metadata is not None
+      assert first_arg.usage_metadata.cached_content_token_count == 800
+      assert first_arg.usage_metadata.prompt_token_count == 1500
+      assert first_arg.usage_metadata.candidates_token_count == 150
+
+      # Verify cache metadata is preserved
+      assert second_arg.cache_name == cache_metadata.cache_name
+      assert second_arg.invocations_used == cache_metadata.invocations_used
