@@ -139,7 +139,7 @@ def _generate_sql_for_knn(
         distance_type, ann=False
     )
     embedding_parameter = f"@{_GOOGLESQL_PARAMETER_QUERY_EMBEDDING}"
-  columns += [f"""{distance_function}(
+  columns = columns + [f"""{distance_function}(
       {embedding_column_to_search},
       {embedding_parameter}) AS {_DISTANCE_ALIAS}
   """]
