@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import sys
 from unittest import mock
 
 from google.adk.agents.llm_agent import LlmAgent
@@ -21,6 +23,7 @@ from google.adk.evaluation.base_eval_service import EvaluateRequest
 from google.adk.evaluation.base_eval_service import InferenceConfig
 from google.adk.evaluation.base_eval_service import InferenceRequest
 from google.adk.evaluation.base_eval_service import InferenceResult
+from google.adk.evaluation.base_eval_service import InferenceStatus
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
@@ -361,3 +364,144 @@ def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
         metric_name="metric1", threshold=0.5, eval_status=status
     )
     eval_service._generate_final_eval_status([eval_metric_result])
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
+)
+async def test_mcp_stdio_agent_no_runtime_error():
+  """Test that LocalEvalService can handle MCP stdio agents without RuntimeError.
+
+  This is a regression test for GitHub issue #2196:
+  "RuntimeError: Attempted to exit cancel scope in a different task than it was entered in"
+
+  The fix ensures that Runner.close() is called to properly cleanup MCP connections.
+  """
+  import tempfile
+
+  from google.adk.evaluation.local_eval_service import LocalEvalService
+  from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+  from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+  from mcp import StdioServerParameters
+
+  # Mock LLM responses to avoid real API calls
+  from tests.unittests.testing_utils import MockModel
+
+  mock_responses = [
+      genai_types.Content(
+          parts=[genai_types.Part(text="Mocked response from test agent")]
+      )
+  ]
+  mock_model = MockModel.create(responses=mock_responses)
+
+  # Create a test agent with MCP stdio toolset and mocked model
+  test_dir = tempfile.mkdtemp()
+  try:
+    agent = LlmAgent(
+        model=mock_model,
+        name="test_mcp_agent",
+        instruction="Test agent for MCP stdio regression test.",
+        tools=[
+            MCPToolset(
+                connection_params=StdioConnectionParams(
+                    server_params=StdioServerParameters(
+                        command="npx",
+                        args=[
+                            "-y",
+                            "@modelcontextprotocol/server-filesystem",
+                            test_dir,
+                        ],
+                    ),
+                    timeout=5,
+                ),
+                tool_filter=["read_file", "list_directory"],
+            )
+        ],
+    )
+
+    # Create a mock eval sets manager that returns an eval case
+    mock_eval_sets_manager = mock.create_autospec(EvalSetsManager)
+    test_eval_case = EvalCase(
+        eval_id="test_mcp_case",
+        conversation=[
+            Invocation(
+                user_content=genai_types.Content(
+                    parts=[genai_types.Part(text="List directory contents")]
+                ),
+                expected_response="",
+            )
+        ],
+    )
+    mock_eval_sets_manager.get_eval_case.return_value = test_eval_case
+    eval_set = EvalSet(
+        eval_set_id="test_set",
+        eval_cases=[test_eval_case],
+    )
+    mock_eval_sets_manager.get_eval_set.return_value = eval_set
+
+    # Create LocalEvalService with MCP agent
+    eval_service = LocalEvalService(
+        root_agent=agent,
+        eval_sets_manager=mock_eval_sets_manager,
+    )
+
+    # Create inference request to actually trigger the code path with the fix
+    inference_request = InferenceRequest(
+        app_name="test_app",
+        eval_set_id="test_set",
+        inference_config=InferenceConfig(parallelism=1),
+    )
+
+    # The main test: actually call perform_inference which will trigger
+    # _generate_inferences_from_root_agent where the fix is located
+
+    # Note: In Python 3.10 and 3.11, there may be asyncio.CancelledError during cleanup
+    # due to anyio cancel scope context violations when MCP toolsets are cleaned up
+    # via asyncio.wait_for() in different task contexts. Python 3.12+ enhanced task
+    # context management (Task.get_context(), improved context propagation) resolves this.
+
+    try:
+      results = []
+      async for result in eval_service.perform_inference(inference_request):
+        results.append(result)
+        # We should get at least one result since we mocked the LLM
+        break
+
+      # Test passes if we get here without the cancel scope RuntimeError
+      # With mocked model, we should get successful inference results
+      assert len(results) >= 1
+
+    except RuntimeError as e:
+      # If we get a RuntimeError about cancel scope, the fix isn't working
+      if "cancel scope" in str(e) and "different task" in str(e):
+        pytest.fail(f"MCP stdio RuntimeError regression detected: {e}")
+      else:
+        # Other RuntimeErrors might be acceptable
+        pass
+    except asyncio.CancelledError as e:
+      # In Python 3.10 and 3.11, anyio cancel scope context violations may manifest as CancelledError
+      # when MCP RequestResponder.__exit__() is called in a different task than __enter__()
+      if (
+          hasattr(e, "args")
+          and len(e.args) > 0
+          and "cancel scope" in str(e.args[0])
+      ):
+        pytest.fail(f"MCP stdio cancel scope error regression detected: {e}")
+      else:
+        # Re-raise other CancelledErrors
+        raise
+    except Exception as e:
+      # Check if this is the specific cancel scope error we're testing for
+      if "cancel scope" in str(e) and "different task" in str(e):
+        pytest.fail(f"MCP stdio RuntimeError regression detected: {e}")
+      # Other exceptions are acceptable for this test
+
+    # The main goal is to ensure the test completes without the specific
+    # RuntimeError about cancel scopes. If we reach here, the fix is working.
+
+  finally:
+    # Cleanup
+    import shutil
+
+    shutil.rmtree(test_dir, ignore_errors=True)

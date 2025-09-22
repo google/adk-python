@@ -22,6 +22,8 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from .cache_metadata import CacheMetadata
+
 
 class LlmResponse(BaseModel):
   """LLM response class that provides the first candidate response from the
@@ -116,6 +118,13 @@ class LlmResponse(BaseModel):
 
   logprobs_result: Optional[types.LogprobsResult] = None
   """Detailed log probabilities for chosen and top candidate tokens."""
+
+  cache_metadata: Optional[CacheMetadata] = None
+  """Context cache metadata if caching was used for this response.
+
+  Contains cache identification, usage tracking, and lifecycle information.
+  This field is automatically populated when context caching is enabled.
+  """
 
   @staticmethod
   def create(

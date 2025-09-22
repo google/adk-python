@@ -156,6 +156,194 @@ def test_append_tools_consolidates_declarations_in_single_tool():
   assert 'third_tool' in request.tools_dict
 
 
+def test_append_instructions_with_string_list():
+  """Test that append_instructions works with list of strings (existing behavior)."""
+  request = LlmRequest()
+
+  # Initially system_instruction should be None
+  assert request.config.system_instruction is None
+
+  # Append first set of instructions
+  request.append_instructions(['First instruction', 'Second instruction'])
+
+  # Should be joined with double newlines
+  expected = 'First instruction\n\nSecond instruction'
+  assert request.config.system_instruction == expected
+  assert len(request.contents) == 0
+
+
+def test_append_instructions_with_string_list_multiple_calls():
+  """Test multiple calls to append_instructions with string lists."""
+  request = LlmRequest()
+
+  # First call
+  request.append_instructions(['First instruction'])
+  assert request.config.system_instruction == 'First instruction'
+
+  # Second call should append with double newlines
+  request.append_instructions(['Second instruction', 'Third instruction'])
+  expected = 'First instruction\n\nSecond instruction\n\nThird instruction'
+  assert request.config.system_instruction == expected
+
+
+def test_append_instructions_with_content():
+  """Test that append_instructions works with types.Content (new behavior)."""
+  request = LlmRequest()
+
+  # Create a Content object
+  content = types.Content(
+      role='user', parts=[types.Part(text='This is content-based instruction')]
+  )
+
+  # Append content
+  request.append_instructions(content)
+
+  # Should be set as system_instruction
+  assert len(request.contents) == 0
+  assert request.config.system_instruction == content
+
+
+def test_append_instructions_with_content_multiple_calls():
+  """Test multiple calls to append_instructions with Content objects."""
+  request = LlmRequest()
+
+  # Add some existing content first
+  existing_content = types.Content(
+      role='user', parts=[types.Part(text='Existing content')]
+  )
+  request.contents.append(existing_content)
+
+  # First Content instruction
+  content1 = types.Content(
+      role='user', parts=[types.Part(text='First instruction')]
+  )
+  request.append_instructions(content1)
+
+  # Should be set as system_instruction, existing content unchanged
+  assert len(request.contents) == 1
+  assert request.contents[0] == existing_content
+  assert request.config.system_instruction == content1
+
+  # Second Content instruction
+  content2 = types.Content(
+      role='user', parts=[types.Part(text='Second instruction')]
+  )
+  request.append_instructions(content2)
+
+  # Second Content should be merged with first in system_instruction
+  assert len(request.contents) == 1
+  assert request.contents[0] == existing_content
+  assert isinstance(request.config.system_instruction, types.Content)
+  assert len(request.config.system_instruction.parts) == 2
+  assert request.config.system_instruction.parts[0].text == 'First instruction'
+  assert request.config.system_instruction.parts[1].text == 'Second instruction'
+
+
+def test_append_instructions_with_content_multipart():
+  """Test append_instructions with Content containing multiple parts."""
+  request = LlmRequest()
+
+  # Create Content with multiple parts (text and potentially files)
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(text='Text instruction'),
+          types.Part(text='Additional text part'),
+      ],
+  )
+
+  request.append_instructions(content)
+
+  assert len(request.contents) == 0
+  assert request.config.system_instruction == content
+  assert len(request.config.system_instruction.parts) == 2
+  assert request.config.system_instruction.parts[0].text == 'Text instruction'
+  assert (
+      request.config.system_instruction.parts[1].text == 'Additional text part'
+  )
+
+
+def test_append_instructions_mixed_string_and_content():
+  """Test mixing string list and Content instructions."""
+  request = LlmRequest()
+
+  # First add string instructions
+  request.append_instructions(['String instruction'])
+  assert request.config.system_instruction == 'String instruction'
+
+  # Then add Content instruction
+  content = types.Content(
+      role='user', parts=[types.Part(text='Content instruction')]
+  )
+  request.append_instructions(content)
+
+  # String and Content should be merged in system_instruction
+  assert len(request.contents) == 0
+  assert isinstance(request.config.system_instruction, types.Content)
+  assert len(request.config.system_instruction.parts) == 2
+  assert request.config.system_instruction.parts[0].text == 'String instruction'
+  assert (
+      request.config.system_instruction.parts[1].text == 'Content instruction'
+  )
+
+
+def test_append_instructions_empty_string_list():
+  """Test append_instructions with empty list of strings."""
+  request = LlmRequest()
+
+  # Empty list should not modify anything
+  request.append_instructions([])
+
+  assert request.config.system_instruction is None
+  assert len(request.contents) == 0
+
+
+def test_append_instructions_invalid_input():
+  """Test append_instructions with invalid input types."""
+  request = LlmRequest()
+
+  # Test with invalid types
+  with pytest.raises(
+      TypeError, match='instructions must be list\\[str\\] or types.Content'
+  ):
+    request.append_instructions('single string')  # Should be list[str]
+
+  with pytest.raises(
+      TypeError, match='instructions must be list\\[str\\] or types.Content'
+  ):
+    request.append_instructions(123)  # Invalid type
+
+  with pytest.raises(
+      TypeError, match='instructions must be list\\[str\\] or types.Content'
+  ):
+    request.append_instructions(
+        ['valid string', 123]
+    )  # Mixed valid/invalid in list
+
+
+def test_append_instructions_content_preserves_role_and_parts():
+  """Test that Content objects have text extracted regardless of role or parts."""
+  request = LlmRequest()
+
+  # Create Content with specific role and parts
+  content = types.Content(
+      role='system',  # Different role
+      parts=[
+          types.Part(text='System instruction'),
+          types.Part(text='Additional system part'),
+      ],
+  )
+
+  request.append_instructions(content)
+
+  # Text should be extracted and concatenated to system_instruction string
+  assert len(request.contents) == 0
+  assert (
+      request.config.system_instruction
+      == 'System instruction\n\nAdditional system part'
+  )
+
+
 async def _create_tool_context() -> ToolContext:
   """Helper to create a ToolContext for testing."""
   session_service = InMemorySessionService()
@@ -308,3 +496,232 @@ def test_multiple_append_tools_calls_consolidate():
   assert 'dummy_tool' in request.tools_dict
   assert 'another_tool' in request.tools_dict
   assert 'third_tool' in request.tools_dict
+
+
+# Updated tests for simplified string-only append_instructions behavior
+
+
+def test_append_instructions_with_content():
+  """Test that append_instructions extracts text from types.Content."""
+  request = LlmRequest()
+
+  # Create a Content object
+  content = types.Content(
+      role='user', parts=[types.Part(text='This is content-based instruction')]
+  )
+
+  # Append content
+  request.append_instructions(content)
+
+  # Should extract text and set as system_instruction string
+  assert len(request.contents) == 0
+  assert (
+      request.config.system_instruction == 'This is content-based instruction'
+  )
+
+
+def test_append_instructions_with_content_multiple_calls():
+  """Test multiple calls to append_instructions with Content objects."""
+  request = LlmRequest()
+
+  # Add some existing content first
+  existing_content = types.Content(
+      role='user', parts=[types.Part(text='Existing content')]
+  )
+  request.contents.append(existing_content)
+
+  # First Content instruction
+  content1 = types.Content(
+      role='user', parts=[types.Part(text='First instruction')]
+  )
+  request.append_instructions(content1)
+
+  # Should extract text and set as system_instruction, existing content unchanged
+  assert len(request.contents) == 1
+  assert request.contents[0] == existing_content
+  assert request.config.system_instruction == 'First instruction'
+
+  # Second Content instruction
+  content2 = types.Content(
+      role='user', parts=[types.Part(text='Second instruction')]
+  )
+  request.append_instructions(content2)
+
+  # Second Content text should be appended to existing string
+  assert len(request.contents) == 1
+  assert request.contents[0] == existing_content
+  assert (
+      request.config.system_instruction
+      == 'First instruction\n\nSecond instruction'
+  )
+
+
+def test_append_instructions_with_content_multipart():
+  """Test append_instructions with Content containing multiple text parts."""
+  request = LlmRequest()
+
+  # Create Content with multiple text parts
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(text='Text instruction'),
+          types.Part(text='Additional text part'),
+      ],
+  )
+
+  request.append_instructions(content)
+
+  # Should extract and join all text parts
+  assert len(request.contents) == 0
+  assert (
+      request.config.system_instruction
+      == 'Text instruction\n\nAdditional text part'
+  )
+
+
+def test_append_instructions_mixed_string_and_content():
+  """Test mixing string list and Content instructions."""
+  request = LlmRequest()
+
+  # First add string instructions
+  request.append_instructions(['String instruction'])
+  assert request.config.system_instruction == 'String instruction'
+
+  # Then add Content instruction
+  content = types.Content(
+      role='user', parts=[types.Part(text='Content instruction')]
+  )
+  request.append_instructions(content)
+
+  # Content text should be appended to existing string
+  assert len(request.contents) == 0
+  assert (
+      request.config.system_instruction
+      == 'String instruction\n\nContent instruction'
+  )
+
+
+def test_append_instructions_content_extracts_text_only():
+  """Test that Content objects have text extracted regardless of role."""
+  request = LlmRequest()
+
+  # Create Content with specific role and parts
+  content = types.Content(
+      role='system',  # Different role
+      parts=[
+          types.Part(text='System instruction'),
+          types.Part(text='Additional system part'),
+      ],
+  )
+
+  request.append_instructions(content)
+
+  # Only text should be extracted and concatenated
+  assert len(request.contents) == 0
+  assert (
+      request.config.system_instruction
+      == 'System instruction\n\nAdditional system part'
+  )
+
+
+def test_append_instructions_content_with_non_text_parts():
+  """Test that non-text parts in Content are ignored."""
+  request = LlmRequest()
+
+  # Create Content with text and non-text parts
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(text='Text instruction'),
+          types.Part(
+              inline_data=types.Blob(data=b'file_data', mime_type='text/plain')
+          ),
+          types.Part(text='More text'),
+      ],
+  )
+
+  request.append_instructions(content)
+
+  # Only text parts should be extracted
+  assert request.config.system_instruction == 'Text instruction\n\nMore text'
+
+
+def test_append_instructions_content_no_text_parts():
+  """Test that Content with no text parts does nothing."""
+  request = LlmRequest()
+
+  # Set initial system instruction
+  request.config.system_instruction = 'Initial'
+
+  # Create Content with only non-text parts
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              inline_data=types.Blob(data=b'file_data', mime_type='text/plain')
+          ),
+      ],
+  )
+
+  request.append_instructions(content)
+
+  # Should remain unchanged since no text to extract
+  assert request.config.system_instruction == 'Initial'
+
+
+def test_append_instructions_content_empty_text_parts():
+  """Test that Content with empty text parts are skipped."""
+  request = LlmRequest()
+
+  # Create Content with empty and non-empty text parts
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(text='Valid text'),
+          types.Part(text=''),  # Empty text
+          types.Part(text=None),  # None text
+          types.Part(text='More valid text'),
+      ],
+  )
+
+  request.append_instructions(content)
+
+  # Only non-empty text should be extracted
+  assert request.config.system_instruction == 'Valid text\n\nMore valid text'
+
+
+def test_append_instructions_warning_unsupported_system_instruction_type(
+    caplog,
+):
+  """Test that warnings are logged for unsupported system_instruction types."""
+  import logging
+
+  request = LlmRequest()
+
+  # Set unsupported type as system_instruction
+  request.config.system_instruction = {'unsupported': 'dict'}
+
+  with caplog.at_level(logging.WARNING):
+    # Try appending Content - should log warning and skip
+    content = types.Content(role='user', parts=[types.Part(text='Test')])
+    request.append_instructions(content)
+
+    # Should remain unchanged
+    assert request.config.system_instruction == {'unsupported': 'dict'}
+
+    # Try appending strings - should also log warning and skip
+    request.append_instructions(['Test string'])
+
+    # Should remain unchanged
+    assert request.config.system_instruction == {'unsupported': 'dict'}
+
+  # Check that warnings were logged
+  assert (
+      len(
+          [record for record in caplog.records if record.levelname == 'WARNING']
+      )
+      >= 1
+  )
+  assert (
+      'Cannot append to system_instruction of unsupported type' in caplog.text
+  )
