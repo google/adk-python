@@ -207,7 +207,7 @@ def test_process_return_value_no_2xx(sample_operation):
   parser = OperationParser(operation_no_2xx, should_parse=False)
   parser._process_return_value()
   assert parser._return_value is not None
-  assert parser._return_value.type_hint == 'Any'
+  assert parser._return_value.type_hint == 'Dict[str, Any]'
 
 
 def test_process_return_value_multiple_2xx(sample_operation):
@@ -255,7 +255,7 @@ def test_process_return_value_no_content(sample_operation):
   )
   parser = OperationParser(operation_no_content, should_parse=False)
   parser._process_return_value()
-  assert parser._return_value.type_hint == 'Any'
+  assert parser._return_value.type_hint == 'Dict[str, Any]'
 
 
 def test_process_return_value_no_schema(sample_operation):
@@ -270,7 +270,7 @@ def test_process_return_value_no_schema(sample_operation):
   )
   parser = OperationParser(operation_no_schema, should_parse=False)
   parser._process_return_value()
-  assert parser._return_value.type_hint == 'Any'
+  assert parser._return_value.type_hint == 'Dict[str, Any]'
 
 
 def test_get_function_name(sample_operation):

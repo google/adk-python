@@ -164,7 +164,7 @@ class OperationParser:
   def _process_return_value(self) -> Parameter:
     """Returns a Parameter object representing the return type."""
     responses = self._operation.responses or {}
-    # Default to Any if no 2xx response or if schema is missing
+    # Default to object if no 2xx response or if schema is missing
     return_schema = Schema(type='object')
 
     # Take the 20x response with the smallest response code.
