@@ -27,16 +27,17 @@ from typing import Dict
 from typing import Optional
 from typing import TextIO
 from typing import Union
+from typing import runtime_checkable
 
 import anyio
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 try:
   from mcp import ClientSession
   from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
-  from mcp.client.streamable_http import streamablehttp_client
+  from mcp.client.streamable_http import streamablehttp_client, McpHttpClientFactory
 except ImportError as e:
 
   if sys.version_info < (3, 10):
@@ -101,11 +102,14 @@ class StreamableHTTPConnectionParams(BaseModel):
         when the connection is closed.
   """
 
+  model_config = ConfigDict(arbitrary_types_allowed=True, )
+
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
+  httpx_client_factory: Optional[runtime_checkable(McpHttpClientFactory)] = None
 
 
 def retry_on_closed_resource(func):
@@ -285,6 +289,7 @@ class MCPSessionManager:
               seconds=self._connection_params.sse_read_timeout
           ),
           terminate_on_close=self._connection_params.terminate_on_close,
+          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     else:
       raise ValueError(

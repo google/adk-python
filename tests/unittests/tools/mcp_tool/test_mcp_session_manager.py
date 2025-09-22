@@ -144,6 +144,30 @@ class TestMCPSessionManager:
 
     assert manager._connection_params == http_params
 
+  @pytest.mark.asyncio
+  async def test_init_with_streamable_http_custom_httpx_factory(self):
+    """Test initialization with StreamableHTTPConnectionParams."""
+    import httpx
+    custom_httpx_client = httpx.AsyncClient()
+
+    def _httpx_factory(headers=None, timeout=None, auth=None):
+      return custom_httpx_client
+
+    custom_httpx_factory = Mock(side_effect=_httpx_factory)
+
+    http_params = StreamableHTTPConnectionParams(
+      url="https://example.com/mcp",
+      timeout=15.0,
+      httpx_client_factory=custom_httpx_factory,
+    )
+    manager = MCPSessionManager(http_params)
+
+    async with manager._create_client():
+      #assert factory was called
+      custom_httpx_factory.assert_called_once()
+
+
+
   def test_generate_session_key_stdio(self):
     """Test session key generation for stdio connections."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
