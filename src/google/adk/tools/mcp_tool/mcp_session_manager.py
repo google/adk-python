@@ -102,7 +102,7 @@ class StreamableHTTPConnectionParams(BaseModel):
         when the connection is closed.
   """
 
-  model_config = ConfigDict(arbitrary_types_allowed=True, )
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
   url: str
   headers: dict[str, Any] | None = None
