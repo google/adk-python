@@ -29,6 +29,7 @@ from google.genai import types
 
 from .agents.active_streaming_tool import ActiveStreamingTool
 from .agents.base_agent import BaseAgent
+from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
@@ -125,8 +126,8 @@ class Runner:
         ValueError: If `app` is provided along with `app_name` or `plugins`, or
           if `app` is not provided but either `app_name` or `agent` is missing.
     """
-    self.app_name, self.agent, plugins = self._validate_runner_params(
-        app, app_name, agent, plugins
+    self.app_name, self.agent, self.context_cache_config, plugins = (
+        self._validate_runner_params(app, app_name, agent, plugins)
     )
     self.artifact_service = artifact_service
     self.session_service = session_service
@@ -140,7 +141,9 @@ class Runner:
       app_name: Optional[str],
       agent: Optional[BaseAgent],
       plugins: Optional[List[BasePlugin]],
-  ) -> tuple[str, BaseAgent, Optional[List[BasePlugin]]]:
+  ) -> tuple[
+      str, BaseAgent, Optional[ContextCacheConfig], Optional[List[BasePlugin]]
+  ]:
     """Validates and extracts runner parameters.
 
     Args:
@@ -150,7 +153,7 @@ class Runner:
         plugins: A list of plugins for the runner.
 
     Returns:
-        A tuple containing (app_name, agent, plugins).
+        A tuple containing (app_name, agent, context_cache_config, plugins).
 
     Raises:
         ValueError: If parameters are invalid.
@@ -170,10 +173,13 @@ class Runner:
       app_name = app.name
       agent = app.root_agent
       plugins = app.plugins
+      context_cache_config = app.context_cache_config
     elif not app_name or not agent:
       raise ValueError(
           'Either app or both app_name and agent must be provided.'
       )
+    else:
+      context_cache_config = None
 
     if plugins:
       warnings.warn(
@@ -181,7 +187,7 @@ class Runner:
           ' to provide plugins instead.',
           DeprecationWarning,
       )
-    return app_name, agent, plugins
+    return app_name, agent, context_cache_config, plugins
 
   def run(
       self,
@@ -659,6 +665,7 @@ class Runner:
         memory_service=self.memory_service,
         credential_service=self.credential_service,
         plugin_manager=self.plugin_manager,
+        context_cache_config=self.context_cache_config,
         invocation_id=invocation_id,
         agent=self.agent,
         session=session,
