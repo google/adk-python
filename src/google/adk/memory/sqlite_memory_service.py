@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 from typing import Dict
@@ -44,8 +45,6 @@ def _prepare_fts_query(query: str) -> str:
   We also wrap each word with quotes for exact word matching.
   """
   # Remove special FTS5 characters and split into words
-  import re
-
   words = re.findall(r'\w+', query.lower())
   if not words:
     return ''
