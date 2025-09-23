@@ -42,8 +42,6 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
 
     root_agent: BaseAgent = agent.root_agent
 

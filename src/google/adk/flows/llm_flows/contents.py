@@ -40,8 +40,6 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
 
     if agent.include_contents == 'default':
       # Include full conversation history
