@@ -17,7 +17,8 @@
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
-from google.adk.flows.llm_flows.contents import _add_dynamic_instructions_to_user_content
+from google.adk.flows.llm_flows.contents import _add_instructions_to_user_content
+from google.adk.flows.llm_flows.contents import request_processor as contents_processor
 from google.adk.flows.llm_flows.instructions import request_processor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -148,8 +149,16 @@ class TestStaticInstructions:
       pass
 
     # Static instruction should be in system instructions
-    assert len(llm_request.contents) == 0
+    # Dynamic instruction should be added as user content by instruction processor
+    assert len(llm_request.contents) == 1
     assert llm_request.config.system_instruction == 'Static instruction content'
+
+    # Check that dynamic instruction was added as user content
+    assert llm_request.contents[0].role == 'user'
+    assert len(llm_request.contents[0].parts) == 1
+    assert (
+        llm_request.contents[0].parts[0].text == 'Dynamic instruction content'
+    )
 
   @pytest.mark.asyncio
   async def test_dynamic_instructions_added_to_user_content(self, llm_backend):
@@ -166,15 +175,21 @@ class TestStaticInstructions:
     invocation_context = await _create_invocation_context(agent)
 
     llm_request = LlmRequest()
-    # Add some existing user content
-    llm_request.contents = [
-        types.Content(role='user', parts=[types.Part(text='Hello world')])
-    ]
 
-    # Run the content processor function
-    await _add_dynamic_instructions_to_user_content(
-        invocation_context, llm_request
+    # Run the instruction processor to add dynamic instruction
+    async for _ in request_processor.run_async(invocation_context, llm_request):
+      pass
+
+    # Add some existing user content to simulate conversation history
+    llm_request.contents.append(
+        types.Content(role='user', parts=[types.Part(text='Hello world')])
     )
+
+    # Run the content processor to move instructions to proper position
+    async for _ in contents_processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
 
     # Dynamic instruction should be inserted before the last continuous batch of user content
     assert len(llm_request.contents) == 2
@@ -204,10 +219,15 @@ class TestStaticInstructions:
     llm_request = LlmRequest()
     # No existing content
 
-    # Run the content processor function
-    await _add_dynamic_instructions_to_user_content(
+    # Run the instruction processor to add dynamic instruction
+    async for _ in request_processor.run_async(invocation_context, llm_request):
+      pass
+
+    # Run the content processor to handle any positioning (no change expected for single content)
+    async for _ in contents_processor.run_async(
         invocation_context, llm_request
-    )
+    ):
+      pass
 
     # Dynamic instruction should create new user content
     assert len(llm_request.contents) == 1
@@ -230,9 +250,7 @@ class TestStaticInstructions:
     llm_request.contents = [original_content]
 
     # Run the content processor function
-    await _add_dynamic_instructions_to_user_content(
-        invocation_context, llm_request
-    )
+    await _add_instructions_to_user_content(invocation_context, llm_request, [])
 
     # Content should remain unchanged
     assert len(llm_request.contents) == 1
@@ -264,9 +282,216 @@ class TestStaticInstructions:
     async for _ in request_processor.run_async(invocation_context, llm_request):
       pass
 
-    # Static instruction should extract only text parts and concatenate them
-    assert len(llm_request.contents) == 0
+    # Static instruction should contain text parts with references to non-text parts
+    assert len(llm_request.contents) == 1
     assert (
         llm_request.config.system_instruction
-        == 'Analyze this image:\n\nFocus on the key elements.'
+        == 'Analyze this image:\n\n[Reference to inline binary data:'
+        ' inline_data_0 (type: image/png)]\n\nFocus on the key elements.'
     )
+
+    # The non-text part should be in user content
+    assert llm_request.contents[0].role == 'user'
+    assert len(llm_request.contents[0].parts) == 2
+    assert (
+        llm_request.contents[0].parts[0].text
+        == 'Referenced inline data: inline_data_0'
+    )
+    assert llm_request.contents[0].parts[1].inline_data
+    assert (
+        llm_request.contents[0].parts[1].inline_data.data == b'fake_image_data'
+    )
+
+  @pytest.mark.asyncio
+  async def test_static_instruction_non_text_parts_moved_to_user_content(
+      self, llm_backend
+  ):
+    """Test that non-text parts from static instruction are moved to user content."""
+    static_content = types.Content(
+        role='user',
+        parts=[
+            types.Part(text='Analyze this image:'),
+            types.Part(
+                inline_data=types.Blob(
+                    data=b'fake_image_data',
+                    mime_type='image/png',
+                    display_name='test_image.png',
+                )
+            ),
+            types.Part(
+                file_data=types.FileData(
+                    file_uri='files/test123',
+                    mime_type='text/plain',
+                    display_name='test_file.txt',
+                )
+            ),
+            types.Part(text='Focus on the key elements.'),
+        ],
+    )
+    agent = LlmAgent(name='test_agent', static_instruction=static_content)
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+
+    # Run the instruction processor
+    async for _ in request_processor.run_async(invocation_context, llm_request):
+      pass
+
+    # Run the contents processor to move non-text parts
+    async for _ in contents_processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+    # System instruction should contain text with references
+    expected_system = (
+        'Analyze this image:\n\n[Reference to inline binary data: inline_data_0'
+        " ('test_image.png', type: image/png)]\n\n[Reference to file data:"
+        " file_data_1 ('test_file.txt', URI: files/test123, type:"
+        ' text/plain)]\n\nFocus on the key elements.'
+    )
+    assert llm_request.config.system_instruction == expected_system
+
+    # Non-text parts should be moved to user content
+    assert len(llm_request.contents) == 2
+
+    # Check first content object (inline_data)
+    inline_content = llm_request.contents[0]
+    assert inline_content.role == 'user'
+    assert len(inline_content.parts) == 2
+    assert (
+        inline_content.parts[0].text == 'Referenced inline data: inline_data_0'
+    )
+    assert inline_content.parts[1].inline_data
+    assert inline_content.parts[1].inline_data.data == b'fake_image_data'
+    assert inline_content.parts[1].inline_data.mime_type == 'image/png'
+    assert inline_content.parts[1].inline_data.display_name == 'test_image.png'
+
+    # Check second content object (file_data)
+    file_content = llm_request.contents[1]
+    assert file_content.role == 'user'
+    assert len(file_content.parts) == 2
+    assert file_content.parts[0].text == 'Referenced file data: file_data_1'
+    assert file_content.parts[1].file_data
+    assert file_content.parts[1].file_data.file_uri == 'files/test123'
+    assert file_content.parts[1].file_data.mime_type == 'text/plain'
+    assert file_content.parts[1].file_data.display_name == 'test_file.txt'
+
+  @pytest.mark.asyncio
+  async def test_static_instruction_reference_id_generation(self, llm_backend):
+    """Test that reference IDs are generated correctly for non-text parts."""
+    static_content = types.Content(
+        role='user',
+        parts=[
+            types.Part(text='Multiple files:'),
+            types.Part(
+                inline_data=types.Blob(data=b'data1', mime_type='image/png')
+            ),
+            types.Part(
+                file_data=types.FileData(
+                    file_uri='files/test1', mime_type='text/plain'
+                )
+            ),
+            types.Part(
+                inline_data=types.Blob(data=b'data2', mime_type='image/jpeg')
+            ),
+        ],
+    )
+    agent = LlmAgent(name='test_agent', static_instruction=static_content)
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+
+    # Run the instruction processor
+    async for _ in request_processor.run_async(invocation_context, llm_request):
+      pass
+
+    # Run the contents processor to move non-text parts
+    async for _ in contents_processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+    # System instruction should contain sequential reference IDs
+    expected_system = (
+        'Multiple files:\n\n[Reference to inline binary data: inline_data_0'
+        ' (type: image/png)]\n\n[Reference to file data: file_data_1 (URI:'
+        ' files/test1, type: text/plain)]\n\n[Reference to inline binary data:'
+        ' inline_data_2 (type: image/jpeg)]'
+    )
+    assert llm_request.config.system_instruction == expected_system
+
+    # All non-text parts should be in user content
+    assert len(llm_request.contents) == 3
+    # Each non-text part gets its own content object with 2 parts (text description + actual part)
+    for content in llm_request.contents:
+      assert len(content.parts) == 2
+
+  @pytest.mark.asyncio
+  async def test_static_instruction_only_text_parts(self, llm_backend):
+    """Test that static instruction with only text parts works normally."""
+    static_content = types.Content(
+        role='user',
+        parts=[
+            types.Part(text='First part'),
+            types.Part(text='Second part'),
+        ],
+    )
+    agent = LlmAgent(name='test_agent', static_instruction=static_content)
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+
+    # Run the instruction processor
+    async for _ in request_processor.run_async(invocation_context, llm_request):
+      pass
+
+    # Only text should be in system instruction
+    assert llm_request.config.system_instruction == 'First part\n\nSecond part'
+    # No user content should be created
+    assert len(llm_request.contents) == 0
+
+  @pytest.mark.asyncio
+  async def test_static_instruction_only_non_text_parts(self, llm_backend):
+    """Test that static instruction with only non-text parts works correctly."""
+    static_content = types.Content(
+        role='user',
+        parts=[
+            types.Part(
+                inline_data=types.Blob(data=b'data', mime_type='image/png')
+            ),
+            types.Part(
+                file_data=types.FileData(
+                    file_uri='files/test', mime_type='text/plain'
+                )
+            ),
+        ],
+    )
+    agent = LlmAgent(name='test_agent', static_instruction=static_content)
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+
+    # Run the instruction processor
+    async for _ in request_processor.run_async(invocation_context, llm_request):
+      pass
+
+    # Run the contents processor to move non-text parts
+    async for _ in contents_processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+    # System instruction should contain only references
+    expected_system = (
+        '[Reference to inline binary data: inline_data_0 (type:'
+        ' image/png)]\n\n[Reference to file data: file_data_1 (URI: files/test,'
+        ' type: text/plain)]'
+    )
+    assert llm_request.config.system_instruction == expected_system
+
+    # All parts should be in user content
+    assert len(llm_request.contents) == 2
+    # Each non-text part gets its own content object with 2 parts (text description + actual part)
+    for content in llm_request.contents:
+      assert len(content.parts) == 2
