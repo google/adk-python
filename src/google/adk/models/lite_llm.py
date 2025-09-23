@@ -513,6 +513,11 @@ def _message_to_generate_content_response(
   """
 
   parts = []
+
+  if reasoning_content := message.get("reasoning_content"):
+      thought_part = types.Part(text=reasoning_content, thought=True)
+      parts.append(thought_part)
+
   if message.get("content", None):
     parts.append(types.Part.from_text(text=message.get("content")))
 
