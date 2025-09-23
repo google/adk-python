@@ -1138,6 +1138,28 @@ def test_message_to_generate_content_response_tool_call():
   assert response.content.parts[0].function_call.id == "test_tool_call_id"
 
 
+def test_message_to_generate_content_response_with_reasoning_content():
+  message = ChatCompletionAssistantMessage(
+    role="assistant", 
+    reasoning_content="Thinking step-by-step...",
+    content="Hello!",
+  )
+
+  response = _message_to_generate_content_response(message)
+  assert response.content.role == "model"
+  assert len(response.content.parts) == 2
+
+  # Check that thought part is created first
+  thought_part = response.content.parts[0]
+  assert thought_part.text == message["reasoning_content"]
+  assert thought_part.thought is True
+
+  # Check that regular content follows
+  text_part = response.content.parts[1]
+  assert text_part.text == message["content"]
+  assert text_part.thought is False
+
+
 def test_get_content_text():
   parts = [types.Part.from_text(text="Test text")]
   content = _get_content(parts)
