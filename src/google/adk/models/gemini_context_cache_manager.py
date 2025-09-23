@@ -25,6 +25,7 @@ from typing import Optional
 from google.genai import Client
 from google.genai import types
 
+from ..utils.feature_decorator import experimental
 from .cache_metadata import CacheMetadata
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -32,6 +33,7 @@ from .llm_response import LlmResponse
 logger = logging.getLogger("google_adk." + __name__)
 
 
+@experimental
 class GeminiContextCacheManager:
   """Manages context cache lifecycle for Gemini models.
 
