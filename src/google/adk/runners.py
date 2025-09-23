@@ -419,6 +419,15 @@ class Runner:
       raise ValueError('No parts in the new_message.')
 
     if self.artifact_service and save_input_blobs_as_artifacts:
+      # Issue deprecation warning
+      warnings.warn(
+          "The 'save_input_blobs_as_artifacts' parameter is deprecated. Use"
+          ' SaveFilesAsArtifactsPlugin instead for better control and'
+          ' flexibility. See google.adk.plugins.SaveFilesAsArtifactsPlugin for'
+          ' migration guidance.',
+          DeprecationWarning,
+          stacklevel=3,
+      )
       # The runner directly saves the artifacts (if applicable) in the
       # user message and replaces the artifact data with a file name
       # placeholder.
