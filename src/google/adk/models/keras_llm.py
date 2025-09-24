@@ -169,7 +169,7 @@ class KerasLlm(BaseLlm):
         generation_params[param] = self._additional_args[param]
 
     def generate_text():
-      return self._keras_model.generate(prompt, **generation_params)
+      return self._keras_model.generate(prompt, strip_prompt=True, **generation_params)
 
     try:
       generated_text = await asyncio.to_thread(generate_text)
