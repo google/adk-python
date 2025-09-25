@@ -14,18 +14,25 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
+
+from fastapi.openapi.models import OAuth2
 
 from ..agents.callback_context import CallbackContext
 from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
 from .auth_schemes import AuthSchemeType
+from .auth_schemes import ExtendedOAuth2
 from .auth_tool import AuthConfig
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
+from .oauth2_discovery import OAuth2DiscoveryManager
 from .refresher.base_credential_refresher import BaseCredentialRefresher
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 @experimental
@@ -74,6 +81,7 @@ class CredentialManager:
     self._auth_config = auth_config
     self._exchanger_registry = CredentialExchangerRegistry()
     self._refresher_registry = CredentialRefresherRegistry()
+    self._discovery_manager = OAuth2DiscoveryManager()
 
     # Register default exchangers and refreshers
     # TODO: support service account credential exchanger
@@ -247,7 +255,14 @@ class CredentialManager:
             "auth_config.raw_credential.oauth2 required for credential type "
             f"{raw_credential.auth_type}"
         )
-        # Additional validation can be added here
+
+    if self._missing_oauth_info() and not await self._populate_auth_scheme():
+      raise ValueError(
+          "OAuth scheme info is missing, and auto-discovery has failed to fill"
+          " them in."
+      )
+
+    # Additional validation can be added here
 
   async def _save_credential(
       self, callback_context: CallbackContext, credential: AuthCredential
@@ -259,3 +274,57 @@ class CredentialManager:
     credential_service = callback_context._invocation_context.credential_service
     if credential_service:
       await callback_context.save_credential(self._auth_config)
+
+  async def _populate_auth_scheme(self) -> bool:
+    """Auto-discover server metadata and populate missing auth scheme info.
+
+    Returns:
+      True if auto-discovery was successful, False otherwise.
+    """
+    auth_scheme = self._auth_config.auth_scheme
+    if (
+        not isinstance(auth_scheme, ExtendedOAuth2)
+        or not auth_scheme.issuer_url
+    ):
+      logger.warning("No issuer_url was provided for auto-discovery.")
+      return False
+
+    metadata = await self._discovery_manager.discover_auth_server_metadata(
+        auth_scheme.issuer_url
+    )
+    if not metadata:
+      logger.warning("Auto-discovery has failed to populate OAuth scheme info.")
+      return False
+
+    flows = auth_scheme.flows
+
+    if flows.implicit and not flows.implicit.authorizationUrl:
+      flows.implicit.authorizationUrl = metadata.authorization_endpoint
+    if flows.password and not flows.password.tokenUrl:
+      flows.password.tokenUrl = metadata.token_endpoint
+    if flows.clientCredentials and not flows.clientCredentials.tokenUrl:
+      flows.clientCredentials.tokenUrl = metadata.token_endpoint
+    if flows.authorizationCode and not flows.authorizationCode.authorizationUrl:
+      flows.authorizationCode.authorizationUrl = metadata.authorization_endpoint
+    if flows.authorizationCode and not flows.authorizationCode.tokenUrl:
+      flows.authorizationCode.tokenUrl = metadata.token_endpoint
+    return True
+
+  def _missing_oauth_info(self) -> bool:
+    """Checks if we are missing auth/token URLs needed for OAuth."""
+    auth_scheme = self._auth_config.auth_scheme
+    if isinstance(auth_scheme, OAuth2):
+      flows = auth_scheme.flows
+      return (
+          flows.implicit
+          and not flows.implicit.authorizationUrl
+          or flows.password
+          and not flows.password.tokenUrl
+          or flows.clientCredentials
+          and not flows.clientCredentials.tokenUrl
+          or flows.authorizationCode
+          and not flows.authorizationCode.authorizationUrl
+          or flows.authorizationCode
+          and not flows.authorizationCode.tokenUrl
+      )
+    return False

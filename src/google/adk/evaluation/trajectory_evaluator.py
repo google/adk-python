@@ -23,6 +23,7 @@ from tabulate import tabulate
 from typing_extensions import deprecated
 from typing_extensions import override
 
+from .eval_case import get_all_tool_calls
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval
@@ -83,14 +84,9 @@ class TrajectoryEvaluator(Evaluator):
     per_invocation_results = []
 
     for actual, expected in zip(actual_invocations, expected_invocations):
-      actual_tool_uses = (
-          actual.intermediate_data.tool_uses if actual.intermediate_data else []
-      )
-      expected_tool_uses = (
-          expected.intermediate_data.tool_uses
-          if expected.intermediate_data
-          else []
-      )
+      actual_tool_uses = get_all_tool_calls(actual.intermediate_data)
+      expected_tool_uses = get_all_tool_calls(expected.intermediate_data)
+
       tool_use_accuracy = (
           1.0
           if self._are_tool_calls_equal(actual_tool_uses, expected_tool_uses)

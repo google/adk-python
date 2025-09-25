@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from typing import Optional
-from typing import TYPE_CHECKING
 import uuid
 
 from google.genai import types
@@ -24,6 +23,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
 
+from ..apps.app import ResumabilityConfig
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events.event import Event
@@ -31,7 +31,6 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
-from ..utils.feature_decorator import working_in_progress
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .context_cache_config import ContextCacheConfig
@@ -189,6 +188,9 @@ class InvocationContext(BaseModel):
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""
 
+  resumability_config: Optional[ResumabilityConfig] = None
+  """The resumability config that applies to all agents under this invocation."""
+
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
@@ -220,7 +222,6 @@ class InvocationContext(BaseModel):
   def user_id(self) -> str:
     return self.session.user_id
 
-  @working_in_progress("incomplete feature, don't use yet")
   def get_events(
       self,
       current_invocation: bool = False,

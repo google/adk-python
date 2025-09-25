@@ -38,8 +38,6 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
 
     # Check if we need the processor: output_schema + tools
     if not agent.output_schema or not agent.tools:

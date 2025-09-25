@@ -139,7 +139,7 @@ def _generate_sql_for_knn(
         distance_type, ann=False
     )
     embedding_parameter = f"@{_GOOGLESQL_PARAMETER_QUERY_EMBEDDING}"
-  columns += [f"""{distance_function}(
+  columns = columns + [f"""{distance_function}(
       {embedding_column_to_search},
       {embedding_parameter}) AS {_DISTANCE_ALIAS}
   """]
@@ -381,10 +381,6 @@ def similarity_search(
           f" {nearest_neighbors_algorithm}"
       )
 
-    # copybara:strip_begin(internal comment)
-    # TODO: Once Spanner supports ML.PREDICT in WITH CTE, we can execute
-    # the embedding and the search in one query instead of two separate queries.
-    # copybara:strip_end
     embedding = _get_embedding_for_query(
         database,
         database.database_dialect,

@@ -40,8 +40,10 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
+
+    # Preserve all contents that were added by instruction processor
+    # (since llm_request.contents will be completely reassigned below)
+    instruction_related_contents = llm_request.contents
 
     if agent.include_contents == 'default':
       # Include full conversation history
@@ -58,9 +60,9 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           agent.name,
       )
 
-    # Add dynamic instructions to the last user content if static instructions exist
-    await _add_dynamic_instructions_to_user_content(
-        invocation_context, llm_request
+    # Add instruction-related contents to proper position in conversation
+    await _add_instructions_to_user_content(
+        invocation_context, llm_request, instruction_related_contents
     )
 
     # Maintain async generator behavior
@@ -76,7 +78,7 @@ def _rearrange_events_for_async_function_responses_in_history(
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
 
-  function_call_id_to_response_events_index: dict[str, list[Event]] = {}
+  function_call_id_to_response_events_index: dict[str, int] = {}
   for i, event in enumerate(events):
     function_responses = event.get_function_responses()
     if function_responses:
@@ -564,47 +566,41 @@ def _is_live_model_audio_event(event: Event) -> bool:
   return False
 
 
-async def _add_dynamic_instructions_to_user_content(
-    invocation_context: InvocationContext, llm_request: LlmRequest
+async def _add_instructions_to_user_content(
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+    instruction_contents: list,
 ) -> None:
-  """Add dynamic instructions to the last user content when static instructions exist."""
-  from ...agents.readonly_context import ReadonlyContext
-  from ...utils import instructions_utils
+  """Insert instruction-related contents at proper position in conversation.
 
-  agent = invocation_context.agent
+  This function inserts instruction-related contents (passed as parameter) at the
+  proper position in the conversation flow, specifically before the last continuous
+  batch of user content to maintain conversation context.
 
-  dynamic_instructions = []
-
-  # Handle agent dynamic instructions if static instruction exists
-  if agent.static_instruction and agent.instruction:
-    # Static instruction exists, so add dynamic instruction to content
-    raw_si, bypass_state_injection = await agent.canonical_instruction(
-        ReadonlyContext(invocation_context)
-    )
-    si = raw_si
-    if not bypass_state_injection:
-      si = await instructions_utils.inject_session_state(
-          raw_si, ReadonlyContext(invocation_context)
-      )
-    if si:  # Only add if not empty
-      dynamic_instructions.append(si)
-
-  if not dynamic_instructions:
+  Args:
+    invocation_context: The invocation context
+    llm_request: The LLM request to modify
+    instruction_contents: List of instruction-related contents to insert
+  """
+  if not instruction_contents:
     return
 
-  # Find the start of the last continuous batch of user content
-  # Walk backwards to find the first non-user content, then insert before next user content
+  # Find the insertion point: before the last continuous batch of user content
+  # Walk backwards to find the first non-user content, then insert after it
   insert_index = len(llm_request.contents)
-  for i in range(len(llm_request.contents) - 1, -1, -1):
-    if llm_request.contents[i].role != 'user':
-      insert_index = i + 1
-      break
-    elif i == 0:
-      # All content from start is user content
-      insert_index = 0
-      break
 
-  # Create new user content with dynamic instructions
-  instruction_parts = [types.Part(text=instr) for instr in dynamic_instructions]
-  new_content = types.Content(role='user', parts=instruction_parts)
-  llm_request.contents.insert(insert_index, new_content)
+  if llm_request.contents:
+    for i in range(len(llm_request.contents) - 1, -1, -1):
+      if llm_request.contents[i].role != 'user':
+        insert_index = i + 1
+        break
+      elif i == 0:
+        # All content from start is user content
+        insert_index = 0
+        break
+  else:
+    # No contents remaining, just append at the end
+    insert_index = 0
+
+  # Insert all instruction contents at the proper position using efficient slicing
+  llm_request.contents[insert_index:insert_index] = instruction_contents

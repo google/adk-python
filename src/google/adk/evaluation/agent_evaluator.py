@@ -34,7 +34,8 @@ from pydantic import ValidationError
 from ..agents.base_agent import BaseAgent
 from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
-from .eval_case import IntermediateData
+from .eval_case import get_all_tool_calls
+from .eval_case import IntermediateDataType
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
@@ -457,12 +458,11 @@ class AgentEvaluator:
 
   @staticmethod
   def _convert_tool_calls_to_text(
-      intermediate_data: Optional[IntermediateData],
+      intermediate_data: Optional[IntermediateDataType],
   ) -> str:
-    if intermediate_data and intermediate_data.tool_uses:
-      return "\n".join([str(t) for t in intermediate_data.tool_uses])
+    tool_calls = get_all_tool_calls(intermediate_data)
 
-    return ""
+    return "\n".join([str(t) for t in tool_calls])
 
   @staticmethod
   def _get_agent_for_eval(
