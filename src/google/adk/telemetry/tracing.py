@@ -25,17 +25,38 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from typing import TYPE_CHECKING
 
 from google.genai import types
 from opentelemetry import trace
 
-from ..agents.invocation_context import InvocationContext
+from .. import version
 from ..events.event import Event
-from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
-from ..tools.base_tool import BaseTool
 
-tracer = trace.get_tracer('gcp.vertex.agent')
+# TODO: Replace with constant from opentelemetry.semconv when it reaches version 1.37 in g3.
+GEN_AI_AGENT_DESCRIPTION = 'gen_ai.agent.description'
+GEN_AI_AGENT_NAME = 'gen_ai.agent.name'
+GEN_AI_CONVERSATION_ID = 'gen_ai.conversation.id'
+GEN_AI_OPERATION_NAME = 'gen_ai.operation.name'
+GEN_AI_TOOL_CALL_ID = 'gen_ai.tool.call.id'
+GEN_AI_TOOL_DESCRIPTION = 'gen_ai.tool.description'
+GEN_AI_TOOL_NAME = 'gen_ai.tool.name'
+GEN_AI_TOOL_TYPE = 'gen_ai.tool.type'
+
+# Needed to avoid circular imports
+if TYPE_CHECKING:
+  from ..agents.base_agent import BaseAgent
+  from ..agents.invocation_context import InvocationContext
+  from ..models.llm_request import LlmRequest
+  from ..models.llm_response import LlmResponse
+  from ..tools.base_tool import BaseTool
+
+tracer = trace.get_tracer(
+    instrumenting_module_name='gcp.vertex.agent',
+    instrumenting_library_version=version.__version__,
+    # TODO: Replace with constant from opentelemetry.semconv when it reaches version 1.37 in g3.
+    schema_url='https://opentelemetry.io/schemas/1.37.0',
+)
 
 
 def _safe_json_serialize(obj) -> str:
@@ -57,6 +78,39 @@ def _safe_json_serialize(obj) -> str:
     return '<not serializable>'
 
 
+def trace_agent_invocation(
+    span: trace.Span, agent: BaseAgent, ctx: InvocationContext
+) -> None:
+  """Sets span attributes immedietely available on agent invocation according to OTEL semconv version 1.37.
+
+  Args:
+    span: Span on which attributes are set.
+    agent: Agent from which attributes are gathered.
+    ctx: InvocationContext from which attrbiutes are gathered.
+
+  Inference related fields are not set, due to their planned removal from invoke_agent span:
+  https://github.com/open-telemetry/semantic-conventions/issues/2632
+
+  `gen_ai.agent.id` is not set because currently it's unclear what attributes this field should have, specifically:
+  - In which scope should it be unique (globally, given project, given agentic flow, given deployment).
+  - Should it be unchanging between deployments, and how this should this be achieved.
+
+  `gen_ai.data_source.id` is not set because it's not available.
+  Closest type which could contain this information is types.GroundingMetadata, which does not have an ID.
+
+  `server.*` attributes are not set pending confirmation from aabmass.
+  """
+
+  # Required
+  span.set_attribute(GEN_AI_OPERATION_NAME, 'invoke_agent')
+
+  # Conditionally Required
+  span.set_attribute(GEN_AI_AGENT_DESCRIPTION, agent.description)
+
+  span.set_attribute(GEN_AI_AGENT_NAME, agent.name)
+  span.set_attribute(GEN_AI_CONVERSATION_ID, ctx.session.id)
+
+
 def trace_tool_call(
     tool: BaseTool,
     args: dict[str, Any],
@@ -70,39 +124,48 @@ def trace_tool_call(
     function_response_event: The event with the function response details.
   """
   span = trace.get_current_span()
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
-  span.set_attribute('gen_ai.operation.name', 'execute_tool')
-  span.set_attribute('gen_ai.tool.name', tool.name)
-  span.set_attribute('gen_ai.tool.description', tool.description)
-  tool_call_id = '<not specified>'
-  tool_response = '<not specified>'
-  if function_response_event.content.parts:
-    function_response = function_response_event.content.parts[
-        0
-    ].function_response
-    if function_response is not None:
-      tool_call_id = function_response.id
-      tool_response = function_response.response
 
-  span.set_attribute('gen_ai.tool.call.id', tool_call_id)
+  span.set_attribute(GEN_AI_OPERATION_NAME, 'execute_tool')
 
-  if not isinstance(tool_response, dict):
-    tool_response = {'result': tool_response}
+  span.set_attribute(GEN_AI_TOOL_DESCRIPTION, tool.description)
+  span.set_attribute(GEN_AI_TOOL_NAME, tool.name)
+
+  # e.g. FunctionTool
+  span.set_attribute(GEN_AI_TOOL_TYPE, tool.__class__.__name__)
+
+  # Setting empty llm request and response (as UI expect these) while not
+  # applicable for tool_response.
+  span.set_attribute('gcp.vertex.agent.llm_request', '{}')
+  span.set_attribute('gcp.vertex.agent.llm_response', '{}')
+
   span.set_attribute(
       'gcp.vertex.agent.tool_call_args',
       _safe_json_serialize(args),
   )
+
+  # Tracing tool response
+  tool_call_id = '<not specified>'
+  tool_response = '<not specified>'
+  if (
+      function_response_event.content is not None
+      and function_response_event.content.parts
+  ):
+    response_parts = function_response_event.content.parts
+    function_response = response_parts[0].function_response
+    if function_response is not None:
+      if function_response.id is not None:
+        tool_call_id = function_response.id
+      if function_response.response is not None:
+        tool_response = function_response.response
+
+  span.set_attribute(GEN_AI_TOOL_CALL_ID, tool_call_id)
+
+  if not isinstance(tool_response, dict):
+    tool_response = {'result': tool_response}
   span.set_attribute('gcp.vertex.agent.event_id', function_response_event.id)
   span.set_attribute(
       'gcp.vertex.agent.tool_response',
       _safe_json_serialize(tool_response),
-  )
-  # Setting empty llm request and response (as UI expect these) while not
-  # applicable for tool_response.
-  span.set_attribute('gcp.vertex.agent.llm_request', '{}')
-  span.set_attribute(
-      'gcp.vertex.agent.llm_response',
-      '{}',
   )
 
 
@@ -121,12 +184,13 @@ def trace_merged_tool_calls(
   """
 
   span = trace.get_current_span()
-  span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
-  span.set_attribute('gen_ai.operation.name', 'execute_tool')
-  span.set_attribute('gen_ai.tool.name', '(merged tools)')
-  span.set_attribute('gen_ai.tool.description', '(merged tools)')
-  span.set_attribute('gen_ai.tool.call.id', response_event_id)
 
+  span.set_attribute(GEN_AI_OPERATION_NAME, 'execute_tool')
+  span.set_attribute(GEN_AI_TOOL_NAME, '(merged tools)')
+  span.set_attribute(GEN_AI_TOOL_DESCRIPTION, '(merged tools)')
+  span.set_attribute(GEN_AI_TOOL_CALL_ID, response_event_id)
+
+  # TODO(b/441461932): See if these are still necessary
   span.set_attribute('gcp.vertex.agent.tool_call_args', 'N/A')
   span.set_attribute('gcp.vertex.agent.event_id', response_event_id)
   try:
