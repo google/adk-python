@@ -181,16 +181,26 @@ class ParallelAgent(BaseAgent):
         )
         for sub_agent in self.sub_agents
     ]
+
+    pause_invocation = False
     try:
       # TODO remove if once Python <3.11 is no longer supported.
       if sys.version_info >= (3, 11):
         async with Aclosing(_merge_agent_run(agent_runs)) as agen:
           async for event in agen:
             yield event
+            if ctx.should_pause_invocation(event):
+              pause_invocation = True
       else:
         async with Aclosing(_merge_agent_run_pre_3_11(agent_runs)) as agen:
           async for event in agen:
             yield event
+            if ctx.should_pause_invocation(event):
+              pause_invocation = True
+
+      if pause_invocation:
+        return
+
     finally:
       for sub_agent_run in agent_runs:
         await sub_agent_run.aclose()

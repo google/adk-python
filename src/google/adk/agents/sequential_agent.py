@@ -52,9 +52,18 @@ class SequentialAgent(BaseAgent):
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     for sub_agent in self.sub_agents:
+      pause_invocation = False
+
       async with Aclosing(sub_agent.run_async(ctx)) as agen:
         async for event in agen:
           yield event
+          if ctx.should_pause_invocation(event):
+            pause_invocation = True
+
+      # Indicates the invocation should pause when receiving signal from
+      # the current sub_agent.
+      if pause_invocation:
+        return
 
   @override
   async def _run_live_impl(

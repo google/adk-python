@@ -70,13 +70,24 @@ class LoopAgent(BaseAgent):
     while not self.max_iterations or times_looped < self.max_iterations:
       for sub_agent in self.sub_agents:
         should_exit = False
+        pause_invocation = False
+
         async with Aclosing(sub_agent.run_async(ctx)) as agen:
           async for event in agen:
             yield event
             if event.actions.escalate:
               should_exit = True
+            if ctx.should_pause_invocation(event):
+              pause_invocation = True
 
+        # Indicates that the loop agent should exist after running this
+        # sub-agent.
         if should_exit:
+          return
+
+        # Indicates that the invocation should be paused after running this
+        # sub-agent.
+        if pause_invocation:
           return
 
       times_looped += 1

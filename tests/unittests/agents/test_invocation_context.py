@@ -16,10 +16,15 @@ from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
+from google.genai.types import FunctionCall
+from google.genai.types import Part
 import pytest
+
+from .. import testing_utils
 
 
 class TestInvocationContext:
@@ -117,3 +122,87 @@ class TestInvocationContext:
         current_branch=True,
     )
     assert not events
+
+
+class TestInvocationContextWithAppResumablity:
+  """Test suite for InvocationContext regarding app resumability."""
+
+  @pytest.fixture
+  def long_running_function_call(self) -> FunctionCall:
+    """A long running function call."""
+    return FunctionCall(
+        id='tool_call_id_1',
+        name='long_running_function_call',
+        args={},
+    )
+
+  @pytest.fixture
+  def event_to_pause(self, long_running_function_call) -> Event:
+    """An event with a long running function call."""
+    return Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=testing_utils.ModelContent(
+            [Part(function_call=long_running_function_call)]
+        ),
+        long_running_tool_ids=[long_running_function_call.id],
+    )
+
+  def _create_test_invocation_context(
+      self, resumability_config
+  ) -> InvocationContext:
+    """Create a mock invocation context for testing."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session),
+        resumability_config=resumability_config,
+    )
+    return ctx
+
+  def test_should_pause_invocation_with_resumable_app(self, event_to_pause):
+    """Tests should_pause_invocation with a resumable app."""
+    mock_invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+
+    assert mock_invocation_context.should_pause_invocation(event_to_pause)
+
+  def test_should_not_pause_invocation_with_non_resumable_app(
+      self, event_to_pause
+  ):
+    """Tests should_pause_invocation with a non-resumable app."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=False)
+    )
+
+    assert not invocation_context.should_pause_invocation(event_to_pause)
+
+  def test_should_not_pause_invocation_with_no_long_running_tool_ids(
+      self, event_to_pause
+  ):
+    """Tests should_pause_invocation with no long running tools."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    nonpausable_event = event_to_pause.model_copy(
+        update={'long_running_tool_ids': []}
+    )
+
+    assert not invocation_context.should_pause_invocation(nonpausable_event)
+
+  def test_should_not_pause_invocation_with_no_function_calls(
+      self, event_to_pause
+  ):
+    """Tests should_pause_invocation with a non-model event."""
+    mock_invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    nonpausable_event = event_to_pause.model_copy(
+        update={'content': testing_utils.UserContent('test text part')}
+    )
+
+    assert not mock_invocation_context.should_pause_invocation(
+        nonpausable_event
+    )
