@@ -16,6 +16,10 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlowImplicit
+from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -23,8 +27,10 @@ from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.auth.auth_credential import ServiceAccountCredential
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import AuthSchemeType
+from google.adk.auth.auth_schemes import ExtendedOAuth2
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_manager import CredentialManager
+from google.adk.auth.oauth2_discovery import AuthorizationServerMetadata
 import pytest
 
 
@@ -391,6 +397,28 @@ class TestCredentialManager:
       await manager._validate_credential()
 
   @pytest.mark.asyncio
+  async def test_validate_credential_oauth2_missing_scheme_info(
+      self, extended_oauth2_scheme
+  ):
+    """Test _validate_credential with OAuth2 missing scheme info."""
+    mock_raw_credential = Mock(spec=AuthCredential)
+    mock_raw_credential.auth_type = AuthCredentialTypes.OAUTH2
+    mock_raw_credential.oauth2 = Mock(spec=OAuth2Auth)
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.raw_auth_credential = mock_raw_credential
+    auth_config.auth_scheme = extended_oauth2_scheme
+
+    manager = CredentialManager(auth_config)
+
+    with patch.object(
+        manager,
+        "_populate_auth_scheme",
+        return_value=False,
+    ) and pytest.raises(ValueError, match="OAuth scheme info is missing"):
+      await manager._validate_credential()
+
+  @pytest.mark.asyncio
   async def test_exchange_credentials_service_account(self):
     """Test _exchange_credential with service account credential."""
     mock_service_account = Mock(spec=ServiceAccount)
@@ -444,6 +472,95 @@ class TestCredentialManager:
 
     assert result == mock_credential
     assert was_exchanged is False
+
+  @pytest.fixture
+  def auth_server_metadata(self):
+    """Create AuthorizationServerMetadata object."""
+    return AuthorizationServerMetadata(
+        issuer="https://auth.example.com",
+        authorization_endpoint="https://auth.example.com/authorize",
+        token_endpoint="https://auth.example.com/token",
+        scopes_supported=["read", "write"],
+    )
+
+  @pytest.fixture
+  def extended_oauth2_scheme(self):
+    """Create ExtendedOAuth2 object with empty endpoints."""
+    return ExtendedOAuth2(
+        issuer_url="https://auth.example.com",
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="",
+                tokenUrl="",
+            )
+        ),
+    )
+
+  @pytest.fixture
+  def implicit_oauth2_scheme(self):
+    """Create OAuth2 object with implicit flow."""
+    return OAuth2(
+        flows=OAuthFlows(
+            implicit=OAuthFlowImplicit(
+                authorizationUrl="https://auth.example.com/authorize"
+            )
+        )
+    )
+
+  @pytest.mark.asyncio
+  async def test_populate_auth_scheme_success(
+      self, auth_server_metadata, extended_oauth2_scheme
+  ):
+    """Test _populate_auth_scheme successfully populates missing info."""
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = extended_oauth2_scheme
+
+    manager = CredentialManager(auth_config)
+    with patch.object(
+        manager._discovery_manager,
+        "discover_auth_server_metadata",
+        return_value=auth_server_metadata,
+    ):
+      assert await manager._populate_auth_scheme()
+
+    assert (
+        manager._auth_config.auth_scheme.flows.authorizationCode.authorizationUrl
+        == "https://auth.example.com/authorize"
+    )
+    assert (
+        manager._auth_config.auth_scheme.flows.authorizationCode.tokenUrl
+        == "https://auth.example.com/token"
+    )
+
+  @pytest.mark.asyncio
+  async def test_populate_auth_scheme_fail(self, extended_oauth2_scheme):
+    """Test _populate_auth_scheme when auto-discovery fails."""
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = extended_oauth2_scheme
+
+    manager = CredentialManager(auth_config)
+    with patch.object(
+        manager._discovery_manager,
+        "discover_auth_server_metadata",
+        return_value=None,
+    ):
+      assert not await manager._populate_auth_scheme()
+
+    assert (
+        not manager._auth_config.auth_scheme.flows.authorizationCode.authorizationUrl
+    )
+    assert not manager._auth_config.auth_scheme.flows.authorizationCode.tokenUrl
+
+  @pytest.mark.asyncio
+  async def test_populate_auth_scheme_noop(self, implicit_oauth2_scheme):
+    """Test _populate_auth_scheme when auth scheme info not missing."""
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = implicit_oauth2_scheme
+
+    manager = CredentialManager(auth_config)
+    assert not await manager._populate_auth_scheme()  # no-op
+
+    assert manager._auth_config.auth_scheme == implicit_oauth2_scheme
 
 
 @pytest.fixture
