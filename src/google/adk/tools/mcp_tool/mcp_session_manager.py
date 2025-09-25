@@ -115,9 +115,7 @@ class StreamableHTTPConnectionParams(BaseModel):
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
-  httpx_client_factory: CheckableMcpHttpClientFactory = (
-      create_mcp_http_client
-  )
+  httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
 def retry_on_closed_resource(func):
