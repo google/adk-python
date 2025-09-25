@@ -208,18 +208,41 @@ async def run_agent_query(message: str, session_id: str = "default", user_id: st
             # IMPORTANT: Define app_name consistently
             app_name = "security_agent"
 
-            # Create session using correct ADK API
+            # Get or create session using correct ADK API
+            # First try to get existing session, then create if it doesn't exist
             try:
-                logger.info(f"[ADK] Creating session: {session_id}")
-                session = adk_session_service.create_session_sync(
-                    app_name="security_agent",
+                logger.info(f"[ADK] Getting or creating session: {session_id}")
+                # Try to get existing session first
+                session = adk_session_service.get_session_sync(
+                    app_name=app_name,
                     user_id=user_id,
-                    session_id=session_id,
-                    state={}
+                    session_id=session_id
                 )
-                logger.info(f"[ADK] Session created successfully")
+                if session:
+                    logger.info(f"[ADK] Found existing session: {session_id}")
+                else:
+                    # Create new session if doesn't exist
+                    logger.info(f"[ADK] Creating new session: {session_id}")
+                    session = adk_session_service.create_session_sync(
+                        app_name=app_name,
+                        user_id=user_id,
+                        session_id=session_id,
+                        state={}
+                    )
+                    logger.info(f"[ADK] Session created successfully")
             except Exception as e:
-                logger.warning(f"[ADK] Session creation error (will continue): {e}")
+                # If get_session fails, try to create a new one
+                logger.warning(f"[ADK] Session retrieval error, creating new session: {e}")
+                try:
+                    session = adk_session_service.create_session_sync(
+                        app_name=app_name,
+                        user_id=user_id,
+                        session_id=session_id,
+                        state={}
+                    )
+                    logger.info(f"[ADK] New session created after retrieval error")
+                except Exception as create_error:
+                    logger.warning(f"[ADK] Session creation also failed (will continue): {create_error}")
 
             # Create proper Content object for the message
             content = types.Content(parts=[types.Part(text=message)])
@@ -244,73 +267,20 @@ async def run_agent_query(message: str, session_id: str = "default", user_id: st
 
                 if hasattr(event, 'content') and event.content and hasattr(event.content, 'parts'):
                     for part in event.content.parts:
-                        if hasattr(part, 'text'):
-                            response_text += part.text
-                elif hasattr(event, 'text'):
-                    response_text += event.text
+                        if hasattr(part, 'text') and part.text is not None:
+                            response_text += str(part.text)
+                elif hasattr(event, 'text') and event.text is not None:
+                    response_text += str(event.text)
 
-            # NUCLEAR OPTION: If agent didn't call tools, force a tool call
-            if not tool_used and response_text:
-                logger.warning(f"[ADK] Agent responded without calling tools! Forcing tool call...")
+            # Log tool usage status
+            if tool_used:
+                logger.info(f"[ADK] Agent successfully used tools")
+            else:
+                logger.info(f"[ADK] Agent provided direct response: {response_text[:100]}...")
 
-                # Import tool locally
-                from agents._tools.sqlite_tool import query_security_data
-
-                # Determine query type from message
-                message_lower = message.lower()
-                if any(word in message_lower for word in ["risk", "problem", "issue", "security", "biggest"]):
-                    query_type = "security_summary"
-                elif any(word in message_lower for word in ["bucket", "storage"]):
-                    query_type = "storage_buckets"
-                elif any(word in message_lower for word in ["finding", "vulnerability"]):
-                    query_type = "security_findings"
-                else:
-                    query_type = "security_summary"
-
-                # Call tool directly
-                tool_result = query_security_data(query_type, limit=10)
-
-                # Create LLM analysis of tool result
-                if tool_result.get("success"):
-                    data = tool_result.get("data", [])
-
-                    # Create analysis prompt
-                    analysis_prompt = f"""
-Based on this security data for the query "{message}":
-
-{json.dumps(data, indent=2)}
-
-Provide a comprehensive security analysis with:
-1. Risk prioritization and severity assessment
-2. Specific actionable recommendations
-3. Business impact explanation
-4. Step-by-step remediation guidance
-
-Focus on insights and analysis, not raw data formatting.
-"""
-
-                    # Send analysis request to LLM directly
-                    try:
-                        import google.genai as genai
-
-                        analysis_content = genai.types.Content(parts=[genai.types.Part(text=analysis_prompt)])
-
-                        # Create simple LLM client for analysis
-                        model = genai.GenerativeModel('gemini-2.5-flash')
-                        analysis_response = model.generate_content(analysis_content)
-
-                        if analysis_response and analysis_response.text:
-                            response_text = analysis_response.text
-                            logger.info(f"[ADK] Generated LLM analysis from tool data")
-                        else:
-                            response_text = f"Analysis of {len(data)} security items found. Please review the findings for critical risks that need immediate attention."
-
-                    except Exception as e:
-                        logger.error(f"[ADK] Error generating analysis: {e}")
-                        response_text = f"Found {len(data)} security items. Please review for critical risks requiring immediate attention."
-
-                else:
-                    response_text = "Unable to retrieve security data for analysis. Please check database connectivity."
+            # Ensure we have a response
+            if not response_text:
+                response_text = "I'm here to help with security questions. Please ask about storage buckets, security findings, IAM, or documentation."
 
             response = response_text if response_text else "No response generated"
             return {
@@ -642,6 +612,85 @@ async def database_health():
                 "error": str(e)
             },
             status_code=503
+        )
+
+@app.get("/health/confluence")
+async def confluence_health():
+    """Confluence health check endpoint."""
+    try:
+        from agents._tools.confluence_tool import ConfluenceTool
+
+        # Initialize Confluence tool
+        confluence_tool = ConfluenceTool()
+
+        # Check if Confluence is configured
+        if not confluence_tool.config.validate():
+            return JSONResponse(
+                content={
+                    "status": "not_configured",
+                    "timestamp": datetime.now().isoformat(),
+                    "details": {
+                        "url_configured": bool(confluence_tool.config.url),
+                        "credentials_configured": bool(confluence_tool.config.username and confluence_tool.config.api_token),
+                        "spaces_configured": len(confluence_tool.config.spaces) > 0,
+                        "message": "Confluence credentials not configured in environment variables"
+                    }
+                },
+                status_code=200  # Not an error, just not configured
+            )
+
+        # Perform health check if configured
+        health_status = await confluence_tool.health_check()
+
+        # Determine HTTP status code
+        if health_status.get("status") == "healthy":
+            status_code = 200
+        elif health_status.get("status") == "degraded":
+            status_code = 200
+        else:
+            status_code = 503
+
+        response = {
+            "status": health_status.get("status", "unknown"),
+            "timestamp": datetime.now().isoformat(),
+            "details": {
+                "connection_status": health_status.get("status"),
+                "last_check": health_status.get("last_check"),
+                "response_time_ms": health_status.get("response_time_ms"),
+                "consecutive_failures": health_status.get("consecutive_failures", 0),
+                "server_version": health_status.get("server_version"),
+                "circuit_breaker_state": health_status.get("circuit_breaker_state", "unknown"),
+                "configuration": {
+                    "url_configured": bool(confluence_tool.config.url),
+                    "credentials_configured": bool(confluence_tool.config.username and confluence_tool.config.api_token),
+                    "spaces_configured": len(confluence_tool.config.spaces) > 0,
+                    "cache_ttl": confluence_tool.config.cache_ttl
+                }
+            }
+        }
+
+        return JSONResponse(content=response, status_code=status_code)
+
+    except ImportError as e:
+        logger.error(f"Confluence tool not available: {e}")
+        return JSONResponse(
+            content={
+                "status": "unavailable",
+                "timestamp": datetime.now().isoformat(),
+                "error": "Confluence tool not available",
+                "details": str(e)
+            },
+            status_code=503
+        )
+    except Exception as e:
+        logger.error(f"Confluence health check error: {e}")
+        return JSONResponse(
+            content={
+                "status": "error",
+                "timestamp": datetime.now().isoformat(),
+                "error": str(e)
+            },
+            status_code=500
         )
 
 @app.post("/api/v1/database/test")
