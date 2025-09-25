@@ -38,6 +38,7 @@ from typing_extensions import override
 from typing_extensions import TypeAlias
 
 from ..events.event import Event
+from ..events.event_actions import EventActions
 from ..telemetry import tracing
 from ..telemetry.tracing import tracer
 from ..utils.context_utils import Aclosing
@@ -73,6 +74,9 @@ class BaseAgentState(BaseModel):
   model_config = ConfigDict(
       extra='forbid',
   )
+
+
+AgentState = TypeVar('AgentState', bound=BaseAgentState)
 
 
 class BaseAgent(BaseModel):
@@ -154,6 +158,57 @@ class BaseAgent(BaseModel):
       When the content is present, the provided content will be used as agent
       response and appended to event history as agent response.
   """
+
+  def _load_agent_state(
+      self,
+      ctx: InvocationContext,
+      state_type: Type[AgentState],
+      default_state: AgentState,
+  ) -> tuple[AgentState, bool]:
+    """Loads the agent state from the invocation context, handling resumption.
+
+    Args:
+      ctx: The invocation context.
+      state_type: The type of the agent state.
+      default_state: The default state to use if not resuming.
+
+    Returns:
+        tuple[AgentState, bool]: The current state and a boolean indicating if
+        resuming.
+    """
+    if self.name not in ctx.agent_states:
+      return default_state, False
+    else:
+      return state_type.model_validate(ctx.agent_states.get(self.name)), True
+
+  def _create_agent_state_event(
+      self,
+      ctx: InvocationContext,
+      *,
+      state: Optional[BaseAgentState] = None,
+      end_of_agent: bool = False,
+  ) -> Event:
+    """Creates an event for agent state.
+
+    Args:
+      ctx: The invocation context.
+      state: The agent state to checkpoint.
+      end_of_agent: Whether the agent is finished running.
+
+    Returns:
+      An Event object representing the checkpoint.
+    """
+    event_actions = EventActions()
+    if state:
+      event_actions.agent_state = state.model_dump(mode='json')
+    if end_of_agent:
+      event_actions.end_of_agent = True
+    return Event(
+        invocation_id=ctx.invocation_id,
+        author=self.name,
+        branch=ctx.branch,
+        actions=event_actions,
+    )
 
   def clone(
       self: SelfAgent, update: Mapping[str, Any] | None = None
