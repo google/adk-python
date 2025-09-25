@@ -92,6 +92,20 @@ async def test_run_async(request: pytest.FixtureRequest):
 
 
 @pytest.mark.asyncio
+async def test_run_async_skip_if_no_sub_agent(request: pytest.FixtureRequest):
+  sequential_agent = SequentialAgent(
+      name=f'{request.function.__name__}_test_agent',
+      sub_agents=[],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, sequential_agent
+  )
+  events = [e async for e in sequential_agent.run_async(parent_ctx)]
+
+  assert not events
+
+
+@pytest.mark.asyncio
 async def test_run_live(request: pytest.FixtureRequest):
   agent_1 = _TestingAgent(name=f'{request.function.__name__}_test_agent_1')
   agent_2 = _TestingAgent(name=f'{request.function.__name__}_test_agent_2')

@@ -51,6 +51,10 @@ class SequentialAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    # Skip if there is no sub-agent.
+    if not self.sub_agents:
+      return
+
     for sub_agent in self.sub_agents:
       pause_invocation = False
 
@@ -80,6 +84,9 @@ class SequentialAgent(BaseAgent):
     Args:
       ctx: The invocation context of the agent.
     """
+    if not self.sub_agents:
+      return
+
     # There is no way to know if it's using live during init phase so we have to init it here
     for sub_agent in self.sub_agents:
       # add tool

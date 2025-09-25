@@ -175,6 +175,9 @@ class ParallelAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    if not self.sub_agents:
+      return
+
     agent_runs = [
         sub_agent.run_async(
             _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)

@@ -66,6 +66,9 @@ class LoopAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    if not self.sub_agents:
+      return
+
     times_looped = 0
     while not self.max_iterations or times_looped < self.max_iterations:
       for sub_agent in self.sub_agents:
