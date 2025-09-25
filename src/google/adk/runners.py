@@ -36,6 +36,7 @@ from .agents.live_request_queue import LiveRequestQueue
 from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
 from .apps.app import App
+from .apps.app import ResumabilityConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
@@ -74,6 +75,8 @@ class Runner:
       session_service: The session service for the runner.
       memory_service: The memory service for the runner.
       credential_service: The credential service for the runner.
+      context_cache_config: The context cache config for the runner.
+      resumability_config: The resumability config for the application.
   """
 
   app_name: str
@@ -90,6 +93,10 @@ class Runner:
   """The memory service for the runner."""
   credential_service: Optional[BaseCredentialService] = None
   """The credential service for the runner."""
+  context_cache_config: Optional[ContextCacheConfig] = None
+  """The context cache config for the runner."""
+  resumability_config: Optional[ResumabilityConfig] = None
+  """The resumability config for the application."""
 
   def __init__(
       self,
@@ -110,11 +117,11 @@ class Runner:
     `ValueError`. Providing `app` is the recommended way to create a runner.
 
     Args:
+        app: An optional `App` instance. If provided, `app_name` and `agent`
+          should not be specified.
         app_name: The application name of the runner. Required if `app` is not
           provided.
         agent: The root agent to run. Required if `app` is not provided.
-        app: An optional `App` instance. If provided, `app_name` and `agent`
-          should not be specified.
         plugins: Deprecated. A list of plugins for the runner. Please use the
           `app` argument to provide plugins instead.
         artifact_service: The artifact service for the runner.
@@ -126,9 +133,13 @@ class Runner:
         ValueError: If `app` is provided along with `app_name` or `plugins`, or
           if `app` is not provided but either `app_name` or `agent` is missing.
     """
-    self.app_name, self.agent, self.context_cache_config, plugins = (
-        self._validate_runner_params(app, app_name, agent, plugins)
-    )
+    (
+        self.app_name,
+        self.agent,
+        self.context_cache_config,
+        self.resumability_config,
+        plugins,
+    ) = self._validate_runner_params(app, app_name, agent, plugins)
     self.artifact_service = artifact_service
     self.session_service = session_service
     self.memory_service = memory_service
@@ -142,7 +153,11 @@ class Runner:
       agent: Optional[BaseAgent],
       plugins: Optional[List[BasePlugin]],
   ) -> tuple[
-      str, BaseAgent, Optional[ContextCacheConfig], Optional[List[BasePlugin]]
+      str,
+      BaseAgent,
+      Optional[ContextCacheConfig],
+      Optional[ResumabilityConfig],
+      Optional[List[BasePlugin]],
   ]:
     """Validates and extracts runner parameters.
 
@@ -153,7 +168,8 @@ class Runner:
         plugins: A list of plugins for the runner.
 
     Returns:
-        A tuple containing (app_name, agent, context_cache_config, plugins).
+        A tuple containing (app_name, agent, context_cache_config,
+        resumability_config, plugins).
 
     Raises:
         ValueError: If parameters are invalid.
@@ -174,12 +190,14 @@ class Runner:
       agent = app.root_agent
       plugins = app.plugins
       context_cache_config = app.context_cache_config
+      resumability_config = app.resumability_config
     elif not app_name or not agent:
       raise ValueError(
           'Either app or both app_name and agent must be provided.'
       )
     else:
       context_cache_config = None
+      resumability_config = None
 
     if plugins:
       warnings.warn(
@@ -187,7 +205,7 @@ class Runner:
           ' to provide plugins instead.',
           DeprecationWarning,
       )
-    return app_name, agent, context_cache_config, plugins
+    return app_name, agent, context_cache_config, resumability_config, plugins
 
   def run(
       self,
@@ -264,6 +282,7 @@ class Runner:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
       new_message: A new message to append to the session.
+      state_delta: Optional state changes to apply to the session.
       run_config: The run config for the agent.
 
     Yields:
@@ -687,6 +706,7 @@ class Runner:
         user_content=new_message,
         live_request_queue=live_request_queue,
         run_config=run_config,
+        resumability_config=self.resumability_config,
     )
 
   def _new_invocation_context_for_live(
