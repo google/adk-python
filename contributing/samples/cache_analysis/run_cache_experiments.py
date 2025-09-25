@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import copy
 import json
+import logging
 import sys
 import time
 from typing import Any
@@ -42,6 +43,7 @@ except ImportError:
   from utils import get_test_prompts
   from utils import run_experiment_batch
 
+from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 from google.adk.utils.cache_performance_analyzer import CachePerformanceAnalyzer
 
@@ -570,8 +572,18 @@ async def main():
           " 2.0)"
       ),
   )
+  parser.add_argument(
+      "--log-level",
+      choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+      default="INFO",
+      help="Set logging level (default: INFO)",
+  )
 
   args = parser.parse_args()
+
+  # Setup logger with specified level
+  log_level = getattr(logging, args.log_level.upper())
+  logs.setup_adk_logger(log_level)
 
   # Set default output filename based on model
   if not args.output:
