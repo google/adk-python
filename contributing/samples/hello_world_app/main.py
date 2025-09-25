@@ -65,7 +65,7 @@ async def main():
         user_id=user_id_1,
         session_id=session.id,
         new_message=content,
-        run_config=RunConfig(save_input_blobs_as_artifacts=True),
+        run_config=RunConfig(save_input_blobs_as_artifacts=False),
     ):
       if event.content.parts and event.content.parts[0].text:
         print(f'** {event.author}: {event.content.parts[0].text}')

@@ -30,7 +30,6 @@ from typing import TypeVar
 from typing import Union
 
 from google.genai import types
-from opentelemetry import trace
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -39,16 +38,15 @@ from typing_extensions import override
 from typing_extensions import TypeAlias
 
 from ..events.event import Event
+from ..telemetry import tracing
+from ..telemetry.tracing import tracer
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
-from .common_configs import AgentRefConfig
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
-
-tracer = trace.get_tracer('gcp.vertex.agent')
 
 _SingleAgentCallback: TypeAlias = Callable[
     [CallbackContext],
@@ -66,6 +64,15 @@ AfterAgentCallback: TypeAlias = Union[
 ]
 
 SelfAgent = TypeVar('SelfAgent', bound='BaseAgent')
+
+
+@experimental
+class BaseAgentState(BaseModel):
+  """Base class for all agent states."""
+
+  model_config = ConfigDict(
+      extra='forbid',
+  )
 
 
 class BaseAgent(BaseModel):
@@ -226,9 +233,9 @@ class BaseAgent(BaseModel):
     """
 
     async def _run_with_trace() -> AsyncGenerator[Event, None]:
-      with tracer.start_as_current_span(f'agent_run [{self.name}]'):
+      with tracer.start_as_current_span(f'invoke_agent {self.name}') as span:
         ctx = self._create_invocation_context(parent_context)
-
+        tracing.trace_agent_invocation(span, self, ctx)
         if event := await self.__handle_before_agent_callback(ctx):
           yield event
         if ctx.end_invocation:
@@ -264,9 +271,9 @@ class BaseAgent(BaseModel):
     """
 
     async def _run_with_trace() -> AsyncGenerator[Event, None]:
-      with tracer.start_as_current_span(f'agent_run [{self.name}]'):
+      with tracer.start_as_current_span(f'invoke_agent {self.name}') as span:
         ctx = self._create_invocation_context(parent_context)
-
+        tracing.trace_agent_invocation(span, self, ctx)
         if event := await self.__handle_before_agent_callback(ctx):
           yield event
         if ctx.end_invocation:

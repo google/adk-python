@@ -23,4 +23,5 @@ class EvalBaseModel(pydantic.BaseModel):
       alias_generator=alias_generators.to_camel,
       populate_by_name=True,
       extra='forbid',
+      arbitrary_types_allowed=True,
   )
