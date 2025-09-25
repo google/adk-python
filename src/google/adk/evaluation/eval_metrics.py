@@ -48,6 +48,10 @@ class PrebuiltMetrics(Enum):
 
   FINAL_RESPONSE_MATCH_V2 = "final_response_match_v2"
 
+  RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1 = (
+      "rubric_based_final_response_quality_v1"
+  )
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float

@@ -47,3 +47,17 @@ class AppDetails(EvalBaseModel):
       default_factory=dict,
   )
   """A mapping from the agent name to the details of that agent."""
+
+  def get_developer_instructions(self, agent_name: str) -> str:
+    """Returns a string containing the developer instructions."""
+    if agent_name not in self.agent_details:
+      raise ValueError(f"`{agent_name}` not found in the agentic system.")
+
+    return self.agent_details[agent_name].instructions
+
+  def get_tools_by_agent_name(self) -> dict[str, genai_types.ToolListUnion]:
+    """Returns a dictionary of tools available to an agent in the App, keyed to the name of the Agent."""
+    return {
+        name: details.tool_declarations
+        for name, details in self.agent_details.items()
+    }
