@@ -87,35 +87,37 @@ class SseConnectionParams(BaseModel):
 
 @runtime_checkable
 class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
-    pass
+  pass
 
 class StreamableHTTPConnectionParams(BaseModel):
-    """Parameters for the MCP Streamable HTTP connection.
+  """Parameters for the MCP Streamable HTTP connection.
 
-    See MCP Streamable HTTP Client documentation for more details.
-    https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/client/streamable_http.py
+  See MCP Streamable HTTP Client documentation for more details.
+  https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/client/streamable_http.py
 
-    Attributes:
-        url: URL for the MCP Streamable HTTP server.
-        headers: Headers for the MCP Streamable HTTP connection.
-        timeout: Timeout in seconds for establishing the connection to the MCP
-          Streamable HTTP server.
-        sse_read_timeout: Timeout in seconds for reading data from the MCP
-          Streamable HTTP server.
-        terminate_on_close: Whether to terminate the MCP Streamable HTTP server
-          when the connection is closed.
-    """
+  Attributes:
+      url: URL for the MCP Streamable HTTP server.
+      headers: Headers for the MCP Streamable HTTP connection.
+      timeout: Timeout in seconds for establishing the connection to the MCP
+        Streamable HTTP server.
+      sse_read_timeout: Timeout in seconds for reading data from the MCP
+        Streamable HTTP server.
+      terminate_on_close: Whether to terminate the MCP Streamable HTTP server
+        when the connection is closed.
+      httpx_client_factory: Factory function to create a custom HTTPX client. If
+        not provided, a default factory will be used.
+  """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    url: str
-    headers: dict[str, Any] | None = None
-    timeout: float = 5.0
-    sse_read_timeout: float = 60 * 5.0
-    terminate_on_close: bool = True
-    httpx_client_factory: CheckableMcpHttpClientFactory = (
-        create_mcp_http_client
-    )
+  url: str
+  headers: dict[str, Any] | None = None
+  timeout: float = 5.0
+  sse_read_timeout: float = 60 * 5.0
+  terminate_on_close: bool = True
+  httpx_client_factory: CheckableMcpHttpClientFactory = (
+      create_mcp_http_client
+  )
 
 
 def retry_on_closed_resource(func):
