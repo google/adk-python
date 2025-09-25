@@ -115,22 +115,33 @@ async def run_default_test_prompts(runner):
       app_name=APP_NAME, user_id=USER_ID
   )
 
-  # Test prompts that specifically exercise the static content features
+  # Common test prompts for all API variants
   test_prompts = [
       "What reference materials do you have access to?",
       "Can you describe the sample chart that was provided to you?",
-      "What does the contributing guide document say about best practices?",
       (
           "How do the inline image and file references in your instructions "
           "help you answer questions?"
       ),
   ]
 
-  # Add Vertex AI specific prompt to test GCS file reference
+  # Add API-specific prompts
   if api_variant == GoogleLLMVariant.VERTEX_AI:
+    # Vertex AI has research papers instead of contributing guide
+    test_prompts.extend([
+        (
+            "What is the Gemma research paper about and what are its key "
+            "contributions?"
+        ),
+        (
+            "Can you compare the research papers you have access to? Are they "
+            "related or different?"
+        ),
+    ])
+  else:
+    # Gemini Developer API has contributing guide document
     test_prompts.append(
-        "What is the Gemma research paper about and what are its key "
-        "contributions?"
+        "What does the contributing guide document say about best practices?"
     )
 
   for i, prompt in enumerate(test_prompts, 1):

@@ -9,7 +9,7 @@ This sample demonstrates ADK's static instruction feature with non-text content 
 - **Gemini Files API integration**: Demonstrates uploading documents and using file_data
 - **Mixed content types**: inline_data for images, file_data for documents
 - **API variant detection**: Different behavior for Gemini API vs Vertex AI
-- **GCS file references**: Additional GCS file support when using Vertex AI
+- **GCS file references**: Support for both GCS URI and HTTPS URL access methods in Vertex AI
 
 ## Static Instruction Content
 
@@ -23,7 +23,7 @@ The agent includes:
 
 **Vertex AI:**
 3. **Research paper**: Gemma research paper from Google Cloud Storage via GCS file reference
-4. **Contributing guide**: Gemini Cookbook contributing guide from GitHub via HTTPS file reference
+4. **AI research paper**: Same research paper accessed via HTTPS URL for comparison
 
 ## Content Used
 
@@ -37,14 +37,14 @@ The agent includes:
   - Files are automatically cleaned up after 48 hours by the Gemini API
 
 **Vertex AI:**
-- **Research Paper**: Gemma research paper (GCS file reference as `file_data`)
-  - Public GCS URI: `gs://cloud-samples-data/generative-ai/pdf/2403.05530.pdf`
-  - Demonstrates GCS file access in Vertex AI
-  - PDF format with technical AI research content
-- **Contributing Guide**: Gemini Cookbook contributing guide (HTTPS file reference as `file_data`)
-  - Public GitHub URL: `https://raw.githubusercontent.com/google-gemini/cookbook/main/CONTRIBUTING.md`
+- **Gemma Research Paper**: Research paper accessed via GCS URI (as `file_data`)
+  - GCS URI: `gs://cloud-samples-data/generative-ai/pdf/2403.05530.pdf`
+  - Demonstrates native GCS file access in Vertex AI
+  - PDF format with technical AI research content about Gemini 1.5
+- **AI Research Paper**: Same research paper accessed via HTTPS URL (as `file_data`)
+  - HTTPS URL: `https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/2403.05530.pdf`
   - Demonstrates HTTPS file access in Vertex AI
-  - Markdown format with development guidelines
+  - Agent can discover these are the same document and compare access methods
 
 ## Setup
 
@@ -73,7 +73,9 @@ The agent will automatically load environment variables on startup.
 cd contributing/samples
 python -m static_non_text_content.main
 ```
-This runs 4 test prompts that specifically demonstrate the static content features.
+This runs test prompts that demonstrate the static content features:
+- **Gemini Developer API**: 4 prompts testing inline_data + Files API upload
+- **Vertex AI**: 5 prompts testing inline_data + GCS/HTTPS file access comparison
 
 ### Interactive Mode  
 ```bash
@@ -101,13 +103,17 @@ The sample automatically runs test prompts when no `--prompt` is specified:
 **All API variants:**
 1. "What reference materials do you have access to?"
 2. "Can you describe the sample chart that was provided to you?"
-3. "What does the contributing guide document say about best practices?"
-4. "How do the inline image and file references in your instructions help you answer questions?"
+3. "How do the inline image and file references in your instructions help you answer questions?"
 
-**Vertex AI only (additional prompt):**
+**Gemini Developer API only:**
+4. "What does the contributing guide document say about best practices?"
+
+**Vertex AI only (additional prompts):**
 5. "What is the Gemma research paper about and what are its key contributions?"
+6. "Can you compare the research papers you have access to? Are they related or different?"
 
-These prompts test `inline_data`, Files API `file_data` (Gemini API), and GCS/HTTPS `file_data` (Vertex AI).
+**Gemini Developer API** tests: `inline_data` (image) + Files API `file_data` (uploaded document)
+**Vertex AI** tests: `inline_data` (image) + GCS URI `file_data` + HTTPS URL `file_data` (same document via different access methods)
 
 ## How It Works
 
