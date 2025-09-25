@@ -30,7 +30,6 @@ from typing import TypeVar
 from typing import Union
 
 from google.genai import types
-from opentelemetry import trace
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -39,16 +38,16 @@ from typing_extensions import override
 from typing_extensions import TypeAlias
 
 from ..events.event import Event
+from ..events.event_actions import EventActions
+from ..telemetry import tracing
+from ..telemetry.tracing import tracer
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
-from .common_configs import AgentRefConfig
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
-
-tracer = trace.get_tracer('gcp.vertex.agent')
 
 _SingleAgentCallback: TypeAlias = Callable[
     [CallbackContext],
@@ -66,6 +65,18 @@ AfterAgentCallback: TypeAlias = Union[
 ]
 
 SelfAgent = TypeVar('SelfAgent', bound='BaseAgent')
+
+
+@experimental
+class BaseAgentState(BaseModel):
+  """Base class for all agent states."""
+
+  model_config = ConfigDict(
+      extra='forbid',
+  )
+
+
+AgentState = TypeVar('AgentState', bound=BaseAgentState)
 
 
 class BaseAgent(BaseModel):
@@ -148,6 +159,57 @@ class BaseAgent(BaseModel):
       response and appended to event history as agent response.
   """
 
+  def _load_agent_state(
+      self,
+      ctx: InvocationContext,
+      state_type: Type[AgentState],
+      default_state: AgentState,
+  ) -> tuple[AgentState, bool]:
+    """Loads the agent state from the invocation context, handling resumption.
+
+    Args:
+      ctx: The invocation context.
+      state_type: The type of the agent state.
+      default_state: The default state to use if not resuming.
+
+    Returns:
+        tuple[AgentState, bool]: The current state and a boolean indicating if
+        resuming.
+    """
+    if self.name not in ctx.agent_states:
+      return default_state, False
+    else:
+      return state_type.model_validate(ctx.agent_states.get(self.name)), True
+
+  def _create_agent_state_event(
+      self,
+      ctx: InvocationContext,
+      *,
+      state: Optional[BaseAgentState] = None,
+      end_of_agent: bool = False,
+  ) -> Event:
+    """Creates an event for agent state.
+
+    Args:
+      ctx: The invocation context.
+      state: The agent state to checkpoint.
+      end_of_agent: Whether the agent is finished running.
+
+    Returns:
+      An Event object representing the checkpoint.
+    """
+    event_actions = EventActions()
+    if state:
+      event_actions.agent_state = state.model_dump(mode='json')
+    if end_of_agent:
+      event_actions.end_of_agent = True
+    return Event(
+        invocation_id=ctx.invocation_id,
+        author=self.name,
+        branch=ctx.branch,
+        actions=event_actions,
+    )
+
   def clone(
       self: SelfAgent, update: Mapping[str, Any] | None = None
   ) -> SelfAgent:
@@ -226,9 +288,9 @@ class BaseAgent(BaseModel):
     """
 
     async def _run_with_trace() -> AsyncGenerator[Event, None]:
-      with tracer.start_as_current_span(f'agent_run [{self.name}]'):
+      with tracer.start_as_current_span(f'invoke_agent {self.name}') as span:
         ctx = self._create_invocation_context(parent_context)
-
+        tracing.trace_agent_invocation(span, self, ctx)
         if event := await self.__handle_before_agent_callback(ctx):
           yield event
         if ctx.end_invocation:
@@ -264,9 +326,9 @@ class BaseAgent(BaseModel):
     """
 
     async def _run_with_trace() -> AsyncGenerator[Event, None]:
-      with tracer.start_as_current_span(f'agent_run [{self.name}]'):
+      with tracer.start_as_current_span(f'invoke_agent {self.name}') as span:
         ctx = self._create_invocation_context(parent_context)
-
+        tracing.trace_agent_invocation(span, self, ctx)
         if event := await self.__handle_before_agent_callback(ctx):
           yield event
         if ctx.end_invocation:

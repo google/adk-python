@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 import uuid
 
@@ -162,6 +163,12 @@ class InvocationContext(BaseModel):
   session: Session
   """The current session of this invocation context. Readonly."""
 
+  agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
+  """The state of the agent for this invocation."""
+
+  end_of_agents: dict[str, bool] = Field(default_factory=dict)
+  """The end of agent status for each agent in this invocation."""
+
   end_invocation: bool = False
   """Whether to end this invocation.
 
@@ -200,6 +207,11 @@ class InvocationContext(BaseModel):
   """A container to keep track of different kinds of costs incurred as a part
   of this invocation.
   """
+
+  def reset_agent_state(self, agent_name: str) -> None:
+    """Resets the state of an agent, allowing it to be re-run."""
+    self.agent_states.pop(agent_name, None)
+    self.end_of_agents.pop(agent_name, None)
 
   def increment_llm_call_count(
       self,

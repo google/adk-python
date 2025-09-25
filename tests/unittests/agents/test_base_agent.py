@@ -23,6 +23,7 @@ from typing import Union
 from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
@@ -732,6 +733,39 @@ async def test_run_live_incomplete_agent(request: pytest.FixtureRequest):
     [e async for e in agent.run_live(parent_ctx)]
 
 
+@pytest.mark.asyncio
+async def test_create_agent_state_event(request: pytest.FixtureRequest):
+  # Arrange
+  agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
+  ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent, branch='test_branch'
+  )
+  state = BaseAgentState()
+
+  # Act
+  event = agent._create_agent_state_event(ctx, state=state)
+
+  # Assert
+  assert event.invocation_id == ctx.invocation_id
+  assert event.author == agent.name
+  assert event.branch == 'test_branch'
+  assert event.actions is not None
+  assert event.actions.agent_state is not None
+  assert event.actions.agent_state == state.model_dump(mode='json')
+  assert not event.actions.end_of_agent
+
+  # Act
+  event = agent._create_agent_state_event(ctx, end_of_agent=True)
+
+  # Assert
+  assert event.invocation_id == ctx.invocation_id
+  assert event.author == agent.name
+  assert event.branch == 'test_branch'
+  assert event.actions is not None
+  assert event.actions.end_of_agent
+  assert event.actions.agent_state is None
+
+
 def test_set_parent_agent_for_sub_agents(request: pytest.FixtureRequest):
   sub_agents: list[BaseAgent] = [
       _TestingAgent(name=f'{request.function.__name__}_sub_agent_1'),
@@ -854,3 +888,54 @@ def test_set_parent_agent_for_sub_agent_twice(
 
 if __name__ == '__main__':
   pytest.main([__file__])
+
+
+class _TestAgentState(BaseAgentState):
+  test_field: str = ''
+
+
+@pytest.mark.asyncio
+async def test_load_agent_state_no_resume():
+  agent = BaseAgent(name='test_agent')
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  ctx = InvocationContext(
+      invocation_id='test_invocation',
+      agent=agent,
+      session=session,
+      session_service=session_service,
+  )
+  default_state = _TestAgentState(test_field='default')
+
+  state, is_resuming = agent._load_agent_state(
+      ctx, _TestAgentState, default_state
+  )
+
+  assert not is_resuming
+  assert state == default_state
+
+
+@pytest.mark.asyncio
+async def test_load_agent_state_with_resume():
+  agent = BaseAgent(name='test_agent')
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  ctx = InvocationContext(
+      invocation_id='test_invocation',
+      agent=agent,
+      session=session,
+      session_service=session_service,
+  )
+  persisted_state = _TestAgentState(test_field='resumed')
+  ctx.agent_states[agent.name] = persisted_state.model_dump(mode='json')
+
+  state, is_resuming = agent._load_agent_state(
+      ctx, _TestAgentState, _TestAgentState()
+  )
+
+  assert is_resuming
+  assert state == persisted_state

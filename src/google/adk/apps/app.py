@@ -35,11 +35,10 @@ class ResumabilityConfig(BaseModel):
   2. resume an invocation from the last event, if it's paused or failed midway
   through.
 
-  Note: ADK resumes the invocation in a best-effort manner. Edge cases include:
-  1. The invocation crashed before receiving the response of a tool call, once
-  resumed, the same tool call will be invoked again.
-  2. If agent transfer forms a loop (root->sub1->sub2->root[pause]), once
-  resumed, the agent transfer loop will be ignored.
+  Note: ADK resumes the invocation in a best-effort manner:
+  1. Tool call to resume needs to be idempotent because we only guarantee
+  an at-least-once behavior once resumed.
+  2. Any temporary / in-memory state will be lost upon resumption.
   """
 
   is_resumable: bool = False
