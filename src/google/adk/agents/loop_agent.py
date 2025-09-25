@@ -21,7 +21,6 @@ from typing import AsyncGenerator
 from typing import ClassVar
 from typing import Dict
 from typing import Optional
-from typing import Type
 
 from typing_extensions import override
 
@@ -30,8 +29,20 @@ from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
+from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
 from .loop_agent_config import LoopAgentConfig
+
+
+@experimental
+class LoopAgentState(BaseAgentState):
+  """State for LoopAgent."""
+
+  current_sub_agent: str = ''
+  """The name of the current sub-agent to run in the loop."""
+
+  times_looped: int = 0
+  """The number of times the loop agent has looped."""
 
 
 class LoopAgent(BaseAgent):

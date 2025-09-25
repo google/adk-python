@@ -66,6 +66,15 @@ AfterAgentCallback: TypeAlias = Union[
 SelfAgent = TypeVar('SelfAgent', bound='BaseAgent')
 
 
+@experimental
+class BaseAgentState(BaseModel):
+  """Base class for all agent states."""
+
+  model_config = ConfigDict(
+      extra='forbid',
+  )
+
+
 class BaseAgent(BaseModel):
   """Base class for all agents in Agent Development Kit."""
 
