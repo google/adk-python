@@ -68,8 +68,19 @@ class GeminiContextCacheManager:
     """
     # Check if we have existing cache metadata and if it's valid
     if llm_request.cache_metadata:
+      logger.debug(
+          "Found existing cache metadata: cache_name=%s, invocations_used=%d,"
+          " cached_contents_count=%d",
+          llm_request.cache_metadata.cache_name,
+          llm_request.cache_metadata.invocations_used,
+          llm_request.cache_metadata.cached_contents_count,
+      )
       if await self._is_cache_valid(llm_request):
         # Valid cache found - use it
+        logger.debug(
+            "Cache is valid, reusing cache: %s",
+            llm_request.cache_metadata.cache_name,
+        )
         cache_name = llm_request.cache_metadata.cache_name
         cache_contents_count = llm_request.cache_metadata.cached_contents_count
         self._apply_cache_to_request(
@@ -78,12 +89,21 @@ class GeminiContextCacheManager:
         return llm_request.cache_metadata.model_copy()
       else:
         # Invalid cache - clean it up
+        logger.debug(
+            "Cache is invalid, cleaning up: %s",
+            llm_request.cache_metadata.cache_name,
+        )
         await self.cleanup_cache(llm_request.cache_metadata.cache_name)
         llm_request.cache_metadata = None
 
     # Find contents to cache for new cache creation
     cache_contents_count = self._find_count_of_contents_to_cache(
         llm_request.contents
+    )
+    logger.debug(
+        "Determined to cache %d contents from %d total contents",
+        cache_contents_count,
+        len(llm_request.contents),
     )
 
     # Create new cache with the determined contents
@@ -96,6 +116,9 @@ class GeminiContextCacheManager:
     # Set up request to use the new cache
     self._apply_cache_to_request(
         llm_request, cache_metadata.cache_name, cache_contents_count
+    )
+    logger.debug(
+        "Successfully applied cache to request: %s", cache_metadata.cache_name
     )
 
     return cache_metadata
@@ -218,8 +241,8 @@ class GeminiContextCacheManager:
         contents_data.append(content.model_dump())
       fingerprint_data["cached_contents"] = contents_data
 
-    # Generate hash
-    fingerprint_str = json.dumps(fingerprint_data, sort_keys=True)
+    # Generate hash using str() instead of json.dumps() to handle bytes
+    fingerprint_str = str(fingerprint_data)
     return hashlib.sha256(fingerprint_str.encode()).hexdigest()[:16]
 
   async def _create_new_cache_with_contents(
@@ -310,6 +333,10 @@ class GeminiContextCacheManager:
     # Add system instruction if present
     if llm_request.config and llm_request.config.system_instruction:
       cache_config.system_instruction = llm_request.config.system_instruction
+      logger.debug(
+          "Added system instruction to cache config (length=%d)",
+          len(llm_request.config.system_instruction),
+      )
 
     # Add tools if present
     if llm_request.config and llm_request.config.tools:
@@ -319,29 +346,30 @@ class GeminiContextCacheManager:
     if llm_request.config and llm_request.config.tool_config:
       cache_config.tool_config = llm_request.config.tool_config
 
-    try:
-      cached_content = await self.genai_client.aio.caches.create(
-          model=llm_request.model,
-          config=cache_config,
-      )
-      # Set precise creation timestamp right after cache creation
-      created_at = time.time()
-      logger.info("Cache created successfully: %s", cached_content.name)
+    logger.debug(
+        "Creating cache with model %s and config: %s",
+        llm_request.model,
+        cache_config,
+    )
+    cached_content = await self.genai_client.aio.caches.create(
+        model=llm_request.model,
+        config=cache_config,
+    )
+    # Set precise creation timestamp right after cache creation
+    created_at = time.time()
+    logger.info("Cache created successfully: %s", cached_content.name)
 
-      # Return complete cache metadata with precise timing
-      return CacheMetadata(
-          cache_name=cached_content.name,
-          expire_time=created_at + llm_request.cache_config.ttl_seconds,
-          fingerprint=self._generate_cache_fingerprint(
-              llm_request, cache_contents_count
-          ),
-          invocations_used=1,
-          cached_contents_count=cache_contents_count,
-          created_at=created_at,
-      )
-    except Exception as e:
-      logger.error("Failed to create Gemini cache: %s", e)
-      raise
+    # Return complete cache metadata with precise timing
+    return CacheMetadata(
+        cache_name=cached_content.name,
+        expire_time=created_at + llm_request.cache_config.ttl_seconds,
+        fingerprint=self._generate_cache_fingerprint(
+            llm_request, cache_contents_count
+        ),
+        invocations_used=1,
+        cached_contents_count=cache_contents_count,
+        created_at=created_at,
+    )
 
   async def cleanup_cache(self, cache_name: str) -> None:
     """Clean up cache by deleting it.
@@ -349,6 +377,7 @@ class GeminiContextCacheManager:
     Args:
         cache_name: Name of cache to delete
     """
+    logger.debug("Attempting to delete cache: %s", cache_name)
     try:
       await self.genai_client.aio.caches.delete(name=cache_name)
       logger.info("Cache cleaned up: %s", cache_name)
