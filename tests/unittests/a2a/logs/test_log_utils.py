@@ -138,34 +138,20 @@ class TestBuildMessagePartLog:
 class TestBuildA2ARequestLog:
   """Test suite for build_a2a_request_log function."""
 
-  def test_request_with_parts_and_config(self):
-    """Test request logging with message parts and configuration."""
+  def test_request_with_parts(self):
+    """Test request logging of message parts."""
 
     # Create mock request with all components
-    req = SendMessageRequest(
-        id="req-123",
-        method="message/send",
-        jsonrpc="2.0",
-        params=MessageSendParams(
-            message=A2AMessage(
-                message_id="msg-456",
-                role="user",
-                task_id="task-789",
-                context_id="ctx-101",
-                parts=[
-                    A2APart(root=A2ATextPart(text="Part 1")),
-                    A2APart(root=A2ATextPart(text="Part 2")),
-                ],
-                metadata={"msg_key": "msg_value"},
-            ),
-            configuration=MessageSendConfiguration(
-                accepted_output_modes=["text", "image"],
-                blocking=True,
-                history_length=10,
-                push_notification_config=None,
-            ),
-            metadata={"key1": "value1"},
-        ),
+    req = A2AMessage(
+        message_id="msg-456",
+        role="user",
+        task_id="task-789",
+        context_id="ctx-101",
+        parts=[
+            A2APart(root=A2ATextPart(text="Part 1")),
+            A2APart(root=A2ATextPart(text="Part 2")),
+        ],
+        metadata={"msg_key": "msg_value"},
     )
 
     with patch(
@@ -176,61 +162,40 @@ class TestBuildA2ARequestLog:
       result = build_a2a_request_log(req)
 
     # Verify all components are present
-    assert "req-123" in result
-    assert "message/send" in result
-    assert "2.0" in result
     assert "msg-456" in result
     assert "user" in result
     assert "task-789" in result
     assert "ctx-101" in result
     assert "Part 0:" in result
     assert "Part 1:" in result
-    assert '"blocking": true' in result
-    assert '"history_length": 10' in result
-    assert '"key1": "value1"' in result
 
   def test_request_without_parts(self):
     """Test request logging without message parts."""
 
     req = Mock()
-    req.id = "req-123"
-    req.method = "message/send"
-    req.jsonrpc = "2.0"
 
-    req.params.message.message_id = "msg-456"
-    req.params.message.role = "user"
-    req.params.message.task_id = "task-789"
-    req.params.message.context_id = "ctx-101"
-    req.params.message.parts = None  # No parts
-    req.params.message.metadata = None  # No message metadata
-
-    req.params.configuration = None  # No configuration
-    req.params.metadata = None  # No metadata
+    req.message_id = "msg-456"
+    req.role = "user"
+    req.task_id = "task-789"
+    req.context_id = "ctx-101"
+    req.parts = None  # No parts
+    req.metadata = None  # No message metadata
 
     result = build_a2a_request_log(req)
 
     assert "No parts" in result
-    assert "Configuration:\nNone" in result
-    # When metadata is None, it's not included in the output
-    assert "Metadata:" not in result
 
   def test_request_with_empty_parts_list(self):
     """Test request logging with empty parts list."""
 
     req = Mock()
-    req.id = "req-123"
-    req.method = "sendMessage"
-    req.jsonrpc = "2.0"
 
-    req.params.message.message_id = "msg-456"
-    req.params.message.role = "user"
-    req.params.message.task_id = "task-789"
-    req.params.message.context_id = "ctx-101"
-    req.params.message.parts = []  # Empty parts list
-    req.params.message.metadata = None  # No message metadata
-
-    req.params.configuration = None
-    req.params.metadata = None
+    req.message_id = "msg-456"
+    req.role = "user"
+    req.task_id = "task-789"
+    req.context_id = "ctx-101"
+    req.parts = []  # Empty parts list
+    req.metadata = None  # No message metadata
 
     result = build_a2a_request_log(req)
 
@@ -240,61 +205,19 @@ class TestBuildA2ARequestLog:
 class TestBuildA2AResponseLog:
   """Test suite for build_a2a_response_log function."""
 
-  def test_error_response(self):
-    """Test error response logging."""
-
-    resp = Mock()
-    resp.root.error.code = 500
-    resp.root.error.message = "Internal Server Error"
-    resp.root.error.data = {"details": "Something went wrong"}
-    resp.root.id = "resp-error"
-    resp.root.jsonrpc = "2.0"
-
-    result = build_a2a_response_log(resp)
-
-    assert "Type: ERROR" in result
-    assert "Error Code: 500" in result
-    assert "Internal Server Error" in result
-    assert '"details": "Something went wrong"' in result
-    assert "resp-error" in result
-    assert "2.0" in result
-
-  def test_error_response_no_data(self):
-    """Test error response logging without error data."""
-
-    resp = Mock()
-    resp.root.error.code = 404
-    resp.root.error.message = "Not Found"
-    resp.root.error.data = None
-    resp.root.id = "resp-404"
-    resp.root.jsonrpc = "2.0"
-
-    result = build_a2a_response_log(resp)
-
-    assert "Type: ERROR" in result
-    assert "Error Code: 404" in result
-    assert "Not Found" in result
-    assert "Error Data: None" in result
-
-  def test_success_response_with_task(self):
+  def test_success_response_with_client_event(self):
     """Test success response logging with Task result."""
     # Use module-level imported types consistently
 
     task_status = TaskStatus(state=TaskState.working)
     task = A2ATask(id="task-123", context_id="ctx-456", status=task_status)
 
-    resp = Mock()
-    resp.root.result = task
-    resp.root.id = "resp-789"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = (task, None)
 
     result = build_a2a_response_log(resp)
 
     assert "Type: SUCCESS" in result
-    assert "Result Type: Task" in result
+    assert "Result Type: ClientEvent" in result
     assert "Task ID: task-123" in result
     assert "Context ID: ctx-456" in result
     # Handle both structured format and JSON fallback due to potential isinstance failures
@@ -327,13 +250,7 @@ class TestBuildA2AResponseLog:
         artifacts=None,
     )
 
-    resp = Mock()
-    resp.root.result = task
-    resp.root.id = "resp-789"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = (task, None)
 
     result = build_a2a_response_log(resp)
 
@@ -359,13 +276,7 @@ class TestBuildA2AResponseLog:
         parts=[A2APart(root=A2ATextPart(text="Message part 1"))],
     )
 
-    resp = Mock()
-    resp.root.result = message
-    resp.root.id = "resp-101"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = message
 
     result = build_a2a_response_log(resp)
 
@@ -395,13 +306,7 @@ class TestBuildA2AResponseLog:
     message.parts = None  # No parts
     message.model_dump_json.return_value = '{"message": "empty"}'
 
-    resp = Mock()
-    resp.root.result = message
-    resp.root.id = "resp-empty"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = message
 
     result = build_a2a_response_log(resp)
 
@@ -415,13 +320,7 @@ class TestBuildA2AResponseLog:
     other_result.__class__.__name__ = "OtherResult"
     other_result.model_dump_json.return_value = '{"other": "data"}'
 
-    resp = Mock()
-    resp.root.result = other_result
-    resp.root.id = "resp-other"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = other_result
 
     result = build_a2a_response_log(resp)
 
@@ -438,13 +337,7 @@ class TestBuildA2AResponseLog:
     # Don't add model_dump_json method
     del other_result.model_dump_json
 
-    resp = Mock()
-    resp.root.result = other_result
-    resp.root.id = "resp-simple"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = other_result
 
     result = build_a2a_response_log(resp)
 
@@ -473,19 +366,13 @@ class TestBuildA2AResponseLog:
     """Test request logging with message metadata."""
 
     req = Mock()
-    req.id = "req-with-metadata"
-    req.method = "sendMessage"
-    req.jsonrpc = "2.0"
 
-    req.params.message.message_id = "msg-with-metadata"
-    req.params.message.role = "user"
-    req.params.message.task_id = "task-metadata"
-    req.params.message.context_id = "ctx-metadata"
-    req.params.message.parts = []
-    req.params.message.metadata = {"msg_type": "test", "priority": "high"}
-
-    req.params.configuration = None
-    req.params.metadata = None
+    req.message_id = "msg-with-metadata"
+    req.role = "user"
+    req.task_id = "task-metadata"
+    req.context_id = "ctx-metadata"
+    req.parts = []
+    req.metadata = {"msg_type": "test", "priority": "high"}
 
     result = build_a2a_request_log(req)
 

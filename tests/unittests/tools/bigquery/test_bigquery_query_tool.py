@@ -1000,7 +1000,7 @@ def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
 
   execute_sql(project, query, credentials, tool_settings, tool_context)
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == project
   assert mock_get_bigquery_client.call_args.kwargs["credentials"] == credentials
   assert (

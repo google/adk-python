@@ -437,10 +437,17 @@ def _model_response_to_chunk(
       for tool_call in message.get("tool_calls"):
         # aggregate tool_call
         if tool_call.type == "function":
+          func_name = tool_call.function.name
+          func_args = tool_call.function.arguments
+
+          # Ignore empty chunks that don't carry any information.
+          if not func_name and not func_args:
+            continue
+
           yield FunctionChunk(
               id=tool_call.id,
-              name=tool_call.function.name,
-              args=tool_call.function.arguments,
+              name=func_name,
+              args=func_args,
               index=tool_call.index,
           ), finish_reason
 

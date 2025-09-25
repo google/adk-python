@@ -325,7 +325,14 @@ class LocalEvalSetsManager(EvalSetsManager):
 
   def _write_eval_set_to_path(self, eval_set_path: str, eval_set: EvalSet):
     with open(eval_set_path, "w", encoding="utf-8") as f:
-      f.write(eval_set.model_dump_json(indent=2))
+      f.write(
+          eval_set.model_dump_json(
+              indent=2,
+              exclude_unset=True,
+              exclude_defaults=True,
+              exclude_none=True,
+          )
+      )
 
   def _save_eval_set(self, app_name: str, eval_set_id: str, eval_set: EvalSet):
     eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)

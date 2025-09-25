@@ -97,6 +97,7 @@ def execute_sql(
     bq_client = client.get_bigquery_client(
         project=project_id,
         credentials=credentials,
+        location=settings.location,
         user_agent=settings.application_name,
     )
 
@@ -604,11 +605,12 @@ def forecast(
     history_data: str,
     timestamp_col: str,
     data_col: str,
+    horizon: int = 10,
+    id_cols: Optional[list[str]] = None,
+    *,
     credentials: Credentials,
     settings: BigQueryToolConfig,
     tool_context: ToolContext,
-    horizon: int = 10,
-    id_cols: Optional[list[str]] = None,
 ) -> dict:
   """Run a BigQuery AI time series forecast using AI.FORECAST.
 
@@ -622,14 +624,14 @@ def forecast(
         each data point.
       data_col (str): The name of the column containing the numerical values to
         be forecasted.
-      credentials (Credentials): The credentials to use for the request.
-      settings (BigQueryToolConfig): The settings for the tool.
-      tool_context (ToolContext): The context for the tool.
       horizon (int, optional): The number of time steps to forecast into the
         future. Defaults to 10.
       id_cols (list, optional): The column names of the id columns to indicate
         each time series when there are multiple time series in the table. All
         elements must be strings. Defaults to None.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
 
   Returns:
       dict: Dictionary representing the result of the forecast. The result

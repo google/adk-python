@@ -134,7 +134,18 @@ class LlmAgent(BaseAgent):
   """The config type for this agent."""
 
   instruction: Union[str, InstructionProvider] = ''
-  """Instructions for the LLM model, guiding the agent's behavior."""
+  """Dynamic instructions for the LLM model, guiding the agent's behavior.
+
+  These instructions can contain placeholders like {variable_name} that will be
+  resolved at runtime using session state and context.
+
+  **Behavior depends on static_instruction:**
+  - If static_instruction is None: instruction goes to system_instruction
+  - If static_instruction is set: instruction goes to user content in the request
+
+  This allows for context caching optimization where static content (static_instruction)
+  comes first in the prompt, followed by dynamic content (instruction).
+  """
 
   global_instruction: Union[str, InstructionProvider] = ''
   """Instructions for all the agents in the entire agent tree.
@@ -143,6 +154,48 @@ class LlmAgent(BaseAgent):
 
   For example: use global_instruction to make all agents have a stable identity
   or personality.
+  """
+
+  static_instruction: Optional[types.Content] = None
+  """Static instruction content sent literally as system instruction at the beginning.
+
+  This field is for content that never changes and doesn't contain placeholders.
+  It's sent directly to the model without any processing or variable substitution.
+
+  This field is primarily for context caching optimization. Static instructions
+  are sent as system instruction at the beginning of the request, allowing
+  for improved performance when the static portion remains unchanged. Live API
+  has its own cache mechanism, thus this field doesn't work with Live API.
+
+  **Impact on instruction field:**
+  - When static_instruction is None: instruction → system_instruction
+  - When static_instruction is set: instruction → user content (after static content)
+
+  **Context Caching:**
+  - **Implicit Cache**: Automatic caching by model providers (no config needed)
+  - **Explicit Cache**: Cache explicitly created by user for instructions, tools and contents
+
+  See below for more information of Implicit Cache and Explicit Cache
+  Gemini API: https://ai.google.dev/gemini-api/docs/caching?lang=python
+  Vertex API: https://cloud.google.com/vertex-ai/generative-ai/docs/context-cache/context-cache-overview
+
+  Setting static_instruction alone does NOT enable caching automatically.
+  For explicit caching control, configure context_cache_config at App level.
+
+  **Content Support:**
+  Can contain text, files, binaries, or any combination as types.Content
+  supports multiple part types (text, inline_data, file_data, etc.).
+
+  **Example:**
+  ```python
+  static_instruction = types.Content(
+      role='user',
+      parts=[
+          types.Part(text='You are a helpful assistant.'),
+          types.Part(file_data=types.FileData(...))
+      ]
+  )
+  ```
   """
 
   tools: list[ToolUnion] = Field(default_factory=list)
@@ -462,7 +515,9 @@ class LlmAgent(BaseAgent):
     ):
 
       result = ''.join(
-          [part.text if part.text else '' for part in event.content.parts]
+          part.text
+          for part in event.content.parts
+          if part.text and not part.thought
       )
       if self.output_schema:
         # If the result from the final chunk is just whitespace or empty,
@@ -598,6 +653,8 @@ class LlmAgent(BaseAgent):
       kwargs['model'] = config.model
     if config.instruction:
       kwargs['instruction'] = config.instruction
+    if config.static_instruction:
+      kwargs['static_instruction'] = config.static_instruction
     if config.disallow_transfer_to_parent:
       kwargs['disallow_transfer_to_parent'] = config.disallow_transfer_to_parent
     if config.disallow_transfer_to_peers:

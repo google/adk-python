@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from ..agents.llm_agent import Agent
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
+from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
@@ -31,11 +32,16 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from .app_details import AppDetails
 from .eval_case import EvalCase
-from .eval_case import IntermediateData
 from .eval_case import Invocation
+from .eval_case import InvocationEvent
+from .eval_case import InvocationEvents
 from .eval_case import SessionInput
 from .eval_set import EvalSet
+
+_USER_AUTHOR = "user"
+_DEFAULT_AUTHOR = "agent"
 
 
 class EvalCaseResponses(BaseModel):
@@ -170,56 +176,105 @@ class EvaluationGenerator:
     if not artifact_service:
       artifact_service = InMemoryArtifactService()
 
-    runner = Runner(
+    # Reset agent state for each query
+    if callable(reset_func):
+      reset_func()
+
+    async with Runner(
         app_name=app_name,
         agent=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-    )
+    ) as runner:
+      events = []
 
-    # Reset agent state for each query
-    if callable(reset_func):
-      reset_func()
+      for invocation in invocations:
+        user_content = invocation.user_content
+        invocation_id = None
 
-    response_invocations = []
+        async with Aclosing(
+            runner.run_async(
+                user_id=user_id, session_id=session_id, new_message=user_content
+            )
+        ) as agen:
 
-    for invocation in invocations:
+          async for event in agen:
+            if not invocation_id:
+              invocation_id = event.invocation_id
+              events.append(
+                  Event(
+                      content=user_content,
+                      author=_USER_AUTHOR,
+                      invocation_id=invocation_id,
+                  )
+              )
+
+            events.append(event)
+
+      return EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  @staticmethod
+  def convert_events_to_eval_invocations(
+      events: list[Event],
+  ) -> list[Invocation]:
+    """Converts a list of events to eval invocations."""
+    # Group Events by invocation id. Events that share the same invocation id
+    # belong to the same invocation.
+    events_by_invocation_id: dict[str, list[Event]] = {}
+
+    for event in events:
+      invocation_id = event.invocation_id
+
+      if invocation_id not in events_by_invocation_id:
+        events_by_invocation_id[invocation_id] = []
+
+      events_by_invocation_id[invocation_id].append(event)
+
+    invocations = []
+    for invocation_id, events in events_by_invocation_id.items():
       final_response = None
-      user_content = invocation.user_content
-      tool_uses = []
-      invocation_id = ""
+      user_content = ""
+      invocation_timestamp = 0
 
-      async with Aclosing(
-          runner.run_async(
-              user_id=user_id, session_id=session_id, new_message=user_content
-          )
-      ) as agen:
-        async for event in agen:
-          invocation_id = (
-              event.invocation_id if not invocation_id else invocation_id
-          )
+      events_to_add = []
 
-          if (
-              event.is_final_response()
-              and event.content
-              and event.content.parts
-          ):
+      for event in events:
+        current_author = (event.author or _DEFAULT_AUTHOR).lower()
+
+        if current_author == _USER_AUTHOR:
+          # If the author is the user, then we just identify it and move on
+          # to the next event.
+          user_content = event.content
+          invocation_timestamp = event.timestamp
+          continue
+
+        if event.content and event.content.parts:
+          if event.is_final_response():
             final_response = event.content
-          elif event.get_function_calls():
-            for call in event.get_function_calls():
-              tool_uses.append(call)
+          else:
+            for p in event.content.parts:
+              if p.function_call or p.function_response or p.text:
+                events_to_add.append(event)
+                break
 
-      response_invocations.append(
+      invocation_events = [
+          InvocationEvent(author=e.author, content=e.content)
+          for e in events_to_add
+      ]
+      invocations.append(
           Invocation(
               invocation_id=invocation_id,
               user_content=user_content,
               final_response=final_response,
-              intermediate_data=IntermediateData(tool_uses=tool_uses),
+              intermediate_data=InvocationEvents(
+                  invocation_events=invocation_events
+              ),
+              creation_timestamp=invocation_timestamp,
           )
       )
 
-    return response_invocations
+    return invocations
 
   @staticmethod
   def _process_query_with_session(session_data, data):

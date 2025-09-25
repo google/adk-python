@@ -34,6 +34,7 @@ pytestmark = pytest.mark.skipif(
 # Import dependencies with version checking
 try:
   from a2a.client.client import ClientConfig
+  from a2a.client.client import Consumer
   from a2a.client.client_factory import ClientFactory
   from a2a.types import AgentCapabilities
   from a2a.types import AgentCard
@@ -245,6 +246,50 @@ class TestRemoteA2aAgentResolution:
 
     assert client == existing_client
     assert agent._httpx_client_needs_cleanup is False
+
+  @pytest.mark.asyncio
+  async def test_ensure_httpx_client_updates_factory_with_new_client(self):
+    """Test that _ensure_httpx_client updates factory with new client."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+        a2a_client_factory=ClientFactory(
+            ClientConfig(httpx_client=None),
+        ),
+    )
+    assert agent._a2a_client_factory._config.httpx_client is None
+
+    client = await agent._ensure_httpx_client()
+
+    assert client is not None
+    assert agent._httpx_client == client
+    assert agent._httpx_client_needs_cleanup is True
+    assert agent._a2a_client_factory._config.httpx_client == client
+
+  @pytest.mark.asyncio
+  async def test_ensure_httpx_client_reregisters_transports_with_new_client(
+      self,
+  ):
+    """Test that _ensure_httpx_client registers transports with new client."""
+    factory = ClientFactory(
+        ClientConfig(httpx_client=None),
+    )
+    factory.register("transport_label", lambda: "test")
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+        a2a_client_factory=factory,
+    )
+    assert agent._a2a_client_factory._config.httpx_client is None
+    assert "transport_label" in agent._a2a_client_factory._registry
+
+    client = await agent._ensure_httpx_client()
+
+    assert client is not None
+    assert agent._httpx_client == client
+    assert agent._httpx_client_needs_cleanup is True
+    assert agent._a2a_client_factory._config.httpx_client == client
+    assert "transport_label" in agent._a2a_client_factory._registry
 
   @pytest.mark.asyncio
   async def test_resolve_agent_card_from_url_success(self):
