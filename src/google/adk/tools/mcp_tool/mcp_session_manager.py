@@ -88,9 +88,11 @@ class SseConnectionParams(BaseModel):
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
 
+
 @runtime_checkable
 class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
   pass
+
 
 class StreamableHTTPConnectionParams(BaseModel):
   """Parameters for the MCP Streamable HTTP connection.

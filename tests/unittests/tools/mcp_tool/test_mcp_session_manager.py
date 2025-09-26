@@ -146,7 +146,7 @@ class TestMCPSessionManager:
 
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamablehttp_client")
   def test_init_with_streamable_http_custom_httpx_factory(
-    self, mock_streamablehttp_client
+      self, mock_streamablehttp_client
   ):
     """Test that streamablehttp_client is called with custom httpx_client_factory."""
     from datetime import timedelta
@@ -154,27 +154,27 @@ class TestMCPSessionManager:
     custom_httpx_factory = Mock()
 
     http_params = StreamableHTTPConnectionParams(
-      url="https://example.com/mcp",
-      timeout=15.0,
-      httpx_client_factory=custom_httpx_factory,
+        url="https://example.com/mcp",
+        timeout=15.0,
+        httpx_client_factory=custom_httpx_factory,
     )
     manager = MCPSessionManager(http_params)
 
     manager._create_client()
 
     mock_streamablehttp_client.assert_called_once_with(
-      url="https://example.com/mcp",
-      headers=None,
-      timeout=timedelta(seconds=15.0),
-      sse_read_timeout=timedelta(seconds=300.0),
-      terminate_on_close=True,
-      httpx_client_factory=custom_httpx_factory,
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=timedelta(seconds=15.0),
+        sse_read_timeout=timedelta(seconds=300.0),
+        terminate_on_close=True,
+        httpx_client_factory=custom_httpx_factory,
     )
 
   @pytest.mark.asyncio
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamablehttp_client")
   async def test_init_with_streamable_http_default_httpx_factory(
-    self, mock_streamablehttp_client
+      self, mock_streamablehttp_client
   ):
     """Test that streamablehttp_client is called with custom httpx_client_factory."""
     from datetime import timedelta
@@ -182,23 +182,20 @@ class TestMCPSessionManager:
     from mcp.client.streamable_http import create_mcp_http_client
 
     http_params = StreamableHTTPConnectionParams(
-      url="https://example.com/mcp",
-      timeout=15.0
+        url="https://example.com/mcp", timeout=15.0
     )
     manager = MCPSessionManager(http_params)
 
     manager._create_client()
 
     mock_streamablehttp_client.assert_called_once_with(
-      url="https://example.com/mcp",
-      headers=None,
-      timeout=timedelta(seconds=15.0),
-      sse_read_timeout=timedelta(seconds=300.0),
-      terminate_on_close=True,
-      httpx_client_factory=create_mcp_http_client,
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=timedelta(seconds=15.0),
+        sse_read_timeout=timedelta(seconds=300.0),
+        terminate_on_close=True,
+        httpx_client_factory=create_mcp_http_client,
     )
-
-
 
   def test_generate_session_key_stdio(self):
     """Test session key generation for stdio connections."""
