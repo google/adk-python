@@ -126,6 +126,12 @@ class LlmResponse(BaseModel):
   This field is automatically populated when context caching is enabled.
   """
 
+  citation_metadata: Optional[types.CitationMetadata] = None
+  """Citation metadata for the response.
+
+  This field is automatically populated when citation is enabled.
+  """
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
@@ -148,6 +154,7 @@ class LlmResponse(BaseModel):
             grounding_metadata=candidate.grounding_metadata,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
+            citation_metadata=candidate.citation_metadata,
             avg_logprobs=candidate.avg_logprobs,
             logprobs_result=candidate.logprobs_result,
         )
@@ -155,6 +162,7 @@ class LlmResponse(BaseModel):
         return LlmResponse(
             error_code=candidate.finish_reason,
             error_message=candidate.finish_message,
+            citation_metadata=candidate.citation_metadata,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
             avg_logprobs=candidate.avg_logprobs,
