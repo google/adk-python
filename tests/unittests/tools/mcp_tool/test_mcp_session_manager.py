@@ -178,6 +178,7 @@ class TestMCPSessionManager:
   ):
     """Test that streamablehttp_client is called with custom httpx_client_factory."""
     from datetime import timedelta
+
     from mcp.client.streamable_http import create_mcp_http_client
 
     http_params = StreamableHTTPConnectionParams(
