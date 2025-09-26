@@ -350,6 +350,8 @@ def _get_current_turn_contents(
   # Find the latest event that starts the current turn and process from there
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
+    if not event.content:
+      continue
     if event.author == 'user' or _is_other_agent_reply(agent_name, event):
       return _get_contents(current_branch, events[i:], agent_name)
 
