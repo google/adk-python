@@ -1,5 +1,60 @@
 # Changelog
 
+## [1.15.0](https://github.com/google/adk-python/compare/v1.14.1...v1.15.0) (2025-09-24)
+
+### Features
+
+* [Core]
+  * Adding the ContextFilterPlugin ([a06bf27](https://github.com/google/adk-python/commit/a06bf278cbc89f521c187ed51b032d82ffdafe2d))
+  * Adds plugin to save artifacts for issue [#2176](https://github.com/google/adk-python/issues/2176) ([657369c](https://github.com/google/adk-python/commit/657369cffe142ef3745cd5950d0d24a49f42f7fd))
+  * Expose log probs of candidates in LlmResponse ([f7bd3c1](https://github.com/google/adk-python/commit/f7bd3c111c211e880d7c1954dd4508b952704c68))
+* [Context Caching]
+  * Support context caching ([c66245a](https://github.com/google/adk-python/commit/c66245a3b80192c16cb67ee3194f82c9a7c901e5))
+    - Support explicit context caching auto creation and lifecycle management.
+
+      Usage: `App(root_agent=..., plugins=..., context_cache_config=...)`
+  * Support non-text content in static instruction ([61213ce](https://github.com/google/adk-python/commit/61213ce4d4c10f7ecaf6ddb521672059cee27942))
+  * Support static instructions ([9be9cc2](https://github.com/google/adk-python/commit/9be9cc2feee92241fd2fbf9dea3a42de5a78e9ce))
+    - Support static instruction that won't change, put at the beginning of
+      the instruction.
+      Static instruction support inline_data and file_data as contents.
+      Dynamic instruction moved to the end of LlmRequest, increasing prefix
+      caching matching size.
+
+      Usage:
+      `LlmAgent(model=...,static_instruction =types.Content(parts=...), ... )`
+* [Telemetry]
+  * Add --otel_to_cloud experimental support ([1ae0b82](https://github.com/google/adk-python/commit/1ae0b82f5602a57ad1ca975ca0b7c85003d1a28a), [b131268](https://github.com/google/adk-python/commit/b1312680f4ea9f21c3246a1d24392619643d71f5), [7870480](https://github.com/google/adk-python/commit/7870480c63bb4fc08cfb3cabc0e1f0458f0e85bd))
+  * Add GenAI Instrumentation if --otel_to_cloud is enabled ([cee365a](https://github.com/google/adk-python/commit/cee365a13d0d1b1f2be046c1cc29e24a8d1fdbcc))
+  * Support standard OTel env variables for exporter endpoints ([f157b2e](https://github.com/google/adk-python/commit/f157b2ee4caf4055e78f4657254e45913895f5de))
+  * Temporarily disable Cloud Monitoring integration in --otel_to_cloud ([3b80337](https://github.com/google/adk-python/commit/3b80337faf427460e4743e25dbb92578f823513f))
+* [Services]
+  * Add endpoint to generate memory from session ([2595824](https://github.com/google/adk-python/commit/25958242db890b4d2aac8612f7f7cfbb561727fa))
+* [Tools]
+  * Add Google Maps Grounding Tool to ADK ([6b49391](https://github.com/google/adk-python/commit/6b493915469ecb42068e24818ab547b0856e4709))
+  * **MCP:** Initialize tool_name_prefix in MCPToolse ([86dea5b](https://github.com/google/adk-python/commit/86dea5b53ac305367283b7e353b60d0f4515be3b))
+* [Evals]
+  * Data model for storing App Details and data model for steps ([01923a9](https://github.com/google/adk-python/commit/01923a9227895906ca8ae32712d65b178e2cd7d5))
+  * Adds Rubric based final response evaluator ([5a485b0](https://github.com/google/adk-python/commit/5a485b01cd64cb49735e13ebd5e7fa3da02cd85f))
+  * Populate AppDetails to each Invocation ([d486795](https://github.com/google/adk-python/commit/d48679582de91050ca9c5106402319be9a8ae7e8))
+* [Samples]
+  * Make the bigquery sample agent run with ADC out-of-the-box ([10cf377](https://github.com/google/adk-python/commit/10cf37749417856e394e62896231e41b13420f18))
+
+### Bug Fixes
+
+* Close runners after running eval ([86ee6e3](https://github.com/google/adk-python/commit/86ee6e3fa3690148d60358fc3dacb0e0ab40942b))
+* Filter out thought parts when saving agent output to state ([632bf8b](https://github.com/google/adk-python/commit/632bf8b0bcf18ff4e4505e4e5f4c626510f366a2))
+* Ignore empty function chunk in LiteLlm streaming response ([8a92fd1](https://github.com/google/adk-python/commit/8a92fd18b600da596c22fd80c6148511a136dfd0))
+* Introduces a `raw_mcp_tool` method in `McpTool` to provide direct access to the underlying MCP tool ([6158075](https://github.com/google/adk-python/commit/6158075a657f8fe0835679e509face6191905403))
+* Make a copy of the `columns` instead of modifying it in place ([aef1ee9](https://github.com/google/adk-python/commit/aef1ee97a55a310f3959d475b8d7d6bc3915ae48))
+* Prevent escaping of Latin characters in LLM response ([c9ea80a](https://github.com/google/adk-python/commit/c9ea80af28e586c9cc1f643b365cdba82f80c700))
+* Retain the consumers and transport registry when recreating the ClientFactory in remote_a2a_agent.py ([6bd33e1](https://github.com/google/adk-python/commit/6bd33e1be36f741a6ed0514197550f9f336262ed))
+* Remove unsupported 'type': 'unknown' in test_common.py for fastapi 0.117.1 ([3745221](https://github.com/google/adk-python/commit/374522197fa6843f786bfd12d17ce0fc20461dfd))
+
+### Documentation
+
+* Correct the documentation of `after_agent_callback` ([b9735b2](https://github.com/google/adk-python/commit/b9735b2193267645781b268231d63c23c6fec654))
+
 ## [1.14.1](https://github.com/google/adk-python/compare/v1.14.0...v1.14.1) (2025-09-12)
 
 ### Bug Fixes
