@@ -52,6 +52,8 @@ class PrebuiltMetrics(Enum):
       "rubric_based_final_response_quality_v1"
   )
 
+  RUBRIC_BASED_TOOL_USE_QUALITY_V1 = "rubric_based_tool_use_quality_v1"
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float

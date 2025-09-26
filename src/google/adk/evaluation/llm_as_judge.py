@@ -26,6 +26,7 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
+from ..utils.feature_decorator import experimental
 from .common import EvalBaseModel
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
@@ -42,6 +43,7 @@ class AutoRaterScore(EvalBaseModel):
   rubric_scores: Optional[list[RubricScore]] = None
 
 
+@experimental
 class LlmAsJudge(Evaluator):
   """Evaluator based on a LLM.
 

@@ -25,6 +25,7 @@ from .evaluator import Evaluator
 from .final_response_match_v2 import FinalResponseMatchV2Evaluator
 from .response_evaluator import ResponseEvaluator
 from .rubric_based_final_response_quality_v1 import RubricBasedFinalResponseQualityV1Evaluator
+from .rubric_based_tool_use_quality_v1 import RubricBasedToolUseV1Evaluator
 from .safety_evaluator import SafetyEvaluatorV1
 from .trajectory_evaluator import TrajectoryEvaluator
 
@@ -115,6 +116,10 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
   metric_evaluator_registry.register_evaluator(
       metric_info=RubricBasedFinalResponseQualityV1Evaluator.get_metric_info(),
       evaluator=RubricBasedFinalResponseQualityV1Evaluator,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_info=RubricBasedToolUseV1Evaluator.get_metric_info(),
+      evaluator=RubricBasedToolUseV1Evaluator,
   )
 
   return metric_evaluator_registry
