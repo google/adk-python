@@ -38,7 +38,9 @@ try:
   from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
-  from mcp.client.streamable_http import streamablehttp_client, McpHttpClientFactory, create_mcp_http_client
+  from mcp.client.streamable_http import streamablehttp_client
+  from mcp.client.streamable_http import McpHttpClientFactory
+  from mcp.client.streamable_http import create_mcp_http_client
 except ImportError as e:
 
   if sys.version_info < (3, 10):
