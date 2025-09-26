@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 import uuid
 
@@ -162,6 +163,12 @@ class InvocationContext(BaseModel):
   session: Session
   """The current session of this invocation context. Readonly."""
 
+  agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
+  """The state of the agent for this invocation."""
+
+  end_of_agents: dict[str, bool] = Field(default_factory=dict)
+  """The end of agent status for each agent in this invocation."""
+
   end_invocation: bool = False
   """Whether to end this invocation.
 
@@ -200,6 +207,11 @@ class InvocationContext(BaseModel):
   """A container to keep track of different kinds of costs incurred as a part
   of this invocation.
   """
+
+  def reset_agent_state(self, agent_name: str) -> None:
+    """Resets the state of an agent, allowing it to be re-run."""
+    self.agent_states.pop(agent_name, None)
+    self.end_of_agents.pop(agent_name, None)
 
   def increment_llm_call_count(
       self,
@@ -247,6 +259,45 @@ class InvocationContext(BaseModel):
     if current_branch:
       results = [event for event in results if event.branch == self.branch]
     return results
+
+  def should_pause_invocation(self, event: Event) -> bool:
+    """Returns whether to pause the invocation right after this event.
+
+    "Pausing" an invocation is different from "ending" an invocation. A paused
+    invocation can be resumed later, while an ended invocation cannot.
+
+    Pausing the current agent's run will also pause all the agents that
+    depend on its execution, i.e. the subsequent agents in a workflow, and the
+    current agent's ancestors, etc.
+
+    Note that parallel sibling agents won't be affected, but their common
+    ancestors will be paused after all the non-blocking sub-agents finished
+    running.
+
+    Should meet all following conditions to pause an invocation:
+      1. The app is resumable.
+      2. The current event has a long running function call.
+
+    Args:
+      event: The current event.
+
+    Returns:
+      Whether to pause the invocation right after this event.
+    """
+    if (
+        not self.resumability_config
+        or not self.resumability_config.is_resumable
+    ):
+      return False
+
+    if not event.long_running_tool_ids or not event.get_function_calls():
+      return False
+
+    for fc in event.get_function_calls():
+      if fc.id in event.long_running_tool_ids:
+        return True
+
+    return False
 
 
 def new_invocation_context_id() -> str:

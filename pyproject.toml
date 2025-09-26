@@ -38,7 +38,8 @@ dependencies = [
   "google-cloud-spanner>=3.56.0, <4.0.0",                   # For Spanner database
   "google-cloud-speech>=2.30.0, <3.0.0",                    # For Audio Transcription
   "google-cloud-storage>=2.18.0, <3.0.0",                   # For GCS Artifact service
-  "google-genai>=1.21.1, <2.0.0",                           # Google GenAI SDK
+  # TODO: Modify genai version constraint after the connector/client session warning is fixed.
+  "google-genai>=1.21.1, <1.37.0",                           # Google GenAI SDK
   "graphviz>=0.20.2, <1.0.0",                               # Graphviz for graph rendering
   "mcp>=1.8.0, <2.0.0;python_version>='3.10'",              # For MCP Toolset
   "opentelemetry-api>=1.37.0, <=1.37.0",                    # OpenTelemetry - limit upper version for sdk and api to not risk breaking changes from unstable _logs package.
