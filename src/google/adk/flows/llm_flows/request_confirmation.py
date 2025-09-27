@@ -47,8 +47,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
+
     events = invocation_context.session.events
     if not events:
       return

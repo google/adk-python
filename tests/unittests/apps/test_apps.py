@@ -17,6 +17,7 @@ from unittest.mock import Mock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.plugins.base_plugin import BasePlugin
 
 
@@ -68,6 +69,23 @@ class TestApp:
     assert app.context_cache_config.ttl_seconds == 3600
     assert app.context_cache_config.min_tokens == 1024
 
+  def test_app_initialization_with_resumability_config(self):
+    """Test that the app is initialized correctly with app config."""
+    mock_agent = Mock(spec=BaseAgent)
+    resumability_config = ResumabilityConfig(
+        is_resumable=True,
+    )
+    app = App(
+        name="test_app",
+        root_agent=mock_agent,
+        resumability_config=resumability_config,
+    )
+
+    assert app.name == "test_app"
+    assert app.root_agent == mock_agent
+    assert app.resumability_config == resumability_config
+    assert app.resumability_config.is_resumable
+
   def test_app_with_all_components(self):
     """Test app with all components: agent, plugins, and cache config."""
     mock_agent = Mock(spec=BaseAgent)
@@ -75,18 +93,24 @@ class TestApp:
     cache_config = ContextCacheConfig(
         cache_intervals=20, ttl_seconds=7200, min_tokens=2048
     )
+    resumability_config = ResumabilityConfig(
+        is_resumable=True,
+    )
 
     app = App(
         name="full_test_app",
         root_agent=mock_agent,
         plugins=[mock_plugin],
         context_cache_config=cache_config,
+        resumability_config=resumability_config,
     )
 
     assert app.name == "full_test_app"
     assert app.root_agent == mock_agent
     assert app.plugins == [mock_plugin]
     assert app.context_cache_config == cache_config
+    assert app.resumability_config == resumability_config
+    assert app.resumability_config.is_resumable
 
   def test_app_cache_config_defaults(self):
     """Test that cache config has proper defaults when created."""
@@ -118,3 +142,29 @@ class TestApp:
         context_cache_config=None,
     )
     assert app.context_cache_config is None
+
+  def test_app_resumability_config_defaults(self):
+    """Test that app config has proper defaults when created."""
+    mock_agent = Mock(spec=BaseAgent)
+
+    app = App(
+        name="default_resumability_config_app",
+        root_agent=mock_agent,
+        resumability_config=ResumabilityConfig(),
+    )
+    assert app.resumability_config is not None
+    assert not app.resumability_config.is_resumable  # Default
+
+  def test_app_resumability_config_is_optional(self):
+    """Test that resumability_config is truly optional."""
+    mock_agent = Mock(spec=BaseAgent)
+
+    app = App(name="no_resumability_config_app", root_agent=mock_agent)
+    assert app.resumability_config is None
+
+    app = App(
+        name="explicit_none_resumability_config_app",
+        root_agent=mock_agent,
+        resumability_config=None,
+    )
+    assert app.resumability_config is None

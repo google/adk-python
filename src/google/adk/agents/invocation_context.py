@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
-from typing import TYPE_CHECKING
 import uuid
 
 from google.genai import types
@@ -24,6 +24,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
 
+from ..apps.app import ResumabilityConfig
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events.event import Event
@@ -31,7 +32,6 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
-from ..utils.feature_decorator import working_in_progress
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .context_cache_config import ContextCacheConfig
@@ -163,6 +163,12 @@ class InvocationContext(BaseModel):
   session: Session
   """The current session of this invocation context. Readonly."""
 
+  agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
+  """The state of the agent for this invocation."""
+
+  end_of_agents: dict[str, bool] = Field(default_factory=dict)
+  """The end of agent status for each agent in this invocation."""
+
   end_invocation: bool = False
   """Whether to end this invocation.
 
@@ -189,6 +195,9 @@ class InvocationContext(BaseModel):
   run_config: Optional[RunConfig] = None
   """Configurations for live agents under this invocation."""
 
+  resumability_config: Optional[ResumabilityConfig] = None
+  """The resumability config that applies to all agents under this invocation."""
+
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
@@ -198,6 +207,19 @@ class InvocationContext(BaseModel):
   """A container to keep track of different kinds of costs incurred as a part
   of this invocation.
   """
+
+  @property
+  def is_resumable(self) -> bool:
+    """Returns whether the current invocation is resumable."""
+    return (
+        self.resumability_config is not None
+        and self.resumability_config.is_resumable
+    )
+
+  def reset_agent_state(self, agent_name: str) -> None:
+    """Resets the state of an agent, allowing it to be re-run."""
+    self.agent_states.pop(agent_name, None)
+    self.end_of_agents.pop(agent_name, None)
 
   def increment_llm_call_count(
       self,
@@ -220,7 +242,6 @@ class InvocationContext(BaseModel):
   def user_id(self) -> str:
     return self.session.user_id
 
-  @working_in_progress("incomplete feature, don't use yet")
   def get_events(
       self,
       current_invocation: bool = False,
@@ -246,6 +267,42 @@ class InvocationContext(BaseModel):
     if current_branch:
       results = [event for event in results if event.branch == self.branch]
     return results
+
+  def should_pause_invocation(self, event: Event) -> bool:
+    """Returns whether to pause the invocation right after this event.
+
+    "Pausing" an invocation is different from "ending" an invocation. A paused
+    invocation can be resumed later, while an ended invocation cannot.
+
+    Pausing the current agent's run will also pause all the agents that
+    depend on its execution, i.e. the subsequent agents in a workflow, and the
+    current agent's ancestors, etc.
+
+    Note that parallel sibling agents won't be affected, but their common
+    ancestors will be paused after all the non-blocking sub-agents finished
+    running.
+
+    Should meet all following conditions to pause an invocation:
+      1. The app is resumable.
+      2. The current event has a long running function call.
+
+    Args:
+      event: The current event.
+
+    Returns:
+      Whether to pause the invocation right after this event.
+    """
+    if not self.is_resumable:
+      return False
+
+    if not event.long_running_tool_ids or not event.get_function_calls():
+      return False
+
+    for fc in event.get_function_calls():
+      if fc.id in event.long_running_tool_ids:
+        return True
+
+    return False
 
 
 def new_invocation_context_id() -> str:

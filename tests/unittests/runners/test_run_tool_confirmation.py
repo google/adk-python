@@ -19,9 +19,8 @@ from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.agents.loop_agent import LoopAgent
-from google.adk.agents.parallel_agent import ParallelAgent
-from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
@@ -363,3 +362,88 @@ class TestHITLConfirmationFlowWithCustomPayloadSchema(BaseHITLTest):
         testing_utils.simplify_events(copy.deepcopy(events))
         == expected_parts_final
     )
+
+
+class TestHITLConfirmationFlowWithResumableApp:
+  """Tests the HITL confirmation flow with a resumable app."""
+
+  @pytest.fixture
+  def tools(self) -> list[FunctionTool]:
+    """Provides the tools for the agent."""
+    return [FunctionTool(func=_test_request_confirmation_function)]
+
+  @pytest.fixture
+  def llm_responses(
+      self, tools: list[FunctionTool]
+  ) -> list[GenerateContentResponse]:
+    """Provides mock LLM responses for the tests."""
+    return [
+        _create_llm_response_from_tools(tools),
+        _create_llm_response_from_text("test llm response after tool call"),
+        _create_llm_response_from_text(
+            "test llm response after final tool call"
+        ),
+    ]
+
+  @pytest.fixture
+  def mock_model(
+      self, llm_responses: list[GenerateContentResponse]
+  ) -> testing_utils.MockModel:
+    """Provides a mock model with predefined responses."""
+    return testing_utils.MockModel(responses=llm_responses)
+
+  @pytest.fixture
+  def agent(
+      self, mock_model: testing_utils.MockModel, tools: list[FunctionTool]
+  ) -> LlmAgent:
+    """Provides a single LlmAgent for the test."""
+    return LlmAgent(name="root_agent", model=mock_model, tools=tools)
+
+  @pytest.fixture
+  def runner(self, agent: LlmAgent) -> testing_utils.TestInMemoryRunner:
+    """Provides an in-memory runner for the agent."""
+    # Mark the app as resumable. So that the invocation will be paused after the
+    # long running tool call.
+    app = App(
+        name="InMemoryRunner",  # Required for using TestInMemoryRunner.
+        resumability_config=ResumabilityConfig(is_resumable=True),
+        root_agent=agent,
+    )
+    return testing_utils.TestInMemoryRunner(app=app, app_name=None)
+
+  @pytest.mark.asyncio
+  async def test_pause_on_request_confirmation(
+      self,
+      runner: testing_utils.TestInMemoryRunner,
+      agent: LlmAgent,
+  ):
+    """Tests HITL flow where all tool calls are confirmed."""
+    events = await runner.run_async_with_new_session("test user query")
+
+    # Verify that the invocation is paused after the long running tool call.
+    # So that no intermediate function response and llm response is generated.
+    assert testing_utils.simplify_events(copy.deepcopy(events)) == [
+        (
+            agent.name,
+            Part(function_call=FunctionCall(name=agent.tools[0].name, args={})),
+        ),
+        (
+            agent.name,
+            Part(
+                function_call=FunctionCall(
+                    name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                    args={
+                        "originalFunctionCall": {
+                            "name": agent.tools[0].name,
+                            "id": mock.ANY,
+                            "args": {},
+                        },
+                        "toolConfirmation": {
+                            "hint": "test hint for request_confirmation",
+                            "confirmed": False,
+                        },
+                    },
+                )
+            ),
+        ),
+    ]

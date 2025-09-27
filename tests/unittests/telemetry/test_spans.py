@@ -23,6 +23,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
 from google.adk.telemetry.tracing import trace_merged_tool_calls
 from google.adk.telemetry.tracing import trace_tool_call
@@ -81,6 +82,30 @@ async def _create_invocation_context(
 
 
 @pytest.mark.asyncio
+async def test_trace_agent_invocation(mock_span_fixture):
+  """Test trace_agent_invocation sets span attributes correctly."""
+  agent = LlmAgent(name='test_llm_agent', model='gemini-pro')
+  agent.description = 'Test agent description'
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_agent_invocation(mock_span_fixture, agent, invocation_context)
+
+  expected_calls = [
+      mock.call('gen_ai.operation.name', 'invoke_agent'),
+      mock.call('gen_ai.agent.description', agent.description),
+      mock.call('gen_ai.agent.name', agent.name),
+      mock.call(
+          'gen_ai.conversation.id',
+          invocation_context.session.id,
+      ),
+  ]
+  mock_span_fixture.set_attribute.assert_has_calls(
+      expected_calls, any_order=True
+  )
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
+
+
+@pytest.mark.asyncio
 async def test_trace_call_llm(monkeypatch, mock_span_fixture):
   """Test trace_call_llm sets all telemetry attributes correctly with normal content."""
   monkeypatch.setattr(
@@ -90,6 +115,7 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
   agent = LlmAgent(name='test_agent')
   invocation_context = await _create_invocation_context(agent)
   llm_request = LlmRequest(
+      model='gemini-pro',
       contents=[
           types.Content(
               role='user',
@@ -97,7 +123,6 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
           ),
       ],
       config=types.GenerateContentConfig(
-          system_instruction='You are a helpful assistant.',
           top_p=0.95,
           max_output_tokens=1024,
       ),
@@ -117,6 +142,7 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       mock.call('gen_ai.system', 'gcp.vertex.agent'),
       mock.call('gen_ai.request.top_p', 0.95),
       mock.call('gen_ai.request.max_tokens', 1024),
+      mock.call('gcp.vertex.agent.llm_response', mock.ANY),
       mock.call('gen_ai.usage.input_tokens', 50),
       mock.call('gen_ai.usage.output_tokens', 50),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
@@ -139,6 +165,7 @@ async def test_trace_call_llm_with_binary_content(
   agent = LlmAgent(name='test_agent')
   invocation_context = await _create_invocation_context(agent)
   llm_request = LlmRequest(
+      model='gemini-pro',
       contents=[
           types.Content(
               role='user',
@@ -166,7 +193,7 @@ async def test_trace_call_llm_with_binary_content(
               ],
           ),
       ],
-      config=types.GenerateContentConfig(system_instruction=''),
+      config=types.GenerateContentConfig(),
   )
   llm_response = LlmResponse(turn_complete=True)
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
@@ -228,12 +255,11 @@ def test_trace_tool_call_with_scalar_response(
   )
 
   # Assert
-  assert mock_span_fixture.set_attribute.call_count == 10
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
+      mock.call('gen_ai.tool.type', 'BaseTool'),
       mock.call('gen_ai.tool.call.id', test_tool_call_id),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call('gcp.vertex.agent.event_id', test_event_id),
@@ -245,6 +271,7 @@ def test_trace_tool_call_with_scalar_response(
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
 
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -289,10 +316,10 @@ def test_trace_tool_call_with_dict_response(
 
   # Assert
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
+      mock.call('gen_ai.tool.type', 'BaseTool'),
       mock.call('gen_ai.tool.call.id', test_tool_call_id),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call('gcp.vertex.agent.event_id', test_event_id),
@@ -303,7 +330,7 @@ def test_trace_tool_call_with_dict_response(
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
 
-  assert mock_span_fixture.set_attribute.call_count == 10
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -328,7 +355,6 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
   )
 
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', '(merged tools)'),
       mock.call('gen_ai.tool.description', '(merged tools)'),
@@ -340,7 +366,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
 
-  assert mock_span_fixture.set_attribute.call_count == 10
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )

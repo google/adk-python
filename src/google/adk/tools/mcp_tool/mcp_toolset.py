@@ -100,6 +100,7 @@ class McpToolset(BaseToolset):
           StreamableHTTPConnectionParams,
       ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      tool_name_prefix: Optional[str] = None,
       errlog: TextIO = sys.stderr,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
@@ -118,11 +119,13 @@ class McpToolset(BaseToolset):
       tool_filter: Optional filter to select specific tools. Can be either: - A
         list of tool names to include - A ToolPredicate function for custom
         filtering logic
+      tool_name_prefix: A prefix to be added to the name of each tool in this
+        toolset.
       errlog: TextIO stream for error logging.
       auth_scheme: The auth scheme of the tool for tool calling
       auth_credential: The auth credential of the tool for tool calling
     """
-    super().__init__(tool_filter=tool_filter)
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
     if not connection_params:
       raise ValueError("Missing connection params in MCPToolset.")
@@ -207,6 +210,7 @@ class McpToolset(BaseToolset):
     return cls(
         connection_params=connection_params,
         tool_filter=mcp_toolset_config.tool_filter,
+        tool_name_prefix=mcp_toolset_config.tool_name_prefix,
         auth_scheme=mcp_toolset_config.auth_scheme,
         auth_credential=mcp_toolset_config.auth_credential,
     )
@@ -238,6 +242,8 @@ class McpToolsetConfig(BaseToolConfig):
   ] = None
 
   tool_filter: Optional[List[str]] = None
+
+  tool_name_prefix: Optional[str] = None
 
   auth_scheme: Optional[AuthScheme] = None
 
