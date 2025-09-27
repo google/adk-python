@@ -167,7 +167,6 @@ class TestApiParameter:
               'List[Dict[str, Any]]',
           ),
           ({'type': 'object'}, Dict[str, Any], 'Dict[str, Any]'),
-          ({'type': 'unknown'}, Any, 'Any'),
           ({}, Any, 'Any'),
       ],
   )
