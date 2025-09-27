@@ -28,7 +28,7 @@ jobs:
 
       - name: Run Triaging Script
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB }}
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GOOGLE_GENAI_USE_VERTEXAI: 0
           OWNER: 'google'
