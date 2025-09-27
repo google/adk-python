@@ -208,6 +208,14 @@ class InvocationContext(BaseModel):
   of this invocation.
   """
 
+  @property
+  def is_resumable(self) -> bool:
+    """Returns whether the current invocation is resumable."""
+    return (
+        self.resumability_config is not None
+        and self.resumability_config.is_resumable
+    )
+
   def reset_agent_state(self, agent_name: str) -> None:
     """Resets the state of an agent, allowing it to be re-run."""
     self.agent_states.pop(agent_name, None)
@@ -284,10 +292,7 @@ class InvocationContext(BaseModel):
     Returns:
       Whether to pause the invocation right after this event.
     """
-    if (
-        not self.resumability_config
-        or not self.resumability_config.is_resumable
-    ):
+    if not self.is_resumable:
       return False
 
     if not event.long_running_tool_ids or not event.get_function_calls():

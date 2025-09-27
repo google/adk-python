@@ -163,44 +163,41 @@ class BaseAgent(BaseModel):
       self,
       ctx: InvocationContext,
       state_type: Type[AgentState],
-      default_state: AgentState,
-  ) -> tuple[AgentState, bool]:
+  ) -> Optional[AgentState]:
     """Loads the agent state from the invocation context, handling resumption.
 
     Args:
       ctx: The invocation context.
       state_type: The type of the agent state.
-      default_state: The default state to use if not resuming.
 
     Returns:
-        tuple[AgentState, bool]: The current state and a boolean indicating if
-        resuming.
+        The current state if resuming, otherwise None.
     """
+    if not ctx.is_resumable:
+      return None
+
     if self.name not in ctx.agent_states:
-      return default_state, False
+      return None
     else:
-      return state_type.model_validate(ctx.agent_states.get(self.name)), True
+      return state_type.model_validate(ctx.agent_states.get(self.name))
 
   def _create_agent_state_event(
       self,
       ctx: InvocationContext,
       *,
-      state: Optional[BaseAgentState] = None,
+      agent_state: Optional[BaseAgentState] = None,
       end_of_agent: bool = False,
   ) -> Event:
-    """Creates an event for agent state.
+    """Returns an event with agent state.
 
     Args:
       ctx: The invocation context.
-      state: The agent state to checkpoint.
+      agent_state: The agent state to checkpoint.
       end_of_agent: Whether the agent is finished running.
-
-    Returns:
-      An Event object representing the checkpoint.
     """
     event_actions = EventActions()
-    if state:
-      event_actions.agent_state = state.model_dump(mode='json')
+    if agent_state:
+      event_actions.agent_state = agent_state.model_dump(mode='json')
     if end_of_agent:
       event_actions.end_of_agent = True
     return Event(
