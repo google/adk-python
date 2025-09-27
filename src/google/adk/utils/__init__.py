@@ -14,7 +14,7 @@
 
 """Utility functions for ADK."""
 
-from src.google.adk.utils.resource_utils import (
+from .resource_utils import (
     extract_agent_engine_id,
     validate_agent_engine_resource_name,
     get_project_from_resource_name,
