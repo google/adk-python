@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 
 from google.genai.types import Content
@@ -95,3 +96,11 @@ class EventActions(BaseModel):
 
   compaction: Optional[EventCompaction] = None
   """The compaction of the events."""
+
+  end_of_agent: Optional[bool] = None
+  """If true, the current agent has finished its current run. Note that there
+  can be multiple events with end_of_agent=True for the same agent within one
+  invocation when there is a loop."""
+
+  agent_state: Optional[dict[str, Any]] = None
+  """The agent state at the current event."""

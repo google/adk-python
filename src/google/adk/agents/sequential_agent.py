@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import AsyncGenerator
 from typing import ClassVar
 from typing import Type
@@ -24,11 +25,23 @@ from typing_extensions import override
 
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
-from .base_agent import BaseAgentConfig
+from .base_agent import BaseAgentState
+from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
 from .sequential_agent_config import SequentialAgentConfig
+
+logger = logging.getLogger('google_adk.' + __name__)
+
+
+@experimental
+class SequentialAgentState(BaseAgentState):
+  """State for SequentialAgent."""
+
+  current_sub_agent: str = ''
+  """The name of the current sub-agent to run."""
 
 
 class SequentialAgent(BaseAgent):
@@ -41,10 +54,68 @@ class SequentialAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    for sub_agent in self.sub_agents:
+    if not self.sub_agents:
+      return
+
+    # Initialize or resume the execution state from the agent state.
+    agent_state = self._load_agent_state(ctx, SequentialAgentState)
+    start_index = self._get_start_index(agent_state)
+
+    pause_invocation = False
+    resuming_sub_agent = agent_state is not None
+    for i in range(start_index, len(self.sub_agents)):
+      sub_agent = self.sub_agents[i]
+      if not resuming_sub_agent:
+        # If we are resuming from the current event, it means the same event has
+        # already been logged, so we should avoid yielding it again.
+        if ctx.is_resumable:
+          agent_state = SequentialAgentState(current_sub_agent=sub_agent.name)
+          yield self._create_agent_state_event(ctx, agent_state=agent_state)
+
+        # Reset the sub-agent's state in the context to ensure that each
+        # sub-agent starts fresh.
+        ctx.reset_agent_state(sub_agent.name)
+
       async with Aclosing(sub_agent.run_async(ctx)) as agen:
         async for event in agen:
           yield event
+          if ctx.should_pause_invocation(event):
+            pause_invocation = True
+
+      # Skip the rest of the sub-agents if the invocation is paused.
+      if pause_invocation:
+        return
+
+      # Reset the flag for the next sub-agent.
+      resuming_sub_agent = False
+
+    if ctx.is_resumable:
+      yield self._create_agent_state_event(ctx, end_of_agent=True)
+
+  def _get_start_index(
+      self,
+      agent_state: SequentialAgentState,
+  ) -> int:
+    """Calculates the start index for the sub-agent loop."""
+    if not agent_state:
+      return 0
+
+    if not agent_state.current_sub_agent:
+      # This means the process was finished.
+      return len(self.sub_agents)
+
+    try:
+      sub_agent_names = [sub_agent.name for sub_agent in self.sub_agents]
+      return sub_agent_names.index(agent_state.current_sub_agent)
+    except ValueError:
+      # A sub-agent was removed so the agent name is not found.
+      # For now, we restart from the beginning.
+      logger.warning(
+          'Sub-agent %s was removed so the agent name is not found. Restarting'
+          ' from the beginning.',
+          agent_state.current_sub_agent,
+      )
+      return 0
 
   @override
   async def _run_live_impl(
@@ -61,6 +132,9 @@ class SequentialAgent(BaseAgent):
     Args:
       ctx: The invocation context of the agent.
     """
+    if not self.sub_agents:
+      return
+
     # There is no way to know if it's using live during init phase so we have to init it here
     for sub_agent in self.sub_agents:
       # add tool

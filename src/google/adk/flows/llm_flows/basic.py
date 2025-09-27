@@ -37,8 +37,6 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
 
     llm_request.model = (
         agent.canonical_model

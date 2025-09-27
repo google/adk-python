@@ -27,6 +27,27 @@ from ..utils.feature_decorator import experimental
 
 
 @experimental
+class ResumabilityConfig(BaseModel):
+  """The config of the resumability for an application.
+
+  The "resumability" in ADK refers to the ability to:
+  1. pause an invocation upon a long running function call.
+  2. resume an invocation from the last event, if it's paused or failed midway
+  through.
+
+  Note: ADK resumes the invocation in a best-effort manner:
+  1. Tool call to resume needs to be idempotent because we only guarantee
+  an at-least-once behavior once resumed.
+  2. Any temporary / in-memory state will be lost upon resumption.
+  """
+
+  is_resumable: bool = False
+  """Whether the app supports agent resumption.
+  If enabled, the feature will be enabled for all agents in the app.
+  """
+
+
+@experimental
 class App(BaseModel):
   """Represents an LLM-backed agentic application.
 
@@ -57,3 +78,9 @@ class App(BaseModel):
 
   context_cache_config: Optional[ContextCacheConfig] = None
   """Context cache configuration that applies to all LLM agents in the app."""
+
+  resumability_config: Optional[ResumabilityConfig] = None
+  """
+  The config of the resumability for the application.
+  If configured, will be applied to all agents in the app.
+  """

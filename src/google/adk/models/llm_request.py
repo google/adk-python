@@ -90,7 +90,7 @@ class LlmRequest(BaseModel):
 
   def append_instructions(
       self, instructions: Union[list[str], types.Content]
-  ) -> None:
+  ) -> list[types.Content]:
     """Appends instructions to the system instruction.
 
     Args:
@@ -98,46 +98,120 @@ class LlmRequest(BaseModel):
         - list[str]: Strings to append/concatenate to system instruction
         - types.Content: Content object to append to system instruction
 
-    Note: Only text content is supported. Model API requires system_instruction
-    to be a string. Non-text parts in Content will be handled differently.
+    Returns:
+      List of user contents from non-text parts (when instructions is types.Content
+      with non-text parts). Empty list otherwise.
+
+    Note: Model API requires system_instruction to be a string. Non-text parts
+    in Content are processed with references in system_instruction and returned
+    as user contents.
 
     Behavior:
       - list[str]: concatenates with existing system_instruction using \\n\\n
-      - types.Content: extracts text from parts and concatenates
+      - types.Content: extracts text parts with references to non-text parts,
+        returns non-text parts as user contents
     """
 
-    # Handle Content object - extract only text parts
+    # Handle Content object
     if isinstance(instructions, types.Content):
-      # TODO: Handle non-text contents in instruction by putting non-text parts
-      # into llm_request.contents and adding a reference in the system instruction
-      # that references the contents.
+      text_parts = []
+      user_contents = []
 
-      # Extract text from all text parts
-      text_parts = [part.text for part in instructions.parts if part.text]
+      # Process all parts, creating references for non-text parts
+      non_text_count = 0
+      for part in instructions.parts:
+        if part.text:
+          # Text part - add to system instruction
+          text_parts.append(part.text)
+        elif part.inline_data:
+          # Inline data part - create reference and user content
+          reference_id = f"inline_data_{non_text_count}"
+          non_text_count += 1
 
-      if not text_parts:
-        return  # No text content to append
+          # Create descriptive reference based on mime_type and display_name
+          display_info = []
+          if part.inline_data.display_name:
+            display_info.append(f"'{part.inline_data.display_name}'")
+          if part.inline_data.mime_type:
+            display_info.append(f"type: {part.inline_data.mime_type}")
 
-      new_text = "\n\n".join(text_parts)
-      if not self.config.system_instruction:
-        self.config.system_instruction = new_text
-      elif isinstance(self.config.system_instruction, str):
-        self.config.system_instruction += "\n\n" + new_text
-      else:
-        # Log warning for unsupported system_instruction types
-        logging.warning(
-            "Cannot append to system_instruction of unsupported type: %s. "
-            "Only string system_instruction is supported.",
-            type(self.config.system_instruction),
-        )
-      return
+          display_text = f" ({', '.join(display_info)})" if display_info else ""
+          reference_text = (
+              f"[Reference to inline binary data: {reference_id}{display_text}]"
+          )
+          text_parts.append(reference_text)
+
+          # Create user content with reference and data
+          user_content = types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(
+                      text=f"Referenced inline data: {reference_id}"
+                  ),
+                  types.Part(inline_data=part.inline_data),
+              ],
+          )
+          user_contents.append(user_content)
+
+        elif part.file_data:
+          # File data part - create reference and user content
+          reference_id = f"file_data_{non_text_count}"
+          non_text_count += 1
+
+          # Create descriptive reference based on file_uri and display_name
+          display_info = []
+          if part.file_data.display_name:
+            display_info.append(f"'{part.file_data.display_name}'")
+          if part.file_data.file_uri:
+            display_info.append(f"URI: {part.file_data.file_uri}")
+          if part.file_data.mime_type:
+            display_info.append(f"type: {part.file_data.mime_type}")
+
+          display_text = f" ({', '.join(display_info)})" if display_info else ""
+          reference_text = (
+              f"[Reference to file data: {reference_id}{display_text}]"
+          )
+          text_parts.append(reference_text)
+
+          # Create user content with reference and file data
+          user_content = types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(
+                      text=f"Referenced file data: {reference_id}"
+                  ),
+                  types.Part(file_data=part.file_data),
+              ],
+          )
+          user_contents.append(user_content)
+
+      # Handle text parts for system instruction
+      if text_parts:
+        new_text = "\n\n".join(text_parts)
+        if not self.config.system_instruction:
+          self.config.system_instruction = new_text
+        elif isinstance(self.config.system_instruction, str):
+          self.config.system_instruction += "\n\n" + new_text
+        else:
+          # Log warning for unsupported system_instruction types
+          logging.warning(
+              "Cannot append to system_instruction of unsupported type: %s. "
+              "Only string system_instruction is supported.",
+              type(self.config.system_instruction),
+          )
+
+      # Add user contents directly to llm_request.contents
+      if user_contents:
+        self.contents.extend(user_contents)
+
+      return user_contents
 
     # Handle list of strings
     if isinstance(instructions, list) and all(
         isinstance(inst, str) for inst in instructions
     ):
       if not instructions:  # Handle empty list
-        return
+        return []
 
       new_text = "\n\n".join(instructions)
       if not self.config.system_instruction:
@@ -151,7 +225,7 @@ class LlmRequest(BaseModel):
             "Only string system_instruction is supported.",
             type(self.config.system_instruction),
         )
-      return
+      return []
 
     # Invalid input
     raise TypeError("instructions must be list[str] or types.Content")

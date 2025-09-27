@@ -341,6 +341,8 @@ class LlmAgent(BaseAgent):
       async for event in agen:
         self.__maybe_save_output_to_state(event)
         yield event
+        if ctx.should_pause_invocation(event):
+          return
 
   @override
   async def _run_live_impl(

@@ -136,7 +136,7 @@ class McpTool(BaseAuthenticatedTool):
     # Get the session from the session manager
     session = await self._mcp_session_manager.create_session(headers=headers)
 
-    response = await session.call_tool(self.name, arguments=args)
+    response = await session.call_tool(self._mcp_tool.name, arguments=args)
     return response
 
   async def _get_headers(

@@ -117,7 +117,12 @@ Always reference this schema when creating configurations to ensure compliance.
 - Tool paths use format: `project_name.tools.module.function_name` (must start with project folder name, no `.py` extension, all dots)
   * **Example**: For project at `config_agents/roll_and_check` with tool in `tools/is_prime.py`, use: `roll_and_check.tools.is_prime.is_prime`
   * **Pattern**: `{{{{project_folder_name}}}}.tools.{{{{module_name}}}}.{{{{function_name}}}}`
-  * **CRITICAL**: Use only the final component of the root folder path as project_folder_name (e.g., for `./config_based/roll_and_check`, use `roll_and_check` not `config_based.roll_and_check`)
+  * **🚨 CRITICAL TOOL NAMING RULE**: Use ONLY the FINAL/LAST component of the root folder path as project_folder_name
+    - ✅ CORRECT: For root directory `projects/workspace/my_agent`, use `my_agent` (last component)
+    - ❌ WRONG: `projects.workspace.my_agent` (full dotted path)
+    - ✅ CORRECT: For `./config_based/roll_and_check`, use `roll_and_check` (last component)
+    - ❌ WRONG: `config_based.roll_and_check` (includes parent directories)
+  * **Remember**: Always extract just the folder name after the last slash/separator
 - No function declarations in YAML (handled automatically by ADK)
 
 **TOOL IMPLEMENTATION STRATEGY:**

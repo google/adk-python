@@ -625,7 +625,7 @@ def test_append_instructions_content_extracts_text_only():
 
 
 def test_append_instructions_content_with_non_text_parts():
-  """Test that non-text parts in Content are ignored."""
+  """Test that non-text parts in Content are processed with references."""
   request = LlmRequest()
 
   # Create Content with text and non-text parts
@@ -640,14 +640,28 @@ def test_append_instructions_content_with_non_text_parts():
       ],
   )
 
-  request.append_instructions(content)
+  user_contents = request.append_instructions(content)
 
-  # Only text parts should be extracted
-  assert request.config.system_instruction == 'Text instruction\n\nMore text'
+  # Text parts should be extracted with references to non-text parts
+  expected_system = (
+      'Text instruction\n\n'
+      '[Reference to inline binary data: inline_data_0 (type: text/plain)]\n\n'
+      'More text'
+  )
+  assert request.config.system_instruction == expected_system
+
+  # Should return user content for the non-text part
+  assert len(user_contents) == 1
+  assert user_contents[0].role == 'user'
+  assert len(user_contents[0].parts) == 2
+  assert (
+      user_contents[0].parts[0].text == 'Referenced inline data: inline_data_0'
+  )
+  assert user_contents[0].parts[1].inline_data.data == b'file_data'
 
 
 def test_append_instructions_content_no_text_parts():
-  """Test that Content with no text parts does nothing."""
+  """Test that Content with no text parts processes non-text parts with references."""
   request = LlmRequest()
 
   # Set initial system instruction
@@ -663,10 +677,23 @@ def test_append_instructions_content_no_text_parts():
       ],
   )
 
-  request.append_instructions(content)
+  user_contents = request.append_instructions(content)
 
-  # Should remain unchanged since no text to extract
-  assert request.config.system_instruction == 'Initial'
+  # Should add reference to non-text part to system instruction
+  expected_system = (
+      'Initial\n\n[Reference to inline binary data: inline_data_0 (type:'
+      ' text/plain)]'
+  )
+  assert request.config.system_instruction == expected_system
+
+  # Should return user content for the non-text part
+  assert len(user_contents) == 1
+  assert user_contents[0].role == 'user'
+  assert len(user_contents[0].parts) == 2
+  assert (
+      user_contents[0].parts[0].text == 'Referenced inline data: inline_data_0'
+  )
+  assert user_contents[0].parts[1].inline_data.data == b'file_data'
 
 
 def test_append_instructions_content_empty_text_parts():
@@ -725,3 +752,87 @@ def test_append_instructions_warning_unsupported_system_instruction_type(
   assert (
       'Cannot append to system_instruction of unsupported type' in caplog.text
   )
+
+
+@pytest.mark.parametrize('llm_backend', ['GOOGLE_AI', 'VERTEX'])
+def test_append_instructions_with_mixed_content(llm_backend):
+  """Test append_instructions with mixed text and non-text content."""
+  request = LlmRequest()
+
+  # Create static instruction with mixed content
+  static_content = types.Content(
+      role='user',
+      parts=[
+          types.Part(text='Analyze this:'),
+          types.Part(
+              inline_data=types.Blob(
+                  data=b'test_data',
+                  mime_type='image/png',
+                  display_name='test.png',
+              )
+          ),
+          types.Part(text='Focus on details.'),
+          types.Part(
+              file_data=types.FileData(
+                  file_uri='files/doc123',
+                  mime_type='text/plain',
+                  display_name='document.txt',
+              )
+          ),
+      ],
+  )
+
+  user_contents = request.append_instructions(static_content)
+
+  # System instruction should contain text with references
+  expected_system = (
+      'Analyze this:\n\n[Reference to inline binary data: inline_data_0'
+      " ('test.png', type: image/png)]\n\nFocus on details.\n\n[Reference to"
+      " file data: file_data_1 ('document.txt', URI: files/doc123, type:"
+      ' text/plain)]'
+  )
+  assert request.config.system_instruction == expected_system
+
+  # Should return user contents for non-text parts
+  assert len(user_contents) == 2
+
+  # Check inline_data content
+  assert user_contents[0].role == 'user'
+  assert len(user_contents[0].parts) == 2
+  assert (
+      user_contents[0].parts[0].text == 'Referenced inline data: inline_data_0'
+  )
+  assert user_contents[0].parts[1].inline_data.data == b'test_data'
+  assert user_contents[0].parts[1].inline_data.display_name == 'test.png'
+
+  # Check file_data content
+  assert user_contents[1].role == 'user'
+  assert len(user_contents[1].parts) == 2
+  assert user_contents[1].parts[0].text == 'Referenced file data: file_data_1'
+  assert user_contents[1].parts[1].file_data.file_uri == 'files/doc123'
+  assert user_contents[1].parts[1].file_data.display_name == 'document.txt'
+
+
+@pytest.mark.parametrize('llm_backend', ['GOOGLE_AI', 'VERTEX'])
+def test_append_instructions_with_only_text_parts(llm_backend):
+  """Test append_instructions with only text parts."""
+  request = LlmRequest()
+
+  static_content = types.Content(
+      role='user',
+      parts=[
+          types.Part(text='First instruction'),
+          types.Part(text='Second instruction'),
+      ],
+  )
+
+  user_contents = request.append_instructions(static_content)
+
+  # Should only have text in system instruction
+  assert (
+      request.config.system_instruction
+      == 'First instruction\n\nSecond instruction'
+  )
+
+  # Should return empty list since no non-text parts
+  assert user_contents == []

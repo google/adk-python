@@ -184,6 +184,19 @@ async def test_generating_one_event_per_agent_at_once(
     # Asserts on event are done in _TestingAgentWithMultipleEvents.
 
 
+@pytest.mark.asyncio
+async def test_run_async_skip_if_no_sub_agent(request: pytest.FixtureRequest):
+  parallel_agent = ParallelAgent(
+      name=f'{request.function.__name__}_test_parallel_agent',
+      sub_agents=[],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, parallel_agent
+  )
+  events = [e async for e in parallel_agent.run_async(parent_ctx)]
+  assert not events
+
+
 class _TestingAgentWithException(_TestingAgent):
   """Mock agent for testing."""
 
