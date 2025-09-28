@@ -115,6 +115,20 @@ async def test_run_async(request: pytest.FixtureRequest):
 
 
 @pytest.mark.asyncio
+async def test_run_async_skip_if_no_sub_agent(request: pytest.FixtureRequest):
+  loop_agent = LoopAgent(
+      name=f'{request.function.__name__}_test_loop_agent',
+      max_iterations=2,
+      sub_agents=[],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, loop_agent
+  )
+  events = [e async for e in loop_agent.run_async(parent_ctx)]
+  assert not events
+
+
+@pytest.mark.asyncio
 async def test_run_async_with_escalate_action(request: pytest.FixtureRequest):
   non_escalating_agent = _TestingAgent(
       name=f'{request.function.__name__}_test_non_escalating_agent'

@@ -148,7 +148,7 @@ def test_list_dataset_ids_bq_client_creation(mock_get_bigquery_client):
 
   metadata_tool.list_dataset_ids(bq_project, bq_credentials, tool_settings)
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == bq_project
   assert (
       mock_get_bigquery_client.call_args.kwargs["credentials"] == bq_credentials
@@ -174,7 +174,7 @@ def test_get_dataset_info_bq_client_creation(mock_get_bigquery_client):
       bq_project, bq_dataset, bq_credentials, tool_settings
   )
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == bq_project
   assert (
       mock_get_bigquery_client.call_args.kwargs["credentials"] == bq_credentials
@@ -200,7 +200,7 @@ def test_list_table_ids_bq_client_creation(mock_get_bigquery_client):
       bq_project, bq_dataset, bq_credentials, tool_settings
   )
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == bq_project
   assert (
       mock_get_bigquery_client.call_args.kwargs["credentials"] == bq_credentials
@@ -227,7 +227,7 @@ def test_get_table_info_bq_client_creation(mock_get_bigquery_client):
       bq_project, bq_dataset, bq_table, bq_credentials, tool_settings
   )
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == bq_project
   assert (
       mock_get_bigquery_client.call_args.kwargs["credentials"] == bq_credentials

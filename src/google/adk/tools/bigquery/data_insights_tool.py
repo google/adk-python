@@ -148,6 +148,7 @@ def ask_data_insights(
             "systemInstruction": instructions,
             "options": {"chart": {"image": {"noImage": {}}}},
         },
+        "clientIdEnum": "GOOGLE_ADK",
     }
 
     resp = _get_stream(

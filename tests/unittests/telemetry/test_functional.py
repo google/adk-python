@@ -16,10 +16,10 @@ import gc
 import sys
 from unittest import mock
 
-from google.adk import telemetry
 from google.adk.agents import base_agent
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.base_llm import BaseLlm
+from google.adk.telemetry import tracing
 from google.adk.tools import FunctionTool
 from google.adk.utils.context_utils import Aclosing
 from google.genai.types import Part
@@ -74,7 +74,7 @@ def mock_start_as_current_span(monkeypatch: pytest.MonkeyPatch) -> mock.Mock:
         tracer, 'start_as_current_span', mock_start_as_current_span
     )
 
-  do_replace(telemetry.tracer)
+  do_replace(tracing.tracer)
   do_replace(base_agent.tracer)
 
   return mock_start_as_current_span
@@ -115,7 +115,7 @@ async def test_tracer_start_as_current_span(
   expected_start_as_current_span_calls = [
       mock.call('invocation'),
       mock.call('execute_tool some_tool'),
-      mock.call('agent_run [some_root_agent]'),
+      mock.call('invoke_agent some_root_agent'),
       mock.call('call_llm'),
       mock.call('call_llm'),
   ]

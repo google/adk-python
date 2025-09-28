@@ -17,12 +17,13 @@ from __future__ import annotations
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
+from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
-from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.final_response_match_v2 import _parse_critique
 from google.adk.evaluation.final_response_match_v2 import FinalResponseMatchV2Evaluator
+from google.adk.evaluation.llm_as_judge import AutoRaterScore
 from google.adk.evaluation.llm_as_judge_utils import Label
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
@@ -206,8 +207,10 @@ def test_convert_auto_rater_response_to_score_valid():
           role="model",
       )
   )
-  score = evaluator.convert_auto_rater_response_to_score(llm_response)
-  assert score == 1.0
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+  assert auto_rater_score == AutoRaterScore(score=1.0)
 
 
 def test_convert_auto_rater_response_to_score_invalid():
@@ -224,8 +227,10 @@ def test_convert_auto_rater_response_to_score_invalid():
           role="model",
       )
   )
-  score = evaluator.convert_auto_rater_response_to_score(llm_response)
-  assert score == 0.0
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+  assert auto_rater_score == AutoRaterScore(score=0.0)
 
 
 def test_convert_auto_rater_response_to_score_invalid_json():
@@ -236,8 +241,10 @@ def test_convert_auto_rater_response_to_score_invalid_json():
           role="model",
       )
   )
-  score = evaluator.convert_auto_rater_response_to_score(llm_response)
-  assert score is None
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+  assert auto_rater_score == AutoRaterScore()
 
 
 def test_convert_auto_rater_response_to_score_missing_key():
@@ -248,8 +255,10 @@ def test_convert_auto_rater_response_to_score_missing_key():
           role="model",
       )
   )
-  score = evaluator.convert_auto_rater_response_to_score(llm_response)
-  assert score is None
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+  assert auto_rater_score == AutoRaterScore()
 
 
 def test_aggregate_per_invocation_samples_none_evaluated():

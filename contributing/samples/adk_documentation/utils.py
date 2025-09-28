@@ -16,7 +16,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 
-from adk_release_analyzer.settings import GITHUB_TOKEN
+from adk_documentation.settings import GITHUB_TOKEN
 from google.adk.agents.run_config import RunConfig
 from google.adk.runners import Runner
 from google.genai import types
