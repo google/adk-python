@@ -306,30 +306,12 @@ class Runner:
         if not session:
           raise ValueError(f'Session not found: {session_id}')
 
-        invocation_context = self._new_invocation_context(
-            session,
+        invocation_context = await self._setup_context_for_new_invocation(
+            session=session,
             new_message=new_message,
             run_config=run_config,
+            state_delta=state_delta,
         )
-        root_agent = self.agent
-
-        # Modify user message before execution.
-        modified_user_message = await invocation_context.plugin_manager.run_on_user_message_callback(
-            invocation_context=invocation_context, user_message=new_message
-        )
-        if modified_user_message is not None:
-          new_message = modified_user_message
-
-        if new_message:
-          await self._append_new_message_to_session(
-              session,
-              new_message,
-              invocation_context,
-              run_config.save_input_blobs_as_artifacts,
-              state_delta,
-          )
-
-        invocation_context.agent = self._find_agent_to_run(session, root_agent)
 
         async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
           async with Aclosing(ctx.agent.run_async(ctx)) as agen:
@@ -420,6 +402,7 @@ class Runner:
 
   async def _append_new_message_to_session(
       self,
+      *,
       session: Session,
       new_message: types.Content,
       invocation_context: InvocationContext,
@@ -433,6 +416,7 @@ class Runner:
         new_message: The new message to append.
         invocation_context: The invocation context for the message.
         save_input_blobs_as_artifacts: Whether to save input blobs as artifacts.
+        state_delta: Optional state changes to apply to the session.
     """
     if not new_message.parts:
       raise ValueError('No parts in the new_message.')
@@ -661,6 +645,44 @@ class Runner:
       agent = agent.parent_agent
     return True
 
+  async def _setup_context_for_new_invocation(
+      self,
+      *,
+      session: Session,
+      new_message: types.Content,
+      run_config: RunConfig,
+      state_delta: Optional[dict[str, Any]],
+  ) -> InvocationContext:
+    """Sets up the context for a new invocation.
+
+    Args:
+      session: The session to setup the invocation context for.
+      new_message: The new message to process and append to the session.
+      run_config: The run config of the agent.
+      state_delta: Optional state changes to apply to the session.
+
+    Returns:
+      The invocation context for the new invocation.
+    """
+    # Step 1: Create invocation context in memory.
+    invocation_context = self._new_invocation_context(
+        session,
+        new_message=new_message,
+        run_config=run_config,
+    )
+    # Step 2: Handle new message, by running callbacks and appending to
+    # session.
+    await self._handle_new_message(
+        session=session,
+        new_message=new_message,
+        invocation_context=invocation_context,
+        run_config=run_config,
+        state_delta=state_delta,
+    )
+    # Step 3: Set agent to run for the invocation.
+    invocation_context.agent = self._find_agent_to_run(session, self.agent)
+    return invocation_context
+
   def _new_invocation_context(
       self,
       session: Session,
@@ -742,6 +764,42 @@ class Runner:
         live_request_queue=live_request_queue,
         run_config=run_config,
     )
+
+  async def _handle_new_message(
+      self,
+      *,
+      session: Session,
+      new_message: types.Content,
+      invocation_context: InvocationContext,
+      run_config: RunConfig,
+      state_delta: Optional[dict[str, Any]],
+  ) -> None:
+    """Handles a new message by running callbacks and appending to session.
+
+    Args:
+      session: The session of the new message.
+      new_message: The new message to process and append to the session.
+      invocation_context: The invocation context to use for the message
+        handling.
+      run_config: The run config of the agent.
+      state_delta: Optional state changes to apply to the session.
+    """
+    modified_user_message = (
+        await invocation_context.plugin_manager.run_on_user_message_callback(
+            invocation_context=invocation_context, user_message=new_message
+        )
+    )
+    if modified_user_message is not None:
+      new_message = modified_user_message
+
+    if new_message:
+      await self._append_new_message_to_session(
+          session=session,
+          new_message=new_message,
+          invocation_context=invocation_context,
+          save_input_blobs_as_artifacts=run_config.save_input_blobs_as_artifacts,
+          state_delta=state_delta,
+      )
 
   def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
     toolsets = set()
