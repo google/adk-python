@@ -26,6 +26,7 @@ from typing_extensions import override
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
+from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
 from .parallel_agent_config import ParallelAgentConfig
@@ -178,12 +179,22 @@ class ParallelAgent(BaseAgent):
     if not self.sub_agents:
       return
 
-    agent_runs = [
-        sub_agent.run_async(
-            _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
-        )
-        for sub_agent in self.sub_agents
-    ]
+    agent_state = self._load_agent_state(ctx, BaseAgentState)
+    if ctx.is_resumable and agent_state is None:
+      yield self._create_agent_state_event(ctx, agent_state=BaseAgentState())
+
+    agent_runs = []
+    # Prepare and collect async generators for each sub-agent.
+    for sub_agent in self.sub_agents:
+      if agent_state is None:
+        # Reset sub-agent state to make sure each sub-agent starts fresh.
+        ctx.reset_agent_state(sub_agent.name)
+
+      sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
+
+      # Only include sub-agents that haven't finished in a previous run.
+      if not sub_agent_ctx.end_of_agents.get(sub_agent.name):
+        agent_runs.append(sub_agent.run_async(sub_agent_ctx))
 
     pause_invocation = False
     try:
@@ -202,6 +213,10 @@ class ParallelAgent(BaseAgent):
 
       if pause_invocation:
         return
+
+      # Once all sub-agents are done, mark the ParallelAgent as final.
+      if ctx.is_resumable:
+        yield self._create_agent_state_event(ctx, end_of_agent=True)
 
     finally:
       for sub_agent_run in agent_runs:
