@@ -26,6 +26,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
@@ -733,39 +734,6 @@ async def test_run_live_incomplete_agent(request: pytest.FixtureRequest):
     [e async for e in agent.run_live(parent_ctx)]
 
 
-@pytest.mark.asyncio
-async def test_create_agent_state_event(request: pytest.FixtureRequest):
-  # Arrange
-  agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
-  ctx = await _create_parent_invocation_context(
-      request.function.__name__, agent, branch='test_branch'
-  )
-  state = BaseAgentState()
-
-  # Act
-  event = agent._create_agent_state_event(ctx, state=state)
-
-  # Assert
-  assert event.invocation_id == ctx.invocation_id
-  assert event.author == agent.name
-  assert event.branch == 'test_branch'
-  assert event.actions is not None
-  assert event.actions.agent_state is not None
-  assert event.actions.agent_state == state.model_dump(mode='json')
-  assert not event.actions.end_of_agent
-
-  # Act
-  event = agent._create_agent_state_event(ctx, end_of_agent=True)
-
-  # Assert
-  assert event.invocation_id == ctx.invocation_id
-  assert event.author == agent.name
-  assert event.branch == 'test_branch'
-  assert event.actions is not None
-  assert event.actions.end_of_agent
-  assert event.actions.agent_state is None
-
-
 def test_set_parent_agent_for_sub_agents(request: pytest.FixtureRequest):
   sub_agents: list[BaseAgent] = [
       _TestingAgent(name=f'{request.function.__name__}_sub_agent_1'),
@@ -895,7 +863,7 @@ class _TestAgentState(BaseAgentState):
 
 
 @pytest.mark.asyncio
-async def test_load_agent_state_no_resume():
+async def test_load_agent_state_not_resumable():
   agent = BaseAgent(name='test_agent')
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -907,14 +875,15 @@ async def test_load_agent_state_no_resume():
       session=session,
       session_service=session_service,
   )
-  default_state = _TestAgentState(test_field='default')
 
-  state, is_resuming = agent._load_agent_state(
-      ctx, _TestAgentState, default_state
-  )
+  # Test case 1: resumability_config is None
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state is None
 
-  assert not is_resuming
-  assert state == default_state
+  # Test case 2: is_resumable is False
+  ctx.resumability_config = ResumabilityConfig(is_resumable=False)
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state is None
 
 
 @pytest.mark.asyncio
@@ -929,13 +898,70 @@ async def test_load_agent_state_with_resume():
       agent=agent,
       session=session,
       session_service=session_service,
+      resumability_config=ResumabilityConfig(is_resumable=True),
   )
+
+  # Test case 1: agent state not in context
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state is None
+
+  # Test case 2: agent state in context
   persisted_state = _TestAgentState(test_field='resumed')
   ctx.agent_states[agent.name] = persisted_state.model_dump(mode='json')
 
-  state, is_resuming = agent._load_agent_state(
-      ctx, _TestAgentState, _TestAgentState()
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state == persisted_state
+
+
+@pytest.mark.asyncio
+async def test_create_agent_state_event():
+  agent = BaseAgent(name='test_agent')
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  ctx = InvocationContext(
+      invocation_id='test_invocation',
+      agent=agent,
+      session=session,
+      session_service=session_service,
   )
 
-  assert is_resuming
-  assert state == persisted_state
+  ctx.branch = 'test_branch'
+
+  # Test case 1: with state
+  state = _TestAgentState(test_field='checkpoint')
+  event = agent._create_agent_state_event(ctx, agent_state=state)
+  assert event is not None
+  assert event.invocation_id == ctx.invocation_id
+  assert event.author == agent.name
+  assert event.branch == 'test_branch'
+  assert event.actions is not None
+  assert event.actions.agent_state is not None
+  assert event.actions.agent_state == state.model_dump(mode='json')
+  assert not event.actions.end_of_agent
+
+  # Test case 2: with end_of_agent
+  event = agent._create_agent_state_event(ctx, end_of_agent=True)
+  assert event is not None
+  assert event.invocation_id == ctx.invocation_id
+  assert event.author == agent.name
+  assert event.branch == 'test_branch'
+  assert event.actions is not None
+  assert event.actions.end_of_agent
+  assert event.actions.agent_state is None
+
+  # Test case 3: with both state and end_of_agent
+  state = _TestAgentState(test_field='checkpoint')
+  event = agent._create_agent_state_event(
+      ctx, agent_state=state, end_of_agent=True
+  )
+  assert event is not None
+  assert event.actions.agent_state == state.model_dump(mode='json')
+  assert event.actions.end_of_agent
+
+  # Test case 4: with neither
+  event = agent._create_agent_state_event(ctx)
+  assert event is not None
+  assert event.actions.agent_state is None
+  assert not event.actions.end_of_agent

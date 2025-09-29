@@ -206,3 +206,22 @@ class TestInvocationContextWithAppResumablity:
     assert not mock_invocation_context.should_pause_invocation(
         nonpausable_event
     )
+
+  def test_is_resumable_true(self):
+    """Tests that is_resumable is True when resumability is enabled."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    assert invocation_context.is_resumable
+
+  def test_is_resumable_false(self):
+    """Tests that is_resumable is False when resumability is disabled."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=False)
+    )
+    assert not invocation_context.is_resumable
+
+  def test_is_resumable_no_config(self):
+    """Tests that is_resumable is False when no resumability config is set."""
+    invocation_context = self._create_test_invocation_context(None)
+    assert not invocation_context.is_resumable

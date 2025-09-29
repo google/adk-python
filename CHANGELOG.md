@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.15.1](https://github.com/google/adk-python/compare/v1.15.0...v1.15.1) (2025-09-26)
+
+### Bug Fixes
+
+* Fix the deployment failure for Agent Engine ([e172811](https://github.com/google/adk-python/commit/e172811bc7173b9004572f2a2afc7024145d7713))
+
 ## [1.15.0](https://github.com/google/adk-python/compare/v1.14.1...v1.15.0) (2025-09-24)
 
 ### Features
