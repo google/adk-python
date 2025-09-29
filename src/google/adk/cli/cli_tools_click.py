@@ -539,6 +539,7 @@ def cli_eval(
     from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
+    from .cli_eval import pretty_print_eval_result
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
@@ -671,16 +672,9 @@ def cli_eval(
     for eval_result in eval_results:
       eval_result: EvalCaseResult
       click.echo(
-          "*********************************************************************"
+          "********************************************************************"
       )
-      click.echo(
-          eval_result.model_dump_json(
-              indent=2,
-              exclude_unset=True,
-              exclude_defaults=True,
-              exclude_none=True,
-          )
-      )
+      pretty_print_eval_result(eval_result)
 
 
 def adk_services_options():
