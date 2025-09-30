@@ -454,12 +454,8 @@ class AdkWebServer:
       )
     else:
       # Combine existing plugins with extra plugins
-      all_plugins = (agent_or_app.plugins or []) + extra_plugins_instances
-      agentic_app = App(
-          name=agent_or_app.name,
-          root_agent=agent_or_app.root_agent,
-          plugins=all_plugins,
-      )
+      agent_or_app.plugins = agent_or_app.plugins + extra_plugins_instances
+      agentic_app = agent_or_app
 
     runner = self._create_runner(agentic_app)
     self.runner_dict[app_name] = runner
