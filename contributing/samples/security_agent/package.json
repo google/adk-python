@@ -1,0 +1,22 @@
+{
+  "name": "adk-security-agent-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for ADK Security Agent",
+  "main": "mcp_server.py",
+  "scripts": {
+    "start": "python mcp_server.py",
+    "mcp": "python mcp_server.py"
+  },
+  "bin": {
+    "adk-security-mcp": "./mcp_server.py"
+  },
+  "keywords": ["mcp", "adk", "security", "gcp", "agent"],
+  "author": "ADK Security Team",
+  "license": "MIT",
+  "dependencies": {
+    "mcp": "^1.0.0"
+  },
+  "engines": {
+    "python": ">=3.11"
+  }
+}

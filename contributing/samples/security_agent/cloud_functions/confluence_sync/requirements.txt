@@ -1,0 +1,5 @@
+functions-framework==3.*
+google-cloud-bigquery==3.*
+google-cloud-secret-manager==2.*
+atlassian-python-api==3.*
+requests==2.*

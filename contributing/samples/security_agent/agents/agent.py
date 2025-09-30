@@ -1,85 +1,128 @@
 """
-GCP Security Agent using ADK
+BigQuery Security Agent
+Uses modular tools from _tools directory
 """
 
 import os
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Import ADK components
-from google.adk import Agent
 from google.adk.tools import FunctionTool
+from google.adk.agents import LlmAgent
 
-# Import the synchronous SQLite tool
-# ADK handles parallelism at the request level - tools should be synchronous
-from agents._tools.sqlite_tool import query_security_data
-logger.info("✅ Using synchronous SQLite tool (ADK handles parallelism)")
+# Import all tools from modular structure
+from ._tools import (
+    # Security tools
+    get_security_insights_summary,
+    query_security_insights,
+    get_security_statistics,
+    # BigQuery tools
+    hello_world,
+    list_datasets,
+    list_tables,
+    get_table_schema,
+    run_query,
+    analyze_query_cost,
+    get_table_sample,
+    # Exploration tools
+    explore_all_tables_and_views,
+    analyze_table_or_view,
+    # Feed tools
+    query_gcp_release_notes,
+    query_security_threat_feeds,
+    get_feed_statistics,
+    search_feeds_by_keyword
+)
 
-# Agent instructions - ANALYSIS-FIRST PATTERN with MANDATORY TOOL USAGE
-instruction = """
-You are a GCP Security Analyst AI. Your primary role is to provide security insights and analysis.
+# Import Confluence tools
+from ._tools.confluence_tools import (
+    search_confluence_documentation,
+    get_confluence_document,
+    analyze_confluence_coverage,
+    get_confluence_statistics,
+    refresh_confluence_cache
+)
 
-🔍 MANDATORY TOOL USAGE:
-For ANY question about GCP resources, infrastructure, security, or data, you MUST call query_security_data FIRST.
+# Import configuration
+from ._tools.base import PROJECT_ID, DEFAULT_DATASET, DEFAULT_TABLE
 
-🎯 CRITICAL: EXACT QUERY TYPE MAPPING
-When users ask about buckets/storage, you MUST use query_type="storage_buckets":
-- "tell me about buckets" → query_type="storage_buckets"
-- "show me buckets" → query_type="storage_buckets"
-- "storage security" → query_type="storage_buckets"
-- "GCS buckets" → query_type="storage_buckets"
+# Wrap functions as tools
+tools = [
+    # Security-focused tools
+    FunctionTool(get_security_insights_summary),
+    FunctionTool(query_security_insights),
+    FunctionTool(get_security_statistics),
+    # Enhanced exploration tools
+    FunctionTool(explore_all_tables_and_views),
+    FunctionTool(analyze_table_or_view),
+    # RSS Feed tools
+    FunctionTool(query_gcp_release_notes),
+    FunctionTool(query_security_threat_feeds),
+    FunctionTool(get_feed_statistics),
+    FunctionTool(search_feeds_by_keyword),
+    # Confluence documentation tools
+    FunctionTool(search_confluence_documentation),
+    FunctionTool(get_confluence_document),
+    FunctionTool(analyze_confluence_coverage),
+    FunctionTool(get_confluence_statistics),
+    FunctionTool(refresh_confluence_cache),
+    # Standard BigQuery tools
+    FunctionTool(hello_world),
+    FunctionTool(list_datasets),
+    FunctionTool(list_tables),
+    FunctionTool(get_table_schema),
+    FunctionTool(run_query),
+    FunctionTool(analyze_query_cost),
+    FunctionTool(get_table_sample),
+]
 
-Other query types:
-- Security overview: query_type="security_summary"
-- Security findings/alerts: query_type="security_findings"
-- IAM users/permissions: query_type="iam_analysis"
-- Firewall rules: query_type="firewall_rules"
-- Compute instances: query_type="compute_instances"
-- Statistics: query_type="statistics"
+# Agent instructions with security focus
+instruction = f"""You are a specialized Security Analyst for the {DEFAULT_DATASET}.{DEFAULT_TABLE} BigQuery dataset. Your PRIMARY focus is analyzing and providing insights from this security data.
 
-📝 MANDATORY PROCESS:
-1. ALWAYS call query_security_data with the correct query_type
-2. Wait for the data response
-3. Analyze the returned data
-4. Provide security insights and recommendations
+🎯 PRIMARY FOCUS:
+- Dataset: {DEFAULT_DATASET} (THIS IS YOUR MAIN DATASET)
+- Table: {DEFAULT_TABLE} (THIS IS YOUR MAIN TABLE)
+- Project: {PROJECT_ID}
 
-📋 EXAMPLES - FOLLOW EXACTLY:
+YOU ARE THE EXPERT ON THE security_insights DATASET - this contains all GCP security findings, vulnerabilities, and compliance data.
 
-User: "tell me about buckets"
-You MUST:
-1. Call query_security_data(query_type="storage_buckets")
-2. Analyze the bucket data returned
-3. Provide security assessment of the buckets
+COMMUNICATION STYLE:
+- Be friendly and conversational, like a helpful colleague
+- Always remind users we're working with the security_insights dataset
+- Use clear, simple language - avoid jargon unless necessary
+- Add personality with occasional emojis when appropriate (🔍, 📊, ⚠️, ✅)
+- Break down complex security issues into understandable pieces
+- Be proactive in suggesting next steps
 
-User: "show security issues"
-You MUST:
-1. Call query_security_data(query_type="security_findings")
-2. Analyze the findings data
-3. Prioritize and explain the security issues
+DEFAULT BEHAVIOR:
+- When users ask about security, ALWAYS query the security_insights dataset FIRST
+- When users ask general questions, assume they want data from security_insights
+- Always mention you're querying the security_insights dataset
+- Default to security_findings table unless explicitly asked for other tables
 
-🚫 CRITICAL RULES:
-- NEVER give generic responses for data queries
-- ALWAYS call query_security_data for any GCP resource question
-- NEVER skip tool calling when data is requested
-- For simple greetings ("hello", "hi"), respond normally without tools
+CAPABILITIES (in order of priority):
+1. Security Analysis from security_insights dataset: Query and analyze security findings, firewall rules, IAM policies
+2. Security Statistics: Generate insights and trends from security_insights data
+3. Risk Assessment: Identify critical issues in security_insights dataset
+4. BigQuery Operations: Support queries but FOCUS on security_insights dataset
 
-REMEMBER: When someone asks about buckets/storage, use query_type="storage_buckets" - this is critical!
+BEST PRACTICES:
+- ALWAYS start with security_insights dataset for any security question
+- For general questions, query security_insights.security_findings first
+- When showing results, mention they're from security_insights dataset
+- Suggest exploring security_insights tables when users seem unsure
+- Default table path: {DEFAULT_DATASET}.{DEFAULT_TABLE}
+
+EXAMPLES:
+- User: "Show me issues" → Query security_insights.security_findings
+- User: "What data do you have?" → Describe security_insights dataset first
+- User: "Run a query" → Suggest queries on security_insights tables
+- User: "List tables" → Focus on security_insights dataset tables
+
+Remember: The security_insights dataset is your PRIMARY data source. Always prioritize it unless explicitly asked to look elsewhere.
 """
 
 # Create the agent
-root_agent = Agent(
-    name="gcp_security_agent",
+root_agent = LlmAgent(
+    name="security_bigquery_agent",
     model="gemini-2.5-flash",
     instruction=instruction,
-    tools=[FunctionTool(query_security_data)]
+    tools=tools
 )
-
-# Log initialization
-project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'demo-project')
-logger.info(f"✅ ADK Agent initialized for project: {project_id}")
-
-# Export for ADK web
-__all__ = ['root_agent', 'query_security_data']

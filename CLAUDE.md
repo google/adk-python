@@ -417,6 +417,93 @@ python run_frontend.py # Terminal 2
 # Navigate to http://localhost:8501 and test chat
 ```
 
+## 🔧 Confluence Tool Documentation
+
+### Overview
+The Confluence Documentation Connector integrates Atlassian Confluence with the ADK Security Agent, enabling automated retrieval and analysis of security documentation, policies, and compliance materials.
+
+### Key Features
+- **Automated Document Search**: CQL-powered search across specified Confluence spaces
+- **Intelligent Caching**: SQLite-based caching with configurable TTL to minimize API calls
+- **Rate Limiting**: Built-in exponential backoff and circuit breaker patterns
+- **Audit Logging**: Complete audit trail for compliance and monitoring
+- **Real-time Integration**: Seamless integration with ADK agent workflows
+
+### Quick Setup
+```bash
+# Install dependencies
+pip install atlassian-python-api python-dotenv
+
+# Configure environment
+CONFLUENCE_URL=https://your-domain.atlassian.net
+CONFLUENCE_USERNAME=your-email@example.com
+CONFLUENCE_API_TOKEN=your-api-token
+CONFLUENCE_SPACES=SEC,POLICY,GCP
+```
+
+### Usage Examples
+```python
+# Initialize tool
+from agents._tools.confluence_tool import ConfluenceTool
+tool = ConfluenceTool()
+
+# Search documentation
+results = tool.search_documentation(
+    query="GCP security policies",
+    spaces=["SEC", "POLICY"],
+    limit=10
+)
+
+# Fetch specific document
+document = tool.get_document(
+    document_id="123456789",
+    use_cache=True
+)
+```
+
+### Performance Optimization
+- **Cache First**: Always check cache before API calls
+- **Batch Operations**: Group multiple requests when possible
+- **Space Filtering**: Limit searches to relevant spaces
+- **TTL Configuration**: Adjust cache TTL based on content criticality
+
+### Monitoring & Troubleshooting
+```python
+# Check cache statistics
+stats = tool.get_cache_stats()
+print(f"Hit rate: {stats['hit_rate']:.1f}%")
+
+# View audit logs
+logs = tool.get_audit_logs(limit=10)
+for log in logs:
+    print(f"{log['timestamp']}: {log['action']}")
+```
+
+### Integration with ADK Agent
+The Confluence tool integrates seamlessly with the ADK Security Agent:
+
+```python
+# In agents/security_agent.py
+from agents._tools.confluence_tool import ConfluenceTool
+
+tools = [
+    # ... existing tools ...
+    ConfluenceTool(sqlite_tool=sqlite_tool)
+]
+```
+
+### Security Considerations
+- **API Token Security**: Store tokens in environment variables only
+- **Space Access Control**: Limit tool access to necessary spaces
+- **Audit Compliance**: All operations are logged for audit trails
+- **Rate Limiting**: Respects Confluence API limits (100 req/min)
+
+### Common Use Cases
+1. **Security Policy Retrieval**: Fetch latest security policies for compliance checks
+2. **Documentation Analysis**: Analyze documentation quality and coverage
+3. **Knowledge Discovery**: Find relevant documentation based on GCP service queries
+4. **Compliance Monitoring**: Track document updates and access patterns
+
 # important-instruction-reminders
 Do what has been asked; nothing more, nothing less.
 NEVER create files unless they're absolutely necessary for achieving your goal.

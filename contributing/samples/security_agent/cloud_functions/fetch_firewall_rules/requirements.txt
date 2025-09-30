@@ -1,0 +1,4 @@
+google-cloud-bigquery>=3.11.0
+google-cloud-compute>=1.13.0
+google-cloud-resource-manager>=1.10.0
+requests>=2.31.0

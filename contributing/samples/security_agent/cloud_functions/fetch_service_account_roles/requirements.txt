@@ -1,0 +1,4 @@
+google-cloud-resource-manager>=1.12.0
+google-cloud-iam>=2.12.0
+google-cloud-bigquery>=3.11.0
+functions-framework>=3.0.0

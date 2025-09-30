@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security BigQuery Agent Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔐 Security BigQuery Agent Dashboard</h1>
+            <div class="status-bar">
+                <span id="status" class="status-indicator">Checking...</span>
+                <span id="model">Model: gemini-2.5-flash</span>
+            </div>
+        </header>
+
+        <!-- Metrics Dashboard Section -->
+        <div class="metrics-dashboard">
+            <h2>📊 Security Insights Overview</h2>
+
+            <!-- Key Metrics Cards -->
+            <div class="metrics-cards">
+                <div class="metric-card">
+                    <div class="metric-value" id="total-findings">-</div>
+                    <div class="metric-label">Total Findings</div>
+                    <div class="metric-trend">↑ 12% from last week</div>
+                </div>
+                <div class="metric-card critical">
+                    <div class="metric-value" id="critical-issues">-</div>
+                    <div class="metric-label">Critical Issues</div>
+                    <div class="metric-trend">↓ 5% from last week</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="categories-count">-</div>
+                    <div class="metric-label">Security Categories</div>
+                    <div class="metric-trend">Active monitoring</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="resources-affected">-</div>
+                    <div class="metric-label">Resource Types</div>
+                    <div class="metric-trend">Across all services</div>
+                </div>
+            </div>
+
+            <!-- Charts Section -->
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <h3>Severity Distribution</h3>
+                    <canvas id="severityChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Issues by Category</h3>
+                    <canvas id="categoryChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Top Resource Types</h3>
+                    <canvas id="resourceChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Trend Over Time</h3>
+                    <canvas id="trendChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Interface -->
+        <div class="chat-section">
+            <h2>💬 Ask the Security Agent</h2>
+            <div class="chat-container">
+                <div id="chat-messages" class="chat-messages"></div>
+
+                <div class="input-container">
+                    <input type="text" id="user-input" class="user-input" placeholder="Ask about your GCP security insights..." autofocus>
+                    <button id="send-btn" class="send-btn">Send</button>
+                </div>
+            </div>
+
+            <div class="examples-container">
+                <h3>Example Queries:</h3>
+                <div id="examples" class="examples">
+                    <button class="example-btn" data-query="SELECT * FROM security_insights.security_findings WHERE severity = 'HIGH' LIMIT 5">Critical Findings</button>
+                    <button class="example-btn" data-query="SELECT category, COUNT(*) as issues FROM security_insights.security_findings GROUP BY category ORDER BY issues DESC LIMIT 5">Top Risk Categories</button>
+                    <button class="example-btn" data-query="SELECT * FROM security_insights.iam_accounts LIMIT 5">IAM Accounts</button>
+                    <button class="example-btn" data-query="SELECT * FROM security_insights.storage_buckets LIMIT 5">Storage Buckets</button>
+                    <button class="example-btn" data-query="SELECT * FROM security_insights.firewall_rules LIMIT 5">Firewall Rules</button>
+                    <button class="example-btn" data-query="SELECT * FROM security_insights.compute_instances LIMIT 5">Compute Instances</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+google-cloud-bigquery>=3.11.0
+requests>=2.31.0
+feedparser>=6.0.10
+python-dateutil>=2.8.2

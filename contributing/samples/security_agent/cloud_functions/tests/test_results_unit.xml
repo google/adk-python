@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="38" skipped="0" tests="40" time="13.201" timestamp="2025-09-29T11:26:01.262157-07:00" hostname="stuartgano-macbookpro2.roam.internal"><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchCustomRoles" name="test_fetch_custom_roles_success" time="0.210"><failure message="AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:47: in test_fetch_custom_roles_success
+    with patch('fetch_custom_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchCustomRoles" name="test_fetch_custom_roles_empty_results" time="0.003"><failure message="AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:65: in test_fetch_custom_roles_empty_results
+    with patch('fetch_custom_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchCustomRoles" name="test_fetch_custom_roles_api_error" time="0.002"><failure message="AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:82: in test_fetch_custom_roles_api_error
+    with patch('fetch_custom_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchCustomRoles" name="test_fetch_custom_roles_bigquery_insert_error" time="0.003"><failure message="AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:100: in test_fetch_custom_roles_bigquery_insert_error
+    with patch('fetch_custom_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchCustomRoles" name="test_fetch_custom_roles_permission_analysis" time="0.006"><failure message="AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:127: in test_fetch_custom_roles_permission_analysis
+    with patch('fetch_custom_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_custom_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_custom_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchUserRoles" name="test_fetch_user_roles_success" time="0.140"><failure message="AttributeError: &lt;module 'fetch_user_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_user_roles/main.py'&gt; does not have the attribute 'ProjectsClient'">unit/test_iam_functions.py:167: in test_fetch_user_roles_success
+    with patch('fetch_user_roles.main.ProjectsClient', return_value=mock_crm_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_user_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_user_roles/main.py'&gt; does not have the attribute 'ProjectsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchUserRoles" name="test_fetch_user_roles_identify_admins" time="0.003"><failure message="AttributeError: &lt;module 'fetch_user_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_user_roles/main.py'&gt; does not have the attribute 'ProjectsClient'">unit/test_iam_functions.py:193: in test_fetch_user_roles_identify_admins
+    with patch('fetch_user_roles.main.ProjectsClient', return_value=mock_crm_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_user_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_user_roles/main.py'&gt; does not have the attribute 'ProjectsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchUserRoles" name="test_fetch_user_roles_external_detection" time="0.003"><failure message="AttributeError: &lt;module 'fetch_user_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_user_roles/main.py'&gt; does not have the attribute 'ProjectsClient'">unit/test_iam_functions.py:222: in test_fetch_user_roles_external_detection
+    with patch('fetch_user_roles.main.ProjectsClient', return_value=mock_crm_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_user_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_user_roles/main.py'&gt; does not have the attribute 'ProjectsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchUserRoles" name="test_fetch_user_roles_no_users" time="0.002"><failure message="AttributeError: &lt;module 'fetch_user_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_user_roles/main.py'&gt; does not have the attribute 'ProjectsClient'">unit/test_iam_functions.py:239: in test_fetch_user_roles_no_users
+    with patch('fetch_user_roles.main.ProjectsClient', return_value=mock_crm_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_user_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_user_roles/main.py'&gt; does not have the attribute 'ProjectsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchServiceAccountRoles" name="test_fetch_service_account_roles_success" time="0.003"><failure message="AttributeError: &lt;module 'fetch_service_account_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_service_account_roles/main.py'&gt; does not have the attribute 'ProjectsClient'">unit/test_iam_functions.py:268: in test_fetch_service_account_roles_success
+    with patch('fetch_service_account_roles.main.ProjectsClient', return_value=mock_crm_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_service_account_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_service_account_roles/main.py'&gt; does not have the attribute 'ProjectsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchServiceAccountRoles" name="test_fetch_service_account_roles_with_keys" time="0.005"><failure message="AttributeError: &lt;module 'fetch_service_account_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_service_account_roles/main.py'&gt; does not have the attribute 'ProjectsClient'">unit/test_iam_functions.py:310: in test_fetch_service_account_roles_with_keys
+    with patch('fetch_service_account_roles.main.ProjectsClient', return_value=mock_crm_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_service_account_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_service_account_roles/main.py'&gt; does not have the attribute 'ProjectsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchServiceAccountRoles" name="test_fetch_service_account_roles_disabled_accounts" time="0.003"><failure message="AttributeError: &lt;module 'fetch_service_account_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_service_account_roles/main.py'&gt; does not have the attribute 'ProjectsClient'">unit/test_iam_functions.py:343: in test_fetch_service_account_roles_disabled_accounts
+    with patch('fetch_service_account_roles.main.ProjectsClient', return_value=mock_crm_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_service_account_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_service_account_roles/main.py'&gt; does not have the attribute 'ProjectsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchStandardRoles" name="test_fetch_standard_roles_success" time="0.003"><failure message="AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:405: in test_fetch_standard_roles_success
+    with patch('fetch_standard_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchStandardRoles" name="test_fetch_standard_roles_categorization" time="0.003"><failure message="AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:445: in test_fetch_standard_roles_categorization
+    with patch('fetch_standard_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchStandardRoles" name="test_fetch_standard_roles_service_extraction" time="0.004"><failure message="AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:478: in test_fetch_standard_roles_service_extraction
+    with patch('fetch_standard_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestFetchStandardRoles" name="test_fetch_standard_roles_empty_permissions" time="0.003"><failure message="AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:504: in test_fetch_standard_roles_empty_permissions
+    with patch('fetch_standard_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestIAMFunctionsPerformance" name="test_large_role_dataset" time="0.330"><failure message="AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'">unit/test_iam_functions.py:540: in test_large_role_dataset
+    with patch('fetch_standard_roles.main.IAMClient', return_value=mock_iam_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_standard_roles.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_standard_roles/main.py'&gt; does not have the attribute 'IAMClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_iam_functions.TestIAMFunctionsPerformance" name="test_concurrent_function_execution" time="0.009" /><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchComputeInstances" name="test_fetch_compute_instances_success" time="0.003"><failure message="AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'">unit/test_infrastructure_functions.py:35: in test_fetch_compute_instances_success
+    with patch('fetch_compute_instances.main.InstancesClient', return_value=mock_compute_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchComputeInstances" name="test_fetch_compute_instances_multiple_zones" time="0.004"><failure message="AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'">unit/test_infrastructure_functions.py:70: in test_fetch_compute_instances_multiple_zones
+    with patch('fetch_compute_instances.main.InstancesClient', return_value=mock_compute_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchComputeInstances" name="test_fetch_compute_instances_security_analysis" time="0.003"><failure message="AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'">unit/test_infrastructure_functions.py:111: in test_fetch_compute_instances_security_analysis
+    with patch('fetch_compute_instances.main.InstancesClient', return_value=mock_compute_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchComputeInstances" name="test_fetch_compute_instances_no_instances" time="0.003"><failure message="AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'">unit/test_infrastructure_functions.py:132: in test_fetch_compute_instances_no_instances
+    with patch('fetch_compute_instances.main.InstancesClient', return_value=mock_compute_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchComputeInstances" name="test_fetch_compute_instances_api_error" time="0.002"><failure message="AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'">unit/test_infrastructure_functions.py:147: in test_fetch_compute_instances_api_error
+    with patch('fetch_compute_instances.main.InstancesClient', return_value=mock_compute_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchFirewallRules" name="test_fetch_firewall_rules_success" time="0.002"><failure message="AttributeError: &lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'">unit/test_infrastructure_functions.py:165: in test_fetch_firewall_rules_success
+    with patch('fetch_firewall_rules.main.FirewallsClient', return_value=mock_firewall_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchFirewallRules" name="test_fetch_firewall_rules_security_analysis" time="0.002"><failure message="AttributeError: &lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'">unit/test_infrastructure_functions.py:197: in test_fetch_firewall_rules_security_analysis
+    with patch('fetch_firewall_rules.main.FirewallsClient', return_value=mock_firewall_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchFirewallRules" name="test_fetch_firewall_rules_common_ports_detection" time="0.004"><failure message="AttributeError: &lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'">unit/test_infrastructure_functions.py:252: in test_fetch_firewall_rules_common_ports_detection
+    with patch('fetch_firewall_rules.main.FirewallsClient', return_value=mock_firewall_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchFirewallRules" name="test_fetch_firewall_rules_deny_rules" time="0.003"><failure message="AttributeError: &lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'">unit/test_infrastructure_functions.py:284: in test_fetch_firewall_rules_deny_rules
+    with patch('fetch_firewall_rules.main.FirewallsClient', return_value=mock_firewall_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchStorageBuckets" name="test_fetch_storage_buckets_success" time="0.078"><failure message="ValueError: too many values to unpack (expected 2)">unit/test_infrastructure_functions.py:306: in test_fetch_storage_buckets_success
+    response, status_code = storage_main.fetch_storage_buckets(request)
+    ^^^^^^^^^^^^^^^^^^^^^
+E   ValueError: too many values to unpack (expected 2)</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchStorageBuckets" name="test_fetch_storage_buckets_public_detection" time="0.018"><failure message="ValueError: too many values to unpack (expected 2)">unit/test_infrastructure_functions.py:336: in test_fetch_storage_buckets_public_detection
+    response, status_code = storage_main.fetch_storage_buckets(request)
+    ^^^^^^^^^^^^^^^^^^^^^
+E   ValueError: too many values to unpack (expected 2)</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchStorageBuckets" name="test_fetch_storage_buckets_security_features" time="0.017"><failure message="ValueError: too many values to unpack (expected 2)">unit/test_infrastructure_functions.py:387: in test_fetch_storage_buckets_security_features
+    response, status_code = storage_main.fetch_storage_buckets(request)
+    ^^^^^^^^^^^^^^^^^^^^^
+E   ValueError: too many values to unpack (expected 2)</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchStorageBuckets" name="test_fetch_storage_buckets_no_buckets" time="0.012"><failure message="ValueError: too many values to unpack (expected 2)">unit/test_infrastructure_functions.py:411: in test_fetch_storage_buckets_no_buckets
+    response, status_code = storage_main.fetch_storage_buckets(request)
+    ^^^^^^^^^^^^^^^^^^^^^
+E   ValueError: too many values to unpack (expected 2)</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchSecurityFindings" name="test_fetch_security_findings_success" time="1.042"><failure message="AttributeError: &lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'">unit/test_infrastructure_functions.py:427: in test_fetch_security_findings_success
+    with patch('fetch_security_findings.main.SecurityCenterClient', return_value=mock_scc_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchSecurityFindings" name="test_fetch_security_findings_severity_distribution" time="0.020"><failure message="AttributeError: &lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'">unit/test_infrastructure_functions.py:462: in test_fetch_security_findings_severity_distribution
+    with patch('fetch_security_findings.main.SecurityCenterClient', return_value=mock_scc_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchSecurityFindings" name="test_fetch_security_findings_by_resource_type" time="0.005"><failure message="AttributeError: &lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'">unit/test_infrastructure_functions.py:504: in test_fetch_security_findings_by_resource_type
+    with patch('fetch_security_findings.main.SecurityCenterClient', return_value=mock_scc_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchSecurityFindings" name="test_fetch_security_findings_inactive_findings" time="0.004"><failure message="AttributeError: &lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'">unit/test_infrastructure_functions.py:538: in test_fetch_security_findings_inactive_findings
+    with patch('fetch_security_findings.main.SecurityCenterClient', return_value=mock_scc_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchIAMAccounts" name="test_fetch_iam_accounts_success" time="0.005"><failure message="AttributeError: &lt;module 'fetch_iam_accounts.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_iam_accounts/main.py'&gt; does not have the attribute 'ProjectsClient'">unit/test_infrastructure_functions.py:571: in test_fetch_iam_accounts_success
+    with patch('fetch_iam_accounts.main.ProjectsClient', return_value=mock_crm_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_iam_accounts.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_iam_accounts/main.py'&gt; does not have the attribute 'ProjectsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestFetchIAMAccounts" name="test_fetch_iam_accounts_account_types" time="0.003"><failure message="AttributeError: &lt;module 'fetch_iam_accounts.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_iam_accounts/main.py'&gt; does not have the attribute 'ProjectsClient'">unit/test_infrastructure_functions.py:606: in test_fetch_iam_accounts_account_types
+    with patch('fetch_iam_accounts.main.ProjectsClient', return_value=mock_crm_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_iam_accounts.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_iam_accounts/main.py'&gt; does not have the attribute 'ProjectsClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestInfrastructureFunctionsPerformance" name="test_large_instance_dataset" time="0.292"><failure message="AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'">unit/test_infrastructure_functions.py:658: in test_large_instance_dataset
+    with patch('fetch_compute_instances.main.InstancesClient', return_value=mock_compute_client):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1497: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.13/3.13.3/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py:1467: in get_original
+    raise AttributeError(
+E   AttributeError: &lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestInfrastructureFunctionsPerformance" name="test_concurrent_infrastructure_functions" time="0.011"><failure message="AssertionError: Errors occurred: [('compute', &quot;&lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'&quot;), ('firewall', &quot;&lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'&quot;), ('findings', &quot;&lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'&quot;), ('storage', 'too many values to unpack (expected 2)')]&#10;assert 4 == 0&#10; +  where 4 = len([('compute', &quot;&lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'&quot;), ('firewall', &quot;&lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'&quot;), ('findings', &quot;&lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'&quot;), ('storage', 'too many values to unpack (expected 2)')])">unit/test_infrastructure_functions.py:712: in test_concurrent_infrastructure_functions
+    assert len(errors) == 0, f"Errors occurred: {errors}"
+E   AssertionError: Errors occurred: [('compute', "&lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'"), ('firewall', "&lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'"), ('findings', "&lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'"), ('storage', 'too many values to unpack (expected 2)')]
+E   assert 4 == 0
+E    +  where 4 = len([('compute', "&lt;module 'fetch_compute_instances.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_compute_instances/main.py'&gt; does not have the attribute 'InstancesClient'"), ('firewall', "&lt;module 'fetch_firewall_rules.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_firewall_rules/main.py'&gt; does not have the attribute 'FirewallsClient'"), ('findings', "&lt;module 'fetch_security_findings.main' from '/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent/cloud_functions/fetch_security_findings/main.py'&gt; does not have the attribute 'SecurityCenterClient'"), ('storage', 'too many values to unpack (expected 2)')])</failure></testcase><testcase classname="cloud_functions.tests.unit.test_infrastructure_functions.TestInfrastructureFunctionsPerformance" name="test_bigquery_batch_insert_performance" time="0.017" /></testsuite></testsuites>

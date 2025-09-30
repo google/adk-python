@@ -1,0 +1,4 @@
+google-cloud-bigquery>=3.11.0
+google-cloud-securitycenter>=1.23.0
+functions-framework>=3.0.0
+requests>=2.31.0

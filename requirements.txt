@@ -1,0 +1,27 @@
+# ADK Confluence Documentation Connector Requirements
+# Core dependencies for Confluence integration
+
+# Confluence API integration
+atlassian-python-api>=3.41.0
+
+# Environment configuration
+python-dotenv>=1.0.0
+
+# Core Python packages (if not already installed)
+sqlite3  # Built-in module
+pathlib  # Built-in module
+datetime  # Built-in module
+hashlib  # Built-in module
+json  # Built-in module
+logging  # Built-in module
+asyncio  # Built-in module
+typing  # Built-in module
+functools  # Built-in module
+
+# Optional: For enhanced error handling and HTTP retries
+requests>=2.31.0
+urllib3>=2.0.0
+
+# Testing dependencies
+pytest>=8.2.0
+pytest-asyncio>=1.2.0

@@ -1,0 +1,67 @@
+# Test Dependencies for Cloud Functions
+
+# Core testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+pytest-asyncio>=0.21.0
+pytest-xdist>=3.3.0  # Parallel test execution
+pytest-html>=3.2.0  # HTML test reports
+
+# Mocking and fixtures
+responses>=0.23.0
+requests-mock>=1.11.0
+factory-boy>=3.3.0
+faker>=19.0.0
+
+# Performance and monitoring
+psutil>=5.9.0
+memory-profiler>=0.61.0
+line-profiler>=4.1.0
+
+# Security scanning
+bandit>=1.7.5
+safety>=2.3.0
+
+# Code quality
+flake8>=6.0.0
+black>=23.7.0
+isort>=5.12.0
+mypy>=1.5.0
+
+# Google Cloud Functions framework and testing
+functions-framework>=3.5.0
+
+# Google Cloud testing
+google-cloud-bigquery>=3.11.0
+google-cloud-iam>=2.12.0
+google-cloud-storage>=2.10.0
+google-cloud-compute>=1.14.0
+google-cloud-firestore>=2.12.0
+google-cloud-securitycenter>=1.23.0
+
+# HTTP testing
+requests>=2.31.0
+urllib3>=2.0.0
+httpx>=0.24.0
+
+# Data handling
+pandas>=2.1.0
+numpy>=1.24.0
+
+# Utilities
+python-dotenv>=1.0.0
+click>=8.1.0
+colorama>=0.4.6
+rich>=13.5.0  # Better console output
+tabulate>=0.9.0
+
+# Development tools
+ipython>=8.14.0
+jupyter>=1.0.0
+
+# Optional: Load testing
+locust>=2.16.0
+
+# Optional: Database testing
+sqlalchemy>=2.0.0

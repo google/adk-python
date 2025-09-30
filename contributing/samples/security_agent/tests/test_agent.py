@@ -1,38 +1,122 @@
 #!/usr/bin/env python3
 """
-Direct test of the ADK agent to verify it works
+Test script to verify the BigQuery ADK Agent is working
 """
 
-import os
-import sys
-from pathlib import Path
+import requests
+import json
+import time
 
-# Add the agents directory to the path
-sys.path.insert(0, str(Path(__file__).parent / "agents"))
+def test_adk_agent():
+    """Test the complete ADK agent flow"""
 
-# Set environment variables
-os.environ["GOOGLE_CLOUD_PROJECT"] = "mgm-digitalconcierge"
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(Path(__file__).parent / "config" / "mgm-digitalconcierge-8e6bb83a7e22.json")
-os.environ["GOOGLE_CLOUD_LOCATION"] = "us-central1"
-os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "1"
-os.environ["DATABASE_PATH"] = str(Path(__file__).parent / "backend" / "cache" / "gcp_data.db")
-os.environ["ADK_AGENT_MODEL"] = "gemini-2.0-flash-exp"
+    # Configuration
+    ADK_BASE_URL = "http://127.0.0.1:8000"
+    FLASK_URL = "http://127.0.0.1:5000"
 
-# Import and test the agent
-from adk_agent import agent
+    print("=" * 60)
+    print("🔍 Testing BigQuery Security Agent")
+    print("=" * 60)
 
-print("Agent loaded successfully!")
-print(f"Agent name: {agent.name}")
-print(f"Agent description: {agent.description}")
-print(f"Agent tools: {[tool.name for tool in agent.tools]}")
+    # Test 1: Check Flask health
+    print("\n1. Testing Flask Frontend...")
+    try:
+        response = requests.get(f"{FLASK_URL}/api/health")
+        if response.status_code == 200:
+            data = response.json()
+            print(f"   ✅ Flask is healthy: {data['status']}")
+            print(f"   ✅ ADK connected: {data['adk_connected']}")
+        else:
+            print(f"   ❌ Flask health check failed: {response.status_code}")
+    except Exception as e:
+        print(f"   ❌ Flask not accessible: {e}")
 
-# Test a simple query
-print("\n" + "="*50)
-print("Testing agent with query: 'How many security findings are there?'")
-print("="*50)
+    # Test 2: Check ADK backend
+    print("\n2. Testing ADK Backend...")
+    try:
+        response = requests.get(f"{ADK_BASE_URL}/list-apps")
+        if response.status_code == 200:
+            apps = response.json()
+            if "agents" in apps:
+                print(f"   ✅ ADK backend is running with 'agents' app")
+            else:
+                print(f"   ⚠️  ADK backend running but no 'agents' app found")
+        else:
+            print(f"   ❌ ADK backend check failed: {response.status_code}")
+    except Exception as e:
+        print(f"   ❌ ADK backend not accessible: {e}")
 
-try:
-    response = agent.say("How many security findings are there?")
-    print(f"\nAgent response: {response}")
-except Exception as e:
-    print(f"\nError: {e}")
+    # Test 3: Create session and send message
+    print("\n3. Testing Agent Communication...")
+    try:
+        # Create session
+        session_response = requests.post(
+            f"{ADK_BASE_URL}/apps/agents/users/test-user/sessions",
+            json={}
+        )
+
+        if session_response.status_code == 200:
+            session_id = session_response.json().get("id")
+            print(f"   ✅ Session created: {session_id}")
+
+            # Send test message
+            print("\n4. Sending test query to agent...")
+            message_payload = {
+                "appName": "agents",
+                "userId": "test-user",
+                "sessionId": session_id,
+                "newMessage": {
+                    "parts": [{"text": "What datasets are available in BigQuery?"}],
+                    "role": "user"
+                },
+                "streaming": False
+            }
+
+            run_response = requests.post(
+                f"{ADK_BASE_URL}/run",
+                json=message_payload
+            )
+
+            if run_response.status_code == 200:
+                response_data = run_response.json()
+
+                # Extract agent response
+                agent_message = ""
+                if isinstance(response_data, list):
+                    for event in response_data:
+                        if isinstance(event, dict) and "content" in event:
+                            content = event["content"]
+                            if "parts" in content:
+                                for part in content["parts"]:
+                                    if "text" in part:
+                                        text = part["text"].strip()
+                                        if len(text) > 20:  # Skip short system messages
+                                            agent_message = text
+                                            break
+                                if agent_message:
+                                    break
+
+                if agent_message:
+                    print(f"   ✅ Agent responded successfully!")
+                    print(f"\n   Agent's response (first 200 chars):")
+                    print(f"   {agent_message[:200]}...")
+                else:
+                    print(f"   ⚠️  Agent responded but no meaningful message found")
+                    print(f"   Raw response: {json.dumps(response_data)[:200]}...")
+
+            else:
+                print(f"   ❌ Failed to get agent response: {run_response.status_code}")
+                print(f"   Error: {run_response.text[:200]}")
+        else:
+            print(f"   ❌ Failed to create session: {session_response.status_code}")
+
+    except Exception as e:
+        print(f"   ❌ Error testing agent: {e}")
+
+    print("\n" + "=" * 60)
+    print("✅ Test complete! You can access the web UI at:")
+    print(f"   {FLASK_URL}")
+    print("=" * 60)
+
+if __name__ == "__main__":
+    test_adk_agent()
