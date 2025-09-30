@@ -14,6 +14,7 @@
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.loop_agent import LoopAgentState
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
@@ -469,12 +470,36 @@ def test_auto_to_loop(is_resumable: bool):
         ('root_agent', transfer_call_part('sub_agent_1')),
         ('root_agent', TRANSFER_RESPONSE_PART),
         # Loops.
+        (
+            'sub_agent_1',
+            LoopAgentState(current_sub_agent='sub_agent_1_1').model_dump(
+                mode='json'
+            ),
+        ),
         ('sub_agent_1_1', 'response1'),
         ('sub_agent_1_1', END_OF_AGENT),
+        (
+            'sub_agent_1',
+            LoopAgentState(current_sub_agent='sub_agent_1_2').model_dump(
+                mode='json'
+            ),
+        ),
         ('sub_agent_1_2', 'response2'),
         ('sub_agent_1_2', END_OF_AGENT),
+        (
+            'sub_agent_1',
+            LoopAgentState(
+                current_sub_agent='sub_agent_1_1', times_looped=1
+            ).model_dump(mode='json'),
+        ),
         ('sub_agent_1_1', 'response3'),
         ('sub_agent_1_1', END_OF_AGENT),
+        (
+            'sub_agent_1',
+            LoopAgentState(
+                current_sub_agent='sub_agent_1_2', times_looped=1
+            ).model_dump(mode='json'),
+        ),
         # Exits.
         ('sub_agent_1_2', Part.from_function_call(name='exit_loop', args={})),
         (
@@ -484,7 +509,7 @@ def test_auto_to_loop(is_resumable: bool):
             ),
         ),
         ('sub_agent_1_2', END_OF_AGENT),
-        # Later expect the loop agent to also yield agent state events.
+        ('sub_agent_1', END_OF_AGENT),
         ('root_agent', END_OF_AGENT),
     ]
     # Same session, different invocation.

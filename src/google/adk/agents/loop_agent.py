@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import ClassVar
@@ -24,14 +25,16 @@ from typing import Optional
 
 from typing_extensions import override
 
-from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
+from .invocation_context import InvocationContext
 from .loop_agent_config import LoopAgentConfig
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 @experimental
@@ -69,11 +72,32 @@ class LoopAgent(BaseAgent):
     if not self.sub_agents:
       return
 
-    times_looped = 0
-    while not self.max_iterations or times_looped < self.max_iterations:
-      for sub_agent in self.sub_agents:
-        should_exit = False
-        pause_invocation = False
+    agent_state = self._load_agent_state(ctx, LoopAgentState)
+    is_resuming_at_current_agent = agent_state is not None
+    times_looped, start_index = self._get_start_state(agent_state)
+
+    should_exit = False
+    pause_invocation = False
+    while (
+        not self.max_iterations or times_looped < self.max_iterations
+    ) and not (should_exit or pause_invocation):
+      for i in range(start_index, len(self.sub_agents)):
+        sub_agent = self.sub_agents[i]
+
+        if ctx.is_resumable and not is_resuming_at_current_agent:
+          # If we are resuming from the current event, it means the same event
+          # has already been logged, so we should avoid yielding it again.
+          agent_state = LoopAgentState(
+              current_sub_agent=sub_agent.name,
+              times_looped=times_looped,
+          )
+          yield self._create_agent_state_event(ctx, agent_state=agent_state)
+
+        # Reset the sub-agent's state in the context to ensure that each
+        # sub-agent starts fresh.
+        if not is_resuming_at_current_agent:
+          ctx.reset_agent_state(sub_agent.name)
+        is_resuming_at_current_agent = False
 
         async with Aclosing(sub_agent.run_async(ctx)) as agen:
           async for event in agen:
@@ -83,18 +107,42 @@ class LoopAgent(BaseAgent):
             if ctx.should_pause_invocation(event):
               pause_invocation = True
 
-        # Indicates that the loop agent should exist after running this
-        # sub-agent.
-        if should_exit:
-          return
+        if should_exit or pause_invocation:
+          break  # break inner for loop
 
-        # Indicates that the invocation should be paused after running this
-        # sub-agent.
-        if pause_invocation:
-          return
-
+      # Restart from the beginning of the loop.
+      start_index = 0
       times_looped += 1
-    return
+
+    # If the invocation is paused, we should not yield the end of agent event.
+    if pause_invocation:
+      return
+
+    if ctx.is_resumable:
+      yield self._create_agent_state_event(ctx, end_of_agent=True)
+
+  def _get_start_state(
+      self,
+      agent_state: Optional[LoopAgentState],
+  ) -> tuple[int, int]:
+    """Computes the start state of the loop agent from the agent state."""
+    if not agent_state:
+      return 0, 0
+
+    times_looped = agent_state.times_looped
+    start_index = 0
+    if agent_state.current_sub_agent:
+      try:
+        sub_agent_names = [sub_agent.name for sub_agent in self.sub_agents]
+        start_index = sub_agent_names.index(agent_state.current_sub_agent)
+      except ValueError:
+        # A sub-agent was removed so the agent name is not found.
+        # For now, we restart from the beginning.
+        logger.warning(
+            'Sub-agent %s was not found. Restarting from the beginning.',
+            agent_state.current_sub_agent,
+        )
+    return times_looped, start_index
 
   @override
   async def _run_live_impl(

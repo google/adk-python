@@ -21,6 +21,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.loop_agent import LoopAgentState
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
@@ -368,8 +369,20 @@ class TestPauseInvocationWithLoopAgent(BasePauseInvocationTest):
   ):
     """Tests that a LoopAgent pauses on long running function call."""
     assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
+        (
+            "root_agent",
+            LoopAgentState(current_sub_agent="sub_agent_1").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_1", "sub agent 1 response"),
         ("sub_agent_1", END_OF_AGENT),
+        (
+            "root_agent",
+            LoopAgentState(current_sub_agent="sub_agent_2").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_2", Part.from_function_call(name="test_tool", args={})),
     ]
 
