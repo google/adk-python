@@ -40,6 +40,18 @@ from ._tools.confluence_tools import (
     refresh_confluence_cache
 )
 
+# Import Service Discovery tools
+from ._tools.service_discovery import (
+    discover_gcp_services,
+    analyze_gcp_service,
+    get_service_resources,
+    suggest_service_analysis,
+    learn_service_from_url,
+    discover_new_gcp_services,
+    register_new_service,
+    learn_from_api_spec
+)
+
 # Import configuration
 from ._tools.base import PROJECT_ID, DEFAULT_DATASET, DEFAULT_TABLE
 
@@ -63,6 +75,16 @@ tools = [
     FunctionTool(analyze_confluence_coverage),
     FunctionTool(get_confluence_statistics),
     FunctionTool(refresh_confluence_cache),
+    # Service Discovery tools for on-demand analysis
+    FunctionTool(discover_gcp_services),
+    FunctionTool(analyze_gcp_service),
+    FunctionTool(get_service_resources),
+    FunctionTool(suggest_service_analysis),
+    # Documentation learning tools for new services
+    FunctionTool(learn_service_from_url),
+    FunctionTool(discover_new_gcp_services),
+    FunctionTool(register_new_service),
+    FunctionTool(learn_from_api_spec),
     # Standard BigQuery tools
     FunctionTool(hello_world),
     FunctionTool(list_datasets),
@@ -96,6 +118,20 @@ DEFAULT BEHAVIOR:
 - When users ask general questions, assume they want data from security_insights
 - Always mention you're querying the security_insights dataset
 - Default to security_findings table unless explicitly asked for other tables
+
+SERVICE DISCOVERY & ON-DEMAND ANALYSIS:
+- Use discover_gcp_services() to find all enabled GCP services in the project
+- Use analyze_gcp_service() to perform on-demand analysis of ANY GCP service
+- Use get_service_resources() to enumerate resources for specific services
+- Use suggest_service_analysis() to recommend analysis for user queries
+- Support custom SQL queries for any service, not limited to pre-populated lists
+
+LEARNING NEW SERVICES FROM DOCUMENTATION:
+- Use learn_service_from_url() to parse and learn about NEW services from documentation URLs
+- Use discover_new_gcp_services() to find newly released services from GCP release notes
+- Use register_new_service() to manually register a new service for analysis
+- Use learn_from_api_spec() to understand services from OpenAPI specs or Proto files
+- The agent can dynamically learn about services that didn't exist when it was created!
 
 CAPABILITIES (in order of priority):
 1. Security Analysis from security_insights dataset: Query and analyze security findings, firewall rules, IAM policies

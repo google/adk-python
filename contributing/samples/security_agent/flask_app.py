@@ -10,6 +10,12 @@ from agents._tools.security_tools import (
     get_security_insights_summary,
     get_security_statistics
 )
+from agents._tools.service_discovery import (
+    discover_gcp_services,
+    analyze_gcp_service,
+    get_service_resources,
+    suggest_service_analysis
+)
 import json
 import traceback
 import re
@@ -327,6 +333,195 @@ def get_resource_type_distribution():
             {'resource_type': 'compute.networks', 'count': 123},
             {'resource_type': 'bigquery.datasets', 'count': 367}
         ])
+
+# Service Discovery Endpoints
+@app.route('/api/services/discover', methods=['GET'])
+def discover_services():
+    """Discover all GCP services enabled in the project"""
+    try:
+        include_all = request.args.get('include_all', 'false').lower() == 'true'
+        result = discover_gcp_services(include_all=include_all)
+
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'services': result.get('services', []),
+                'total_count': len(result.get('services', [])),
+                'message': f"Discovered {len(result.get('services', []))} services"
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Discovery failed')
+            }), 500
+    except Exception as e:
+        print(f"Error discovering services: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/services/analyze', methods=['POST'])
+def analyze_service():
+    """Perform on-demand analysis of a specific GCP service"""
+    try:
+        data = request.get_json()
+        service_name = data.get('service_name', '')
+        analysis_types = data.get('analysis_types', ['security', 'compliance'])
+        custom_query = data.get('custom_query', None)
+
+        if not service_name:
+            return jsonify({
+                'success': False,
+                'error': 'Service name is required'
+            }), 400
+
+        # Build analysis query
+        analysis_query = json.dumps({
+            'service': service_name,
+            'types': analysis_types,
+            'custom_query': custom_query
+        })
+
+        result = analyze_gcp_service(
+            service_name=service_name,
+            analysis_query=analysis_query
+        )
+
+        if result['success']:
+            # Extract findings
+            findings = []
+            analysis_data = result.get('analysis', {})
+
+            if 'security' in analysis_types:
+                security_findings = analysis_data.get('security_findings', [])
+                findings.extend([{
+                    'type': 'security',
+                    'severity': f.get('severity', 'INFO'),
+                    'title': f.get('title', 'Security Finding'),
+                    'description': f.get('description', ''),
+                    'recommendation': f.get('recommendation', '')
+                } for f in security_findings[:5]])
+
+            return jsonify({
+                'success': True,
+                'service': service_name,
+                'analysis': analysis_data,
+                'findings': findings,
+                'message': f"Analysis complete for {service_name}"
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Analysis failed')
+            }), 500
+    except Exception as e:
+        print(f"Error analyzing service: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/services/resources/<service_name>', methods=['GET'])
+def get_resources(service_name):
+    """Get resources for a specific service"""
+    try:
+        resource_type = request.args.get('resource_type')
+        limit = int(request.args.get('limit', 100))
+
+        result = get_service_resources(
+            service_name=service_name,
+            resource_type=resource_type,
+            limit=limit
+        )
+
+        if result['success']:
+            resources = result.get('resources', [])
+            return jsonify({
+                'success': True,
+                'service': service_name,
+                'resources': resources,
+                'count': len(resources)
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to get resources')
+            }), 500
+    except Exception as e:
+        print(f"Error getting resources: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/services/suggest', methods=['GET'])
+def suggest_analysis():
+    """Get AI-powered suggestions for service analysis"""
+    try:
+        query = request.args.get('query', '')
+
+        if not query:
+            return jsonify({
+                'success': False,
+                'error': 'Query is required'
+            }), 400
+
+        result = suggest_service_analysis(user_query=query)
+
+        if result['success']:
+            suggestions = result.get('suggestions', [])
+
+            # Format recommendations
+            recommendations = []
+            for i, suggestion in enumerate(suggestions[:5], 1):
+                recommendations.append({
+                    'id': i,
+                    'title': suggestion.get('title', f'Analysis {i}'),
+                    'description': suggestion.get('description', ''),
+                    'query': suggestion.get('query', ''),
+                    'service': suggestion.get('service', ''),
+                    'priority': suggestion.get('priority', 'Medium'),
+                    'estimated_time': suggestion.get('estimated_time', '< 1 minute')
+                })
+
+            return jsonify({
+                'success': True,
+                'query': query,
+                'recommendations': recommendations
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to get suggestions')
+            }), 500
+    except Exception as e:
+        print(f"Error getting suggestions: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/services/categories', methods=['GET'])
+def get_service_categories():
+    """Get available service categories for filtering"""
+    categories = [
+        {'id': 'compute', 'name': 'Compute', 'icon': '💻', 'count': 0},
+        {'id': 'storage', 'name': 'Storage', 'icon': '💾', 'count': 0},
+        {'id': 'database', 'name': 'Database', 'icon': '🗄️', 'count': 0},
+        {'id': 'networking', 'name': 'Networking', 'icon': '🌐', 'count': 0},
+        {'id': 'ai-ml', 'name': 'AI & ML', 'icon': '🤖', 'count': 0},
+        {'id': 'analytics', 'name': 'Analytics', 'icon': '📊', 'count': 0},
+        {'id': 'security', 'name': 'Security', 'icon': '🔒', 'count': 0},
+        {'id': 'management', 'name': 'Management', 'icon': '⚙️', 'count': 0},
+        {'id': 'developer', 'name': 'Developer Tools', 'icon': '🛠️', 'count': 0},
+        {'id': 'integration', 'name': 'Integration', 'icon': '🔗', 'count': 0}
+    ]
+
+    return jsonify({
+        'success': True,
+        'categories': categories
+    })
 
 if __name__ == '__main__':
     print("🚀 Starting Flask app for BigQuery Security Agent")
