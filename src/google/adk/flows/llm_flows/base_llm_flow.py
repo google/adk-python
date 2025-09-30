@@ -376,6 +376,28 @@ class BaseLlmFlow(ABC):
     if invocation_context.end_invocation:
       return
 
+    # Resume the LLM agent based on the last event from the current branch.
+    # 1. User content: continue the normal flow
+    # 2. Function call: call the tool and get the response event.
+    events = invocation_context._get_events(
+        current_invocation=True, current_branch=True
+    )
+    if (
+        invocation_context.is_resumable
+        and events
+        and events[-1].get_function_calls()
+    ):
+      model_response_event = events[-1]
+      async with Aclosing(
+          self._postprocess_handle_function_calls_async(
+              invocation_context, model_response_event, llm_request
+          )
+      ) as agen:
+        async for event in agen:
+          event.id = Event.new_id()
+          yield event
+        return
+
     # Calls the LLM.
     model_response_event = Event(
         id=Event.new_id(),

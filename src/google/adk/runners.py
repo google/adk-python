@@ -606,7 +606,16 @@ class Runner:
     event = find_matching_function_call(session.events)
     if event and event.author:
       return root_agent.find_agent(event.author)
-    for event in filter(lambda e: e.author != 'user', reversed(session.events)):
+
+    def _event_filter(event: Event) -> bool:
+      """Filters out user-authored events and agent state change events."""
+      if event.author == 'user':
+        return False
+      if event.actions.agent_state is not None or event.actions.end_of_agent:
+        return False
+      return True
+
+    for event in filter(_event_filter, reversed(session.events)):
       if event.author == root_agent.name:
         # Found root agent.
         return root_agent

@@ -400,29 +400,31 @@ class TestHITLConfirmationFlowWithResumableApp:
     return LlmAgent(name="root_agent", model=mock_model, tools=tools)
 
   @pytest.fixture
-  def runner(self, agent: LlmAgent) -> testing_utils.TestInMemoryRunner:
+  def runner(self, agent: LlmAgent) -> testing_utils.InMemoryRunner:
     """Provides an in-memory runner for the agent."""
     # Mark the app as resumable. So that the invocation will be paused after the
     # long running tool call.
     app = App(
-        name="InMemoryRunner",  # Required for using TestInMemoryRunner.
+        name="test_app",
         resumability_config=ResumabilityConfig(is_resumable=True),
         root_agent=agent,
     )
-    return testing_utils.TestInMemoryRunner(app=app, app_name=None)
+    return testing_utils.InMemoryRunner(app=app)
 
   @pytest.mark.asyncio
-  async def test_pause_on_request_confirmation(
+  def test_pause_on_request_confirmation(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
       agent: LlmAgent,
   ):
     """Tests HITL flow where all tool calls are confirmed."""
-    events = await runner.run_async_with_new_session("test user query")
+    events = runner.run("test user query")
 
     # Verify that the invocation is paused after the long running tool call.
     # So that no intermediate function response and llm response is generated.
-    assert testing_utils.simplify_events(copy.deepcopy(events)) == [
+    assert testing_utils.simplify_resumable_app_events(
+        copy.deepcopy(events)
+    ) == [
         (
             agent.name,
             Part(function_call=FunctionCall(name=agent.tools[0].name, args={})),

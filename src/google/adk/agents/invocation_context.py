@@ -242,8 +242,10 @@ class InvocationContext(BaseModel):
   def user_id(self) -> str:
     return self.session.user_id
 
-  def get_events(
+  # TODO: Move this method from invocation_context to a dedicated module.
+  def _get_events(
       self,
+      *,
       current_invocation: bool = False,
       current_branch: bool = False,
   ) -> list[Event]:
@@ -303,6 +305,25 @@ class InvocationContext(BaseModel):
         return True
 
     return False
+
+  # TODO: Move this method from invocation_context to a dedicated module.
+  # TODO: Converge this method with find_matching_function_call in llm_flows.
+  def _find_matching_function_call(
+      self, function_response_event: Event
+  ) -> Optional[Event]:
+    """Finds the function call event in the current invocation that matches the function response id."""
+    function_responses = function_response_event.get_function_responses()
+    if not function_responses:
+      return None
+    function_call_id = function_responses[0].id
+
+    events = self._get_events(current_invocation=True)
+    # The last event is function_response_event, so we search backwards from the
+    # one before it.
+    for event in reversed(events[:-1]):
+      if any(fc.id == function_call_id for fc in event.get_function_calls()):
+        return event
+    return None
 
 
 def new_invocation_context_id() -> str:

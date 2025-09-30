@@ -135,7 +135,8 @@ def _rearrange_events_for_latest_function_response(
   Returns:
     A list of events with the latest function_response rearranged.
   """
-  if not events:
+  if len(events) < 2:
+    # No need to process, since there is no function_call.
     return events
 
   function_responses = events[-1].get_function_responses()
