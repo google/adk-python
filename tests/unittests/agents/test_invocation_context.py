@@ -15,9 +15,11 @@
 from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.genai.types import Content
@@ -226,6 +228,124 @@ class TestInvocationContextWithAppResumablity:
     """Tests that is_resumable is False when no resumability config is set."""
     invocation_context = self._create_test_invocation_context(None)
     assert not invocation_context.is_resumable
+
+  def test_populate_invocation_agent_states_not_resumable(self):
+    """Tests that populate_invocation_agent_states does nothing if not resumable."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=False)
+    )
+    event = Event(
+        invocation_id='inv_1',
+        author='agent1',
+        actions=EventActions(end_of_agent=True, agent_state=None),
+    )
+    invocation_context.session.events = [event]
+    invocation_context.populate_invocation_agent_states()
+    assert not invocation_context.agent_states
+    assert not invocation_context.end_of_agents
+
+  def test_populate_invocation_agent_states_end_of_agent(self):
+    """Tests that populate_invocation_agent_states handles end_of_agent."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    event = Event(
+        invocation_id='inv_1',
+        author='agent1',
+        actions=EventActions(end_of_agent=True, agent_state=None),
+    )
+    invocation_context.session.events = [event]
+    invocation_context.populate_invocation_agent_states()
+    assert not invocation_context.agent_states
+    assert invocation_context.end_of_agents == {'agent1': True}
+
+  def test_populate_invocation_agent_states_with_agent_state(self):
+    """Tests that populate_invocation_agent_states handles agent_state."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    event = Event(
+        invocation_id='inv_1',
+        author='agent1',
+        actions=EventActions(
+            end_of_agent=False,
+            agent_state=BaseAgentState().model_dump(mode='json'),
+        ),
+    )
+    invocation_context.session.events = [event]
+    invocation_context.populate_invocation_agent_states()
+    assert invocation_context.agent_states == {'agent1': {}}
+    assert invocation_context.end_of_agents == {'agent1': False}
+
+  def test_populate_invocation_agent_states_with_agent_state_and_end_of_agent(
+      self,
+  ):
+    """Tests that populate_invocation_agent_states handles agent_state and end_of_agent."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    event = Event(
+        invocation_id='inv_1',
+        author='agent1',
+        actions=EventActions(
+            end_of_agent=True,
+            agent_state=BaseAgentState().model_dump(mode='json'),
+        ),
+    )
+    invocation_context.session.events = [event]
+    invocation_context.populate_invocation_agent_states()
+    # When both agent_state and end_of_agent are set, agent_state should be
+    # cleared, as end_of_agent is of a higher priority.
+    assert not invocation_context.agent_states
+    assert invocation_context.end_of_agents == {'agent1': True}
+
+  def test_populate_invocation_agent_states_with_content_no_state(self):
+    """Tests that populate_invocation_agent_states creates default state."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    event = Event(
+        invocation_id='inv_1',
+        author='agent1',
+        actions=EventActions(end_of_agent=False, agent_state=None),
+        content=Content(role='model', parts=[Part(text='hi')]),
+    )
+    invocation_context.session.events = [event]
+    invocation_context.populate_invocation_agent_states()
+    assert invocation_context.agent_states == {'agent1': BaseAgentState()}
+    assert invocation_context.end_of_agents == {'agent1': False}
+
+  def test_populate_invocation_agent_states_user_message_event(self):
+    """Tests that populate_invocation_agent_states ignores user message events for default state."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    event = Event(
+        invocation_id='inv_1',
+        author='user',
+        actions=EventActions(end_of_agent=False, agent_state=None),
+        content=Content(role='user', parts=[Part(text='hi')]),
+    )
+    invocation_context.session.events = [event]
+    invocation_context.populate_invocation_agent_states()
+    assert not invocation_context.agent_states
+    assert not invocation_context.end_of_agents
+
+  def test_populate_invocation_agent_states_no_content(self):
+    """Tests that populate_invocation_agent_states ignores events with no content if no state."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    event = Event(
+        invocation_id='inv_1',
+        author='agent1',
+        actions=EventActions(end_of_agent=None, agent_state=None),
+        content=None,
+    )
+    invocation_context.session.events = [event]
+    invocation_context.populate_invocation_agent_states()
+    assert not invocation_context.agent_states
+    assert not invocation_context.end_of_agents
 
 
 class TestFindMatchingFunctionCall:
