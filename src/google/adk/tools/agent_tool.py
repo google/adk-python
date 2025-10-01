@@ -134,10 +134,16 @@ class AgentTool(BaseTool):
         credential_service=tool_context._invocation_context.credential_service,
         plugins=list(tool_context._invocation_context.plugin_manager.plugins),
     )
+
+    state_dict = {
+        k: v
+        for k, v in tool_context.state.to_dict().items()
+        if not k.startswith('_adk')  # Filter out adk internal states
+    }
     session = await runner.session_service.create_session(
         app_name=self.agent.name,
         user_id=tool_context._invocation_context.user_id,
-        state=tool_context.state.to_dict(),
+        state=state_dict,
     )
 
     last_content = None

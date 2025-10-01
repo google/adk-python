@@ -115,7 +115,7 @@ async def test_tracer_start_as_current_span(
   expected_start_as_current_span_calls = [
       mock.call('invocation'),
       mock.call('execute_tool some_tool'),
-      mock.call('agent_run [some_root_agent]'),
+      mock.call('invoke_agent some_root_agent'),
       mock.call('call_llm'),
       mock.call('call_llm'),
   ]

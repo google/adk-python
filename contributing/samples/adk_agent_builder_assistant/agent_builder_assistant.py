@@ -16,7 +16,6 @@
 
 from pathlib import Path
 from typing import Callable
-from typing import Literal
 from typing import Optional
 from typing import Union
 
@@ -46,46 +45,22 @@ class AgentBuilderAssistant:
   @staticmethod
   def create_agent(
       model: Union[str, BaseLlm] = "gemini-2.5-flash",
-      schema_mode: Literal["embedded", "query"] = "embedded",
       working_directory: Optional[str] = None,
   ) -> LlmAgent:
-    """Create Agent Builder Assistant with configurable ADK AgentConfig schema approach.
+    """Create Agent Builder Assistant with embedded ADK AgentConfig schema.
 
     Args:
       model: Model to use for the assistant (default: gemini-2.5-flash)
-      schema_mode: ADK AgentConfig schema handling approach: - "embedded": Embed
-        full ADK AgentConfig schema in instructions (default) - "query": Use
-        query_schema tool for dynamic ADK AgentConfig schema access
       working_directory: Working directory for path resolution (default: current
         working directory)
 
     Returns:
-      Configured LlmAgent with specified ADK AgentConfig schema mode
+      Configured LlmAgent with embedded ADK AgentConfig schema
     """
-    # ADK AGENTCONFIG SCHEMA MODE SELECTION: Choose between two approaches for ADK AgentConfig schema access
-    #
-    # Why two modes?
-    # 1. Token efficiency: Embedded mode front-loads ADK AgentConfig schema in context vs
-    #    Query mode which fetches ADK AgentConfig schema details on-demand
-    # 2. Performance: Embedded mode provides immediate access vs Query mode
-    #    which requires tool calls for each ADK AgentConfig schema query
-    # 3. Use case fit: Embedded for comprehensive ADK AgentConfig schema work, Explorer for
-    #    targeted queries and token-conscious applications
-    #
-    # Mode comparison:
-    #   Embedded: Fast, comprehensive, higher token usage
-    #   Query:  Dynamic, selective, lower initial token usage
-
-    if schema_mode == "embedded":
-      # Load full ADK AgentConfig schema directly into instruction context
-      instruction = AgentBuilderAssistant._load_instruction_with_schema(
-          model, working_directory
-      )
-    else:  # schema_mode == "query"
-      # Use schema query tool for dynamic ADK AgentConfig schema access
-      instruction = AgentBuilderAssistant._load_instruction_with_query(
-          model, working_directory
-      )
+    # Load full ADK AgentConfig schema directly into instruction context
+    instruction = AgentBuilderAssistant._load_instruction_with_schema(
+        model, working_directory
+    )
 
     # TOOL ARCHITECTURE: Hybrid approach using both AgentTools and FunctionTools
     #
@@ -123,17 +98,6 @@ class AgentBuilderAssistant:
         # ADK source code search (regex-based)
         FunctionTool(search_adk_source),  # Search ADK source with regex
     ]
-
-    # CONDITIONAL TOOL LOADING: Add ADK AgentConfig schema query tool only in query mode
-    #
-    # Why conditional?
-    # - Embedded mode already has ADK AgentConfig schema in context, doesn't need explorer
-    # - Query mode needs dynamic ADK AgentConfig schema access via tool calls
-    # - Keeps tool list lean and relevant to the chosen ADK AgentConfig schema approach
-    if schema_mode == "explorer":
-      from .tools.query_schema import query_schema
-
-      custom_tools.append(FunctionTool(query_schema))
 
     # Combine all tools
     all_tools = agent_tools + custom_tools
@@ -212,34 +176,6 @@ class AgentBuilderAssistant:
     return instruction_provider
 
   @staticmethod
-  def _load_instruction_with_query(
-      model: Union[str, BaseLlm],
-      working_directory: Optional[str] = None,
-  ) -> Callable[[ReadonlyContext], str]:
-    """Load instruction template for ADK AgentConfig schema query mode."""
-    query_template = (
-        AgentBuilderAssistant._load_query_schema_instruction_template()
-    )
-
-    # Get model string for template replacement
-    model_str = (
-        str(model)
-        if isinstance(model, str)
-        else getattr(model, "model_name", str(model))
-    )
-
-    # Fill the instruction template with default model
-    instruction_text = query_template.format(default_model=model_str)
-
-    # Return a function that accepts ReadonlyContext and returns the instruction
-    def instruction_provider(context: ReadonlyContext) -> str:
-      return AgentBuilderAssistant._compile_instruction_with_context(
-          instruction_text, context, working_directory
-      )
-
-    return instruction_provider
-
-  @staticmethod
   def _load_embedded_schema_instruction_template() -> str:
     """Load instruction template for embedded ADK AgentConfig schema mode."""
     template_path = Path(__file__).parent / "instruction_embedded.template"
@@ -247,19 +183,6 @@ class AgentBuilderAssistant:
     if not template_path.exists():
       raise FileNotFoundError(
           f"Instruction template not found at {template_path}"
-      )
-
-    with open(template_path, "r", encoding="utf-8") as f:
-      return f.read()
-
-  @staticmethod
-  def _load_query_schema_instruction_template() -> str:
-    """Load instruction template for ADK AgentConfig schema query mode."""
-    template_path = Path(__file__).parent / "instruction_query.template"
-
-    if not template_path.exists():
-      raise FileNotFoundError(
-          f"Query instruction template not found at {template_path}"
       )
 
     with open(template_path, "r", encoding="utf-8") as f:

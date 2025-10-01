@@ -22,6 +22,8 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from .cache_metadata import CacheMetadata
+
 
 class LlmResponse(BaseModel):
   """LLM response class that provides the first candidate response from the
@@ -117,6 +119,19 @@ class LlmResponse(BaseModel):
   logprobs_result: Optional[types.LogprobsResult] = None
   """Detailed log probabilities for chosen and top candidate tokens."""
 
+  cache_metadata: Optional[CacheMetadata] = None
+  """Context cache metadata if caching was used for this response.
+
+  Contains cache identification, usage tracking, and lifecycle information.
+  This field is automatically populated when context caching is enabled.
+  """
+
+  citation_metadata: Optional[types.CitationMetadata] = None
+  """Citation metadata for the response.
+
+  This field is automatically populated when citation is enabled.
+  """
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
@@ -139,6 +154,7 @@ class LlmResponse(BaseModel):
             grounding_metadata=candidate.grounding_metadata,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
+            citation_metadata=candidate.citation_metadata,
             avg_logprobs=candidate.avg_logprobs,
             logprobs_result=candidate.logprobs_result,
         )
@@ -146,6 +162,7 @@ class LlmResponse(BaseModel):
         return LlmResponse(
             error_code=candidate.finish_reason,
             error_message=candidate.finish_message,
+            citation_metadata=candidate.citation_metadata,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
             avg_logprobs=candidate.avg_logprobs,

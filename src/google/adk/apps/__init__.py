@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from .app import App
+from .app import ResumabilityConfig
 
 __all__ = [
     'App',
+    'ResumabilityConfig',
 ]

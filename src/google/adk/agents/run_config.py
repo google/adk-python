@@ -48,8 +48,15 @@ class RunConfig(BaseModel):
   response_modalities: Optional[list[str]] = None
   """The output modalities. If not set, it's default to AUDIO."""
 
-  save_input_blobs_as_artifacts: bool = False
-  """Whether or not to save the input blobs as artifacts."""
+  save_input_blobs_as_artifacts: bool = Field(
+      default=False,
+      deprecated=True,
+      description=(
+          'Whether or not to save the input blobs as artifacts. DEPRECATED: Use'
+          ' SaveFilesAsArtifactsPlugin instead for better control and'
+          ' flexibility. See google.adk.plugins.SaveFilesAsArtifactsPlugin.'
+      ),
+  )
 
   support_cfc: bool = False
   """

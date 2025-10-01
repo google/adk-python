@@ -22,6 +22,7 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Dict
+from typing import Literal
 from typing import Optional
 
 import httpx
@@ -178,34 +179,59 @@ class AdkWebServerClient:
   async def run_agent(
       self,
       request: RunAgentRequest,
+      mode: Optional[Literal["record", "replay"]] = None,
+      test_case_dir: Optional[str] = None,
+      user_message_index: Optional[int] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run an agent with streaming Server-Sent Events response.
 
     Args:
       request: The RunAgentRequest containing agent execution parameters
+      mode: Optional conformance mode ("record" or "replay") to trigger recording
+      test_case_dir: Optional test case directory path for conformance recording
+      user_message_index: Optional user message index for conformance recording
 
     Yields:
       Event objects streamed from the agent execution
 
     Raises:
+      ValueError: If mode is provided but test_case_dir or user_message_index is None
       httpx.HTTPStatusError: If the request fails
       json.JSONDecodeError: If event data cannot be parsed
     """
-    # TODO: Prepare headers for conformance tracking
-    headers = {}
+    # Add recording parameters to state_delta for conformance tests
+    if mode:
+      if test_case_dir is None or user_message_index is None:
+        raise ValueError(
+            "test_case_dir and user_message_index must be provided when mode is"
+            " specified"
+        )
+
+      # Modify request state_delta in place
+      if request.state_delta is None:
+        request.state_delta = {}
+
+      if mode == "replay":
+        request.state_delta["_adk_replay_config"] = {
+            "dir": str(test_case_dir),
+            "user_message_index": user_message_index,
+        }
+      else:  # record mode
+        request.state_delta["_adk_recordings_config"] = {
+            "dir": str(test_case_dir),
+            "user_message_index": user_message_index,
+        }
 
     async with self._get_client() as client:
       async with client.stream(
           "POST",
           "/run_sse",
           json=request.model_dump(by_alias=True, exclude_none=True),
-          headers=headers,
       ) as response:
         response.raise_for_status()
         async for line in response.aiter_lines():
           if line.startswith("data:") and (data := line[5:].strip()):
-            try:
-              event_data = json.loads(data)
-              yield Event.model_validate(event_data)
-            except (json.JSONDecodeError, ValueError) as exc:
-              logger.warning("Failed to parse event data: %s", exc)
+            event_data = json.loads(data)
+            yield Event.model_validate(event_data)
+          else:
+            logger.debug("Non data line received: %s", line)

@@ -14,14 +14,18 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
+from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from ..agents.context_cache_config import ContextCacheConfig
 from ..tools.base_tool import BaseTool
+from .cache_metadata import CacheMetadata
 
 
 def _find_tool_with_function_declarations(
@@ -52,6 +56,8 @@ class LlmRequest(BaseModel):
     contents: The contents to send to the model.
     config: Additional config for the generate content request.
     tools_dict: The tools dictionary.
+    cache_config: Context cache configuration for this request.
+    cache_metadata: Cache metadata from previous requests, used for cache management.
   """
 
   model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -76,17 +82,153 @@ class LlmRequest(BaseModel):
   tools_dict: dict[str, BaseTool] = Field(default_factory=dict, exclude=True)
   """The tools dictionary."""
 
-  def append_instructions(self, instructions: list[str]) -> None:
+  cache_config: Optional[ContextCacheConfig] = None
+  """Context cache configuration for this request."""
+
+  cache_metadata: Optional[CacheMetadata] = None
+  """Cache metadata from previous requests, used for cache management."""
+
+  def append_instructions(
+      self, instructions: Union[list[str], types.Content]
+  ) -> list[types.Content]:
     """Appends instructions to the system instruction.
 
     Args:
-      instructions: The instructions to append.
+      instructions: The instructions to append. Can be:
+        - list[str]: Strings to append/concatenate to system instruction
+        - types.Content: Content object to append to system instruction
+
+    Returns:
+      List of user contents from non-text parts (when instructions is types.Content
+      with non-text parts). Empty list otherwise.
+
+    Note: Model API requires system_instruction to be a string. Non-text parts
+    in Content are processed with references in system_instruction and returned
+    as user contents.
+
+    Behavior:
+      - list[str]: concatenates with existing system_instruction using \\n\\n
+      - types.Content: extracts text parts with references to non-text parts,
+        returns non-text parts as user contents
     """
 
-    if self.config.system_instruction:
-      self.config.system_instruction += '\n\n' + '\n\n'.join(instructions)
-    else:
-      self.config.system_instruction = '\n\n'.join(instructions)
+    # Handle Content object
+    if isinstance(instructions, types.Content):
+      text_parts = []
+      user_contents = []
+
+      # Process all parts, creating references for non-text parts
+      non_text_count = 0
+      for part in instructions.parts:
+        if part.text:
+          # Text part - add to system instruction
+          text_parts.append(part.text)
+        elif part.inline_data:
+          # Inline data part - create reference and user content
+          reference_id = f"inline_data_{non_text_count}"
+          non_text_count += 1
+
+          # Create descriptive reference based on mime_type and display_name
+          display_info = []
+          if part.inline_data.display_name:
+            display_info.append(f"'{part.inline_data.display_name}'")
+          if part.inline_data.mime_type:
+            display_info.append(f"type: {part.inline_data.mime_type}")
+
+          display_text = f" ({', '.join(display_info)})" if display_info else ""
+          reference_text = (
+              f"[Reference to inline binary data: {reference_id}{display_text}]"
+          )
+          text_parts.append(reference_text)
+
+          # Create user content with reference and data
+          user_content = types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(
+                      text=f"Referenced inline data: {reference_id}"
+                  ),
+                  types.Part(inline_data=part.inline_data),
+              ],
+          )
+          user_contents.append(user_content)
+
+        elif part.file_data:
+          # File data part - create reference and user content
+          reference_id = f"file_data_{non_text_count}"
+          non_text_count += 1
+
+          # Create descriptive reference based on file_uri and display_name
+          display_info = []
+          if part.file_data.display_name:
+            display_info.append(f"'{part.file_data.display_name}'")
+          if part.file_data.file_uri:
+            display_info.append(f"URI: {part.file_data.file_uri}")
+          if part.file_data.mime_type:
+            display_info.append(f"type: {part.file_data.mime_type}")
+
+          display_text = f" ({', '.join(display_info)})" if display_info else ""
+          reference_text = (
+              f"[Reference to file data: {reference_id}{display_text}]"
+          )
+          text_parts.append(reference_text)
+
+          # Create user content with reference and file data
+          user_content = types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(
+                      text=f"Referenced file data: {reference_id}"
+                  ),
+                  types.Part(file_data=part.file_data),
+              ],
+          )
+          user_contents.append(user_content)
+
+      # Handle text parts for system instruction
+      if text_parts:
+        new_text = "\n\n".join(text_parts)
+        if not self.config.system_instruction:
+          self.config.system_instruction = new_text
+        elif isinstance(self.config.system_instruction, str):
+          self.config.system_instruction += "\n\n" + new_text
+        else:
+          # Log warning for unsupported system_instruction types
+          logging.warning(
+              "Cannot append to system_instruction of unsupported type: %s. "
+              "Only string system_instruction is supported.",
+              type(self.config.system_instruction),
+          )
+
+      # Add user contents directly to llm_request.contents
+      if user_contents:
+        self.contents.extend(user_contents)
+
+      return user_contents
+
+    # Handle list of strings
+    if isinstance(instructions, list) and all(
+        isinstance(inst, str) for inst in instructions
+    ):
+      if not instructions:  # Handle empty list
+        return []
+
+      new_text = "\n\n".join(instructions)
+      if not self.config.system_instruction:
+        self.config.system_instruction = new_text
+      elif isinstance(self.config.system_instruction, str):
+        self.config.system_instruction += "\n\n" + new_text
+      else:
+        # Log warning for unsupported system_instruction types
+        logging.warning(
+            "Cannot append to system_instruction of unsupported type: %s. "
+            "Only string system_instruction is supported.",
+            type(self.config.system_instruction),
+        )
+      return []
+
+    # Invalid input
+    raise TypeError("instructions must be list[str] or types.Content")
 
   def append_tools(self, tools: list[BaseTool]) -> None:
     """Appends tools to the request.
@@ -128,4 +270,4 @@ class LlmRequest(BaseModel):
     """
 
     self.config.response_schema = base_model
-    self.config.response_mime_type = 'application/json'
+    self.config.response_mime_type = "application/json"
