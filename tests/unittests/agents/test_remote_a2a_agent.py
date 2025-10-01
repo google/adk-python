@@ -44,6 +44,8 @@ try:
   from a2a.types import SendMessageSuccessResponse
   from a2a.types import Task as A2ATask
   from a2a.types import TaskArtifactUpdateEvent
+  from a2a.types import TaskState
+  from a2a.types import TaskStatus
   from a2a.types import TaskStatusUpdateEvent
   from google.adk.agents.invocation_context import InvocationContext
   from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
@@ -733,8 +735,9 @@ class TestRemoteA2aAgentMessageHandling:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.message = mock_a2a_message
-    mock_update.status = "COMPLETED"
+    mock_update.status = Mock(TaskStatus)
+    mock_update.status.state = TaskState.completed
+    mock_update.status.message = mock_a2a_message
 
     # Create a proper Event mock that can handle custom_metadata
     mock_event = Event(
@@ -770,8 +773,9 @@ class TestRemoteA2aAgentMessageHandling:
     mock_a2a_task.id = "task-123"
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.message = None
-    mock_update.status = "COMPLETED"
+    mock_update.status = Mock(TaskStatus)
+    mock_update.status.state = TaskState.completed
+    mock_update.status.message = None
 
     result = await self.agent._handle_a2a_response(
         (mock_a2a_task, mock_update), self.mock_context
@@ -1021,8 +1025,9 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.message = mock_a2a_message
-    mock_update.status = "COMPLETED"
+    mock_update.status = Mock(TaskStatus)
+    mock_update.status.state = TaskState.completed
+    mock_update.status.message = mock_a2a_message
 
     # Create a proper Event mock that can handle custom_metadata
     mock_event = Event(
@@ -1058,8 +1063,9 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_a2a_task.id = "task-123"
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.message = None
-    mock_update.status = "COMPLETED"
+    mock_update.status = Mock(TaskStatus)
+    mock_update.status.state = TaskState.completed
+    mock_update.status.message = None
 
     result = await self.agent._handle_a2a_response(
         (mock_a2a_task, mock_update), self.mock_context
