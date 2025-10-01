@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
-import vertexai
+
+try:
+  import vertexai
+except ImportError:
+  from google.cloud.aiplatform import vertexai
 
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
