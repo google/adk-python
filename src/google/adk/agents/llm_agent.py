@@ -112,8 +112,22 @@ ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
 
 
 async def _convert_tool_union_to_tools(
-    tool_union: ToolUnion, ctx: ReadonlyContext
+    tool_union: ToolUnion,
+    ctx: ReadonlyContext,
+    model: Union[str, BaseLlm],
+    multiple_tools: bool = False,
 ) -> list[BaseTool]:
+  from ..tools.google_search_tool import google_search
+
+  # Wrap google_search tool with AgentTool if there are multiple tools because
+  # the built-in tools cannot be used together with other tools.
+  # TODO(b/448114567): Remove once the workaround is no longer needed.
+  if multiple_tools and tool_union is google_search:
+    from ..tools.google_search_agent_tool import create_google_search_agent
+    from ..tools.google_search_agent_tool import GoogleSearchAgentTool
+
+    return [GoogleSearchAgentTool(create_google_search_agent(model))]
+
   if isinstance(tool_union, BaseTool):
     return [tool_union]
   if callable(tool_union):
@@ -462,8 +476,16 @@ class LlmAgent(BaseAgent):
     This method is only for use by Agent Development Kit.
     """
     resolved_tools = []
+    # We may need to wrap some built-in tools if there are other tools
+    # because the built-in tools cannot be used together with other tools.
+    # TODO(b/448114567): Remove once the workaround is no longer needed.
+    multiple_tools = len(self.tools) > 1
     for tool_union in self.tools:
-      resolved_tools.extend(await _convert_tool_union_to_tools(tool_union, ctx))
+      resolved_tools.extend(
+          await _convert_tool_union_to_tools(
+              tool_union, ctx, self.model, multiple_tools
+          )
+      )
     return resolved_tools
 
   @property
