@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 from functools import cached_property
 import logging
 import os
@@ -300,8 +301,13 @@ class Gemini(BaseLlm):
           if not content.parts:
             continue
           for part in content.parts:
-            _remove_display_name_if_present(part.inline_data)
-            _remove_display_name_if_present(part.file_data)
+            # Create copies to avoid mutating the original objects
+            if part.inline_data:
+              part.inline_data = copy.copy(part.inline_data)
+              _remove_display_name_if_present(part.inline_data)
+            if part.file_data:
+              part.file_data = copy.copy(part.file_data)
+              _remove_display_name_if_present(part.file_data)
 
     # Initialize config if needed
     if llm_request.config and llm_request.config.tools:
