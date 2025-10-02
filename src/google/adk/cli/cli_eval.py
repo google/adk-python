@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
-import json
 import logging
 import os
 import sys
@@ -70,10 +69,6 @@ DEFAULT_CRITERIA = {
     RESPONSE_MATCH_SCORE_KEY: 0.8,
 }
 
-_DEFAULT_EVAL_CONFIG = EvalConfig(
-    criteria={"tool_trajectory_avg_score": 1.0, "response_match_score": 0.8}
-)
-
 
 def _import_from_path(module_name, file_path):
   spec = importlib.util.spec_from_file_location(module_name, file_path)
@@ -87,52 +82,6 @@ def _get_agent_module(agent_module_file_path: str):
   file_path = os.path.join(agent_module_file_path, "__init__.py")
   module_name = "agent"
   return _import_from_path(module_name, file_path)
-
-
-def get_evaluation_criteria_or_default(
-    eval_config_file_path: str,
-) -> EvalConfig:
-  """Returns EvalConfig read from the config file, if present.
-
-  Otherwise a default one is returned.
-  """
-  if eval_config_file_path:
-    with open(eval_config_file_path, "r", encoding="utf-8") as f:
-      content = f.read()
-      return EvalConfig.model_validate_json(content)
-
-  logger.info("No config file supplied. Using default criteria.")
-  return _DEFAULT_EVAL_CONFIG
-
-
-def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
-  """Returns a list of EvalMetrics mapped from the EvalConfig."""
-  eval_metric_list = []
-  if eval_config.criteria:
-    for metric_name, criterion in eval_config.criteria.items():
-      if isinstance(criterion, float):
-        eval_metric_list.append(
-            EvalMetric(
-                metric_name=metric_name,
-                threshold=criterion,
-                criterion=BaseCriterion(threshold=criterion),
-            )
-        )
-      elif isinstance(criterion, BaseCriterion):
-        eval_metric_list.append(
-            EvalMetric(
-                metric_name=metric_name,
-                threshold=criterion.threshold,
-                criterion=criterion,
-            )
-        )
-      else:
-        raise ValueError(
-            f"Unexpected criterion type. {type(criterion).__name__} not"
-            " supported."
-        )
-
-  return eval_metric_list
 
 
 def get_root_agent(agent_module_file_path: str) -> Agent:
