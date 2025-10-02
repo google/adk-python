@@ -14,16 +14,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any
-from typing import Dict
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from google.genai import Client
 from google.genai import types
 from typing_extensions import override
+import vertexai
 
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
@@ -59,8 +56,6 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
   @override
   async def add_session_to_memory(self, session: Session):
-    api_client = self._get_api_client()
-
     if not self._agent_engine_id:
       raise ValueError('Agent Engine ID is required for Memory Bank.')
 
@@ -72,62 +67,53 @@ class VertexAiMemoryBankService(BaseMemoryService):
         events.append({
             'content': event.content.model_dump(exclude_none=True, mode='json')
         })
-    request_dict = {
-        'direct_contents_source': {
-            'events': events,
-        },
-        'scope': {
-            'app_name': session.app_name,
-            'user_id': session.user_id,
-        },
-    }
-
     if events:
-      api_response = await api_client.async_request(
-          http_method='POST',
-          path=f'reasoningEngines/{self._agent_engine_id}/memories:generate',
-          request_dict=request_dict,
+      client = self._get_api_client()
+      operation = client.agent_engines.memories.generate(
+          name='reasoningEngines/' + self._agent_engine_id,
+          direct_contents_source={'events': events},
+          scope={
+              'app_name': session.app_name,
+              'user_id': session.user_id,
+          },
+          config={'wait_for_completion': False},
       )
       logger.info('Generate memory response received.')
-      logger.debug('Generate memory response: %s', api_response)
+      logger.debug('Generate memory response: %s', operation)
     else:
       logger.info('No events to add to memory.')
 
   @override
   async def search_memory(self, *, app_name: str, user_id: str, query: str):
-    api_client = self._get_api_client()
+    if not self._agent_engine_id:
+      raise ValueError('Agent Engine ID is required for Memory Bank.')
 
-    api_response = await api_client.async_request(
-        http_method='POST',
-        path=f'reasoningEngines/{self._agent_engine_id}/memories:retrieve',
-        request_dict={
-            'scope': {
-                'app_name': app_name,
-                'user_id': user_id,
-            },
-            'similarity_search_params': {
-                'search_query': query,
-            },
+    client = self._get_api_client()
+    retrieved_memories_iterator = client.agent_engines.memories.retrieve(
+        name='reasoningEngines/' + self._agent_engine_id,
+        scope={
+            'app_name': app_name,
+            'user_id': user_id,
+        },
+        similarity_search_params={
+            'search_query': query,
         },
     )
-    api_response = _convert_api_response(api_response)
-    logger.info('Search memory response received.')
-    logger.debug('Search memory response: %s', api_response)
 
-    if not api_response or not api_response.get('retrievedMemories', None):
-      return SearchMemoryResponse()
+    logger.info('Search memory response received.')
 
     memory_events = []
-    for memory in api_response.get('retrievedMemories', []):
+    for retrieved_memory in retrieved_memories_iterator:
       # TODO: add more complex error handling
+      logger.debug('Retrieved memory: %s', retrieved_memory)
       memory_events.append(
           MemoryEntry(
               author='user',
               content=types.Content(
-                  parts=[types.Part(text=memory.get('memory').get('fact'))],
+                  parts=[types.Part(text=retrieved_memory.memory.fact)],
                   role='user',
               ),
-              timestamp=memory.get('updateTime'),
+              timestamp=retrieved_memory.memory.update_time.isoformat(),
           )
       )
     return SearchMemoryResponse(memories=memory_events)
@@ -141,17 +127,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     Returns:
       An API client for the given project and location.
     """
-    client = Client(
-        vertexai=True, project=self._project, location=self._location
-    )
-    return client._api_client
-
-
-def _convert_api_response(api_response) -> Dict[str, Any]:
-  """Converts the API response to a JSON object based on the type."""
-  if hasattr(api_response, 'body'):
-    return json.loads(api_response.body)
-  return api_response
+    return vertexai.Client(project=self._project, location=self._location)
 
 
 def _should_filter_out_event(content: types.Content) -> bool:

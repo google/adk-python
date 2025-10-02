@@ -414,9 +414,14 @@ class RemoteA2aAgent(BaseAgent):
           # response for a non-streaming task, which is the full task state.
           # We process this to get the initial message.
           event = convert_a2a_task_to_event(task, self.name, ctx)
-        elif isinstance(update, A2ATaskStatusUpdateEvent) and update.message:
+        elif (
+            isinstance(update, A2ATaskStatusUpdateEvent)
+            and update.status.message
+        ):
           # This is a streaming task status update with a message.
-          event = convert_a2a_message_to_event(update.message, self.name, ctx)
+          event = convert_a2a_message_to_event(
+              update.status.message, self.name, ctx
+          )
         elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
             not update.append or update.last_chunk
         ):

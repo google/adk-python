@@ -34,6 +34,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
+from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
 from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
@@ -221,6 +222,37 @@ class InvocationContext(BaseModel):
     self.agent_states.pop(agent_name, None)
     self.end_of_agents.pop(agent_name, None)
 
+  def populate_invocation_agent_states(self) -> None:
+    """Populates agent states for the current invocation if it is resumable.
+
+    For history events that contain agent state information, set the
+    agent_state and end_of_agent of the agent that generated the event.
+
+    For non-workflow agents, also set an initial agent_state if it has
+    already generated some contents.
+    """
+    if not self.is_resumable:
+      return
+    for event in self._get_events(current_invocation=True):
+      if event.actions.end_of_agent:
+        self.end_of_agents[event.author] = True
+        # Delete agent_state when it is end
+        self.agent_states.pop(event.author, None)
+      elif event.actions.agent_state is not None:
+        self.agent_states[event.author] = event.actions.agent_state
+        # Invalidate the end_of_agent flag
+        self.end_of_agents[event.author] = False
+      elif (
+          event.author != "user"
+          and event.content
+          and not self.agent_states.get(event.author)
+      ):
+        # If the agent has generated some contents but its agent_state is not
+        # set, set its agent_state to an empty agent_state.
+        self.agent_states[event.author] = BaseAgentState()
+        # Invalidate the end_of_agent flag
+        self.end_of_agents[event.author] = False
+
   def increment_llm_call_count(
       self,
   ):
@@ -242,8 +274,10 @@ class InvocationContext(BaseModel):
   def user_id(self) -> str:
     return self.session.user_id
 
-  def get_events(
+  # TODO: Move this method from invocation_context to a dedicated module.
+  def _get_events(
       self,
+      *,
       current_invocation: bool = False,
       current_branch: bool = False,
   ) -> list[Event]:
@@ -303,6 +337,25 @@ class InvocationContext(BaseModel):
         return True
 
     return False
+
+  # TODO: Move this method from invocation_context to a dedicated module.
+  # TODO: Converge this method with find_matching_function_call in llm_flows.
+  def _find_matching_function_call(
+      self, function_response_event: Event
+  ) -> Optional[Event]:
+    """Finds the function call event in the current invocation that matches the function response id."""
+    function_responses = function_response_event.get_function_responses()
+    if not function_responses:
+      return None
+    function_call_id = function_responses[0].id
+
+    events = self._get_events(current_invocation=True)
+    # The last event is function_response_event, so we search backwards from the
+    # one before it.
+    for event in reversed(events[:-1]):
+      if any(fc.id == function_call_id for fc in event.get_function_calls()):
+        return event
+    return None
 
 
 def new_invocation_context_id() -> str:

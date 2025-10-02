@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,8 @@ from .base_tool import BaseTool
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from .tool_context import ToolContext
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class LoadArtifactsTool(BaseTool):
@@ -96,7 +99,18 @@ class LoadArtifactsTool(BaseTool):
       if function_response and function_response.name == 'load_artifacts':
         artifact_names = function_response.response['artifact_names']
         for artifact_name in artifact_names:
+          # Try session-scoped first (default behavior)
           artifact = await tool_context.load_artifact(artifact_name)
+
+          # If not found and name doesn't already have user: prefix,
+          # try cross-session artifacts with user: prefix
+          if artifact is None and not artifact_name.startswith('user:'):
+            prefixed_name = f'user:{artifact_name}'
+            artifact = await tool_context.load_artifact(prefixed_name)
+
+          if artifact is None:
+            logger.warning('Artifact "%s" not found, skipping', artifact_name)
+            continue
           llm_request.contents.append(
               types.Content(
                   role='user',

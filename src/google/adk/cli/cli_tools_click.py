@@ -524,8 +524,8 @@ def cli_eval(
   try:
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
-    from ..evaluation.eval_metrics import EvalMetric
-    from ..evaluation.eval_metrics import JudgeModelOptions
+    from ..evaluation.eval_config import get_eval_metrics_from_config
+    from ..evaluation.eval_config import get_evaluation_criteria_or_default
     from ..evaluation.eval_result import EvalCaseResult
     from ..evaluation.evaluator import EvalStatus
     from ..evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
@@ -535,8 +535,6 @@ def cli_eval(
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
-    from .cli_eval import get_eval_metrics_from_config
-    from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
@@ -675,6 +673,34 @@ def cli_eval(
           "********************************************************************"
       )
       pretty_print_eval_result(eval_result)
+
+
+def web_options():
+  """Decorator to add web UI options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--logo-text",
+        type=str,
+        help="Optional. The text to display in the logo of the web UI.",
+        default=None,
+    )
+    @click.option(
+        "--logo-image-url",
+        type=str,
+        help=(
+            "Optional. The URL of the image to display in the logo of the"
+            " web UI."
+        ),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
 
 
 def adk_services_options():
@@ -872,6 +898,7 @@ def fast_api_common_options():
 
 @main.command("web")
 @fast_api_common_options()
+@web_options()
 @adk_services_options()
 @deprecated_adk_services_options()
 @click.argument(
@@ -899,6 +926,8 @@ def cli_web(
     a2a: bool = False,
     reload_agents: bool = False,
     extra_plugins: Optional[list[str]] = None,
+    logo_text: Optional[str] = None,
+    logo_image_url: Optional[str] = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -951,6 +980,8 @@ def cli_web(
       port=port,
       reload_agents=reload_agents,
       extra_plugins=extra_plugins,
+      logo_text=logo_text,
+      logo_image_url=logo_image_url,
   )
   config = uvicorn.Config(
       app,

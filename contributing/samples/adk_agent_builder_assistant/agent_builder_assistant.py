@@ -112,6 +112,9 @@ class AgentBuilderAssistant:
         instruction=instruction,
         model=model,
         tools=all_tools,
+        generate_content_config=types.GenerateContextConfig(
+            max_output_tokens=8192,
+        ),
     )
 
     return agent

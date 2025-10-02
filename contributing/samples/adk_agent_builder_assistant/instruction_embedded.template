@@ -187,7 +187,6 @@ Always reference this schema when creating configurations to ensure compliance.
 
 #### Project Organization
 - **explore_project**: Explore project structure and suggest conventional file paths
-- **get_working_directory_info**: Get current working directory and execution context information
 - **resolve_root_directory**: Resolve path issues when execution context differs from user's working directory
 
 ### ADK Knowledge and Research Tools
