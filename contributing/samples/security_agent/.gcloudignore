@@ -1,0 +1,53 @@
+# This file specifies files that are *not* uploaded to Google Cloud
+# using gcloud. It follows the same syntax as .gitignore, with the addition of
+# "#!include" directives (which insert the entries of the given .gitignore-style
+# file at that point).
+
+.gcloudignore
+.git
+.gitignore
+node_modules
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env
+venv
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+*.log
+*.db
+*.pid
+*.seed
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+*.egg
+tests/
+test/
+docs/
+monitoring/
+swarms/
+examples/
+scripts/
+deployment/
+*.md
+README.*
+LICENSE
+.env
+.env.*
+*.bak
+*.swp
+*~
+.DS_Store

@@ -18,6 +18,8 @@ google-api-core==2.22.0
 
 # Web Interface
 flask==3.0.0
+flask-cors==4.0.0
+gunicorn==21.2.0
 
 # Testing (optional)
 pytest==8.3.4
