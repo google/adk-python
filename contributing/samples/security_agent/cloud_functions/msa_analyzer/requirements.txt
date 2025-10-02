@@ -1,0 +1,7 @@
+feedparser==6.0.10
+beautifulsoup4==4.12.2
+requests==2.31.0
+google-cloud-bigquery==3.11.4
+google-cloud-storage==2.10.0
+google-cloud-pubsub==2.18.1
+Flask==2.3.2
