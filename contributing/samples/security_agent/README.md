@@ -6,8 +6,8 @@ A comprehensive security monitoring and analysis platform for Google Cloud, feat
 
 This platform underwent a complete architectural redesign, reducing codebase by 84% while adding powerful new capabilities:
 - **19,402 lines added** / **53,520 lines removed**
-- **12 Cloud Functions** for automated security data collection
-- **Confluence integration** for documentation management
+- **13 Cloud Functions** for automated data collection and synchronization
+- **Confluence → BigQuery sync** via dedicated Cloud Function (584 lines)
 - **RSS feed aggregation** for security updates
 - **BigQuery-native** data platform with real-time analysis
 
@@ -54,12 +54,24 @@ adk web
     └────────────────────┬───────────────────────┘
                          │
     ┌────────────────────▼───────────────────────┐
-    │          Cloud Functions (12)               │
-    │   Automated Data Collection & Refresh       │
+    │         Cloud Functions (13)                │
+    │   Automated Data Collection & Sync          │
+    │                                             │
+    │  ┌─────────────────────────────┐           │
+    │  │ confluence_sync/            │           │
+    │  │ - Fetches from Confluence   │           │
+    │  │ - Classifies documents      │           │
+    │  │ - Syncs to BigQuery tables  │           │
+    │  └─────────────────────────────┘           │
+    │                                             │
+    │  + 12 Security Data Functions               │
     └────────────────────┬───────────────────────┘
                          │
     ┌────────────────────▼───────────────────────┐
-    │            GCP APIs & Services              │
+    │       External Data Sources                 │
+    │  - GCP APIs & Services                     │
+    │  - Confluence Documentation                │
+    │  - RSS Security Feeds                       │
     └─────────────────────────────────────────────┘
 ```
 
@@ -80,6 +92,55 @@ adk web
    - Confluence tools for documentation
    - RSS feed aggregation for security updates
    - Security-specific analysis tools
+
+## 📚 Confluence → BigQuery Sync Pattern
+
+### Overview
+The platform implements a sophisticated document synchronization pipeline that automatically ingests security documentation from Confluence into BigQuery for analysis:
+
+```
+Confluence API → Cloud Function → BigQuery Tables
+     ↑                ↓                 ↓
+   Spaces:       Processing:        Tables Created:
+   - SEC         - Extract text     - confluence_documents
+   - POLICY      - Classify docs    - confluence_sync_audit
+   - GCP         - Add metadata
+```
+
+### Key Features
+- **Automatic Classification**: Documents are classified by type (policy, guide, architecture, runbook)
+- **Security Tagging**: Identifies confidential content and compliance requirements (PCI, HIPAA, GDPR, etc.)
+- **Content Analysis**: Extracts plain text, calculates word counts, identifies attachments
+- **Change Tracking**: Maintains content hashes to detect modifications
+- **Audit Logging**: Complete sync history in `confluence_sync_audit` table
+
+### BigQuery Schema
+The `confluence_documents` table includes:
+- Document metadata (ID, title, URL, dates, authors)
+- Content (HTML and plain text versions)
+- Classification (document type, security level, compliance tags)
+- Relationships (parent documents, labels)
+- Sync metadata (timestamps, status, content hash)
+
+### Deployment
+```bash
+# Deploy the Confluence sync function
+cd cloud_functions/confluence_sync
+gcloud functions deploy sync-confluence-to-bigquery \
+  --runtime python311 \
+  --trigger-http \
+  --entry-point sync_confluence_to_bigquery \
+  --memory 512MB \
+  --timeout 540s \
+  --set-env-vars "CONFLUENCE_SPACES=SEC,POLICY,GCP"
+
+# Schedule automatic syncs (every 6 hours)
+gcloud scheduler jobs create http sync-confluence \
+  --schedule="0 */6 * * *" \
+  --uri="https://REGION-PROJECT.cloudfunctions.net/sync-confluence-to-bigquery" \
+  --http-method=POST \
+  --message-body='{"sync_type":"incremental"}'
+```
 
 ## 📊 Complete Cloud Functions Inventory
 

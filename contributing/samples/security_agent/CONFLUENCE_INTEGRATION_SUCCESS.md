@@ -59,7 +59,7 @@ docs/CONFLUENCE_BIGQUERY_INTEGRATION.md        # Full documentation
 
 ### Start the Agent:
 ```bash
-cd "/Users/stuartgano/Desktop/Micron/IT TEAM/ADK/contributing/samples/security_agent"
+cd "/path/to/security_agent"
 source venv/bin/activate
 adk web
 ```

@@ -1,0 +1,13 @@
+# Minimal requirements for Cloud Run deployment
+# Most functionality handled by Cloud Functions
+
+# Flask for web interface
+flask==3.0.0
+
+# Google Cloud client libraries (minimal set)
+google-cloud-storage==2.19.0
+google-auth==2.35.0
+
+# Basic utilities
+python-dotenv==1.1.1
+requests==2.32.4
