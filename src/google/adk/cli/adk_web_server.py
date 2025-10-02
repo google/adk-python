@@ -220,6 +220,13 @@ class UpdateMemoryRequest(common.BaseModel):
   """The ID of the session to add to memory."""
 
 
+class UpdateSessionRequest(common.BaseModel):
+  """Request to update session state without running the agent."""
+
+  state_delta: dict[str, Any]
+  """The state changes to apply to the session."""
+
+
 class RunEvalResult(common.BaseModel):
   eval_set_file: str
   eval_set_id: str
@@ -766,6 +773,56 @@ class AdkWebServer:
       await self.session_service.delete_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
+
+    @app.patch(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model_exclude_none=True,
+    )
+    async def update_session(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: UpdateSessionRequest,
+    ) -> Session:
+      """Updates session state without running the agent.
+
+      Args:
+          app_name: The name of the application.
+          user_id: The ID of the user.
+          session_id: The ID of the session to update.
+          req: The patch request containing state changes.
+
+      Returns:
+          The updated session.
+
+      Raises:
+          HTTPException: If the session is not found.
+      """
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+      # Create an event to record the state change
+      import uuid
+
+      from ..events.event import Event
+      from ..events.event import EventActions
+
+      state_update_event = Event(
+          invocation_id="p-" + str(uuid.uuid4()),
+          author="user",
+          actions=EventActions(state_delta=req.state_delta),
+      )
+
+      # Append the event to the session
+      # This will automatically update the session state through __update_session_state
+      await self.session_service.append_event(
+          session=session, event=state_update_event
+      )
+
+      return session
 
     @app.post(
         "/apps/{app_name}/eval-sets",

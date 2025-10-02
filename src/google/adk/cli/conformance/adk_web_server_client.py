@@ -176,6 +176,36 @@ class AdkWebServerClient:
       )
       response.raise_for_status()
 
+  async def update_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      state_delta: Dict[str, Any],
+  ) -> Session:
+    """Update session state without running the agent.
+
+    Args:
+      app_name: Name of the application
+      user_id: User identifier
+      session_id: Session identifier to update
+      state_delta: The state changes to apply to the session
+
+    Returns:
+      The updated Session object
+
+    Raises:
+      httpx.HTTPStatusError: If the request fails or session not found
+    """
+    async with self._get_client() as client:
+      response = await client.patch(
+          f"/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+          json={"state_delta": state_delta},
+      )
+      response.raise_for_status()
+      return Session.model_validate(response.json())
+
   async def run_agent(
       self,
       request: RunAgentRequest,
