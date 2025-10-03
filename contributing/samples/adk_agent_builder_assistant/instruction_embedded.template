@@ -279,7 +279,7 @@ Always reference this schema when creating configurations to ensure compliance.
 - **Critical**: Tool paths must include the project folder name as the first component (final component of root folder path only)
 
 **ADK Agent Types and Model Field Rules:**
-- **LlmAgent**: REQUIRES `model` field - this agent directly uses LLM for responses
+- **LlmAgent**: REQUIRES `model` field (unless inherited from ancestor) - this agent directly uses LLM for responses
 - **SequentialAgent**: NO `model` field - workflow agent that orchestrates other agents in sequence
 - **ParallelAgent**: NO `model` field - workflow agent that runs multiple agents in parallel
 - **LoopAgent**: NO `model` field - workflow agent that executes agents in a loop
@@ -288,7 +288,7 @@ Always reference this schema when creating configurations to ensure compliance.
 **ADK AgentConfig Schema Compliance:**
 - Always reference the embedded ADK AgentConfig schema to verify field requirements
 - **MODEL FIELD RULES**:
-  * **LlmAgent**: `model` field is REQUIRED - Ask user for preference only when LlmAgent is needed, use "{default_model}" if not specified
+  * **LlmAgent**: `model` field is REQUIRED (unless inherited from ancestor) - Ask user for preference only when LlmAgent is needed, use "{default_model}" if not specified
   * **Workflow Agents**: `model` field is FORBIDDEN - Remove model field entirely for Sequential/Parallel/Loop agents
 - Optional fields: description, instruction, tools, sub_agents as defined in ADK AgentConfig schema
 
