@@ -8,11 +8,14 @@ from .controls import SecurityControlsInventory
 from .enforcement import EnforcementAnalyzer
 from .risk import RiskAssessmentEngine
 from .approval import ApprovalWorkflow
+from .compliance_checker import ComplianceChecker, check_service_compliance
 
 __all__ = [
     'evaluate_new_service',
     'SecurityControlsInventory',
     'EnforcementAnalyzer',
     'RiskAssessmentEngine',
-    'ApprovalWorkflow'
+    'ApprovalWorkflow',
+    'ComplianceChecker',
+    'check_service_compliance'
 ]

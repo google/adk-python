@@ -13,6 +13,7 @@ from .controls import SecurityControlsInventory, SecurityControl
 from .enforcement import EnforcementAnalyzer, EnforcementOption
 from .risk import RiskAssessmentEngine, RiskAssessment, RiskLevel, ServiceProfile
 from .approval import ApprovalWorkflow, ApprovalWorkflowResult
+from .compliance_checker import ComplianceChecker, ComplianceReport
 
 
 @dataclass
@@ -44,6 +45,11 @@ class ServiceEvaluationResult:
     recommendations: List[str]
     next_steps: List[str]
 
+    # Compliance Status (NEW - BigQuery integration)
+    compliance_report: Optional[Dict[str, Any]] = None
+    current_compliance_score: Optional[float] = None
+    compliance_gaps: Optional[List[Dict[str, Any]]] = None
+
 
 class ServiceEvaluator:
     """Main orchestrator for service evaluation"""
@@ -53,6 +59,7 @@ class ServiceEvaluator:
         self.enforcement_analyzer = EnforcementAnalyzer()
         self.risk_engine = RiskAssessmentEngine()
         self.approval_workflow = ApprovalWorkflow()
+        self.compliance_checker = ComplianceChecker()  # NEW: BigQuery integration
 
     def evaluate_service(
         self,
@@ -60,7 +67,8 @@ class ServiceEvaluator:
         service_type: str,
         service_profile: Optional[ServiceProfile] = None,
         use_case: Optional[str] = None,
-        data_classification: Optional[str] = None
+        data_classification: Optional[str] = None,
+        check_current_compliance: bool = False  # NEW: Check against BigQuery
     ) -> ServiceEvaluationResult:
         """
         Perform comprehensive service evaluation
@@ -144,7 +152,44 @@ class ServiceEvaluator:
             approval_result
         )
 
-        # Step 7: Create Summary
+        # Step 7: Check Current Compliance (NEW - BigQuery Integration)
+        compliance_report_data = None
+        current_compliance_score = None
+        compliance_gaps_data = None
+
+        if check_current_compliance:
+            try:
+                compliance_report = self.compliance_checker.check_compliance(service_type)
+                compliance_report_data = {
+                    'total_controls_checked': compliance_report.total_controls_checked,
+                    'controls_passed': compliance_report.controls_passed,
+                    'controls_failed': compliance_report.controls_failed,
+                    'compliance_score': compliance_report.compliance_score,
+                    'total_violations': compliance_report.total_violations,
+                    'violations_by_severity': compliance_report.violations_by_severity,
+                    'summary': compliance_report.summary
+                }
+                current_compliance_score = compliance_report.compliance_score
+
+                # Extract compliance gaps
+                compliance_gaps_data = []
+                for status in compliance_report.control_statuses:
+                    if status.status == 'FAIL':
+                        for violation in status.violations:
+                            compliance_gaps_data.append({
+                                'control_id': status.control_id,
+                                'control_name': status.control_name,
+                                'severity': status.severity,
+                                'resource': violation.resource_name,
+                                'details': violation.violation_details,
+                                'remediation': violation.remediation
+                            })
+            except Exception as e:
+                # If compliance check fails, continue without it
+                import logging
+                logging.warning(f"Compliance check failed: {e}")
+
+        # Step 8: Create Summary
         summary = {
             'risk_level': risk_assessment.risk_level.value,
             'risk_score': risk_assessment.overall_score,
@@ -161,6 +206,11 @@ class ServiceEvaluator:
             'evaluation_timestamp': datetime.utcnow().isoformat()
         }
 
+        # Add compliance score if available
+        if current_compliance_score is not None:
+            summary['current_compliance_score'] = current_compliance_score
+            summary['compliance_gaps_count'] = len(compliance_gaps_data) if compliance_gaps_data else 0
+
         # Create final result
         return ServiceEvaluationResult(
             service_name=service_name,
@@ -175,7 +225,10 @@ class ServiceEvaluator:
             approval_workflow=self._serialize_approval_workflow(approval_result),
             summary=summary,
             recommendations=recommendations,
-            next_steps=next_steps
+            next_steps=next_steps,
+            compliance_report=compliance_report_data,
+            current_compliance_score=current_compliance_score,
+            compliance_gaps=compliance_gaps_data
         )
 
     def _serialize_control(self, control: SecurityControl) -> Dict[str, Any]:
@@ -433,6 +486,7 @@ def evaluate_new_service(
     service_profile: Optional[ServiceProfile] = None,
     use_case: Optional[str] = None,
     data_classification: Optional[str] = None,
+    check_current_compliance: bool = False,  # NEW: Check against BigQuery
     return_format: str = 'object'
 ) -> Any:
     """
@@ -444,6 +498,7 @@ def evaluate_new_service(
         service_profile: Optional detailed service profile
         use_case: Optional use case description
         data_classification: Optional data classification
+        check_current_compliance: Check current compliance against BigQuery (NEW)
         return_format: 'object', 'dict', or 'summary'
 
     Returns:
@@ -455,7 +510,8 @@ def evaluate_new_service(
         service_type=service_type,
         service_profile=service_profile,
         use_case=use_case,
-        data_classification=data_classification
+        data_classification=data_classification,
+        check_current_compliance=check_current_compliance  # NEW
     )
 
     if return_format == 'dict':

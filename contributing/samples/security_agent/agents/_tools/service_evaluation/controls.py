@@ -73,7 +73,7 @@ class SecurityControlsInventory:
             pci_dss='7.1.2',
             hipaa='164.308(a)(4)',
             implementation_guidance='Replace primitive roles with predefined or custom roles with minimal permissions',
-            validation_query='SELECT * FROM iam_bindings WHERE role IN ("roles/owner", "roles/editor")'
+            validation_query='SELECT email, role, account_type FROM `security_insights.iam_accounts` WHERE role IN ("roles/owner", "roles/editor") OR role IN ("roles/viewer")'
         )
 
         controls['IAM-002'] = SecurityControl(
@@ -88,7 +88,7 @@ class SecurityControlsInventory:
             nist_framework='IA-5',
             pci_dss='8.2.4',
             implementation_guidance='Implement automated key rotation using Cloud Scheduler and Secret Manager',
-            validation_query='SELECT * FROM service_account_keys WHERE created_at < DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)'
+            validation_query='SELECT email, created_at, DATE_DIFF(CURRENT_DATE(), CAST(created_at AS DATE), DAY) as days_old FROM `security_insights.iam_accounts` WHERE account_type = "serviceAccount" AND DATE_DIFF(CURRENT_DATE(), CAST(created_at AS DATE), DAY) > 90'
         )
 
         controls['IAM-003'] = SecurityControl(
@@ -104,7 +104,7 @@ class SecurityControlsInventory:
             pci_dss='8.3',
             hipaa='164.312(d)',
             implementation_guidance='Enable 2FA in Google Workspace and enforce via org policy',
-            validation_query='SELECT * FROM user_accounts WHERE has_admin_role = TRUE AND mfa_enabled = FALSE'
+            validation_query='SELECT email, role FROM `security_insights.iam_accounts` WHERE role IN ("roles/owner", "roles/editor") AND account_type = "user"'
         )
 
         # Network Security Controls
@@ -119,7 +119,7 @@ class SecurityControlsInventory:
             cis_benchmark='3.2',
             nist_framework='SC-7',
             implementation_guidance='Enable Private Google Access on all subnets, remove external IPs where possible',
-            validation_query='SELECT * FROM vpc_subnets WHERE private_google_access = FALSE'
+            validation_query='SELECT name, network FROM `security_insights.networks` WHERE name LIKE "%subnet%"'
         )
 
         controls['NET-002'] = SecurityControl(
@@ -134,7 +134,7 @@ class SecurityControlsInventory:
             nist_framework='SC-7',
             pci_dss='1.3',
             implementation_guidance='Audit firewall rules monthly, remove unused rules, restrict source ranges',
-            validation_query='SELECT * FROM firewall_rules WHERE source_ranges LIKE "%0.0.0.0/0%" AND allowed = TRUE'
+            validation_query='SELECT name, direction, source_ranges, allowed_ports FROM `security_insights.firewall_rules` WHERE source_ranges = "0.0.0.0/0" AND direction = "INGRESS"'
         )
 
         controls['NET-003'] = SecurityControl(
@@ -150,7 +150,7 @@ class SecurityControlsInventory:
             pci_dss='10.1',
             hipaa='164.312(b)',
             implementation_guidance='Enable flow logs on all subnets with appropriate sampling rate',
-            validation_query='SELECT * FROM vpc_subnets WHERE flow_logs_enabled = FALSE'
+            validation_query='SELECT name, network FROM `security_insights.networks`'
         )
 
         # Data Protection Controls
@@ -168,7 +168,7 @@ class SecurityControlsInventory:
             hipaa='164.312(a)(2)(iv)',
             gdpr='Article 32',
             implementation_guidance='Create Cloud KMS keys and configure services to use CMEK',
-            validation_query='SELECT * FROM storage_buckets WHERE kms_key_name IS NULL AND contains_sensitive_data = TRUE'
+            validation_query='SELECT name, location, encryption_type FROM `security_insights.storage_buckets` WHERE encryption_type IS NULL OR encryption_type != "CMEK"'
         )
 
         controls['DATA-002'] = SecurityControl(
@@ -185,7 +185,7 @@ class SecurityControlsInventory:
             hipaa='164.308(a)(3)',
             gdpr='Article 32',
             implementation_guidance='Use org policy to prevent public access, audit IAM bindings',
-            validation_query='SELECT * FROM storage_buckets WHERE "allUsers" IN UNNEST(iam_members) OR "allAuthenticatedUsers" IN UNNEST(iam_members)'
+            validation_query='SELECT name, location, public_access_prevention FROM `security_insights.storage_buckets` WHERE public_access_prevention != "enforced"'
         )
 
         controls['DATA-003'] = SecurityControl(
@@ -201,7 +201,7 @@ class SecurityControlsInventory:
             hipaa='164.308(a)(1)(ii)(A)',
             gdpr='Article 32',
             implementation_guidance='Configure Cloud DLP with appropriate detection templates',
-            validation_query='SELECT * FROM dlp_findings WHERE severity = "HIGH" AND remediated = FALSE'
+            validation_query='SELECT name, category, severity FROM `security_insights.security_findings` WHERE category LIKE "%DLP%" AND state = "ACTIVE"'
         )
 
         # Logging & Monitoring Controls
@@ -219,7 +219,7 @@ class SecurityControlsInventory:
             hipaa='164.308(a)(1)(ii)(D)',
             sox='Sarbanes-Oxley 404',
             implementation_guidance='Enable all audit log types via org policy or project settings',
-            validation_query='SELECT * FROM audit_configs WHERE data_access_logs_enabled = FALSE'
+            validation_query='SELECT project_id FROM `security_insights.security_findings` WHERE category = "AUDIT_LOGGING" AND severity IN ("HIGH", "CRITICAL")'
         )
 
         controls['LOG-002'] = SecurityControl(
@@ -236,7 +236,7 @@ class SecurityControlsInventory:
             hipaa='164.308(a)(1)(ii)(D)',
             sox='Sarbanes-Oxley 404',
             implementation_guidance='Configure log sinks to BigQuery or Cloud Storage with lifecycle policies',
-            validation_query='SELECT * FROM log_sinks WHERE retention_days < 365'
+            validation_query='SELECT project_id FROM `security_insights.security_findings` WHERE category = "LOG_RETENTION"'
         )
 
         controls['LOG-003'] = SecurityControl(
@@ -251,7 +251,7 @@ class SecurityControlsInventory:
             nist_framework='SI-4',
             pci_dss='10.6',
             implementation_guidance='Create log-based metrics and alerting policies in Cloud Monitoring',
-            validation_query='SELECT COUNT(*) as alert_count FROM monitoring_alerts WHERE enabled = TRUE'
+            validation_query='SELECT project_id FROM `security_insights.security_findings` WHERE category = "MONITORING"'
         )
 
         # Configuration Management Controls
@@ -266,7 +266,7 @@ class SecurityControlsInventory:
             cis_benchmark='1.10, 1.11',
             nist_framework='CM-7',
             implementation_guidance='Enable org policies: disable service account key creation, require OS Login, enforce uniform bucket-level access',
-            validation_query='SELECT * FROM org_policies WHERE enforced = FALSE'
+            validation_query='SELECT project_id FROM `security_insights.security_findings` WHERE category = "ORG_POLICY"'
         )
 
         controls['CFG-002'] = SecurityControl(
@@ -281,7 +281,7 @@ class SecurityControlsInventory:
             nist_framework='SI-2',
             pci_dss='6.2',
             implementation_guidance='Configure OS Patch Management or use managed instance groups with auto-update',
-            validation_query='SELECT * FROM compute_instances WHERE os_patch_management_enabled = FALSE'
+            validation_query='SELECT name, status, machine_type FROM `security_insights.compute_instances`'
         )
 
         # Encryption Controls
@@ -298,7 +298,7 @@ class SecurityControlsInventory:
             pci_dss='4.1',
             hipaa='164.312(e)(1)',
             implementation_guidance='Configure minimum TLS version in load balancer and application settings',
-            validation_query='SELECT * FROM lb_ssl_policies WHERE min_tls_version < "TLS_1_2"'
+            validation_query='SELECT name, category FROM `security_insights.security_findings` WHERE category = "TLS_VERSION"'
         )
 
         # Compliance Controls
@@ -313,7 +313,7 @@ class SecurityControlsInventory:
             nist_framework='CA-7',
             pci_dss='11.5',
             implementation_guidance='Enable SCC Premium tier for comprehensive security posture management',
-            validation_query='SELECT * FROM scc_findings WHERE state = "ACTIVE" AND severity IN ("HIGH", "CRITICAL")'
+            validation_query='SELECT name, category, severity FROM `security_insights.security_findings` WHERE state = "ACTIVE" AND severity IN ("HIGH", "CRITICAL")'
         )
 
         return controls
