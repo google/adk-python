@@ -104,6 +104,9 @@ class McpToolset(BaseToolset):
       errlog: TextIO = sys.stderr,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
+      session_close_timeout: float = 5.0,
+      session_create_timeout: float = 15.0,
+      list_tools_timeout: float = 30.0,
   ):
     """Initializes the MCPToolset.
 
@@ -140,6 +143,9 @@ class McpToolset(BaseToolset):
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._session_close_timeout = session_close_timeout
+    self._session_create_timeout = session_create_timeout
+    self._list_tools_timeout = list_tools_timeout
 
   @retry_on_closed_resource
   async def get_tools(
@@ -155,11 +161,44 @@ class McpToolset(BaseToolset):
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
     """
-    # Get session from session manager
-    session = await self._mcp_session_manager.create_session()
+    import asyncio
+    
+    # Close stale session manager and create fresh one
+    try:
+      await asyncio.wait_for(
+          self._mcp_session_manager.close(), 
+          timeout=self._session_close_timeout
+      )
+    except (asyncio.TimeoutError, Exception):
+      pass  # Ignore close errors
+    
+    # Recreate session manager with fresh connections
+    self._mcp_session_manager = MCPSessionManager(
+        connection_params=self._connection_params,
+        errlog=self._errlog,
+    )
+    
+    # Get session from session manager with timeout
+    try:
+      session = await asyncio.wait_for(
+          self._mcp_session_manager.create_session(),
+          timeout=self._session_create_timeout
+      )
+    except asyncio.TimeoutError:
+      raise RuntimeError(
+          f"Failed to create MCP session: timeout after {self._session_create_timeout}s"
+      )
 
-    # Fetch available tools from the MCP server
-    tools_response: ListToolsResult = await session.list_tools()
+    # Fetch available tools from the MCP server with timeout
+    try:
+      tools_response: ListToolsResult = await asyncio.wait_for(
+          session.list_tools(),
+          timeout=self._list_tools_timeout
+      )
+    except asyncio.TimeoutError:
+      raise RuntimeError(
+          f"Failed to list MCP tools: timeout after {self._list_tools_timeout}s"
+      )
 
     # Apply filtering based on context and tool_filter
     tools = []
