@@ -213,7 +213,8 @@ User → Flask (app.py) → ADK Backend (port 8000) → Agent Tools → BigQuery
 |-----------|--------|------------|----------|
 | **Service Onboarding** | **Complete** | **100%** | ✅ |
 | **IAM/Custom Roles** | **Complete** | **100%** | ✅ |
-| **MSA Analyzer** | Not Started | 0% | ⭐⭐⭐⭐ |
+| **MSA Analyzer** | **Complete** | **100%** | ✅ |
+| **RSS/Changelog Monitoring** | **Complete** | **100%** | ✅ |
 | **Real Data Integration** | **Partial** | **50%** | ⭐⭐⭐ |
 | **MCP Communication** | Research | 10% | ⭐⭐⭐⭐ |
 | **Core Tools** | Complete | 100% | ✅ |
