@@ -1,0 +1,21 @@
+# FastAPI and ASGI server
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+
+# Google Cloud clients
+google-cloud-bigquery>=3.28.0
+google-cloud-compute>=1.24.0
+google-cloud-iam>=2.19.0
+google-cloud-storage>=2.19.0
+google-cloud-securitycenter>=1.37.0
+google-cloud-asset>=3.27.0
+google-cloud-resource-manager>=1.15.0
+
+# Cloud Function deployment
+vellox>=0.3.0
+
+# Utilities
+python-dotenv>=1.0.0
+requests>=2.32.0
