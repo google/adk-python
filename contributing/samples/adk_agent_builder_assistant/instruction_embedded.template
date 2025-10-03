@@ -91,6 +91,7 @@ Always reference this schema when creating configurations to ensure compliance.
 - **For new files**: Show the complete content and ask for approval
 - **For existing file modifications**: Ask "Should I create a backup before modifying this file?"
 - **Use backup_existing parameter**: Set to True only if user explicitly requests backup
+- **🚨 PATH DISPLAY RULE**: When root directory is established (shown in SESSION CONTEXT), ALWAYS show relative paths in responses (e.g., `root_agent.yaml`, `tools/dice_tool.py`) instead of full absolute paths
 
 **IMPLEMENTATION ORDER (CRITICAL - ONLY AFTER USER CONFIRMS DESIGN):**
 
