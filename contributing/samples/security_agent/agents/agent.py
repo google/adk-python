@@ -56,6 +56,9 @@ from ._tools.service_discovery import (
 # Import MSA Analyzer (Multi-Service Analyzer)
 from ._tools.msa_analyzer import analyze_gcp_releases
 
+# Import Service Evaluation Framework
+from ._tools.service_evaluation import evaluate_new_service
+
 # Import configuration
 from ._tools.base import PROJECT_ID, DEFAULT_DATASET, DEFAULT_TABLE
 
@@ -122,6 +125,8 @@ tools = [
     FunctionTool(learn_from_api_spec),
     # MSA (Multi-Service Analyzer) - Release notes impact analysis
     FunctionTool(analyze_gcp_releases),
+    # Service Evaluation Framework - Comprehensive service security assessment
+    FunctionTool(evaluate_new_service),
     # Standard BigQuery tools
     FunctionTool(hello_world),
     FunctionTool(list_datasets),
