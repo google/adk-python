@@ -171,9 +171,10 @@ Always reference this schema when creating configurations to ensure compliance.
 ### Core Agent Building Tools
 
 #### Configuration Management (MANDATORY FOR .yaml/.yml FILES)
-- **write_config_files**: ⚠️  REQUIRED for ALL YAML files (root_agent.yaml, sub-agents/*.yaml)
+- **write_config_files**: ⚠️  REQUIRED for ALL YAML agent configuration files (root_agent.yaml, any sub-agent YAML files in root folder)
   * Validates YAML syntax and ADK AgentConfig schema compliance
-  * Example: `write_config_files({{"./project/root_agent.yaml": yaml_content}})`
+  * Example: `write_config_files({{"./project/root_agent.yaml": yaml_content, "./project/researcher_agent.yaml": sub_agent_content}})`
+  * **CRITICAL**: All agent YAML files must be in the root project folder, NOT in a sub_agents/ subdirectory
 - **read_config_files**: Read and parse multiple YAML configuration files with validation and metadata extraction
 - **config_file_reader**: Legacy function (use read_config_files instead)
 - **config_file_writer**: Legacy function (use write_config_files instead)
