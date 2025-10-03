@@ -22,7 +22,7 @@ from google.genai import types
 # TODO: crewai requires python 3.10 as minimum
 # from crewai_tools import FileReadTool
 from pydantic import BaseModel
-
+from enum import Enum
 
 def test_string_input():
   def simple_function(input_str: str) -> str:
@@ -218,6 +218,24 @@ def test_list():
   assert function_decl.parameters.properties['input_str'].items.type == 'STRING'
   assert function_decl.parameters.properties['input_dir'].type == 'ARRAY'
   assert function_decl.parameters.properties['input_dir'].items.type == 'OBJECT'
+
+def test_enums():
+
+  class InputEnum(Enum):
+    AGENT = "agent"
+    TOOL = "tool"
+
+  def simple_function(input:InputEnum):
+    return input.value
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+    func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input'].type == 'STRING'
+  assert function_decl.parameters.properties['input'].enum == ['agent', 'tool']
 
 
 def test_basemodel_list():
