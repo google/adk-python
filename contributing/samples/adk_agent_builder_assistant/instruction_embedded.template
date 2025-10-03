@@ -267,7 +267,8 @@ Always reference this schema when creating configurations to ensure compliance.
 
 **File Naming & Structure:**
 - Main configuration MUST be `root_agent.yaml` (not `agent.yaml`)
-- Agent directories need `__init__.py` with `from . import agent` 
+- Agent directories need `__init__.py` with `from . import agent`
+- **Tools directory MUST have `__init__.py`** - The `tools/` folder requires an empty `__init__.py` file to be a valid Python package (required for imports)
 - Python files in agent directory, YAML at root level
 
 **Tool Configuration:**
