@@ -52,6 +52,9 @@ from ._tools.service_discovery import (
     learn_from_api_spec
 )
 
+# Import MSA Analyzer (Multi-Service Analyzer)
+from ._tools.msa_analyzer import analyze_gcp_releases
+
 # Import configuration
 from ._tools.base import PROJECT_ID, DEFAULT_DATASET, DEFAULT_TABLE
 
@@ -85,6 +88,8 @@ tools = [
     FunctionTool(discover_new_gcp_services),
     FunctionTool(register_new_service),
     FunctionTool(learn_from_api_spec),
+    # MSA (Multi-Service Analyzer) - Release notes impact analysis
+    FunctionTool(analyze_gcp_releases),
     # Standard BigQuery tools
     FunctionTool(hello_world),
     FunctionTool(list_datasets),
@@ -133,11 +138,24 @@ LEARNING NEW SERVICES FROM DOCUMENTATION:
 - Use learn_from_api_spec() to understand services from OpenAPI specs or Proto files
 - The agent can dynamically learn about services that didn't exist when it was created!
 
+MSA (MULTI-SERVICE ANALYZER) - RELEASE NOTES MONITORING:
+- Use analyze_gcp_releases() to analyze recent GCP release notes for impacts
+- Monitors security, billing, and compliance changes across all GCP services
+- Provides risk scoring and prioritized recommendations
+- Results stored in security_data.msa_analysis_history BigQuery table
+- Can query: security_data.msa_latest_summary, msa_critical_issues, msa_billing_trends
+- Tracks impacts on YOUR active services only (customizable in security_data.active_services)
+
+AVAILABLE DATASETS:
+1. security_insights (PRIMARY) - Security findings, firewall rules, IAM policies
+2. security_data - MSA analysis results, active services monitoring, release notes impacts
+
 CAPABILITIES (in order of priority):
 1. Security Analysis from security_insights dataset: Query and analyze security findings, firewall rules, IAM policies
-2. Security Statistics: Generate insights and trends from security_insights data
-3. Risk Assessment: Identify critical issues in security_insights dataset
-4. BigQuery Operations: Support queries but FOCUS on security_insights dataset
+2. Release Notes Impact Analysis: Monitor GCP changes using MSA analyzer and security_data dataset
+3. Security Statistics: Generate insights and trends from security_insights data
+4. Risk Assessment: Identify critical issues across both datasets
+5. BigQuery Operations: Support queries across ALL datasets, with focus on security_insights and security_data
 
 BEST PRACTICES:
 - ALWAYS start with security_insights dataset for any security question
@@ -148,11 +166,14 @@ BEST PRACTICES:
 
 EXAMPLES:
 - User: "Show me issues" → Query security_insights.security_findings
-- User: "What data do you have?" → Describe security_insights dataset first
+- User: "What data do you have?" → Describe security_insights dataset first, mention security_data for MSA
 - User: "Run a query" → Suggest queries on security_insights tables
-- User: "List tables" → Focus on security_insights dataset tables
+- User: "List tables" → Focus on security_insights dataset tables, also show security_data tables
+- User: "Analyze GCP release notes" → Use analyze_gcp_releases() then query security_data.msa_latest_summary
+- User: "What changed in GCP recently?" → Query security_data.msa_analysis_history
+- User: "Show critical GCP updates" → Query security_data.msa_critical_issues
 
-Remember: The security_insights dataset is your PRIMARY data source. Always prioritize it unless explicitly asked to look elsewhere.
+Remember: The security_insights dataset is your PRIMARY data source. The security_data dataset provides release notes monitoring and impact analysis. Use run_query() to access ALL BigQuery datasets and tables in the project.
 """
 
 # Create the agent

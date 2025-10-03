@@ -36,6 +36,8 @@ report = analyze_gcp_releases(days_back=7)
 
 ## 🚀 Quick Start
 
+### Local Development
+
 ```bash
 # Clone repository
 git clone https://github.com/stuagano/adk-python.git
@@ -48,46 +50,62 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your GCP project details and credentials
 
-# Populate sample data (for testing)
-python scripts/populate_confluence_cache.py
-
-# Run the ADK agent
+# Terminal 1: Start ADK backend (agent with 23 tools)
 adk web
-# Navigate to http://localhost:8000
+# Runs on http://localhost:8000
+
+# Terminal 2: Start Flask wrapper (optional - for web UI)
+python3 app.py
+# Runs on http://localhost:5000
 ```
+
+### Architecture
+- **ADK Backend** (port 8000): Agent with 23 tools, direct BigQuery access
+- **Flask Wrapper** (port 5000): Optional web interface that calls ADK backend
+- **Cloud Functions**: 13 independent data fetchers (deploy what you need)
+- **BigQuery**: Central data store queried by agent
 
 ## 🏗️ Architecture Overview
 
 ### System Architecture
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   ADK Security Agent                      │
-│  (Gemini 2.5 Flash - Natural Language Interface)         │
-└────────────┬───────────────────────────┬─────────────────┘
-             │                           │
-    ┌────────▼────────┐        ┌────────▼────────┐
-    │  BigQuery Tools │        │ Confluence Tools │
-    │  - Analysis     │        │  - Documentation │
-    │  - Queries      │        │  - Policies      │
+┌──────────────────────────────────────────────────────────────┐
+│                          User                                 │
+└────────────┬─────────────────────────────────────────────────┘
+             │
+    ┌────────▼────────┐
+    │  Flask Wrapper  │  (Optional - Web UI on port 5000)
+    │    (app.py)     │
+    └────────┬────────┘
+             │ HTTP
+    ┌────────▼────────────────────────────────────────────────┐
+    │              ADK Backend (port 8000)                     │
+    │    ADK Security Agent - 23 Tools                        │
+    │    (Gemini 2.5 Flash - Natural Language Interface)      │
+    └────────┬──────────────────────────┬─────────────────────┘
+             │                          │
+    ┌────────▼────────┐        ┌───────▼─────────┐
+    │  BigQuery Tools │        │ Confluence Tools│
+    │  - Analysis     │        │ - Documentation │
+    │  - Queries      │        │ - Policies      │
+    │  - 12 tools     │        │ - 5 tools       │
     └────────┬────────┘        └────────┬────────┘
-             │                           │
+             │                          │
     ┌────────▼──────────────────────────▼────────┐
-    │           BigQuery Data Platform            │
-    │         (Single Source of Truth)            │
+    │        BigQuery Data Platform               │
+    │      (Single Source of Truth)               │
+    │   - security_insights (primary)             │
+    │   - security_data (MSA results)             │
     └────────────────────┬───────────────────────┘
                          │
     ┌────────────────────▼───────────────────────┐
-    │         Cloud Functions (13)                │
-    │   Automated Data Collection & Sync          │
+    │      Cloud Functions (13) - Modular        │
+    │   Customer Chooses Which to Deploy         │
     │                                             │
-    │  ┌─────────────────────────────┐           │
-    │  │ confluence_sync/            │           │
-    │  │ - Fetches from Confluence   │           │
-    │  │ - Classifies documents      │           │
-    │  │ - Syncs to BigQuery tables  │           │
-    │  └─────────────────────────────┘           │
-    │                                             │
-    │  + 12 Security Data Functions               │
+    │  🔒 IAM & Security (7 functions)           │
+    │  ☁️ Infrastructure (2 functions)            │
+    │  📰 Feeds & Docs (3 functions)              │
+    │  🎯 Analysis (1 function - MSA)             │
     └────────────────────┬───────────────────────┘
                          │
     ┌────────────────────▼───────────────────────┐
@@ -95,26 +113,44 @@ adk web
     │  - GCP APIs & Services                     │
     │  - Confluence Documentation                │
     │  - RSS Security Feeds                       │
+    │  - GCP Release Notes                       │
     └─────────────────────────────────────────────┘
 ```
 
+### Key Architectural Principles
+- **Separation of Concerns**: Agent queries BigQuery, Cloud Functions populate data
+- **Modular Deployment**: Deploy only the Cloud Functions you need
+- **Direct Access**: Agent has full BigQuery access via `run_query()` tool
+- **No Coupling**: Agent never calls Cloud Functions directly
+- **Scheduled Updates**: Cloud Functions run on schedules (Cloud Scheduler)
+
 ### Core Components
 
-1. **ADK Agent** (`agents/agent.py`)
+1. **ADK Backend** (`agents/agent.py`) - Port 8000
    - Gemini 2.5 Flash powered conversational AI
-   - Natural language security analysis
-   - Multi-tool orchestration for comprehensive insights
+   - 23 tools for security analysis
+   - Direct BigQuery access via `run_query()` tool
+   - Natural language interface to all data
 
-2. **Cloud Functions Suite** (`cloud_functions/`)
-   - 12 specialized functions for different security domains
+2. **Flask Wrapper** (`app.py`) - Port 5000 (Optional)
+   - Web UI for chat interface
+   - Calls ADK backend via HTTP
+   - Session management
+   - Agent info endpoints
+
+3. **Cloud Functions Suite** (`cloud_functions/`) - Modular
+   - 13 independent data fetchers
+   - Customer chooses which to deploy
    - Automated scheduling with Cloud Scheduler
-   - BigQuery direct integration for real-time data
+   - BigQuery direct integration
+   - See `cloud_functions/README.md` for full list
 
-3. **Tool Library** (`agents/_tools/`)
-   - BigQuery tools for data analysis
-   - Confluence tools for documentation
-   - RSS feed aggregation for security updates
-   - Security-specific analysis tools
+4. **Tool Library** (`agents/_tools/`)
+   - **BigQuery Tools** (12): Analysis, queries, exploration
+   - **Confluence Tools** (5): Documentation search and retrieval
+   - **Service Discovery** (3): GCP service onboarding
+   - **IAM Analysis** (2): Custom role analysis
+   - **MSA Analyzer** (1): Release notes monitoring
 
 ## 📚 Confluence → BigQuery Sync Pattern
 

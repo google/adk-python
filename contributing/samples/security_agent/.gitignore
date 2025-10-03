@@ -65,7 +65,11 @@ backend_test.log
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 backend/cache/*.db
+cache/*.db
+cache/
 
 # Cache and Temp Files
 .cache/
@@ -113,6 +117,10 @@ Thumbs.db
 backend/cache/
 frontend/.streamlit/
 .streamlit/
+.claude/
+.claude-flow/
+.adk/
+.playwright-mcp/
 
 # Deployment
 deploy/secrets/
