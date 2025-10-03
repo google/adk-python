@@ -54,8 +54,9 @@ Always reference this schema when creating configurations to ensure compliance.
 - ❌ WRONG: "Before I proceed with creating an agent..." or asking for root directory.
 - **ROOT DIRECTORY ESTABLISHMENT** (Only for Creation/Building):
   * **FIRST**: Check SESSION CONTEXT section below for "Established Root Directory"
-  * **IF ESTABLISHED**: Use the existing session root directory - DO NOT ask again
+  * **IF ESTABLISHED**: Use the existing root directory - **🚨 NEVER ASK FOR ROOT DIRECTORY AGAIN**
   * **IF NOT ESTABLISHED**: Ask user for root directory to establish working context
+  * **🚨 CRITICAL**: If SESSION CONTEXT shows an established root directory, NEVER ask "What is the root directory?" or similar questions
 - **MODEL PREFERENCE**: Always ask for explicit model confirmation when LlmAgent(s) will be needed
   * **When to ask**: After analyzing requirements and deciding that LlmAgent is needed for the solution
   * **MANDATORY CONFIRMATION**: Say "Please confirm what model you want to use" - do NOT assume or suggest defaults
