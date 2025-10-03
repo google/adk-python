@@ -198,6 +198,9 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         if 'tool_context' in args_to_show:
           args_to_show.pop('tool_context')
 
+        # Set pending confirmation state to gate other tools
+        tool_context.invocation_context.set_pending_confirmation(self.name)
+
         tool_context.request_confirmation(
             hint=(
                 f'Please approve or reject the tool call {self.name}() by'
@@ -212,7 +215,12 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
             )
         }
       elif not tool_context.tool_confirmation.confirmed:
+        # Clear pending state when confirmation is rejected
+        tool_context.invocation_context.clear_pending_confirmation()
         return {'error': 'This tool call is rejected.'}
+      else:
+        # Clear pending state when confirmation is approved
+        tool_context.invocation_context.clear_pending_confirmation()
 
     return await self._invoke_callable(self.func, args_to_call)
 

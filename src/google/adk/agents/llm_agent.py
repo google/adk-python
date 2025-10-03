@@ -486,6 +486,24 @@ class LlmAgent(BaseAgent):
               tool_union, ctx, self.model, multiple_tools
           )
       )
+
+    # CONFIRMATION GATING: Filter tools if confirmation is pending
+    # When a tool requires confirmation, we hide all other tools from the model
+    # to prevent it from bypassing the confirmation requirement.
+    # See: https://github.com/google/adk-python/issues/3018
+    if ctx and hasattr(ctx, '_invocation_context'):
+      inv_ctx = ctx._invocation_context
+      if hasattr(inv_ctx, 'has_pending_confirmation') and inv_ctx.has_pending_confirmation:
+        pending_tool_name = inv_ctx.pending_confirmation_tool
+        logger.info(
+            f"Tool confirmation pending for '{pending_tool_name}'. "
+            f"Gating {len(resolved_tools) - 1} other tool(s)."
+        )
+        resolved_tools = [
+            t for t in resolved_tools
+            if t.name == pending_tool_name
+        ]
+
     return resolved_tools
 
   @property

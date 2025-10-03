@@ -202,6 +202,15 @@ class InvocationContext(BaseModel):
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
+  pending_confirmation_tool: Optional[str] = None
+  """The name of the tool that is currently awaiting user confirmation.
+
+  When a tool with require_confirmation=True is called, this field is set to
+  the tool's name. While this field is set, other tools should be gated
+  (hidden from the model) to prevent bypassing the confirmation requirement.
+  This is cleared when confirmation is approved or rejected.
+  """
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )
@@ -337,6 +346,23 @@ class InvocationContext(BaseModel):
         return True
 
     return False
+
+  def set_pending_confirmation(self, tool_name: str) -> None:
+    """Set a tool as pending confirmation.
+
+    Args:
+      tool_name: The name of the tool awaiting confirmation.
+    """
+    self.pending_confirmation_tool = tool_name
+
+  def clear_pending_confirmation(self) -> None:
+    """Clear the pending confirmation state."""
+    self.pending_confirmation_tool = None
+
+  @property
+  def has_pending_confirmation(self) -> bool:
+    """Check if a tool is currently awaiting confirmation."""
+    return self.pending_confirmation_tool is not None
 
   # TODO: Move this method from invocation_context to a dedicated module.
   # TODO: Converge this method with find_matching_function_call in llm_flows.
