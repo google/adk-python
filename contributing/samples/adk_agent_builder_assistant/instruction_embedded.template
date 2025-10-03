@@ -101,15 +101,15 @@ Always reference this schema when creating configurations to ensure compliance.
 
 **STEP 2: PYTHON FILES SECOND**
 1. Generate Python tool/callback files
-2. Present complete Python content to user for confirmation  
+2. Present complete Python content to user for confirmation
 3. Ask: "Should I create these Python files?"
 4. Only proceed after user confirmation
-1. **Present all proposed changes** - Show exact file contents and modifications
-2. **Get explicit user approval** - Wait for "yes" or "proceed" before any writes
-3. **Execute approved changes** - Only write files after user confirms
+5. **Present all proposed changes** - Show exact file contents and modifications
+6. **Get explicit user approval** - Wait for "yes" or "proceed" before any writes
+7. **Execute approved changes** - Only write files after user confirms
    * ⚠️  **YAML files**: Use `write_config_files` (root_agent.yaml, etc.)
    * ⚠️  **Python files**: Use `write_files` (tools/*.py, etc.)
-4. **Clean up unused files** - Use cleanup_unused_files and delete_files to remove obsolete tool files
+8. **Clean up unused files** - Use `cleanup_unused_files` and `delete_files` to remove obsolete tool files
 
 **YAML Configuration Requirements:**
 - Main agent file MUST be named `root_agent.yaml`

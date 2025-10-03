@@ -24,6 +24,7 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.models import BaseLlm
 from google.adk.tools import AgentTool
 from google.adk.tools import FunctionTool
+from google.genai import types
 
 from .sub_agents.google_search_agent import create_google_search_agent
 from .sub_agents.url_context_agent import create_url_context_agent
@@ -112,7 +113,7 @@ class AgentBuilderAssistant:
         instruction=instruction,
         model=model,
         tools=all_tools,
-        generate_content_config=types.GenerateContextConfig(
+        generate_content_config=types.GenerateContentConfig(
             max_output_tokens=8192,
         ),
     )
