@@ -37,6 +37,7 @@ def execute_sql(
     credentials: Credentials,
     settings: BigQueryToolConfig,
     tool_context: ToolContext,
+    dry_run: bool = False,
 ) -> dict:
   """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
 
@@ -47,12 +48,17 @@ def execute_sql(
       credentials (Credentials): The credentials to use for the request.
       settings (BigQueryToolConfig): The settings for the tool.
       tool_context (ToolContext): The context for the tool.
+      dry_run (bool, default False): If True, the query will not be executed.
+        Instead, the query will be validated and information about the query
+        will be returned. Defaults to False.
 
   Returns:
-      dict: Dictionary representing the result of the query.
-            If the result contains the key "result_is_likely_truncated" with
-            value True, it means that there may be additional rows matching the
-            query not returned in the result.
+      dict: If `dry_run` is False, dictionary representing the result of the
+            query. If the result contains the key "result_is_likely_truncated"
+            with value True, it means that there may be additional rows matching
+            the query not returned in the result.
+            If `dry_run` is True, dictionary with "dry_run_info" field
+            containing query information returned by BigQuery.
 
   Examples:
       Fetch data or insights from a table:
@@ -76,6 +82,39 @@ def execute_sql(
                     "population": 52
                 }
             ]
+          }
+
+      Validate a query and estimate costs without executing it:
+
+          >>> execute_sql(
+          ...     "my_project",
+          ...     "SELECT island FROM "
+          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     dry_run=True
+          ... )
+          {
+            "status": "SUCCESS",
+            "dry_run_info": {
+              "configuration": {
+                "dryRun": True,
+                "jobType": "QUERY",
+                "query": {
+                  "destinationTable": {
+                    "datasetId": "_...",
+                    "projectId": "my_project",
+                    "tableId": "anon..."
+                  },
+                  "priority": "INTERACTIVE",
+                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "useLegacySql": False,
+                  "writeDisposition": "WRITE_TRUNCATE"
+                }
+              },
+              "jobReference": {
+                "location": "US",
+                "projectId": "my_project"
+              }
+            }
           }
   """
   try:
@@ -167,6 +206,18 @@ def execute_sql(
         }
 
     # Finally execute the query and fetch the result
+    if dry_run:
+      job_config_kwargs = {"dry_run": True}
+      if bq_connection_properties:
+        job_config_kwargs["connection_properties"] = bq_connection_properties
+      job_config = bigquery.QueryJobConfig(**job_config_kwargs)
+      dry_run_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=job_config,
+      )
+      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
+
     job_config = (
         bigquery.QueryJobConfig(connection_properties=bq_connection_properties)
         if bq_connection_properties
@@ -214,12 +265,17 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       credentials (Credentials): The credentials to use for the request.
       settings (BigQueryToolConfig): The settings for the tool.
       tool_context (ToolContext): The context for the tool.
+      dry_run (bool, default False): If True, the query will not be executed.
+        Instead, the query will be validated and information about the query
+        will be returned. Defaults to False.
 
   Returns:
-      dict: Dictionary representing the result of the query.
-            If the result contains the key "result_is_likely_truncated" with
-            value True, it means that there may be additional rows matching the
-            query not returned in the result.
+      dict: If `dry_run` is False, dictionary representing the result of the
+            query. If the result contains the key "result_is_likely_truncated"
+            with value True, it means that there may be additional rows matching
+            the query not returned in the result.
+            If `dry_run` is True, dictionary with "dry_run_info" field
+            containing query information returned by BigQuery.
 
   Examples:
       Fetch data or insights from a table:
@@ -243,6 +299,39 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
                     "population": 52
                 }
             ]
+          }
+
+      Validate a query and estimate costs without executing it:
+
+          >>> execute_sql(
+          ...     "my_project",
+          ...     "SELECT island FROM "
+          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     dry_run=True
+          ... )
+          {
+            "status": "SUCCESS",
+            "dry_run_info": {
+              "configuration": {
+                "dryRun": True,
+                "jobType": "QUERY",
+                "query": {
+                  "destinationTable": {
+                    "datasetId": "_...",
+                    "projectId": "my_project",
+                    "tableId": "anon..."
+                  },
+                  "priority": "INTERACTIVE",
+                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "useLegacySql": False,
+                  "writeDisposition": "WRITE_TRUNCATE"
+                }
+              },
+              "jobReference": {
+                "location": "US",
+                "projectId": "my_project"
+              }
+            }
           }
 
       Create a table with schema prescribed:
@@ -396,12 +485,17 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       credentials (Credentials): The credentials to use for the request.
       settings (BigQueryToolConfig): The settings for the tool.
       tool_context (ToolContext): The context for the tool.
+      dry_run (bool, default False): If True, the query will not be executed.
+        Instead, the query will be validated and information about the query
+        will be returned. Defaults to False.
 
   Returns:
-      dict: Dictionary representing the result of the query.
-            If the result contains the key "result_is_likely_truncated" with
-            value True, it means that there may be additional rows matching the
-            query not returned in the result.
+      dict: If `dry_run` is False, dictionary representing the result of the
+            query. If the result contains the key "result_is_likely_truncated"
+            with value True, it means that there may be additional rows matching
+            the query not returned in the result.
+            If `dry_run` is True, dictionary with "dry_run_info" field
+            containing query information returned by BigQuery.
 
   Examples:
       Fetch data or insights from a table:
@@ -425,6 +519,39 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
                     "population": 52
                 }
             ]
+          }
+
+      Validate a query and estimate costs without executing it:
+
+          >>> execute_sql(
+          ...     "my_project",
+          ...     "SELECT island FROM "
+          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     dry_run=True
+          ... )
+          {
+            "status": "SUCCESS",
+            "dry_run_info": {
+              "configuration": {
+                "dryRun": True,
+                "jobType": "QUERY",
+                "query": {
+                  "destinationTable": {
+                    "datasetId": "_...",
+                    "projectId": "my_project",
+                    "tableId": "anon..."
+                  },
+                  "priority": "INTERACTIVE",
+                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "useLegacySql": False,
+                  "writeDisposition": "WRITE_TRUNCATE"
+                }
+              },
+              "jobReference": {
+                "location": "US",
+                "projectId": "my_project"
+              }
+            }
           }
 
       Create a temporary table with schema prescribed:
