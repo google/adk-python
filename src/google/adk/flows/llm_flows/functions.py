@@ -215,8 +215,6 @@ async def handle_function_call_list_async(
   from ...agents.llm_agent import LlmAgent
 
   agent = invocation_context.agent
-  if not isinstance(agent, LlmAgent):
-    return None
 
   # Filter function calls
   filtered_calls = [

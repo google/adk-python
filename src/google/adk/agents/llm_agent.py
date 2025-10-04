@@ -27,6 +27,7 @@ from typing import Literal
 from typing import Optional
 from typing import Type
 from typing import Union
+import warnings
 
 from google.genai import types
 from pydantic import BaseModel
@@ -54,6 +55,7 @@ from ..tools.tool_context import ToolContext
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
+from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
@@ -110,8 +112,22 @@ ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
 
 
 async def _convert_tool_union_to_tools(
-    tool_union: ToolUnion, ctx: ReadonlyContext
+    tool_union: ToolUnion,
+    ctx: ReadonlyContext,
+    model: Union[str, BaseLlm],
+    multiple_tools: bool = False,
 ) -> list[BaseTool]:
+  from ..tools.google_search_tool import google_search
+
+  # Wrap google_search tool with AgentTool if there are multiple tools because
+  # the built-in tools cannot be used together with other tools.
+  # TODO(b/448114567): Remove once the workaround is no longer needed.
+  if multiple_tools and tool_union is google_search:
+    from ..tools.google_search_agent_tool import create_google_search_agent
+    from ..tools.google_search_agent_tool import GoogleSearchAgentTool
+
+    return [GoogleSearchAgentTool(create_google_search_agent(model))]
+
   if isinstance(tool_union, BaseTool):
     return [tool_union]
   if callable(tool_union):
@@ -149,6 +165,10 @@ class LlmAgent(BaseAgent):
 
   global_instruction: Union[str, InstructionProvider] = ''
   """Instructions for all the agents in the entire agent tree.
+
+  DEPRECATED: This field is deprecated and will be removed in a future version.
+  Use GlobalInstructionPlugin instead, which provides the same functionality
+  at the App level. See migration guide for details.
 
   ONLY the global_instruction in root agent will take effect.
 
@@ -337,10 +357,29 @@ class LlmAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    agent_state = self._load_agent_state(ctx, BaseAgentState)
+
+    # If there is an sub-agent to resume, run it and then end the current
+    # agent.
+    if agent_state is not None and (
+        agent_to_transfer := self._get_subagent_to_resume(ctx)
+    ):
+      async with Aclosing(agent_to_transfer.run_async(ctx)) as agen:
+        async for event in agen:
+          yield event
+
+      yield self._create_agent_state_event(ctx, end_of_agent=True)
+      return
+
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
       async for event in agen:
         self.__maybe_save_output_to_state(event)
         yield event
+        if ctx.should_pause_invocation(event):
+          return
+
+    if ctx.is_resumable:
+      yield self._create_agent_state_event(ctx, end_of_agent=True)
 
   @override
   async def _run_live_impl(
@@ -411,6 +450,16 @@ class LlmAgent(BaseAgent):
       bypass_state_injection: Whether the instruction is based on
       InstructionProvider.
     """
+    # Issue deprecation warning if global_instruction is being used
+    if self.global_instruction:
+      warnings.warn(
+          'global_instruction field is deprecated and will be removed in a'
+          ' future version. Use GlobalInstructionPlugin instead for the same'
+          ' functionality at the App level. See migration guide for details.',
+          DeprecationWarning,
+          stacklevel=2,
+      )
+
     if isinstance(self.global_instruction, str):
       return self.global_instruction, False
     else:
@@ -427,8 +476,16 @@ class LlmAgent(BaseAgent):
     This method is only for use by Agent Development Kit.
     """
     resolved_tools = []
+    # We may need to wrap some built-in tools if there are other tools
+    # because the built-in tools cannot be used together with other tools.
+    # TODO(b/448114567): Remove once the workaround is no longer needed.
+    multiple_tools = len(self.tools) > 1
     for tool_union in self.tools:
-      resolved_tools.extend(await _convert_tool_union_to_tools(tool_union, ctx))
+      resolved_tools.extend(
+          await _convert_tool_union_to_tools(
+              tool_union, ctx, self.model, multiple_tools
+          )
+      )
     return resolved_tools
 
   @property
@@ -495,6 +552,74 @@ class LlmAgent(BaseAgent):
       return SingleFlow()
     else:
       return AutoFlow()
+
+  def _get_subagent_to_resume(
+      self, ctx: InvocationContext
+  ) -> Optional[BaseAgent]:
+    """Returns the sub-agent in the llm tree to resume if it exists.
+
+    There are 2 cases where we need to transfer to and resume a sub-agent:
+    1. The last event is a transfer to agent response from the current agent.
+       In this case, we need to return the agent specified in the response.
+
+    2. The last event's author isn't the current agent, or the user is
+       responding to another agent's tool call.
+       In this case, we need to return the LAST agent being transferred to
+       from the current agent.
+    """
+    events = ctx._get_events(current_invocation=True, current_branch=True)
+    if not events:
+      return None
+
+    last_event = events[-1]
+    if last_event.author == self.name:
+      # Last event is from current agent. Return transfer_to_agent in the event
+      # if it exists, or None.
+      return self.__get_transfer_to_agent_or_none(last_event, self.name)
+
+    # Last event is from user or another agent.
+    if last_event.author == 'user':
+      function_call_event = ctx._find_matching_function_call(last_event)
+      if not function_call_event:
+        raise ValueError(
+            'No agent to transfer to for resuming agent from function response'
+            f' {self.name}'
+        )
+      if function_call_event.author == self.name:
+        # User is responding to a tool call from the current agent.
+        # Current agent should continue, so no sub-agent to resume.
+        return None
+
+    # Last event is from another agent, or from user for another agent's tool
+    # call. We need to find the last agent we transferred to.
+    for event in reversed(events):
+      if agent := self.__get_transfer_to_agent_or_none(event, self.name):
+        return agent
+
+    return None
+
+  def __get_agent_to_run(self, agent_name: str) -> BaseAgent:
+    """Find the agent to run under the root agent by name."""
+    agent_to_run = self.root_agent.find_agent(agent_name)
+    if not agent_to_run:
+      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
+    return agent_to_run
+
+  def __get_transfer_to_agent_or_none(
+      self, event: Event, from_agent: str
+  ) -> Optional[BaseAgent]:
+    """Returns the agent to run if the event is a transfer to agent response."""
+    function_responses = event.get_function_responses()
+    if not function_responses:
+      return None
+    for function_response in function_responses:
+      if (
+          function_response.name == 'transfer_to_agent'
+          and event.author == from_agent
+          and event.actions.transfer_to_agent != from_agent
+      ):
+        return self.__get_agent_to_run(event.actions.transfer_to_agent)
+    return None
 
   def __maybe_save_output_to_state(self, event: Event):
     """Saves the model output to state if needed."""

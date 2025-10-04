@@ -21,6 +21,8 @@ from google.adk.apps import App
 from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.context_filter_plugin import ContextFilterPlugin
+from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin
+from google.adk.tools import load_artifacts
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
@@ -97,6 +99,7 @@ root_agent = Agent(
     tools=[
         roll_die,
         check_prime,
+        load_artifacts,
     ],
     # planner=BuiltInPlanner(
     #     thinking_config=types.ThinkingConfig(
@@ -145,5 +148,6 @@ app = App(
     plugins=[
         CountInvocationPlugin(),
         ContextFilterPlugin(num_invocations_to_keep=3),
+        SaveFilesAsArtifactsPlugin(),
     ],
 )

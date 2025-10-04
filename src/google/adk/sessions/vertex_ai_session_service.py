@@ -371,19 +371,21 @@ class VertexAiSessionService(BaseSessionService):
   ) -> Optional[genai.types.HttpOptions]:
     return None
 
-  def _get_api_client(self):
+  def _get_api_client(self) -> genai.client.BaseApiClient:
     """Instantiates an API client for the given project and location.
 
     It needs to be instantiated inside each request so that the event loop
     management can be properly propagated.
-    """
-    api_client = genai.Client(
-        vertexai=True, project=self._project, location=self._location
-    )._api_client
 
-    if new_options := self._api_client_http_options_override():
-      api_client._http_options = new_options
-    return api_client
+    Returns:
+      An API client for the given project and location.
+    """
+    return genai.client.BaseApiClient(
+        vertexai=True,
+        project=self._project,
+        location=self._location,
+        http_options=self._api_client_http_options_override(),
+    )
 
 
 def _is_vertex_express_mode(

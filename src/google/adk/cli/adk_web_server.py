@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import importlib
+import json
 import logging
 import os
 import time
@@ -219,6 +220,13 @@ class UpdateMemoryRequest(common.BaseModel):
   """The ID of the session to add to memory."""
 
 
+class UpdateSessionRequest(common.BaseModel):
+  """Request to update session state without running the agent."""
+
+  state_delta: dict[str, Any]
+  """The state changes to apply to the session."""
+
+
 class RunEvalResult(common.BaseModel):
   eval_set_file: str
   eval_set_id: str
@@ -395,6 +403,9 @@ class AdkWebServer:
         managing evaluation set results.
       agents_dir: Root directory containing subdirs for agents with those
         containing resources (e.g. .env files, eval sets, etc.) for the agents.
+      extra_plugins: A list of fully qualified names of extra plugins to load.
+      logo_text: Text to display in the logo of the UI.
+      logo_image_url: URL of an image to display as logo of the UI.
       runners_to_clean: Set of runner names marked for cleanup.
       current_app_name_ref: A shared reference to the latest ran app name.
       runner_dict: A dict of instantiated runners for each app.
@@ -412,6 +423,8 @@ class AdkWebServer:
       eval_set_results_manager: EvalSetResultsManager,
       agents_dir: str,
       extra_plugins: Optional[list[str]] = None,
+      logo_text: Optional[str] = None,
+      logo_image_url: Optional[str] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -422,6 +435,8 @@ class AdkWebServer:
     self.eval_set_results_manager = eval_set_results_manager
     self.agents_dir = agents_dir
     self.extra_plugins = extra_plugins or []
+    self.logo_text = logo_text
+    self.logo_image_url = logo_image_url
     # Internal propeties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
@@ -454,12 +469,8 @@ class AdkWebServer:
       )
     else:
       # Combine existing plugins with extra plugins
-      all_plugins = (agent_or_app.plugins or []) + extra_plugins_instances
-      agentic_app = App(
-          name=agent_or_app.name,
-          root_agent=agent_or_app.root_agent,
-          plugins=all_plugins,
-      )
+      agent_or_app.plugins = agent_or_app.plugins + extra_plugins_instances
+      agentic_app = agent_or_app
 
     runner = self._create_runner(agentic_app)
     self.runner_dict[app_name] = runner
@@ -509,6 +520,52 @@ class AdkWebServer:
     module_name, obj_name = qualified_name.rsplit(".", 1)
     module = importlib.import_module(module_name)
     return getattr(module, obj_name)
+
+  def _setup_runtime_config(self, web_assets_dir: str):
+    """Sets up the runtime config for the web server."""
+    # Read existing runtime config file.
+    runtime_config_path = os.path.join(
+        web_assets_dir, "assets", "config", "runtime-config.json"
+    )
+    runtime_config = {}
+    try:
+      with open(runtime_config_path, "r") as f:
+        runtime_config = json.load(f)
+    except FileNotFoundError:
+      logger.info(
+          "File not found: %s. A new runtime config file will be created.",
+          runtime_config_path,
+      )
+    except json.JSONDecodeError:
+      logger.warning(
+          "Failed to decode JSON from %s. The file content will be"
+          " overwritten.",
+          runtime_config_path,
+      )
+
+    # Set custom logo config.
+    if self.logo_text or self.logo_image_url:
+      if not self.logo_text or not self.logo_image_url:
+        raise ValueError(
+            "Both --logo-text and --logo-image-url must be defined when using"
+            " logo config."
+        )
+      runtime_config["logo"] = {
+          "text": self.logo_text,
+          "imageUrl": self.logo_image_url,
+      }
+    elif "logo" in runtime_config:
+      del runtime_config["logo"]
+
+    # Write the runtime config file.
+    try:
+      os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
+      with open(runtime_config_path, "w") as f:
+        json.dump(runtime_config, f, indent=2)
+    except IOError as e:
+      logger.error(
+          "Failed to write runtime config file %s: %s", runtime_config_path, e
+      )
 
   def get_fast_api_app(
       self,
@@ -574,6 +631,8 @@ class AdkWebServer:
             export_lib.SimpleSpanProcessor(memory_exporter),
         ],
     )
+    if web_assets_dir:
+      self._setup_runtime_config(web_assets_dir)
 
     # TODO - register_processors to be removed once --otel_to_cloud is no
     # longer experimental.
@@ -714,6 +773,56 @@ class AdkWebServer:
       await self.session_service.delete_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
+
+    @app.patch(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model_exclude_none=True,
+    )
+    async def update_session(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: UpdateSessionRequest,
+    ) -> Session:
+      """Updates session state without running the agent.
+
+      Args:
+          app_name: The name of the application.
+          user_id: The ID of the user.
+          session_id: The ID of the session to update.
+          req: The patch request containing state changes.
+
+      Returns:
+          The updated session.
+
+      Raises:
+          HTTPException: If the session is not found.
+      """
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+      # Create an event to record the state change
+      import uuid
+
+      from ..events.event import Event
+      from ..events.event import EventActions
+
+      state_update_event = Event(
+          invocation_id="p-" + str(uuid.uuid4()),
+          author="user",
+          actions=EventActions(state_delta=req.state_delta),
+      )
+
+      # Append the event to the session
+      # This will automatically update the session state through __update_session_state
+      await self.session_service.append_event(
+          session=session, event=state_update_event
+      )
+
+      return session
 
     @app.post(
         "/apps/{app_name}/eval-sets",
@@ -1416,6 +1525,13 @@ class AdkWebServer:
 
       mimetypes.add_type("application/javascript", ".js", True)
       mimetypes.add_type("text/javascript", ".js", True)
+
+      @app.get("/dev-ui/config")
+      async def get_ui_config():
+        return {
+            "logo_text": self.logo_text,
+            "logo_image_url": self.logo_image_url,
+        }
 
       @app.get("/")
       async def redirect_root_to_dev_ui():

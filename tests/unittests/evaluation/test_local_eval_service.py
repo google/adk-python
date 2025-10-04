@@ -429,7 +429,6 @@ async def test_mcp_stdio_agent_no_runtime_error():
                 user_content=genai_types.Content(
                     parts=[genai_types.Part(text="List directory contents")]
                 ),
-                expected_response="",
             )
         ],
     )

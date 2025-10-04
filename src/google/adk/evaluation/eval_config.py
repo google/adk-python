@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import logging
+from typing import Optional
 from typing import Union
 
 from pydantic import alias_generators
@@ -21,8 +23,11 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from ..evaluation.eval_metrics import EvalMetric
 from .eval_metrics import BaseCriterion
 from .eval_metrics import Threshold
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class EvalConfig(BaseModel):
@@ -64,3 +69,54 @@ the third one uses `LlmAsAJudgeCriterion`.
 }
 """,
   )
+
+
+_DEFAULT_EVAL_CONFIG = EvalConfig(
+    criteria={"tool_trajectory_avg_score": 1.0, "response_match_score": 0.8}
+)
+
+
+def get_evaluation_criteria_or_default(
+    eval_config_file_path: Optional[str],
+) -> EvalConfig:
+  """Returns EvalConfig read from the config file, if present.
+
+  Otherwise a default one is returned.
+  """
+  if eval_config_file_path:
+    with open(eval_config_file_path, "r", encoding="utf-8") as f:
+      content = f.read()
+      return EvalConfig.model_validate_json(content)
+
+  logger.info("No config file supplied. Using default criteria.")
+  return _DEFAULT_EVAL_CONFIG
+
+
+def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
+  """Returns a list of EvalMetrics mapped from the EvalConfig."""
+  eval_metric_list = []
+  if eval_config.criteria:
+    for metric_name, criterion in eval_config.criteria.items():
+      if isinstance(criterion, float):
+        eval_metric_list.append(
+            EvalMetric(
+                metric_name=metric_name,
+                threshold=criterion,
+                criterion=BaseCriterion(threshold=criterion),
+            )
+        )
+      elif isinstance(criterion, BaseCriterion):
+        eval_metric_list.append(
+            EvalMetric(
+                metric_name=metric_name,
+                threshold=criterion.threshold,
+                criterion=criterion,
+            )
+        )
+      else:
+        raise ValueError(
+            f"Unexpected criterion type. {type(criterion).__name__} not"
+            " supported."
+        )
+
+  return eval_metric_list

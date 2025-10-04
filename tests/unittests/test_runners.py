@@ -19,6 +19,7 @@ from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
@@ -565,6 +566,7 @@ class TestRunnerCacheConfig:
         name="order_test_app",
         root_agent=self.root_agent,
         context_cache_config=cache_config,
+        resumability_config=ResumabilityConfig(is_resumable=True),
     )
 
     runner = Runner(
@@ -574,7 +576,7 @@ class TestRunnerCacheConfig:
     )
 
     # Test the validation method directly
-    app_name, agent, context_cache_config, plugins = (
+    app_name, agent, context_cache_config, resumability_config, plugins = (
         runner._validate_runner_params(app, None, None, None)
     )
 
@@ -582,6 +584,7 @@ class TestRunnerCacheConfig:
     assert agent == self.root_agent
     assert context_cache_config == cache_config
     assert context_cache_config.cache_intervals == 25
+    assert resumability_config == app.resumability_config
     assert plugins == []
 
   def test_runner_validate_params_without_app(self):
@@ -593,13 +596,14 @@ class TestRunnerCacheConfig:
         artifact_service=self.artifact_service,
     )
 
-    app_name, agent, context_cache_config, plugins = (
+    app_name, agent, context_cache_config, resumability_config, plugins = (
         runner._validate_runner_params(None, "test_app", self.root_agent, None)
     )
 
     assert app_name == "test_app"
     assert agent == self.root_agent
     assert context_cache_config is None
+    assert resumability_config is None
     assert plugins is None
 
   def test_runner_app_name_and_agent_extracted_correctly(self):
