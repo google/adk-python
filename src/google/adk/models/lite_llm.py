@@ -182,7 +182,7 @@ def _extract_cached_prompt_tokens(usage: dict[str, Any]) -> int:
       total = 0
       for item in details:
         if isinstance(item, dict) and isinstance(item.get("cached_tokens"), int):
-          total += int(item.get("cached_tokens", 0))
+          total += item["cached_tokens"]
       if total:
         return total
 
