@@ -23,6 +23,7 @@ from google.genai import types
 # from crewai_tools import FileReadTool
 from pydantic import BaseModel
 from enum import Enum
+import pytest
 
 def test_string_input():
   def simple_function(input_str: str) -> str:
@@ -225,7 +226,7 @@ def test_enums():
     AGENT = "agent"
     TOOL = "tool"
 
-  def simple_function(input:InputEnum):
+  def simple_function(input:InputEnum=InputEnum.AGENT):
     return input.value
 
   function_decl = _automatic_function_calling_util.build_function_declaration(
@@ -235,8 +236,16 @@ def test_enums():
   assert function_decl.name == 'simple_function'
   assert function_decl.parameters.type == 'OBJECT'
   assert function_decl.parameters.properties['input'].type == 'STRING'
+  assert function_decl.parameters.properties['input'].default == 'agent'
   assert function_decl.parameters.properties['input'].enum == ['agent', 'tool']
 
+  def simple_function_with_wrong_enum(input:InputEnum="WRONG_ENUM"):
+    return input.value
+
+  with pytest.raises(ValueError):
+    _automatic_function_calling_util.build_function_declaration(
+      func=simple_function_with_wrong_enum
+    )
 
 def test_basemodel_list():
   class ChildInput(BaseModel):

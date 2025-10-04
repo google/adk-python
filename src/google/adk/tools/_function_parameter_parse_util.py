@@ -76,7 +76,7 @@ def _raise_if_schema_unsupported(
 ):
   if variant == GoogleLLMVariant.GEMINI_API:
     _raise_for_any_of_if_mldev(schema)
-    _update_for_default_if_mldev(schema)
+    # _update_for_default_if_mldev(schema) # No need of this since GEMINI now supports default value
 
 
 def _is_default_value_compatible(
@@ -150,9 +150,10 @@ def _parse_schema_from_parameter(
       schema.type = types.Type.STRING
       schema.enum = [e.value for e in param.annotation]
       if param.default is not inspect.Parameter.empty:
-          if not _is_default_value_compatible(param.default, param.annotation):
+          default_value = param.default.value if isinstance(param.default, Enum) else param.default
+          if default_value not in schema.enum:
               raise ValueError(default_value_error_msg)
-          schema.default = param.default
+          schema.default = default_value
       _raise_if_schema_unsupported(variant, schema)
       return schema
   if (
