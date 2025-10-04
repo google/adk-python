@@ -1318,6 +1318,88 @@ def test_model_response_to_chunk(response, expected_chunks, expected_finished):
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_with_cached_tokens_non_stream(
+    lite_llm_instance, mock_acompletion
+):
+  # Simulate LiteLLM usage shapes that include cached tokens
+  mock_response_with_cached_usage = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="Test response",
+              )
+          )
+      ],
+      usage={
+          "prompt_tokens": 2100,
+          "completion_tokens": 50,
+          "total_tokens": 2150,
+          # Common provider shapes
+          "prompt_tokens_details": {"cached_tokens": 1800},
+      },
+  )
+  mock_acompletion.return_value = mock_response_with_cached_usage
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="q")])
+      ]
+  )
+
+  results = [
+      r async for r in lite_llm_instance.generate_content_async(llm_request)
+  ]
+  assert len(results) == 1
+  resp = results[0]
+  assert resp.usage_metadata is not None
+  assert resp.usage_metadata.prompt_token_count == 2100
+  assert resp.usage_metadata.candidates_token_count == 50
+  assert resp.usage_metadata.total_token_count == 2150
+  # Key assertion: cached_content_token_count is propagated
+  assert resp.usage_metadata.cached_content_token_count == 1800
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_cached_tokens_stream(
+    mock_completion, lite_llm_instance
+):
+  # Build a stream with final usage chunk that includes cached tokens
+  streaming_with_cached_usage = [
+      *STREAMING_MODEL_RESPONSE,
+      ModelResponse(
+          usage={
+              "prompt_tokens": 2100,
+              "completion_tokens": 50,
+              "total_tokens": 2150,
+              # Alternative flattened shape
+              "cached_prompt_tokens": 1700,
+          },
+          choices=[StreamingChoices(finish_reason=None)],
+      ),
+  ]
+  mock_completion.return_value = iter(streaming_with_cached_usage)
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="q")])
+      ]
+  )
+  responses = [
+      r async for r in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+  # Final aggregated response carries usage
+  assert len(responses) == 4
+  final_resp = responses[-1]
+  assert final_resp.usage_metadata is not None
+  assert final_resp.usage_metadata.prompt_token_count == 2100
+  assert final_resp.usage_metadata.total_token_count == 2150
+  assert final_resp.usage_metadata.cached_content_token_count == 1700
+
+
+@pytest.mark.asyncio
 async def test_acompletion_additional_args(mock_acompletion, mock_client):
   lite_llm_instance = LiteLlm(
       # valid args

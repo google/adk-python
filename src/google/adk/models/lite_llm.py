@@ -85,6 +85,8 @@ class UsageMetadataChunk(BaseModel):
   prompt_tokens: int
   completion_tokens: int
   total_tokens: int
+  # Cached tokens served from provider cache for the prompt portion
+  cached_prompt_tokens: int = 0
 
 
 class LiteLLMClient:
@@ -152,6 +154,46 @@ def _safe_json_serialize(obj) -> str:
     return json.dumps(obj, ensure_ascii=False)
   except (TypeError, OverflowError):
     return str(obj)
+
+
+def _extract_cached_prompt_tokens(usage: dict[str, Any]) -> int:
+  """Best-effort extraction of cached prompt tokens from LiteLLM usage.
+
+  Providers expose cached token metrics in different shapes. Common patterns:
+  - usage["prompt_tokens_details"]["cached_tokens"] (OpenAI/Azure style)
+  - usage["prompt_tokens_details"] is a list of dicts with cached_tokens
+  - usage["cached_prompt_tokens"] (LiteLLM-normalized for some providers)
+  - usage["cached_tokens"] (flat)
+
+  Args:
+    usage: Usage dictionary from LiteLLM response.
+
+  Returns:
+    Integer number of cached prompt tokens if present; otherwise 0.
+  """
+
+  try:
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+      value = details.get("cached_tokens")
+      if isinstance(value, int):
+        return value
+    elif isinstance(details, list):
+      total = 0
+      for item in details:
+        if isinstance(item, dict) and isinstance(item.get("cached_tokens"), int):
+          total += int(item.get("cached_tokens", 0))
+      if total:
+        return total
+
+    for key in ("cached_prompt_tokens", "cached_tokens"):
+      value = usage.get(key)
+      if isinstance(value, int):
+        return value
+  except Exception:  # noqa: BLE001 - defensive: provider-specific shapes vary
+    pass
+
+  return 0
 
 
 def _content_to_message_param(
@@ -463,10 +505,12 @@ def _model_response_to_chunk(
   # finish_reason set. But this is not the case we are observing from litellm.
   # So we are sending it as a separate chunk to be set on the llm_response.
   if response.get("usage", None):
+    usage_dict = response["usage"]
     yield UsageMetadataChunk(
-        prompt_tokens=response["usage"].get("prompt_tokens", 0),
-        completion_tokens=response["usage"].get("completion_tokens", 0),
-        total_tokens=response["usage"].get("total_tokens", 0),
+        prompt_tokens=usage_dict.get("prompt_tokens", 0),
+        completion_tokens=usage_dict.get("completion_tokens", 0),
+        total_tokens=usage_dict.get("total_tokens", 0),
+        cached_prompt_tokens=_extract_cached_prompt_tokens(usage_dict),
     ), None
 
 
@@ -491,10 +535,12 @@ def _model_response_to_generate_content_response(
 
   llm_response = _message_to_generate_content_response(message)
   if response.get("usage", None):
+    usage_dict = response["usage"]
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
-        prompt_token_count=response["usage"].get("prompt_tokens", 0),
-        candidates_token_count=response["usage"].get("completion_tokens", 0),
-        total_token_count=response["usage"].get("total_tokens", 0),
+        prompt_token_count=usage_dict.get("prompt_tokens", 0),
+        candidates_token_count=usage_dict.get("completion_tokens", 0),
+        total_token_count=usage_dict.get("total_tokens", 0),
+        cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
     )
   return llm_response
 
@@ -874,6 +920,7 @@ class LiteLlm(BaseLlm):
                 prompt_token_count=chunk.prompt_tokens,
                 candidates_token_count=chunk.completion_tokens,
                 total_token_count=chunk.total_tokens,
+              cached_content_token_count=chunk.cached_prompt_tokens,
             )
 
           if (
