@@ -25,11 +25,11 @@ from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import ExtendedOAuth2
+from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
 from .oauth2_discovery import OAuth2DiscoveryManager
-from .refresher.base_credential_refresher import BaseCredentialRefresher
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -85,7 +85,16 @@ class CredentialManager:
 
     # Register default exchangers and refreshers
     # TODO: support service account credential exchanger
+    from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
     from .refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
+
+    oauth2_exchanger = OAuth2CredentialExchanger()
+    self._exchanger_registry.register(
+        AuthCredentialTypes.OAUTH2, oauth2_exchanger
+    )
+    self._exchanger_registry.register(
+        AuthCredentialTypes.OPEN_ID_CONNECT, oauth2_exchanger
+    )
 
     oauth2_refresher = OAuth2CredentialRefresher()
     self._refresher_registry.register(
@@ -134,9 +143,14 @@ class CredentialManager:
       credential = await self._load_from_auth_response(callback_context)
       was_from_auth_response = True
 
-    # Step 5: If still no credential available, return None
+    # Step 5: If still no credential available, check if client credentials
     if not credential:
-      return None
+      # For client credentials flow, use raw credentials directly
+      if self._is_client_credentials_flow():
+        credential = self._auth_config.raw_auth_credential
+      else:
+        # For authorization code flow, return None to trigger user authorization
+        return None
 
     # Step 6: Exchange credential if needed (e.g., service account to access token)
     credential, was_exchanged = await self._exchange_credential(credential)
@@ -327,4 +341,27 @@ class CredentialManager:
           or flows.authorizationCode
           and not flows.authorizationCode.tokenUrl
       )
+    return False
+
+  def _is_client_credentials_flow(self) -> bool:
+    """Check if the auth scheme uses client credentials flow.
+
+    Supports both OAuth2 and OIDC schemes.
+
+    Returns:
+      True if using client credentials flow, False otherwise.
+    """
+    auth_scheme = self._auth_config.auth_scheme
+
+    # Check OAuth2 schemes
+    if isinstance(auth_scheme, OAuth2) and auth_scheme.flows:
+      return auth_scheme.flows.clientCredentials is not None
+
+    # Check OIDC schemes
+    if isinstance(auth_scheme, OpenIdConnectWithConfig):
+      return (
+          auth_scheme.grant_types_supported is not None
+          and "client_credentials" in auth_scheme.grant_types_supported
+      )
+
     return False
