@@ -152,6 +152,9 @@ python3 app.py
    - **IAM Analysis** (2): Custom role analysis
    - **MSA Analyzer** (1): Release notes monitoring
 
+### Agent Behaviour & Instructions
+- [Security BigQuery agent instructions](docs/agent_instructions.md) – comprehensive behavioural contract mirrored from `agents/agent.py`.
+
 ## 📚 Confluence → BigQuery Sync Pattern
 
 ### Overview

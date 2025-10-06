@@ -11,12 +11,50 @@
 <body>
     <div class="container">
         <header>
-            <h1>🔐 Security BigQuery Agent Dashboard</h1>
+            <div class="header-top">
+                <h1>🔐 Security BigQuery Agent Dashboard</h1>
+                <button id="overview-toggle" class="overview-btn" type="button">Agent overview</button>
+            </div>
             <div class="status-bar">
                 <span id="status" class="status-indicator">Checking...</span>
                 <span id="model">Model: gemini-2.5-flash</span>
             </div>
         </header>
+
+        <!-- Agent Overview Panel -->
+        <aside id="agent-overview" class="agent-overview hidden" aria-hidden="true">
+            <div class="overview-content" role="dialog" aria-modal="true" aria-labelledby="overview-title">
+                <div class="overview-header">
+                    <div>
+                        <h2 id="overview-title">Agent instructions &amp; tools</h2>
+                        <p class="overview-subtitle">Understand the agent's behaviour, guardrails, and available capabilities before you start a chat.</p>
+                    </div>
+                    <button id="overview-close" class="overview-close" type="button" aria-label="Close agent overview">✕</button>
+                </div>
+                <div class="overview-body">
+                    <section class="overview-section">
+                        <header class="overview-section-header">
+                            <h3>Instruction guide</h3>
+                            <div class="overview-actions">
+                                <button id="instructions-expand" class="secondary-btn" type="button">Expand all</button>
+                                <button id="instructions-collapse" class="secondary-btn" type="button">Collapse all</button>
+                            </div>
+                        </header>
+                        <div id="instruction-sections" class="instruction-list" aria-live="polite"></div>
+                    </section>
+                    <section class="overview-section">
+                        <header class="overview-section-header">
+                            <h3>Available tools</h3>
+                            <div class="overview-actions">
+                                <label for="tool-filter" class="visually-hidden">Filter tools</label>
+                                <input id="tool-filter" class="tool-filter" type="search" placeholder="Search tools..." aria-label="Filter tools">
+                            </div>
+                        </header>
+                        <ul id="tool-list" class="tool-list" aria-live="polite"></ul>
+                    </section>
+                </div>
+            </div>
+        </aside>
 
         <!-- Metrics Dashboard Section -->
         <div class="metrics-dashboard">
