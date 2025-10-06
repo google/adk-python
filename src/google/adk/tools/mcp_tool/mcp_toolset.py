@@ -169,8 +169,8 @@ class McpToolset(BaseToolset):
           self._mcp_session_manager.close(), 
           timeout=self._session_close_timeout
       )
-    except (asyncio.TimeoutError, Exception):
-      pass  # Ignore close errors
+    except (asyncio.TimeoutError, Exception) as e:
+      logger.warning('Ignoring error while closing stale MCP session manager: %s', e)
     
     # Recreate session manager with fresh connections
     self._mcp_session_manager = MCPSessionManager(
