@@ -26,6 +26,7 @@ from google.adk.tools import AgentTool
 from google.adk.tools import FunctionTool
 from google.genai import types
 
+from .sub_agents.adk_knowledge_agent import create_adk_knowledge_agent
 from .sub_agents.google_search_agent import create_google_search_agent
 from .sub_agents.url_context_agent import create_url_context_agent
 from .tools.cleanup_unused_files import cleanup_unused_files
@@ -71,9 +72,14 @@ class AgentBuilderAssistant:
     # - Maintains compatibility with existing ADK tool ecosystem
 
     # Built-in ADK tools wrapped as sub-agents
+    adk_knowledge_agent = create_adk_knowledge_agent()
     google_search_agent = create_google_search_agent()
     url_context_agent = create_url_context_agent()
-    agent_tools = [AgentTool(google_search_agent), AgentTool(url_context_agent)]
+    agent_tools = [
+        AgentTool(adk_knowledge_agent),
+        AgentTool(google_search_agent),
+        AgentTool(url_context_agent),
+    ]
 
     # CUSTOM FUNCTION TOOLS: Agent Builder specific capabilities
     #
