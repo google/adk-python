@@ -25,6 +25,8 @@ from typing import List
 from typing import Optional
 import warnings
 
+from google.adk.apps.compaction import _run_compaction_for_sliding_window
+from google.adk.apps.sliding_window_compactor import SlidingWindowCompactor
 from google.genai import types
 
 from .agents.active_streaming_tool import ActiveStreamingTool
@@ -134,6 +136,7 @@ class Runner:
         ValueError: If `app` is provided along with `app_name` or `plugins`, or
           if `app` is not provided but either `app_name` or `agent` is missing.
     """
+    self.app = app
     (
         self.app_name,
         self.agent,
@@ -360,10 +363,41 @@ class Runner:
         ) as agen:
           async for event in agen:
             yield event
+        # Run compaction after all events are yielded from the agent.
+        # (We don't compact in the middle of an invocation, we only compact at the end of an invocation.)
+        if self.app and self.app.events_compaction_config:
+          logger.info('Running event compactor.')
+          # Run compaction in a separate task to avoid blocking the main thread.
+          # So the users can still finish the event loop from the agent while the
+          # compaction is running.
+          asyncio.create_task(
+              _run_compaction_for_sliding_window(
+                  self.app, session, self.session_service
+              )
+          )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
         yield event
+
+  async def _run_compaction_default(self, session: Session):
+    """Runs compaction for other types of compactors.
+
+    This method calls `maybe_compact_events` on the compactor with all
+    events in the session.
+
+    Args:
+      session: The session containing events to compact.
+    """
+    compaction_event = (
+        await self.app.events_compaction_config.compactor.maybe_compact_events(
+            events=session.events
+        )
+    )
+    if compaction_event:
+      await self.session_service.append_event(
+          session=session, event=compaction_event
+      )
 
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""

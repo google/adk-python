@@ -48,6 +48,26 @@ class ResumabilityConfig(BaseModel):
 
 
 @experimental
+class EventsCompactionConfig(BaseModel):
+  """The config of event compaction for an application."""
+
+  model_config = ConfigDict(
+      arbitrary_types_allowed=True,
+      extra="forbid",
+  )
+
+  compactor: BaseEventsCompactor
+  """The event compactor strategy for the application."""
+  compaction_interval: int
+  """The number of *new* user-initiated invocations that, once
+  fully represented in the session's events, will trigger a compaction."""
+  overlap_size: int
+  """The number of preceding invocations to include from the
+  end of the last compacted range. This creates an overlap between consecutive
+  compacted summaries, maintaining context."""
+
+
+@experimental
 class App(BaseModel):
   """Represents an LLM-backed agentic application.
 
@@ -73,8 +93,8 @@ class App(BaseModel):
   plugins: list[BasePlugin] = Field(default_factory=list)
   """The plugins in the application."""
 
-  event_compactor: Optional[BaseEventsCompactor] = None
-  """The event compactor strategy for the application."""
+  events_compaction_config: Optional[EventsCompactionConfig] = None
+  """The config of event compaction for the application."""
 
   context_cache_config: Optional[ContextCacheConfig] = None
   """Context cache configuration that applies to all LLM agents in the app."""

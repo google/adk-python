@@ -222,6 +222,9 @@ def _contains_empty_content(event: Event) -> bool:
   Returns:
     True if the event should be skipped, False otherwise.
   """
+  if event.actions and event.actions.compaction:
+    return False
+
   return (
       not event.content
       or not event.content.role
@@ -233,17 +236,40 @@ def _contains_empty_content(event: Event) -> bool:
 def _get_contents(
     current_branch: Optional[str], events: list[Event], agent_name: str = ''
 ) -> list[types.Content]:
-  """Get the contents for the LLM request.
+  """Retrieves and processes events into a list of Contents for the LLM request.
 
-  Applies filtering, rearrangement, and content processing to events.
+  This function prepares the conversation history for the LLM by applying
+  several transformations:
+  1.  **Initial Filtering**: Removes events that are empty, do not belong
+      to the current invocation branch, or are related to authentication
+      or request confirmation.
+  2.  **Compaction Handling**: Identifies the latest compaction event. If found,
+      it replaces all events covered by the compaction range with the compacted
+      summary content. Only events *after* the compaction's end timestamp
+      are included in addition to the summary. If no compaction event exists,
+      all filtered events are considered.
+  3.  **Transcription Aggregation**: Combines consecutive
+      `input_transcription` and `output_transcription` events into single
+      'user' and 'model' role `types.Content` events, respectively.
+  4.  **Multi-Agent Presentation**: Reformats messages from other agents
+      (i.e., not the current `agent_name` and not 'user') to be presented
+      as user-role context, prefixed with `[agent_name] said:`. Compactor
+      events are included directly without reformatting.
+  5.  **Function Call/Response Rearrangement**: Ensures proper pairing of
+      asynchronous function calls and responses within the event history.
+  6.  **Content Conversion**: Converts the final list of processed events
+      into `types.Content` objects, removing any client-side function call IDs.
 
   Args:
-    current_branch: The current branch of the agent.
-    events: Events to process.
-    agent_name: The name of the agent.
+    current_branch: The current invocation branch ID. Events outside this branch
+      will be filtered out.
+    events: A list of session events to process.
+    agent_name: The name of the agent currently running. Used to distinguish
+      between events from the current agent, other agents, and the user.
 
   Returns:
-    A list of processed contents.
+    A list of `types.Content` objects representing the conversation history
+    to be sent to the LLM.
   """
   accumulated_input_transcription = ''
   accumulated_output_transcription = ''
@@ -266,18 +292,55 @@ def _get_contents(
 
     raw_filtered_events.append(event)
 
+  # Find the latest compaction event.
+  latest_compaction_event = None
+  for event in reversed(raw_filtered_events):
+    if event.actions and event.actions.compaction:
+      latest_compaction_event = event
+      break
+
+  events_to_process = []
+  if latest_compaction_event:
+    compaction = latest_compaction_event.actions.compaction
+    if (
+        compaction.start_timestamp is not None
+        and compaction.end_timestamp is not None
+    ):
+      # Add the compacted event itself.
+      new_event = Event(
+          timestamp=compaction.end_timestamp,
+          author='compactor',
+          content=compaction.compacted_content,
+          branch=latest_compaction_event.branch,
+          invocation_id=latest_compaction_event.invocation_id,
+          actions=latest_compaction_event.actions,
+      )
+      events_to_process.append(new_event)
+
+      # Add events from raw_filtered_events that are *after* the
+      # latest compaction's end timestamp.
+      for event in raw_filtered_events:
+        if event.timestamp > compaction.end_timestamp:
+          events_to_process.append(event)
+  else:
+    # No compaction events, process all raw filtered events.
+    events_to_process = raw_filtered_events
+
+  # Sort by timestamp to ensure chronological order.
+  events_to_process.sort(key=lambda x: x.timestamp)
+
   filtered_events = []
   # aggregate transcription events
-  for i in range(len(raw_filtered_events)):
-    event = raw_filtered_events[i]
+  for i in range(len(events_to_process)):
+    event = events_to_process[i]
     if not event.content:
       # Convert transcription into normal event
       if event.input_transcription and event.input_transcription.text:
         accumulated_input_transcription += event.input_transcription.text
         if (
-            i != len(raw_filtered_events) - 1
-            and raw_filtered_events[i + 1].input_transcription
-            and raw_filtered_events[i + 1].input_transcription.text
+            i != len(events_to_process) - 1
+            and events_to_process[i + 1].input_transcription
+            and events_to_process[i + 1].input_transcription.text
         ):
           continue
         event = event.model_copy(deep=True)
@@ -290,9 +353,9 @@ def _get_contents(
       elif event.output_transcription and event.output_transcription.text:
         accumulated_output_transcription += event.output_transcription.text
         if (
-            i != len(raw_filtered_events) - 1
-            and raw_filtered_events[i + 1].output_transcription
-            and raw_filtered_events[i + 1].output_transcription.text
+            i != len(events_to_process) - 1
+            and events_to_process[i + 1].output_transcription
+            and events_to_process[i + 1].output_transcription.text
         ):
           continue
         event = event.model_copy(deep=True)
@@ -321,8 +384,9 @@ def _get_contents(
   contents = []
   for event in result_events:
     content = copy.deepcopy(event.content)
-    remove_client_function_call_id(content)
-    contents.append(content)
+    if content:
+      remove_client_function_call_id(content)
+      contents.append(content)
   return contents
 
 
