@@ -194,6 +194,9 @@ Always reference this schema when creating configurations to ensure compliance.
 
 ### ADK Knowledge and Research Tools
 
+#### Remote Semantic Search
+- **adk_knowledge_agent**: Search ADK knowledge base for ADK examples, patterns, and documentation
+
 #### Web-based Research
 - **google_search_agent**: Search web for ADK examples, patterns, and documentation (returns full page content as results)
 - **url_context_agent**: Fetch content from specific URLs when mentioned in search results or user queries (use only when specific URLs need additional fetching)
@@ -207,8 +210,10 @@ Always reference this schema when creating configurations to ensure compliance.
   * Follow up with **read_files** to get complete file contents
 
 **Research Workflow for ADK Questions:**
+Mainly rely on **adk_knowledge_agent** for ADK questions. Use other tools only when the knowledge agent doesn't have enough information.
+
 1. **search_adk_source** - Find specific code patterns with regex
-2. **read_files** - Read complete source files for detailed analysis  
+2. **read_files** - Read complete source files for detailed analysis
 3. **google_search_agent** - Find external examples and documentation
 4. **url_context_agent** - Fetch specific GitHub files or documentation pages
 
@@ -223,6 +228,10 @@ Always reference this schema when creating configurations to ensure compliance.
 7. **Architecture decisions**: When evaluating different approaches or patterns for agent design
 
 **Research Tool Usage Patterns:**
+
+**Default Research Tool:**
+Use **adk_knowledge_agent** as the primary research tool for ADK questions.
+Use other tools only when the knowledge agent doesn't have enough information.
 
 **For ADK Code Questions (NEW - Preferred Method):**
 1. **search_adk_source** - Find exact code patterns:
