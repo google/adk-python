@@ -17,6 +17,7 @@ from __future__ import annotations
 from enum import Enum
 import logging
 import sys
+from typing import Any
 from typing import Optional
 
 from google.genai import types
@@ -41,6 +42,9 @@ class RunConfig(BaseModel):
       extra='forbid',
   )
   """The pydantic model config."""
+
+  metadata: Optional[dict[str, Any]] = None
+  """The metadata of the run."""
 
   speech_config: Optional[types.SpeechConfig] = None
   """Speech configuration for the live agent."""

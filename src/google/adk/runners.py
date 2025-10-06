@@ -848,6 +848,7 @@ class Runner:
         live_request_queue=live_request_queue,
         run_config=run_config,
         resumability_config=self.resumability_config,
+        a2a_metadata=run_config.metadata,
     )
 
   def _new_invocation_context_for_live(

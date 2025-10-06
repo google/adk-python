@@ -202,6 +202,9 @@ class InvocationContext(BaseModel):
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
+  a2a_metadata: Optional[dict[str, Any]] = None
+  """The metadata of the A2A request."""
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )

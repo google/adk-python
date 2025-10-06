@@ -55,14 +55,17 @@ def convert_a2a_request_to_adk_run_args(
 ) -> dict[str, Any]:
 
   if not request.message:
-    raise ValueError('Request message cannot be None')
+    raise ValueError("Request message cannot be None")
 
+  metadata = None
+  if hasattr(request, "metadata"):
+    metadata = request.metadata
   return {
-      'user_id': _get_user_id(request),
-      'session_id': request.context_id,
-      'new_message': genai_types.Content(
-          role='user',
+      "user_id": _get_user_id(request),
+      "session_id": request.context_id,
+      "new_message": genai_types.Content(
+          role="user",
           parts=[part_converter(part) for part in request.message.parts],
       ),
-      'run_config': RunConfig(),
+      "run_config": RunConfig(metadata=metadata),
   }
