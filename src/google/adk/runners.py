@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+from pathlib import Path
 import queue
 from typing import Any
 from typing import AsyncGenerator
@@ -149,6 +151,11 @@ class Runner:
     self.memory_service = memory_service
     self.credential_service = credential_service
     self.plugin_manager = PluginManager(plugins=plugins)
+    (
+        self._agent_origin_app_name,
+        self._agent_origin_dir,
+    ) = self._infer_agent_origin(self.agent)
+    self._enforce_app_name_alignment()
 
   def _validate_runner_params(
       self,
@@ -210,6 +217,48 @@ class Runner:
           DeprecationWarning,
       )
     return app_name, agent, context_cache_config, resumability_config, plugins
+
+  def _infer_agent_origin(
+      self, agent: BaseAgent
+  ) -> tuple[Optional[str], Optional[Path]]:
+    module = inspect.getmodule(agent.__class__)
+    if not module:
+      return None, None
+    module_file = getattr(module, '__file__', None)
+    if not module_file:
+      return None, None
+    module_path = Path(module_file).resolve()
+    project_root = Path.cwd()
+    try:
+      module_path.relative_to(project_root)
+    except ValueError:
+      return None, module_path.parent
+
+    current = module_path.parent
+    while current != project_root and current.parent != current:
+      parent = current.parent
+      if parent.name == 'agents':
+        return current.name, current
+      current = parent
+
+    return None, module_path.parent
+
+  def _enforce_app_name_alignment(self) -> None:
+    origin_name = self._agent_origin_app_name
+    origin_dir = self._agent_origin_dir
+    if not origin_name or origin_name.startswith('__'):
+      return
+    if origin_name == self.app_name:
+      return
+    origin_location = str(origin_dir) if origin_dir else origin_name
+    message = (
+        'App name mismatch detected. The runner is configured with '
+        f'app name "{self.app_name}", but the root agent was loaded from '
+        f'"{origin_location}", which implies app name "{origin_name}". '
+        'Rename the App or its directory so the names match before running '
+        'the agent.'
+    )
+    raise ValueError(message)
 
   def run(
       self,
