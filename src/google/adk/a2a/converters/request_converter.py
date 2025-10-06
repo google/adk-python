@@ -57,9 +57,7 @@ def convert_a2a_request_to_adk_run_args(
   if not request.message:
     raise ValueError('Request message cannot be None')
 
-  metadata = None
-  if hasattr(request, 'metadata'):
-    metadata = request.metadata
+  metadata = getattr(request, 'metadata', None)
   return {
       'user_id': _get_user_id(request),
       'session_id': request.context_id,
