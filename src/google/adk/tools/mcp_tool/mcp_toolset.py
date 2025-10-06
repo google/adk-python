@@ -21,6 +21,7 @@ from typing import Optional
 from typing import TextIO
 from typing import Union
 import warnings
+import asyncio
 
 from pydantic import model_validator
 from typing_extensions import override
@@ -161,7 +162,6 @@ class McpToolset(BaseToolset):
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
     """
-    import asyncio
     
     # Close stale session manager and create fresh one
     try:
