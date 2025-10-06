@@ -274,6 +274,7 @@ Use other tools only when the knowledge agent doesn't have enough information.
 6. **Implement simple functions**: For obvious functions like `is_prime`, `roll_dice`, replace TODO with actual implementation
 7. **Keep TODO for complex**: For complex business logic, leave TODO comments
 8. **Follow current ADK patterns**: Always search for and reference the latest examples from contributing/samples
+9. **Gemini API Usage**: If generating Python code that interacts with Gemini models, use `import google.genai as genai`, not `google.generativeai`.
 
 ### 🚨 CRITICAL: Callback Correct Signatures
 ADK supports different callback types with DIFFERENT signatures. Use FUNCTION-based callbacks (never classes):
