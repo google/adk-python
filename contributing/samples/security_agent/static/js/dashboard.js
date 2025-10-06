@@ -6,6 +6,10 @@ Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Rob
 Chart.defaults.plugins.legend.display = true;
 Chart.defaults.plugins.legend.position = 'bottom';
 
+let severityChartInstance;
+let categoryChartInstance;
+let resourceChartInstance;
+
 // Initialize dashboard when DOM is ready
 document.addEventListener('DOMContentLoaded', function() {
     loadMetrics();
@@ -27,9 +31,15 @@ async function loadMetrics() {
         updateMetricValue('categories-count', metrics.categories || 0);
         updateMetricValue('resources-affected', metrics.resource_types || 0);
 
-        // Calculate critical issues (mock calculation - in real app would query for CRITICAL severity)
-        const criticalCount = Math.floor((metrics.total_records || 0) * 0.036); // ~3.6% critical
-        updateMetricValue('critical-issues', criticalCount);
+        const severityBreakdown = metrics.severity_breakdown || [];
+        const criticalEntry = severityBreakdown.find(item =>
+            typeof item.severity === 'string' && item.severity.toUpperCase() === 'CRITICAL'
+        );
+        if (criticalEntry) {
+            updateMetricValue('critical-issues', criticalEntry.count || 0);
+        } else {
+            updateMetricValue('critical-issues', 0);
+        }
     } catch (error) {
         console.error('Error loading metrics:', error);
         // Use fallback values
@@ -66,48 +76,53 @@ async function createSeverityChart() {
         const data = await response.json();
 
         const ctx = document.getElementById('severityChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'doughnut',
-            data: {
-                labels: data.map(d => d.severity),
-                datasets: [{
-                    data: data.map(d => d.count),
-                    backgroundColor: [
-                        '#dc3545', // Critical - Red
-                        '#fd7e14', // High - Orange
-                        '#ffc107', // Medium - Yellow
-                        '#28a745'  // Low - Green
-                    ],
-                    borderWidth: 0
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: {
-                        position: 'bottom',
-                        labels: {
-                            padding: 15,
-                            font: {
-                                size: 11
+        const chartData = {
+            labels: data.map(d => d.severity || 'Unknown'),
+            datasets: [{
+                data: data.map(d => d.count || 0),
+                backgroundColor: [
+                    '#dc3545',
+                    '#fd7e14',
+                    '#ffc107',
+                    '#28a745'
+                ],
+                borderWidth: 0
+            }]
+        };
+
+        if (severityChartInstance) {
+            severityChartInstance.data = chartData;
+            severityChartInstance.update();
+        } else {
+            severityChartInstance = new Chart(ctx, {
+                type: 'doughnut',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                padding: 15,
+                                font: { size: 11 }
                             }
-                        }
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                const label = context.label || '';
-                                const value = context.parsed || 0;
-                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                                const percentage = ((value / total) * 100).toFixed(1);
-                                return `${label}: ${value} (${percentage}%)`;
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.label || '';
+                                    const value = context.parsed || 0;
+                                    const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                    const percentage = total ? ((value / total) * 100).toFixed(1) : 0;
+                                    return `${label}: ${value} (${percentage}%)`;
+                                }
                             }
                         }
                     }
                 }
-            }
-        });
+            });
+        }
     } catch (error) {
         console.error('Error creating severity chart:', error);
     }
@@ -120,47 +135,46 @@ async function createCategoryChart() {
         const data = await response.json();
 
         const ctx = document.getElementById('categoryChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: data.map(d => d.category.replace(/_/g, ' ')),
-                datasets: [{
-                    label: 'Issues',
-                    data: data.map(d => d.count),
-                    backgroundColor: '#4a90e2',
-                    borderColor: '#357abd',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: {
-                        display: false
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: {
-                            font: {
-                                size: 10
-                            }
-                        }
+        const chartData = {
+            labels: data.map(d => (d.category || '').replace(/_/g, ' ')),
+            datasets: [{
+                label: 'Issues',
+                data: data.map(d => d.count || 0),
+                backgroundColor: '#4a90e2',
+                borderColor: '#357abd',
+                borderWidth: 1
+            }]
+        };
+
+        if (categoryChartInstance) {
+            categoryChartInstance.data = chartData;
+            categoryChartInstance.update();
+        } else {
+            categoryChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: { display: false }
                     },
-                    x: {
-                        ticks: {
-                            font: {
-                                size: 10
-                            },
-                            maxRotation: 45,
-                            minRotation: 45
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { font: { size: 10 } }
+                        },
+                        x: {
+                            ticks: {
+                                font: { size: 10 },
+                                maxRotation: 45,
+                                minRotation: 45
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
+        }
     } catch (error) {
         console.error('Error creating category chart:', error);
     }
@@ -176,45 +190,43 @@ async function createResourceChart() {
         const sortedData = data.sort((a, b) => b.count - a.count).slice(0, 6);
 
         const ctx = document.getElementById('resourceChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'horizontalBar',
-            data: {
-                labels: sortedData.map(d => d.resource_type.split('.').pop()),
-                datasets: [{
-                    label: 'Findings',
-                    data: sortedData.map(d => d.count),
-                    backgroundColor: '#6c757d',
-                    borderColor: '#495057',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: {
-                        display: false
-                    }
-                },
-                scales: {
-                    x: {
-                        beginAtZero: true,
-                        ticks: {
-                            font: {
-                                size: 10
-                            }
-                        }
+        const chartData = {
+            labels: sortedData.map(d => (d.resource_type || '').split('.').pop()),
+            datasets: [{
+                label: 'Findings',
+                data: sortedData.map(d => d.count || 0),
+                backgroundColor: '#6c757d',
+                borderColor: '#495057',
+                borderWidth: 1
+            }]
+        };
+
+        if (resourceChartInstance) {
+            resourceChartInstance.data = chartData;
+            resourceChartInstance.update();
+        } else {
+            resourceChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: chartData,
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: { display: false }
                     },
-                    y: {
-                        ticks: {
-                            font: {
-                                size: 10
-                            }
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            ticks: { font: { size: 10 } }
+                        },
+                        y: {
+                            ticks: { font: { size: 10 } }
                         }
                     }
                 }
-            }
-        });
+            });
+        }
     } catch (error) {
         console.error('Error creating resource chart:', error);
     }

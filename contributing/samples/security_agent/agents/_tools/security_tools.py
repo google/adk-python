@@ -1,192 +1,264 @@
-"""
-Security-focused BigQuery tools for analyzing GCP security insights
-"""
+"""Security-focused BigQuery tools for analyzing GCP security insights."""
+
+from __future__ import annotations
+
+from typing import Iterable, List
+
+from google.cloud import bigquery
+from google.cloud.exceptions import NotFound
 
 from .base import (
-    bq_client, check_client, PROJECT_ID,
-    DEFAULT_DATASET, DEFAULT_TABLE, MAX_RESULTS,
-    logger
+    DEFAULT_DATASET,
+    DEFAULT_TABLE,
+    MAX_RESULTS,
+    PROJECT_ID,
+    StructuredToolResponse,
+    bq_client,
+    check_client,
+    logger,
 )
 
-def get_security_insights_summary() -> str:
-    """
-    PRIMARY FUNCTION: Get a comprehensive summary of the security_insights.security_findings table.
 
-    This is the main entry point for analyzing security data. Always call this first
-    when users ask about security posture, issues, or general security questions.
+def _error_response(message: str) -> StructuredToolResponse:
+    """Build a structured error payload."""
 
-    Returns summary statistics from the security_insights dataset including:
-    - Total security findings
-    - Categories of issues
-    - Severity distribution
-    - Resource types affected
-    - Date range of findings
-    """
+    logger.error(message)
+    return StructuredToolResponse(summary=message, data={}, metadata={"error": True})
+
+
+def _chunk_rows(rows: Iterable[bigquery.table.Row]) -> List[dict]:
+    """Convert BigQuery rows to a list of dictionaries with JSON-safe values."""
+
+    safe_rows: List[dict] = []
+    for row in rows:
+        row_dict = dict(row)
+        safe_rows.append({key: value for key, value in row_dict.items()})
+    return safe_rows
+
+
+def get_security_insights_summary() -> StructuredToolResponse:
+    """Summarize the primary security findings table with structured metrics."""
+
     try:
         check_client()
-    except Exception as e:
-        return f"Error: {e}"
+    except Exception as exc:  # pragma: no cover - requires missing credentials
+        return _error_response(f"Error: {exc}")
 
     dataset_id = DEFAULT_DATASET
     table_id = DEFAULT_TABLE
 
     try:
-        # First check if the dataset/table exists
         table_ref = bq_client.dataset(dataset_id).table(table_id)
         table = bq_client.get_table(table_ref)
+    except NotFound:
+        return _error_response(
+            f"Table {dataset_id}.{table_id} was not found in project {PROJECT_ID}."
+        )
 
-        # Get summary statistics
-        query = f"""
+    query = f"""
         SELECT
-            COUNT(*) as total_records,
-            COUNT(DISTINCT category) as unique_categories,
-            COUNT(DISTINCT severity) as severity_levels,
-            MIN(created_at) as earliest_record,
-            MAX(created_at) as latest_record,
-            COUNT(DISTINCT resource_type) as resource_types
+            COUNT(*) AS total_records,
+            COUNT(DISTINCT category) AS unique_categories,
+            COUNT(DISTINCT severity) AS severity_levels,
+            COUNT(DISTINCT resource_type) AS resource_types,
+            MIN(created_at) AS earliest_record,
+            MAX(created_at) AS latest_record
         FROM `{PROJECT_ID}.{dataset_id}.{table_id}`
-        """
-
-        results = bq_client.query(query).result()
-
-        output = [f"📊 Security Insights Summary ({dataset_id}.{table_id}):"]
-        output.append(f"   Table Size: {table.num_rows:,} rows, {table.num_bytes:,} bytes")
-
-        for row in results:
-            output.append(f"   Total Records: {row.total_records:,}")
-            output.append(f"   Unique Categories: {row.unique_categories}")
-            output.append(f"   Severity Levels: {row.severity_levels}")
-            output.append(f"   Resource Types: {row.resource_types}")
-            output.append(f"   Date Range: {row.earliest_record} to {row.latest_record}")
-
-        return "\n".join(output)
-    except Exception as e:
-        return f"Error getting security insights summary: {e}"
-
-
-def query_security_insights(query_filter: str = "", limit: int = 0) -> str:
     """
-    Query the security_insights.security_findings table with optional filtering.
 
-    This queries the MAIN SECURITY DATASET that contains all GCP security findings.
-    Use this for specific searches like:
-    - Filtering by severity (e.g., "severity = 'CRITICAL'")
-    - Finding specific resource types
-    - Searching for particular categories of issues
+    try:
+        results = list(bq_client.query(query).result())
+    except Exception as exc:  # pragma: no cover - requires live BQ errors
+        return _error_response(f"Error getting security insights summary: {exc}")
 
-    Args:
-        query_filter: SQL WHERE clause conditions (e.g., "severity = 'HIGH'")
-        limit: Max number of results (default from MAX_RESULTS env var)
+    metrics = {
+        "total_records": 0,
+        "unique_categories": 0,
+        "severity_levels": 0,
+        "resource_types": 0,
+        "earliest_record": None,
+        "latest_record": None,
+    }
 
-    Returns:
-        Formatted results from security_insights dataset
-    """
+    if results:
+        row = results[0]
+        metrics.update(
+            {
+                "total_records": row.total_records,
+                "unique_categories": row.unique_categories,
+                "severity_levels": row.severity_levels,
+                "resource_types": row.resource_types,
+                "earliest_record": row.earliest_record,
+                "latest_record": row.latest_record,
+            }
+        )
+
+    summary_lines = [
+        f"📊 Security Insights Summary ({dataset_id}.{table_id}):",
+        f"   Table Size: {table.num_rows:,} rows, {table.num_bytes:,} bytes",
+        f"   Total Records: {metrics['total_records']:,}",
+        f"   Unique Categories: {metrics['unique_categories']}",
+        f"   Severity Levels: {metrics['severity_levels']}",
+        f"   Resource Types: {metrics['resource_types']}",
+        "   Date Range: "
+        f"{metrics['earliest_record']} to {metrics['latest_record']}",
+    ]
+
+    data = {
+        "dataset": dataset_id,
+        "table": table_id,
+        "table_details": {"rows": table.num_rows, "bytes": table.num_bytes},
+        "metrics": metrics,
+    }
+
+    return StructuredToolResponse(
+        summary="\n".join(summary_lines),
+        data=data,
+        metadata={"query": query.strip()},
+    )
+
+
+def query_security_insights(query_filter: str = "", limit: int = 0) -> StructuredToolResponse:
+    """Query the security findings table with optional filtering."""
+
     try:
         check_client()
-    except Exception as e:
-        return f"Error: {e}"
+    except Exception as exc:  # pragma: no cover - requires missing credentials
+        return _error_response(f"Error: {exc}")
 
+    dataset_id = DEFAULT_DATASET
+    table_id = DEFAULT_TABLE
     limit = limit if limit > 0 else MAX_RESULTS
-    dataset_id = DEFAULT_DATASET
-    table_id = DEFAULT_TABLE
+
+    base_query = f"""
+        SELECT * FROM `{PROJECT_ID}.{dataset_id}.{table_id}`
+    """
+    if query_filter:
+        base_query += f"\n        WHERE {query_filter}"
+    base_query += f"\n        LIMIT {limit}"
+
+    query_text = base_query.strip()
 
     try:
-        # Build query with optional filter
-        if query_filter:
-            query = f"""
-            SELECT * FROM `{PROJECT_ID}.{dataset_id}.{table_id}`
-            WHERE {query_filter}
-            LIMIT {limit}
-            """
-        else:
-            query = f"""
-            SELECT * FROM `{PROJECT_ID}.{dataset_id}.{table_id}`
-            LIMIT {limit}
-            """
+        job = bq_client.query(query_text)
+        rows_iterable = job.result()
+    except Exception as exc:  # pragma: no cover - requires live BQ errors
+        return _error_response(f"Error querying security insights: {exc}")
 
-        results = bq_client.query(query).result()
-        rows = list(results)
+    schema = rows_iterable.schema
+    rows = list(rows_iterable)
+    columns = [field.name for field in schema] if rows else []
 
-        if rows:
-            columns = [field.name for field in results.schema]
-            output = [f"🔍 Security Insights Query Results:"]
-            output.append(f"   Found {len(rows)} record(s)")
-            output.append(f"   Columns: {', '.join(columns[:5])}..." if len(columns) > 5 else f"   Columns: {', '.join(columns)}")
-            output.append("-" * 50)
+    summary_lines = [
+        "🔍 Security Insights Query Results:",
+        f"   Found {len(rows)} record(s)",
+    ]
+    if columns:
+        preview_columns = ", ".join(columns[:5])
+        summary_lines.append(
+            "   Columns: "
+            f"{preview_columns}{'...' if len(columns) > 5 else ''}"
+        )
 
-            # Show first few rows
-            for i, row in enumerate(rows[:10], 1):
-                row_dict = dict(row)
-                # Format for readability
-                output.append(f"\n📌 Record {i}:")
-                for key, value in list(row_dict.items())[:8]:  # Show first 8 fields
-                    output.append(f"   {key}: {value}")
-                if len(row_dict) > 8:
-                    output.append(f"   ... and {len(row_dict) - 8} more fields")
+    detail_rows = []
+    for index, row in enumerate(rows[:10], 1):
+        row_dict = dict(row)
+        preview_items = list(row_dict.items())[:8]
+        detail_lines = [f"📌 Record {index}:"]
+        detail_lines.extend(
+            f"   {key}: {value}" for key, value in preview_items
+        )
+        if len(row_dict) > 8:
+            detail_lines.append(
+                f"   ... and {len(row_dict) - 8} more fields"
+            )
+        detail_rows.append("\n".join(detail_lines))
 
-            if len(rows) > 10:
-                output.append(f"\n... and {len(rows) - 10} more records")
+    if detail_rows:
+        summary_lines.append("-" * 50)
+        summary_lines.extend(detail_rows)
+    if len(rows) > 10:
+        summary_lines.append(f"\n... and {len(rows) - 10} more records")
 
-            return "\n".join(output)
-        else:
-            return "Query executed but no matching records found"
-    except Exception as e:
-        return f"Error querying security insights: {e}"
+    data = {
+        "dataset": dataset_id,
+        "table": table_id,
+        "row_count": len(rows),
+        "columns": columns,
+        "records": _chunk_rows(rows[:limit]),
+    }
+
+    return StructuredToolResponse(
+        summary="\n".join(summary_lines),
+        data=data,
+        metadata={"query": query_text},
+    )
 
 
-def get_security_statistics(group_by: str = "severity") -> str:
-    """
-    Get aggregated statistics from the security_insights.security_findings table.
+def get_security_statistics(group_by: str = "severity") -> StructuredToolResponse:
+    """Provide aggregated statistics from the security findings table."""
 
-    This provides high-level analytics on the security_insights dataset.
-    Perfect for understanding the overall security posture and trends.
-
-    Args:
-        group_by: Field to group by - severity, category, resource_type, status, or region
-
-    Returns:
-        Statistical analysis of security_insights data with counts and percentages
-    """
     try:
         check_client()
-    except Exception as e:
-        return f"Error: {e}"
+    except Exception as exc:  # pragma: no cover - requires missing credentials
+        return _error_response(f"Error: {exc}")
 
     dataset_id = DEFAULT_DATASET
     table_id = DEFAULT_TABLE
 
-    # Validate group_by field
-    valid_fields = ["severity", "category", "resource_type", "status", "region"]
+    valid_fields = {"severity", "category", "resource_type", "status", "region"}
     if group_by not in valid_fields:
+        logger.warning(
+            "Invalid group_by '%s' requested. Falling back to 'severity'.", group_by
+        )
         group_by = "severity"
 
-    try:
-        query = f"""
+    query = f"""
         SELECT
-            {group_by},
-            COUNT(*) as count,
-            COUNT(DISTINCT resource_id) as affected_resources
+            {group_by} AS grouping_value,
+            COUNT(*) AS count,
+            COUNT(DISTINCT resource_id) AS affected_resources
         FROM `{PROJECT_ID}.{dataset_id}.{table_id}`
-        GROUP BY {group_by}
+        GROUP BY grouping_value
         ORDER BY count DESC
-        """
+    """
 
-        results = bq_client.query(query).result()
-        rows = list(results)
+    try:
+        results = list(bq_client.query(query).result())
+    except Exception as exc:  # pragma: no cover - requires live BQ errors
+        return _error_response(f"Error getting statistics: {exc}")
 
-        output = [f"📊 Security Statistics (grouped by {group_by}):"]
-        total = sum(row.count for row in rows)
-        output.append(f"   Total Records: {total:,}")
-        output.append("-" * 50)
+    total = sum(row.count for row in results)
+    distribution = []
+    summary_lines = [f"📊 Security Statistics (grouped by {group_by}):"]
+    summary_lines.append(f"   Total Records: {total:,}")
+    summary_lines.append("-" * 50)
 
-        for row in rows:
-            percentage = (row.count / total) * 100 if total > 0 else 0
-            output.append(f"   {row[group_by] or 'Unknown'}:")
-            output.append(f"     - Count: {row.count:,} ({percentage:.1f}%)")
-            output.append(f"     - Affected Resources: {row.affected_resources:,}")
+    for row in results:
+        label = row.grouping_value or "Unknown"
+        percentage = (row.count / total * 100) if total else 0
+        summary_lines.append(f"   {label}:")
+        summary_lines.append(f"     - Count: {row.count:,} ({percentage:.1f}%)")
+        summary_lines.append(
+            f"     - Affected Resources: {row.affected_resources:,}"
+        )
+        distribution.append(
+            {
+                "value": label,
+                "count": row.count,
+                "affected_resources": row.affected_resources,
+                "percentage": round(percentage, 1),
+            }
+        )
 
-        return "\n".join(output)
-    except Exception as e:
-        return f"Error getting statistics: {e}"
+    data = {
+        "group_by": group_by,
+        "total_records": total,
+        "distribution": distribution,
+    }
 
-
+    return StructuredToolResponse(
+        summary="\n".join(summary_lines),
+        data=data,
+        metadata={"query": query.strip()},
+    )
