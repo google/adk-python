@@ -1,13 +1,13 @@
 # Copyright 2025 Google LLC
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
+# Licensed under the Apache License, Version 2.0 (the 'License');
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
+# distributed under the License is distributed on an 'AS IS' BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
@@ -55,17 +55,17 @@ def convert_a2a_request_to_adk_run_args(
 ) -> dict[str, Any]:
 
   if not request.message:
-    raise ValueError("Request message cannot be None")
+    raise ValueError('Request message cannot be None')
 
   metadata = None
-  if hasattr(request, "metadata"):
+  if hasattr(request, 'metadata'):
     metadata = request.metadata
   return {
-      "user_id": _get_user_id(request),
-      "session_id": request.context_id,
-      "new_message": genai_types.Content(
-          role="user",
+      'user_id': _get_user_id(request),
+      'session_id': request.context_id,
+      'new_message': genai_types.Content(
+          role='user',
           parts=[part_converter(part) for part in request.message.parts],
       ),
-      "run_config": RunConfig(metadata=metadata),
+      'run_config': RunConfig(metadata=metadata),
   }
