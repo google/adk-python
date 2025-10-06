@@ -257,12 +257,21 @@ class GeminiContextCacheManager:
     Returns:
         Cache metadata if successful, None otherwise
     """
-    # Estimate token count for minimum cache size check
-    estimated_tokens = self._estimate_request_tokens(llm_request)
-    if estimated_tokens < llm_request.cache_config.min_tokens:
+    # Check if we have token count from previous response for cache size validation
+    if llm_request.cacheable_contents_token_count is None:
       logger.info(
-          "Request too small for caching (%d < %d tokens)",
-          estimated_tokens,
+          "No previous token count available, skipping cache creation for"
+          " initial request"
+      )
+      return None
+
+    if (
+        llm_request.cacheable_contents_token_count
+        < llm_request.cache_config.min_tokens
+    ):
+      logger.info(
+          "Previous request too small for caching (%d < %d tokens)",
+          llm_request.cacheable_contents_token_count,
           llm_request.cache_config.min_tokens,
       )
       return None

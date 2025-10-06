@@ -288,6 +288,22 @@ def mock_session_service():
       ):
         del session_data[app_name][user_id][session_id]
 
+    async def append_event(self, session, event):
+      """Append an event to a session."""
+      # Update session state if event has state_delta
+      if event.actions and event.actions.state_delta:
+        session["state"].update(event.actions.state_delta)
+
+      # Add event to session events
+      session["events"].append(event.model_dump())
+
+      # Update the session in storage
+      session_data[session["app_name"]][session["user_id"]][
+          session["id"]
+      ] = session
+
+      return event
+
   # Return an instance of our mock service
   return MockSessionService()
 
@@ -723,6 +739,80 @@ def test_delete_session(test_app, create_test_session):
   response = test_app.get(url)
   assert response.status_code == 404
   logger.info("Session deleted successfully")
+
+
+def test_update_session(test_app, create_test_session):
+  """Test patching a session state."""
+  info = create_test_session
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}"
+
+  # Get the original session
+  response = test_app.get(url)
+  assert response.status_code == 200
+  original_session = response.json()
+  original_state = original_session.get("state", {})
+
+  # Prepare state delta
+  state_delta = {"test_key": "test_value", "counter": 42}
+
+  # Patch the session
+  response = test_app.patch(url, json={"state_delta": state_delta})
+  assert response.status_code == 200
+
+  # Verify the response
+  patched_session = response.json()
+  assert patched_session["id"] == info["session_id"]
+
+  # Verify state was updated correctly
+  expected_state = {**original_state, **state_delta}
+  assert patched_session["state"] == expected_state
+
+  # Verify the session was actually updated in storage
+  response = test_app.get(url)
+  assert response.status_code == 200
+  retrieved_session = response.json()
+  assert retrieved_session["state"] == expected_state
+
+  # Verify an event was created for the state change
+  events = retrieved_session.get("events", [])
+  assert len(events) > len(original_session.get("events", []))
+
+  # Find the state patch event (looking for "p-" prefix pattern)
+  state_patch_events = [
+      event
+      for event in events
+      if (
+          event.get("invocationId") or event.get("invocation_id", "")
+      ).startswith("p-")
+  ]
+
+  assert len(state_patch_events) == 1, (
+      f"Expected 1 state_patch event, found {len(state_patch_events)}. Events:"
+      f" {events}"
+  )
+  state_patch_event = state_patch_events[0]
+  assert state_patch_event["author"] == "user"
+
+  # Check for actions in both camelCase and snake_case
+  actions = state_patch_event.get("actions") or state_patch_event.get("actions")
+  assert actions is not None, f"No actions found in event: {state_patch_event}"
+  state_delta_in_event = actions.get("state_delta") or actions.get("stateDelta")
+  assert state_delta_in_event == state_delta
+
+  logger.info("Session state patched successfully")
+
+
+def test_patch_session_not_found(test_app, test_session_info):
+  """Test patching a non-existent session."""
+  info = test_session_info
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/nonexistent"
+
+  state_delta = {"test_key": "test_value"}
+  response = test_app.patch(url, json={"state_delta": state_delta})
+
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+  logger.info("Patch session not found test passed")
 
 
 def test_agent_run(test_app, create_test_session):

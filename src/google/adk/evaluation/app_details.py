@@ -39,7 +39,7 @@ class AgentDetails(EvalBaseModel):
 class AppDetails(EvalBaseModel):
   """Contains details about the App (the agentic system).
 
-  This structure is only a projection of the acutal app. Only details
+  This structure is only a projection of the actual app. Only details
   that are relevant to the Eval System are captured here.
   """
 

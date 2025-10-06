@@ -36,6 +36,8 @@ try:
   from a2a.types import Message as A2AMessage
   from a2a.types import Part as A2APart
   from a2a.types import Role
+  from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
+  from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
   from a2a.types import TransportProtocol as A2ATransport
 except ImportError as e:
   import sys
@@ -393,7 +395,7 @@ class RemoteA2aAgent(BaseAgent):
 
   async def _handle_a2a_response(
       self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
-  ) -> Event:
+  ) -> Optional[Event]:
     """Handle A2A response and convert to Event.
 
     Args:
@@ -401,14 +403,42 @@ class RemoteA2aAgent(BaseAgent):
       ctx: The invocation context
 
     Returns:
-      Event object representing the response
+      Event object representing the response, or None if no event should be
+      emitted.
     """
     try:
       if isinstance(a2a_response, tuple):
-        # ClientEvent is a tuple of the absolute Task state and the last update.
-        # We only need the Task state.
-        task = a2a_response[0]
-        event = convert_a2a_task_to_event(task, self.name, ctx)
+        task, update = a2a_response
+        if update is None:
+          # This is the initial response for a streaming task or the complete
+          # response for a non-streaming task, which is the full task state.
+          # We process this to get the initial message.
+          event = convert_a2a_task_to_event(task, self.name, ctx)
+        elif (
+            isinstance(update, A2ATaskStatusUpdateEvent)
+            and update.status.message
+        ):
+          # This is a streaming task status update with a message.
+          event = convert_a2a_message_to_event(
+              update.status.message, self.name, ctx
+          )
+        elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
+            not update.append or update.last_chunk
+        ):
+          # This is a streaming task artifact update.
+          # We only handle full artifact updates and ignore partial updates.
+          # Note: Depends on the server implementation, there is no clear
+          # definition of what a partial update is currently. We use the two
+          # signals:
+          # 1. append: True for partial updates, False for full updates.
+          # 2. last_chunk: True for full updates, False for partial updates.
+          event = convert_a2a_task_to_event(task, self.name, ctx)
+        else:
+          # This is a streaming update without a message (e.g. status change)
+          # or an partial artifact update. We don't emit an event for these
+          # for now.
+          return None
+
         event.custom_metadata = event.custom_metadata or {}
         event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
         if task.context_id:
@@ -416,7 +446,7 @@ class RemoteA2aAgent(BaseAgent):
               task.context_id
           )
 
-      # Otherwise, it's a regular A2AMessage.
+      # Otherwise, it's a regular A2AMessage for non-streaming responses.
       elif isinstance(a2a_response, A2AMessage):
         event = convert_a2a_message_to_event(a2a_response, self.name, ctx)
         event.custom_metadata = event.custom_metadata or {}
@@ -492,6 +522,8 @@ class RemoteA2aAgent(BaseAgent):
         logger.debug(build_a2a_response_log(a2a_response))
 
         event = await self._handle_a2a_response(a2a_response, ctx)
+        if not event:
+          continue
 
         # Add metadata about the request and response
         event.custom_metadata = event.custom_metadata or {}

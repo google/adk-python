@@ -67,7 +67,8 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
 
     root_agent: BaseAgent = agent.root_agent
 
-    # Handle global instructions
+    # Handle global instructions (DEPRECATED - use GlobalInstructionPlugin instead)
+    # TODO: Remove this code block when global_instruction field is removed
     if isinstance(root_agent, LlmAgent) and root_agent.global_instruction:
       raw_si, bypass_state_injection = (
           await root_agent.canonical_global_instruction(

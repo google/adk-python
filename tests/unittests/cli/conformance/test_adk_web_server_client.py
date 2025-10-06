@@ -128,6 +128,43 @@ async def test_delete_session():
 
 
 @pytest.mark.asyncio
+async def test_update_session():
+  client = AdkWebServerClient()
+
+  # Mock the HTTP response
+  mock_response = MagicMock()
+  mock_response.json.return_value = {
+      "id": "test_session",
+      "app_name": "test_app",
+      "user_id": "test_user",
+      "events": [],
+      "state": {"key": "updated_value", "new_key": "new_value"},
+  }
+
+  with patch("httpx.AsyncClient") as mock_client_class:
+    mock_client = AsyncMock()
+    mock_client.patch.return_value = mock_response
+    mock_client_class.return_value = mock_client
+
+    state_delta = {"key": "updated_value", "new_key": "new_value"}
+    session = await client.update_session(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="test_session",
+        state_delta=state_delta,
+    )
+
+    assert isinstance(session, Session)
+    assert session.id == "test_session"
+    assert session.state == {"key": "updated_value", "new_key": "new_value"}
+    mock_client.patch.assert_called_once_with(
+        "/apps/test_app/users/test_user/sessions/test_session",
+        json={"state_delta": state_delta},
+    )
+    mock_response.raise_for_status.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_run_agent():
   client = AdkWebServerClient()
 

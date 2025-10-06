@@ -21,8 +21,10 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.loop_agent import LoopAgentState
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
@@ -71,6 +73,7 @@ class _TestingAgent(BaseAgent):
 _TRANSFER_RESPONSE_PART = Part.from_function_response(
     name="transfer_to_agent", response={"result": None}
 )
+END_OF_AGENT = testing_utils.END_OF_AGENT
 
 
 class BasePauseInvocationTest:
@@ -85,15 +88,15 @@ class BasePauseInvocationTest:
   def app(self, agent: BaseAgent) -> App:
     """Provides an App for the test."""
     return App(
-        name="InMemoryRunner",  # Required for using TestInMemoryRunner.
+        name="test_app",
         root_agent=agent,
         resumability_config=ResumabilityConfig(is_resumable=True),
     )
 
   @pytest.fixture
-  def runner(self, app: App) -> testing_utils.TestInMemoryRunner:
+  def runner(self, app: App) -> testing_utils.InMemoryRunner:
     """Provides an in-memory runner for the agent."""
-    return testing_utils.TestInMemoryRunner(app=app, app_name=None)
+    return testing_utils.InMemoryRunner(app=app)
 
   @staticmethod
   def mock_model(responses: list[Part]) -> testing_utils.MockModel:
@@ -107,10 +110,6 @@ class TestPauseInvocationWithSingleLlmAgent(BasePauseInvocationTest):
   @pytest.fixture
   def agent(self) -> BaseAgent:
     """Provides a BaseAgent for the test."""
-
-    def test_tool() -> str:
-      return ""
-
     return LlmAgent(
         name="root_agent",
         model=self.mock_model(
@@ -120,14 +119,12 @@ class TestPauseInvocationWithSingleLlmAgent(BasePauseInvocationTest):
     )
 
   @pytest.mark.asyncio
-  async def test_pause_on_long_running_function_call(
+  def test_pause_on_long_running_function_call(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a single LlmAgent pauses on long running function call."""
-    assert testing_utils.simplify_events(
-        await runner.run_async_with_new_session("test")
-    ) == [
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
         ("root_agent", Part.from_function_call(name="test_tool", args={})),
     ]
 
@@ -158,34 +155,42 @@ class TestPauseInvocationWithSequentialAgent(BasePauseInvocationTest):
     )
 
   @pytest.mark.asyncio
-  async def test_pause_first_agent_on_long_running_function_call(
+  def test_pause_first_agent_on_long_running_function_call(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
   ):
-    """Tests that a single LlmAgent pauses on long running function call."""
-    assert testing_utils.simplify_events(
-        await runner.run_async_with_new_session("test")
-    ) == [
+    """Tests that a SequentialAgent pauses on the first sub-agent."""
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
+        (
+            "root_agent",
+            SequentialAgentState(current_sub_agent="sub_agent_1").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_1", Part.from_function_call(name="test_tool", args={})),
     ]
 
   @pytest.mark.asyncio
-  async def test_pause_second_agent_on_long_running_function_call(
+  def test_pause_second_agent_on_long_running_function_call(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a single LlmAgent pauses on long running function call."""
     # Change the base sequential agent, so that the first agent does not pause.
-    runner.agent.sub_agents[0].tools = [FunctionTool(func=test_tool)]
-    runner.agent.sub_agents[0].model = self.mock_model(
+    runner.root_agent.sub_agents[0].tools = [FunctionTool(func=test_tool)]
+    runner.root_agent.sub_agents[0].model = self.mock_model(
         responses=[
             Part.from_function_call(name="test_tool", args={}),
             Part.from_text(text="model response after tool call"),
         ]
     )
-    assert testing_utils.simplify_events(
-        await runner.run_async_with_new_session("test")
-    ) == [
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
+        (
+            "root_agent",
+            SequentialAgentState(current_sub_agent="sub_agent_1").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_1", Part.from_function_call(name="test_tool", args={})),
         (
             "sub_agent_1",
@@ -194,6 +199,13 @@ class TestPauseInvocationWithSequentialAgent(BasePauseInvocationTest):
             ),
         ),
         ("sub_agent_1", "model response after tool call"),
+        ("sub_agent_1", END_OF_AGENT),
+        (
+            "root_agent",
+            SequentialAgentState(current_sub_agent="sub_agent_2").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_2", Part.from_function_call(name="test_tool", args={})),
     ]
 
@@ -221,17 +233,19 @@ class TestPauseInvocationWithParallelAgent(BasePauseInvocationTest):
     )
 
   @pytest.mark.asyncio
-  async def test_pause_on_long_running_function_call(
+  def test_pause_on_long_running_function_call(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a ParallelAgent pauses on long running function call."""
-    assert testing_utils.simplify_events(
-        await runner.run_async_with_new_session("test")
-    ) == [
-        ("sub_agent_1", Part.from_function_call(name="test_tool", args={})),
-        ("sub_agent_2", "Delayed message"),
-    ]
+    simplified_event_parts = testing_utils.simplify_resumable_app_events(
+        runner.run("test")
+    )
+    assert (
+        "sub_agent_1",
+        Part.from_function_call(name="test_tool", args={}),
+    ) in simplified_event_parts
+    assert ("sub_agent_2", "Delayed message") in simplified_event_parts
 
 
 class TestPauseInvocationWithNestedParallelAgent(BasePauseInvocationTest):
@@ -265,50 +279,49 @@ class TestPauseInvocationWithNestedParallelAgent(BasePauseInvocationTest):
     )
 
   @pytest.mark.asyncio
-  async def test_pause_on_long_running_function_call_in_nested_agent(
+  def test_pause_on_long_running_function_call(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a nested ParallelAgent pauses on long running function call."""
-    assert testing_utils.simplify_events(
-        await runner.run_async_with_new_session("test")
-    ) == [
-        (
-            "nested_sub_agent_1",
-            Part.from_function_call(name="test_tool", args={}),
-        ),
-        ("sub_agent_1", "Delayed message"),
-        ("nested_sub_agent_2", "Delayed message"),
-    ]
+    simplified_event_parts = testing_utils.simplify_resumable_app_events(
+        runner.run("test")
+    )
+    assert (
+        "nested_sub_agent_1",
+        Part.from_function_call(name="test_tool", args={}),
+    ) in simplified_event_parts
+    assert ("sub_agent_1", "Delayed message") in simplified_event_parts
+    assert ("nested_sub_agent_2", "Delayed message") in simplified_event_parts
 
   @pytest.mark.asyncio
-  async def test_pause_on_multiple_long_running_function_calls(
+  def test_pause_on_multiple_long_running_function_calls(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a ParallelAgent pauses on long running function calls."""
-    runner.agent.sub_agents[0] = LlmAgent(
+    runner.root_agent.sub_agents[0] = LlmAgent(
         name="sub_agent_1",
         model=self.mock_model(
             responses=[
-                Part.from_function_call(name="test_tool", args={}),
                 Part.from_function_call(name="test_tool", args={}),
             ]
         ),
         tools=[LongRunningFunctionTool(func=test_tool)],
     )
-    simplified_events = testing_utils.simplify_events(
-        await runner.run_async_with_new_session("test")
+    simplified_events = testing_utils.simplify_resumable_app_events(
+        runner.run("test")
     )
-    assert len(simplified_events) == 3
     assert (
         "sub_agent_1",
         Part.from_function_call(name="test_tool", args={}),
     ) in simplified_events
+    assert ("sub_agent_1", END_OF_AGENT) not in simplified_events
     assert (
         "nested_sub_agent_1",
         Part.from_function_call(name="test_tool", args={}),
     ) in simplified_events
+    assert ("nested_sub_agent_1", END_OF_AGENT) not in simplified_events
 
 
 class TestPauseInvocationWithLoopAgent(BasePauseInvocationTest):
@@ -350,15 +363,26 @@ class TestPauseInvocationWithLoopAgent(BasePauseInvocationTest):
     )
 
   @pytest.mark.asyncio
-  async def test_pause_on_long_running_function_call_in_loop(
+  def test_pause_on_long_running_function_call(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a LoopAgent pauses on long running function call."""
-    assert testing_utils.simplify_events(
-        await runner.run_async_with_new_session("test")
-    ) == [
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
+        (
+            "root_agent",
+            LoopAgentState(current_sub_agent="sub_agent_1").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_1", "sub agent 1 response"),
+        ("sub_agent_1", END_OF_AGENT),
+        (
+            "root_agent",
+            LoopAgentState(current_sub_agent="sub_agent_2").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_2", Part.from_function_call(name="test_tool", args={})),
     ]
 
@@ -400,14 +424,12 @@ class TestPauseInvocationWithLlmAgentTree(BasePauseInvocationTest):
     )
 
   @pytest.mark.asyncio
-  async def test_pause_on_transfer_call_part(
+  def test_pause_on_long_running_function_call(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a tree of resumable LlmAgents yields checkpoint events."""
-    assert testing_utils.simplify_events(
-        await runner.run_async_with_new_session("test")
-    ) == [
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
         ("root_agent", _transfer_call_part("sub_llm_agent_1")),
         ("root_agent", _TRANSFER_RESPONSE_PART),
         ("sub_llm_agent_1", _transfer_call_part("sub_llm_agent_2")),
@@ -454,14 +476,12 @@ class TestPauseInvocationWithWithTransferLoop(BasePauseInvocationTest):
     )
 
   @pytest.mark.asyncio
-  async def test_agent_tree_yields_checkpoints(
+  def test_pause_on_long_running_function_call(
       self,
-      runner: testing_utils.TestInMemoryRunner,
+      runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a tree of resumable LlmAgents yields checkpoint events."""
-    assert testing_utils.simplify_events(
-        await runner.run_async_with_new_session("test")
-    ) == [
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
         ("root_agent", _transfer_call_part("sub_llm_agent_1")),
         ("root_agent", _TRANSFER_RESPONSE_PART),
         ("sub_llm_agent_1", _transfer_call_part("sub_llm_agent_2")),

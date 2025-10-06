@@ -128,7 +128,7 @@ def llm_request_with_computer_use():
           system_instruction="You are a helpful assistant",
           tools=[
               types.Tool(
-                  computer_use=types.ToolComputerUse(
+                  computer_use=types.ComputerUse(
                       environment=types.Environment.ENVIRONMENT_BROWSER
                   )
               )
@@ -1488,7 +1488,7 @@ async def test_computer_use_removes_system_instruction():
           system_instruction="You are a helpful assistant",
           tools=[
               types.Tool(
-                  computer_use=types.ToolComputerUse(
+                  computer_use=types.ComputerUse(
                       environment=types.Environment.ENVIRONMENT_BROWSER
                   )
               )

@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 
 import google.auth
-from opentelemetry.resourcedetector.gcp_resource_detector import GoogleCloudResourceDetector
 from opentelemetry.sdk._logs import LogRecordProcessor
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics.export import MetricReader
@@ -108,8 +107,19 @@ def get_gcp_resource() -> Resource:
   # Then the GCP detector adds attributes corresponding to a correct
   # monitored resource if ADK runs on one of supported platforms
   # (e.g. GCE, GKE, CloudRun).
-  return (
-      OTELResourceDetector()
-      .detect()
-      .merge(GoogleCloudResourceDetector(raise_on_error=False).detect())
-  )
+
+  resource = OTELResourceDetector().detect()
+
+  try:
+    from opentelemetry.resourcedetector.gcp_resource_detector import GoogleCloudResourceDetector
+
+    resource = resource.merge(
+        GoogleCloudResourceDetector(raise_on_error=False).detect()
+    )
+  except ImportError:
+    logger.warning(
+        'Cloud not import opentelemetry.resourcedetector.gcp_resource_detector'
+        ' GCE, GKE or CloudRun related resource attributes may be missing'
+    )
+
+  return resource

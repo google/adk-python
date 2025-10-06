@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
-import json
 import logging
 import os
 import sys
@@ -25,6 +24,8 @@ from typing import AsyncGenerator
 from typing import Optional
 import uuid
 
+import click
+from google.genai import types as genai_types
 from typing_extensions import deprecated
 
 from ..agents.llm_agent import Agent
@@ -37,6 +38,8 @@ from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.base_eval_service import InferenceResult
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import EvalCase
+from ..evaluation.eval_case import get_all_tool_calls
+from ..evaluation.eval_case import IntermediateDataType
 from ..evaluation.eval_config import BaseCriterion
 from ..evaluation.eval_config import EvalConfig
 from ..evaluation.eval_metrics import EvalMetric
@@ -66,10 +69,6 @@ DEFAULT_CRITERIA = {
     RESPONSE_MATCH_SCORE_KEY: 0.8,
 }
 
-_DEFAULT_EVAL_CONFIG = EvalConfig(
-    criteria={"tool_trajectory_avg_score": 1.0, "response_match_score": 0.8}
-)
-
 
 def _import_from_path(module_name, file_path):
   spec = importlib.util.spec_from_file_location(module_name, file_path)
@@ -83,52 +82,6 @@ def _get_agent_module(agent_module_file_path: str):
   file_path = os.path.join(agent_module_file_path, "__init__.py")
   module_name = "agent"
   return _import_from_path(module_name, file_path)
-
-
-def get_evaluation_criteria_or_default(
-    eval_config_file_path: str,
-) -> EvalConfig:
-  """Returns EvalConfig read from the config file, if present.
-
-  Otherwise a default one is returned.
-  """
-  if eval_config_file_path:
-    with open(eval_config_file_path, "r", encoding="utf-8") as f:
-      content = f.read()
-      return EvalConfig.model_validate_json(content)
-
-  logger.info("No config file supplied. Using default criteria.")
-  return _DEFAULT_EVAL_CONFIG
-
-
-def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
-  """Returns a list of EvalMetrics mapped from the EvalConfig."""
-  eval_metric_list = []
-  if eval_config.criteria:
-    for metric_name, criterion in eval_config.criteria.items():
-      if isinstance(criterion, float):
-        eval_metric_list.append(
-            EvalMetric(
-                metric_name=metric_name,
-                threshold=criterion,
-                criterion=BaseCriterion(threshold=criterion),
-            )
-        )
-      elif isinstance(criterion, BaseCriterion):
-        eval_metric_list.append(
-            EvalMetric(
-                metric_name=metric_name,
-                threshold=criterion.threshold,
-                criterion=criterion,
-            )
-        )
-      else:
-        raise ValueError(
-            f"Unexpected criterion type. {type(criterion).__name__} not"
-            " supported."
-        )
-
-  return eval_metric_list
 
 
 def get_root_agent(agent_module_file_path: str) -> Agent:
@@ -357,6 +310,106 @@ async def run_evals(
         # Catching the general exception, so that we don't block other eval
         # cases.
         logger.exception("Eval failed for `%s:%s`", eval_set_id, eval_name)
+
+
+def _convert_content_to_text(
+    content: Optional[genai_types.Content],
+) -> str:
+  if content and content.parts:
+    return "\n".join([p.text for p in content.parts if p.text])
+  return ""
+
+
+def _convert_tool_calls_to_text(
+    intermediate_data: Optional[IntermediateDataType],
+) -> str:
+  tool_calls = get_all_tool_calls(intermediate_data)
+  return "\n".join([str(t) for t in tool_calls])
+
+
+def pretty_print_eval_result(eval_result: EvalCaseResult):
+  """Pretty prints eval result."""
+  try:
+    import pandas as pd
+    from tabulate import tabulate
+  except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
+
+  click.echo(f"Eval Set Id: {eval_result.eval_set_id}")
+  click.echo(f"Eval Id: {eval_result.eval_id}")
+  click.echo(f"Overall Eval Status: {eval_result.final_eval_status.name}")
+
+  for metric_result in eval_result.overall_eval_metric_results:
+    click.echo(
+        "---------------------------------------------------------------------"
+    )
+    click.echo(
+        f"Metric: {metric_result.metric_name}, "
+        f"Status: {metric_result.eval_status.name}, "
+        f"Score: {metric_result.score}, "
+        f"Threshold: {metric_result.threshold}"
+    )
+    if metric_result.details and metric_result.details.rubric_scores:
+      click.echo("Rubric Scores:")
+      rubrics_by_id = {
+          r["rubric_id"]: r["rubric_content"]["text_property"]
+          for r in metric_result.criterion.rubrics
+      }
+      for rubric_score in metric_result.details.rubric_scores:
+        rubric = rubrics_by_id.get(rubric_score.rubric_id)
+        click.echo(
+            f"Rubric: {rubric}, "
+            f"Score: {rubric_score.score}, "
+            f"Reasoning: {rubric_score.rationale}"
+        )
+
+  data = []
+  for per_invocation_result in eval_result.eval_metric_result_per_invocation:
+    row_data = {
+        "prompt": _convert_content_to_text(
+            per_invocation_result.expected_invocation.user_content
+        ),
+        "expected_response": _convert_content_to_text(
+            per_invocation_result.expected_invocation.final_response
+        ),
+        "actual_response": _convert_content_to_text(
+            per_invocation_result.actual_invocation.final_response
+        ),
+        "expected_tool_calls": _convert_tool_calls_to_text(
+            per_invocation_result.expected_invocation.intermediate_data
+        ),
+        "actual_tool_calls": _convert_tool_calls_to_text(
+            per_invocation_result.actual_invocation.intermediate_data
+        ),
+    }
+    for metric_result in per_invocation_result.eval_metric_results:
+      row_data[metric_result.metric_name] = (
+          f"Status: {metric_result.eval_status.name}, "
+          f"Score: {metric_result.score}"
+      )
+      if metric_result.details and metric_result.details.rubric_scores:
+        rubrics_by_id = {
+            r["rubric_id"]: r["rubric_content"]["text_property"]
+            for r in metric_result.criterion.rubrics
+        }
+        for rubric_score in metric_result.details.rubric_scores:
+          rubric = rubrics_by_id.get(rubric_score.rubric_id)
+          row_data[f"Rubric: {rubric}"] = (
+              f"Reasoning: {rubric_score.rationale}, "
+              f"Score: {rubric_score.score}"
+          )
+    data.append(row_data)
+  if data:
+    click.echo(
+        "---------------------------------------------------------------------"
+    )
+    click.echo("Invocation Details:")
+    df = pd.DataFrame(data)
+    for col in df.columns:
+      if df[col].dtype == "object":
+        df[col] = df[col].str.wrap(40)
+    click.echo(tabulate(df, headers="keys", tablefmt="grid"))
+  click.echo("\n\n")  # Few empty lines for visual clarity
 
 
 def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
