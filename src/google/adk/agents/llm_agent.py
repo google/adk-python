@@ -25,6 +25,7 @@ from typing import ClassVar
 from typing import Dict
 from typing import Literal
 from typing import Optional
+from typing import Sequence
 from typing import Type
 from typing import Union
 import warnings
@@ -218,7 +219,7 @@ class LlmAgent(BaseAgent):
   ```
   """
 
-  tools: list[ToolUnion] = Field(default_factory=list)
+  tools: Sequence[ToolUnion] = Field(default_factory=list)
   """Tools available to this agent."""
 
   generate_content_config: Optional[types.GenerateContentConfig] = None
