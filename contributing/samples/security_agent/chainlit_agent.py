@@ -252,9 +252,16 @@ Start here for **documentation and policy** questions. I have full access to:
         # Get selected agent profile
         chat_profile = cl.user_session.get("chat_profile")
 
-        # Create ADK session
-        session_id = cls.create_adk_session()
-        cl.user_session.set("security_session_id", session_id)
+        # Check if session already exists (to prevent duplicate sessions)
+        existing_session = cl.user_session.get("security_session_id")
+
+        if existing_session:
+            # Reuse existing session
+            session_id = existing_session
+        else:
+            # Create new ADK session
+            session_id = cls.create_adk_session()
+            cl.user_session.set("security_session_id", session_id)
 
         # Send welcome message
         welcome_msg = cls.get_welcome_message(chat_profile, session_id)

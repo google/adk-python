@@ -19,11 +19,11 @@ from .base import (
 )
 
 
-def _error_response(message: str) -> StructuredToolResponse:
-    """Build a structured error payload."""
+def _error_response(message: str) -> str:
+    """Build an error message."""
 
     logger.error(message)
-    return StructuredToolResponse(summary=message, data={}, metadata={"error": True})
+    return message
 
 
 def _chunk_rows(rows: Iterable[bigquery.table.Row]) -> List[dict]:
@@ -36,7 +36,7 @@ def _chunk_rows(rows: Iterable[bigquery.table.Row]) -> List[dict]:
     return safe_rows
 
 
-def get_security_insights_summary() -> StructuredToolResponse:
+def get_security_insights_summary() -> str:
     """Summarize the primary security findings table with structured metrics."""
 
     try:
@@ -60,7 +60,7 @@ def get_security_insights_summary() -> StructuredToolResponse:
             COUNT(*) AS total_records,
             COUNT(DISTINCT category) AS unique_categories,
             COUNT(DISTINCT severity) AS severity_levels,
-            COUNT(DISTINCT resource_type) AS resource_types,
+            COUNT(DISTINCT resource_name) AS resource_names,
             MIN(created_at) AS earliest_record,
             MAX(created_at) AS latest_record
         FROM `{PROJECT_ID}.{dataset_id}.{table_id}`
@@ -75,7 +75,7 @@ def get_security_insights_summary() -> StructuredToolResponse:
         "total_records": 0,
         "unique_categories": 0,
         "severity_levels": 0,
-        "resource_types": 0,
+        "resource_names": 0,
         "earliest_record": None,
         "latest_record": None,
     }
@@ -87,7 +87,7 @@ def get_security_insights_summary() -> StructuredToolResponse:
                 "total_records": row.total_records,
                 "unique_categories": row.unique_categories,
                 "severity_levels": row.severity_levels,
-                "resource_types": row.resource_types,
+                "resource_names": row.resource_names,
                 "earliest_record": row.earliest_record,
                 "latest_record": row.latest_record,
             }
@@ -99,7 +99,7 @@ def get_security_insights_summary() -> StructuredToolResponse:
         f"   Total Records: {metrics['total_records']:,}",
         f"   Unique Categories: {metrics['unique_categories']}",
         f"   Severity Levels: {metrics['severity_levels']}",
-        f"   Resource Types: {metrics['resource_types']}",
+        f"   Unique Resources: {metrics['resource_names']}",
         "   Date Range: "
         f"{metrics['earliest_record']} to {metrics['latest_record']}",
     ]
@@ -111,15 +111,29 @@ def get_security_insights_summary() -> StructuredToolResponse:
         "metrics": metrics,
     }
 
-    return StructuredToolResponse(
-        summary="\n".join(summary_lines),
-        data=data,
-        metadata={"query": query.strip()},
-    )
+    return "\n".join(summary_lines)
 
 
-def query_security_insights(query_filter: str = "", limit: int = 0) -> StructuredToolResponse:
-    """Query the security findings table with optional filtering."""
+def query_security_insights(query_filter: str = "", limit: int = 0) -> str:
+    """Query the security findings table with optional filtering.
+
+    Available columns for filtering:
+    - id (INTEGER): Unique identifier
+    - name (STRING): Finding name
+    - category (STRING): Security category
+    - severity (STRING): Severity level (e.g., HIGH, MEDIUM, LOW)
+    - resource_name (STRING): Affected resource
+    - description (STRING): Finding description
+    - recommendation (STRING): Remediation recommendation
+    - state (STRING): Current state
+    - created_at (STRING): Creation timestamp
+    - project_id (STRING): GCP project ID
+
+    Example filters:
+    - "severity = 'HIGH'"
+    - "category = 'VULNERABILITY'"
+    - "created_at >= '2025-10-06'"
+    """
 
     try:
         check_client()
@@ -180,23 +194,18 @@ def query_security_insights(query_filter: str = "", limit: int = 0) -> Structure
     if len(rows) > 10:
         summary_lines.append(f"\n... and {len(rows) - 10} more records")
 
-    data = {
-        "dataset": dataset_id,
-        "table": table_id,
-        "row_count": len(rows),
-        "columns": columns,
-        "records": _chunk_rows(rows[:limit]),
-    }
-
-    return StructuredToolResponse(
-        summary="\n".join(summary_lines),
-        data=data,
-        metadata={"query": query_text},
-    )
+    return "\n".join(summary_lines)
 
 
-def get_security_statistics(group_by: str = "severity") -> StructuredToolResponse:
-    """Provide aggregated statistics from the security findings table."""
+def get_security_statistics(group_by: str = "severity") -> str:
+    """Provide aggregated statistics from the security findings table.
+
+    Valid group_by values:
+    - severity: Group by severity level
+    - category: Group by security category
+    - state: Group by finding state
+    - project_id: Group by GCP project
+    """
 
     try:
         check_client()
@@ -257,8 +266,4 @@ def get_security_statistics(group_by: str = "severity") -> StructuredToolRespons
         "distribution": distribution,
     }
 
-    return StructuredToolResponse(
-        summary="\n".join(summary_lines),
-        data=data,
-        metadata={"query": query.strip()},
-    )
+    return "\n".join(summary_lines)

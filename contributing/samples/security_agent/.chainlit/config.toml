@@ -3,18 +3,21 @@
 enable_telemetry = false
 
 # List of environment variables to be provided by each user to use the app.
-user_env = [
-    "GOOGLE_CLOUD_PROJECT",
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    "GOOGLE_CLOUD_LOCATION",
-    "BQ_DEFAULT_DATASET",
-    "BQ_DEFAULT_TABLE",
-    "ADK_BASE_URL",
-    "CONFLUENCE_URL",
-    "CONFLUENCE_USERNAME",
-    "CONFLUENCE_API_TOKEN",
-    "CONFLUENCE_SPACES"
-]
+# For local development with .env file, leave this empty.
+# For cloud deployment, uncomment and add required variables.
+user_env = []
+# user_env = [
+#     "GOOGLE_CLOUD_PROJECT",
+#     "GOOGLE_APPLICATION_CREDENTIALS",
+#     "GOOGLE_CLOUD_LOCATION",
+#     "BQ_DEFAULT_DATASET",
+#     "BQ_DEFAULT_TABLE",
+#     "ADK_BASE_URL",
+#     "CONFLUENCE_URL",
+#     "CONFLUENCE_USERNAME",
+#     "CONFLUENCE_API_TOKEN",
+#     "CONFLUENCE_SPACES"
+# ]
 
 # Duration (in seconds) during which the session is saved when the connection is lost
 session_timeout = 3600
