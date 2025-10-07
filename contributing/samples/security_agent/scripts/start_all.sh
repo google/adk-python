@@ -42,6 +42,46 @@ fi
 echo -e "${GREEN}✓${NC} Environment loaded: Project ${YELLOW}$GOOGLE_CLOUD_PROJECT${NC}"
 echo ""
 
+# Run dependency check
+echo -e "${BLUE}=== Checking Dependencies ===${NC}"
+echo ""
+
+# Quick check of critical modules only
+echo -e "${BLUE}Validating critical dependencies...${NC}"
+
+missing_deps=()
+
+# Check Flask
+if ! python3 -c "import flask" 2>/dev/null; then
+    missing_deps+=("flask")
+fi
+
+# Check Google Cloud AI Platform
+if ! python3 -c "import google.cloud.aiplatform" 2>/dev/null; then
+    missing_deps+=("google-cloud-aiplatform")
+fi
+
+# Check Requests
+if ! python3 -c "import requests" 2>/dev/null; then
+    missing_deps+=("requests")
+fi
+
+# Check dotenv
+if ! python3 -c "import dotenv" 2>/dev/null; then
+    missing_deps+=("python-dotenv")
+fi
+
+if [ ${#missing_deps[@]} -eq 0 ]; then
+    echo -e "${GREEN}✓${NC} All critical dependencies available"
+    echo -e "  ${BLUE}→${NC} Run 'python3 tests/test_dependencies.py' for full validation"
+else
+    echo -e "${RED}❌ Missing critical dependencies: ${missing_deps[*]}${NC}"
+    echo -e "  ${BLUE}→${NC} Install with: pip install ${missing_deps[*]}"
+    echo -e "  ${BLUE}→${NC} Or run: pip install -r requirements.txt"
+    exit 1
+fi
+echo ""
+
 # Function to check if port is in use
 check_port() {
     local port=$1

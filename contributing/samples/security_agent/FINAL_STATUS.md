@@ -60,10 +60,12 @@ The GCP Security Intelligence Platform is fully operational and ready for custom
 ./scripts/start_all.sh
 ```
 
-This starts:
-- ✅ ADK Backend on port 8000
-- ✅ Flask UI on port 5001
-- ✅ Chainlit UI on port 8001 (if installed)
+This script:
+- ✅ Validates environment variables
+- ✅ Checks critical dependencies (flask, google-cloud-aiplatform, requests, python-dotenv)
+- ✅ Starts ADK Backend on port 8000
+- ✅ Starts Flask UI on port 5001
+- ✅ Starts Chainlit UI on port 8001 (if installed)
 
 ### 2. Access Interfaces
 
