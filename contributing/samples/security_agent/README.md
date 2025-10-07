@@ -66,12 +66,29 @@ python3 app.py --port=5001
 chainlit run chainlit_app.py
 # Runs on http://localhost:8001
 # See docs/CHAINLIT_INTEGRATION.md for details
+
+# OR option 3: MCP Server (for Claude Desktop, Continue, Cursor)
+python3 mcp_server.py
+# Exposes 4 high-level tools via Model Context Protocol
+# See docs/MCP_SERVER_INTEGRATION.md for setup
 ```
 
-### Architecture
+### Interface Options
+
+Choose the interface that best fits your use case:
+
+| Interface | Use Case | Port | Documentation |
+|-----------|----------|------|---------------|
+| **ADK Backend** | Direct API access, programmatic | 8000 | Built-in |
+| **Flask Web UI** | Custom web interface, dashboards | 5001 | [app.py](app.py) |
+| **Chainlit UI** | End-user chat, modern UX | 8001 | [CHAINLIT_INTEGRATION.md](docs/CHAINLIT_INTEGRATION.md) |
+| **MCP Server** | AI assistants (Claude Desktop, etc.) | stdio | [MCP_SERVER_INTEGRATION.md](docs/MCP_SERVER_INTEGRATION.md) |
+
+### Architecture Components
 - **ADK Backend** (port 8000): Agent with 32 tools, direct BigQuery access
 - **Flask Web UI** (port 5001): Web interface with chat UI and dashboard
-- **Chainlit UI** (port 8001): Modern ChatGPT-like interface (recommended)
+- **Chainlit UI** (port 8001): Modern ChatGPT-like interface (recommended for end users)
+- **MCP Server** (stdio): Model Context Protocol for AI tool integration
 - **Cloud Functions**: 13 independent data fetchers (deploy what you need)
 - **BigQuery**: Central data store queried by agent
 
@@ -534,8 +551,12 @@ Edit schedules in deployment scripts:
 
 ## 📚 Documentation
 
+### Interface Guides
+- [MCP Server Integration](docs/MCP_SERVER_INTEGRATION.md) - Model Context Protocol for AI assistants
 - [Chainlit UI Integration](docs/CHAINLIT_INTEGRATION.md) - Modern ChatGPT-like interface
 - [Complete Tool Reference](docs/TOOLS.md) - All 32 tools documented
+
+### Architecture & Integration
 - [Confluence BigQuery Integration Guide](docs/CONFLUENCE_BIGQUERY_INTEGRATION.md)
 - [IAM Analysis Architecture](docs/IAM_ANALYSIS_ARCHITECTURE.md)
 - [Cloud Functions Test Guide](cloud_functions/tests/README.md)
