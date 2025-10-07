@@ -328,10 +328,11 @@ class VertexAiSessionService(BaseSessionService):
     Returns:
       An API client for the given project and location.
     """
-    client = vertexai.Client(project=self._project, location=self._location)
-    if self._api_client_http_options_override():
-      client.http_options = self._api_client_http_options_override()
-    return client
+    return vertexai.Client(
+        project=self._project,
+        location=self._location,
+        http_options=self._api_client_http_options_override(),
+    )
 
 
 def _is_vertex_express_mode(
