@@ -313,11 +313,7 @@ class Gemini(BaseLlm):
     if llm_request.config and llm_request.config.tools:
       # Check if computer use is configured
       for tool in llm_request.config.tools:
-        if (
-            isinstance(tool, (types.Tool, types.ToolDict))
-            and hasattr(tool, 'computer_use')
-            and tool.computer_use
-        ):
+        if isinstance(tool, types.Tool) and tool.computer_use:
           llm_request.config.system_instruction = None
           await self._adapt_computer_use_tool(llm_request)
 

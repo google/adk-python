@@ -23,7 +23,7 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
 
 1. `execute_sql`
 
-  Runs a SQL query in BigQuery.
+  Runs or dry-runs a SQL query in BigQuery.
 
 1. `ask_data_insights`
 

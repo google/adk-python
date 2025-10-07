@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+from pathlib import Path
 import queue
 from typing import Any
 from typing import AsyncGenerator
@@ -25,6 +27,7 @@ from typing import List
 from typing import Optional
 import warnings
 
+from google.adk.apps.compaction import _run_compaction_for_sliding_window
 from google.genai import types
 
 from .agents.active_streaming_tool import ActiveStreamingTool
@@ -134,6 +137,7 @@ class Runner:
         ValueError: If `app` is provided along with `app_name` or `plugins`, or
           if `app` is not provided but either `app_name` or `agent` is missing.
     """
+    self.app = app
     (
         self.app_name,
         self.agent,
@@ -146,6 +150,11 @@ class Runner:
     self.memory_service = memory_service
     self.credential_service = credential_service
     self.plugin_manager = PluginManager(plugins=plugins)
+    (
+        self._agent_origin_app_name,
+        self._agent_origin_dir,
+    ) = self._infer_agent_origin(self.agent)
+    self._enforce_app_name_alignment()
 
   def _validate_runner_params(
       self,
@@ -207,6 +216,48 @@ class Runner:
           DeprecationWarning,
       )
     return app_name, agent, context_cache_config, resumability_config, plugins
+
+  def _infer_agent_origin(
+      self, agent: BaseAgent
+  ) -> tuple[Optional[str], Optional[Path]]:
+    module = inspect.getmodule(agent.__class__)
+    if not module:
+      return None, None
+    module_file = getattr(module, '__file__', None)
+    if not module_file:
+      return None, None
+    module_path = Path(module_file).resolve()
+    project_root = Path.cwd()
+    try:
+      module_path.relative_to(project_root)
+    except ValueError:
+      return None, module_path.parent
+
+    current = module_path.parent
+    while current != project_root and current.parent != current:
+      parent = current.parent
+      if parent.name == 'agents':
+        return current.name, current
+      current = parent
+
+    return None, module_path.parent
+
+  def _enforce_app_name_alignment(self) -> None:
+    origin_name = self._agent_origin_app_name
+    origin_dir = self._agent_origin_dir
+    if not origin_name or origin_name.startswith('__'):
+      return
+    if origin_name == self.app_name:
+      return
+    origin_location = str(origin_dir) if origin_dir else origin_name
+    message = (
+        'App name mismatch detected. The runner is configured with '
+        f'app name "{self.app_name}", but the root agent was loaded from '
+        f'"{origin_location}", which implies app name "{origin_name}". '
+        'Rename the App or its directory so the names match before running '
+        'the agent.'
+    )
+    raise ValueError(message)
 
   def run(
       self,
@@ -360,10 +411,41 @@ class Runner:
         ) as agen:
           async for event in agen:
             yield event
+        # Run compaction after all events are yielded from the agent.
+        # (We don't compact in the middle of an invocation, we only compact at the end of an invocation.)
+        if self.app and self.app.events_compaction_config:
+          logger.info('Running event compactor.')
+          # Run compaction in a separate task to avoid blocking the main thread.
+          # So the users can still finish the event loop from the agent while the
+          # compaction is running.
+          asyncio.create_task(
+              _run_compaction_for_sliding_window(
+                  self.app, session, self.session_service
+              )
+          )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
         yield event
+
+  async def _run_compaction_default(self, session: Session):
+    """Runs compaction for other types of compactors.
+
+    This method calls `maybe_compact_events` on the compactor with all
+    events in the session.
+
+    Args:
+      session: The session containing events to compact.
+    """
+    compaction_event = (
+        await self.app.events_compaction_config.compactor.maybe_compact_events(
+            events=session.events
+        )
+    )
+    if compaction_event:
+      await self.session_service.append_event(
+          session=session, event=compaction_event
+      )
 
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""
@@ -534,6 +616,10 @@ class Runner:
         Either `session` or both `user_id` and `session_id` must be provided.
     """
     run_config = run_config or RunConfig()
+    # Some native audio models requires the modality to be set. So we set it to
+    # AUDIO by default.
+    if run_config.response_modalities is None:
+      run_config.response_modalities = ['AUDIO']
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'

@@ -105,8 +105,8 @@ def get_fast_api_app(
       agent_engine_id = agent_engine_id_or_resource_name.split("/")[-1]
     else:
       envs.load_dotenv_for_agent("", agents_dir)
-      project = os.environ["GOOGLE_CLOUD_PROJECT"]
-      location = os.environ["GOOGLE_CLOUD_LOCATION"]
+      project = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
+      location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
       agent_engine_id = agent_engine_id_or_resource_name
     return project, location, agent_engine_id
 
