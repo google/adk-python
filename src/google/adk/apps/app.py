@@ -21,7 +21,7 @@ from pydantic import Field
 
 from ..agents.base_agent import BaseAgent
 from ..agents.context_cache_config import ContextCacheConfig
-from ..apps.base_events_compactor import BaseEventsCompactor
+from ..apps.base_events_summarizer import BaseEventsSummarizer
 from ..plugins.base_plugin import BasePlugin
 from ..utils.feature_decorator import experimental
 
@@ -56,11 +56,13 @@ class EventsCompactionConfig(BaseModel):
       extra="forbid",
   )
 
-  compactor: BaseEventsCompactor
-  """The event compactor strategy for the application."""
+  summarizer: Optional[BaseEventsSummarizer] = None
+  """The event summarizer to use for compaction."""
+
   compaction_interval: int
   """The number of *new* user-initiated invocations that, once
   fully represented in the session's events, will trigger a compaction."""
+
   overlap_size: int
   """The number of preceding invocations to include from the
   end of the last compacted range. This creates an overlap between consecutive

@@ -72,7 +72,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     await _run_compaction_for_sliding_window(
         app, session, self.mock_session_service
     )
-    self.mock_compactor.maybe_compact_events.assert_not_called()
+    self.mock_compactor.maybe_summarize_events.assert_not_called()
     self.mock_session_service.append_event.assert_not_called()
 
   async def test_run_compaction_for_sliding_window_not_enough_new_invocations(
@@ -82,7 +82,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         name='test',
         root_agent=Mock(spec=BaseAgent),
         events_compaction_config=EventsCompactionConfig(
-            compactor=self.mock_compactor,
+            summarizer=self.mock_compactor,
             compaction_interval=3,
             overlap_size=1,
         ),
@@ -100,7 +100,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     await _run_compaction_for_sliding_window(
         app, session, self.mock_session_service
     )
-    self.mock_compactor.maybe_compact_events.assert_not_called()
+    self.mock_compactor.maybe_summarize_events.assert_not_called()
     self.mock_session_service.append_event.assert_not_called()
 
   async def test_run_compaction_for_sliding_window_first_compaction(self):
@@ -108,7 +108,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         name='test',
         root_agent=Mock(spec=BaseAgent),
         events_compaction_config=EventsCompactionConfig(
-            compactor=self.mock_compactor,
+            summarizer=self.mock_compactor,
             compaction_interval=2,
             overlap_size=1,
         ),
@@ -124,14 +124,16 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     mock_compacted_event = self._create_compacted_event(
         1.0, 4.0, 'Summary inv1-inv4'
     )
-    self.mock_compactor.maybe_compact_events.return_value = mock_compacted_event
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
 
     await _run_compaction_for_sliding_window(
         app, session, self.mock_session_service
     )
 
     # Expected events to compact: inv1, inv2, inv3, inv4
-    compacted_events_arg = self.mock_compactor.maybe_compact_events.call_args[
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
     ]['events']
     self.assertEqual(
@@ -147,7 +149,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         name='test',
         root_agent=Mock(spec=BaseAgent),
         events_compaction_config=EventsCompactionConfig(
-            compactor=self.mock_compactor,
+            summarizer=self.mock_compactor,
             compaction_interval=2,
             overlap_size=1,
         ),
@@ -174,7 +176,9 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     mock_compacted_event = self._create_compacted_event(
         2.0, 5.0, 'Summary inv2-inv5'
     )
-    self.mock_compactor.maybe_compact_events.return_value = mock_compacted_event
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
 
     await _run_compaction_for_sliding_window(
         app, session, self.mock_session_service
@@ -183,7 +187,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     # New invocations are inv3, inv4, inv5 (3 new) > threshold (2).
     # Overlap size is 1, so start from 1 inv before inv3, which is inv2.
     # Compact range: inv2 to inv5.
-    compacted_events_arg = self.mock_compactor.maybe_compact_events.call_args[
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
     ]['events']
     self.assertEqual(
@@ -201,7 +205,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         name='test',
         root_agent=Mock(spec=BaseAgent),
         events_compaction_config=EventsCompactionConfig(
-            compactor=self.mock_compactor,
+            summarizer=self.mock_compactor,
             compaction_interval=1,
             overlap_size=0,
         ),
@@ -209,11 +213,11 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     events = [self._create_event(1.0, 'inv1', 'e1')]
     session = Session(app_name='test', user_id='u1', id='s1', events=events)
 
-    self.mock_compactor.maybe_compact_events.return_value = None
+    self.mock_compactor.maybe_summarize_events.return_value = None
 
     await _run_compaction_for_sliding_window(
         app, session, self.mock_session_service
     )
 
-    self.mock_compactor.maybe_compact_events.assert_called_once()
+    self.mock_compactor.maybe_summarize_events.assert_called_once()
     self.mock_session_service.append_event.assert_not_called()

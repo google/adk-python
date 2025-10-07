@@ -19,15 +19,15 @@ from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 
+from ..apps.base_events_summarizer import BaseEventsSummarizer
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..events.event_actions import EventCompaction
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
-from .base_events_compactor import BaseEventsCompactor
 
 
-class LlmEventSummarizer(BaseEventsCompactor):
+class LlmEventSummarizer(BaseEventsSummarizer):
   """An LLM-based event summarizer for sliding window compaction.
 
   This class is responsible for summarizing a provided list of events into a
@@ -81,7 +81,7 @@ class LlmEventSummarizer(BaseEventsCompactor):
             formatted_history.append(f'{event.author}: {part.text}')
     return '\\n'.join(formatted_history)
 
-  async def maybe_compact_events(
+  async def maybe_summarize_events(
       self, *, events: list[Event]
   ) -> Optional[Event]:
     """Compacts given events and returns the compacted content.

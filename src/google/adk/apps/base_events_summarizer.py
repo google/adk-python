@@ -23,11 +23,11 @@ from ..utils.feature_decorator import experimental
 
 
 @experimental
-class BaseEventsCompactor(abc.ABC):
+class BaseEventsSummarizer(abc.ABC):
   """Base interface for compacting events."""
 
   @abc.abstractmethod
-  async def maybe_compact_events(
+  async def maybe_summarize_events(
       self, *, events: list[Event]
   ) -> Optional[Event]:
     """Compact a list of events into a single event.

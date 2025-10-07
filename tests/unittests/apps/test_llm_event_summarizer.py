@@ -64,7 +64,7 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
 
     self.mock_llm.generate_content_async.return_value = async_gen()
 
-    compacted_event = await self.compactor.maybe_compact_events(events=events)
+    compacted_event = await self.compactor.maybe_summarize_events(events=events)
 
     self.assertIsNotNone(compacted_event)
     self.assertEqual(
@@ -101,11 +101,11 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
 
     self.mock_llm.generate_content_async.return_value = async_gen()
 
-    compacted_event = await self.compactor.maybe_compact_events(events=events)
+    compacted_event = await self.compactor.maybe_summarize_events(events=events)
     self.assertIsNone(compacted_event)
 
   async def test_maybe_compact_events_empty_input(self):
-    compacted_event = await self.compactor.maybe_compact_events(events=[])
+    compacted_event = await self.compactor.maybe_summarize_events(events=[])
     self.assertIsNone(compacted_event)
     self.mock_llm.generate_content_async.assert_not_called()
 

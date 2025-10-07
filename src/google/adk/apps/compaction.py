@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 
 from google.adk.apps.app import App
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 
@@ -180,8 +181,13 @@ async def _run_compaction_for_sliding_window(
   if not events_to_compact:
     return None
 
+  if not app.events_compaction_config.summarizer:
+    app.events_compaction_config.summarizer = LlmEventSummarizer(
+        llm=app.root_agent.canonical_model
+    )
+
   compaction_event = (
-      await app.events_compaction_config.compactor.maybe_compact_events(
+      await app.events_compaction_config.summarizer.maybe_summarize_events(
           events=events_to_compact
       )
   )
