@@ -34,6 +34,7 @@ dependencies = [
   "google-api-python-client>=2.157.0, <3.0.0",              # Google API client discovery
   "google-cloud-aiplatform[agent_engines]>=1.112.0, <2.0.0",# For VertexAI integrations, e.g. example store.
   "google-cloud-bigtable>=2.32.0",                          # For Bigtable database
+  "google-cloud-discoveryengine>=0.13.12, <0.14.0",         # For Discovery Engine Search Tool
   "google-cloud-secret-manager>=2.22.0, <3.0.0",            # Fetching secrets in RestAPI Tool
   "google-cloud-spanner>=3.56.0, <4.0.0",                   # For Spanner database
   "google-cloud-speech>=2.30.0, <3.0.0",                    # For Audio Transcription
