@@ -83,6 +83,7 @@ temp/
 !package*.json
 !tsconfig*.json
 !**/config/template*.json
+!tests/fixtures/*.json
 config/*.json
 config/secrets/
 credentials/
@@ -116,11 +117,11 @@ Thumbs.db
 # Application Specific
 backend/cache/
 frontend/.streamlit/
-.streamlit/
 .claude/
 .claude-flow/
 .adk/
 .playwright-mcp/
+docs/archive/
 
 # Deployment
 deploy/secrets/

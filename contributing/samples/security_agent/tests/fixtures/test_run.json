@@ -1,0 +1,9 @@
+{
+  "appName": "agents",
+  "userId": "web-user", 
+  "sessionId": "test-123",
+  "newMessage": {
+    "parts": [{"text": "list tables"}],
+    "role": "user"
+  }
+}

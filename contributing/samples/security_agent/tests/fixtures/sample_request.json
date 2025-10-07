@@ -1,0 +1,9 @@
+{
+  "appName": "agents",
+  "userId": "web-user",
+  "sessionId": "0028668f-5b1f-48a8-b9d7-e53e16fc2101",
+  "newMessage": {
+    "parts": [{"text": "SELECT * FROM security_insights.security_findings LIMIT 1"}],
+    "role": "user"
+  }
+}

@@ -206,7 +206,8 @@ Choose the interface that best fits your use case:
    - **Feed Tools** (4): RSS feeds, release notes, threat intelligence
 
 ### Agent Behaviour & Instructions
-- [Security BigQuery agent instructions](docs/agent_instructions.md) – comprehensive behavioural contract mirrored from `agents/agent.py`.
+- [Complete Setup and Usage Guide](docs/INSTRUCTIONS.md) – comprehensive installation and configuration
+- [Agent Instructions](docs/agent_instructions.md) – behavioral contract for the AI agent
 
 ## 📚 Confluence → BigQuery Sync Pattern
 
