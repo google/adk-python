@@ -19,7 +19,6 @@ from .delete_files import delete_files
 from .explore_project import explore_project
 from .read_config_files import read_config_files
 from .read_files import read_files
-from .resolve_root_directory import resolve_root_directory
 from .search_adk_source import search_adk_source
 from .write_config_files import write_config_files
 from .write_files import write_files
@@ -33,5 +32,4 @@ __all__ = [
     'write_files',
     'search_adk_source',
     'explore_project',
-    'resolve_root_directory',
 ]
