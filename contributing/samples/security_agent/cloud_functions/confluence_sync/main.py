@@ -15,16 +15,56 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import re
+import time
+from urllib.parse import parse_qs, urlparse
 
+import requests
 from google.cloud import bigquery
 from google.cloud import secretmanager
 from google.cloud.exceptions import NotFound
 import functions_framework
-from atlassian import Confluence
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Environment helpers
+
+
+def _load_env_file_if_present() -> None:
+    """Load environment variables from a .env style file if provided."""
+
+    def _load_file(path: Optional[str]) -> bool:
+        if not path:
+            return False
+        expanded = os.path.expanduser(path)
+        if not os.path.isfile(expanded):
+            return False
+
+        logger.info("Loading environment variables from %s", expanded)
+        with open(expanded, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                # Do not override existing environment variables
+                os.environ.setdefault(key, value)
+        return True
+
+    # Explicit path takes precedence, fall back to local .env if present
+    explicit_path = os.environ.get("CONFLUENCE_ENV_FILE")
+    if not _load_file(explicit_path):
+        default_path = os.path.join(os.path.dirname(__file__), ".env")
+        _load_file(default_path)
+
+
+_load_env_file_if_present()
+
 
 # Configuration
 PROJECT_ID = os.environ.get('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')
@@ -37,6 +77,127 @@ SYNC_BATCH_SIZE = int(os.environ.get('SYNC_BATCH_SIZE', '50'))
 SECRET_CONFLUENCE_URL = os.environ.get('SECRET_CONFLUENCE_URL', 'confluence-url')
 SECRET_CONFLUENCE_USER = os.environ.get('SECRET_CONFLUENCE_USER', 'confluence-username')
 SECRET_CONFLUENCE_TOKEN = os.environ.get('SECRET_CONFLUENCE_TOKEN', 'confluence-api-token')
+
+
+class ConfluenceAPIClient:
+    """Minimal Confluence Cloud REST v2 client focused on page retrieval."""
+
+    def __init__(self, base_url: str, username: str, api_token: str, timeout: int = 30):
+        self.base_url = base_url.rstrip('/')
+        self.api_root = f"{self.base_url}/wiki/api/v2"
+        self.site_root = f"{self.base_url}/wiki"
+        self.timeout = timeout
+
+        self.session = requests.Session()
+        self.session.auth = (username, api_token)
+        self.session.headers.update({
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        })
+
+    def _request(self, method: str, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        url = f"{self.api_root}{path}"
+        for attempt in range(3):
+            response = self.session.request(
+                method=method,
+                url=url,
+                params=params,
+                timeout=self.timeout,
+            )
+
+            if response.status_code == 429 or response.status_code >= 500:
+                sleep_time = min(2 ** attempt, 8)
+                logger.warning(
+                    "Confluence API %s %s failed with %s. Retrying in %s seconds",
+                    method,
+                    path,
+                    response.status_code,
+                    sleep_time,
+                )
+                time.sleep(sleep_time)
+                continue
+
+            if response.status_code >= 400:
+                try:
+                    details = response.json()
+                except ValueError:
+                    details = response.text
+                raise RuntimeError(
+                    f"Confluence API error {response.status_code} for {method} {path}: {details}"
+                )
+
+            if response.content:
+                return response.json()
+            return {}
+
+        raise RuntimeError(f"Confluence API request {method} {path} failed after retries")
+
+    def get_space_id(self, space_key: str) -> str:
+        data = self._request("get", "/spaces", params={"keys": space_key})
+        results = data.get("results", [])
+        if not results:
+            raise ValueError(f"Space with key {space_key} not found")
+        # API returns id as int or string
+        return str(results[0].get("id"))
+
+    def list_space_pages(
+        self,
+        space_id: str,
+        limit: int = SYNC_BATCH_SIZE,
+        cursor: Optional[str] = None,
+        modified_since: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "space-id": space_id,
+            "limit": limit,
+            "status": "current",
+            "sort": "updated-date DESC",
+        }
+        if cursor:
+            params["cursor"] = cursor
+        if modified_since:
+            iso_value = modified_since.replace(microsecond=0).isoformat()
+            if iso_value.endswith("+00:00"):
+                iso_value = iso_value[:-6] + "Z"
+            elif not iso_value.endswith("Z"):
+                iso_value = f"{iso_value}Z"
+            params["modified-since"] = iso_value
+        return self._request("get", "/pages", params=params)
+
+    def get_page(self, page_id: str) -> Dict[str, Any]:
+        params = {
+            "body-format": "storage",
+            "include": "ancestors,body.storage,metadata.labels,version",
+        }
+        # Uses https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/#api-pages-id-get
+        return self._request("get", f"/pages/{page_id}", params=params)
+
+    def get_page_labels(self, page_id: str) -> List[Dict[str, Any]]:
+        data = self._request("get", f"/pages/{page_id}/labels")
+        return data.get("results", [])
+
+    @staticmethod
+    def extract_cursor(next_link: Optional[str]) -> Optional[str]:
+        if not next_link:
+            return None
+        parsed = urlparse(next_link)
+        if not parsed.query:
+            return next_link
+        query = parse_qs(parsed.query)
+        cursor_values = query.get("cursor")
+        if cursor_values:
+            return cursor_values[0]
+        return next_link
+
+    def build_page_url(self, page_data: Dict[str, Any]) -> Optional[str]:
+        links = page_data.get("_links", {})
+        webui = links.get("webui")
+        if webui:
+            return f"{self.site_root}{webui}"
+        page_id = page_data.get("id")
+        if page_id:
+            return f"{self.site_root}/pages/{page_id}"
+        return None
 
 
 class ConfluenceBigQuerySync:
@@ -70,13 +231,12 @@ class ConfluenceBigQuerySync:
             if not all([url, username, api_token]):
                 raise ValueError("Missing Confluence credentials")
 
-            self.confluence = Confluence(
-                url=url,
+            self.confluence = ConfluenceAPIClient(
+                base_url=url,
                 username=username,
-                password=api_token,
-                cloud=True
+                api_token=api_token,
             )
-            logger.info(f"Initialized Confluence client for {url}")
+            logger.info(f"Initialized Confluence API client for {url}")
 
     def _init_bigquery_dataset(self):
         """Create BigQuery dataset and table if they don't exist."""
@@ -219,96 +379,175 @@ class ConfluenceBigQuerySync:
 
     def fetch_confluence_documents(self, spaces: List[str],
                                   modified_since: Optional[datetime] = None) -> List[Dict]:
-        """Fetch documents from Confluence spaces."""
+        """Fetch documents from Confluence spaces using the REST v2 API."""
         self._init_confluence_client()
-        all_documents = []
+        all_documents: List[Dict] = []
 
         for space in spaces:
             try:
                 logger.info(f"Fetching documents from space: {space}")
+                space_id = self.confluence.get_space_id(space)
+            except Exception as space_error:
+                logger.error(f"Unable to resolve Confluence space {space}: {space_error}")
+                continue
 
-                # Build CQL query
-                cql = f"space = {space} AND type = page"
-                if modified_since:
-                    # Format date for CQL
-                    date_str = modified_since.strftime('%Y-%m-%d')
-                    cql += f" AND lastmodified >= '{date_str}'"
-
-                # Fetch pages
-                start = 0
-                while True:
-                    results = self.confluence.cql(
-                        cql=cql,
-                        start=start,
+            cursor: Optional[str] = None
+            while True:
+                try:
+                    page_batch = self.confluence.list_space_pages(
+                        space_id=space_id,
                         limit=SYNC_BATCH_SIZE,
-                        expand="body.storage,version,metadata.labels,ancestors"
+                        cursor=cursor,
+                        modified_since=modified_since,
                     )
+                except Exception as request_error:
+                    logger.error(
+                        f"Failed to list pages for space {space}: {request_error}"
+                    )
+                    break
 
-                    pages = results.get('results', [])
-                    if not pages:
-                        break
+                pages = page_batch.get("results", [])
+                if not pages:
+                    break
 
-                    for page in pages:
-                        try:
-                            # Extract document data
-                            doc = self._process_confluence_page(page, space)
-                            all_documents.append(doc)
-                        except Exception as e:
-                            logger.error(f"Error processing page {page.get('id')}: {str(e)}")
+                for page_summary in pages:
+                    page_id = str(page_summary.get("id") or page_summary.get("contentId") or "")
+                    if not page_id:
+                        logger.warning("Skipping page without id in space %s", space)
+                        continue
 
-                    # Check if there are more pages
-                    if len(pages) < SYNC_BATCH_SIZE:
-                        break
-                    start += SYNC_BATCH_SIZE
+                    try:
+                        page_details = self.confluence.get_page(page_id)
+                        if not page_details:
+                            logger.warning("Empty response for page %s", page_id)
+                            continue
 
-                logger.info(f"Fetched {len(all_documents)} documents from space {space}")
+                        # Enrich with labels if not included
+                        if "labels" not in page_details or not page_details.get("labels"):
+                            page_details["labels"] = self.confluence.get_page_labels(page_id)
 
-            except Exception as e:
-                logger.error(f"Error fetching documents from space {space}: {str(e)}")
+                        doc = self._process_confluence_page(
+                            page_details,
+                            space_key=space,
+                            page_summary=page_summary,
+                        )
+                        all_documents.append(doc)
+                    except Exception as page_error:
+                        logger.error(
+                            "Error processing page %s in space %s: %s",
+                            page_id,
+                            space,
+                            page_error,
+                        )
+
+                cursor = None
+                # Prefer cursor from API, fall back to links.next URL
+                cursor = page_batch.get("cursor", {}).get("next") if isinstance(page_batch.get("cursor"), dict) else page_batch.get("cursor")
+                if not cursor:
+                    cursor = page_batch.get("_links", {}).get("next") or page_batch.get("links", {}).get("next")
+                cursor = ConfluenceAPIClient.extract_cursor(cursor)
+
+                if not cursor:
+                    break
+
+            logger.info(f"Fetched {len(all_documents)} total documents after space {space}")
 
         return all_documents
 
-    def _process_confluence_page(self, page: Dict, space_key: str) -> Dict:
+    def _process_confluence_page(
+        self,
+        page: Dict[str, Any],
+        space_key: str,
+        page_summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Process a Confluence page into BigQuery format."""
-        # Extract content
-        content_html = page.get('body', {}).get('storage', {}).get('value', '')
+
+        body = page.get("body", {})
+        content_html = (
+            body.get("storage", {}).get("value")
+            or body.get("value", "")
+            or page_summary.get("body", {}).get("storage", {}).get("value", "")
+            if page_summary
+            else ""
+        )
+        content_html = content_html or ""
         content_text = self._extract_text_from_html(content_html)
 
-        # Extract metadata
-        labels = [label.get('name', '') for label in page.get('metadata', {}).get('labels', {}).get('results', [])]
+        labels: List[str] = []
+        if isinstance(page.get("labels"), list):
+            labels = [label.get("name", "") for label in page.get("labels", []) if isinstance(label, dict)]
+        elif isinstance(page.get("labels"), dict):
+            labels = [label.get("name", "") for label in page.get("labels", {}).get("results", [])]
+        else:
+            metadata_labels = page.get("metadata", {}).get("labels", {}).get("results", [])
+            labels = [label.get("name", "") for label in metadata_labels]
 
-        # Get parent information
-        ancestors = page.get('ancestors', [])
-        parent_id = ancestors[-1].get('id') if ancestors else None
-        parent_title = ancestors[-1].get('title') if ancestors else None
+        ancestors = page.get("ancestors")
+        parent_id = None
+        parent_title = None
+        if isinstance(ancestors, list) and ancestors:
+            ancestor = ancestors[-1]
+            if isinstance(ancestor, dict):
+                parent_id = ancestor.get("id") or ancestor.get("contentId")
+                parent_title = ancestor.get("title")
+        if not parent_id:
+            parent_id = page.get("parentId")
 
-        # Get attachments count (would need additional API call for details)
-        # For now, just check if content mentions attachments
-        has_attachments = 'attachment' in content_html.lower()
+        has_attachments = "attachment" in content_html.lower()
 
-        # Classification
-        classification = self._classify_document(content_text, page.get('title', ''), labels)
+        title = page.get("title") or (page_summary or {}).get("title", "")
+        classification = self._classify_document(content_text, title, labels)
 
-        # Create document record
+        created_date = (
+            page.get("createdAt")
+            or page.get("createdDate")
+            or page.get("history", {}).get("createdDate")
+        )
+        modified_date = (
+            page.get("updatedAt")
+            or page.get("modifiedAt")
+            or page.get("version", {}).get("when")
+            or page.get("history", {}).get("lastUpdated", {}).get("when")
+        )
+
+        created_by = (
+            page.get("createdBy", {}).get("displayName")
+            if isinstance(page.get("createdBy"), dict)
+            else (page.get("history", {}).get("createdBy", {}).get("displayName", ""))
+        )
+        modified_by = (
+            page.get("updatedBy", {}).get("displayName")
+            if isinstance(page.get("updatedBy"), dict)
+            else (page.get("history", {}).get("lastUpdated", {}).get("by", {}).get("displayName", ""))
+        )
+
+        page_id = str(page.get("id") or page.get("contentId") or page_summary.get("id") if page_summary else "")
+        page_url = self.confluence.build_page_url(page) if hasattr(self.confluence, "build_page_url") else None
+        if not page_url and page_summary:
+            links = page_summary.get("_links", {})
+            webui = links.get("webui")
+            if webui and hasattr(self.confluence, "site_root"):
+                page_url = f"{self.confluence.site_root}{webui}"
+
         document = {
-            'document_id': page.get('id'),
+            'document_id': page_id,
             'space_key': space_key,
-            'title': page.get('title', ''),
+            'title': title,
             'content': content_html[:1000000],  # Limit content size
             'content_text': content_text[:500000],  # Plain text version
-            'url': f"{self.confluence.url}/wiki{page.get('_links', {}).get('webui', '')}",
-            'created_date': self._parse_confluence_date(page.get('history', {}).get('createdDate')),
-            'modified_date': self._parse_confluence_date(page.get('history', {}).get('lastUpdated', {}).get('when')),
-            'created_by': page.get('history', {}).get('createdBy', {}).get('displayName', ''),
-            'modified_by': page.get('history', {}).get('lastUpdated', {}).get('by', {}).get('displayName', ''),
+            'url': page_url,
+            'created_date': self._parse_confluence_date(created_date),
+            'modified_date': self._parse_confluence_date(modified_date),
+            'created_by': created_by or '',
+            'modified_by': modified_by or '',
             'parent_id': parent_id,
             'parent_title': parent_title,
-            'labels': labels,
+            'labels': [label for label in labels if label],
             'content_hash': hashlib.md5(content_html.encode()).hexdigest(),
-            'word_count': len(content_text.split()),
+            'word_count': len(content_text.split()) if content_text else 0,
             'has_attachments': has_attachments,
             'attachment_count': 0,  # Would need additional API call
-            'version_number': page.get('version', {}).get('number', 1),
+            'version_number': page.get('version', {}).get('number', 1) if isinstance(page.get('version'), dict) else 1,
             'sync_timestamp': datetime.utcnow().isoformat(),
             'sync_status': 'success',
             'security_classification': classification['security_classification'],
@@ -324,11 +563,14 @@ class ConfluenceBigQuerySync:
             return None
 
         try:
+            if isinstance(date_str, datetime):
+                return date_str.replace(microsecond=0).isoformat()
+
             # Confluence dates are in ISO format but may have microseconds
-            if '.' in date_str:
+            if isinstance(date_str, str) and '.' in date_str:
                 date_str = date_str.split('.')[0] + 'Z'
 
-            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(str(date_str).replace('Z', '+00:00'))
             return dt.isoformat()
         except Exception as e:
             logger.warning(f"Failed to parse date {date_str}: {str(e)}")
