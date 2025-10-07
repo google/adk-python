@@ -102,6 +102,27 @@ All 32 tools accessible via natural language:
 - **Confluence** - Documentation search
 - **Feeds** - RSS feeds, release notes
 
+### 5. Prompt Playground
+- **Enabled by default** - Test and iterate on prompts
+- Interactive prompt editor in the UI
+- Real-time testing with your agent
+- Save and share prompt variations
+
+### 6. Environment Variables
+Chainlit exposes required environment variables through the UI:
+- `GOOGLE_CLOUD_PROJECT` - GCP project ID
+- `GOOGLE_APPLICATION_CREDENTIALS` - Service account path
+- `GOOGLE_CLOUD_LOCATION` - Region (e.g., us-central1)
+- `BQ_DEFAULT_DATASET` - BigQuery dataset name
+- `BQ_DEFAULT_TABLE` - BigQuery table name
+- `ADK_BASE_URL` - ADK backend URL
+- `CONFLUENCE_URL` - Confluence instance URL
+- `CONFLUENCE_USERNAME` - Confluence user email
+- `CONFLUENCE_API_TOKEN` - Confluence API token
+- `CONFLUENCE_SPACES` - Comma-separated space keys
+
+Users can provide these through the UI or via `.env` file.
+
 ## 🎨 Customization
 
 ### Branding
@@ -148,6 +169,38 @@ Edit `.chainlit` config:
 # Duration (in seconds) during which the session is saved when the connection is lost
 session_timeout = 3600  # 1 hour
 ```
+
+### Enable/Disable Prompt Playground
+
+Edit `.chainlit` config:
+
+```toml
+[features]
+# Show the prompt playground (enabled by default)
+prompt_playground = true
+```
+
+The prompt playground allows users to:
+- Test and iterate on prompts interactively
+- See real-time results from the agent
+- Save and share prompt variations
+- Experiment with different prompt strategies
+
+### Configure Environment Variables
+
+Edit `.chainlit` config to specify which environment variables users must provide:
+
+```toml
+[project]
+user_env = [
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "BQ_DEFAULT_DATASET",
+    "ADK_BASE_URL"
+]
+```
+
+If these are not in the `.env` file, Chainlit will prompt users to enter them through the UI.
 
 ## 🔧 Configuration
 
