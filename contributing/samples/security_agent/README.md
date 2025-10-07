@@ -210,6 +210,8 @@ gcloud scheduler jobs create http sync-confluence \
   --message-body='{"sync_type":"incremental"}'
 ```
 
+> 💡 **Local testing tip:** Copy `.env.example` to `.env` in `cloud_functions/confluence_sync/` (or point `CONFLUENCE_ENV_FILE` to your secrets file) and the function will automatically load the required variables without needing Secret Manager when run locally.
+
 ## 📊 Complete Cloud Functions Inventory
 
 ### Identity & Access Management
