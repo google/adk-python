@@ -348,6 +348,32 @@ docker run -p 8000:8000 --env-file .env gcp-security-agent
 
 ---
 
+## 🔧 Recent Fixes & Improvements (October 7, 2025)
+
+### ADK Automatic Function Calling Compatibility
+- ✅ Fixed all security tools to return simple `str` type instead of `StructuredToolResponse`
+- ✅ ADK automatic function calling requires simple types (str, dict, int) - custom dataclasses not supported
+- ✅ Updated: `get_security_insights_summary()`, `query_security_insights()`, `get_security_statistics()`
+
+### BigQuery Schema Corrections
+- ✅ Fixed column name: `resource_type` → `resource_name` (actual column in table)
+- ✅ Table schema documented: id, name, category, severity, resource_name, description, recommendation, state, created_at, project_id
+- ✅ Added detailed schema documentation to tool docstrings for accurate AI-generated queries
+
+### Chainlit Configuration
+- ✅ Fixed directory structure: `.chainlit` file → `.chainlit/config.toml` directory
+- ✅ Resolved FileExistsError on Chainlit startup
+- ✅ Configured `user_env = []` for local development with .env file
+
+### Session Management
+- ✅ Prevented duplicate ADK session creation on UI refresh
+- ✅ Added session reuse logic in `on_chat_start()`
+- ✅ Single session per user instead of multiple sessions
+
+**Result**: Agent now successfully queries BigQuery tables through Chainlit interface without errors! 🎉
+
+---
+
 ## 📞 Support & Resources
 
 - **Documentation**: `docs/` directory
@@ -360,6 +386,6 @@ docker run -p 8000:8000 --env-file .env gcp-security-agent
 
 **Status**: ✅ **Production Ready**
 **Last Updated**: October 7, 2025
-**Version**: 1.0.0
+**Version**: 1.0.1
 
 The GCP Security Intelligence Platform is ready for customer deployment! 🚀
