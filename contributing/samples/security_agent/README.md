@@ -82,43 +82,63 @@ python3 app.py --port=5001
     │    (app.py)     │  - Chat interface
     └────────┬────────┘  - Dashboard & metrics
              │ HTTP
-    ┌────────▼────────────────────────────────────────────────┐
-    │              ADK Backend (port 8000)                     │
-    │    ADK Security Agent - 32 Tools                        │
-    │    (Gemini 2.5 Flash - Natural Language Interface)      │
-    └────────┬──────────────────────────┬─────────────────────┘
-             │                          │
-    ┌────────▼────────┐        ┌───────▼─────────┐
-    │  BigQuery Tools │        │ Service Tools   │
-    │  - Analysis     │        │ - Discovery     │
-    │  - Queries      │        │ - Evaluation    │
-    │  - Exploration  │        │ - Onboarding    │
-    │  - 12 tools     │        │ - 20 tools      │
-    └────────┬────────┘        └────────┬────────┘
-             │                          │
-    ┌────────▼──────────────────────────▼────────┐
-    │        BigQuery Data Platform               │
-    │      (Single Source of Truth)               │
-    │   - security_insights (primary)             │
-    │   - security_data (MSA results)             │
-    └────────────────────┬───────────────────────┘
+    ┌────────▼────────────────────────────────────────────────────────┐
+    │                ADK Backend (port 8000)                           │
+    │         ADK Security Agent - 32 Tools (7 categories)            │
+    │         (Gemini 2.5 Flash - Natural Language Interface)         │
+    └─────┬──────────┬────────────┬───────────┬──────────┬───────────┘
+          │          │            │           │          │
+    ┌─────▼──┐  ┌───▼────┐  ┌────▼───┐  ┌───▼────┐  ┌──▼────┐
+    │BigQuery│  │Service │  │Service │  │Conflue │  │ Feed  │
+    │ Tools  │  │Eval    │  │Discov  │  │ -nce  │  │ Tools │
+    │(12)    │  │(3)     │  │(8)     │  │ (5)   │  │ (4)   │
+    │        │  │        │  │        │  │       │  │       │
+    │·Query  │  │·Eval   │  │·Discov │  │·Search│  │·GCP   │
+    │·Analyze│  │·Comply │  │·Learn  │  │·Get   │  │·RSS   │
+    │·Explore│  │·Control│  │·Onboard│  │·Stats │  │·Search│
+    └────┬───┘  └────┬───┘  └────┬───┘  └───┬───┘  └───┬───┘
+         │           │           │          │          │
+    ┌────▼───────────▼───────────▼──────────▼──────────▼─────┐
+    │            BigQuery Data Platform                        │
+    │          (Single Source of Truth)                        │
+    │   - security_insights (primary dataset)                  │
+    │   - security_data (MSA results)                          │
+    │   - confluence_documents (synced docs)                   │
+    │   - security_feeds (RSS aggregation)                     │
+    └────────────────────┬─────────────────────────────────────┘
                          │
     ┌────────────────────▼───────────────────────┐
     │      Cloud Functions (13) - Modular        │
     │   Customer Chooses Which to Deploy         │
     │                                             │
-    │  🔒 IAM & Security (7 functions)           │
-    │  ☁️ Infrastructure (2 functions)            │
-    │  📰 Feeds & Docs (3 functions)              │
-    │  🎯 Analysis (1 function - MSA)             │
+    │  🔒 IAM & Security (5 functions)           │
+    │     fetch_iam_accounts                     │
+    │     fetch_service_account_roles            │
+    │     fetch_user_roles                       │
+    │     fetch_custom_roles                     │
+    │     fetch_standard_roles                   │
+    │                                             │
+    │  ☁️ Infrastructure (3 functions)            │
+    │     fetch_compute_instances                │
+    │     fetch_firewall_rules                   │
+    │     fetch_storage_buckets                  │
+    │                                             │
+    │  📰 Feeds & Docs (4 functions)              │
+    │     fetch_security_findings                │
+    │     fetch_security_feeds                   │
+    │     fetch_gcp_release_notes                │
+    │     confluence_sync                        │
+    │                                             │
+    │  🎯 Analysis (1 function)                   │
+    │     multi_service_analyzer (MSA)           │
     └────────────────────┬───────────────────────┘
                          │
     ┌────────────────────▼───────────────────────┐
     │       External Data Sources                 │
     │  - GCP APIs & Services                     │
-    │  - Confluence Documentation                │
-    │  - RSS Security Feeds                       │
-    │  - GCP Release Notes                       │
+    │  - Confluence Documentation (SEC, POLICY)  │
+    │  - RSS Security Feeds (10+ sources)        │
+    │  - GCP Release Notes & Documentation       │
     └─────────────────────────────────────────────┘
 ```
 
