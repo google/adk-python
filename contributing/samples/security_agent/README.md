@@ -57,15 +57,21 @@ cp .env.example .env
 adk web
 # Runs on http://localhost:8000
 
-# Terminal 2: Start Flask web UI
+# Terminal 2: Start Flask web UI (option 1)
 python3 app.py --port=5001
 # Runs on http://localhost:5001
 # Note: Port 5001 used to avoid macOS AirPlay Receiver conflict on port 5000
+
+# OR Terminal 2: Start Chainlit UI (option 2 - modern ChatGPT-like interface)
+chainlit run chainlit_app.py
+# Runs on http://localhost:8001
+# See docs/CHAINLIT_INTEGRATION.md for details
 ```
 
 ### Architecture
 - **ADK Backend** (port 8000): Agent with 32 tools, direct BigQuery access
 - **Flask Web UI** (port 5001): Web interface with chat UI and dashboard
+- **Chainlit UI** (port 8001): Modern ChatGPT-like interface (recommended)
 - **Cloud Functions**: 13 independent data fetchers (deploy what you need)
 - **BigQuery**: Central data store queried by agent
 
@@ -528,6 +534,8 @@ Edit schedules in deployment scripts:
 
 ## 📚 Documentation
 
+- [Chainlit UI Integration](docs/CHAINLIT_INTEGRATION.md) - Modern ChatGPT-like interface
+- [Complete Tool Reference](docs/TOOLS.md) - All 32 tools documented
 - [Confluence BigQuery Integration Guide](docs/CONFLUENCE_BIGQUERY_INTEGRATION.md)
 - [IAM Analysis Architecture](docs/IAM_ANALYSIS_ARCHITECTURE.md)
 - [Cloud Functions Test Guide](cloud_functions/tests/README.md)

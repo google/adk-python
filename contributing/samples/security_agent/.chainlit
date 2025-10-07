@@ -1,0 +1,41 @@
+[project]
+# Whether to enable telemetry (default: true). No personal data is collected.
+enable_telemetry = false
+
+# List of environment variables to be provided by each user to use the app.
+user_env = []
+
+# Duration (in seconds) during which the session is saved when the connection is lost
+session_timeout = 3600
+
+# Enable third parties caching (e.g LangChain cache)
+cache = false
+
+[features]
+# Show the prompt playground
+prompt_playground = false
+
+[UI]
+# Name of the app and chatbot.
+name = "GCP Security Intelligence Platform"
+
+# Show the readme while the thread is empty.
+show_readme_as_default = true
+
+# Description of the app and chatbot. This is used for HTML tags.
+description = "AI-powered GCP security monitoring and analysis platform with ADK backend and 32 specialized tools"
+
+# Large size content are by default collapsed for a cleaner ui
+default_collapse_content = true
+
+# The default value for the expand messages settings.
+default_expand_messages = false
+
+# Hide the chain of thought details from the user in the UI.
+hide_cot = false
+
+# Link to your github repo. This will add a github button in the UI's header.
+# github = "https://github.com/stuagano/adk-python"
+
+[meta]
+generated_by = "1.0.0"

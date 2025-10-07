@@ -21,6 +21,9 @@ flask==3.0.0
 flask-cors==4.0.0
 gunicorn==21.2.0
 
+# Chainlit UI (modern chat interface)
+chainlit==1.0.0
+
 # Testing (optional)
 pytest==8.3.4
 requests==2.32.4
