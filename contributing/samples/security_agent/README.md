@@ -46,22 +46,26 @@ cd contributing/samples/security_agent
 # Install dependencies
 pip install -r requirements.txt
 
+# Install required packages in ADK environment
+/Users/stuartgano/.local/pipx/venvs/google-adk/bin/python3.13 -m pip install beautifulsoup4 lxml feedparser
+
 # Configure environment
 cp .env.example .env
 # Edit .env with your GCP project details and credentials
 
-# Terminal 1: Start ADK backend (agent with 23 tools)
+# Terminal 1: Start ADK backend (agent with 32 tools)
 adk web
 # Runs on http://localhost:8000
 
-# Terminal 2: Start Flask wrapper (optional - for web UI)
-python3 app.py
-# Runs on http://localhost:5000
+# Terminal 2: Start Flask web UI
+python3 app.py --port=5001
+# Runs on http://localhost:5001
+# Note: Port 5001 used to avoid macOS AirPlay Receiver conflict on port 5000
 ```
 
 ### Architecture
-- **ADK Backend** (port 8000): Agent with 23 tools, direct BigQuery access
-- **Flask Wrapper** (port 5000): Optional web interface that calls ADK backend
+- **ADK Backend** (port 8000): Agent with 32 tools, direct BigQuery access
+- **Flask Web UI** (port 5001): Web interface with chat UI and dashboard
 - **Cloud Functions**: 13 independent data fetchers (deploy what you need)
 - **BigQuery**: Central data store queried by agent
 
@@ -74,21 +78,22 @@ python3 app.py
 └────────────┬─────────────────────────────────────────────────┘
              │
     ┌────────▼────────┐
-    │  Flask Wrapper  │  (Optional - Web UI on port 5000)
-    │    (app.py)     │
-    └────────┬────────┘
+    │  Flask Web UI   │  (Web UI on port 5001)
+    │    (app.py)     │  - Chat interface
+    └────────┬────────┘  - Dashboard & metrics
              │ HTTP
     ┌────────▼────────────────────────────────────────────────┐
     │              ADK Backend (port 8000)                     │
-    │    ADK Security Agent - 23 Tools                        │
+    │    ADK Security Agent - 32 Tools                        │
     │    (Gemini 2.5 Flash - Natural Language Interface)      │
     └────────┬──────────────────────────┬─────────────────────┘
              │                          │
     ┌────────▼────────┐        ┌───────▼─────────┐
-    │  BigQuery Tools │        │ Confluence Tools│
-    │  - Analysis     │        │ - Documentation │
-    │  - Queries      │        │ - Policies      │
-    │  - 12 tools     │        │ - 5 tools       │
+    │  BigQuery Tools │        │ Service Tools   │
+    │  - Analysis     │        │ - Discovery     │
+    │  - Queries      │        │ - Evaluation    │
+    │  - Exploration  │        │ - Onboarding    │
+    │  - 12 tools     │        │ - 20 tools      │
     └────────┬────────┘        └────────┬────────┘
              │                          │
     ┌────────▼──────────────────────────▼────────┐
@@ -128,15 +133,16 @@ python3 app.py
 
 1. **ADK Backend** (`agents/agent.py`) - Port 8000
    - Gemini 2.5 Flash powered conversational AI
-   - 23 tools for security analysis
+   - 32 tools for security analysis
    - Direct BigQuery access via `run_query()` tool
    - Natural language interface to all data
+   - Service evaluation framework with compliance checking
 
-2. **Flask Wrapper** (`app.py`) - Port 5000 (Optional)
-   - Web UI for chat interface
-   - Calls ADK backend via HTTP
+2. **Flask Web UI** (`app.py`) - Port 5001
+   - Web interface for chat with agent
+   - Real-time security dashboard
+   - Metrics visualization
    - Session management
-   - Agent info endpoints
 
 3. **Cloud Functions Suite** (`cloud_functions/`) - Modular
    - 13 independent data fetchers
@@ -147,10 +153,10 @@ python3 app.py
 
 4. **Tool Library** (`agents/_tools/`)
    - **BigQuery Tools** (12): Analysis, queries, exploration
+   - **Service Evaluation** (3): New service assessment, compliance checking
+   - **Service Discovery** (8): GCP service onboarding and learning
    - **Confluence Tools** (5): Documentation search and retrieval
-   - **Service Discovery** (3): GCP service onboarding
-   - **IAM Analysis** (2): Custom role analysis
-   - **MSA Analyzer** (1): Release notes monitoring
+   - **Feed Tools** (4): RSS feeds, release notes, threat intelligence
 
 ### Agent Behaviour & Instructions
 - [Security BigQuery agent instructions](docs/agent_instructions.md) – comprehensive behavioural contract mirrored from `agents/agent.py`.
@@ -233,9 +239,9 @@ gcloud scheduler jobs create http sync-confluence \
 | `fetch_gcp_release_notes/` | GCP platform updates and patches | 361 | Every 6 hours |
 | `confluence_sync/` | Documentation sync to BigQuery | 584 | Daily |
 
-## 🛠️ Available Tools
+## 🛠️ Available Tools (32 Total)
 
-### BigQuery Analysis Tools
+### BigQuery Analysis Tools (12)
 ```python
 1. get_security_insights_summary()    # Overview of all security data
 2. query_security_insights()          # Custom security queries
@@ -251,7 +257,25 @@ gcloud scheduler jobs create http sync-confluence \
 12. hello_world()                      # Test connection
 ```
 
-### Confluence Documentation Tools
+### Service Evaluation & Discovery Tools (11)
+```python
+# Service Evaluation Framework
+1. evaluate_new_service()              # Comprehensive security assessment
+2. check_service_compliance()          # Validate against controls
+3. get_security_controls_inventory()   # List all security controls
+
+# Service Discovery & Onboarding
+4. discover_gcp_services()             # Find enabled services
+5. analyze_gcp_service()               # On-demand service analysis
+6. get_service_resources()             # Enumerate resources
+7. suggest_service_analysis()          # Smart recommendations
+8. learn_service_from_url()            # Learn from documentation
+9. discover_new_gcp_services()         # Find new GCP releases
+10. register_new_service()             # Manual service registration
+11. learn_from_api_spec()              # Learn from OpenAPI specs
+```
+
+### Confluence Documentation Tools (5)
 ```python
 1. search_confluence_documentation()   # Search across spaces
 2. get_confluence_document()          # Retrieve specific docs
@@ -260,11 +284,13 @@ gcloud scheduler jobs create http sync-confluence \
 5. refresh_confluence_cache()         # Manual cache refresh
 ```
 
-### RSS Feed Tools
+### Feed & Release Analysis Tools (4)
 ```python
-1. get_security_feeds()                # Latest security updates
-2. search_security_feeds()             # Search feed content
+1. query_gcp_release_notes()          # GCP release notes
+2. query_security_threat_feeds()      # Security RSS feeds
 3. get_feed_statistics()              # Feed metrics
+4. search_feeds_by_keyword()          # Search feed content
+5. analyze_gcp_releases()             # MSA release impact analysis
 ```
 
 ## 💾 BigQuery Schema
