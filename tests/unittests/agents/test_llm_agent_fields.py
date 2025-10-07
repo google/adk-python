@@ -16,6 +16,7 @@
 
 from typing import Any
 from typing import Optional
+from unittest import mock
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
@@ -341,6 +342,10 @@ class TestCanonicalTools:
     assert tools[0].name == '_my_tool'
     assert tools[0].__class__.__name__ == 'FunctionTool'
 
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
   async def test_handle_google_vais_with_other_tools(self):
     """Test that VertexAiSearchTool is wrapped into an agent."""
     agent = LlmAgent(
