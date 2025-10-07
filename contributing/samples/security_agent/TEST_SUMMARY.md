@@ -58,7 +58,7 @@
   - ✓ WebSocket support enabled
 
 #### 5. **ADK Evals Configuration** ✅ CREATED
-- **File**: `evals/security_agent_eval.yaml`
+- **File**: `evals/security_agent_eval.json`
 - **Test Cases**: 13 scenarios
 - **Coverage**:
   - ✓ BigQuery tools (3 tests)
@@ -68,7 +68,7 @@
   - ✓ Feed tools (2 tests)
   - ✓ Multi-tool workflows (2 tests)
 - **Success Threshold**: 75%
-- **Run Command**: `adk eval run --eval-config evals/security_agent_eval.yaml`
+- **Run Command**: `adk eval agents/ evals/security_agent_eval.json`
 
 ### 🎯 What's Working
 
@@ -136,7 +136,7 @@
 
 1. **Run Evals** (Optional)
    ```bash
-   adk eval run --eval-config evals/security_agent_eval.yaml
+   adk eval agents/ evals/security_agent_eval.json
    ```
 
 2. **Test Chainlit UI** (Optional)
@@ -182,7 +182,7 @@ The platform is **production-ready** for deployment! 🎉
 python3 tests/test_dependencies.py
 
 # Run evals
-adk eval run --eval-config evals/security_agent_eval.yaml
+adk eval agents/ evals/security_agent_eval.json
 
 # Start Chainlit
 chainlit run chainlit_app.py
