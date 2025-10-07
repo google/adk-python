@@ -49,6 +49,10 @@ pip install -r requirements.txt
 # Install required packages in ADK environment
 /Users/stuartgano/.local/pipx/venvs/google-adk/bin/python3.13 -m pip install beautifulsoup4 lxml feedparser
 
+# Validate all dependencies are installed correctly
+python3 test_dependencies.py
+# Should show: "✓ All dependencies installed correctly!"
+
 # Configure environment
 cp .env.example .env
 # Edit .env with your GCP project details and credentials
@@ -461,6 +465,25 @@ ORDER BY severity DESC;
 - **Rate Limiting**: API call throttling and circuit breakers
 
 ## 🧪 Testing
+
+### Validate Dependencies
+```bash
+# Comprehensive dependency validation
+python3 test_dependencies.py
+
+# Tests:
+# - Python version (3.11+)
+# - Core dependencies (ADK, Google Cloud libraries)
+# - Web interface dependencies (Flask, Chainlit, MCP)
+# - Tool dependencies (BeautifulSoup, feedparser, lxml)
+# - ADK pipx environment
+# - Environment variables configuration
+# - Project structure
+# - Module imports
+# - ADK CLI availability
+
+# Expected output: "✓ All dependencies installed correctly!"
+```
 
 ### Run Test Suite
 ```bash
