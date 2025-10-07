@@ -28,6 +28,7 @@ from google.adk.models.lite_llm import FunctionChunk
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.lite_llm import LiteLLMClient
 from google.adk.models.lite_llm import TextChunk
+from google.adk.models.lite_llm import ThoughtChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
@@ -447,6 +448,61 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
                             index=0,
                         )
                     ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+            )
+        ]
+    ),
+]
+
+
+STREAMING_MODEL_RESPONSE_WITH_REASONING = [
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    reasoning_content="Let me think",
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    reasoning_content=" step by step...",
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    content="The answer is ",
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    content="42.",
                 ),
             )
         ]
@@ -1140,7 +1196,7 @@ def test_message_to_generate_content_response_tool_call():
 
 def test_message_to_generate_content_response_with_reasoning_content():
   message = ChatCompletionAssistantMessage(
-    role="assistant", 
+    role="assistant",
     reasoning_content="Thinking step-by-step...",
     content="Hello!",
   )
@@ -1157,7 +1213,7 @@ def test_message_to_generate_content_response_with_reasoning_content():
   # Check that regular content follows
   text_part = response.content.parts[1]
   assert text_part.text == message["content"]
-  assert text_part.thought is False
+  assert text_part.thought is not True
 
 
 def test_get_content_text():
@@ -1871,3 +1927,80 @@ def test_non_gemini_litellm_no_warning():
     # Test with non-Gemini model
     LiteLlm(model="openai/gpt-4o")
     assert len(w) == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_reasoning_content(
+    mock_completion, lite_llm_instance
+):
+  """Test streaming with reasoning content (thought) chunks.
+
+  This test verifies that:
+  1. Reasoning content chunks are handled correctly in streaming mode
+  2. ThoughtChunk objects are yielded for reasoning_content
+  3. Thought parts are yielded incrementally with is_partial=True
+  4. The final response contains both reasoning and regular content
+  """
+  mock_completion.return_value = iter(STREAMING_MODEL_RESPONSE_WITH_REASONING)
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[types.Part.from_text(text="What is the meaning of life?")],
+          )
+      ],
+  )
+
+  responses = []
+  async for response in lite_llm_instance.generate_content_async(
+      llm_request, stream=True
+  ):
+    responses.append(response)
+
+  # Should have 4 partial responses (2 thoughts + 2 text) + 1 final aggregated
+  assert len(responses) == 5
+
+  # First response: thought chunk
+  assert responses[0].content.role == "model"
+  assert len(responses[0].content.parts) == 1
+  assert responses[0].content.parts[0].text == "Let me think"
+  assert responses[0].content.parts[0].thought is True
+  assert responses[0].partial is True
+
+  # Second response: thought chunk
+  assert responses[1].content.role == "model"
+  assert len(responses[1].content.parts) == 1
+  assert responses[1].content.parts[0].text == " step by step..."
+  assert responses[1].content.parts[0].thought is True
+  assert responses[1].partial is True
+
+  # Third response: text chunk
+  assert responses[2].content.role == "model"
+  assert len(responses[2].content.parts) == 1
+  assert responses[2].content.parts[0].text == "The answer is "
+  assert responses[2].content.parts[0].thought is not True
+  assert responses[2].partial is True
+
+  # Fourth response: text chunk
+  assert responses[3].content.role == "model"
+  assert len(responses[3].content.parts) == 1
+  assert responses[3].content.parts[0].text == "42."
+  assert responses[3].content.parts[0].thought is not True
+  assert responses[3].partial is True
+
+  # Final aggregated response should contain both reasoning and content
+  final_response = responses[4]
+  assert final_response.content.role == "model"
+  assert len(final_response.content.parts) == 2
+
+  # First part should be the accumulated thought
+  assert final_response.content.parts[0].text == "Let me think step by step..."
+  assert final_response.content.parts[0].thought is True
+
+  # Second part should be the accumulated text content
+  assert final_response.content.parts[1].text == "The answer is 42."
+  assert final_response.content.parts[1].thought is not True
+
+  # Final response should not be partial
+  assert final_response.partial is False

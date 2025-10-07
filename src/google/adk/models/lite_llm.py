@@ -81,6 +81,10 @@ class TextChunk(BaseModel):
   text: str
 
 
+class ThoughtChunk(BaseModel):
+  text: str
+
+
 class UsageMetadataChunk(BaseModel):
   prompt_tokens: int
   completion_tokens: int
@@ -407,19 +411,19 @@ def _model_response_to_chunk(
     response: ModelResponse,
 ) -> Generator[
     Tuple[
-        Optional[Union[TextChunk, FunctionChunk, UsageMetadataChunk]],
+        Optional[Union[TextChunk, ThoughtChunk, FunctionChunk, UsageMetadataChunk]],
         Optional[str],
     ],
     None,
     None,
 ]:
-  """Converts a litellm message to text, function or usage metadata chunk.
+  """Converts a litellm message to text, thought, function or usage metadata chunk.
 
   Args:
     response: The response from the model.
 
   Yields:
-    A tuple of text or function or usage metadata chunk and finish reason.
+    A tuple of text, thought, function or usage metadata chunk and finish reason.
   """
 
   message = None
@@ -429,6 +433,9 @@ def _model_response_to_chunk(
     # check streaming delta
     if message is None and response["choices"][0].get("delta", None):
       message = response["choices"][0]["delta"]
+
+    if message.get("reasoning_content", None):
+      yield ThoughtChunk(text=message.get("reasoning_content")), finish_reason
 
     if message.get("content", None):
       yield TextChunk(text=message.get("content")), finish_reason
@@ -452,7 +459,9 @@ def _model_response_to_chunk(
           ), finish_reason
 
     if finish_reason and not (
-        message.get("content", None) or message.get("tool_calls", None)
+        message.get("reasoning_content", None)
+        or message.get("content", None)
+        or message.get("tool_calls", None)
     ):
       yield None, finish_reason
 
@@ -835,6 +844,7 @@ class LiteLlm(BaseLlm):
 
     if stream:
       text = ""
+      reasoning_text = ""
       # Track function calls by index
       function_calls = {}  # index -> {name, args, id}
       completion_args["stream"] = True
@@ -864,6 +874,15 @@ class LiteLlm(BaseLlm):
 
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)
+            )
+          elif isinstance(chunk, ThoughtChunk):
+            reasoning_text += chunk.text
+            yield _message_to_generate_content_response(
+                ChatCompletionAssistantMessage(
+                    role="assistant",
+                    reasoning_content=chunk.text,
+                ),
+                is_partial=True,
             )
           elif isinstance(chunk, TextChunk):
             text += chunk.text
@@ -898,22 +917,30 @@ class LiteLlm(BaseLlm):
                         ),
                     )
                 )
+            message_kwargs = {
+                "role": "assistant",
+                "content": text,
+                "tool_calls": tool_calls,
+            }
+            if reasoning_text:
+              message_kwargs["reasoning_content"] = reasoning_text
             aggregated_llm_response_with_tool_call = (
                 _message_to_generate_content_response(
-                    ChatCompletionAssistantMessage(
-                        role="assistant",
-                        content=text,
-                        tool_calls=tool_calls,
-                    )
+                    ChatCompletionAssistantMessage(**message_kwargs)
                 )
             )
             text = ""
+            reasoning_text = ""
             function_calls.clear()
-          elif finish_reason == "stop" and text:
+          elif finish_reason == "stop" and (text or reasoning_text):
+            message_kwargs = {"role": "assistant", "content": text}
+            if reasoning_text:
+              message_kwargs["reasoning_content"] = reasoning_text
             aggregated_llm_response = _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(role="assistant", content=text)
+                ChatCompletionAssistantMessage(**message_kwargs)
             )
             text = ""
+            reasoning_text = ""
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with
