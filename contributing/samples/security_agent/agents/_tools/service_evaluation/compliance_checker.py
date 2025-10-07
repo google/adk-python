@@ -300,7 +300,7 @@ class ComplianceChecker:
 def check_service_compliance(
     service_type: str,
     detailed: bool = False
-) -> ComplianceReport:
+) -> str:
     """
     Check compliance for a service type
 
@@ -309,12 +309,19 @@ def check_service_compliance(
         detailed: Include detailed violation information
 
     Returns:
-        ComplianceReport with status and violations
+        JSON string with compliance report
     """
     checker = ComplianceChecker()
     report = checker.check_compliance(service_type)
 
-    if detailed:
-        print(checker.format_report(report, detailed=True))
+    # Convert to dict for JSON serialization
+    from dataclasses import asdict
+    import json
 
-    return report
+    report_dict = asdict(report)
+
+    if detailed:
+        # Add formatted text for detailed view
+        report_dict['formatted_report'] = checker.format_report(report, detailed=True)
+
+    return json.dumps(report_dict, indent=2)

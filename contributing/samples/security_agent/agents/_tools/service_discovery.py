@@ -765,7 +765,7 @@ def learn_service_from_url(documentation_url: str) -> str:
         return f"Error learning from URL: {str(e)}"
 
 
-def discover_new_gcp_services(release_notes_url: str = None) -> str:
+def discover_new_gcp_services(release_notes_url: Optional[str] = None) -> str:
     """
     Discover newly released GCP services from release notes.
 

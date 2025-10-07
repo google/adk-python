@@ -379,9 +379,25 @@ class SecurityControlsInventory:
 # Initialize singleton instance
 _inventory = None
 
-def get_security_controls_inventory() -> SecurityControlsInventory:
-    """Get the singleton security controls inventory"""
+def get_security_controls_inventory() -> str:
+    """
+    Get the security controls inventory as JSON
+
+    Returns:
+        JSON string with security controls inventory
+    """
+    import json
+    from dataclasses import asdict
+
     global _inventory
     if _inventory is None:
         _inventory = SecurityControlsInventory()
-    return _inventory
+
+    # Serialize to dict
+    controls_dict = {
+        'total_controls': len(_inventory.controls),
+        'controls': [asdict(control) for control in _inventory.controls.values()],
+        'categories': list(set(c.category.value for c in _inventory.controls.values()))
+    }
+
+    return json.dumps(controls_dict, indent=2, default=str)

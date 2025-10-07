@@ -738,7 +738,7 @@ def parse_service_documentation(url: str) -> str:
     return output
 
 
-def discover_new_services(release_notes_url: str = None) -> str:
+def discover_new_services(release_notes_url: Optional[str] = None) -> str:
     """
     Discover newly released GCP services from release notes or documentation.
 

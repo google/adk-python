@@ -21,7 +21,7 @@ class ServiceOnboardingTool:
     Automatically extracts service details and performs compliance checks.
     """
 
-    def __init__(self, project_id: str = None):
+    def __init__(self, project_id: Optional[str] = None):
         """Initialize the service onboarding tool"""
         import os
         self.project_id = project_id or os.environ.get('GOOGLE_CLOUD_PROJECT', 'mgm-digitalconcierge')

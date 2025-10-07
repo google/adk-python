@@ -57,7 +57,7 @@ from ._tools.service_discovery import (
 from ._tools.msa_analyzer import analyze_gcp_releases
 
 # Import Service Evaluation Framework
-from ._tools.service_evaluation import evaluate_new_service
+from ._tools.service_evaluation import evaluate_new_service, check_service_compliance
 
 # Import configuration
 from ._tools.base import PROJECT_ID, DEFAULT_DATASET, DEFAULT_TABLE
@@ -127,6 +127,8 @@ tools = [
     FunctionTool(analyze_gcp_releases),
     # Service Evaluation Framework - Comprehensive service security assessment
     FunctionTool(evaluate_new_service),
+    # Compliance Checker - Validate controls against BigQuery (actual environment state)
+    FunctionTool(check_service_compliance),
     # Standard BigQuery tools
     FunctionTool(hello_world),
     FunctionTool(list_datasets),

@@ -662,14 +662,30 @@ def get_service_categories():
 
     return jsonify({"success": True, "categories": categories})
 
+if __name__ == '__main__':
+    import os
+    import sys
 
-if __name__ == "__main__":
+    # Get port from environment variable or command line argument
+    port = 5000  # default
+
+    # Check for --port argument
+    for i, arg in enumerate(sys.argv):
+        if arg.startswith('--port='):
+            port = int(arg.split('=')[1])
+        elif arg == '--port' and i + 1 < len(sys.argv):
+            port = int(sys.argv[i + 1])
+
+    # Check environment variable (FLASK_PORT takes precedence)
+    if 'FLASK_PORT' in os.environ:
+        port = int(os.environ['FLASK_PORT'])
+
     print("🚀 Starting Flask app for BigQuery Security Agent")
     print(f"   Agent: {root_agent.name}")
     print(f"   Model: {root_agent.model}")
     print(f"   Tools: {len(root_agent.tools)} tools available")
-    print("\n📍 Server running at: http://localhost:5000")
-    print("   Health check: http://localhost:5000/health")
-    print("   Agent info: http://localhost:5000/agent-info")
+    print(f"\n📍 Server running at: http://localhost:{port}")
+    print(f"   Health check: http://localhost:{port}/health")
+    print(f"   Agent info: http://localhost:{port}/agent-info")
 
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=port)

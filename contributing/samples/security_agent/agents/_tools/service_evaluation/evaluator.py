@@ -483,7 +483,7 @@ NEXT STEPS
 def evaluate_new_service(
     service_name: str,
     service_type: str,
-    service_profile: Optional[ServiceProfile] = None,
+    service_profile: Optional[str] = None,  # Changed to str (JSON) for ADK compatibility
     use_case: Optional[str] = None,
     data_classification: Optional[str] = None,
     check_current_compliance: bool = False,  # NEW: Check against BigQuery
@@ -495,7 +495,7 @@ def evaluate_new_service(
     Args:
         service_name: Name of the GCP service
         service_type: Service type (storage, compute, database, etc.)
-        service_profile: Optional detailed service profile
+        service_profile: Optional JSON string with service profile details
         use_case: Optional use case description
         data_classification: Optional data classification
         check_current_compliance: Check current compliance against BigQuery (NEW)
@@ -504,11 +504,24 @@ def evaluate_new_service(
     Returns:
         ServiceEvaluationResult (object), dict, or text summary based on return_format
     """
+    # Convert JSON string to ServiceProfile if provided
+    profile_obj = None
+    if service_profile:
+        try:
+            if isinstance(service_profile, str):
+                profile_data = json.loads(service_profile)
+                profile_obj = ServiceProfile(**profile_data)
+            else:
+                profile_obj = service_profile
+        except (json.JSONDecodeError, TypeError):
+            # If parsing fails, pass None and let the evaluator handle it
+            profile_obj = None
+
     evaluator = ServiceEvaluator()
     result = evaluator.evaluate_service(
         service_name=service_name,
         service_type=service_type,
-        service_profile=service_profile,
+        service_profile=profile_obj,
         use_case=use_case,
         data_classification=data_classification,
         check_current_compliance=check_current_compliance  # NEW
