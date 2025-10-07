@@ -14,11 +14,11 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import re
 from typing import Any
-from typing import Dict
 from typing import Optional
 from typing import Union
 
@@ -132,9 +132,9 @@ class VertexAiSessionService(BaseSessionService):
       session_id = get_session_response.name.split('/')[-1]
 
     session = Session(
-        app_name=str(app_name),
-        user_id=str(user_id),
-        id=str(session_id),
+        app_name=app_name,
+        user_id=user_id,
+        id=session_id,
         state=getattr(get_session_response, 'session_state', None) or {},
         last_update_time=get_session_response.update_time.timestamp(),
     )
@@ -162,12 +162,11 @@ class VertexAiSessionService(BaseSessionService):
           f'Session {session_id} does not belong to user {user_id}.'
       )
 
-    session_id_from_name = get_session_response.name.split('/')[-1]
     update_timestamp = get_session_response.update_time.timestamp()
     session = Session(
-        app_name=str(app_name),
-        user_id=str(user_id),
-        id=str(session_id_from_name),
+        app_name=app_name,
+        user_id=user_id,
+        id=session_id,
         state=getattr(get_session_response, 'session_state', None) or {},
         last_update_time=update_timestamp,
     )
@@ -186,10 +185,10 @@ class VertexAiSessionService(BaseSessionService):
         name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
         **list_events_kwargs,
     )
-    session.events += [_from_api_event(event) for event in events_iterator]
-
-    session.events = [
-        event for event in session.events if event.timestamp <= update_timestamp
+    session.events += [
+        _from_api_event(event)
+        for event in events_iterator
+        if event.timestamp.timestamp() <= update_timestamp
     ]
 
     # Filter events based on config
@@ -259,7 +258,12 @@ class VertexAiSessionService(BaseSessionService):
           'artifact_delta': event.actions.artifact_delta,
           'transfer_agent': event.actions.transfer_to_agent,
           'escalate': event.actions.escalate,
-          'requested_auth_configs': event.actions.requested_auth_configs,
+          'requested_auth_configs': {
+              k: json.loads(v.model_dump_json(exclude_none=True, by_alias=True))
+              for k, v in event.actions.requested_auth_configs.items()
+          },
+          # TODO: add requested_tool_confirmations, compaction, agent_state once
+          # they are available in the API.
       }
     if event.error_code:
       config['error_code'] = event.error_code
@@ -305,7 +309,7 @@ class VertexAiSessionService(BaseSessionService):
     pattern = r'^projects/([a-zA-Z0-9-_]+)/locations/([a-zA-Z0-9-_]+)/reasoningEngines/(\d+)$'
     match = re.fullmatch(pattern, app_name)
 
-    if not bool(match):
+    if not match:
       raise ValueError(
           f'App name {app_name} is not valid. It should either be the full'
           ' ReasoningEngine resource name, or the reasoning engine id.'
@@ -340,59 +344,6 @@ def _is_vertex_express_mode(
       and project is None
       and location is None
   )
-
-
-def _convert_event_to_json(event: Event) -> Dict[str, Any]:
-  metadata_json = {
-      'partial': event.partial,
-      'turn_complete': event.turn_complete,
-      'interrupted': event.interrupted,
-      'branch': event.branch,
-      'custom_metadata': event.custom_metadata,
-      'long_running_tool_ids': (
-          list(event.long_running_tool_ids)
-          if event.long_running_tool_ids
-          else None
-      ),
-  }
-  if event.grounding_metadata:
-    metadata_json['grounding_metadata'] = event.grounding_metadata.model_dump(
-        exclude_none=True, mode='json'
-    )
-
-  event_json = {
-      'author': event.author,
-      'invocation_id': event.invocation_id,
-      'timestamp': {
-          'seconds': int(event.timestamp),
-          'nanos': int(
-              (event.timestamp - int(event.timestamp)) * 1_000_000_000
-          ),
-      },
-      'error_code': event.error_code,
-      'error_message': event.error_message,
-      'event_metadata': metadata_json,
-  }
-
-  if event.actions:
-    actions_json = {
-        'skip_summarization': event.actions.skip_summarization,
-        'state_delta': event.actions.state_delta,
-        'artifact_delta': event.actions.artifact_delta,
-        'transfer_agent': event.actions.transfer_to_agent,
-        'escalate': event.actions.escalate,
-        'requested_auth_configs': event.actions.requested_auth_configs,
-    }
-    event_json['actions'] = actions_json
-  if event.content:
-    event_json['content'] = event.content.model_dump(
-        exclude_none=True, mode='json'
-    )
-  if event.error_code:
-    event_json['error_code'] = event.error_code
-  if event.error_message:
-    event_json['error_message'] = event.error_message
-  return event_json
 
 
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:

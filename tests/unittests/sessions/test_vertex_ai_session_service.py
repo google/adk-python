@@ -22,6 +22,9 @@ from typing import Tuple
 from unittest import mock
 
 from dateutil.parser import isoparse
+from fastapi.openapi import models as openapi_models
+from google.adk.auth import auth_schemes
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.base_session_service import GetSessionConfig
@@ -522,6 +525,18 @@ async def test_append_event():
           transfer_to_agent='another_agent',
           state_delta={'new_key': 'new_value'},
           skip_summarization=True,
+          requested_auth_configs={
+              'test_auth': AuthConfig(
+                  auth_scheme=auth_schemes.OAuth2(
+                      flows=openapi_models.OAuthFlows(
+                          implicit=openapi_models.OAuthFlowImplicit(
+                              authorizationUrl='http://test.com/auth',
+                              scopes={},
+                          )
+                      )
+                  ),
+              ),
+          },
       ),
       error_code='1',
       error_message='test_error',
