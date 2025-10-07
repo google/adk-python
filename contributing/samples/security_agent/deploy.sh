@@ -53,6 +53,8 @@ if ! gcloud iam service-accounts describe ${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.g
 
     # Grant necessary permissions
     echo "Granting permissions..."
+
+    # Basic permissions
     gcloud projects add-iam-policy-binding ${PROJECT_ID} \
         --member="serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com" \
         --role="roles/cloudfunctions.invoker"
@@ -60,6 +62,24 @@ if ! gcloud iam service-accounts describe ${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.g
     gcloud projects add-iam-policy-binding ${PROJECT_ID} \
         --member="serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com" \
         --role="roles/logging.logWriter"
+
+    # BigQuery permissions (required for agent to query data)
+    gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+        --member="serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com" \
+        --role="roles/bigquery.dataEditor"
+
+    gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+        --member="serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com" \
+        --role="roles/bigquery.jobUser"
+
+    # GCP resource monitoring permissions (required for security analysis)
+    gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+        --member="serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com" \
+        --role="roles/resourcemanager.organizationViewer"
+
+    gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+        --member="serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com" \
+        --role="roles/iam.securityReviewer"
 else
     echo "Service account already exists: ${SERVICE_ACCOUNT}"
 fi
