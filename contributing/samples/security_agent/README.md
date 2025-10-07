@@ -57,6 +57,12 @@ python3 test_dependencies.py
 cp .env.example .env
 # Edit .env with your GCP project details and credentials
 
+# Start all services with one command
+./scripts/start_all.sh
+# Starts: ADK backend (8000), Flask UI (5001), Chainlit UI (8001)
+
+# OR start services individually:
+
 # Terminal 1: Start ADK backend (agent with 32 tools)
 adk web
 # Runs on http://localhost:8000
@@ -75,6 +81,9 @@ chainlit run chainlit_app.py
 python3 mcp_server.py
 # Exposes 4 high-level tools via Model Context Protocol
 # See docs/MCP_SERVER_INTEGRATION.md for setup
+
+# Stop all services
+./scripts/stop_all.sh
 ```
 
 ### Interface Options
