@@ -76,61 +76,116 @@ async def run_agent_interaction(message: str, session_id: str) -> str:
         return f"❌ Error communicating with agent: {str(e)}"
 
 
+@cl.set_chat_profiles
+async def chat_profile():
+    """Define multiple agent profiles for the dropdown selector."""
+    return [
+        cl.ChatProfile(
+            name="Security Agent",
+            markdown_description="🔒 **GCP Security Intelligence** - Access to 32 security tools across BigQuery, compliance, service discovery, and documentation.",
+            icon="https://api.iconify.design/mdi/shield-check.svg?color=%234285f4",
+        ),
+        cl.ChatProfile(
+            name="Compliance Expert",
+            markdown_description="✅ **Compliance & Audit** - Specialized in PCI-DSS, HIPAA, SOC2 compliance checking and security controls.",
+            icon="https://api.iconify.design/mdi/certificate.svg?color=%2334a853",
+        ),
+        cl.ChatProfile(
+            name="Service Discovery",
+            markdown_description="☁️ **GCP Service Discovery** - Onboard new services, analyze resources, and explore API specifications.",
+            icon="https://api.iconify.design/mdi/cloud-search.svg?color=%23fbbc04",
+        ),
+        cl.ChatProfile(
+            name="Documentation Search",
+            markdown_description="📚 **Confluence & Docs** - Search security documentation, gap analysis, and knowledge retrieval.",
+            icon="https://api.iconify.design/mdi/book-search.svg?color=%23ea4335",
+        ),
+    ]
+
+
 @cl.on_chat_start
 async def start():
     """Initialize a new chat session."""
+    # Get selected agent profile
+    chat_profile = cl.user_session.get("chat_profile")
+
     # Create ADK session
     session_id = create_adk_session()
     cl.user_session.set("session_id", session_id)
 
-    # Send welcome message
-    welcome_msg = """# 🔒 GCP Security Intelligence Platform
+    # Customize welcome message based on selected agent profile
+    agent_welcomes = {
+        "Security Agent": """# 🔒 GCP Security Intelligence Platform
 
-Welcome! I'm your AI security agent powered by **ADK** with access to **32 specialized tools** across 7 categories:
+Welcome! I'm your AI security agent with access to **32 specialized tools** across 7 categories:
 
-## 🛠️ Available Capabilities
-
-**🔍 BigQuery Analysis (12 tools)**
-- Security insights summary & statistics
-- Custom SQL queries with cost analysis
-- Table exploration & data sampling
-
-**🎯 Service Evaluation (3 tools)**
-- New service security assessment
-- Compliance checking (PCI, HIPAA, SOC2)
-- Security controls inventory
-
-**☁️ Service Discovery (8 tools)**
-- GCP service onboarding from documentation
-- Resource enumeration & analysis
-- API specification learning
-
-**📚 Confluence Documentation (5 tools)**
-- Search across security documentation
-- Gap analysis & coverage reports
-- Document retrieval & statistics
-
-**📰 Feed & Release Analysis (4 tools)**
-- GCP release notes monitoring
-- Security RSS feed aggregation
-- Threat intelligence tracking
+**🔍 BigQuery Analysis** • **🎯 Service Evaluation** • **☁️ Service Discovery**
+**📚 Confluence Docs** • **📰 Feed Analysis** • **🔐 Compliance** • **🛡️ Threat Intel**
 
 ## 💬 Example Questions
-
 - "Show me all critical security findings from the last 24 hours"
 - "Analyze the security posture of Cloud Run"
 - "Find IAM accounts with admin privileges"
-- "Search Confluence for data encryption policies"
 - "What are the latest GCP security updates?"
+
+**Session ID:** `{}`""",
+
+        "Compliance Expert": """# ✅ Compliance & Audit Expert
+
+I specialize in **compliance frameworks** and **security controls** with these capabilities:
+
+**✓ PCI-DSS Compliance** - Payment card security standards
+**✓ HIPAA Compliance** - Healthcare data protection
+**✓ SOC2 Compliance** - Service organization controls
+**✓ Security Controls** - Inventory and validation
+
+## 💬 Example Questions
 - "Evaluate BigQuery for PCI-DSS compliance"
+- "Check Cloud Storage HIPAA compliance status"
+- "List all security controls for Cloud Run"
+- "Generate SOC2 compliance report for GKE"
 
----
+**Session ID:** `{}`""",
 
-**Connected to:** ADK Backend (localhost:8000)
-**Session ID:** `{}`
+        "Service Discovery": """# ☁️ GCP Service Discovery Agent
 
-What would you like to explore?
-""".format(session_id[:8] + "...")
+I help you **onboard and analyze** GCP services with these capabilities:
+
+**🔎 Service Onboarding** - Learn from GCP documentation
+**📋 Resource Enumeration** - Discover and catalog resources
+**🔌 API Exploration** - Analyze service specifications
+**🏗️ Architecture Analysis** - Map service dependencies
+
+## 💬 Example Questions
+- "Onboard Cloud Run service from documentation"
+- "List all resources in project for Cloud Storage"
+- "What APIs are available for BigQuery?"
+- "Analyze the architecture of GKE"
+
+**Session ID:** `{}`""",
+
+        "Documentation Search": """# 📚 Confluence & Documentation Search
+
+I search and analyze **security documentation** with these capabilities:
+
+**🔍 Documentation Search** - Find policies and procedures
+**📊 Gap Analysis** - Identify missing documentation
+**📈 Coverage Reports** - Track documentation completeness
+**📄 Document Retrieval** - Access specific resources
+
+## 💬 Example Questions
+- "Search Confluence for data encryption policies"
+- "Find documentation gaps in security policies"
+- "Get the incident response runbook"
+- "Show documentation coverage statistics"
+
+**Session ID:** `{}`""",
+    }
+
+    # Get appropriate welcome message
+    welcome_msg = agent_welcomes.get(
+        chat_profile, agent_welcomes["Security Agent"]
+    ).format(session_id[:8] + "...")
 
     await cl.Message(content=welcome_msg).send()
 

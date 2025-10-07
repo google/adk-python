@@ -76,12 +76,23 @@ chainlit run chainlit_app.py --port 8080 --watch
 
 ## 📋 Features
 
-### 1. Welcome Message
-When users connect, they see:
-- Platform overview
-- List of 32 tools across 7 categories
-- Example questions
-- Session ID for tracking
+### 1. **Multiple Agent Profiles (Chat Profiles)** ✨
+The dropdown at the top of the UI lets users select from **4 specialized agents**:
+
+| Agent | Icon | Specialization |
+|-------|------|----------------|
+| 🔒 **Security Agent** | Shield | Full access to all 32 tools across 7 categories |
+| ✅ **Compliance Expert** | Certificate | PCI-DSS, HIPAA, SOC2 compliance focused |
+| ☁️ **Service Discovery** | Cloud Search | GCP service onboarding and analysis |
+| 📚 **Documentation Search** | Book | Confluence and knowledge base search |
+
+Each agent has:
+- Custom welcome message
+- Tailored example questions
+- Specialized capabilities description
+- Unique icon and branding
+
+**This is the "hack" your customer is using** - the `@cl.set_chat_profiles` decorator replaces the foundation model selector with an agent selector!
 
 ### 2. Real-time Chat
 - Natural language queries to the security agent
@@ -125,6 +136,46 @@ Users can provide these through the UI or via `.env` file.
 
 ## 🎨 Customization
 
+### Adding Custom Agent Profiles (Plug & Play)
+
+This is how your customer "hacked" the component. Edit [chainlit_app.py](../chainlit_app.py):
+
+```python
+@cl.set_chat_profiles
+async def chat_profile():
+    """Define multiple agent profiles for the dropdown selector."""
+    return [
+        cl.ChatProfile(
+            name="Security Agent",
+            markdown_description="🔒 **GCP Security Intelligence** - Access to 32 security tools...",
+            icon="https://api.iconify.design/mdi/shield-check.svg?color=%234285f4",
+        ),
+        # Add your custom agents here!
+        cl.ChatProfile(
+            name="Cost Optimizer",
+            markdown_description="💰 **Cost Analysis** - Analyze spending and optimize resources",
+            icon="https://api.iconify.design/mdi/cash.svg?color=%2334a853",
+        ),
+        cl.ChatProfile(
+            name="Incident Response",
+            markdown_description="🚨 **Security Incidents** - Handle security events and alerts",
+            icon="https://api.iconify.design/mdi/alert.svg?color=%23ea4335",
+        ),
+    ]
+```
+
+Then add custom welcome messages in the `agent_welcomes` dictionary:
+
+```python
+agent_welcomes = {
+    "Security Agent": """# 🔒 GCP Security Intelligence Platform...""",
+    "Cost Optimizer": """# 💰 Cost Optimization Agent...""",
+    "Incident Response": """# 🚨 Incident Response Agent...""",
+}
+```
+
+**Icons**: Use [Iconify](https://iconify.design/) for professional icons. Search for icons and copy the API URL.
+
 ### Branding
 
 Edit `.chainlit` config file:
@@ -134,21 +185,6 @@ Edit `.chainlit` config file:
 name = "Your Company Security Platform"
 description = "Custom description"
 # github = "https://github.com/your-org/your-repo"
-```
-
-### Welcome Message
-
-Edit [chainlit_app.py](../chainlit_app.py) `start()` function:
-
-```python
-@cl.on_chat_start
-async def start():
-    welcome_msg = """
-    # Your Custom Welcome Message
-
-    Add your branding, instructions, etc.
-    """
-    await cl.Message(content=welcome_msg).send()
 ```
 
 ### Timeout Configuration
