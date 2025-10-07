@@ -205,9 +205,19 @@ class AgentLoader(BaseAgentLoader):
     envs.load_dotenv_for_agent(actual_agent_name, str(agents_dir))
 
     if root_agent := self._load_from_module_or_package(actual_agent_name):
+      self._ensure_app_name_matches(
+          maybe_app=root_agent,
+          expected_app_name=actual_agent_name,
+          agents_dir=agents_dir,
+      )
       return root_agent
 
     if root_agent := self._load_from_submodule(actual_agent_name):
+      self._ensure_app_name_matches(
+          maybe_app=root_agent,
+          expected_app_name=actual_agent_name,
+          agents_dir=agents_dir,
+      )
       return root_agent
 
     if root_agent := self._load_from_yaml_config(actual_agent_name, agents_dir):
@@ -221,6 +231,33 @@ class AgentLoader(BaseAgentLoader):
         f" '{actual_agent_name}/root_agent.yaml'. Ensure"
         f" '{agents_dir}/{actual_agent_name}' is structured correctly, an .env"
         " file can be loaded if present, and a root_agent is exposed."
+    )
+
+  def _ensure_app_name_matches(
+      self,
+      *,
+      maybe_app: Union[BaseAgent, App],
+      expected_app_name: str,
+      agents_dir: str,
+  ) -> None:
+    """Raises a detailed error when App.name does not match its directory."""
+
+    if not isinstance(maybe_app, App):
+      return
+
+    # Built-in apps live under double-underscore directories.
+    if expected_app_name.startswith("__"):
+      return
+
+    if maybe_app.name == expected_app_name:
+      return
+
+    raise ValueError(
+        "App name mismatch detected. The App defined at "
+        f"'{agents_dir}/{expected_app_name}' declares name "
+        f"'{maybe_app.name}', but ADK expects it to match the directory "
+        f"name '{expected_app_name}'. Rename the App or the folder so they "
+        "match, then reload."
     )
 
   @override

@@ -19,12 +19,15 @@ from typing import Any
 from typing import Dict
 from typing import List
 
+from google.adk.tools.tool_context import ToolContext
 import yaml
 
 from .read_files import read_files
 
 
-async def read_config_files(file_paths: List[str]) -> Dict[str, Any]:
+async def read_config_files(
+    file_paths: List[str], tool_context: ToolContext
+) -> Dict[str, Any]:
   """Read multiple YAML configuration files and extract metadata.
 
   Args:
@@ -49,7 +52,7 @@ async def read_config_files(file_paths: List[str]) -> Dict[str, Any]:
       - errors: list of general error messages
   """
   # Read all files using the file_manager read_files tool
-  read_result = await read_files(file_paths)
+  read_result = await read_files(file_paths, tool_context)
 
   result = {
       "success": True,

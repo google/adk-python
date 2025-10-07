@@ -292,8 +292,9 @@ def _setup_telemetry(
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = TracerProvider()
-    for exporter in internal_exporters:
-      tracer_provider.add_span_processor(exporter)
+    if internal_exporters is not None:
+      for exporter in internal_exporters:
+        tracer_provider.add_span_processor(exporter)
     trace.set_tracer_provider(tracer_provider=tracer_provider)
 
 
@@ -312,10 +313,10 @@ def _otel_env_vars_enabled() -> bool:
 def _setup_gcp_telemetry_experimental(
     internal_exporters: list[SpanProcessor] = None,
 ):
-  from ..telemetry.setup import maybe_set_otel_providers
+  if typing.TYPE_CHECKING:
+    from ..telemetry.setup import OTelHooks
 
-  otel_hooks_to_add = []
-  otel_resource = None
+  otel_hooks_to_add: list[OTelHooks] = []
 
   if internal_exporters:
     from ..telemetry.setup import OTelHooks
@@ -323,8 +324,13 @@ def _setup_gcp_telemetry_experimental(
     # Register ADK-specific exporters in trace provider.
     otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
 
+  import google.auth
+
   from ..telemetry.google_cloud import get_gcp_exporters
   from ..telemetry.google_cloud import get_gcp_resource
+  from ..telemetry.setup import maybe_set_otel_providers
+
+  credentials, project_id = google.auth.default()
 
   otel_hooks_to_add.append(
       get_gcp_exporters(
@@ -334,12 +340,14 @@ def _setup_gcp_telemetry_experimental(
           # TODO - reenable metrics once errors during shutdown are fixed.
           enable_cloud_metrics=False,
           enable_cloud_logging=True,
+          google_auth=(credentials, project_id),
       )
   )
-  otel_resource = get_gcp_resource()
+  otel_resource = get_gcp_resource(project_id)
 
   maybe_set_otel_providers(
-      otel_hooks_to_setup=otel_hooks_to_add, otel_resource=otel_resource
+      otel_hooks_to_setup=otel_hooks_to_add,
+      otel_resource=otel_resource,
   )
   _setup_instrumentation_lib_if_installed()
 

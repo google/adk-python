@@ -28,6 +28,7 @@ from google.adk.tools.bigquery import BigQueryCredentialsConfig
 from google.adk.tools.bigquery import BigQueryToolset
 from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.bigquery.config import WriteMode
+from google.adk.tools.bigquery.query_tool import analyze_contribution
 from google.adk.tools.bigquery.query_tool import execute_sql
 from google.adk.tools.bigquery.query_tool import forecast
 from google.adk.tools.tool_context import ToolContext
@@ -874,7 +875,8 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
   """Test execute_sql tool for non-SELECT query when writes are protected.
 
   This is a special case when the destination table is a persistent/permananent
-  one and the protected write is enabled. In this case the operation should fail.
+  one and the protected write is enabled. In this case the operation should
+  fail.
   """
   project = "my_project"
   query_result = []
@@ -1272,3 +1274,130 @@ def test_forecast_with_invalid_id_cols():
 
   assert result["status"] == "ERROR"
   assert "All elements in id_cols must be strings." in result["error_details"]
+
+
+# analyze_contribution calls execute_sql twice. We need to test that the
+# queries are properly constructed and call execute_sql with the correct
+# parameters exactly twice.
+@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
+@mock.patch("uuid.uuid4", autospec=True)
+def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
+  """Test analyze_contribution tool invocation with a table id."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+  mock_uuid.return_value = "test_uuid"
+  mock_execute_sql.return_value = {"status": "SUCCESS"}
+
+  analyze_contribution(
+      project_id="test-project",
+      input_data="test-dataset.test-table",
+      dimension_id_cols=["dim1", "dim2"],
+      contribution_metric="SUM(metric)",
+      is_test_col="is_test",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  expected_create_model_query = """
+  CREATE TEMP MODEL contribution_analysis_model_test_uuid
+    OPTIONS (MODEL_TYPE = 'CONTRIBUTION_ANALYSIS', CONTRIBUTION_METRIC = 'SUM(metric)', IS_TEST_COL = 'is_test', DIMENSION_ID_COLS = ['dim1', 'dim2'], TOP_K_INSIGHTS_BY_APRIORI_SUPPORT = 30, PRUNING_METHOD = 'PRUNE_REDUNDANT_INSIGHTS')
+  AS SELECT * FROM `test-dataset.test-table`
+  """
+
+  expected_get_insights_query = """
+  SELECT * FROM ML.GET_INSIGHTS(MODEL contribution_analysis_model_test_uuid)
+  """
+
+  assert mock_execute_sql.call_count == 2
+  mock_execute_sql.assert_any_call(
+      "test-project",
+      expected_create_model_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+  mock_execute_sql.assert_any_call(
+      "test-project",
+      expected_get_insights_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+
+
+# analyze_contribution calls execute_sql twice. We need to test that the
+# queries are properly constructed and call execute_sql with the correct
+# parameters exactly twice.
+@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
+@mock.patch("uuid.uuid4", autospec=True)
+def test_analyze_contribution_with_query_statement(mock_uuid, mock_execute_sql):
+  """Test analyze_contribution tool invocation with a query statement."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+  mock_uuid.return_value = "test_uuid"
+  mock_execute_sql.return_value = {"status": "SUCCESS"}
+
+  input_data_query = "SELECT * FROM `test-dataset.test-table`"
+  analyze_contribution(
+      project_id="test-project",
+      input_data=input_data_query,
+      dimension_id_cols=["dim1", "dim2"],
+      contribution_metric="SUM(metric)",
+      is_test_col="is_test",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  expected_create_model_query = f"""
+  CREATE TEMP MODEL contribution_analysis_model_test_uuid
+    OPTIONS (MODEL_TYPE = 'CONTRIBUTION_ANALYSIS', CONTRIBUTION_METRIC = 'SUM(metric)', IS_TEST_COL = 'is_test', DIMENSION_ID_COLS = ['dim1', 'dim2'], TOP_K_INSIGHTS_BY_APRIORI_SUPPORT = 30, PRUNING_METHOD = 'PRUNE_REDUNDANT_INSIGHTS')
+  AS ({input_data_query})
+  """
+
+  expected_get_insights_query = """
+  SELECT * FROM ML.GET_INSIGHTS(MODEL contribution_analysis_model_test_uuid)
+  """
+
+  assert mock_execute_sql.call_count == 2
+  mock_execute_sql.assert_any_call(
+      "test-project",
+      expected_create_model_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+  mock_execute_sql.assert_any_call(
+      "test-project",
+      expected_get_insights_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+
+
+def test_analyze_contribution_with_invalid_dimension_id_cols():
+  """Test analyze_contribution tool invocation with invalid dimension_id_cols."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig()
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  result = analyze_contribution(
+      project_id="test-project",
+      input_data="test-dataset.test-table",
+      dimension_id_cols=["dim1", 123],
+      contribution_metric="metric",
+      is_test_col="is_test",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  assert result["status"] == "ERROR"
+  assert (
+      "All elements in dimension_id_cols must be strings."
+      in result["error_details"]
+  )
