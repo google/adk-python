@@ -82,22 +82,22 @@ async def chat_profile():
     return [
         cl.ChatProfile(
             name="Security Agent",
-            markdown_description="🔒 **GCP Security Intelligence** - Access to 32 security tools across BigQuery, compliance, service discovery, and documentation.",
+            markdown_description="🔒 **Unified Security Agent** - One agent with ALL 32 tools. General security analysis, compliance, discovery, and documentation.",
             icon="https://api.iconify.design/mdi/shield-check.svg?color=%234285f4",
         ),
         cl.ChatProfile(
             name="Compliance Expert",
-            markdown_description="✅ **Compliance & Audit** - Specialized in PCI-DSS, HIPAA, SOC2 compliance checking and security controls.",
+            markdown_description="✅ **Start with Compliance** - Same agent, compliance-focused examples. Has ALL tools (BigQuery, discovery, docs, etc.).",
             icon="https://api.iconify.design/mdi/certificate.svg?color=%2334a853",
         ),
         cl.ChatProfile(
             name="Service Discovery",
-            markdown_description="☁️ **GCP Service Discovery** - Onboard new services, analyze resources, and explore API specifications.",
+            markdown_description="☁️ **Start with Service Discovery** - Same agent, discovery-focused examples. Has ALL tools (compliance, BigQuery, docs, etc.).",
             icon="https://api.iconify.design/mdi/cloud-search.svg?color=%23fbbc04",
         ),
         cl.ChatProfile(
             name="Documentation Search",
-            markdown_description="📚 **Confluence & Docs** - Search security documentation, gap analysis, and knowledge retrieval.",
+            markdown_description="📚 **Start with Documentation** - Same agent, docs-focused examples. Has ALL tools (compliance, discovery, BigQuery, etc.).",
             icon="https://api.iconify.design/mdi/book-search.svg?color=%23ea4335",
         ),
     ]
@@ -117,67 +117,80 @@ async def start():
     agent_welcomes = {
         "Security Agent": """# 🔒 GCP Security Intelligence Platform
 
-Welcome! I'm your AI security agent with access to **32 specialized tools** across 7 categories:
+I'm your unified AI security agent with **32 specialized tools** across all security domains:
 
 **🔍 BigQuery Analysis** • **🎯 Service Evaluation** • **☁️ Service Discovery**
 **📚 Confluence Docs** • **📰 Feed Analysis** • **🔐 Compliance** • **🛡️ Threat Intel**
 
-## 💬 Example Questions
-- "Show me all critical security findings from the last 24 hours"
-- "Analyze the security posture of Cloud Run"
-- "Find IAM accounts with admin privileges"
+## 💬 Try These Questions
+- "Show me critical security findings from the last 24 hours"
+- "Evaluate BigQuery for PCI-DSS compliance"
+- "Search Confluence for data encryption policies"
 - "What are the latest GCP security updates?"
+- "Onboard Cloud Run service from documentation"
+- "Find IAM accounts with admin privileges"
+
+I can help with **security analysis, compliance checking, service discovery, documentation search, and more** - just ask!
 
 **Session ID:** `{}`""",
 
-        "Compliance Expert": """# ✅ Compliance & Audit Expert
+        "Compliance Expert": """# ✅ Compliance & Security Controls
 
-I specialize in **compliance frameworks** and **security controls** with these capabilities:
+Start here for **compliance and audit** questions. I have full access to:
 
-**✓ PCI-DSS Compliance** - Payment card security standards
-**✓ HIPAA Compliance** - Healthcare data protection
-**✓ SOC2 Compliance** - Service organization controls
-**✓ Security Controls** - Inventory and validation
+**All 32 Tools:** BigQuery • Service Evaluation • Service Discovery • Confluence • Feeds • Compliance • Threat Intel
 
-## 💬 Example Questions
+## 💬 Suggested Compliance Questions
 - "Evaluate BigQuery for PCI-DSS compliance"
 - "Check Cloud Storage HIPAA compliance status"
 - "List all security controls for Cloud Run"
 - "Generate SOC2 compliance report for GKE"
 
+## 💬 But I Can Also Help With
+- Security data analysis ("Show critical findings from last week")
+- Service discovery ("Onboard new GCP service")
+- Documentation search ("Find incident response policy")
+- Threat intelligence ("Latest security updates")
+
 **Session ID:** `{}`""",
 
-        "Service Discovery": """# ☁️ GCP Service Discovery Agent
+        "Service Discovery": """# ☁️ GCP Service Discovery & Analysis
 
-I help you **onboard and analyze** GCP services with these capabilities:
+Start here for **service onboarding and analysis**. I have full access to:
 
-**🔎 Service Onboarding** - Learn from GCP documentation
-**📋 Resource Enumeration** - Discover and catalog resources
-**🔌 API Exploration** - Analyze service specifications
-**🏗️ Architecture Analysis** - Map service dependencies
+**All 32 Tools:** BigQuery • Service Evaluation • Service Discovery • Confluence • Feeds • Compliance • Threat Intel
 
-## 💬 Example Questions
+## 💬 Suggested Service Discovery Questions
 - "Onboard Cloud Run service from documentation"
 - "List all resources in project for Cloud Storage"
 - "What APIs are available for BigQuery?"
 - "Analyze the architecture of GKE"
 
+## 💬 But I Can Also Help With
+- Security analysis ("Show security posture of Cloud Run")
+- Compliance checking ("Evaluate service for PCI-DSS")
+- Documentation search ("Find service security policies")
+- Threat monitoring ("Check for service vulnerabilities")
+
 **Session ID:** `{}`""",
 
-        "Documentation Search": """# 📚 Confluence & Documentation Search
+        "Documentation Search": """# 📚 Documentation & Knowledge Search
 
-I search and analyze **security documentation** with these capabilities:
+Start here for **documentation and policy** questions. I have full access to:
 
-**🔍 Documentation Search** - Find policies and procedures
-**📊 Gap Analysis** - Identify missing documentation
-**📈 Coverage Reports** - Track documentation completeness
-**📄 Document Retrieval** - Access specific resources
+**All 32 Tools:** BigQuery • Service Evaluation • Service Discovery • Confluence • Feeds • Compliance • Threat Intel
 
-## 💬 Example Questions
+## 💬 Suggested Documentation Questions
 - "Search Confluence for data encryption policies"
 - "Find documentation gaps in security policies"
 - "Get the incident response runbook"
 - "Show documentation coverage statistics"
+
+## 💬 But I Can Also Help With
+- Security analysis ("Query security insights")
+- Compliance checking ("Evaluate for HIPAA compliance")
+- Service discovery ("Onboard new GCP service")
+- Threat intelligence ("Latest security advisories")
 
 **Session ID:** `{}`""",
     }
