@@ -617,6 +617,10 @@ class Runner:
         Either `session` or both `user_id` and `session_id` must be provided.
     """
     run_config = run_config or RunConfig()
+    # Some native audio models requires the modality to be set. So we set it to
+    # AUDIO by default.
+    if run_config.response_modalities is None:
+      run_config.response_modalities = ['AUDIO']
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
