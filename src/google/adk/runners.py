@@ -28,7 +28,6 @@ from typing import Optional
 import warnings
 
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
-from google.adk.apps.sliding_window_compactor import SlidingWindowCompactor
 from google.genai import types
 
 from .agents.active_streaming_tool import ActiveStreamingTool

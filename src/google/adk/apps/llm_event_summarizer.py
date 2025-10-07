@@ -27,31 +27,23 @@ from ..models.llm_request import LlmRequest
 from .base_events_compactor import BaseEventsCompactor
 
 
-class SlidingWindowCompactor(BaseEventsCompactor):
-  """A summarizer for Sliding Window Compaction logic in Runner.
+class LlmEventSummarizer(BaseEventsCompactor):
+  """An LLM-based event summarizer for sliding window compaction.
 
-  This compactor works with ADK runner to provide sliding window compaction.
-  The runner uses `compaction_invocation_threshold` and `overlap_size`
-  configured in `EventsCompactionConfig` on the `App` to determine when to
-  trigger compaction and which events to compact. This class performs
-  summarization of events passed by the runner.
+  This class is responsible for summarizing a provided list of events into a
+  single compacted event. It is designed to be used as part of a sliding window
+  compaction process.
 
-  The compaction process is controlled by two parameters read by the Runner from
-  `EventsCompactionConfig`:
-  1.  `compaction_invocation_threshold`: The number of *new* user-initiated
-  invocations that, once fully
-      represented in the session's events, will trigger a compaction.
-  2.  `overlap_size`: The number of preceding invocations to include from the
-  end of the last
-      compacted range. This creates an overlap between consecutive compacted
-      summaries,
-      maintaining context.
+  The actual logic for determining *when* to trigger compaction and *which*
+  events form the sliding window (based on parameters like
+  `compaction_invocation_threshold` and `overlap_size` from
+  `EventsCompactionConfig`) is handled by an external component, such as an ADK
+  "Runner". This compactor focuses solely on generating a summary of the events
+  it receives.
 
-  When `Runner` determines compaction is needed based on
-  `compaction_invocation_threshold`,
-  it selects a range of events based on `overlap_size` and passes them to
-  `maybe_compact_events` for summarization into a `CompactedEvent`.
-  This `CompactedEvent` is then appended to the session by the `Runner`.
+  When `maybe_compact_events` is called with a list of events, this class
+  formats the events, generates a summary using an LLM, and returns a new
+  `Event` containing the summary within an `EventCompaction`.
   """
 
   _DEFAULT_PROMPT_TEMPLATE = (
@@ -68,7 +60,7 @@ class SlidingWindowCompactor(BaseEventsCompactor):
       llm: BaseLlm,
       prompt_template: Optional[str] = None,
   ):
-    """Initializes the SlidingWindowCompactor.
+    """Initializes the LlmEventSummarizer.
 
     Args:
         llm: The LLM used for summarization.

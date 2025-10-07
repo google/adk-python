@@ -20,7 +20,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
-from google.adk.apps.sliding_window_compactor import SlidingWindowCompactor
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
@@ -38,7 +38,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
 
   def setUp(self):
     self.mock_session_service = AsyncMock(spec=BaseSessionService)
-    self.mock_compactor = AsyncMock(spec=SlidingWindowCompactor)
+    self.mock_compactor = AsyncMock(spec=LlmEventSummarizer)
 
   def _create_event(
       self, timestamp: float, invocation_id: str, text: str
