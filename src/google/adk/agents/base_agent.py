@@ -184,21 +184,19 @@ class BaseAgent(BaseModel):
   def _create_agent_state_event(
       self,
       ctx: InvocationContext,
-      *,
-      agent_state: Optional[BaseAgentState] = None,
-      end_of_agent: bool = False,
   ) -> Event:
-    """Returns an event with agent state.
+    """Returns an event with current agent state set in the invocation context.
 
     Args:
       ctx: The invocation context.
-      agent_state: The agent state to checkpoint.
-      end_of_agent: Whether the agent is finished running.
+
+    Returns:
+      An event with the current agent state set in the invocation context.
     """
     event_actions = EventActions()
-    if agent_state:
-      event_actions.agent_state = agent_state.model_dump(mode='json')
-    if end_of_agent:
+    if (agent_state := ctx.agent_states.get(self.name)) is not None:
+      event_actions.agent_state = agent_state
+    if ctx.end_of_agents.get(self.name):
       event_actions.end_of_agent = True
     return Event(
         invocation_id=ctx.invocation_id,

@@ -388,7 +388,8 @@ class LlmAgent(BaseAgent):
         async for event in agen:
           yield event
 
-      yield self._create_agent_state_event(ctx, end_of_agent=True)
+      ctx.set_agent_state(self.name, end_of_agent=True)
+      yield self._create_agent_state_event(ctx)
       return
 
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
@@ -399,7 +400,8 @@ class LlmAgent(BaseAgent):
           return
 
     if ctx.is_resumable:
-      yield self._create_agent_state_event(ctx, end_of_agent=True)
+      ctx.set_agent_state(self.name, end_of_agent=True)
+      yield self._create_agent_state_event(ctx)
 
   @override
   async def _run_live_impl(
