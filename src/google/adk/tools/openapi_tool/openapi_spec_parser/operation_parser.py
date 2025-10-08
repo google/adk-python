@@ -210,8 +210,6 @@ class OperationParser:
     responses = self._operation.responses or {}
     # Default to object type if no 2xx response or if schema is missing
     return_schema = self._create_default_schema()
-    # Default to empty schema if no 2xx response or if schema is missing
-    return_schema = Schema()
 
     # Take the 20x response with the smallest response code.
     valid_codes = list(
