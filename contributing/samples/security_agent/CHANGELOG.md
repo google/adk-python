@@ -5,6 +5,36 @@ All notable changes to the GCP Security Intelligence Platform will be documented
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2025-10-07
+
+### Added
+- **Re-enabled ALL 51 Tools** - Restored complete tool suite that was previously in codebase but not imported:
+
+  **Security Analysis Tools (16 total)**:
+  - Core Security (6): `get_security_insights_summary`, `query_security_insights`, `get_security_statistics`, `get_resources_by_severity`, `get_recent_findings`, `export_findings_to_csv`
+  - IAM Security (5): `get_primitive_role_accounts`, `get_old_service_account_keys`, `analyze_iam_security_posture`, `analyze_all_custom_roles`, `analyze_custom_role_tool`
+  - Network Security (3): `get_open_firewall_rules`, `get_ssh_accessible_resources`, `analyze_network_security_posture`
+  - Storage Security (2): `get_public_storage_buckets`, `get_unencrypted_buckets`
+
+  **Operations & Discovery Tools (35 total)**:
+  - BigQuery Tools (9): Complete BigQuery operations suite
+  - Documentation Tools (5): Confluence integration and caching
+  - Security Feed Tools (4): GCP release notes and threat intelligence
+  - Service Discovery (8): Automated GCP service discovery and learning
+  - Service Documentation (4): API spec parsing and custom service registration
+  - Service Onboarding (1): Automated service onboarding
+  - Release Analysis (2): MSA and GCP release analysis
+  - Critical Security (2): `get_critical_security_findings`, `get_high_severity_findings_by_resource`
+
+### Changed
+- Updated `__init__.py` to import from all tool modules
+- Tool count increased from 6 → **51 tools** (748% increase!)
+- Updated README.md with complete tool categories and descriptions
+- Added comprehensive tool categorization by function
+
+### Why This Matters
+The tools existed in the codebase since earlier versions but were not registered in `__init__.py`, making them inaccessible to the AI agent. This release restores full platform functionality with all 51 tools now available for queries.
+
 ## [1.0.2] - 2025-10-07
 
 ### Added

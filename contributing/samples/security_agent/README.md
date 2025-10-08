@@ -1,6 +1,6 @@
 # GCP Security Intelligence Platform
 
-**Version 1.0.2** | Production Ready ✅
+**Version 1.0.3** | Production Ready ✅
 
 A comprehensive security monitoring and analysis platform for Google Cloud Platform, featuring an ADK-powered AI agent with BigQuery integration and multiple user interfaces.
 
@@ -15,7 +15,7 @@ The GCP Security Intelligence Platform provides a unified AI agent that queries 
 - 🔌 **Multiple Interfaces** - ADK, Flask, Chainlit, MCP Server
 - ☁️ **Modular Cloud Functions** - Deploy only what you need
 - 📚 **Documentation Sync** - Confluence → BigQuery integration
-- 🔒 **Security Tools** - 3 specialized security analysis tools
+- 🔒 **Security Tools** - 51 comprehensive security and operations tools
 
 ## 🚀 Quick Start
 
@@ -78,9 +78,9 @@ cp .env.example .env
 | **Flask UI** | http://localhost:5001 | Custom web interface, dashboards |
 | **Chainlit UI** | http://localhost:8001 | Modern chat interface (recommended for end users) |
 
-## 🛠️ Security Analysis Tools
+## 🛠️ Comprehensive Tool Suite
 
-The platform includes **6 specialized security tools** that query BigQuery:
+The platform includes **51 specialized tools** organized into 9 categories:
 
 ### Core Analysis Tools
 
@@ -175,6 +175,41 @@ export_findings_to_csv()                                    # Export all
 export_findings_to_csv("severity = 'HIGH'", "high.csv")    # Export high severity only
 export_findings_to_csv("created_at >= '2025-10-01'")      # Export October findings
 ```
+
+### 📦 Complete Tool Categories
+
+#### 🔒 Security Analysis Tools (16 tools)
+- **Core Security**: `get_security_insights_summary`, `query_security_insights`, `get_security_statistics`, `get_resources_by_severity`, `get_recent_findings`, `export_findings_to_csv`
+- **IAM Security**: `get_primitive_role_accounts`, `get_old_service_account_keys`, `analyze_iam_security_posture`, `analyze_all_custom_roles`, `analyze_custom_role_tool`
+- **Network Security**: `get_open_firewall_rules`, `get_ssh_accessible_resources`, `analyze_network_security_posture`
+- **Storage Security**: `get_public_storage_buckets`, `get_unencrypted_buckets`
+- **Critical Findings**: `get_critical_security_findings`, `get_high_severity_findings_by_resource`
+
+#### 📊 BigQuery Tools (9 tools)
+- **Basic Operations**: `hello_world`, `list_datasets`, `list_tables`, `get_table_schema`
+- **Query Operations**: `run_query`, `analyze_query_cost`, `get_table_sample`
+- **Exploration**: `explore_all_tables_and_views`, `analyze_table_or_view`
+
+#### 📚 Documentation Tools (5 tools)
+- **Confluence**: `search_confluence_documentation`, `get_confluence_document`, `analyze_confluence_coverage`, `get_confluence_statistics`, `refresh_confluence_cache`
+
+#### 📡 Security Feed Tools (4 tools)
+- **Threat Intelligence**: `query_gcp_release_notes`, `query_security_threat_feeds`, `get_feed_statistics`, `search_feeds_by_keyword`
+
+#### 🔍 Service Discovery Tools (8 tools)
+- **Discovery**: `discover_gcp_services`, `analyze_gcp_service`, `get_service_resources`, `suggest_service_analysis`
+- **Learning**: `learn_service_from_url`, `discover_new_gcp_services`, `register_new_service`, `learn_from_api_spec`
+
+#### 📝 Service Documentation Tools (4 tools)
+- **Parsing**: `parse_service_documentation`, `discover_new_services`, `learn_service_from_api_spec_parser`, `register_custom_service`
+
+#### 🚀 Service Onboarding Tools (1 tool)
+- **Onboarding**: `onboard_service`
+
+#### 📦 Release Analysis Tools (2 tools)
+- **MSA Analysis**: `analyze_releases`, `analyze_gcp_releases`
+
+**Total: 51 Tools** across 9 categories providing comprehensive security analysis, operations, and GCP service management capabilities.
 
 ## 📊 BigQuery Schema
 
