@@ -152,7 +152,7 @@ class OperationParser:
       schema = media_type_object.schema_ or {}
       
       # Sanitize schema to handle 'Any' type
-      if isinstance(schema, Schema):
+      if isinstance(schema, (Schema, dict)):
         schema = self._sanitize_schema(schema)
       
       description = request_body.description or ''
