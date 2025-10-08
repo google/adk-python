@@ -94,7 +94,7 @@ class OperationParser:
       schema = Schema(**schema)
     
     # If schema has 'Any' type, convert to 'object'
-    if hasattr(schema, 'type') and schema.type in ('Any', 'any'):
+    if hasattr(schema, 'type') and schema.type and schema.type.lower() == 'any':
       schema.type = 'object'
     
     return schema
