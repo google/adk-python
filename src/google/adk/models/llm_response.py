@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Optional
+from typing import Union
 
 from google.genai import types
 from pydantic import alias_generators
@@ -77,8 +78,11 @@ class LlmResponse(BaseModel):
   Only used for streaming mode.
   """
 
-  finish_reason: Optional[types.FinishReason] = None
-  """The finish reason of the response."""
+  finish_reason: Optional[Union[types.FinishReason, str]] = None
+  """The finish reason of the response.
+
+  Can be either a types.FinishReason enum (from Gemini) or a string (from LiteLLM).
+  """
 
   error_code: Optional[str] = None
   """Error code if the response is an error. Code varies by model."""
