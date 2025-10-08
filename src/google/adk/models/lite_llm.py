@@ -494,13 +494,17 @@ def _model_response_to_generate_content_response(
   """
 
   message = None
+  finish_reason = None
   if response.get("choices", None):
     message = response["choices"][0].get("message", None)
+    finish_reason = response["choices"][0].get("finish_reason", None)
 
   if not message:
     raise ValueError("No message in response")
 
   llm_response = _message_to_generate_content_response(message)
+  if finish_reason:
+    llm_response.finish_reason = finish_reason
   if response.get("usage", None):
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=response["usage"].get("prompt_tokens", 0),

@@ -303,9 +303,13 @@ def trace_call_llm(
           llm_response.usage_metadata.candidates_token_count,
       )
   if llm_response.finish_reason:
+    if hasattr(llm_response.finish_reason, 'value'):
+      finish_reason_str = llm_response.finish_reason.value.lower()
+    else:
+      finish_reason_str = str(llm_response.finish_reason).lower()
     span.set_attribute(
         'gen_ai.response.finish_reasons',
-        [llm_response.finish_reason.value.lower()],
+        [finish_reason_str],
     )
 
 
