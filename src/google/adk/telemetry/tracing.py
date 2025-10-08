@@ -303,7 +303,7 @@ def trace_call_llm(
           llm_response.usage_metadata.candidates_token_count,
       )
   if llm_response.finish_reason:
-    if hasattr(llm_response.finish_reason, 'name'):
+    if isinstance(llm_response.finish_reason, types.FinishReason):
       finish_reason_str = llm_response.finish_reason.name.lower()
     else:
       finish_reason_str = str(llm_response.finish_reason).lower()
