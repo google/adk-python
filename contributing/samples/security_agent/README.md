@@ -304,6 +304,7 @@ curl http://localhost:8001
 ### Getting Started
 - [FINAL_STATUS.md](FINAL_STATUS.md) - Complete platform status and features
 - [CHANGELOG.md](CHANGELOG.md) - Version history and recent changes
+- [ROADMAP.md](ROADMAP.md) - Future features and development plan
 - [docs/INSTRUCTIONS.md](docs/INSTRUCTIONS.md) - Comprehensive setup guide
 
 ### Integration Guides
