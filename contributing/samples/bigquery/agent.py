@@ -22,8 +22,11 @@ from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.bigquery.config import WriteMode
 import google.auth
 
-# Define an appropriate credential type
-CREDENTIALS_TYPE = AuthCredentialTypes.OAUTH2
+# Define the desired credential type.
+# By default use Application Default Credentials (ADC) from the local
+# environment, which can be set up by following
+# https://cloud.google.com/docs/authentication/provide-credentials-adc.
+CREDENTIALS_TYPE = None
 
 # Define an appropriate application name
 BIGQUERY_AGENT_NAME = "adk_sample_bigquery_agent"

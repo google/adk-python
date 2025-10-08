@@ -236,7 +236,7 @@ def test_update_artifacts():
     ],
     indirect=True,
 )
-def test_custom_schema():
+def test_custom_schema(env_variables):
   class CustomInput(BaseModel):
     custom_input: str
 
@@ -289,7 +289,9 @@ def test_custom_schema():
     ],
     indirect=True,
 )
-def test_agent_tool_response_schema_no_output_schema_vertex_ai():
+def test_agent_tool_response_schema_no_output_schema_vertex_ai(
+    env_variables,
+):
   """Test AgentTool with no output schema has string response schema for VERTEX_AI."""
   tool_agent = Agent(
       name='tool_agent',
@@ -314,7 +316,9 @@ def test_agent_tool_response_schema_no_output_schema_vertex_ai():
     ],
     indirect=True,
 )
-def test_agent_tool_response_schema_with_output_schema_vertex_ai():
+def test_agent_tool_response_schema_with_output_schema_vertex_ai(
+    env_variables,
+):
   """Test AgentTool with output schema has object response schema for VERTEX_AI."""
 
   class CustomOutput(BaseModel):
@@ -342,7 +346,9 @@ def test_agent_tool_response_schema_with_output_schema_vertex_ai():
     ],
     indirect=True,
 )
-def test_agent_tool_response_schema_gemini_api():
+def test_agent_tool_response_schema_gemini_api(
+    env_variables,
+):
   """Test AgentTool with GEMINI_API variant has no response schema."""
 
   class CustomOutput(BaseModel):
@@ -369,7 +375,9 @@ def test_agent_tool_response_schema_gemini_api():
     ],
     indirect=True,
 )
-def test_agent_tool_response_schema_with_input_schema_vertex_ai():
+def test_agent_tool_response_schema_with_input_schema_vertex_ai(
+    env_variables,
+):
   """Test AgentTool with input and output schemas for VERTEX_AI."""
 
   class CustomInput(BaseModel):
@@ -403,7 +411,9 @@ def test_agent_tool_response_schema_with_input_schema_vertex_ai():
     ],
     indirect=True,
 )
-def test_agent_tool_response_schema_with_input_schema_no_output_vertex_ai():
+def test_agent_tool_response_schema_with_input_schema_no_output_vertex_ai(
+    env_variables,
+):
   """Test AgentTool with input schema but no output schema for VERTEX_AI."""
 
   class CustomInput(BaseModel):

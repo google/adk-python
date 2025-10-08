@@ -24,6 +24,7 @@ from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import PerInvocationResult
+from google.adk.evaluation.llm_as_judge import AutoRaterScore
 from google.adk.evaluation.llm_as_judge import LlmAsJudge
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
@@ -41,8 +42,8 @@ class MockLlmAsJudge(LlmAsJudge):
 
   def convert_auto_rater_response_to_score(
       self, llm_response: LlmResponse
-  ) -> Optional[float]:
-    return 1.0
+  ) -> AutoRaterScore:
+    return AutoRaterScore(score=1.0)
 
   def aggregate_per_invocation_samples(
       self,

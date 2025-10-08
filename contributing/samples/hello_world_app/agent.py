@@ -18,8 +18,13 @@ from google.adk import Agent
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.apps import App
+from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.context_filter_plugin import ContextFilterPlugin
+from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin
+from google.adk.tools import load_artifacts
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
@@ -96,6 +101,7 @@ root_agent = Agent(
     tools=[
         roll_die,
         check_prime,
+        load_artifacts,
     ],
     # planner=BuiltInPlanner(
     #     thinking_config=types.ThinkingConfig(
@@ -141,5 +147,14 @@ class CountInvocationPlugin(BasePlugin):
 app = App(
     name='hello_world_app',
     root_agent=root_agent,
-    plugins=[CountInvocationPlugin()],
+    plugins=[
+        CountInvocationPlugin(),
+        # ContextFilterPlugin(num_invocations_to_keep=3),
+        SaveFilesAsArtifactsPlugin(),
+    ],
+    # Enable event compaction with an LLM-based summarizer.
+    events_compaction_config=EventsCompactionConfig(
+        compaction_interval=2,
+        overlap_size=1,
+    ),
 )
