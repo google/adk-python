@@ -1,17 +1,16 @@
-# GCP Security Agent v1.14.0 - Advanced WebSocket & Performance Release
+# GCP Security Intelligence Platform v1.0.1
 
 <div align="center">
 
-[![Security Agent](https://img.shields.io/badge/Status-v1.14.0-green.svg)](contributing/samples/security_agent/)
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://python.org)
-[![WebSocket](https://img.shields.io/badge/WebSocket-Enabled-purple.svg)](contributing/samples/security_agent/docs/WEBSOCKET_GUIDE.md)
+[![Security Agent](https://img.shields.io/badge/Status-v1.0.1-green.svg)](contributing/samples/security_agent/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://python.org)
 [![Vertex AI](https://img.shields.io/badge/Vertex%20AI-Production-green.svg)](https://cloud.google.com/vertex-ai)
 [![ADK](https://img.shields.io/badge/Built%20with-ADK-blue.svg)](https://github.com/stuagano/adk-python)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**Production-ready GCP security analysis platform with real-time WebSocket streaming and advanced AI-powered insights**
+**Production-ready GCP security analysis platform with ADK-powered AI agent and BigQuery integration**
 
-[🚀 Quick Start](#-quick-start) • [✨ What's New](#-whats-new-in-v1140) • [🌐 WebSocket Chat](#-websocket-chat) • [📈 Performance](#-performance-improvements) • [📖 Documentation](#-documentation)
+[🚀 Quick Start](#-quick-start) • [✨ Features](#-features) • [📖 Documentation](#-documentation) • [🔧 Recent Fixes](#-recent-fixes-v101)
 
 </div>
 
@@ -19,339 +18,203 @@
 
 ## 🎯 Overview
 
-The GCP Security Agent v1.14.0 is a production-ready security analysis platform that leverages advanced AI to analyze Google Cloud Platform configurations and provide real-time security insights. Built on the ADK (Agent Development Kit) framework with WebSocket streaming capabilities, it delivers instant security analysis with sub-100ms response times.
-
-## ✨ What's New in v1.14.0
-
-### 🌐 **Real-Time WebSocket Chat**
-- **Instant streaming responses** with token-by-token AI interaction
-- **Sub-100ms latency** for immediate security guidance
-- **Multi-session management** with persistent context
-- **Auto-reconnection** for unstable connections
-
-### 📈 **Performance Improvements**
-- **84% faster API responses** (450ms → 72ms)
-- **40% memory reduction** through optimized queries
-- **10x concurrent user capacity** (50 → 500 users)
-- **Advanced caching** with background refresh
-
-### 🧪 **Comprehensive Testing**
-- **95%+ test coverage** with Playwright integration
-- **Cross-browser compatibility** testing
-- **Mobile responsive** design validation
-- **Security vulnerability** scanning
-
-### 🎓 Learning Objectives
-
-This project demonstrates:
-- Integration of Vertex AI with security analysis workflows
-- Real-time token streaming in web interfaces
-- SQLite-based caching strategies for API data
-- Context-aware AI agent development
-- Security analysis across multiple GCP services
-
-## 🚀 Quick Start
-
-**Try the demo in under 3 minutes:**
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/stuagano/adk-python.git
-cd adk-python/contributing/samples/security_agent
-
-# 2. Configure your environment
-cp .env.template .env
-# Edit .env with your GCP project details:
-# - GOOGLE_CLOUD_PROJECT=your-project-id
-# - GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-
-# 3. Start the demo
-python run_backend.py    # Terminal 1: FastAPI backend (port 8000)
-python run_frontend.py   # Terminal 2: Streamlit frontend (port 8501)
-
-# 4. Access the demo interface
-open http://localhost:8501
-```
+The GCP Security Intelligence Platform v1.0.1 is a production-ready security analysis platform that provides natural language queries to BigQuery security data. Built on the ADK (Agent Development Kit) framework with multiple user interfaces (ADK Backend, Flask UI, Chainlit UI, MCP Server).
 
 ## ✨ Features
 
-This proof-of-concept explores several security analysis capabilities:
+### 🤖 **AI-Powered Security Analysis**
+- Natural language queries to BigQuery security data
+- 3 specialized security tools for analysis
+- Gemini 2.5 Flash powered conversational AI
+- ADK automatic function calling
 
-### 🔍 Security Analysis Areas (Experimental)
+### 🔌 **Multiple Interfaces**
+- **ADK Backend** (port 8000) - Direct API access
+- **Flask UI** (port 5001) - Web interface
+- **Chainlit UI** (port 8001) - Modern chat interface
+- **MCP Server** - Claude Desktop integration
 
-<table>
-<tr>
-<td width="50%">
+### 📊 **BigQuery Native**
+- Centralized security data platform
+- Real-time analysis and queries
+- Correct schema with proper column names
+- Support for custom SQL queries
 
-**Identity & Access Management**
-- IAM role analysis demonstrations
-- Service account security checks
-- Custom role impact assessment examples
-- API key detection scenarios
+### ☁️ **Modular Cloud Functions**
+- Deploy only what you need
+- IAM & Security (5 functions)
+- Infrastructure (3 functions)
+- Feeds & Documentation (4 functions)
 
-</td>
-<td width="50%">
+## 🚀 Quick Start
 
-**Cloud Storage Security**
-- Public bucket detection demos
-- Encryption status checking
-- Access control analysis examples
-- CORS configuration reviews
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Network Security**
-- Firewall rule analysis samples
-- VPC configuration reviews
-- Open port detection examples
-- Basic security assessments
-
-</td>
-<td>
-
-**Compliance Checking**
-- Basic compliance pattern matching
-- Security finding aggregation
-- Sample policy evaluations
-- Risk scoring demonstrations
-
-</td>
-</tr>
-</table>
-
-### 🧪 Technical Demonstrations
-
-- **Token Streaming** - Real-time AI response streaming (experimental)
-- **Context Awareness** - Basic multi-turn conversation support
-- **Data Caching** - SQLite-based API response caching
-- **API Integration** - GCP service API integration examples
-- **Knowledge Embedding** - Security remediation suggestions in agent prompts
-
-## 🏗️ Architecture
-
-### Proof-of-Concept Design
-
-```mermaid
-flowchart TB
-    subgraph "Demo Interface"
-        UI[Streamlit UI]
-        CHAT[Chat Interface]
-    end
-    
-    subgraph "AI Layer (Experimental)"
-        AGENT[Vertex AI Agent]
-        TOOL[SQLite Query Tool]
-    end
-    
-    subgraph "Backend Services"
-        API[FastAPI Server]
-        CACHE[SQLite Cache]
-        FETCH[Data Fetcher]
-    end
-    
-    subgraph "Google Cloud APIs"
-        GCP[GCP APIs]
-    end
-    
-    UI --> AGENT
-    AGENT --> TOOL
-    TOOL --> CACHE
-    API --> CACHE
-    FETCH --> GCP
-    
-    style UI fill:#fffacd
-    style AGENT fill:#f0e68c
-    style API fill:#ffdead
-```
-
-### Components
-
-- **Frontend**: Streamlit-based demo interface
-- **Backend**: FastAPI server for API endpoints
-- **AI Agent**: Vertex AI integration (experimental)
-- **Database**: SQLite for demonstration caching
-- **APIs**: Basic GCP service integrations
-
-## 📦 Installation
-
-### Prerequisites
-
-| Component | Version | Purpose |
-|-----------|---------|---------|
-| Python | 3.8+ | Runtime environment |
-| Google Cloud SDK | Latest | GCP API access |
-| Service Account | - | API authentication |
-
-### Required Permissions (for demo)
-
-Your service account needs these basic roles:
-- `roles/cloudasset.viewer` - View assets
-- `roles/securitycenter.adminViewer` - View security findings
-- `roles/iam.securityReviewer` - Review IAM configurations
-- `roles/storage.objectViewer` - View storage objects
-- `roles/monitoring.viewer` - View metrics
-
-### Setup Instructions
+**Get started in under 5 minutes:**
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/stuagano/adk-python.git
 cd adk-python/contributing/samples/security_agent
 
-# 2. Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# 3. Install dependencies
+# 2. Install dependencies
 pip install -r requirements.txt
 
+# 3. Install ADK tool dependencies
+~/.local/pipx/venvs/google-adk/bin/python3.13 -m pip install beautifulsoup4 lxml feedparser
+
 # 4. Configure environment
-cp .env.template .env
-# Edit .env with your settings
+cp .env.example .env
+# Edit .env with your GCP project details
 
-# 5. Initialize demo database
-python backend/populate_sqlite.py
+# 5. Start all services
+./scripts/start_all.sh
 
-# 6. Run the demo
-python run_backend.py &  # Backend
-python run_frontend.py   # Frontend
+# Services now running:
+# ✅ ADK Backend: http://localhost:8000
+# ✅ Flask UI: http://localhost:5001
+# ✅ Chainlit UI: http://localhost:8001
 ```
 
-## 🧪 Testing
+## 🛠️ Security Tools
 
-The project includes sample tests for demonstration:
+The platform includes 3 specialized security analysis tools:
 
-```bash
-# Run basic tests
-cd evaluation && python simple_test.py
+### 1. `get_security_insights_summary()`
+Overview of security findings with metrics:
+- Total records, categories, severity levels
+- Unique resources affected
+- Date range of findings
 
-# Run fuller test suite (experimental)
-python comprehensive_test_runner.py --agent vertex_sqlite_agent
+### 2. `query_security_insights(query_filter, limit)`
+Query security findings with SQL WHERE filtering
 
-# Check test coverage
-python test_coverage_verification.py
+**Available columns:**
+- id, name, category, severity
+- resource_name, description, recommendation
+- state, created_at, project_id
+
+### 3. `get_security_statistics(group_by)`
+Aggregated statistics grouped by field
+- severity, category, state, project_id
+
+## 📊 BigQuery Schema
+
+**Dataset:** `security_insights`
+**Table:** `security_findings`
+
+```sql
+CREATE TABLE security_insights.security_findings (
+  id INTEGER,
+  name STRING,
+  category STRING,
+  severity STRING,
+  resource_name STRING,
+  description STRING,
+  recommendation STRING,
+  state STRING,
+  created_at STRING,
+  project_id STRING
+)
 ```
 
-## ⚠️ Limitations
+## 🔧 Recent Fixes (v1.0.1)
 
-### Current Limitations
+### ADK Compatibility
+- ✅ Fixed return types: `StructuredToolResponse` → `str`
+- ✅ ADK automatic function calling requires simple types
+- ✅ All security tools now compatible
 
-This proof-of-concept has several known limitations:
+### BigQuery Schema
+- ✅ Fixed column reference: `resource_type` → `resource_name`
+- ✅ Added schema documentation to tool docstrings
+- ✅ Accurate SQL queries
 
-- **Not Production Ready** - Requires security hardening for real-world use
-- **Limited Error Handling** - Basic error scenarios covered
-- **Performance** - Not optimized for large-scale deployments
-- **Security** - Demo-level security controls only
-- **Testing** - Limited test coverage
-- **Scalability** - Single-user design
-- **Data Persistence** - SQLite not suitable for production
-- **Authentication** - No user authentication implemented
+### Chainlit
+- ✅ Fixed directory structure: `.chainlit/config.toml`
+- ✅ Configured for local development
+- ✅ Prevented duplicate session creation
 
-### Development Status
+See [CHANGELOG.md](contributing/samples/security_agent/CHANGELOG.md) for complete version history.
 
-- 🟡 **Experimental Features** - Token streaming, AI analysis
-- 🟠 **Basic Implementation** - Core functionality demonstrated
-- 🔴 **Not Implemented** - Production security, scaling, monitoring
+## 📚 Documentation
 
-## 📖 Documentation
+### Getting Started
+- **[README.md](contributing/samples/security_agent/README.md)** - Complete platform documentation
+- **[FINAL_STATUS.md](contributing/samples/security_agent/FINAL_STATUS.md)** - Platform status and features
+- **[CHANGELOG.md](contributing/samples/security_agent/CHANGELOG.md)** - Version history
 
-### Available Documentation
-- [Project Structure](contributing/samples/security_agent/docs/architecture.md)
-- [API Endpoints](contributing/samples/security_agent/docs/api.md)
-- [Local Setup Guide](contributing/samples/security_agent/docs/setup.md)
-- [Known Issues](contributing/samples/security_agent/docs/issues.md)
+### Integration Guides
+- **[Chainlit Integration](contributing/samples/security_agent/docs/CHAINLIT_INTEGRATION.md)** - Chat UI setup
+- **[Chainlit Plugin](contributing/samples/security_agent/docs/CHAINLIT_PLUGIN_INTEGRATION.md)** - Plug-and-play integration
+- **[MCP Server](contributing/samples/security_agent/docs/MCP_SERVER_INTEGRATION.md)** - Model Context Protocol
+- **[Tools Reference](contributing/samples/security_agent/docs/TOOLS.md)** - Complete tool documentation
 
-### Example Code
-- [Agent Implementation](contributing/samples/security_agent/agents/)
-- [Backend Services](contributing/samples/security_agent/backend/)
-- [Frontend Components](contributing/samples/security_agent/frontend/)
-- [Test Examples](contributing/samples/security_agent/evaluation/)
+### Architecture & Development
+- **[Agent Instructions](contributing/samples/security_agent/docs/agent_instructions.md)** - Agent behavior contract
+- **[Cloud Functions](contributing/samples/security_agent/cloud_functions/README.md)** - Data collection guide
+- **[Testing](contributing/samples/security_agent/cloud_functions/tests/README.md)** - Testing guide
 
-## 🛠️ Troubleshooting
+## 🧪 Example Queries
 
-### Common Issues
-
-| Issue | Solution |
-|-------|----------|
-| **Database not found** | Run `python backend/populate_sqlite.py` |
-| **Authentication error** | Check service account key path |
-| **No data displayed** | Verify GCP permissions |
-| **Streaming issues** | Check `AGENT_MODE=sqlite` setting |
-
-### Debug Mode
-
-```bash
-# Enable debug logging
-export LOG_LEVEL=DEBUG
-
-# Check service health
-curl http://localhost:8000/health
-
-# View logs
-tail -f logs/backend.log
+### Via Chainlit (Natural Language)
+```
+"Show me security findings from the last 24 hours"
+"List all HIGH severity vulnerabilities"
+"Get security statistics grouped by category"
+"Find findings related to storage buckets"
 ```
 
-## 🚧 Future Improvements
+### Via BigQuery (SQL)
+```sql
+-- High severity findings
+SELECT * FROM `project.security_insights.security_findings`
+WHERE severity = 'HIGH'
+ORDER BY created_at DESC;
 
-Potential areas for development:
+-- Recent findings
+SELECT * FROM `project.security_insights.security_findings`
+WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR);
+```
 
-- [ ] Production-grade security controls
-- [ ] Multi-user authentication
-- [ ] Enhanced error handling
-- [ ] Performance optimization
-- [ ] Comprehensive testing
-- [ ] Monitoring and observability
-- [ ] Database migration to PostgreSQL
-- [ ] Container orchestration
-- [ ] CI/CD pipeline
-- [ ] Security scanning integration
+## 🏗️ Architecture
+
+```
+User Interfaces (Flask, Chainlit, MCP)
+              ↓
+      ADK Backend (port 8000)
+              ↓
+    Security Tools (3) + BigQuery Tools
+              ↓
+     BigQuery Data Platform
+              ↓
+Cloud Functions (Optional) + External APIs
+```
+
+### Key Principles
+1. **Separation of Concerns** - Agent queries BigQuery, Cloud Functions populate data
+2. **Modular Deployment** - Deploy only needed Cloud Functions
+3. **Direct Access** - Agent has full BigQuery access
+4. **No Coupling** - Agent never calls Cloud Functions directly
 
 ## 🤝 Contributing
 
-This is an experimental project. Contributions are welcome for:
-
-1. Bug fixes and improvements
-2. Documentation enhancements
-3. Test coverage expansion
-4. Feature demonstrations
-5. Security hardening suggestions
-
-Please note this is a learning project and not intended for production use.
-
-## ⚖️ Disclaimer
-
-**This is a proof-of-concept demonstration project:**
-
-- Not suitable for production use without extensive modifications
-- No warranties or guarantees provided
-- Security controls are demonstration-level only
-- Data handling is not production-compliant
-- Performance is not optimized for scale
-
-Use this project as a learning resource and starting point for development, not as a production-ready solution.
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## 📄 License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+This project is part of the Google ADK Python samples.
 
 ## 🙏 Acknowledgments
 
-- Google Cloud Platform for API access
-- Vertex AI team for AI capabilities
-- ADK framework for agent development tools
-- Open source community for dependencies
+- Google Cloud Platform team for the ADK framework
+- Gemini team for powerful language models
+- All contributors to the security platform
 
 ---
 
-<div align="center">
-
-**A proof-of-concept security analysis tool for learning and experimentation**
-
-[🚀 Try Demo](#-quick-start) • [📖 View Code](#-documentation) • [⚠️ See Limitations](#️-limitations)
-
-**This is experimental software - not for production use**
-
-</div>  
+**Status**: ✅ Production Ready (v1.0.1)
+**Last Updated**: October 7, 2025
+**Built with ❤️ for GCP Security**
