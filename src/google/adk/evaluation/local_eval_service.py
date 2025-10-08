@@ -182,7 +182,7 @@ class LocalEvalService(BaseEvalService):
     """Returns EvalCaseResult for the given inference result.
 
     A single inference result can have multiple invocations. For each
-    invocaiton, this method evaluates the metrics present in evaluate config.
+    invocation, this method evaluates the metrics present in evaluate config.
 
     The EvalCaseResult contains scores for each metric per invocation and the
     overall score.
