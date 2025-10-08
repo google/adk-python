@@ -97,6 +97,12 @@ from .msa_analyzer import (
     analyze_gcp_releases
 )
 
+# Performance Tools
+from .performance_tools import (
+    get_cache_statistics,
+    clear_query_cache
+)
+
 __all__ = [
     # Security Analysis Tools (6)
     'get_security_insights_summary',
@@ -170,4 +176,8 @@ __all__ = [
     # MSA/Release Analyzer (2)
     'analyze_releases',
     'analyze_gcp_releases',
+
+    # Performance Tools (2)
+    'get_cache_statistics',
+    'clear_query_cache',
 ]

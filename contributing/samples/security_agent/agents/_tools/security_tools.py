@@ -19,6 +19,7 @@ from .base import (
     check_client,
     logger,
 )
+from .cache_manager import cached
 
 
 def _error_response(message: str) -> str:
@@ -38,8 +39,11 @@ def _chunk_rows(rows: Iterable[bigquery.table.Row]) -> List[dict]:
     return safe_rows
 
 
+@cached(ttl=300, key_prefix="security")  # Cache for 5 minutes
 def get_security_insights_summary() -> str:
-    """Summarize the primary security findings table with structured metrics."""
+    """Summarize the primary security findings table with structured metrics.
+
+    Note: Results are cached for 5 minutes for performance."""
 
     try:
         check_client()
@@ -116,8 +120,11 @@ def get_security_insights_summary() -> str:
     return "\n".join(summary_lines)
 
 
+@cached(ttl=180, key_prefix="security")  # Cache for 3 minutes
 def query_security_insights(query_filter: str = "", limit: int = 0) -> str:
     """Query the security findings table with optional filtering.
+
+    Note: Results are cached for 3 minutes for performance.
 
     Available columns for filtering:
     - id (INTEGER): Unique identifier
@@ -199,8 +206,11 @@ def query_security_insights(query_filter: str = "", limit: int = 0) -> str:
     return "\n".join(summary_lines)
 
 
+@cached(ttl=300, key_prefix="security")  # Cache for 5 minutes
 def get_security_statistics(group_by: str = "severity") -> str:
     """Provide aggregated statistics from the security findings table.
+
+    Note: Results are cached for 5 minutes for performance.
 
     Valid group_by values:
     - severity: Group by severity level
