@@ -21,6 +21,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import ClassVar
 from typing import Dict
 from typing import Literal
@@ -118,6 +119,7 @@ async def _convert_tool_union_to_tools(
     multiple_tools: bool = False,
 ) -> list[BaseTool]:
   from ..tools.google_search_tool import google_search
+  from ..tools.vertex_ai_search_tool import VertexAiSearchTool
 
   # Wrap google_search tool with AgentTool if there are multiple tools because
   # the built-in tools cannot be used together with other tools.
@@ -127,6 +129,24 @@ async def _convert_tool_union_to_tools(
     from ..tools.google_search_agent_tool import GoogleSearchAgentTool
 
     return [GoogleSearchAgentTool(create_google_search_agent(model))]
+
+  # Replace VertexAiSearchTool with DiscoveryEngineSearchTool if there are
+  # multiple tools because the built-in tools cannot be used together with
+  # other tools.
+  # TODO(b/448114567): Remove once the workaround is no longer needed.
+  if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
+    from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
+
+    vais_tool = cast(VertexAiSearchTool, tool_union)
+    return [
+        DiscoveryEngineSearchTool(
+            data_store_id=vais_tool.data_store_id,
+            data_store_specs=vais_tool.data_store_specs,
+            search_engine_id=vais_tool.search_engine_id,
+            filter=vais_tool.filter,
+            max_results=vais_tool.max_results,
+        )
+    ]
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]

@@ -172,6 +172,8 @@ class RunAgentRequest(common.BaseModel):
   new_message: types.Content
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
+  # for resume long running functions
+  invocation_id: Optional[str] = None
 
 
 class CreateSessionRequest(common.BaseModel):
@@ -1386,6 +1388,7 @@ class AdkWebServer:
                   new_message=req.new_message,
                   state_delta=req.state_delta,
                   run_config=RunConfig(streaming_mode=stream_mode),
+                  invocation_id=req.invocation_id,
               )
           ) as agen:
             async for event in agen:

@@ -190,11 +190,7 @@ class ComputerUseToolset(BaseToolset):
 
       # Check if computer use is already configured
       for tool in llm_request.config.tools:
-        if (
-            isinstance(tool, (types.Tool, types.ToolDict))
-            and hasattr(tool, "computer_use")
-            and tool.computer_use
-        ):
+        if isinstance(tool, types.Tool) and tool.computer_use:
           logger.debug("Computer use already configured in LLM request")
           return
 

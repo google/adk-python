@@ -48,7 +48,8 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     agent = invocation_context.agent
 
-    events = invocation_context.session.events
+    # Only look at events in the current branch.
+    events = invocation_context._get_events(current_branch=True)
     if not events:
       return
 
