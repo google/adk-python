@@ -118,7 +118,7 @@ class OperationParser:
         schema = param.schema_ or {}  # Use schema_ instead of .schema
         
         # Sanitize schema to handle 'Any' type
-        if isinstance(schema, Schema):
+        if isinstance(schema, (Schema, dict)):
           schema = self._sanitize_schema(schema)
         
         schema.description = (
