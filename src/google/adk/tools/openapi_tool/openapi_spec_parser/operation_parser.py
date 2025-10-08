@@ -77,6 +77,36 @@ class OperationParser:
     parser._return_value = return_value
     return parser
 
+  @staticmethod
+  def _sanitize_schema(schema: Union[Schema, Dict[str, Any]]) -> Schema:
+    """Sanitizes schema to ensure Pydantic 2.11+ compatibility.
+    
+    Converts 'Any' type to 'object' type since Pydantic 2.11+ only accepts:
+    'array', 'boolean', 'integer', 'null', 'number', 'object', 'string'
+    
+    Args:
+        schema: Schema object or dict to sanitize
+        
+    Returns:
+        Sanitized Schema object
+    """
+    if isinstance(schema, dict):
+      schema = Schema(**schema)
+    
+    # If schema has 'Any' type, convert to 'object'
+    if hasattr(schema, 'type') and schema.type in ('Any', 'any'):
+      schema.type = 'object'
+    
+    return schema
+  
+  @staticmethod
+  def _create_default_schema() -> Schema:
+    """Creates a default schema that's compatible with Pydantic 2.11+.
+    
+    Returns 'object' type instead of 'Any' to ensure Pydantic validation passes.
+    """
+    return Schema(type='object')
+
   def _process_operation_parameters(self):
     """Processes parameters from the OpenAPI operation."""
     parameters = self._operation.parameters or []
@@ -86,6 +116,11 @@ class OperationParser:
         description = param.description or ''
         location = param.in_ or ''
         schema = param.schema_ or {}  # Use schema_ instead of .schema
+        
+        # Sanitize schema to handle 'Any' type
+        if isinstance(schema, Schema):
+          schema = self._sanitize_schema(schema)
+        
         schema.description = (
             description if not schema.description else schema.description
         )
@@ -115,11 +150,20 @@ class OperationParser:
     # If request body is an object, expand the properties as parameters
     for _, media_type_object in content.items():
       schema = media_type_object.schema_ or {}
+      
+      # Sanitize schema to handle 'Any' type
+      if isinstance(schema, Schema):
+        schema = self._sanitize_schema(schema)
+      
       description = request_body.description or ''
 
       if schema and schema.type == 'object':
         properties = schema.properties or {}
         for prop_name, prop_details in properties.items():
+          # Sanitize nested schema
+          if isinstance(prop_details, Schema):
+            prop_details = self._sanitize_schema(prop_details)
+          
           self._params.append(
               ApiParameter(
                   original_name=prop_name,
@@ -164,8 +208,8 @@ class OperationParser:
   def _process_return_value(self) -> Parameter:
     """Returns a Parameter object representing the return type."""
     responses = self._operation.responses or {}
-    # Default to Any if no 2xx response or if schema is missing
-    return_schema = Schema(type='Any')
+    # Default to object type if no 2xx response or if schema is missing
+    return_schema = self._create_default_schema()
 
     # Take the 20x response with the smallest response code.
     valid_codes = list(
@@ -178,6 +222,11 @@ class OperationParser:
       for mime_type in content:
         if content[mime_type].schema_:
           return_schema = content[mime_type].schema_
+          
+          # Sanitize return schema
+          if isinstance(return_schema, Schema):
+            return_schema = self._sanitize_schema(return_schema)
+          
           break
 
     self._return_value = ApiParameter(
