@@ -51,8 +51,7 @@ class LlmEventSummarizer(BaseEventsSummarizer):
       ' agent. Please summarize the conversation, focusing on key'
       ' information and decisions made, as well as any unresolved'
       ' questions or tasks. The summary should be concise and capture the'
-      ' essence of the interaction. Each event is prefixed with the'
-      ' author.\\n\\n{conversation_history}'
+      ' essence of the interaction.\\n\\n{conversation_history}'
   )
 
   def __init__(
@@ -115,8 +114,8 @@ class LlmEventSummarizer(BaseEventsSummarizer):
     if summary_content is None:
       return None
 
-    # Ensure the compacted content has the role 'user'
-    summary_content.role = 'user'
+    # Ensure the compacted content has the role 'model'
+    summary_content.role = 'model'
 
     start_timestamp = events[0].timestamp
     end_timestamp = events[-1].timestamp

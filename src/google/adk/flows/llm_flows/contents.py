@@ -214,7 +214,8 @@ def _contains_empty_content(event: Event) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
   This can happen to the evnets that only changed session state.
-  When both content and transcriptions are empty, the event will be considered as empty.
+  When both content and transcriptions are empty, the event will be considered
+  as empty.
 
   Args:
     event: The event to check.
@@ -233,43 +234,78 @@ def _contains_empty_content(event: Event) -> bool:
   ) and (not event.output_transcription and not event.input_transcription)
 
 
+def _process_compaction_events(events: list[Event]) -> list[Event]:
+  """Processes events by applying compaction.
+
+  Identifies compacted ranges and filters out events that are covered by
+  compaction summaries.
+
+  Args:
+    events: A list of events to process.
+
+  Returns:
+    A list of events with compaction applied.
+  """
+  # example of compaction events:
+  # [event_1(timestamp=1), event_2(timestamp=2),
+  # compaction_1(event_1, event_2, timestamp=3), event_3(timestamp=4),
+  # compaction_2(event_2, event_3, timestamp=5), event_4(timestamp=6)]
+  # for each compaction event, it only covers the events at most between the
+  # current compaction and the previous compaction. So during copmaction, we
+  # don't have to go across compaction boundaries.
+  # Compaction events are always strictly in order based on event timestamp.
+  events_to_process = []
+  last_compaction_start_time = float('inf')
+
+  # Iterate in reverse to easily handle overlapping compactions.
+  for event in reversed(events):
+    if event.actions and event.actions.compaction:
+      compaction = event.actions.compaction
+      if (
+          compaction.start_timestamp is not None
+          and compaction.end_timestamp is not None
+      ):
+        # Create a new event for the compacted summary.
+        new_event = Event(
+            timestamp=compaction.end_timestamp,
+            author='model',
+            content=compaction.compacted_content,
+            branch=event.branch,
+            invocation_id=event.invocation_id,
+            actions=event.actions,
+        )
+        # Prepend to maintain chronological order in the final list.
+        events_to_process.insert(0, new_event)
+        # Update the boundary for filtering. Events with timestamps greater than
+        # or equal to this start time have been compacted.
+        last_compaction_start_time = min(
+            last_compaction_start_time, compaction.start_timestamp
+        )
+    elif event.timestamp < last_compaction_start_time:
+      # This event is not a compaction and is before the current compaction
+      # range. Prepend to maintain chronological order.
+      events_to_process.insert(0, event)
+    else:
+      # skip the event
+      pass
+
+  return events_to_process
+
+
 def _get_contents(
     current_branch: Optional[str], events: list[Event], agent_name: str = ''
 ) -> list[types.Content]:
-  """Retrieves and processes events into a list of Contents for the LLM request.
+  """Get the contents for the LLM request.
 
-  This function prepares the conversation history for the LLM by applying
-  several transformations:
-  1.  **Initial Filtering**: Removes events that are empty, do not belong
-      to the current invocation branch, or are related to authentication
-      or request confirmation.
-  2.  **Compaction Handling**: Identifies the latest compaction event. If found,
-      it replaces all events covered by the compaction range with the compacted
-      summary content. Only events *after* the compaction's end timestamp
-      are included in addition to the summary. If no compaction event exists,
-      all filtered events are considered.
-  3.  **Transcription Aggregation**: Combines consecutive
-      `input_transcription` and `output_transcription` events into single
-      'user' and 'model' role `types.Content` events, respectively.
-  4.  **Multi-Agent Presentation**: Reformats messages from other agents
-      (i.e., not the current `agent_name` and not 'user') to be presented
-      as user-role context, prefixed with `[agent_name] said:`. Compactor
-      events are included directly without reformatting.
-  5.  **Function Call/Response Rearrangement**: Ensures proper pairing of
-      asynchronous function calls and responses within the event history.
-  6.  **Content Conversion**: Converts the final list of processed events
-      into `types.Content` objects, removing any client-side function call IDs.
+  Applies filtering, rearrangement, and content processing to events.
 
   Args:
-    current_branch: The current invocation branch ID. Events outside this branch
-      will be filtered out.
-    events: A list of session events to process.
-    agent_name: The name of the agent currently running. Used to distinguish
-      between events from the current agent, other agents, and the user.
+    current_branch: The current branch of the agent.
+    events: Events to process.
+    agent_name: The name of the agent.
 
   Returns:
-    A list of `types.Content` objects representing the conversation history
-    to be sent to the LLM.
+    A list of processed contents.
   """
   accumulated_input_transcription = ''
   accumulated_output_transcription = ''
@@ -277,6 +313,7 @@ def _get_contents(
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
   raw_filtered_events = []
+  has_compaction_events = False
   for event in events:
     if _contains_empty_content(event):
       continue
@@ -290,44 +327,14 @@ def _get_contents(
       # Skip request confirmation events.
       continue
 
+    if event.actions and event.actions.compaction:
+      has_compaction_events = True
     raw_filtered_events.append(event)
 
-  # Find the latest compaction event.
-  latest_compaction_event = None
-  for event in reversed(raw_filtered_events):
-    if event.actions and event.actions.compaction:
-      latest_compaction_event = event
-      break
-
-  events_to_process = []
-  if latest_compaction_event:
-    compaction = latest_compaction_event.actions.compaction
-    if (
-        compaction.start_timestamp is not None
-        and compaction.end_timestamp is not None
-    ):
-      # Add the compacted event itself.
-      new_event = Event(
-          timestamp=compaction.end_timestamp,
-          author='compactor',
-          content=compaction.compacted_content,
-          branch=latest_compaction_event.branch,
-          invocation_id=latest_compaction_event.invocation_id,
-          actions=latest_compaction_event.actions,
-      )
-      events_to_process.append(new_event)
-
-      # Add events from raw_filtered_events that are *after* the
-      # latest compaction's end timestamp.
-      for event in raw_filtered_events:
-        if event.timestamp > compaction.end_timestamp:
-          events_to_process.append(event)
+  if has_compaction_events:
+    events_to_process = _process_compaction_events(raw_filtered_events)
   else:
-    # No compaction events, process all raw filtered events.
     events_to_process = raw_filtered_events
-
-  # Sort by timestamp to ensure chronological order.
-  events_to_process.sort(key=lambda x: x.timestamp)
 
   filtered_events = []
   # aggregate transcription events
@@ -618,7 +625,8 @@ def _is_live_model_audio_event(event: Event) -> bool:
       ),
     ],
     role='model'
-  ) grounding_metadata=None partial=None turn_complete=None finish_reason=None error_code=None error_message=None ...
+  ) grounding_metadata=None partial=None turn_complete=None finish_reason=None
+  error_code=None error_message=None ...
   """
   if not event.content:
     return False
@@ -640,8 +648,10 @@ async def _add_instructions_to_user_content(
 ) -> None:
   """Insert instruction-related contents at proper position in conversation.
 
-  This function inserts instruction-related contents (passed as parameter) at the
-  proper position in the conversation flow, specifically before the last continuous
+  This function inserts instruction-related contents (passed as parameter) at
+  the
+  proper position in the conversation flow, specifically before the last
+  continuous
   batch of user content to maintain conversation context.
 
   Args:
