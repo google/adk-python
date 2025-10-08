@@ -495,9 +495,11 @@ def _model_response_to_generate_content_response(
 
   message = None
   finish_reason = None
-  if response.get("choices", None):
-    message = response["choices"][0].get("message", None)
-    finish_reason = response["choices"][0].get("finish_reason", None)
+  if response.get("choices", None) and (
+      first_choice := response["choices"][0]
+  ):
+    message = first_choice.get("message", None)
+    finish_reason = first_choice.get("finish_reason", None)
 
   if not message:
     raise ValueError("No message in response")

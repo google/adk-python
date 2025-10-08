@@ -1905,23 +1905,57 @@ def test_non_gemini_litellm_no_warning():
     assert len(w) == 0
 
 
+@pytest.mark.parametrize(
+    "finish_reason,response_content,expected_content,has_tool_calls",
+    [
+        ("length", "Test response", "Test response", False),
+        ("stop", "Complete response", "Complete response", False),
+        (
+            "tool_calls",
+            "",
+            "",
+            True,
+        ),
+        ("content_filter", "", "", False),
+    ],
+    ids=["length", "stop", "tool_calls", "content_filter"],
+)
 @pytest.mark.asyncio
-async def test_finish_reason_propagation_non_streaming(
-    mock_acompletion, lite_llm_instance
+async def test_finish_reason_propagation(
+    mock_acompletion,
+    lite_llm_instance,
+    finish_reason,
+    response_content,
+    expected_content,
+    has_tool_calls,
 ):
-  """Test that finish_reason is properly propagated from LiteLLM response in non-streaming mode."""
-  mock_response_with_finish_reason = ModelResponse(
+  """Test that finish_reason is properly propagated from LiteLLM response."""
+  tool_calls = None
+  if has_tool_calls:
+    tool_calls = [
+        ChatCompletionMessageToolCall(
+            type="function",
+            id="test_id",
+            function=Function(
+                name="test_function",
+                arguments='{"arg": "value"}',
+            ),
+        )
+    ]
+
+  mock_response = ModelResponse(
       choices=[
           Choices(
               message=ChatCompletionAssistantMessage(
                   role="assistant",
-                  content="Test response",
+                  content=response_content,
+                  tool_calls=tool_calls,
               ),
-              finish_reason="length",
+              finish_reason=finish_reason,
           )
       ]
   )
-  mock_acompletion.return_value = mock_response_with_finish_reason
+  mock_acompletion.return_value = mock_response
 
   llm_request = LlmRequest(
       contents=[
@@ -1933,113 +1967,11 @@ async def test_finish_reason_propagation_non_streaming(
 
   async for response in lite_llm_instance.generate_content_async(llm_request):
     assert response.content.role == "model"
-    assert response.content.parts[0].text == "Test response"
-    assert response.finish_reason == "length"
-
-  mock_acompletion.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_finish_reason_propagation_stop(
-    mock_acompletion, lite_llm_instance
-):
-  """Test that finish_reason='stop' is properly propagated."""
-  mock_response_with_finish_reason = ModelResponse(
-      choices=[
-          Choices(
-              message=ChatCompletionAssistantMessage(
-                  role="assistant",
-                  content="Complete response",
-              ),
-              finish_reason="stop",
-          )
-      ]
-  )
-  mock_acompletion.return_value = mock_response_with_finish_reason
-
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Test prompt")]
-          )
-      ],
-  )
-
-  async for response in lite_llm_instance.generate_content_async(llm_request):
-    assert response.finish_reason == "stop"
-
-  mock_acompletion.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_finish_reason_propagation_tool_calls(
-    mock_acompletion, lite_llm_instance
-):
-  """Test that finish_reason='tool_calls' is properly propagated."""
-  mock_response_with_finish_reason = ModelResponse(
-      choices=[
-          Choices(
-              message=ChatCompletionAssistantMessage(
-                  role="assistant",
-                  content="",
-                  tool_calls=[
-                      ChatCompletionMessageToolCall(
-                          type="function",
-                          id="test_id",
-                          function=Function(
-                              name="test_function",
-                              arguments='{"arg": "value"}',
-                          ),
-                      )
-                  ],
-              ),
-              finish_reason="tool_calls",
-          )
-      ]
-  )
-  mock_acompletion.return_value = mock_response_with_finish_reason
-
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Test prompt")]
-          )
-      ],
-  )
-
-  async for response in lite_llm_instance.generate_content_async(llm_request):
-    assert response.finish_reason == "tool_calls"
-
-  mock_acompletion.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_finish_reason_content_filter(
-    mock_acompletion, lite_llm_instance
-):
-  """Test that finish_reason='content_filter' is properly propagated."""
-  mock_response_with_content_filter = ModelResponse(
-      choices=[
-          Choices(
-              message=ChatCompletionAssistantMessage(
-                  role="assistant",
-                  content="",
-              ),
-              finish_reason="content_filter",
-          )
-      ]
-  )
-  mock_acompletion.return_value = mock_response_with_content_filter
-
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Test prompt")]
-          )
-      ],
-  )
-
-  async for response in lite_llm_instance.generate_content_async(llm_request):
-    assert response.finish_reason == "content_filter"
+    assert response.finish_reason == finish_reason
+    if expected_content:
+      assert response.content.parts[0].text == expected_content
+    if has_tool_calls:
+      assert len(response.content.parts) > 0
+      assert response.content.parts[-1].function_call.name == "test_function"
 
   mock_acompletion.assert_called_once()
