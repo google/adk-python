@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+from datetime import datetime, timedelta
 from typing import Iterable, List
 
 from google.cloud import bigquery
@@ -267,3 +269,229 @@ def get_security_statistics(group_by: str = "severity") -> str:
     }
 
     return "\n".join(summary_lines)
+
+
+def get_resources_by_severity(severity: str = "HIGH") -> str:
+    """List all unique resources affected by findings of a specific severity level.
+
+    Valid severity values:
+    - CRITICAL: Critical security issues requiring immediate attention
+    - HIGH: High severity issues that should be addressed soon
+    - MEDIUM: Medium severity issues for scheduled remediation
+    - LOW: Low severity issues for eventual remediation
+
+    Args:
+        severity: The severity level to filter by (default: HIGH)
+
+    Returns:
+        Formatted string with list of affected resources and their finding counts
+    """
+    try:
+        check_client()
+    except Exception as exc:  # pragma: no cover - requires missing credentials
+        return _error_response(f"Error: {exc}")
+
+    dataset_id = DEFAULT_DATASET
+    table_id = DEFAULT_TABLE
+
+    # Validate severity input
+    valid_severities = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+    severity_upper = severity.upper()
+    if severity_upper not in valid_severities:
+        return _error_response(
+            f"Invalid severity '{severity}'. Valid options: {', '.join(valid_severities)}"
+        )
+
+    query = f"""
+        SELECT
+            resource_name,
+            COUNT(*) AS finding_count,
+            STRING_AGG(DISTINCT category, ', ') AS categories,
+            MAX(created_at) AS latest_finding
+        FROM `{PROJECT_ID}.{dataset_id}.{table_id}`
+        WHERE UPPER(severity) = '{severity_upper}'
+        GROUP BY resource_name
+        ORDER BY finding_count DESC, latest_finding DESC
+    """
+
+    try:
+        results = list(bq_client.query(query).result())
+    except Exception as exc:  # pragma: no cover - requires live BQ errors
+        return _error_response(f"Error querying resources by severity: {exc}")
+
+    if not results:
+        return f"🔍 No resources found with {severity_upper} severity findings."
+
+    summary_lines = [
+        f"🚨 Resources with {severity_upper} Severity Findings:",
+        f"   Total Affected Resources: {len(results)}",
+        "-" * 50,
+    ]
+
+    for idx, row in enumerate(results, 1):
+        summary_lines.append(f"\n📌 Resource #{idx}: {row.resource_name}")
+        summary_lines.append(f"   Finding Count: {row.finding_count}")
+        summary_lines.append(f"   Categories: {row.categories}")
+        summary_lines.append(f"   Latest Finding: {row.latest_finding}")
+
+    return "\n".join(summary_lines)
+
+
+def get_recent_findings(days: int = 7) -> str:
+    """Get security findings from the last N days.
+
+    Args:
+        days: Number of days to look back (default: 7)
+
+    Returns:
+        Formatted string with recent findings grouped by severity
+    """
+    try:
+        check_client()
+    except Exception as exc:  # pragma: no cover - requires missing credentials
+        return _error_response(f"Error: {exc}")
+
+    dataset_id = DEFAULT_DATASET
+    table_id = DEFAULT_TABLE
+
+    # Validate days input
+    if days < 1:
+        return _error_response("Days must be a positive number (minimum: 1)")
+    if days > 365:
+        return _error_response("Days cannot exceed 365")
+
+    # Calculate cutoff date
+    cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    query = f"""
+        SELECT
+            severity,
+            category,
+            resource_name,
+            name,
+            created_at,
+            state
+        FROM `{PROJECT_ID}.{dataset_id}.{table_id}`
+        WHERE created_at >= '{cutoff_date}'
+        ORDER BY
+            CASE severity
+                WHEN 'CRITICAL' THEN 1
+                WHEN 'HIGH' THEN 2
+                WHEN 'MEDIUM' THEN 3
+                WHEN 'LOW' THEN 4
+                ELSE 5
+            END,
+            created_at DESC
+    """
+
+    try:
+        results = list(bq_client.query(query).result())
+    except Exception as exc:  # pragma: no cover - requires live BQ errors
+        return _error_response(f"Error querying recent findings: {exc}")
+
+    if not results:
+        return f"🔍 No security findings found in the last {days} day(s)."
+
+    summary_lines = [
+        f"📅 Security Findings - Last {days} Day(s):",
+        f"   Date Range: {cutoff_date} to {datetime.now().strftime('%Y-%m-%d')}",
+        f"   Total Findings: {len(results)}",
+        "-" * 50,
+    ]
+
+    # Group by severity for summary
+    severity_counts = {}
+    for row in results:
+        sev = row.severity or "UNKNOWN"
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+    summary_lines.append("\n📊 Severity Breakdown:")
+    for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]:
+        if sev in severity_counts:
+            summary_lines.append(f"   {sev}: {severity_counts[sev]}")
+
+    summary_lines.append("\n" + "-" * 50)
+    summary_lines.append("\n📋 Recent Findings Details:")
+
+    for idx, row in enumerate(results[:20], 1):  # Show first 20
+        summary_lines.append(f"\n{idx}. [{row.severity}] {row.name}")
+        summary_lines.append(f"   Resource: {row.resource_name}")
+        summary_lines.append(f"   Category: {row.category}")
+        summary_lines.append(f"   State: {row.state}")
+        summary_lines.append(f"   Date: {row.created_at}")
+
+    if len(results) > 20:
+        summary_lines.append(f"\n... and {len(results) - 20} more findings")
+
+    return "\n".join(summary_lines)
+
+
+def export_findings_to_csv(
+    query_filter: str = "", output_file: str = "security_findings.csv"
+) -> str:
+    """Export security findings to a CSV file.
+
+    Args:
+        query_filter: SQL WHERE clause to filter results (optional)
+        output_file: Output CSV filename (default: security_findings.csv)
+
+    Returns:
+        Success message with file path or error message
+
+    Example:
+        export_findings_to_csv("severity = 'HIGH'", "high_severity.csv")
+    """
+    try:
+        check_client()
+    except Exception as exc:  # pragma: no cover - requires missing credentials
+        return _error_response(f"Error: {exc}")
+
+    dataset_id = DEFAULT_DATASET
+    table_id = DEFAULT_TABLE
+
+    # Ensure .csv extension
+    if not output_file.endswith(".csv"):
+        output_file += ".csv"
+
+    base_query = f"""
+        SELECT * FROM `{PROJECT_ID}.{dataset_id}.{table_id}`
+    """
+    if query_filter:
+        base_query += f"\n        WHERE {query_filter}"
+    base_query += "\n        ORDER BY created_at DESC"
+
+    query_text = base_query.strip()
+
+    try:
+        job = bq_client.query(query_text)
+        rows_iterable = job.result()
+    except Exception as exc:  # pragma: no cover - requires live BQ errors
+        return _error_response(f"Error querying for export: {exc}")
+
+    rows = list(rows_iterable)
+    if not rows:
+        return "⚠️ No findings match the criteria. CSV file not created."
+
+    # Get column names from schema
+    schema = rows_iterable.schema
+    columns = [field.name for field in schema]
+
+    # Write to CSV
+    try:
+        with open(output_file, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=columns)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(row))
+
+        summary_lines = [
+            "✅ Export Successful!",
+            f"   File: {output_file}",
+            f"   Records Exported: {len(rows)}",
+            f"   Columns: {len(columns)}",
+            f"   Filter Applied: {query_filter if query_filter else 'None (all records)'}",
+        ]
+        return "\n".join(summary_lines)
+
+    except Exception as exc:
+        return _error_response(f"Error writing CSV file: {exc}")

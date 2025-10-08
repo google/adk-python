@@ -6,7 +6,10 @@ Organized tools for security analysis and BigQuery operations
 from .security_tools import (
     get_security_insights_summary,
     query_security_insights,
-    get_security_statistics
+    get_security_statistics,
+    get_resources_by_severity,
+    get_recent_findings,
+    export_findings_to_csv
 )
 
 from .bigquery_tools import (
@@ -36,6 +39,9 @@ __all__ = [
     'get_security_insights_summary',
     'query_security_insights',
     'get_security_statistics',
+    'get_resources_by_severity',
+    'get_recent_findings',
+    'export_findings_to_csv',
     # BigQuery tools
     'hello_world',
     'list_datasets',

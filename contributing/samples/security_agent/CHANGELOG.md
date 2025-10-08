@@ -5,6 +5,34 @@ All notable changes to the GCP Security Intelligence Platform will be documented
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2025-10-07
+
+### Added
+- **Enhanced Security Analysis Tools** - 3 new powerful tools for deeper security insights:
+
+  1. **`get_resources_by_severity(severity="HIGH")`**
+     - Lists all unique resources affected by findings of specific severity
+     - Groups findings by resource with counts and categories
+     - Supports CRITICAL, HIGH, MEDIUM, LOW severity levels
+     - Shows latest finding timestamp per resource
+
+  2. **`get_recent_findings(days=7)`**
+     - Time-based filtering for security findings (1-365 days)
+     - Automatic severity breakdown and counts
+     - Ordered by severity priority (CRITICAL → LOW)
+     - Displays first 20 findings with full details
+
+  3. **`export_findings_to_csv(query_filter="", output_file="security_findings.csv")`**
+     - Export findings to CSV for Excel/Sheets analysis
+     - Optional SQL WHERE clause filtering
+     - Automatic `.csv` extension handling
+     - All columns included, ordered by creation date
+
+### Changed
+- Updated tool count from 3 to 6 security analysis tools
+- Enhanced README.md with detailed documentation for new tools
+- Added code examples for all new tool functions
+
 ## [1.0.1] - 2025-10-07
 
 ### Fixed

@@ -1,6 +1,6 @@
 # GCP Security Intelligence Platform
 
-**Version 1.0.1** | Production Ready ✅
+**Version 1.0.2** | Production Ready ✅
 
 A comprehensive security monitoring and analysis platform for Google Cloud Platform, featuring an ADK-powered AI agent with BigQuery integration and multiple user interfaces.
 
@@ -80,15 +80,17 @@ cp .env.example .env
 
 ## 🛠️ Security Analysis Tools
 
-The platform includes 3 specialized security tools that query BigQuery:
+The platform includes **6 specialized security tools** that query BigQuery:
 
-### 1. `get_security_insights_summary()`
+### Core Analysis Tools
+
+#### 1. `get_security_insights_summary()`
 Returns overview of security findings table with metrics:
 - Total records, categories, severity levels
 - Unique resources affected
 - Date range of findings
 
-### 2. `query_security_insights(query_filter, limit)`
+#### 2. `query_security_insights(query_filter, limit)`
 Query security findings with SQL WHERE clause filtering.
 
 **Available columns:**
@@ -110,7 +112,7 @@ query_security_insights("created_at >= '2025-10-06'")
 query_security_insights("category = 'VULNERABILITY'", limit=10)
 ```
 
-### 3. `get_security_statistics(group_by)`
+#### 3. `get_security_statistics(group_by)`
 Aggregated statistics grouped by field.
 
 **Valid group_by values:**
@@ -118,6 +120,61 @@ Aggregated statistics grouped by field.
 - `category` - Group by security category
 - `state` - Group by finding state
 - `project_id` - Group by GCP project
+
+### 🆕 Enhanced Analysis Tools (v1.0.2)
+
+#### 4. `get_resources_by_severity(severity="HIGH")`
+List all unique resources affected by findings of a specific severity level.
+
+**Severity levels:**
+- `CRITICAL` - Critical issues requiring immediate attention
+- `HIGH` - High severity, address soon
+- `MEDIUM` - Medium severity, scheduled remediation
+- `LOW` - Low severity, eventual remediation
+
+**Output includes:**
+- Resource name
+- Finding count per resource
+- Categories of findings
+- Latest finding timestamp
+
+**Example:**
+```python
+get_resources_by_severity("CRITICAL")  # Show all critical resources
+get_resources_by_severity("HIGH")      # Show high-severity resources
+```
+
+#### 5. `get_recent_findings(days=7)`
+Get security findings from the last N days with severity breakdown.
+
+**Features:**
+- Time-based filtering (1-365 days)
+- Severity breakdown and counts
+- Ordered by severity (CRITICAL → LOW)
+- Shows first 20 findings with full details
+
+**Example:**
+```python
+get_recent_findings(7)    # Last week
+get_recent_findings(30)   # Last month
+get_recent_findings(1)    # Last 24 hours
+```
+
+#### 6. `export_findings_to_csv(query_filter="", output_file="security_findings.csv")`
+Export security findings to CSV file for analysis in Excel/Sheets.
+
+**Features:**
+- Optional SQL filtering
+- Automatic `.csv` extension
+- All columns included
+- Ordered by creation date (newest first)
+
+**Example:**
+```python
+export_findings_to_csv()                                    # Export all
+export_findings_to_csv("severity = 'HIGH'", "high.csv")    # Export high severity only
+export_findings_to_csv("created_at >= '2025-10-01'")      # Export October findings
+```
 
 ## 📊 BigQuery Schema
 
