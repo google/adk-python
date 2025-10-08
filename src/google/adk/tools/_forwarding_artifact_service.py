@@ -39,9 +39,9 @@ class ForwardingArtifactService(BaseArtifactService):
       *,
       app_name: str,
       user_id: str,
-      session_id: str,
       filename: str,
       artifact: types.Part,
+      session_id: Optional[str] = None,
   ) -> int:
     return await self.tool_context.save_artifact(
         filename=filename, artifact=artifact
@@ -53,8 +53,8 @@ class ForwardingArtifactService(BaseArtifactService):
       *,
       app_name: str,
       user_id: str,
-      session_id: str,
       filename: str,
+      session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[types.Part]:
     return await self.tool_context.load_artifact(
@@ -63,13 +63,18 @@ class ForwardingArtifactService(BaseArtifactService):
 
   @override
   async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: str
+      self, *, app_name: str, user_id: str, session_id: Optional[str] = None
   ) -> list[str]:
     return await self.tool_context.list_artifacts()
 
   @override
   async def delete_artifact(
-      self, *, app_name: str, user_id: str, session_id: str, filename: str
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
   ) -> None:
     del app_name, user_id, session_id
     if self._invocation_context.artifact_service is None:
@@ -83,7 +88,12 @@ class ForwardingArtifactService(BaseArtifactService):
 
   @override
   async def list_versions(
-      self, *, app_name: str, user_id: str, session_id: str, filename: str
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
   ) -> list[int]:
     del app_name, user_id, session_id
     if self._invocation_context.artifact_service is None:

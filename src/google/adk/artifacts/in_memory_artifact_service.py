@@ -48,21 +48,30 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     return filename.startswith("user:")
 
   def _artifact_path(
-      self, app_name: str, user_id: str, session_id: str, filename: str
+      self,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str],
   ) -> str:
     """Constructs the artifact path.
 
     Args:
         app_name: The name of the application.
         user_id: The ID of the user.
-        session_id: The ID of the session.
         filename: The name of the artifact file.
+        session_id: The ID of the session.
 
     Returns:
         The constructed artifact path.
     """
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
+
+    if session_id is None:
+      raise ValueError(
+          "Session ID must be provided for session-scoped artifacts."
+      )
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   @override
@@ -71,11 +80,11 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       *,
       app_name: str,
       user_id: str,
-      session_id: str,
       filename: str,
       artifact: types.Part,
+      session_id: Optional[str] = None,
   ) -> int:
-    path = self._artifact_path(app_name, user_id, session_id, filename)
+    path = self._artifact_path(app_name, user_id, filename, session_id)
     if path not in self.artifacts:
       self.artifacts[path] = []
     version = len(self.artifacts[path])
@@ -88,11 +97,11 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       *,
       app_name: str,
       user_id: str,
-      session_id: str,
       filename: str,
+      session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[types.Part]:
-    path = self._artifact_path(app_name, user_id, session_id, filename)
+    path = self._artifact_path(app_name, user_id, filename, session_id)
     versions = self.artifacts.get(path)
     if not versions:
       return None
@@ -102,13 +111,15 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
 
   @override
   async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: str
+      self, *, app_name: str, user_id: str, session_id: Optional[str] = None
   ) -> list[str]:
-    session_prefix = f"{app_name}/{user_id}/{session_id}/"
     usernamespace_prefix = f"{app_name}/{user_id}/user/"
+    session_prefix = (
+        f"{app_name}/{user_id}/{session_id}/" if session_id else None
+    )
     filenames = []
     for path in self.artifacts:
-      if path.startswith(session_prefix):
+      if session_prefix and path.startswith(session_prefix):
         filename = path.removeprefix(session_prefix)
         filenames.append(filename)
       elif path.startswith(usernamespace_prefix):
@@ -118,18 +129,28 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
 
   @override
   async def delete_artifact(
-      self, *, app_name: str, user_id: str, session_id: str, filename: str
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
   ) -> None:
-    path = self._artifact_path(app_name, user_id, session_id, filename)
+    path = self._artifact_path(app_name, user_id, filename, session_id)
     if not self.artifacts.get(path):
       return None
     self.artifacts.pop(path, None)
 
   @override
   async def list_versions(
-      self, *, app_name: str, user_id: str, session_id: str, filename: str
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
   ) -> list[int]:
-    path = self._artifact_path(app_name, user_id, session_id, filename)
+    path = self._artifact_path(app_name, user_id, filename, session_id)
     versions = self.artifacts.get(path)
     if not versions:
       return []
