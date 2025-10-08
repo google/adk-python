@@ -12,22 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Defines the interface to support a model."""
 
-from .base_llm import BaseLlm
-from .gemma_llm import Gemma
-from .google_llm import Gemini
-from .llm_request import LlmRequest
-from .llm_response import LlmResponse
-from .registry import LLMRegistry
-
-__all__ = [
-    'BaseLlm',
-    'Gemini',
-    'Gemma',
-    'LLMRegistry',
-]
-
-
-LLMRegistry.register(Gemini)
-LLMRegistry.register(Gemma)
+from . import agent
