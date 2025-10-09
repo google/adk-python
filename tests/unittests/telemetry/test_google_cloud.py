@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+from typing import Optional
 from unittest import mock
 
 from google.adk.telemetry.google_cloud import get_gcp_exporters
+from google.adk.telemetry.google_cloud import get_gcp_resource
 import pytest
 
 
@@ -54,4 +57,35 @@ def test_get_gcp_exporters(
   assert len(otel_hooks.metric_readers) == (1 if enable_cloud_metrics else 0)
   assert len(otel_hooks.log_record_processors) == (
       1 if enable_cloud_logging else 0
+  )
+
+
+@pytest.mark.parametrize("project_id_in_arg", ["project_id_in_arg", None])
+@pytest.mark.parametrize("project_id_on_env", ["project_id_on_env", None])
+def test_get_gcp_resource(
+    project_id_in_arg: Optional[str],
+    project_id_on_env: Optional[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+  # Arrange.
+  if project_id_on_env is not None:
+    monkeypatch.setenv(
+        "OTEL_RESOURCE_ATTRIBUTES", f"gcp.project_id={project_id_on_env}"
+    )
+
+  # Act.
+  otel_resource = get_gcp_resource(project_id_in_arg)
+
+  # Assert.
+  expected_project_id = (
+      project_id_on_env
+      if project_id_on_env is not None
+      else project_id_in_arg
+      if project_id_in_arg is not None
+      else None
+  )
+  assert otel_resource is not None
+  assert (
+      otel_resource.attributes.get("gcp.project_id", None)
+      == expected_project_id
   )

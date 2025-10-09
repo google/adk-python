@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 
 from google.genai.types import Content
@@ -36,11 +37,14 @@ class EventCompaction(BaseModel):
   )
   """The pydantic model config."""
 
-  compaction_range: Optional[tuple[float, float]] = None
-  """The sequence ID range of the events that are summarized, in the form(start_sequence_id, end_sequence_id)`"""
+  start_timestamp: float
+  """The start timestamp of the compacted events, in seconds."""
+
+  end_timestamp: float
+  """The end timestamp of the compacted events, in seconds."""
 
   compacted_content: Content
-  """The summarized content of the events."""
+  """The compacted content of the events."""
 
 
 class EventActions(BaseModel):
@@ -92,3 +96,11 @@ class EventActions(BaseModel):
 
   compaction: Optional[EventCompaction] = None
   """The compaction of the events."""
+
+  end_of_agent: Optional[bool] = None
+  """If true, the current agent has finished its current run. Note that there
+  can be multiple events with end_of_agent=True for the same agent within one
+  invocation when there is a loop."""
+
+  agent_state: Optional[dict[str, Any]] = None
+  """The agent state at the current event."""

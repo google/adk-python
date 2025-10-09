@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from typing import Dict
 
+from google.adk.tools.tool_context import ToolContext
 import jsonschema
 import yaml
 
@@ -27,6 +28,7 @@ from .write_files import write_files
 
 async def write_config_files(
     configs: Dict[str, str],
+    tool_context: ToolContext,
     backup_existing: bool = False,  # Changed default to False - user should decide
     create_directories: bool = True,
 ) -> Dict[str, Any]:
@@ -143,6 +145,7 @@ async def write_config_files(
   if result["success"] and validated_configs:
     write_result: Dict[str, Any] = await write_files(
         validated_configs,
+        tool_context,
         create_backup=backup_existing,
         create_directories=create_directories,
     )

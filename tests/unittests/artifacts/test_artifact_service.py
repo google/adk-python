@@ -277,3 +277,48 @@ async def test_list_versions(service_type):
   )
 
   assert response_versions == list(range(4))
+
+
+@pytest.mark.asyncio
+async def test_list_keys_preserves_user_prefix():
+  """Tests that list_artifact_keys preserves 'user:' prefix in returned names."""
+  artifact_service = InMemoryArtifactService()
+  artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+
+  # Save artifacts with "user:" prefix (cross-session artifacts)
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="user:document.pdf",
+      artifact=artifact,
+  )
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="user:image.png",
+      artifact=artifact,
+  )
+
+  # Save session-scoped artifact without prefix
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="session_file.txt",
+      artifact=artifact,
+  )
+
+  # List artifacts should return names with "user:" prefix for user-scoped artifacts
+  artifact_keys = await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  )
+
+  # Should contain prefixed names and session file
+  expected_keys = ["user:document.pdf", "user:image.png", "session_file.txt"]
+  assert sorted(artifact_keys) == sorted(expected_keys)

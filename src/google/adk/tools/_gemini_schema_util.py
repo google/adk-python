@@ -99,6 +99,44 @@ def _sanitize_schema_type(schema: dict[str, Any]) -> dict[str, Any]:
   return schema
 
 
+def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
+  """Resolves $ref pointers in a JSON schema."""
+
+  defs = schema.get("$defs", {})
+
+  def _resolve_refs(sub_schema: Any) -> Any:
+    if isinstance(sub_schema, dict):
+      if "$ref" in sub_schema:
+        ref_key = sub_schema["$ref"].split("/")[-1]
+        if ref_key in defs:
+          # Found the reference, replace it with the definition.
+          resolved = defs[ref_key].copy()
+          # Merge properties from the reference, allowing overrides.
+          sub_schema_copy = sub_schema.copy()
+          del sub_schema_copy["$ref"]
+          resolved.update(sub_schema_copy)
+          # Recursively resolve refs in the newly inserted part.
+          return _resolve_refs(resolved)
+        else:
+          # Reference not found, return as is.
+          return sub_schema
+      else:
+        # No $ref, so traverse deeper into the dictionary.
+        return {key: _resolve_refs(value) for key, value in sub_schema.items()}
+    elif isinstance(sub_schema, list):
+      # Traverse into lists.
+      return [_resolve_refs(item) for item in sub_schema]
+    else:
+      # Not a dict or list, return as is.
+      return sub_schema
+
+  dereferenced_schema = _resolve_refs(schema)
+  # Remove the definitions block after resolving.
+  if "$defs" in dereferenced_schema:
+    del dereferenced_schema["$defs"]
+  return dereferenced_schema
+
+
 def _sanitize_schema_formats_for_gemini(
     schema: dict[str, Any],
 ) -> dict[str, Any]:
@@ -109,7 +147,10 @@ def _sanitize_schema_formats_for_gemini(
       "any_of",  # 'one_of', 'all_of', 'not' to come
   }
   snake_case_schema = {}
-  dict_schema_field_names: tuple[str] = ("properties",)  # 'defs' to come
+  dict_schema_field_names: tuple[str, ...] = (
+      "properties",
+      "defs",
+  )
   for field_name, field_value in schema.items():
     field_name = _to_snake_case(field_name)
     if field_name in schema_field_names:
@@ -151,8 +192,9 @@ def _to_gemini_schema(openapi_schema: dict[str, Any]) -> Schema:
   if not isinstance(openapi_schema, dict):
     raise TypeError("openapi_schema must be a dictionary")
 
-  openapi_schema = _sanitize_schema_formats_for_gemini(openapi_schema)
+  dereferenced_schema = _dereference_schema(openapi_schema)
+  sanitized_schema = _sanitize_schema_formats_for_gemini(dereferenced_schema)
   return Schema.from_json_schema(
-      json_schema=_ExtendedJSONSchema.model_validate(openapi_schema),
+      json_schema=_ExtendedJSONSchema.model_validate(sanitized_schema),
       api_option=get_google_llm_variant(),
   )

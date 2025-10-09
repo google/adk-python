@@ -120,7 +120,16 @@ class ConformanceTestRunner:
     for user_message_index, user_message in enumerate(
         test_case.test_spec.user_messages
     ):
-      content = types.UserContent(parts=[types.Part(text=user_message)])
+      # Create content from UserMessage object
+      if user_message.content is not None:
+        content = user_message.content
+      elif user_message.text is not None:
+        content = types.UserContent(parts=[types.Part(text=user_message.text)])
+      else:
+        raise ValueError(
+            f"UserMessage at index {user_message_index} has neither text nor"
+            " content"
+        )
 
       request = RunAgentRequest(
           app_name=test_case.test_spec.agent,
@@ -128,6 +137,7 @@ class ConformanceTestRunner:
           session_id=session_id,
           new_message=content,
           streaming=False,
+          state_delta=user_message.state_delta,
       )
 
       # Run the agent but don't collect events here
@@ -193,7 +203,9 @@ class ConformanceTestRunner:
     try:
       # Create session
       session = await self.client.create_session(
-          app_name=test_case.test_spec.agent, user_id=self.user_id, state={}
+          app_name=test_case.test_spec.agent,
+          user_id=self.user_id,
+          state=test_case.test_spec.initial_state,
       )
 
       # Run each user message

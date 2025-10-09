@@ -599,6 +599,9 @@ class DatabaseSessionService(BaseSessionService):
     if event.partial:
       return event
 
+    # Trim temp state before persisting
+    event = self._trim_temp_delta_state(event)
+
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config
     # 3. Store event to table
