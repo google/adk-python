@@ -347,6 +347,49 @@ class TestInvocationContextWithAppResumablity:
     assert not invocation_context.agent_states
     assert not invocation_context.end_of_agents
 
+  def test_set_agent_state_with_end_of_agent_true(self):
+    """Tests that set_agent_state clears agent_state and sets end_of_agent to True."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    invocation_context.agent_states['agent1'] = {}
+    invocation_context.end_of_agents['agent1'] = False
+
+    # Set state with end_of_agent=True, which should clear the existing
+    # agent_state.
+    invocation_context.set_agent_state('agent1', end_of_agent=True)
+    assert 'agent1' not in invocation_context.agent_states
+    assert invocation_context.end_of_agents['agent1']
+
+  def test_set_agent_state_with_agent_state(self):
+    """Tests that set_agent_state sets agent_state and sets end_of_agent to False."""
+    agent_state = BaseAgentState()
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    invocation_context.end_of_agents['agent1'] = True
+
+    # Set state with agent_state=agent_state, which should set the agent_state
+    # and reset the end_of_agent flag to False.
+    invocation_context.set_agent_state('agent1', agent_state=agent_state)
+    assert invocation_context.agent_states['agent1'] == agent_state.model_dump(
+        mode='json'
+    )
+    assert invocation_context.end_of_agents['agent1'] is False
+
+  def test_reset_agent_state(self):
+    """Tests that set_agent_state clears agent_state and end_of_agent."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    invocation_context.agent_states['agent1'] = {}
+    invocation_context.end_of_agents['agent1'] = True
+
+    # Reset state, which should clear the agent_state and end_of_agent flag.
+    invocation_context.set_agent_state('agent1')
+    assert 'agent1' not in invocation_context.agent_states
+    assert 'agent1' not in invocation_context.end_of_agents
+
 
 class TestFindMatchingFunctionCall:
   """Test suite for find_matching_function_call."""
