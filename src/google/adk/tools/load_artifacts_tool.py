@@ -62,7 +62,13 @@ class LoadArtifactsTool(BaseTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     artifact_names: list[str] = args.get('artifact_names', [])
-    return {'artifact_names': artifact_names}
+    return {
+        'artifact_names': artifact_names,
+        'status': (
+            'artifact contents temporarily inserted and removed. to access'
+            ' these artifacts, call load_artifacts tool again.'
+        ),
+    }
 
   @override
   async def process_llm_request(
@@ -88,8 +94,10 @@ class LoadArtifactsTool(BaseTool):
   {json.dumps(artifact_names)}
 
   When the user asks questions about any of the artifacts, you should call the
-  `load_artifacts` function to load the artifact. Do not generate any text other
-  than the function call.
+  `load_artifacts` function to load the artifact. Always call load_artifacts
+  before answering questions related to the artifacts, regardless of whether the
+  artifacts have been loaded before. Do not depend on prior answers about the
+  artifacts.
   """])
 
     # Attach the content of the artifacts if the model requests them.

@@ -17,6 +17,9 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from authlib.oauth2.rfc6749 import OAuth2Token
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowClientCredentials
+from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -218,3 +221,116 @@ class TestOAuth2CredentialExchanger:
     # Should return original credential when authlib is not available
     assert result == credential
     assert result.oauth2.access_token is None
+
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @pytest.mark.asyncio
+  async def test_exchange_client_credentials_success(self, mock_oauth2_session):
+    """Test successful client credentials exchange."""
+    # Setup mock
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_tokens = OAuth2Token({
+        "access_token": "client_access_token",
+        "expires_at": int(time.time()) + 3600,
+        "expires_in": 3600,
+    })
+    mock_client.fetch_token.return_value = mock_tokens
+
+    # Create OAuth2 scheme with client credentials flow
+    flows = OAuthFlows(
+        clientCredentials=OAuthFlowClientCredentials(
+            tokenUrl="https://example.com/token",
+            scopes={"read": "Read access", "write": "Write access"},
+        )
+    )
+    scheme = OAuth2(flows=flows)
+
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+        ),
+    )
+
+    exchanger = OAuth2CredentialExchanger()
+    result = await exchanger.exchange(credential, scheme)
+
+    # Verify client credentials exchange was successful
+    assert result.oauth2.access_token == "client_access_token"
+    mock_client.fetch_token.assert_called_once_with(
+        "https://example.com/token",
+        grant_type="client_credentials",
+    )
+
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @pytest.mark.asyncio
+  async def test_exchange_client_credentials_failure(self, mock_oauth2_session):
+    """Test client credentials exchange failure."""
+    # Setup mock to raise exception during fetch_token
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.fetch_token.side_effect = Exception(
+        "Client credentials fetch failed"
+    )
+
+    # Create OAuth2 scheme with client credentials flow
+    flows = OAuthFlows(
+        clientCredentials=OAuthFlowClientCredentials(
+            tokenUrl="https://example.com/token", scopes={"read": "Read access"}
+        )
+    )
+    scheme = OAuth2(flows=flows)
+
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+        ),
+    )
+
+    exchanger = OAuth2CredentialExchanger()
+    result = await exchanger.exchange(credential, scheme)
+
+    # Should return original credential when client credentials exchange fails
+    assert result == credential
+    assert result.oauth2.access_token is None
+    mock_client.fetch_token.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_determine_grant_type_client_credentials(self):
+    """Test grant type determination for client credentials."""
+    flows = OAuthFlows(
+        clientCredentials=OAuthFlowClientCredentials(
+            tokenUrl="https://example.com/token", scopes={"read": "Read access"}
+        )
+    )
+    scheme = OAuth2(flows=flows)
+
+    exchanger = OAuth2CredentialExchanger()
+    grant_type = exchanger._determine_grant_type(scheme)
+
+    from google.adk.auth.auth_schemes import OAuthGrantType
+
+    assert grant_type == OAuthGrantType.CLIENT_CREDENTIALS
+
+  @pytest.mark.asyncio
+  async def test_determine_grant_type_openid_connect(self):
+    """Test grant type determination for OpenID Connect (defaults to auth code)."""
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+
+    exchanger = OAuth2CredentialExchanger()
+    grant_type = exchanger._determine_grant_type(scheme)
+
+    from google.adk.auth.auth_schemes import OAuthGrantType
+
+    assert grant_type == OAuthGrantType.AUTHORIZATION_CODE

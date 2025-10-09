@@ -929,9 +929,10 @@ async def test_create_agent_state_event():
 
   ctx.branch = 'test_branch'
 
-  # Test case 1: with state
+  # Test case 1: set agent state in context
   state = _TestAgentState(test_field='checkpoint')
-  event = agent._create_agent_state_event(ctx, agent_state=state)
+  ctx.set_agent_state(agent.name, agent_state=state)
+  event = agent._create_agent_state_event(ctx)
   assert event is not None
   assert event.invocation_id == ctx.invocation_id
   assert event.author == agent.name
@@ -941,8 +942,9 @@ async def test_create_agent_state_event():
   assert event.actions.agent_state == state.model_dump(mode='json')
   assert not event.actions.end_of_agent
 
-  # Test case 2: with end_of_agent
-  event = agent._create_agent_state_event(ctx, end_of_agent=True)
+  # Test case 2: set end_of_agent in context
+  ctx.set_agent_state(agent.name, end_of_agent=True)
+  event = agent._create_agent_state_event(ctx)
   assert event is not None
   assert event.invocation_id == ctx.invocation_id
   assert event.author == agent.name
@@ -951,16 +953,8 @@ async def test_create_agent_state_event():
   assert event.actions.end_of_agent
   assert event.actions.agent_state is None
 
-  # Test case 3: with both state and end_of_agent
-  state = _TestAgentState(test_field='checkpoint')
-  event = agent._create_agent_state_event(
-      ctx, agent_state=state, end_of_agent=True
-  )
-  assert event is not None
-  assert event.actions.agent_state == state.model_dump(mode='json')
-  assert event.actions.end_of_agent
-
-  # Test case 4: with neither
+  # Test case 3: reset agent state and end_of_agent in context
+  ctx.set_agent_state(agent.name)
   event = agent._create_agent_state_event(ctx)
   assert event is not None
   assert event.actions.agent_state is None

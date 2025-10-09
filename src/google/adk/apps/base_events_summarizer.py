@@ -23,28 +23,25 @@ from ..utils.feature_decorator import experimental
 
 
 @experimental
-class BaseEventsCompactor(abc.ABC):
+class BaseEventsSummarizer(abc.ABC):
   """Base interface for compacting events."""
 
-  async def maybe_compact_events(
+  @abc.abstractmethod
+  async def maybe_summarize_events(
       self, *, events: list[Event]
-  ) -> Optional[Content]:
-    """A list of uncompacted events, decide whether to compact.
+  ) -> Optional[Event]:
+    """Compact a list of events into a single event.
 
-    If no need to compact, return None. Otherwise, compact into a content and
+    If compaction failed, return None. Otherwise, compact into a content and
     return it.
 
-      This method will summarize the events and return a new summray event
-      indicating the range of events it summarized.
-
-    When sending events to the LLM, if a summary event is present, the events it
-    replaces (those identified in itssummary_range) should not be included.
+    This method will summarize the events and return a new summray event
+    indicating the range of events it summarized.
 
     Args:
       events: Events to compact.
-      agent_name: The name of the agent.
 
     Returns:
-      The new compacted content, or None if no compaction is needed.
+      The new compacted event, or None if no compaction happended.
     """
     raise NotImplementedError()

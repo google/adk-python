@@ -313,11 +313,7 @@ class Gemini(BaseLlm):
     if llm_request.config and llm_request.config.tools:
       # Check if computer use is configured
       for tool in llm_request.config.tools:
-        if (
-            isinstance(tool, (types.Tool, types.ToolDict))
-            and hasattr(tool, 'computer_use')
-            and tool.computer_use
-        ):
+        if isinstance(tool, types.Tool) and tool.computer_use:
           llm_request.config.system_instruction = None
           await self._adapt_computer_use_tool(llm_request)
 
@@ -355,10 +351,19 @@ def _build_function_declaration_log(
 
 
 def _build_request_log(req: LlmRequest) -> str:
-  function_decls: list[types.FunctionDeclaration] = cast(
-      list[types.FunctionDeclaration],
-      req.config.tools[0].function_declarations if req.config.tools else [],
-  )
+  # Find which tool contains function_declarations
+  function_decls: list[types.FunctionDeclaration] = []
+  function_decl_tool_index: Optional[int] = None
+
+  if req.config.tools:
+    for idx, tool in enumerate(req.config.tools):
+      if tool.function_declarations:
+        function_decls = cast(
+            list[types.FunctionDeclaration], tool.function_declarations
+        )
+        function_decl_tool_index = idx
+        break
+
   function_logs = (
       [
           _build_function_declaration_log(func_decl)
@@ -379,11 +384,34 @@ def _build_request_log(req: LlmRequest) -> str:
       for content in req.contents
   ]
 
+  # Build exclusion dict for config logging
+  tools_exclusion = (
+      {function_decl_tool_index: {'function_declarations'}}
+      if function_decl_tool_index is not None
+      else True
+  )
+
+  try:
+    config_log = str(
+        req.config.model_dump(
+            exclude_none=True,
+            exclude={
+                'system_instruction': True,
+                'tools': tools_exclusion if req.config.tools else True,
+            },
+        )
+    )
+  except Exception:
+    config_log = repr(req.config)
+
   return f"""
 LLM Request:
 -----------------------------------------------------------
 System Instruction:
 {req.config.system_instruction}
+-----------------------------------------------------------
+Config:
+{config_log}
 -----------------------------------------------------------
 Contents:
 {_NEW_LINE.join(contents_logs)}
