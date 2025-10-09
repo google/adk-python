@@ -409,6 +409,11 @@ class LlmAgent(BaseAgent):
           return
 
     if ctx.is_resumable:
+      events = ctx._get_events(current_invocation=True, current_branch=True)
+      if events and ctx.should_pause_invocation(events[-1]):
+        return
+      # Only yield an end state if the last event is no longer a long running
+      # tool call.
       ctx.set_agent_state(self.name, end_of_agent=True)
       yield self._create_agent_state_event(ctx)
 

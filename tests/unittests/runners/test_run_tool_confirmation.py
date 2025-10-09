@@ -18,7 +18,9 @@ import copy
 from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
@@ -549,10 +551,23 @@ class TestHITLConfirmationFlowWithSequentialAgentAndResumableApp:
       agent: SequentialAgent,
   ):
     """Tests HITL flow where all tool calls are confirmed."""
+
+    # Test setup:
+    # - root_agent is a SequentialAgent with two sub-agents: sub_agent1 and
+    #   sub_agent2.
+    #   - sub_agent1 has a tool call that asks for HITL confirmation.
+    #   - sub_agent2 does not have any tool calls.
+    # - The test will:
+    #   - Run the query and verify that the invocation is paused after the long
+    #     running tool call, at sub_agent1.
+    #   - Resume the invocation and execute the tool call from sub_agent1.
+    #   - Verify that root_agent continues to run sub_agent2.
+
     events = runner.run("test user query")
     sub_agent1 = agent.sub_agents[0]
     sub_agent2 = agent.sub_agents[1]
 
+    # Step 1:
     # Verify that the invocation is paused after the long running tool call.
     # So that no intermediate function response and llm response is generated.
     # And the second sub agent is not started.
@@ -598,6 +613,7 @@ class TestHITLConfirmationFlowWithSequentialAgentAndResumableApp:
     )
     invocation_id = events[2].invocation_id
 
+    # Step 2:
     # Resume the invocation and confirm the tool call from sub_agent1, and
     # sub_agent2 will continue.
     user_confirmation = testing_utils.UserContent(
@@ -640,3 +656,249 @@ class TestHITLConfirmationFlowWithSequentialAgentAndResumableApp:
         testing_utils.simplify_resumable_app_events(copy.deepcopy(events))
         == expected_parts_final
     )
+
+
+class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
+  """Tests the HITL confirmation flow with a resumable sequential agent app."""
+
+  @pytest.fixture
+  def tools(self) -> list[FunctionTool]:
+    """Provides the tools for the agent."""
+    return [FunctionTool(func=_test_request_confirmation_function)]
+
+  @pytest.fixture
+  def llm_responses(
+      self, tools: list[FunctionTool]
+  ) -> list[GenerateContentResponse]:
+    """Provides mock LLM responses for the tests."""
+    return [
+        _create_llm_response_from_tools(tools),
+        _create_llm_response_from_text("test llm response after tool call"),
+    ]
+
+  @pytest.fixture
+  def agent(
+      self,
+      tools: list[FunctionTool],
+      llm_responses: list[GenerateContentResponse],
+  ) -> ParallelAgent:
+    """Provides a single ParallelAgent for the test."""
+    return ParallelAgent(
+        name="root_agent",
+        sub_agents=[
+            LlmAgent(
+                name="agent1",
+                model=testing_utils.MockModel(responses=llm_responses),
+                tools=tools,
+            ),
+            LlmAgent(
+                name="agent2",
+                model=testing_utils.MockModel(responses=llm_responses),
+                tools=tools,
+            ),
+        ],
+    )
+
+  @pytest.fixture
+  def runner(self, agent: ParallelAgent) -> testing_utils.InMemoryRunner:
+    """Provides an in-memory runner for the agent."""
+    # Mark the app as resumable. So that the invocation will be paused after the
+    # long running tool call.
+    app = App(
+        name="test_app",
+        resumability_config=ResumabilityConfig(is_resumable=True),
+        root_agent=agent,
+    )
+    return testing_utils.InMemoryRunner(app=app)
+
+  @pytest.mark.asyncio
+  async def test_pause_and_resume_on_request_confirmation(
+      self,
+      runner: testing_utils.InMemoryRunner,
+      agent: ParallelAgent,
+  ):
+    """Tests HITL flow where all tool calls are confirmed."""
+    events = runner.run("test user query")
+
+    # Test setup:
+    # - root_agent is a ParallelAgent with two sub-agents: sub_agent1 and
+    #   sub_agent2.
+    # - Both sub_agents have a tool call that asks for HITL confirmation.
+    # - The test will:
+    #   - Run the query and verify that each branch is paused after the long
+    #     running tool call.
+    #   - Resume the invocation and execute the tool call of each branch.
+
+    sub_agent1 = agent.sub_agents[0]
+    sub_agent2 = agent.sub_agents[1]
+
+    # Verify that each branch is paused after the long running tool call.
+    # So that no intermediate function response and llm response is generated.
+    root_agent_events = [event for event in events if event.branch is None]
+    sub_agent1_branch_events = [
+        event
+        for event in events
+        if event.branch == f"{agent.name}.{sub_agent1.name}"
+    ]
+    sub_agent2_branch_events = [
+        event
+        for event in events
+        if event.branch == f"{agent.name}.{sub_agent2.name}"
+    ]
+    assert testing_utils.simplify_resumable_app_events(
+        copy.deepcopy(root_agent_events)
+    ) == [
+        (
+            agent.name,
+            BaseAgentState().model_dump(mode="json"),
+        ),
+    ]
+    assert testing_utils.simplify_resumable_app_events(
+        copy.deepcopy(sub_agent1_branch_events)
+    ) == [
+        (
+            sub_agent1.name,
+            Part(
+                function_call=FunctionCall(
+                    name=sub_agent1.tools[0].name, args={}
+                )
+            ),
+        ),
+        (
+            sub_agent1.name,
+            Part(
+                function_call=FunctionCall(
+                    name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                    args={
+                        "originalFunctionCall": {
+                            "name": sub_agent1.tools[0].name,
+                            "id": mock.ANY,
+                            "args": {},
+                        },
+                        "toolConfirmation": {
+                            "hint": "test hint for request_confirmation",
+                            "confirmed": False,
+                        },
+                    },
+                )
+            ),
+        ),
+    ]
+    assert testing_utils.simplify_resumable_app_events(
+        copy.deepcopy(sub_agent2_branch_events)
+    ) == [
+        (
+            sub_agent2.name,
+            Part(
+                function_call=FunctionCall(
+                    name=sub_agent2.tools[0].name, args={}
+                )
+            ),
+        ),
+        (
+            sub_agent2.name,
+            Part(
+                function_call=FunctionCall(
+                    name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                    args={
+                        "originalFunctionCall": {
+                            "name": sub_agent2.tools[0].name,
+                            "id": mock.ANY,
+                            "args": {},
+                        },
+                        "toolConfirmation": {
+                            "hint": "test hint for request_confirmation",
+                            "confirmed": False,
+                        },
+                    },
+                )
+            ),
+        ),
+    ]
+
+    ask_for_confirmation_function_call_ids = [
+        sub_agent1_branch_events[1].content.parts[0].function_call.id,
+        sub_agent2_branch_events[1].content.parts[0].function_call.id,
+    ]
+    assert (
+        sub_agent1_branch_events[1].invocation_id
+        == sub_agent2_branch_events[1].invocation_id
+    )
+    invocation_id = sub_agent1_branch_events[1].invocation_id
+
+    # Resume the invocation and confirm the tool call from sub_agent1.
+    user_confirmations = [
+        testing_utils.UserContent(
+            Part(
+                function_response=FunctionResponse(
+                    id=id,
+                    name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                    response={"confirmed": True},
+                )
+            )
+        )
+        for id in ask_for_confirmation_function_call_ids
+    ]
+
+    events = await runner.run_async(
+        user_confirmations[0], invocation_id=invocation_id
+    )
+    for event in events:
+      assert event.invocation_id == invocation_id
+
+    root_agent_events = [event for event in events if event.branch is None]
+    sub_agent1_branch_events = [
+        event
+        for event in events
+        if event.branch == f"{agent.name}.{sub_agent1.name}"
+    ]
+    sub_agent2_branch_events = [
+        event
+        for event in events
+        if event.branch == f"{agent.name}.{sub_agent2.name}"
+    ]
+
+    # Verify that sub_agent1 is resumed and final; sub_agent2 is still paused;
+    # root_agent is not final.
+    assert not root_agent_events
+    assert not sub_agent2_branch_events
+    assert testing_utils.simplify_resumable_app_events(
+        copy.deepcopy(sub_agent1_branch_events)
+    ) == [
+        (
+            sub_agent1.name,
+            Part(
+                function_response=FunctionResponse(
+                    name=sub_agent1.tools[0].name,
+                    response={"result": "confirmed=True"},
+                )
+            ),
+        ),
+        (sub_agent1.name, "test llm response after tool call"),
+        (sub_agent1.name, testing_utils.END_OF_AGENT),
+    ]
+
+    # Resume the invocation again and confirm the tool call from sub_agent2.
+    events = await runner.run_async(
+        user_confirmations[1], invocation_id=invocation_id
+    )
+    for event in events:
+      assert event.invocation_id == invocation_id
+
+    # Verify that sub_agent2 is resumed and final; root_agent is final.
+    assert testing_utils.simplify_resumable_app_events(
+        copy.deepcopy(events)
+    ) == [
+        (
+            sub_agent2.name,
+            Part(
+                function_response=FunctionResponse(
+                    name=sub_agent1.tools[0].name,
+                    response={"result": "confirmed=True"},
+                )
+            ),
+        ),
+        (sub_agent2.name, "test llm response after tool call"),
+        (sub_agent2.name, testing_utils.END_OF_AGENT),
+        (agent.name, testing_utils.END_OF_AGENT),
+    ]
