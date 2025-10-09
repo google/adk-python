@@ -441,3 +441,39 @@ async def test_append_event_with_fields(service_type):
   retrieved_event = retrieved_session.events[0]
 
   assert retrieved_event == event
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+)
+async def test_append_event_should_trim_temp_delta_state(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      content=types.Content(role='user', parts=[types.Part(text='text')]),
+      actions=EventActions(
+          state_delta={
+              'app:key': 'app_value',
+              'temp:key': 'temp_value',
+          }
+      ),
+  )
+
+  await session_service.append_event(session, event)
+
+  updated_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+
+  last_event = updated_session.events[-1]
+  assert 'temp:key' not in last_event.actions.state_delta
+  assert last_event.actions.state_delta['app:key'] == 'app_value'
