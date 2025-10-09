@@ -24,6 +24,7 @@ from typing_extensions import TypeAlias
 
 from .app_details import AppDetails
 from .common import EvalBaseModel
+from .conversation_scenarios import ConversationScenario
 from .eval_rubrics import Rubric
 
 
@@ -119,14 +120,29 @@ class SessionInput(EvalBaseModel):
   """The state of the session."""
 
 
+StaticConversation: TypeAlias = list[Invocation]
+"""A conversation where user's query for each invocation is already specified."""
+
+
 class EvalCase(EvalBaseModel):
   """An eval case."""
 
   eval_id: str
   """Unique identifier for the evaluation case."""
 
-  conversation: list[Invocation]
-  """A conversation between the user and the Agent. The conversation can have any number of invocations."""
+  conversation: Optional[StaticConversation] = None
+  """A static conversation between the user and the Agent.
+
+   While creating an eval case you should specify either a `conversation` or a
+  `conversation_scenario`, but not both.
+  """
+
+  conversation_scenario: Optional[ConversationScenario] = None
+  """A conversation scenario that should be used by a UserSimulator.
+
+  While creating an eval case you should specify either a `conversation` or a
+  `conversation_scenario`, but not both.
+  """
 
   session_input: Optional[SessionInput] = None
   """Session input that will be passed on to the Agent during eval.

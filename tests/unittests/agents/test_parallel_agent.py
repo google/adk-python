@@ -52,6 +52,8 @@ class _TestingAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     await asyncio.sleep(self.delay)
     yield self.event(ctx)
+    if ctx.is_resumable:
+      ctx.set_agent_state(self.name, end_of_agent=True)
 
 
 async def _create_parent_invocation_context(
