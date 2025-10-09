@@ -194,9 +194,14 @@ def execute_sql(
               connection_properties=bq_connection_properties,
           ),
       )
+      destination_dataset_id = None
+      if dry_run_query_job.destination:
+          destination_dataset_id = dry_run_query_job.destination.dataset_id
+
       if (
           dry_run_query_job.statement_type != "SELECT"
-          and dry_run_query_job.destination.dataset_id != bq_session_dataset_id
+          and destination_dataset_id != bq_session_dataset_id
+          and destination_dataset_id is not None
       ):
         return {
             "status": "ERROR",
