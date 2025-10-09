@@ -196,7 +196,7 @@ class LlmAgent(BaseAgent):
   or personality.
   """
 
-  static_instruction: Optional[types.Content] = None
+  static_instruction: Optional[types.ContentUnion] = None
   """Static instruction content sent literally as system instruction at the beginning.
 
   This field is for content that never changes and doesn't contain placeholders.
@@ -223,11 +223,20 @@ class LlmAgent(BaseAgent):
   For explicit caching control, configure context_cache_config at App level.
 
   **Content Support:**
-  Can contain text, files, binaries, or any combination as types.Content
-  supports multiple part types (text, inline_data, file_data, etc.).
+  Accepts types.ContentUnion which includes:
+  - str: Simple text instruction
+  - types.Content: Rich content object
+  - types.Part: Single part (text, inline_data, file_data, etc.)
+  - PIL.Image.Image: Image object
+  - types.File: File reference
+  - list[PartUnion]: List of parts
 
-  **Example:**
+  **Examples:**
   ```python
+  # Simple string instruction
+  static_instruction = "You are a helpful assistant."
+
+  # Rich content with files
   static_instruction = types.Content(
       role='user',
       parts=[
