@@ -96,7 +96,7 @@ def cache_metadata():
       expire_time=time.time() + 3600,
       fingerprint="test_fingerprint",
       invocations_used=2,
-      cached_contents_count=3,
+      contents_count=3,
       created_at=time.time() - 600,
   )
 
