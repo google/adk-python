@@ -32,6 +32,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from .app_details import AgentDetails
 from .app_details import AppDetails
 from .eval_case import EvalCase
 from .eval_case import Invocation
@@ -39,6 +40,7 @@ from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
 from .eval_case import SessionInput
 from .eval_set import EvalSet
+from .request_intercepter_plugin import _RequestIntercepterPlugin
 
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"
@@ -180,12 +182,16 @@ class EvaluationGenerator:
     if callable(reset_func):
       reset_func()
 
+    request_intercepter_plugin = _RequestIntercepterPlugin(
+        name="request_intercepter_plugin"
+    )
     async with Runner(
         app_name=app_name,
         agent=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
+        plugins=[request_intercepter_plugin],
     ) as runner:
       events = []
 
@@ -212,30 +218,36 @@ class EvaluationGenerator:
 
             events.append(event)
 
-      return EvaluationGenerator.convert_events_to_eval_invocations(events)
+      app_details_by_invocation_id = (
+          EvaluationGenerator._get_app_details_by_invocation_id(
+              events, request_intercepter_plugin
+          )
+      )
+      return EvaluationGenerator.convert_events_to_eval_invocations(
+          events, app_details_by_invocation_id
+      )
 
   @staticmethod
   def convert_events_to_eval_invocations(
       events: list[Event],
+      app_details_per_invocation: Optional[dict[str, AppDetails]] = None,
   ) -> list[Invocation]:
     """Converts a list of events to eval invocations."""
-    # Group Events by invocation id. Events that share the same invocation id
-    # belong to the same invocation.
-    events_by_invocation_id: dict[str, list[Event]] = {}
-
-    for event in events:
-      invocation_id = event.invocation_id
-
-      if invocation_id not in events_by_invocation_id:
-        events_by_invocation_id[invocation_id] = []
-
-      events_by_invocation_id[invocation_id].append(event)
+    events_by_invocation_id = (
+        EvaluationGenerator._collect_events_by_invocation_id(events)
+    )
 
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
       final_response = None
       user_content = ""
       invocation_timestamp = 0
+      app_details = None
+      if (
+          app_details_per_invocation
+          and invocation_id in app_details_per_invocation
+      ):
+        app_details = app_details_per_invocation[invocation_id]
 
       events_to_add = []
 
@@ -271,10 +283,60 @@ class EvaluationGenerator:
                   invocation_events=invocation_events
               ),
               creation_timestamp=invocation_timestamp,
+              app_details=app_details,
           )
       )
 
     return invocations
+
+  @staticmethod
+  def _get_app_details_by_invocation_id(
+      events: list[Event], request_intercepter: _RequestIntercepterPlugin
+  ) -> dict[str, AppDetails]:
+    """Creates an AppDetails object from the list of events."""
+    events_by_invocation_id = (
+        EvaluationGenerator._collect_events_by_invocation_id(events)
+    )
+    app_details_by_invocation_id = {}
+
+    for invocation_id, events in events_by_invocation_id.items():
+      app_details = AppDetails(agent_details={})
+      app_details_by_invocation_id[invocation_id] = app_details
+
+      for event in events:
+        if event.author == _USER_AUTHOR:
+          continue
+
+        llm_request = request_intercepter.get_model_request(event)
+
+        if not llm_request:
+          continue
+
+        if event.author not in app_details.agent_details:
+          agent_name = event.author
+          app_details.agent_details[agent_name] = AgentDetails(
+              name=agent_name,
+              instructions=llm_request.config.system_instruction,
+              tool_declarations=llm_request.config.tools or [],
+          )
+
+    return app_details_by_invocation_id
+
+  @staticmethod
+  def _collect_events_by_invocation_id(events: list[Event]) -> dict[str, Event]:
+    # Group Events by invocation id. Events that share the same invocation id
+    # belong to the same invocation.
+    events_by_invocation_id: dict[str, list[Event]] = {}
+
+    for event in events:
+      invocation_id = event.invocation_id
+
+      if invocation_id not in events_by_invocation_id:
+        events_by_invocation_id[invocation_id] = []
+
+      events_by_invocation_id[invocation_id].append(event)
+
+    return events_by_invocation_id
 
   @staticmethod
   def _process_query_with_session(session_data, data):

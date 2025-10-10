@@ -24,6 +24,7 @@ from typing_extensions import TypeAlias
 
 from .app_details import AppDetails
 from .common import EvalBaseModel
+from .conversation_scenarios import ConversationScenario
 from .eval_rubrics import Rubric
 
 
@@ -119,14 +120,29 @@ class SessionInput(EvalBaseModel):
   """The state of the session."""
 
 
+StaticConversation: TypeAlias = list[Invocation]
+"""A conversation where user's query for each invocation is already specified."""
+
+
 class EvalCase(EvalBaseModel):
   """An eval case."""
 
   eval_id: str
   """Unique identifier for the evaluation case."""
 
-  conversation: list[Invocation]
-  """A conversation between the user and the Agent. The conversation can have any number of invocations."""
+  conversation: Optional[StaticConversation] = None
+  """A static conversation between the user and the Agent.
+
+   While creating an eval case you should specify either a `conversation` or a
+  `conversation_scenario`, but not both.
+  """
+
+  conversation_scenario: Optional[ConversationScenario] = None
+  """A conversation scenario that should be used by a UserSimulator.
+
+  While creating an eval case you should specify either a `conversation` or a
+  `conversation_scenario`, but not both.
+  """
 
   session_input: Optional[SessionInput] = None
   """Session input that will be passed on to the Agent during eval.
@@ -168,3 +184,54 @@ def get_all_tool_calls(
     )
 
   return tool_calls
+
+
+def get_all_tool_responses(
+    intermediate_data: Optional[IntermediateDataType],
+) -> list[genai_types.FunctionResponse]:
+  """A utility method to retrieve tools responses from intermediate data."""
+  if not intermediate_data:
+    return []
+
+  tool_responses = []
+  if isinstance(intermediate_data, IntermediateData):
+    tool_responses = intermediate_data.tool_responses
+  elif isinstance(intermediate_data, InvocationEvents):
+    # Go over each event in the list of events
+    for invocation_event in intermediate_data.invocation_events:
+      # Check if the event has content and some parts.
+      if invocation_event.content and invocation_event.content.parts:
+        for p in invocation_event.content.parts:
+          # For each part, we check if any of those part is a function response.
+          if p.function_response:
+            tool_responses.append(p.function_response)
+  else:
+    raise ValueError(
+        f"Unsupported type for intermediate_data `{intermediate_data}`"
+    )
+
+  return tool_responses
+
+
+ToolCallAndResponse: TypeAlias = tuple[
+    genai_types.FunctionCall, Optional[genai_types.FunctionResponse]
+]
+"""A Tuple representing a Function call and corresponding optional function response."""
+
+
+def get_all_tool_calls_with_responses(
+    intermediate_data: Optional[IntermediateDataType],
+) -> list[ToolCallAndResponse]:
+  """Returns tool calls with the corresponding responses, if available."""
+  tool_responses_by_call_id: dict[str, genai_types.FunctionResponse] = {
+      tool_response.id: tool_response
+      for tool_response in get_all_tool_responses(intermediate_data)
+  }
+
+  tool_call_and_responses: list[ToolCallAndResponse] = []
+
+  for tool_call in get_all_tool_calls(intermediate_data):
+    response = tool_responses_by_call_id.get(tool_call.id, None)
+    tool_call_and_responses.append((tool_call, response))
+
+  return tool_call_and_responses

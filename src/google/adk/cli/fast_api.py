@@ -71,6 +71,8 @@ def get_fast_api_app(
     reload_agents: bool = False,
     lifespan: Optional[Lifespan[FastAPI]] = None,
     extra_plugins: Optional[list[str]] = None,
+    logo_text: Optional[str] = None,
+    logo_image_url: Optional[str] = None,
 ) -> FastAPI:
   # Set up eval managers.
   if eval_storage_uri:
@@ -103,8 +105,8 @@ def get_fast_api_app(
       agent_engine_id = agent_engine_id_or_resource_name.split("/")[-1]
     else:
       envs.load_dotenv_for_agent("", agents_dir)
-      project = os.environ["GOOGLE_CLOUD_PROJECT"]
-      location = os.environ["GOOGLE_CLOUD_LOCATION"]
+      project = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
+      location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
       agent_engine_id = agent_engine_id_or_resource_name
     return project, location, agent_engine_id
 
@@ -189,6 +191,8 @@ def get_fast_api_app(
       eval_set_results_manager=eval_set_results_manager,
       agents_dir=agents_dir,
       extra_plugins=extra_plugins,
+      logo_text=logo_text,
+      logo_image_url=logo_image_url,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance
@@ -252,29 +256,74 @@ def get_fast_api_app(
 
   @working_in_progress("builder_save is not ready for use.")
   @app.post("/builder/save", response_model_exclude_none=True)
-  async def builder_build(files: list[UploadFile]) -> bool:
+  async def builder_build(
+      files: list[UploadFile], tmp: Optional[bool] = False
+  ) -> bool:
     base_path = Path.cwd() / agents_dir
-
     for file in files:
+      if not file.filename:
+        logger.exception("Agent name is missing in the input files")
+        return False
+      agent_name, filename = file.filename.split("/")
+      agent_dir = os.path.join(base_path, agent_name)
       try:
         # File name format: {app_name}/{agent_name}.yaml
-        if not file.filename:
-          logger.exception("Agent name is missing in the input files")
-          return False
+        if tmp:
+          agent_dir = os.path.join(agent_dir, "tmp/" + agent_name)
+          os.makedirs(agent_dir, exist_ok=True)
+          file_path = os.path.join(agent_dir, filename)
+          with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-        agent_name, filename = file.filename.split("/")
-
-        agent_dir = os.path.join(base_path, agent_name)
-        os.makedirs(agent_dir, exist_ok=True)
-        file_path = os.path.join(agent_dir, filename)
-
-        with open(file_path, "wb") as buffer:
-          shutil.copyfileobj(file.file, buffer)
-
+        else:
+          source_dir = os.path.join(agent_dir, "tmp/" + agent_name)
+          destination_dir = agent_dir
+          for item in os.listdir(source_dir):
+            source_item = os.path.join(source_dir, item)
+            destination_item = os.path.join(destination_dir, item)
+            if os.path.isdir(source_item):
+              shutil.copytree(source_item, destination_item, dirs_exist_ok=True)
+            # Check if the item is a file
+            elif os.path.isfile(source_item):
+              shutil.copy2(source_item, destination_item)
       except Exception as e:
         logger.exception("Error in builder_build: %s", e)
         return False
 
+    return True
+
+  @working_in_progress("builder_save is not ready for use.")
+  @app.post("/builder/app/{app_name}/cancel", response_model_exclude_none=True)
+  async def builder_cancel(app_name: str) -> bool:
+    base_path = Path.cwd() / agents_dir
+    agent_dir = os.path.join(base_path, app_name)
+    destination_dir = os.path.join(agent_dir, "tmp/" + app_name)
+    source_dir = agent_dir
+    source_items = set(os.listdir(source_dir))
+    try:
+      for item in os.listdir(destination_dir):
+        if item in source_items:
+          continue
+        # If it doesn't exist in the source, delete it from the destination
+        item_path = os.path.join(destination_dir, item)
+        if os.path.isdir(item_path):
+          shutil.rmtree(item_path)
+        elif os.path.isfile(item_path):
+          os.remove(item_path)
+
+      for item in os.listdir(source_dir):
+        source_item = os.path.join(source_dir, item)
+        destination_item = os.path.join(destination_dir, item)
+        if item == "tmp" and os.path.isdir(source_item):
+          continue
+        if os.path.isdir(source_item):
+          shutil.copytree(source_item, destination_item, dirs_exist_ok=True)
+        # Check if the item is a file
+        elif os.path.isfile(source_item):
+          shutil.copy2(source_item, destination_item)
+    except Exception as e:
+      logger.exception("Error in builder_build: %s", e)
+      return False
     return True
 
   @working_in_progress("builder_get is not ready for use.")
@@ -283,9 +332,16 @@ def get_fast_api_app(
       response_model_exclude_none=True,
       response_class=PlainTextResponse,
   )
-  async def get_agent_builder(app_name: str, file_path: Optional[str] = None):
+  async def get_agent_builder(
+      app_name: str,
+      file_path: Optional[str] = None,
+      tmp: Optional[bool] = False,
+  ):
     base_path = Path.cwd() / agents_dir
     agent_dir = base_path / app_name
+    if tmp:
+      agent_dir = agent_dir / "tmp"
+      agent_dir = agent_dir / app_name
     if not file_path:
       file_name = "root_agent.yaml"
       root_file_path = agent_dir / file_name

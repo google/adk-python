@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Optional
 
@@ -29,14 +30,15 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
   """A plugin that saves files embedded in user messages as artifacts.
 
   This is useful to allow users to upload files in the chat experience and have
-  those files available to the agent.
+  those files available to the agent within the current session.
 
-  We use Blob.display_name to determine
-  the file name. Artifacts with the same name will be overwritten. A placeholder
-  with the artifact name will be put in place of the embedded file in the user
-  message so the model knows where to find the file. You may want to add
-  load_artifacts tool to the agent, or load the artifacts in your own tool to
-  use the files.
+  We use Blob.display_name to determine the file name. By default, artifacts are
+  session-scoped. For cross-session persistence, prefix the filename with
+  "user:".
+  Artifacts with the same name will be overwritten. A placeholder with the
+  artifact name will be put in place of the embedded file in the user message
+  so the model knows where to find the file. You may want to add load_artifacts
+  tool to the agent, or load the artifacts in your own tool to use the files.
   """
 
   def __init__(self, name: str = 'save_files_as_artifacts_plugin'):
@@ -62,10 +64,14 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
       return user_message
 
     if not user_message.parts:
-      return user_message
+      return None
+
+    new_parts = []
+    modified = False
 
     for i, part in enumerate(user_message.parts):
       if part.inline_data is None:
+        new_parts.append(part)
         continue
 
       try:
@@ -77,23 +83,32 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
               f'No display_name found, using generated filename: {file_name}'
           )
 
+        # Store original filename for display to user/ placeholder
+        display_name = file_name
+
+        # Create a copy to stop mutation of the saved artifact if the original part is modified
         await invocation_context.artifact_service.save_artifact(
             app_name=invocation_context.app_name,
             user_id=invocation_context.user_id,
             session_id=invocation_context.session.id,
             filename=file_name,
-            artifact=part,
+            artifact=copy.copy(part),
         )
 
-        # Replace the inline data with a placeholder text
-        user_message.parts[i] = types.Part(
-            text=f'[Uploaded Artifact: "{file_name}"]'
+        # Replace the inline data with a placeholder text (using the clean name)
+        new_parts.append(
+            types.Part(text=f'[Uploaded Artifact: "{display_name}"]')
         )
+        modified = True
         logger.info(f'Successfully saved artifact: {file_name}')
 
       except Exception as e:
         logger.error(f'Failed to save artifact for part {i}: {e}')
         # Keep the original part if saving fails
+        new_parts.append(part)
         continue
 
-    return user_message
+    if modified:
+      return types.Content(role=user_message.role, parts=new_parts)
+    else:
+      return None

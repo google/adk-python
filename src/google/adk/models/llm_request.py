@@ -88,6 +88,9 @@ class LlmRequest(BaseModel):
   cache_metadata: Optional[CacheMetadata] = None
   """Cache metadata from previous requests, used for cache management."""
 
+  cacheable_contents_token_count: Optional[int] = None
+  """Token count from previous request's prompt, used for cache size validation."""
+
   def append_instructions(
       self, instructions: Union[list[str], types.Content]
   ) -> list[types.Content]:

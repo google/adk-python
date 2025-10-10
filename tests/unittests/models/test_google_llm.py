@@ -24,6 +24,7 @@ from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_TAG
+from google.adk.models.google_llm import _build_request_log
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -95,7 +96,7 @@ def cache_metadata():
       expire_time=time.time() + 3600,
       fingerprint="test_fingerprint",
       invocations_used=2,
-      cached_contents_count=3,
+      contents_count=3,
       created_at=time.time() - 600,
   )
 
@@ -128,7 +129,7 @@ def llm_request_with_computer_use():
           system_instruction="You are a helpful assistant",
           tools=[
               types.Tool(
-                  computer_use=types.ToolComputerUse(
+                  computer_use=types.ComputerUse(
                       environment=types.Environment.ENVIRONMENT_BROWSER
                   )
               )
@@ -1488,7 +1489,7 @@ async def test_computer_use_removes_system_instruction():
           system_instruction="You are a helpful assistant",
           tools=[
               types.Tool(
-                  computer_use=types.ToolComputerUse(
+                  computer_use=types.ComputerUse(
                       environment=types.Environment.ENVIRONMENT_BROWSER
                   )
               )
@@ -1726,3 +1727,134 @@ async def test_generate_content_async_with_cache_metadata_integration(
       # Verify cache metadata is preserved
       assert second_arg.cache_name == cache_metadata.cache_name
       assert second_arg.invocations_used == cache_metadata.invocations_used
+
+
+def test_build_request_log_with_config_multiple_tool_types():
+  """Test that _build_request_log includes config with multiple tool types."""
+  func_decl = types.FunctionDeclaration(
+      name="test_function",
+      description="A test function",
+      parameters={"type": "object", "properties": {}},
+  )
+
+  tool = types.Tool(
+      function_declarations=[func_decl],
+      google_search=types.GoogleSearch(),
+      code_execution=types.ToolCodeExecution(),
+  )
+
+  llm_request = LlmRequest(
+      model="gemini-1.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          max_output_tokens=500,
+          system_instruction="You are a helpful assistant",
+          tools=[tool],
+      ),
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  # Verify config section exists
+  assert "Config:" in log_output
+
+  # Verify config contains expected fields (using Python dict format with single quotes)
+  assert "'temperature': 0.7" in log_output
+  assert "'max_output_tokens': 500" in log_output
+
+  # Verify config contains other tool types (not function_declarations)
+  assert "'google_search'" in log_output
+  assert "'code_execution'" in log_output
+
+  # Verify function_declarations is NOT in config section
+  # (it should only be in the Functions section)
+  config_section = log_output.split("Functions:")[0]
+  assert "'function_declarations'" not in config_section
+
+  # Verify function is in Functions section
+  assert "Functions:" in log_output
+  assert "test_function" in log_output
+
+  # Verify system instruction is NOT in config section
+  assert (
+      "'system_instruction'"
+      not in log_output.split("Contents:")[0].split("Config:")[1]
+  )
+
+
+def test_build_request_log_function_declarations_in_second_tool():
+  """Test that function_declarations in non-first tool are handled correctly."""
+  func_decl = types.FunctionDeclaration(
+      name="my_function",
+      description="A test function",
+      parameters={"type": "object", "properties": {}},
+  )
+
+  # First tool has only google_search
+  tool1 = types.Tool(google_search=types.GoogleSearch())
+
+  # Second tool has function_declarations
+  tool2 = types.Tool(
+      function_declarations=[func_decl],
+      code_execution=types.ToolCodeExecution(),
+  )
+
+  llm_request = LlmRequest(
+      model="gemini-1.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.5,
+          system_instruction="You are a helpful assistant",
+          tools=[tool1, tool2],
+      ),
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  # Verify function is in Functions section
+  assert "Functions:" in log_output
+  assert "my_function" in log_output
+
+  # Verify function_declarations is NOT in config section
+  config_section = log_output.split("Functions:")[0]
+  assert "'function_declarations'" not in config_section
+
+  # Verify both tools are in config but without function_declarations (Python dict format)
+  assert "'google_search'" in log_output
+  assert "'code_execution'" in log_output
+
+  # Verify config has the expected structure without parsing
+  config_section = log_output.split("Config:")[1].split("---")[0]
+  # Should have 2 tools (two dict entries in the tools list)
+  assert config_section.count("'google_search'") == 1
+  assert config_section.count("'code_execution'") == 1
+  # Function declarations should NOT be in config section
+  assert "'function_declarations'" not in config_section
+
+
+def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
+  """Test that _build_request_log falls back to repr() if model_dump fails."""
+
+  llm_request = LlmRequest(
+      model="gemini-1.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          system_instruction="You are a helpful assistant",
+      ),
+  )
+
+  # Mock model_dump at class level to raise exception
+  def mock_model_dump(*args, **kwargs):
+    raise Exception("dump failed")
+
+  monkeypatch.setattr(
+      types.GenerateContentConfig, "model_dump", mock_model_dump
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  # Should still succeed using repr()
+  assert "Config:" in log_output
+  assert "GenerateContentConfig" in log_output

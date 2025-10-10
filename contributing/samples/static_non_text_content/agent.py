@@ -75,7 +75,7 @@ def create_static_instruction_with_file_upload():
   file_data_parts = []
 
   if api_variant == GoogleLLMVariant.VERTEX_AI:
-    print("Using Vertex AI - adding GCS and GitHub file references")
+    print("Using Vertex AI - adding GCS URI and HTTPS URL references")
 
     # Add GCS file reference
     file_data_parts.append(
@@ -90,20 +90,20 @@ def create_static_instruction_with_file_upload():
         )
     )
 
-    # Add GitHub public file reference
+    # Add the same document via HTTPS URL to demonstrate both access methods
     file_data_parts.append(
         types.Part(
             file_data=types.FileData(
-                file_uri="https://raw.githubusercontent.com/google-gemini/cookbook/main/CONTRIBUTING.md",
-                mime_type="text/markdown",
-                display_name="Gemini Cookbook Contributing Guide",
+                file_uri="https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/2403.05530.pdf",
+                mime_type="application/pdf",
+                display_name="AI Research Paper (HTTPS)",
             )
         )
     )
 
     additional_text = (
-        " You also have access to the Gemma research paper from Google Cloud"
-        " Storage and the Gemini Cookbook contributing guide from GitHub."
+        " You also have access to a Gemma research paper from GCS"
+        " and an AI research paper from HTTPS URL."
     )
 
   else:
@@ -187,8 +187,8 @@ def create_static_instruction_with_file_upload():
     instruction_text = """
 When users ask questions, you should:
 1. Use the reference chart above to provide context when discussing visual data or charts
-2. Reference the Gemma research paper when discussing AI research, model architectures, or technical details
-3. Reference the Gemini Cookbook contributing guide when explaining best practices and guidelines
+2. Reference the Gemma research paper (from GCS) when discussing AI research, model architectures, or technical details
+3. Reference the AI research paper (from HTTPS) when discussing research topics
 4. Be helpful and informative in your responses
 5. Explain how the provided reference materials relate to their questions"""
   else:
