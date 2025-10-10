@@ -125,7 +125,12 @@ def get_table_schema(dataset_id: str = "", table_id: str = "") -> str:
 
 
 def run_query(query: str) -> str:
-    """Execute any BigQuery SQL query"""
+    """Execute a general-purpose BigQuery SQL query.
+
+    Note: For security-related queries, prefer the more specific tools like
+    `query_security_insights` or `get_security_statistics` when possible.
+    This tool is best for queries that are not covered by other tools.
+    """
     try:
         check_client()
     except Exception as e:
@@ -203,7 +208,7 @@ def analyze_query_cost(query: str) -> str:
 
 
 def get_table_sample(dataset_id: str = "", table_id: str = "", limit: int = 0) -> str:
-    """Get a sample of rows from a table"""
+    """Get a sample of rows from a generic BigQuery table."""
     try:
         check_client()
     except Exception as e:

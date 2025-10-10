@@ -41,7 +41,10 @@ def _chunk_rows(rows: Iterable[bigquery.table.Row]) -> List[dict]:
 
 @cached(ttl=300, key_prefix="security")  # Cache for 5 minutes
 def get_security_insights_summary() -> str:
-    """Summarize the primary security findings table with structured metrics.
+    """Get a high-level summary of the security findings table.
+
+    Provides key metrics like total records, unique categories, severity levels,
+    and the date range of the data.
 
     Note: Results are cached for 5 minutes for performance."""
 
@@ -122,9 +125,20 @@ def get_security_insights_summary() -> str:
 
 @cached(ttl=180, key_prefix="security")  # Cache for 3 minutes
 def query_security_insights(query_filter: str = "", limit: int = 0) -> str:
-    """Query the security findings table with optional filtering.
+    """Query the security findings table with a SQL WHERE clause.
+
+    When to Use:
+    - Use this tool for specific, targeted queries when the user provides
+      exact criteria (e.g., "find all findings with severity HIGH and category
+      VULNERABILITY").
+    - For broader, more general questions (e.g., "summarize recent findings"),
+      prefer other tools like `get_recent_findings` or `get_security_statistics`.
 
     Note: Results are cached for 3 minutes for performance.
+
+    Args:
+        query_filter: The SQL `WHERE` clause to filter results.
+        limit: The maximum number of records to return.
 
     Available columns for filtering:
     - id (INTEGER): Unique identifier
@@ -208,15 +222,15 @@ def query_security_insights(query_filter: str = "", limit: int = 0) -> str:
 
 @cached(ttl=300, key_prefix="security")  # Cache for 5 minutes
 def get_security_statistics(group_by: str = "severity") -> str:
-    """Provide aggregated statistics from the security findings table.
+    """Get aggregated statistics of security findings, grouped by a specific field.
+
+    Use this to see the distribution of findings by category, severity, state, or project.
 
     Note: Results are cached for 5 minutes for performance.
 
-    Valid group_by values:
-    - severity: Group by severity level
-    - category: Group by security category
-    - state: Group by finding state
-    - project_id: Group by GCP project
+    Args:
+        group_by: The field to group statistics by. Valid options are:
+                  `severity`, `category`, `state`, `project_id`.
     """
 
     try:
@@ -282,19 +296,10 @@ def get_security_statistics(group_by: str = "severity") -> str:
 
 
 def get_resources_by_severity(severity: str = "HIGH") -> str:
-    """List all unique resources affected by findings of a specific severity level.
-
-    Valid severity values:
-    - CRITICAL: Critical security issues requiring immediate attention
-    - HIGH: High severity issues that should be addressed soon
-    - MEDIUM: Medium severity issues for scheduled remediation
-    - LOW: Low severity issues for eventual remediation
+    """Get a list of resources that are affected by findings of a specific severity.
 
     Args:
-        severity: The severity level to filter by (default: HIGH)
-
-    Returns:
-        Formatted string with list of affected resources and their finding counts
+        severity: The severity level to filter by (e.g., CRITICAL, HIGH, MEDIUM, LOW).
     """
     try:
         check_client()
@@ -348,13 +353,10 @@ def get_resources_by_severity(severity: str = "HIGH") -> str:
 
 
 def get_recent_findings(days: int = 7) -> str:
-    """Get security findings from the last N days.
+    """Get all security findings from the last N days, grouped by severity.
 
     Args:
-        days: Number of days to look back (default: 7)
-
-    Returns:
-        Formatted string with recent findings grouped by severity
+        days: The number of days to look back (1-365).
     """
     try:
         check_client()
@@ -439,17 +441,11 @@ def get_recent_findings(days: int = 7) -> str:
 def export_findings_to_csv(
     query_filter: str = "", output_file: str = "security_findings.csv"
 ) -> str:
-    """Export security findings to a CSV file.
+    """Export security findings to a CSV file for offline analysis.
 
     Args:
-        query_filter: SQL WHERE clause to filter results (optional)
-        output_file: Output CSV filename (default: security_findings.csv)
-
-    Returns:
-        Success message with file path or error message
-
-    Example:
-        export_findings_to_csv("severity = 'HIGH'", "high_severity.csv")
+        query_filter: An optional SQL WHERE clause to filter the findings.
+        output_file: The name of the output CSV file.
     """
     try:
         check_client()

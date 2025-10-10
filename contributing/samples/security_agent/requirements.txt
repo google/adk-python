@@ -19,10 +19,10 @@ google-api-core==2.22.0
 # Web Interface
 flask==3.0.0
 flask-cors==4.0.0
-gunicorn==21.2.0
+gunicorn
 
 # Chainlit UI (modern chat interface)
-chainlit==1.0.0
+chainlit
 
 # Testing (optional)
 pytest==8.3.4

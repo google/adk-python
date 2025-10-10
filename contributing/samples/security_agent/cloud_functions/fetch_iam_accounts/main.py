@@ -14,10 +14,95 @@ from datetime import datetime
 from typing import List, Dict, Any, Set, Optional
 import functions_framework
 
+from google.cloud import bigquery
+
+try:
+    from google.protobuf.json_format import MessageToDict
+except ImportError:  # pragma: no cover - optional dependency
+    MessageToDict = None
+
+try:
+    from google.protobuf.message import Message  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    Message = None  # type: ignore
+
 # Lazy load heavy dependencies to avoid timeout during cold start
 _iam_client: Optional[Any] = None
 _rm_client: Optional[Any] = None
 _bq_client: Optional[Any] = None
+
+
+def _to_serializable(value: Any) -> Any:
+    """Convert protobuf or complex objects into JSON-serializable data."""
+
+    if value is None:
+        return None
+
+    if MessageToDict and Message is not None:
+        try:
+            if isinstance(value, Message):
+                return MessageToDict(value, preserving_proto_field_name=True)
+        except Exception:
+            pass
+
+    if isinstance(value, dict):
+        return {key: _to_serializable(val) for key, val in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_to_serializable(item) for item in value]
+
+    if hasattr(value, "__dict__"):
+        return {
+            key: _to_serializable(val)
+            for key, val in value.__dict__.items()
+            if not key.startswith("_")
+        }
+
+    return value
+
+
+def safe_json_dump(value: Any) -> str:
+    """Serialize complex values to JSON, handling protobuf descriptors safely."""
+
+    return json.dumps(_to_serializable(value), default=str)
+
+
+def serialize_condition(condition: Any) -> Dict[str, Any]:
+    """Convert IAM binding condition objects into a plain dictionary."""
+
+    if not condition:
+        return {}
+
+    converted = _to_serializable(condition)
+    if isinstance(converted, dict):
+        return converted
+
+    return {
+        "title": getattr(condition, "title", "") or "",
+        "description": getattr(condition, "description", "") or "",
+        "expression": getattr(condition, "expression", "") or "",
+        "location": getattr(condition, "location", "") or "",
+    }
+
+
+def serialize_service_account(sa: Any) -> Dict[str, Any]:
+    """Normalize service account protobufs into dictionaries."""
+
+    if not sa:
+        return {}
+
+    converted = _to_serializable(sa)
+    if isinstance(converted, dict):
+        return converted
+
+    return {
+        "name": getattr(sa, "name", ""),
+        "email": getattr(sa, "email", ""),
+        "unique_id": getattr(sa, "unique_id", ""),
+        "disabled": getattr(sa, "disabled", False),
+        "description": getattr(sa, "description", "") or "",
+        "display_name": getattr(sa, "display_name", "") or "",
+    }
 
 def get_iam_client():
     """Lazy load IAM client"""
@@ -276,7 +361,7 @@ def fetch_iam_accounts(request):
                     'is_external': not member_identity.endswith(f'@{project_id}.iam.gserviceaccount.com'),
                     'has_admin_privileges': 'admin' in role.lower() or role in ['roles/owner', 'roles/editor'],
                     'project_id': project_id,
-                    'conditions': json.dumps(dict(binding.condition.__dict__) if binding.condition and hasattr(binding.condition, '__dict__') else {}),
+                    'conditions': safe_json_dump(serialize_condition(binding.condition)),
                     'last_refreshed': datetime.utcnow().isoformat(),
                     'refresh_job': 'scheduled_6h'
                 }
@@ -310,14 +395,8 @@ def fetch_iam_accounts(request):
                         'is_external': False,
                         'has_admin_privileges': False,
                         'project_id': project_id,
-                        'service_account_details': json.dumps({
-                            'name': sa.name,
-                            'unique_id': sa.unique_id,
-                            'disabled': sa.disabled,
-                            'description': sa.description or '',
-                            'display_name': sa.display_name or ''
-                        }),
-                        'conditions': json.dumps({}),
+                        'service_account_details': safe_json_dump(serialize_service_account(sa)),
+                        'conditions': safe_json_dump({}),
                         'last_refreshed': datetime.utcnow().isoformat(),
                         'refresh_job': 'scheduled_6h'
                     }
@@ -326,13 +405,7 @@ def fetch_iam_accounts(request):
                     # Update existing record with service account details
                     for record in iam_accounts_data:
                         if record['email'] == sa_email:
-                            record['service_account_details'] = json.dumps({
-                                'name': sa.name,
-                                'unique_id': sa.unique_id,
-                                'disabled': sa.disabled,
-                                'description': sa.description or '',
-                                'display_name': sa.display_name or ''
-                            })
+                            record['service_account_details'] = safe_json_dump(serialize_service_account(sa))
 
         except Exception as e:
             print(f"Warning: Could not fetch service account details: {e}")
@@ -372,13 +445,13 @@ def fetch_iam_accounts(request):
                     'name': custom_role.name,
                     'title': custom_role.title if hasattr(custom_role, 'title') else "",
                     'description': custom_role.description if hasattr(custom_role, 'description') else "",
-                    'included_permissions': json.dumps(permissions_list),
+                    'included_permissions': safe_json_dump(permissions_list),
                     'stage': custom_role.stage.name if hasattr(custom_role, 'stage') else "GA",
                     'deleted': custom_role.deleted if hasattr(custom_role, 'deleted') else False,
                     'etag': custom_role.etag if hasattr(custom_role, 'etag') else "",
                     'permission_count': len(permissions_list),
-                    'similar_predefined_roles': json.dumps(similar_roles),
-                    'risk_analysis': json.dumps(analyze_role_permissions(custom_role.name, permissions_list)),
+                    'similar_predefined_roles': safe_json_dump(similar_roles),
+                    'risk_analysis': safe_json_dump(analyze_role_permissions(custom_role.name, permissions_list)),
                     'last_refreshed': datetime.utcnow().isoformat(),
                     'project_id': project_id
                 }
@@ -474,7 +547,6 @@ def fetch_iam_accounts(request):
                 schema=schema,
                 write_disposition="WRITE_TRUNCATE",
                 create_disposition="CREATE_IF_NEEDED",
-                schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION]
             )
 
             # Load data
@@ -513,7 +585,6 @@ def fetch_iam_accounts(request):
                 schema=custom_roles_schema,
                 write_disposition="WRITE_TRUNCATE",
                 create_disposition="CREATE_IF_NEEDED",
-                schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION]
             )
 
             custom_roles_job = bq_client.load_table_from_json(
@@ -550,7 +621,6 @@ def fetch_iam_accounts(request):
                 schema=role_permissions_schema,
                 write_disposition="WRITE_TRUNCATE",
                 create_disposition="CREATE_IF_NEEDED",
-                schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION]
             )
 
             role_permissions_job = bq_client.load_table_from_json(
@@ -575,7 +645,7 @@ def fetch_iam_accounts(request):
             'record_count': len(iam_accounts_data),
             'status': 'success',
             'refresh_type': 'scheduled',
-            'details': json.dumps({
+            'details': safe_json_dump({
                 'total_accounts': len(iam_accounts_data),
                 'service_accounts': sum(1 for a in iam_accounts_data if a['is_service_account']),
                 'admin_accounts': sum(1 for a in iam_accounts_data if a['has_admin_privileges']),
@@ -802,4 +872,4 @@ if __name__ == "__main__":
             self.json = {}
 
     result = fetch_iam_accounts(MockRequest())
-    print(json.dumps(result, indent=2))
+    print(safe_json_dump(result))
