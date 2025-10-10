@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from unittest import mock
 
-from google.adk.cli.cli_eval import _DEFAULT_EVAL_CONFIG
-from google.adk.cli.cli_eval import get_eval_metrics_from_config
-from google.adk.cli.cli_eval import get_evaluation_criteria_or_default
+from google.adk.evaluation.eval_config import _DEFAULT_EVAL_CONFIG
 from google.adk.evaluation.eval_config import EvalConfig
+from google.adk.evaluation.eval_config import get_eval_metrics_from_config
+from google.adk.evaluation.eval_config import get_evaluation_criteria_or_default
 from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.eval_rubrics import RubricContent
 

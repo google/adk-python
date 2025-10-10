@@ -57,7 +57,7 @@ class TestSaveFilesAsArtifactsPlugin:
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Verify artifact was saved with correct filename
+    # Verify artifact was saved with correct filename (session-scoped by default)
     self.mock_context.artifact_service.save_artifact.assert_called_once_with(
         app_name="test_app",
         user_id="test_user",
@@ -66,7 +66,7 @@ class TestSaveFilesAsArtifactsPlugin:
         artifact=original_part,
     )
 
-    # Verify message was modified with placeholder
+    # Verify message was modified with placeholder (clean name)
     assert result.parts[0].text == '[Uploaded Artifact: "test_document.pdf"]'
 
   @pytest.mark.asyncio
@@ -85,7 +85,7 @@ class TestSaveFilesAsArtifactsPlugin:
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Verify artifact was saved with generated filename
+    # Verify artifact was saved with generated filename (session-scoped by default)
     expected_filename = "artifact_test_invocation_123_0"
     self.mock_context.artifact_service.save_artifact.assert_called_once_with(
         app_name="test_app",
@@ -95,8 +95,12 @@ class TestSaveFilesAsArtifactsPlugin:
         artifact=original_part,
     )
 
-    # Verify message was modified with generated filename
-    assert result.parts[0].text == f'[Uploaded Artifact: "{expected_filename}"]'
+    # Verify message was modified with generated filename (clean name)
+    generated_display_name = "artifact_test_invocation_123_0"
+    assert (
+        result.parts[0].text
+        == f'[Uploaded Artifact: "{generated_display_name}"]'
+    )
 
   @pytest.mark.asyncio
   async def test_multiple_files_in_message(self):
@@ -138,7 +142,7 @@ class TestSaveFilesAsArtifactsPlugin:
     )
     assert second_call[1]["filename"] == "file2.jpg"
 
-    # Verify message parts were modified correctly
+    # Verify message parts were modified correctly (clean names)
     assert result.parts[0].text == '[Uploaded Artifact: "file1.txt"]'
     assert result.parts[1].text == "Some text between files"  # Unchanged
     assert result.parts[2].text == '[Uploaded Artifact: "file2.jpg"]'
@@ -174,9 +178,8 @@ class TestSaveFilesAsArtifactsPlugin:
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Should return original message unchanged
-    assert result == user_message
-    assert result.parts == []
+    # Should return None to proceed with original message
+    assert result is None
 
     # Should not try to save any artifacts
     self.mock_context.artifact_service.save_artifact.assert_not_called()
@@ -193,10 +196,8 @@ class TestSaveFilesAsArtifactsPlugin:
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Should return original message unchanged
-    assert result == user_message
-    assert result.parts[0].text == "Hello world"
-    assert result.parts[1].text == "No files here"
+    # Should return None to proceed with original message
+    assert result is None
 
     # Should not try to save any artifacts
     self.mock_context.artifact_service.save_artifact.assert_not_called()
@@ -221,9 +222,8 @@ class TestSaveFilesAsArtifactsPlugin:
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Should preserve original part when saving fails
-    assert result.parts[0] == original_part
-    assert result.parts[0].inline_data == inline_data
+    # Should return None when saving fails (no modifications made)
+    assert result is None
 
   @pytest.mark.asyncio
   async def test_mixed_success_and_failure(self):
@@ -264,7 +264,7 @@ class TestSaveFilesAsArtifactsPlugin:
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # First file should be replaced with placeholder
+    # First file should be replaced with placeholder (clean name)
     assert result.parts[0].text == '[Uploaded Artifact: "success.pdf"]'
 
     # Second file should remain unchanged due to failure
@@ -287,7 +287,7 @@ class TestSaveFilesAsArtifactsPlugin:
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Verify exact format of placeholder text
+    # Verify exact format of placeholder text (clean name)
     expected_text = '[Uploaded Artifact: "test file with spaces.docx"]'
     assert result.parts[0].text == expected_text
 

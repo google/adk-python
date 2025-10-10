@@ -82,6 +82,8 @@ root_agent = Agent(
         - You can ignore unit test files, unless you are sure that the test code is uesful to understand the related concepts.
         - You should read all the the found files to find all the related code, unless you already know the content of the file or you are sure that the file is not related to the ADK doc.
       8. Update the ADK doc file according to the doc update instructions and the related code.
+        - Use active voice phrasing in your doc updates.
+        - Use second person "you" form of address in your doc updates.
       9. Create pull requests to update the ADK doc file using the `create_pull_request_from_changes` tool.
         - For each recommended change, create a separate pull request.
         - The title of the pull request should be "Update ADK doc according to issue #<issue number> - <change id>", where <issue number> is the number of the ADK docs issue and <change id> is the id of the recommended change (e.g. "1", "2", etc.).
@@ -92,6 +94,8 @@ root_agent = Agent(
       - **File Paths:** Always use absolute paths when calling the tools to read files, list directories, or search the codebase.
       - **Tool Call Parallelism:** Execute multiple independent tool calls in parallel when feasible (i.e. searching the codebase).
       - **Explaination:** Provide concise explanations for your actions and reasoning for each step.
+      - **Minimize changes:** When making updates to documentation pages, make the minimum amount of changes to achieve the communication goal. Only make changes that are necessary, and leave everything else as-is.
+      - **Avoid trivial code sample changes:** Update code samples only when adding or modifying functionality. Do not reformat code samples, change variable names, or change code syntax unless you are specifically directed to make those updates.
 
       # 5. Output
       Present the followings in an easy to read format as the final output to the user.

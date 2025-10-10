@@ -14,7 +14,12 @@
 
 """Sub-agents for Agent Builder Assistant."""
 
+from .adk_knowledge_agent import create_adk_knowledge_agent
 from .google_search_agent import create_google_search_agent
 from .url_context_agent import create_url_context_agent
 
-__all__ = ['create_google_search_agent', 'create_url_context_agent']
+__all__ = [
+    'create_adk_knowledge_agent',
+    'create_google_search_agent',
+    'create_url_context_agent',
+]

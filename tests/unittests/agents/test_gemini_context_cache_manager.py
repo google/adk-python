@@ -121,6 +121,9 @@ class TestGeminiContextCacheManager:
     )
 
     llm_request = self.create_llm_request()
+    llm_request.cacheable_contents_token_count = (
+        2048  # Add token count for cache creation
+    )
     start_time = time.time()
 
     with patch.object(
@@ -194,6 +197,9 @@ class TestGeminiContextCacheManager:
         invocations_used=15
     )  # Exceeds cache_intervals
     llm_request = self.create_llm_request(cache_metadata=existing_cache)
+    llm_request.cacheable_contents_token_count = (
+        2048  # Add token count for cache creation
+    )
 
     with (
         patch.object(self.manager, "_is_cache_valid", return_value=False),
@@ -521,3 +527,65 @@ class TestGeminiContextCacheManager:
     assert not hasattr(
         cache_metadata, "usage_metadata"
     )  # CacheMetadata should NOT have this
+
+  def create_llm_request_with_token_count(
+      self, token_count=None, cache_metadata=None
+  ):
+    """Helper to create LlmRequest with cacheable_contents_token_count."""
+    llm_request = self.create_llm_request(cache_metadata=cache_metadata)
+    llm_request.cacheable_contents_token_count = token_count
+    return llm_request
+
+  async def test_cache_creation_with_sufficient_token_count(self):
+    """Test cache creation succeeds when token count meets minimum."""
+    # Setup mocks
+    mock_cached_content = AsyncMock()
+    mock_cached_content.name = (
+        "projects/test/locations/us-central1/cachedContents/token123"
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_cached_content
+    )
+
+    # Create request with sufficient token count
+    llm_request = self.create_llm_request_with_token_count(token_count=2048)
+
+    with patch.object(
+        self.manager, "_generate_cache_fingerprint", return_value="test_fp"
+    ):
+      result = await self.manager.handle_context_caching(llm_request)
+
+    # Should succeed in creating cache
+    assert result is not None
+    assert result.cache_name == mock_cached_content.name
+    self.manager.genai_client.aio.caches.create.assert_called_once()
+
+  async def test_cache_creation_with_insufficient_token_count(self):
+    """Test cache creation fails when token count is below minimum."""
+    # Set higher minimum token requirement
+    self.manager.cache_config = ContextCacheConfig(
+        cache_intervals=10,
+        ttl_seconds=1800,
+        min_tokens=2048,
+    )
+
+    # Create request with insufficient token count
+    llm_request = self.create_llm_request_with_token_count(token_count=1024)
+    llm_request.cache_config = self.manager.cache_config
+
+    result = await self.manager.handle_context_caching(llm_request)
+
+    # Should not create cache
+    assert result is None
+    self.manager.genai_client.aio.caches.create.assert_not_called()
+
+  async def test_cache_creation_without_token_count(self):
+    """Test cache creation is skipped when no token count is available."""
+    # Create request without token count (initial request)
+    llm_request = self.create_llm_request_with_token_count(token_count=None)
+
+    result = await self.manager.handle_context_caching(llm_request)
+
+    # Should skip cache creation for initial request
+    assert result is None
+    self.manager.genai_client.aio.caches.create.assert_not_called()

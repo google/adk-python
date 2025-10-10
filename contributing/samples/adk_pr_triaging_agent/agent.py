@@ -15,7 +15,6 @@
 from pathlib import Path
 from typing import Any
 
-from adk_pr_triaging_agent.settings import BOT_LABEL
 from adk_pr_triaging_agent.settings import GITHUB_BASE_URL
 from adk_pr_triaging_agent.settings import IS_INTERACTIVE
 from adk_pr_triaging_agent.settings import OWNER
@@ -178,7 +177,7 @@ def add_label_and_reviewer_to_pr(pr_number: int, label: str) -> dict[str, Any]:
   label_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{pr_number}/labels"
   )
-  label_payload = [label, BOT_LABEL]
+  label_payload = [label]
 
   try:
     response = post_request(label_url, label_payload)

@@ -37,6 +37,10 @@ from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .eval_case import get_all_tool_calls
 from .eval_case import IntermediateDataType
 from .eval_case import Invocation
+from .eval_config import EvalConfig
+from .eval_config import get_eval_metrics_from_config
+from .eval_config import get_evaluation_criteria_or_default
+from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
 from .eval_metrics import PrebuiltMetrics
@@ -72,12 +76,6 @@ REFERENCE_COLUMN = "reference"
 EXPECTED_TOOL_USE_COLUMN = "expected_tool_use"
 
 
-DEFAULT_CRITERIA = {
-    TOOL_TRAJECTORY_SCORE_KEY: 1.0,  # 1-point scale; 1.0 is perfect.
-    RESPONSE_MATCH_SCORE_KEY: 0.8,  # Rouge-1 text match; 0.8 is default.
-}
-
-
 def load_json(file_path: str) -> Union[Dict, List]:
   with open(file_path, "r") as f:
     return json.load(f)
@@ -99,28 +97,18 @@ class AgentEvaluator:
   """An evaluator for Agents, mainly intended for helping with test cases."""
 
   @staticmethod
-  def find_config_for_test_file(test_file: str):
+  def find_config_for_test_file(test_file: str) -> EvalConfig:
     """Find the test_config.json file in the same folder as the test file."""
     test_folder = os.path.dirname(test_file)
     config_path = os.path.join(test_folder, "test_config.json")
-    if os.path.exists(config_path):
-      config_data = load_json(config_path)
-      if "criteria" in config_data and isinstance(
-          config_data["criteria"], dict
-      ):
-        return config_data["criteria"]
-      else:
-        raise ValueError(
-            f"Invalid format for test_config.json at {config_path}. Expected a"
-            " 'criteria' dictionary."
-        )
-    return DEFAULT_CRITERIA
+    return get_evaluation_criteria_or_default(config_path)
 
   @staticmethod
   async def evaluate_eval_set(
       agent_module: str,
       eval_set: EvalSet,
-      criteria: dict[str, float],
+      criteria: Optional[dict[str, float]] = None,
+      eval_config: Optional[EvalConfig] = None,
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
       print_detailed_results: bool = True,
@@ -133,7 +121,8 @@ class AgentEvaluator:
         look for 'root_agent' in the loaded module.
       eval_set: The eval set.
       criteria: Evauation criterias, a dictionary of metric names to their
-        respective thresholds.
+        respective thresholds. This field is deprecated.
+      eval_config: The evauation config.
       num_runs: Number of times all entries in the eval dataset should be
         assessed.
       agent_name: The name of the agent, if trying to evaluate something other
@@ -141,12 +130,24 @@ class AgentEvaluator:
       print_detailed_results: Whether to print detailed results for each metric
         evaluation.
     """
+    if criteria:
+      logger.warning(
+          "`criteria` field is deprecated and will be removed in future"
+          " iterations. For now, we will automatically map values in `criteria`"
+          " to `eval_config`, but you should move to using `eval_config` field."
+      )
+      base_criteria = {
+          k: BaseCriterion(threshold=v) for k, v in criteria.items()
+      }
+      eval_config = EvalConfig(criteria=base_criteria)
+
+    if eval_config is None:
+      raise ValueError("`eval_config` is required.")
+
     agent_for_eval = AgentEvaluator._get_agent_for_eval(
         module_name=agent_module, agent_name=agent_name
     )
-    eval_metrics = [
-        EvalMetric(metric_name=n, threshold=t) for n, t in criteria.items()
-    ]
+    eval_metrics = get_eval_metrics_from_config(eval_config)
 
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
@@ -226,15 +227,15 @@ class AgentEvaluator:
     initial_session = AgentEvaluator._get_initial_session(initial_session_file)
 
     for test_file in test_files:
-      criteria = AgentEvaluator.find_config_for_test_file(test_file)
+      eval_config = AgentEvaluator.find_config_for_test_file(test_file)
       eval_set = AgentEvaluator._load_eval_set_from_file(
-          test_file, criteria, initial_session
+          test_file, eval_config, initial_session
       )
 
       await AgentEvaluator.evaluate_eval_set(
           agent_module=agent_module,
           eval_set=eval_set,
-          criteria=criteria,
+          eval_config=eval_config,
           num_runs=num_runs,
           agent_name=agent_name,
           print_detailed_results=print_detailed_results,
@@ -252,11 +253,11 @@ class AgentEvaluator:
           "One of old_eval_data_file or new_eval_data_file is empty."
       )
 
-    criteria = AgentEvaluator.find_config_for_test_file(old_eval_data_file)
+    eval_config = AgentEvaluator.find_config_for_test_file(old_eval_data_file)
     initial_session = AgentEvaluator._get_initial_session(initial_session_file)
 
     eval_set = AgentEvaluator._get_eval_set_from_old_format(
-        old_eval_data_file, criteria, initial_session
+        old_eval_data_file, eval_config, initial_session
     )
 
     with open(new_eval_data_file, "w") as f:
@@ -265,7 +266,7 @@ class AgentEvaluator:
   @staticmethod
   def _load_eval_set_from_file(
       eval_set_file: str,
-      criteria: dict[str, float],
+      eval_config: EvalConfig,
       initial_session: dict[str, Any],
   ) -> EvalSet:
     """Loads an EvalSet from the given file."""
@@ -292,17 +293,17 @@ class AgentEvaluator:
 
     # If we are here, the data must be specified in the older format.
     return AgentEvaluator._get_eval_set_from_old_format(
-        eval_set_file, criteria, initial_session
+        eval_set_file, eval_config, initial_session
     )
 
   @staticmethod
   def _get_eval_set_from_old_format(
       eval_set_file: str,
-      criteria: dict[str, float],
+      eval_config: EvalConfig,
       initial_session: dict[str, Any],
   ) -> EvalSet:
     data = AgentEvaluator._load_dataset(eval_set_file)[0]
-    AgentEvaluator._validate_input([data], criteria)
+    AgentEvaluator._validate_input([data], eval_config.criteria)
     eval_data = {
         "name": eval_set_file,
         "data": data,

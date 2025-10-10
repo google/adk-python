@@ -52,6 +52,8 @@ class PrebuiltMetrics(Enum):
       "rubric_based_final_response_quality_v1"
   )
 
+  HALLUCINATIONS_V1 = "hallucinations_v1"
+
   RUBRIC_BASED_TOOL_USE_QUALITY_V1 = "rubric_based_tool_use_quality_v1"
 
 
@@ -126,6 +128,24 @@ class RubricsBasedCriterion(BaseCriterion):
           " that don't use Rubrics, will just ignore this field, if specified."
           " Metrics that do use rubrics will raise an execption, if they are"
           " not specified."
+      ),
+  )
+
+
+class HallucinationsCriterion(BaseCriterion):
+  """Criterion to use when evaluating agents response for hallucinations."""
+
+  judge_model_options: JudgeModelOptions = Field(
+      default_factory=JudgeModelOptions,
+      description="Options for the judge model.",
+  )
+
+  evaluate_intermediate_nl_responses: bool = Field(
+      default=False,
+      description=(
+          "Whether any intermediate NL responses should be evaluated"
+          " for hallucinations or not. By default, the metric only evaluates"
+          " final response from the Agent for hallucinations."
       ),
   )
 

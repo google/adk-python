@@ -29,6 +29,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.apps.app import App
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
@@ -39,6 +40,7 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
+from google.adk.sessions.session import Session
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -287,6 +289,22 @@ def mock_session_service():
           and session_id in session_data[app_name][user_id]
       ):
         del session_data[app_name][user_id][session_id]
+
+    async def append_event(self, session, event):
+      """Append an event to a session."""
+      # Update session state if event has state_delta
+      if event.actions and event.actions.state_delta:
+        session["state"].update(event.actions.state_delta)
+
+      # Add event to session events
+      session["events"].append(event.model_dump())
+
+      # Update the session in storage
+      session_data[session["app_name"]][session["user_id"]][
+          session["id"]
+      ] = session
+
+      return event
 
   # Return an instance of our mock service
   return MockSessionService()
@@ -725,6 +743,80 @@ def test_delete_session(test_app, create_test_session):
   logger.info("Session deleted successfully")
 
 
+def test_update_session(test_app, create_test_session):
+  """Test patching a session state."""
+  info = create_test_session
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}"
+
+  # Get the original session
+  response = test_app.get(url)
+  assert response.status_code == 200
+  original_session = response.json()
+  original_state = original_session.get("state", {})
+
+  # Prepare state delta
+  state_delta = {"test_key": "test_value", "counter": 42}
+
+  # Patch the session
+  response = test_app.patch(url, json={"state_delta": state_delta})
+  assert response.status_code == 200
+
+  # Verify the response
+  patched_session = response.json()
+  assert patched_session["id"] == info["session_id"]
+
+  # Verify state was updated correctly
+  expected_state = {**original_state, **state_delta}
+  assert patched_session["state"] == expected_state
+
+  # Verify the session was actually updated in storage
+  response = test_app.get(url)
+  assert response.status_code == 200
+  retrieved_session = response.json()
+  assert retrieved_session["state"] == expected_state
+
+  # Verify an event was created for the state change
+  events = retrieved_session.get("events", [])
+  assert len(events) > len(original_session.get("events", []))
+
+  # Find the state patch event (looking for "p-" prefix pattern)
+  state_patch_events = [
+      event
+      for event in events
+      if (
+          event.get("invocationId") or event.get("invocation_id", "")
+      ).startswith("p-")
+  ]
+
+  assert len(state_patch_events) == 1, (
+      f"Expected 1 state_patch event, found {len(state_patch_events)}. Events:"
+      f" {events}"
+  )
+  state_patch_event = state_patch_events[0]
+  assert state_patch_event["author"] == "user"
+
+  # Check for actions in both camelCase and snake_case
+  actions = state_patch_event.get("actions") or state_patch_event.get("actions")
+  assert actions is not None, f"No actions found in event: {state_patch_event}"
+  state_delta_in_event = actions.get("state_delta") or actions.get("stateDelta")
+  assert state_delta_in_event == state_delta
+
+  logger.info("Session state patched successfully")
+
+
+def test_patch_session_not_found(test_app, test_session_info):
+  """Test patching a non-existent session."""
+  info = test_session_info
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/nonexistent"
+
+  state_delta = {"test_key": "test_value"}
+  response = test_app.patch(url, json={"state_delta": state_delta})
+
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+  logger.info("Patch session not found test passed")
+
+
 def test_agent_run(test_app, create_test_session):
   """Test running an agent with a message."""
   info = create_test_session
@@ -915,6 +1007,56 @@ def test_debug_trace(test_app):
   # Verify we get a 404 for a nonexistent trace
   assert response.status_code == 404
   logger.info("Debug trace test completed successfully")
+
+
+def test_get_event_graph_returns_dot_src_for_app_agent():
+  """Ensure graph endpoint unwraps App instances before building the graph."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  root_agent = DummyAgent(name="dummy_agent")
+  app_agent = App(name="test_app", root_agent=root_agent)
+
+  class Loader:
+
+    def load_agent(self, app_name):
+      return app_agent
+
+    def list_agents(self):
+      return [app_agent.name]
+
+  session_service = AsyncMock()
+  session = Session(
+      id="session_id",
+      app_name="test_app",
+      user_id="user",
+      state={},
+      events=[Event(author="dummy_agent")],
+  )
+  event_id = session.events[0].id
+  session_service.get_session.return_value = session
+
+  adk_web_server = AdkWebServer(
+      agent_loader=Loader(),
+      session_service=session_service,
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=MagicMock(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+
+  client = TestClient(fast_api_app)
+  response = client.get(
+      f"/apps/test_app/users/user/sessions/session_id/events/{event_id}/graph"
+  )
+  assert response.status_code == 200
+  assert "dotSrc" in response.json()
 
 
 @pytest.mark.skipif(
