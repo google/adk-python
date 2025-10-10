@@ -14,7 +14,7 @@ from .models import (
     IAMAccount, CustomRole, ServiceAccountRole,
     ComputeInstance, FirewallRule, Network,
     StorageBucket, SecurityFinding, SecurityFeed,
-    ReleaseNote, ConfluencePage
+    ReleaseNote
 )
 
 logger = logging.getLogger(__name__)
@@ -47,8 +47,7 @@ class BigQueryOperations:
             "storage_buckets": StorageBucket,
             "security_findings": SecurityFinding,
             "security_feeds": SecurityFeed,
-            "release_notes": ReleaseNote,
-            "confluence_pages": ConfluencePage,
+            "release_notes": ReleaseNote
         }
 
     # ========================================================================

@@ -22,7 +22,7 @@ from .models import (
     IAMAccount, CustomRole, ServiceAccountRole,
     ComputeInstance, FirewallRule, Network,
     StorageBucket, SecurityFinding, SecurityFeed,
-    ReleaseNote, ConfluencePage,
+    ReleaseNote,
     DataFetchResponse, BulkInsertResponse, HealthCheckResponse,
     Severity, AccountType, ResourceState
 )
@@ -43,7 +43,6 @@ __all__ = [
     "SecurityFinding",
     "SecurityFeed",
     "ReleaseNote",
-    "ConfluencePage",
     "DataFetchResponse",
     "BulkInsertResponse",
     "HealthCheckResponse",

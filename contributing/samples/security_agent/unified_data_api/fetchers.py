@@ -14,7 +14,7 @@ from .models import (
     IAMAccount, CustomRole, ServiceAccountRole,
     ComputeInstance, FirewallRule, Network,
     StorageBucket, SecurityFinding, SecurityFeed,
-    ReleaseNote, ConfluencePage,
+    ReleaseNote,
     AccountType, Severity
 )
 
@@ -475,9 +475,3 @@ class FeedFetcher:
             score += 2
 
         return min(score, 10)  # Cap at 10
-
-    def fetch_confluence_pages(self, space_key: Optional[str] = None) -> List[ConfluencePage]:
-        """Fetch Confluence pages"""
-        # TODO: Implement using existing cloud_functions/confluence_sync/main.py logic
-        logger.info("Fetching Confluence pages...")
-        return []

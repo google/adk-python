@@ -297,28 +297,6 @@ class ReleaseNote(BaseModel):
     ingested_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-class ConfluencePage(BaseModel):
-    """Confluence documentation page"""
-    page_id: str
-    space_key: str
-    title: str
-    content: str
-
-    # Metadata
-    author: str
-    created_at: datetime
-    updated_at: datetime
-    version: int = 1
-
-    # Categorization
-    labels: List[str] = Field(default_factory=list)
-    parent_page_id: Optional[str] = None
-
-    # Sync tracking
-    synced_at: datetime = Field(default_factory=datetime.utcnow)
-    content_hash: Optional[str] = None
-
-
 # ============================================================================
 # API Response Models
 # ============================================================================

@@ -25,7 +25,7 @@ from .models import (
     IAMAccount, CustomRole, ServiceAccountRole,
     ComputeInstance, FirewallRule, Network,
     StorageBucket, SecurityFinding, SecurityFeed,
-    ReleaseNote, ConfluencePage,
+    ReleaseNote,
     DataFetchResponse, BulkInsertResponse, HealthCheckResponse
 )
 from .bigquery_ops import BigQueryOperations
@@ -459,38 +459,6 @@ async def fetch_release_notes(sync_to_bq: bool = True):
         logger.error(f"Failed to fetch release notes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.post("/api/v1/feeds/confluence/sync", response_model=DataFetchResponse)
-async def sync_confluence_pages(
-    sync_to_bq: bool = True,
-    space_key: Optional[str] = Query(None, description="Specific Confluence space to sync")
-):
-    """Sync Confluence documentation pages"""
-    start_time = datetime.utcnow()
-
-    try:
-        pages = feed_fetcher.fetch_confluence_pages(space_key=space_key)
-        records_fetched = len(pages)
-        records_inserted = 0
-
-        if sync_to_bq and pages:
-            result = bq_ops.upsert_records("confluence_pages", pages, key_fields=["page_id"])
-            records_inserted = result.get("upserted", 0)
-
-        execution_time = (datetime.utcnow() - start_time).total_seconds() * 1000
-
-        return DataFetchResponse(
-            success=True,
-            message=f"Synced {records_fetched} Confluence pages",
-            records_fetched=records_fetched,
-            records_inserted=records_inserted,
-            table_name="confluence_pages" if sync_to_bq else None,
-            execution_time_ms=execution_time
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to sync Confluence pages: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
