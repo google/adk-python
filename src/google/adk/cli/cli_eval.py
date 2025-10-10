@@ -47,6 +47,7 @@ from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
 from ..evaluation.eval_metrics import JudgeModelOptions
 from ..evaluation.eval_result import EvalCaseResult
+from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..evaluation.evaluator import EvalStatus
 from ..evaluation.evaluator import Evaluator
 from ..sessions.base_session_service import BaseSessionService
@@ -436,3 +437,22 @@ def _get_evaluator(eval_metric: EvalMetric) -> Evaluator:
     return FinalResponseMatchV2Evaluator(eval_metric)
 
   raise ValueError(f"Unsupported eval metric: {eval_metric}")
+
+
+def get_eval_sets_manager(
+    eval_storage_uri: Optional[str], agents_dir: str
+) -> EvalSetsManager:
+  """Returns an instance of EvalSetsManager."""
+  try:
+    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+    from .utils import evals
+  except ModuleNotFoundError as mnf:
+    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+
+  if eval_storage_uri:
+    gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
+        eval_storage_uri
+    )
+    return gcs_eval_managers.eval_sets_manager
+  else:
+    return LocalEvalSetsManager(agents_dir=agents_dir)
