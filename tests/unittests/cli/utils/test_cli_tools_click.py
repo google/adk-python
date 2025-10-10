@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -618,6 +619,177 @@ def test_cli_eval_with_eval_set_id(
       app_name=app_name
   )
   assert len(eval_set_results) == 2
+
+
+def test_cli_create_eval_set(tmp_path: Path):
+  app_name = "test_app"
+  eval_set_id = "test_eval_set"
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["eval_set", "create", str(agent_path), eval_set_id],
+  )
+
+  assert result.exit_code == 0
+  eval_set_file = agent_path / f"{eval_set_id}.evalset.json"
+  assert eval_set_file.exists()
+  with open(eval_set_file, "r") as f:
+    eval_set_data = json.load(f)
+  assert eval_set_data["eval_set_id"] == eval_set_id
+  assert eval_set_data["eval_cases"] == []
+
+
+def test_cli_add_eval_case_no_session(tmp_path: Path):
+  app_name = "test_app_add_1"
+  eval_set_id = "test_eval_set_add_1"
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  scenarios_file = tmp_path / "scenarios1.json"
+  scenarios_file.write_text(
+      '{"scenarios": [{"starting_prompt": "hello", "conversation_plan":'
+      ' "world"}]}'
+  )
+
+  runner = CliRunner()
+  runner.invoke(
+      cli_tools_click.main,
+      ["eval_set", "create", str(agent_path), eval_set_id],
+      catch_exceptions=False,
+  )
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "eval_set",
+          "add_eval_case",
+          str(agent_path),
+          eval_set_id,
+          "--scenarios_file",
+          str(scenarios_file),
+      ],
+      catch_exceptions=False,
+  )
+
+  assert result.exit_code == 0
+  eval_set_file = agent_path / f"{eval_set_id}.evalset.json"
+  assert eval_set_file.exists()
+  with open(eval_set_file, "r") as f:
+    eval_set_data = json.load(f)
+  assert len(eval_set_data["eval_cases"]) == 1
+  eval_case = eval_set_data["eval_cases"][0]
+  assert eval_case["eval_id"] == "0a1a5048"
+  assert eval_case["conversation_scenario"]["starting_prompt"] == "hello"
+  assert "session_input" not in eval_case
+
+
+def test_cli_add_eval_case_with_session(tmp_path: Path):
+  app_name = "test_app_add_2"
+  eval_set_id = "test_eval_set_add_2"
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  scenarios_file = tmp_path / "scenarios2.json"
+  scenarios_file.write_text(
+      '{"scenarios": [{"starting_prompt": "hello", "conversation_plan":'
+      ' "world"}]}'
+  )
+  session_file = tmp_path / "session2.json"
+  session_file.write_text(
+      '{"app_name": "test_app_add_2", "user_id": "test_user", "state": {}}'
+  )
+
+  runner = CliRunner()
+  runner.invoke(
+      cli_tools_click.main,
+      ["eval_set", "create", str(agent_path), eval_set_id],
+      catch_exceptions=False,
+  )
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "eval_set",
+          "add_eval_case",
+          str(agent_path),
+          eval_set_id,
+          "--scenarios_file",
+          str(scenarios_file),
+          "--session_input_file",
+          str(session_file),
+      ],
+      catch_exceptions=False,
+  )
+
+  assert result.exit_code == 0
+  eval_set_file = agent_path / f"{eval_set_id}.evalset.json"
+  assert eval_set_file.exists()
+  with open(eval_set_file, "r") as f:
+    eval_set_data = json.load(f)
+  assert len(eval_set_data["eval_cases"]) == 1
+  eval_case = eval_set_data["eval_cases"][0]
+  assert eval_case["eval_id"] == "0a1a5048"
+  assert eval_case["session_input"]["app_name"] == "test_app_add_2"
+
+
+def test_cli_add_eval_case_skip_existing(tmp_path: Path):
+  app_name = "test_app_add_3"
+  eval_set_id = "test_eval_set_add_3"
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  scenarios_file = tmp_path / "scenarios3.json"
+  scenarios_file.write_text(
+      '{"scenarios": [{"starting_prompt": "hello", "conversation_plan":'
+      ' "world"}]}'
+  )
+
+  runner = CliRunner()
+  runner.invoke(
+      cli_tools_click.main,
+      ["eval_set", "create", str(agent_path), eval_set_id],
+      catch_exceptions=False,
+  )
+  result1 = runner.invoke(
+      cli_tools_click.main,
+      [
+          "eval_set",
+          "add_eval_case",
+          str(agent_path),
+          eval_set_id,
+          "--scenarios_file",
+          str(scenarios_file),
+      ],
+      catch_exceptions=False,
+  )
+  eval_set_file = agent_path / f"{eval_set_id}.evalset.json"
+  with open(eval_set_file, "r") as f:
+    eval_set_data1 = json.load(f)
+
+  result2 = runner.invoke(
+      cli_tools_click.main,
+      [
+          "eval_set",
+          "add_eval_case",
+          str(agent_path),
+          eval_set_id,
+          "--scenarios_file",
+          str(scenarios_file),
+      ],
+      catch_exceptions=False,
+  )
+  with open(eval_set_file, "r") as f:
+    eval_set_data2 = json.load(f)
+
+  assert result1.exit_code == 0
+  assert result2.exit_code == 0
+  assert len(eval_set_data1["eval_cases"]) == 1
+  assert len(eval_set_data2["eval_cases"]) == 1
 
 
 def test_cli_deploy_cloud_run_gcloud_arg_conflict(

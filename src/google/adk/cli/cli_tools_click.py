@@ -18,6 +18,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 import functools
+import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -433,6 +435,28 @@ def cli_run(
   )
 
 
+def eval_options():
+  """Decorator to add common eval options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--eval_storage_uri",
+        type=str,
+        help=(
+            "Optional. The evals storage URI to store agent evals,"
+            " supported URIs: gs://<bucket name>."
+        ),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
 @main.command("eval", cls=HelpfulCommand)
 @click.argument(
     "agent_module_file_path",
@@ -449,15 +473,7 @@ def cli_run(
     default=False,
     help="Optional. Whether to print detailed results on console or not.",
 )
-@click.option(
-    "--eval_storage_uri",
-    type=str,
-    help=(
-        "Optional. The evals storage URI to store agent evals,"
-        " supported URIs: gs://<bucket name>."
-    ),
-    default=None,
-)
+@eval_options()
 def cli_eval(
     agent_module_file_path: str,
     eval_set_file_path_or_id: list[str],
@@ -673,6 +689,138 @@ def cli_eval(
           "********************************************************************"
       )
       pretty_print_eval_result(eval_result)
+
+
+@main.group("eval_set")
+def eval_set():
+  """Manage Eval Sets."""
+  pass
+
+
+@eval_set.command("create", cls=HelpfulCommand)
+@click.argument(
+    "agent_module_file_path",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.argument("eval_set_id", type=str, required=True)
+@eval_options()
+def cli_create_eval_set(
+    agent_module_file_path: str,
+    eval_set_id: str,
+    eval_storage_uri: Optional[str] = None,
+):
+  """Creates an empty EvalSet given the agent_module_file_path and eval_set_id."""
+  from .cli_eval import get_eval_sets_manager
+
+  app_name = os.path.basename(agent_module_file_path)
+  agents_dir = os.path.dirname(agent_module_file_path)
+  eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
+
+  try:
+    eval_sets_manager.create_eval_set(
+        app_name=app_name, eval_set_id=eval_set_id
+    )
+    click.echo(f"Eval set '{eval_set_id}' created for app '{app_name}'.")
+  except ValueError as e:
+    raise click.ClickException(str(e))
+
+
+@eval_set.command("add_eval_case", cls=HelpfulCommand)
+@click.argument(
+    "agent_module_file_path",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.argument("eval_set_id", type=str, required=True)
+@click.option(
+    "--scenarios_file",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help="A path to file containing JSON serialized ConversationScenarios.",
+    required=True,
+)
+@click.option(
+    "--session_input_file",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help=(
+        "Optional. Path to session file containing SessionInput in JSON format."
+    ),
+    default=None,
+)
+@eval_options()
+def cli_add_eval_case(
+    agent_module_file_path: str,
+    eval_set_id: str,
+    scenarios_file: str,
+    eval_storage_uri: Optional[str] = None,
+    session_input_file: Optional[str] = None,
+):
+  """Adds eval cases to the given eval set.
+
+  There are several ways that an eval case can be created, for now this method
+  only supports adding one using a conversation scenarios file.
+
+  If an eval case for the generated id already exists, then we skip adding it.
+  """
+  try:
+    from ..evaluation.conversation_scenarios import ConversationScenarios
+    from ..evaluation.eval_case import EvalCase
+    from ..evaluation.eval_case import SessionInput
+    from .cli_eval import get_eval_sets_manager
+  except ModuleNotFoundError as mnf:
+    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+
+  app_name = os.path.basename(agent_module_file_path)
+  agents_dir = os.path.dirname(agent_module_file_path)
+  eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
+
+  try:
+    session_input = None
+    if session_input_file:
+      with open(session_input_file, "r") as f:
+        session_input = SessionInput.model_validate_json(f.read())
+
+    with open(scenarios_file, "r") as f:
+      conversation_scenarios = ConversationScenarios.model_validate_json(
+          f.read()
+      )
+
+    for scenario in conversation_scenarios.scenarios:
+      scenario_str = json.dumps(scenario.model_dump(), sort_keys=True)
+      eval_id = hashlib.sha256(scenario_str.encode("utf-8")).hexdigest()[:8]
+      eval_case = EvalCase(
+          eval_id=eval_id,
+          conversation_scenario=scenario,
+          session_input=session_input,
+          creation_timestamp=datetime.now().timestamp(),
+      )
+
+      if (
+          eval_sets_manager.get_eval_case(
+              app_name=app_name, eval_set_id=eval_set_id, eval_case_id=eval_id
+          )
+          is None
+      ):
+        eval_sets_manager.add_eval_case(
+            app_name=app_name, eval_set_id=eval_set_id, eval_case=eval_case
+        )
+        click.echo(
+            f"Eval case '{eval_case.eval_id}' added to eval set"
+            f" '{eval_set_id}'."
+        )
+      else:
+        click.echo(
+            f"Eval case '{eval_case.eval_id}' already exists in eval set"
+            f" '{eval_set_id}', skipped adding."
+        )
+  except Exception as e:
+    raise click.ClickException(f"Failed to add eval case(s): {e}") from e
 
 
 def web_options():

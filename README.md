@@ -26,6 +26,35 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 
 ---
+## 🔥ADK's very first community call on Oct 15
+
+Join our ADK Community Call! Our first virtual community call is on Oct 15!
+Meet our team, and talk with us about our roadmap and how to contribute.
+
+First Call Details:
+
+Topic: ADK Roadmap
+
+Date: October 15, 2025
+
+Time: 9:30-10:30am PST
+
+Meeting link:
+[Join the call](http://meet.google.com/gjm-gfim-ctz)
+
+Add to your calendar
+[Event calendar invite](https://calendar.google.com/calendar/event?action=TEMPLATE&tmeid=MDUydWo1dHV1dHFtNzJuM3E0bmEyMW12ZnZfMjAyNTEwMTVUMTYzMDAwWiBjXzljNWVjODhhMmQyYWU5YjY5Mzk4ODU1MGZkNDA5MjVmYjgxYjM4MTI1NGNjYTgzNmRkMjMwNzRiMjNmYzcyZDVAZw&tmsrc=c_9c5ec88a2d2ae9b693988550fd40925fb81b381254cca836dd23074b23fc72d5%40group.calendar.google.com), [.ics file](https://calendar.google.com/calendar/ical/c_9c5ec88a2d2ae9b693988550fd40925fb81b381254cca836dd23074b23fc72d5%40group.calendar.google.com/public/basic.ics), [ADK community calendar](https://calendar.google.com/calendar/embed?src=c_9c5ec88a2d2ae9b693988550fd40925fb81b381254cca836dd23074b23fc72d5%40group.calendar.google.com&ctz=America%2FLos_Angeles)
+
+Agenda:
+[Julia] ADK Roadmap
+
+[ Bo & Hangfei] Eng Deep Dive: Context Caching
+
+[Kris] How to Contribute
+
+[Shubham] Upcoming Events
+
+---
 
 ## 🔥 What's new
 
