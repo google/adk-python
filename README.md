@@ -26,7 +26,7 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 
 ---
-## 🔥ADK's very first community call on Oct 15
+## 🔥 ADK's very first community call on Oct 15
 
 Join our ADK Community Call! Our first virtual community call is on Oct 15!
 Meet our team, and talk with us about our roadmap and how to contribute.
@@ -47,9 +47,7 @@ Add to your calendar
 
 Agenda:
 [Julia] ADK Roadmap
-
 [ Bo & Hangfei] Eng Deep Dive: Context Caching
-
 [Kris] How to Contribute
 
 [Shubham] Upcoming Events
@@ -58,10 +56,13 @@ Agenda:
 
 ## 🔥 What's new
 
-- **Agent Config**: Build agents without code. Check out the
-  [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+- **Context compaction**: Supports context compaction to reduce context length. Here is a [sample](https://github.com/google/adk-python/blob/main/contributing/samples/hello_world_app/agent.py#L156) and [compaction config](https://github.com/google/adk-python/blob/main/src/google/adk/apps/app.py#L51).
 
-- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input
+- **Resumability**: Support pause and resume an invocation in ADK.
+
+- **ReflectRetryToolPlugin**: Add [`ReflectRetryToolPlugin`](https://github.com/google/adk-python/blob/main/src/google/adk/plugins/reflect_retry_tool_plugin.py) to reflect from errors and retry with different arguments when tool errors.
+
+- **Search tool**: Support using Google built-in search and built-in `VertexAiSearchTool` with other tools in the same agent.
 
 ## ✨ Key Features
 
@@ -71,6 +72,11 @@ Agenda:
 
 - **Code-First Development**: Define agent logic, tools, and orchestration
   directly in Python for ultimate flexibility, testability, and versioning.
+
+- **Agent Config**: Build agents without code. Check out the
+  [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+
+- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input.
 
 - **Modular Multi-Agent Systems**: Design scalable applications by composing
   multiple specialized agents into flexible hierarchies.
