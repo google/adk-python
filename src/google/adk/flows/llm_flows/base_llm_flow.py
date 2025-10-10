@@ -388,6 +388,11 @@ class BaseLlmFlow(ABC):
         and events
         and events[-1].get_function_calls()
     ):
+      # Long running tool calls should have been handled before this point.
+      # If there are still long running tool calls, it means the agent is paused
+      # before, and its branch hasn't been resumed yet.
+      if invocation_context.should_pause_invocation(events[-1]):
+        return
       model_response_event = events[-1]
       async with Aclosing(
           self._postprocess_handle_function_calls_async(

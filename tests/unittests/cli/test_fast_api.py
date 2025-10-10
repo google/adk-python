@@ -29,6 +29,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.apps.app import App
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
@@ -39,6 +40,7 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
+from google.adk.sessions.session import Session
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -1005,6 +1007,56 @@ def test_debug_trace(test_app):
   # Verify we get a 404 for a nonexistent trace
   assert response.status_code == 404
   logger.info("Debug trace test completed successfully")
+
+
+def test_get_event_graph_returns_dot_src_for_app_agent():
+  """Ensure graph endpoint unwraps App instances before building the graph."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  root_agent = DummyAgent(name="dummy_agent")
+  app_agent = App(name="test_app", root_agent=root_agent)
+
+  class Loader:
+
+    def load_agent(self, app_name):
+      return app_agent
+
+    def list_agents(self):
+      return [app_agent.name]
+
+  session_service = AsyncMock()
+  session = Session(
+      id="session_id",
+      app_name="test_app",
+      user_id="user",
+      state={},
+      events=[Event(author="dummy_agent")],
+  )
+  event_id = session.events[0].id
+  session_service.get_session.return_value = session
+
+  adk_web_server = AdkWebServer(
+      agent_loader=Loader(),
+      session_service=session_service,
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=MagicMock(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+
+  client = TestClient(fast_api_app)
+  response = client.get(
+      f"/apps/test_app/users/user/sessions/session_id/events/{event_id}/graph"
+  )
+  assert response.status_code == 200
+  assert "dotSrc" in response.json()
 
 
 @pytest.mark.skipif(
