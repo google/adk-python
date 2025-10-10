@@ -12,21 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-
-from dotenv import load_dotenv
-
-load_dotenv(override=True)
-
-GITHUB_BASE_URL = "https://api.github.com"
-GITHUB_GRAPHQL_URL = GITHUB_BASE_URL + "/graphql"
-
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-if not GITHUB_TOKEN:
-  raise ValueError("GITHUB_TOKEN environment variable not set")
-
-OWNER = os.getenv("OWNER", "google")
-REPO = os.getenv("REPO", "adk-python")
-PULL_REQUEST_NUMBER = os.getenv("PULL_REQUEST_NUMBER")
-
-IS_INTERACTIVE = os.environ.get("INTERACTIVE", "1").lower() in ["true", "1"]
+from . import agent

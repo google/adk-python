@@ -26,6 +26,7 @@ from pydantic import Field
 from ..evaluation.eval_metrics import EvalMetric
 from .eval_metrics import BaseCriterion
 from .eval_metrics import Threshold
+from .user_simulator import BaseUserSimulatorConfig
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -68,6 +69,11 @@ the third one uses `LlmAsAJudgeCriterion`.
   }
 }
 """,
+  )
+
+  user_simulator_config: Optional[BaseUserSimulatorConfig] = Field(
+      default=None,
+      description="""Config to be used by the user simulator.""",
   )
 
 

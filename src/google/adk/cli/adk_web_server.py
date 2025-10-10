@@ -1429,7 +1429,14 @@ class AdkWebServer:
 
       function_calls = event.get_function_calls()
       function_responses = event.get_function_responses()
-      root_agent = self.agent_loader.load_agent(app_name)
+      agent_or_app = self.agent_loader.load_agent(app_name)
+      # The loader may return an App; unwrap to its root agent so the graph builder
+      # receives a BaseAgent instance.
+      root_agent = (
+          agent_or_app.root_agent
+          if isinstance(agent_or_app, App)
+          else agent_or_app
+      )
       dot_graph = None
       if function_calls:
         function_call_highlights = []

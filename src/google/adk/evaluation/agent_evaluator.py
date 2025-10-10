@@ -629,7 +629,7 @@ class AgentEvaluator:
       scores = [
           m.eval_metric_result.score
           for m in eval_metric_results_with_invocations
-          if m.eval_metric_result.score
+          if m.eval_metric_result.score is not None
       ]
 
       if scores:

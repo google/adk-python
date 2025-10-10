@@ -72,11 +72,9 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
     if latest_cache_metadata:
       llm_request.cache_metadata = latest_cache_metadata
       logger.debug(
-          'Found cache metadata for agent %s: invocations_used=%d, '
-          'cached_contents=%d',
+          'Found cache metadata for agent %s: %s',
           agent.name,
-          latest_cache_metadata.invocations_used,
-          latest_cache_metadata.cached_contents_count,
+          latest_cache_metadata,
       )
 
     if previous_token_count is not None:
@@ -108,8 +106,10 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
 
     Returns:
         Tuple of (cache_metadata, previous_prompt_token_count)
-        cache_metadata: Latest cache metadata with updated invocations_used if needed
-        previous_prompt_token_count: Most recent prompt token count from LLM response
+        cache_metadata: Latest cache metadata with invocations_used incremented
+            only if this is a different invocation and has active cache
+        previous_prompt_token_count: Most recent prompt token count from
+            LLM response
     """
     if not invocation_context.session or not invocation_context.session.events:
       return None, None
@@ -126,17 +126,21 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
 
       # Look for cache metadata (only in actual LLM response events)
       if cache_metadata is None and event.cache_metadata is not None:
-        # Check if this is a different invocation - increment invocations_used
-        if event.invocation_id and event.invocation_id != current_invocation_id:
-          # Different invocation - increment invocations_used
+        # Check if this is a different invocation and has active cache
+        if (
+            event.invocation_id
+            and event.invocation_id != current_invocation_id
+            and event.cache_metadata.cache_name is not None
+        ):
+          # Different invocation with active cache - increment invocations_used
           cache_metadata = event.cache_metadata.model_copy(
               update={
                   'invocations_used': event.cache_metadata.invocations_used + 1
               }
           )
         else:
-          # Same invocation or no invocation_id - return as-is
-          cache_metadata = event.cache_metadata
+          # Same invocation or no active cache - return copy as-is
+          cache_metadata = event.cache_metadata.model_copy()
 
       # Look for previous prompt token count (from actual LLM response events)
       if (

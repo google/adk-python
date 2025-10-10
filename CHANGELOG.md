@@ -49,6 +49,7 @@
 * Update remote_a2a_agent to better handle streaming events and avoid duplicate responses ([8e5f361](https://github.com/google/adk-python/commit/8e5f36126498f751171bb2639c7f5a9e7dca2558))
 * Update the load_artifacts tool so that the model can reliably call it for follow up questions about the same artifact ([238472d](https://github.com/google/adk-python/commit/238472d083b5aa67551bde733fc47826ff062679))
 * Fix VertexAiSessionService base_url override to preserve initialized http_options ([8110e41](https://github.com/google/adk-python/commit/8110e41b36cceddb8b92ba17cffaacf701706b36), [c51ea0b](https://github.com/google/adk-python/commit/c51ea0b52e63de8e43d3dccb24f9d20987784aa5))
+* Handle `App` instances returned by `agent_loader.load_agent` ([847df16](https://github.com/google/adk-python/commit/847df1638cbf1686aa43e8e094121d4e23e40245))
 
 ### Improvements
 

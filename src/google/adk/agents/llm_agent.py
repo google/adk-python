@@ -118,17 +118,19 @@ async def _convert_tool_union_to_tools(
     model: Union[str, BaseLlm],
     multiple_tools: bool = False,
 ) -> list[BaseTool]:
-  from ..tools.google_search_tool import google_search
+  from ..tools.google_search_tool import GoogleSearchTool
   from ..tools.vertex_ai_search_tool import VertexAiSearchTool
 
   # Wrap google_search tool with AgentTool if there are multiple tools because
   # the built-in tools cannot be used together with other tools.
   # TODO(b/448114567): Remove once the workaround is no longer needed.
-  if multiple_tools and tool_union is google_search:
+  if multiple_tools and isinstance(tool_union, GoogleSearchTool):
     from ..tools.google_search_agent_tool import create_google_search_agent
     from ..tools.google_search_agent_tool import GoogleSearchAgentTool
 
-    return [GoogleSearchAgentTool(create_google_search_agent(model))]
+    search_tool = cast(GoogleSearchTool, tool_union)
+    if search_tool.bypass_multi_tools_limit:
+      return [GoogleSearchAgentTool(create_google_search_agent(model))]
 
   # Replace VertexAiSearchTool with DiscoveryEngineSearchTool if there are
   # multiple tools because the built-in tools cannot be used together with
@@ -138,15 +140,16 @@ async def _convert_tool_union_to_tools(
     from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
 
     vais_tool = cast(VertexAiSearchTool, tool_union)
-    return [
-        DiscoveryEngineSearchTool(
-            data_store_id=vais_tool.data_store_id,
-            data_store_specs=vais_tool.data_store_specs,
-            search_engine_id=vais_tool.search_engine_id,
-            filter=vais_tool.filter,
-            max_results=vais_tool.max_results,
-        )
-    ]
+    if vais_tool.bypass_multi_tools_limit:
+      return [
+          DiscoveryEngineSearchTool(
+              data_store_id=vais_tool.data_store_id,
+              data_store_specs=vais_tool.data_store_specs,
+              search_engine_id=vais_tool.search_engine_id,
+              filter=vais_tool.filter,
+              max_results=vais_tool.max_results,
+          )
+      ]
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]
@@ -196,7 +199,7 @@ class LlmAgent(BaseAgent):
   or personality.
   """
 
-  static_instruction: Optional[types.Content] = None
+  static_instruction: Optional[types.ContentUnion] = None
   """Static instruction content sent literally as system instruction at the beginning.
 
   This field is for content that never changes and doesn't contain placeholders.
@@ -223,11 +226,20 @@ class LlmAgent(BaseAgent):
   For explicit caching control, configure context_cache_config at App level.
 
   **Content Support:**
-  Can contain text, files, binaries, or any combination as types.Content
-  supports multiple part types (text, inline_data, file_data, etc.).
+  Accepts types.ContentUnion which includes:
+  - str: Simple text instruction
+  - types.Content: Rich content object
+  - types.Part: Single part (text, inline_data, file_data, etc.)
+  - PIL.Image.Image: Image object
+  - types.File: File reference
+  - list[PartUnion]: List of parts
 
-  **Example:**
+  **Examples:**
   ```python
+  # Simple string instruction
+  static_instruction = "You are a helpful assistant."
+
+  # Rich content with files
   static_instruction = types.Content(
       role='user',
       parts=[
@@ -388,7 +400,8 @@ class LlmAgent(BaseAgent):
         async for event in agen:
           yield event
 
-      yield self._create_agent_state_event(ctx, end_of_agent=True)
+      ctx.set_agent_state(self.name, end_of_agent=True)
+      yield self._create_agent_state_event(ctx)
       return
 
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
@@ -399,7 +412,13 @@ class LlmAgent(BaseAgent):
           return
 
     if ctx.is_resumable:
-      yield self._create_agent_state_event(ctx, end_of_agent=True)
+      events = ctx._get_events(current_invocation=True, current_branch=True)
+      if events and ctx.should_pause_invocation(events[-1]):
+        return
+      # Only yield an end state if the last event is no longer a long running
+      # tool call.
+      ctx.set_agent_state(self.name, end_of_agent=True)
+      yield self._create_agent_state_event(ctx)
 
   @override
   async def _run_live_impl(
