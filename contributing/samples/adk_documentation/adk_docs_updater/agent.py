@@ -85,7 +85,15 @@ root_agent = Agent(
         - Use active voice phrasing in your doc updates.
         - Use second person "you" form of address in your doc updates.
       9. Create pull requests to update the ADK doc file using the `create_pull_request_from_changes` tool.
-        - For each recommended change, create a separate pull request.
+        - For each recommended change, create a separate pull request. Make sure the recommended change has exactly one pull request.
+          For example, if the ADK doc issue contains the following 2 recommended changes:
+          ```
+          1. Title of recommended change 1
+             <content of recommended change 1>
+          2. Title of recommended change 2
+             <content of recommended change 2>
+          ```
+          Then you should create 2 pull requests, one for each recommended change, even if each recommended change needs to update multiple ADK doc files.
         - The title of the pull request should be "Update ADK doc according to issue #<issue number> - <change id>", where <issue number> is the number of the ADK docs issue and <change id> is the id of the recommended change (e.g. "1", "2", etc.).
         - The body of the pull request should be the instructions about how to update the ADK docs.
         - **{APPROVAL_INSTRUCTION}**
@@ -93,6 +101,7 @@ root_agent = Agent(
       # 4. Guidelines & Rules
       - **File Paths:** Always use absolute paths when calling the tools to read files, list directories, or search the codebase.
       - **Tool Call Parallelism:** Execute multiple independent tool calls in parallel when feasible (i.e. searching the codebase).
+      - **Avoid deletion:** Do not delete any existing content unless specifically directed to do so.
       - **Explaination:** Provide concise explanations for your actions and reasoning for each step.
       - **Minimize changes:** When making updates to documentation pages, make the minimum amount of changes to achieve the communication goal. Only make changes that are necessary, and leave everything else as-is.
       - **Avoid trivial code sample changes:** Update code samples only when adding or modifying functionality. Do not reformat code samples, change variable names, or change code syntax unless you are specifically directed to make those updates.

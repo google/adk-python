@@ -37,6 +37,7 @@ try:
   from a2a.types import Part as A2APart
   from a2a.types import Role
   from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
+  from a2a.types import TaskState
   from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
   from a2a.types import TransportProtocol as A2ATransport
 except ImportError as e:
@@ -414,14 +415,25 @@ class RemoteA2aAgent(BaseAgent):
           # response for a non-streaming task, which is the full task state.
           # We process this to get the initial message.
           event = convert_a2a_task_to_event(task, self.name, ctx)
+          # for streaming task, we update the event with the task status.
+          # We update the event as Thought updates.
+          if task and task.status and task.status.state == TaskState.submitted:
+            event.content.parts[0].thought = True
         elif (
             isinstance(update, A2ATaskStatusUpdateEvent)
+            and update.status
             and update.status.message
         ):
           # This is a streaming task status update with a message.
           event = convert_a2a_message_to_event(
               update.status.message, self.name, ctx
           )
+          if event.content and update.status.state in [
+              TaskState.submitted,
+              TaskState.working,
+          ]:
+            for part in event.content.parts:
+              part.thought = True
         elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
             not update.append or update.last_chunk
         ):

@@ -25,11 +25,13 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
-from google.adk.tools.google_search_tool import google_search
+from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 import pytest
 
 from ... import testing_utils
+
+google_search = GoogleSearchTool(bypass_multi_tools_limit=True)
 
 
 class BaseLlmFlowForTesting(BaseLlmFlow):

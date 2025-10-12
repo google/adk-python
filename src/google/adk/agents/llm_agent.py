@@ -118,17 +118,19 @@ async def _convert_tool_union_to_tools(
     model: Union[str, BaseLlm],
     multiple_tools: bool = False,
 ) -> list[BaseTool]:
-  from ..tools.google_search_tool import google_search
+  from ..tools.google_search_tool import GoogleSearchTool
   from ..tools.vertex_ai_search_tool import VertexAiSearchTool
 
   # Wrap google_search tool with AgentTool if there are multiple tools because
   # the built-in tools cannot be used together with other tools.
   # TODO(b/448114567): Remove once the workaround is no longer needed.
-  if multiple_tools and tool_union is google_search:
+  if multiple_tools and isinstance(tool_union, GoogleSearchTool):
     from ..tools.google_search_agent_tool import create_google_search_agent
     from ..tools.google_search_agent_tool import GoogleSearchAgentTool
 
-    return [GoogleSearchAgentTool(create_google_search_agent(model))]
+    search_tool = cast(GoogleSearchTool, tool_union)
+    if search_tool.bypass_multi_tools_limit:
+      return [GoogleSearchAgentTool(create_google_search_agent(model))]
 
   # Replace VertexAiSearchTool with DiscoveryEngineSearchTool if there are
   # multiple tools because the built-in tools cannot be used together with
@@ -138,15 +140,16 @@ async def _convert_tool_union_to_tools(
     from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
 
     vais_tool = cast(VertexAiSearchTool, tool_union)
-    return [
-        DiscoveryEngineSearchTool(
-            data_store_id=vais_tool.data_store_id,
-            data_store_specs=vais_tool.data_store_specs,
-            search_engine_id=vais_tool.search_engine_id,
-            filter=vais_tool.filter,
-            max_results=vais_tool.max_results,
-        )
-    ]
+    if vais_tool.bypass_multi_tools_limit:
+      return [
+          DiscoveryEngineSearchTool(
+              data_store_id=vais_tool.data_store_id,
+              data_store_specs=vais_tool.data_store_specs,
+              search_engine_id=vais_tool.search_engine_id,
+              filter=vais_tool.filter,
+              max_results=vais_tool.max_results,
+          )
+      ]
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]

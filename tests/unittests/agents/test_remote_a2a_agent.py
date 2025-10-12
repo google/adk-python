@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 from google.adk.events.event import Event
 from google.adk.sessions.session import Session
+from google.genai import types as genai_types
 import httpx
 import pytest
 
@@ -41,12 +42,14 @@ try:
   from a2a.types import AgentSkill
   from a2a.types import Artifact
   from a2a.types import Message as A2AMessage
+  from a2a.types import Part as A2ATaskStatus
   from a2a.types import SendMessageSuccessResponse
   from a2a.types import Task as A2ATask
   from a2a.types import TaskArtifactUpdateEvent
   from a2a.types import TaskState
   from a2a.types import TaskStatus
   from a2a.types import TaskStatusUpdateEvent
+  from a2a.types import TextPart
   from google.adk.agents.invocation_context import InvocationContext
   from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
   from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
@@ -693,17 +696,21 @@ class TestRemoteA2aAgentMessageHandling:
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
   @pytest.mark.asyncio
-  async def test_handle_a2a_response_with_task_and_no_update(self):
-    """Test successful A2A response handling with task and no update."""
+  async def test_handle_a2a_response_with_task_completed_and_no_update(self):
+    """Test successful A2A response handling with non-streeaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = TaskState.completed
 
     # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
         branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
     with patch(
@@ -721,6 +728,49 @@ class TestRemoteA2aAgentMessageHandling:
           self.agent.name,
           self.mock_context,
       )
+      # Check the parts are not updated as Thought
+      assert result.content.parts[0].thought is None
+      # Check that metadata was added
+      assert result.custom_metadata is not None
+      assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+      assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_with_task_submitted_and_no_update(self):
+    """Test successful A2A response handling with streaming task and no update."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = TaskState.submitted
+
+    # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+      assert result == mock_event
+      mock_convert.assert_called_once_with(
+          mock_a2a_task,
+          self.agent.name,
+          self.mock_context,
+      )
+      # Check the parts are updated as Thought
+      assert result.content.parts[0].thought is True
+      assert result.content.parts[0].thought_signature is None
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
@@ -740,10 +790,12 @@ class TestRemoteA2aAgentMessageHandling:
     mock_update.status.message = mock_a2a_message
 
     # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
         branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
     with patch(
@@ -763,6 +815,52 @@ class TestRemoteA2aAgentMessageHandling:
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
+      assert result.content.parts[0].thought is None
+      assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+      assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_with_task_status_working_update_with_message(
+      self,
+  ):
+    """Test handling of a task status update with a message."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_update = Mock(spec=TaskStatusUpdateEvent)
+    mock_update.status = Mock(TaskStatus)
+    mock_update.status.state = TaskState.working
+    mock_update.status.message = mock_a2a_message
+
+    # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, mock_update), self.mock_context
+      )
+
+      assert result == mock_event
+      mock_convert.assert_called_once_with(
+          mock_a2a_message,
+          self.agent.name,
+          self.mock_context,
+      )
+      # Check that metadata was added
+      assert result.custom_metadata is not None
+      assert result.content.parts[0].thought is True
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
@@ -985,17 +1083,21 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
   @pytest.mark.asyncio
-  async def test_handle_a2a_response_with_task_and_no_update(self):
-    """Test successful A2A response handling with task and no update."""
+  async def test_handle_a2a_response_with_task_completed_and_no_update(self):
+    """Test successful A2A response handling with non-streeaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = TaskState.completed
 
     # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
         branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
     with patch(
@@ -1009,8 +1111,53 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
       assert result == mock_event
       mock_convert.assert_called_once_with(
-          mock_a2a_task, self.agent.name, self.mock_context
+          mock_a2a_task,
+          self.agent.name,
+          self.mock_context,
       )
+      # Check the parts are not updated as Thought
+      assert result.content.parts[0].thought is None
+      # Check that metadata was added
+      assert result.custom_metadata is not None
+      assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+      assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_with_task_submitted_and_no_update(self):
+    """Test successful A2A response handling with streaming task and no update."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = TaskState.submitted
+
+    # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+      assert result == mock_event
+      mock_convert.assert_called_once_with(
+          mock_a2a_task,
+          self.agent.name,
+          self.mock_context,
+      )
+      # Check the parts are updated as Thought
+      assert result.content.parts[0].thought is True
+      assert result.content.parts[0].thought_signature is None
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
@@ -1030,10 +1177,12 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_update.status.message = mock_a2a_message
 
     # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
         branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
     with patch(
@@ -1053,6 +1202,52 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
+      assert result.content.parts[0].thought is None
+      assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+      assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_with_task_status_working_update_with_message(
+      self,
+  ):
+    """Test handling of a task status update with a message."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_update = Mock(spec=TaskStatusUpdateEvent)
+    mock_update.status = Mock(TaskStatus)
+    mock_update.status.state = TaskState.working
+    mock_update.status.message = mock_a2a_message
+
+    # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, mock_update), self.mock_context
+      )
+
+      assert result == mock_event
+      mock_convert.assert_called_once_with(
+          mock_a2a_message,
+          self.agent.name,
+          self.mock_context,
+      )
+      # Check that metadata was added
+      assert result.custom_metadata is not None
+      assert result.content.parts[0].thought is True
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
