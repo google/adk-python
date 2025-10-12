@@ -799,6 +799,60 @@ class BaseLlmFlow(ABC):
         invocation_context, event_actions=model_response_event.actions
     )
 
+    state = getattr(callback_context, 'state', None)
+    if state is None:
+      injections = None
+    else:
+      injections = state.get("__persisted_prompt_injections")
+
+    if not injections:
+      try:
+        session_state = getattr(invocation_context, 'session', None)
+        if session_state and getattr(session_state, 'state', None) is not None:
+          persisted = session_state.state.get("__persisted_prompt_injections")
+          if persisted:
+            injections = persisted
+      except Exception:
+        injections = injections
+
+    if injections:
+      if not isinstance(injections, list):
+        injections = [injections]
+      for inj in injections:
+        if not inj:
+          continue
+        already = False
+        inj_text = None
+        if isinstance(inj, str):
+          inj_text = inj
+        else:
+          parts = getattr(inj, 'parts', None)
+          if parts and len(parts) and hasattr(parts[0], 'text'):
+            inj_text = parts[0].text
+          else:
+            inj_text = None
+
+        if inj_text:
+          for c in list(llm_request.contents or []):
+            if not c.parts:
+              continue
+            for part in c.parts:
+              if part and getattr(part, 'text', None) == inj_text:
+                already = True
+                break
+            if already:
+              break
+        if already:
+          continue
+
+        llm_request.contents = llm_request.contents or []
+        if isinstance(inj, str):
+          llm_request.contents.insert(
+              0, types.Content(role="user", parts=[types.Part(text=inj)])
+          )
+        else:
+          llm_request.contents.insert(0, inj)
+
     # First run callbacks from the plugins.
     callback_response = (
         await invocation_context.plugin_manager.run_before_model_callback(
