@@ -299,7 +299,7 @@ class TestCanonicalTools:
         model='gemini-pro',
         tools=[
             self._my_tool,
-            google_search,
+            GoogleSearchTool(bypass_multi_tools_limit=True),
         ],
     )
     ctx = await _create_readonly_context(agent)
@@ -373,7 +373,10 @@ class TestCanonicalTools:
         model='gemini-pro',
         tools=[
             self._my_tool,
-            VertexAiSearchTool(data_store_id='test_data_store_id'),
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+            ),
         ],
     )
     ctx = await _create_readonly_context(agent)

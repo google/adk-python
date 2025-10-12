@@ -35,7 +35,7 @@ class GoogleSearchTool(BaseTool):
   local code execution.
   """
 
-  def __init__(self, *, bypass_multi_tools_limit: bool = True):
+  def __init__(self, *, bypass_multi_tools_limit: bool = False):
     """Initializes the Google search tool.
 
     Args:

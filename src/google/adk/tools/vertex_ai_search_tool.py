@@ -47,7 +47,7 @@ class VertexAiSearchTool(BaseTool):
       search_engine_id: Optional[str] = None,
       filter: Optional[str] = None,
       max_results: Optional[int] = None,
-      bypass_multi_tools_limit: bool = True,
+      bypass_multi_tools_limit: bool = False,
   ):
     """Initializes the Vertex AI Search tool.
 
