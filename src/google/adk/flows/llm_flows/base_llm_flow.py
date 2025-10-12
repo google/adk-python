@@ -804,7 +804,6 @@ class BaseLlmFlow(ABC):
       injections = None
     else:
       injections = state.get("__persisted_prompt_injections")
-
     if not injections:
       try:
         session_state = getattr(invocation_context, 'session', None)

@@ -28,7 +28,6 @@ def before_model_callback_persist_injections(callback_context, llm_request):
   global _index
   if not getattr(llm_request, 'contents', None):
     llm_request.contents = []
-
   injections = callback_context.state.get(INJECTIONS_STATE_KEY, [])
   for inj in injections:
     found = False
