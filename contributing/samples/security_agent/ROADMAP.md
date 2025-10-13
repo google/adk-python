@@ -20,6 +20,9 @@ Build a comprehensive, AI-powered security intelligence platform that provides r
 **Theme:** Expand security analysis capabilities
 
 #### Security Tools Expansion
+- [x] **Enhance custom IAM analysis**
+  - Suggest predefined role bundles that cover custom roles
+  - Highlight missing vs extra permissions with actionable guidance
 - [ ] **Add compliance checking tools**
   - PCI-DSS compliance validation
   - HIPAA compliance checking
