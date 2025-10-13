@@ -321,7 +321,7 @@ class ServiceDocumentationParser:
         permissions = set()
 
         # IAM permission pattern (e.g., compute.instances.create)
-        perm_pattern = r'([a-z]+\.[a-z]+\.[a-z]+)'
+        perm_pattern = r'([a-z]+\.[a-zA-Z]+\.[a-zA-Z]+)'
         perm_matches = re.findall(perm_pattern, content)
 
         for perm in perm_matches:
