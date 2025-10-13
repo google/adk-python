@@ -79,7 +79,7 @@ class GlobalInstructionPlugin(BasePlugin):
       return None
 
     # Resolve the global instruction (handle both string and InstructionProvider)
-    readonly_context = ReadonlyContext(callback_context.invocation_context)
+    readonly_context = callback_context
     final_global_instruction = await self._resolve_global_instruction(
         readonly_context
     )

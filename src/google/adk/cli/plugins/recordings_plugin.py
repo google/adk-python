@@ -39,7 +39,6 @@ from .recordings_schema import Recordings
 from .recordings_schema import ToolRecording
 
 if TYPE_CHECKING:
-  from ...agents.invocation_context import InvocationContext
   from ...tools.base_tool import BaseTool
   from ...tools.tool_context import ToolContext
 
@@ -75,10 +74,10 @@ class RecordingsPlugin(BasePlugin):
 
   @override
   async def before_run_callback(
-      self, *, invocation_context: InvocationContext
+      self, *, callback_context: CallbackContext
   ) -> Optional[types.Content]:
     """Always create fresh per-invocation recording state when enabled."""
-    ctx = CallbackContext(invocation_context)
+    ctx = callback_context
     if self._is_record_mode_on(ctx):
       # Always create/overwrite the state for this invocation
       self._create_invocation_state(ctx)
@@ -280,10 +279,10 @@ class RecordingsPlugin(BasePlugin):
 
   @override
   async def after_run_callback(
-      self, *, invocation_context: InvocationContext
+      self, *, callback_context: CallbackContext
   ) -> None:
     """Finalize and persist recordings, then clean per-invocation state."""
-    ctx = CallbackContext(invocation_context)
+    ctx = callback_context
     if not self._is_record_mode_on(ctx):
       return None
 

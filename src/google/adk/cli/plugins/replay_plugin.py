@@ -38,7 +38,6 @@ from .recordings_schema import Recordings
 from .recordings_schema import ToolRecording
 
 if TYPE_CHECKING:
-  from ...agents.invocation_context import InvocationContext
   from ...tools.base_tool import BaseTool
   from ...tools.tool_context import ToolContext
 
@@ -81,10 +80,10 @@ class ReplayPlugin(BasePlugin):
 
   @override
   async def before_run_callback(
-      self, *, invocation_context: InvocationContext
+      self, *, callback_context: CallbackContext
   ) -> Optional[types.Content]:
     """Load replay recordings when enabled."""
-    ctx = CallbackContext(invocation_context)
+    ctx = callback_context
     if self._is_replay_mode_on(ctx):
       # Load the replay state for this invocation
       self._load_invocation_state(ctx)
@@ -156,10 +155,10 @@ class ReplayPlugin(BasePlugin):
 
   @override
   async def after_run_callback(
-      self, *, invocation_context: InvocationContext
+      self, *, callback_context: CallbackContext
   ) -> None:
     """Clean up replay state after invocation completes."""
-    ctx = CallbackContext(invocation_context)
+    ctx = callback_context
     if not self._is_replay_mode_on(ctx):
       return None
 

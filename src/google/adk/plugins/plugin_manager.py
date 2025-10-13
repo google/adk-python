@@ -14,20 +14,22 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any
 from typing import List
 from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.genai import types
 
+from ..agents.callback_context import CallbackContext
 from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
-  from ..agents.callback_context import CallbackContext
   from ..agents.invocation_context import InvocationContext
   from ..events.event import Event
   from ..models.llm_request import LlmRequest
@@ -113,35 +115,39 @@ class PluginManager:
       invocation_context: InvocationContext,
   ) -> Optional[types.Content]:
     """Runs the `on_user_message_callback` for all plugins."""
+    callback_context = CallbackContext(invocation_context)
     return await self._run_callbacks(
         "on_user_message_callback",
         user_message=user_message,
-        invocation_context=invocation_context,
+        callback_context=callback_context,
     )
 
   async def run_before_run_callback(
       self, *, invocation_context: InvocationContext
   ) -> Optional[types.Content]:
     """Runs the `before_run_callback` for all plugins."""
+    callback_context = CallbackContext(invocation_context)
     return await self._run_callbacks(
-        "before_run_callback", invocation_context=invocation_context
+        "before_run_callback", callback_context=callback_context
     )
 
   async def run_after_run_callback(
       self, *, invocation_context: InvocationContext
   ) -> Optional[None]:
     """Runs the `after_run_callback` for all plugins."""
+    callback_context = CallbackContext(invocation_context)
     return await self._run_callbacks(
-        "after_run_callback", invocation_context=invocation_context
+        "after_run_callback", callback_context=callback_context
     )
 
   async def run_on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
   ) -> Optional[Event]:
     """Runs the `on_event_callback` for all plugins."""
+    callback_context = CallbackContext(invocation_context)
     return await self._run_callbacks(
         "on_event_callback",
-        invocation_context=invocation_context,
+        callback_context=callback_context,
         event=event,
     )
 
@@ -277,8 +283,14 @@ class PluginManager:
       # Each plugin might not implement all callbacks. The base class provides
       # default `pass` implementations, so `getattr` will always succeed.
       callback_method = getattr(plugin, callback_name)
+
+      # Backward compatibility: Support both callback_context and invocation_context
+      adapted_kwargs = self._adapt_kwargs_for_plugin(
+          plugin, callback_method, kwargs
+      )
+
       try:
-        result = await callback_method(**kwargs)
+        result = await callback_method(**adapted_kwargs)
         if result is not None:
           # Early exit: A plugin has returned a value. We stop
           # processing further plugins and return this value immediately.
@@ -297,3 +309,80 @@ class PluginManager:
         raise RuntimeError(error_message) from e
 
     return None
+
+  def _adapt_kwargs_for_plugin(
+      self, plugin: BasePlugin, callback_method: Any, kwargs: dict[str, Any]
+  ) -> dict[str, Any]:
+    """Adapts keyword arguments for backward compatibility with legacy plugins.
+
+    This method handles the migration from invocation_context to
+    callback_context
+    by inspecting the plugin's callback method signature and providing the
+    appropriate parameter name. For maximum compatibility, it may pass both
+    parameters when the signature is ambiguous.
+
+    Args:
+      plugin: The plugin instance.
+      callback_method: The callback method to be invoked.
+      kwargs: The original keyword arguments.
+
+    Returns:
+      Adapted keyword arguments that match the plugin's expected signature.
+    """
+    # If no callback_context in kwargs, no adaptation needed
+    if "callback_context" not in kwargs:
+      return kwargs.copy()
+
+    callback_context = kwargs["callback_context"]
+
+    try:
+      # Inspect the callback method signature
+      sig = inspect.signature(callback_method)
+      params = sig.parameters
+
+      # Case 1: Method explicitly wants only invocation_context
+      if "invocation_context" in params and "callback_context" not in params:
+        # Legacy plugin - pass only invocation_context
+        warnings.warn(
+            f"Plugin '{plugin.name}' uses deprecated 'invocation_context' "
+            "parameter in callback methods. Please update to use "
+            "'callback_context' instead. Support for 'invocation_context' "
+            "will be removed in a future version.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        adapted_kwargs = kwargs.copy()
+        adapted_kwargs["invocation_context"] = (
+            callback_context._invocation_context
+        )
+        del adapted_kwargs["callback_context"]
+        return adapted_kwargs
+
+      # Case 2: Method explicitly wants only callback_context
+      elif "callback_context" in params and "invocation_context" not in params:
+        # Modern plugin - pass only callback_context
+        return kwargs.copy()
+
+      # Case 3: Method wants both, uses **kwargs, or signature is unclear
+      else:
+        # Pass both parameters for maximum compatibility
+        # This handles: **kwargs, both parameters explicitly, or unknown cases
+        adapted_kwargs = kwargs.copy()
+        adapted_kwargs["invocation_context"] = (
+            callback_context._invocation_context
+        )
+        return adapted_kwargs
+
+    except (ValueError, TypeError) as e:
+      # Fallback: Pass both parameters for safety
+      logger.debug(
+          "Failed to inspect plugin '%s' callback signature: %s. "
+          "Passing both callback_context and invocation_context for safety.",
+          plugin.name,
+          e,
+      )
+      adapted_kwargs = kwargs.copy()
+      adapted_kwargs["invocation_context"] = (
+          callback_context._invocation_context
+      )
+      return adapted_kwargs

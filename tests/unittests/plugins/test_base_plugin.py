@@ -103,19 +103,15 @@ async def test_base_plugin_default_callbacks_return_none():
   assert (
       await plugin.on_user_message_callback(
           user_message=mock_user_message,
-          invocation_context=mock_context,
+          callback_context=mock_context,
       )
       is None
   )
-  assert (
-      await plugin.before_run_callback(invocation_context=mock_context) is None
-  )
-  assert (
-      await plugin.after_run_callback(invocation_context=mock_context) is None
-  )
+  assert await plugin.before_run_callback(callback_context=mock_context) is None
+  assert await plugin.after_run_callback(callback_context=mock_context) is None
   assert (
       await plugin.on_event_callback(
-          invocation_context=mock_context, event=mock_context
+          callback_context=mock_context, event=mock_context
       )
       is None
   )
@@ -200,25 +196,21 @@ async def test_base_plugin_all_callbacks_can_be_overridden():
   assert (
       await plugin.on_user_message_callback(
           user_message=mock_user_message,
-          invocation_context=mock_invocation_context,
+          callback_context=mock_callback_context,
       )
       == "overridden_on_user_message"
   )
   assert (
-      await plugin.before_run_callback(
-          invocation_context=mock_invocation_context
-      )
+      await plugin.before_run_callback(callback_context=mock_callback_context)
       == "overridden_before_run"
   )
   assert (
-      await plugin.after_run_callback(
-          invocation_context=mock_invocation_context
-      )
+      await plugin.after_run_callback(callback_context=mock_callback_context)
       == "overridden_after_run"
   )
   assert (
       await plugin.on_event_callback(
-          invocation_context=mock_invocation_context, event=mock_event
+          callback_context=mock_callback_context, event=mock_event
       )
       == "overridden_on_event"
   )

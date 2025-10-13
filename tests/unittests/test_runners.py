@@ -15,8 +15,8 @@
 from typing import Optional
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.context_cache_config import ContextCacheConfig
-from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
@@ -98,7 +98,7 @@ class MockPlugin(BasePlugin):
   async def on_user_message_callback(
       self,
       *,
-      invocation_context: InvocationContext,
+      callback_context: CallbackContext,
       user_message: types.Content,
   ) -> Optional[types.Content]:
     if not self.enable_user_message_callback:
@@ -109,7 +109,7 @@ class MockPlugin(BasePlugin):
     )
 
   async def on_event_callback(
-      self, *, invocation_context: InvocationContext, event: Event
+      self, *, callback_context: CallbackContext, event: Event
   ) -> Optional[Event]:
     if not self.enable_event_callback:
       return None
