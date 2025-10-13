@@ -937,6 +937,7 @@ def fast_api_common_options():
   """Decorator to add common fast api options to click commands."""
 
   def decorator(func):
+
     @click.option(
         "--host",
         type=str,
@@ -984,6 +985,17 @@ def fast_api_common_options():
         help=(
             "EXPERIMENTAL Optional. Whether to write OTel data to Google Cloud"
             " Observability services - Cloud Trace and Cloud Logging."
+        ),
+    )
+    @click.option(
+        "--log_to_cloud",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help=(
+            "Optional. Emit structured JSON logs via Google Cloud Logging,"
+            " keeping multiline messages in a single entry. Only set this to"
+            " True when deployed to Google Cloud environment."
         ),
     )
     @click.option(
@@ -1065,6 +1077,7 @@ def cli_web(
     port: int = 8000,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
+    log_to_cloud: bool = False,
     reload: bool = True,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -1086,7 +1099,9 @@ def cli_web(
 
     adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
-  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  logs.setup_adk_logger(
+      getattr(logging, log_level.upper()), log_to_cloud=log_to_cloud
+  )
 
   @asynccontextmanager
   async def _lifespan(app: FastAPI):
@@ -1164,6 +1179,7 @@ def cli_api_server(
     port: int = 8000,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
+    log_to_cloud: bool = False,
     reload: bool = True,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -1183,7 +1199,9 @@ def cli_api_server(
 
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
-  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  logs.setup_adk_logger(
+      getattr(logging, log_level.upper()), log_to_cloud=log_to_cloud
+  )
 
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri

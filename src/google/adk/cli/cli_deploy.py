@@ -59,7 +59,7 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {log_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
@@ -267,6 +267,7 @@ def to_cloud_run(
             memory_service_uri,
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        log_to_cloud_option='--log_to_cloud',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,
@@ -702,6 +703,7 @@ def to_gke(
             memory_service_uri,
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        log_to_cloud_option='--log_to_cloud',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,
