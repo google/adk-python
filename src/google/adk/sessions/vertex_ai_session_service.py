@@ -215,7 +215,7 @@ class VertexAiSessionService(BaseSessionService):
       sessions.append(
           Session(
               app_name=app_name,
-              user_id=user_id,
+              user_id=api_session.get('userId', None),
               id=api_session.name.split('/')[-1],
               state=getattr(api_session, 'session_state', None) or {},
               last_update_time=api_session.update_time.timestamp(),
