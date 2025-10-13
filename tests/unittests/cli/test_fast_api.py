@@ -153,28 +153,6 @@ class _MockEvalCaseResult(BaseModel):
   eval_metric_result_per_invocation: list = {}
 
 
-# Mock for the run_evals function, tailored for test_run_eval
-async def mock_run_evals_for_fast_api(*args, **kwargs):
-  # This is what the test_run_eval expects for its assertions
-  yield _MockEvalCaseResult(
-      eval_set_id="test_eval_set_id",  # Matches expected in verify_eval_case_result
-      eval_id="test_eval_case_id",  # Matches expected
-      final_eval_status=1,  # Matches expected (assuming 1 is PASSED)
-      user_id="test_user",  # Placeholder, adapt if needed
-      session_id="test_session_for_eval_case",  # Placeholder
-      eval_set_file="test_eval_set_file",  # Placeholder
-      overall_eval_metric_results=[{  # Matches expected
-          "metricName": "tool_trajectory_avg_score",
-          "threshold": 0.5,
-          "score": 1.0,
-          "evalStatus": 1,
-      }],
-      # Provide other fields if RunEvalResult or subsequent processing needs them
-      eval_metric_results=[],
-      eval_metric_result_per_invocation=[],
-  )
-
-
 #################################################
 # Test Fixtures
 #################################################
@@ -453,10 +431,6 @@ def test_app(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
-      patch(
-          "google.adk.cli.cli_eval.run_evals",  # Patch where it's imported in fast_api.py
-          new=mock_run_evals_for_fast_api,
-      ),
   ):
     # Get the FastAPI app, but don't actually run it
     app = get_fast_api_app(
@@ -603,10 +577,6 @@ def test_app_with_a2a(
       patch(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
-      ),
-      patch(
-          "google.adk.cli.cli_eval.run_evals",
-          new=mock_run_evals_for_fast_api,
       ),
       patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store,
       patch(
