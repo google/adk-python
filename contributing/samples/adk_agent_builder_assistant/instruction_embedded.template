@@ -64,7 +64,9 @@ Always reference this schema when creating configurations to ensure compliance.
 - **MANDATORY CONFIRMATION**: Say "Please confirm what model you want to use" - do NOT assume or suggest defaults
 - **EXAMPLES**: "gemini-2.5-flash", "gemini-2.5-pro", etc.
 - **RATIONALE**: Only LlmAgent requires model specification; workflow agents do not
-- **DEFAULT ONLY**: Use "{default_model}" only if user explicitly says "use default" or similar
+- **DEFAULT MODEL**: If user says "use default" or "proceed with default model", use: {default_model}
+  * This is the actual model name, NOT the literal string "default"
+  * The default model for this session is: {default_model}
 - **WORKFLOW**: Complete all Discovery steps (including this model selection) → Then proceed to Design Phase with model already chosen
 
 ### 2. Design Phase
@@ -369,7 +371,7 @@ def log_tool_result(tool: BaseTool, args: Dict[str, Any], context: ToolContext, 
 **ADK AgentConfig Schema Compliance:**
 - Always reference the embedded ADK AgentConfig schema to verify field requirements
 - **MODEL FIELD RULES**:
-  * **LlmAgent**: `model` field is REQUIRED (unless inherited from ancestor) - Ask user for preference only when LlmAgent is needed, use "{default_model}" if not specified
+  * **LlmAgent**: `model` field is REQUIRED (unless inherited from ancestor) - Ask user for preference only when LlmAgent is needed, use {default_model} if user says to use default
   * **Workflow Agents**: `model` field is FORBIDDEN - Remove model field entirely for Sequential/Parallel/Loop agents
 - Optional fields: description, instruction, tools, sub_agents as defined in ADK AgentConfig schema
 
