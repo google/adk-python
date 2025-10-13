@@ -19,37 +19,17 @@ import os
 import tempfile
 import time
 
-from google.api_core import exceptions as api_core_exceptions
-from google.auth import exceptions as auth_exceptions
-from google.cloud import logging as cloud_logging
-
 LOGGING_FORMAT = (
     '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
 )
 
 
-def setup_adk_logger(level=logging.INFO, *, log_to_cloud: bool = False):
-  """Set up ADK logger with optional Google Cloud Logging integration."""
-  root_logger = logging.getLogger()
+def setup_adk_logger(level=logging.INFO):
+  # Configure the root logger format and level.
+  logging.basicConfig(level=level, format=LOGGING_FORMAT)
 
-  if log_to_cloud:
-    # Remove the default StreamHandler to avoid duplicate stdout logs.
-    root_logger.handlers = []
-    client = cloud_logging.Client()
-    client.setup_logging(log_level=level)
-    root_logger.setLevel(level)
-  else:
-    if root_logger.handlers:
-      # Uvicorn installs handlers ahead of application code, so basicConfig is a no-op.
-      formatter = logging.Formatter(LOGGING_FORMAT)
-      for handler in root_logger.handlers:
-        handler.setLevel(level)
-        handler.setFormatter(formatter)
-    else:
-      logging.basicConfig(level=level, format=LOGGING_FORMAT)
-    root_logger.setLevel(level)
-
-  logging.getLogger('google_adk').setLevel(level)
+  adk_logger = logging.getLogger('google_adk')
+  adk_logger.setLevel(level)
 
 
 def log_to_tmp_folder(
