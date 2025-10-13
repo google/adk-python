@@ -40,7 +40,8 @@ from .bigquery_tools import (
     get_table_schema,
     run_query,
     analyze_query_cost,
-    get_table_sample
+    get_table_sample,
+    BigQueryTool,
 )
 
 # Exploration Tools
@@ -136,6 +137,7 @@ __all__ = [
     'run_query',
     'analyze_query_cost',
     'get_table_sample',
+    'BigQueryTool',
 
     # Exploration Tools (2)
     'explore_all_tables_and_views',

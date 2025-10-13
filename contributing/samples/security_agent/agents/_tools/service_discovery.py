@@ -105,6 +105,7 @@ class GCPServiceDiscovery:
             'name': 'Cloud Run',
             'api': 'run.googleapis.com',
             'resource_types': ['services', 'jobs', 'revisions'],
+            'documentation_url': 'https://cloud.google.com/run/docs',
             'analysis_queries': {
                 'security': "SELECT * FROM `{project}.{dataset}.cloudrun_services` WHERE allow_unauthenticated = TRUE",
                 'compliance': "SELECT * FROM `{project}.{dataset}.cloudrun_services` WHERE binary_authorization_policy IS NULL",
@@ -385,8 +386,29 @@ class GCPServiceDiscovery:
                 results['query_executed'] = query
 
             except exceptions.NotFound:
-                results['error'] = f"Table not found. You may need to run data collection for {service['name']} first."
+                results['error'] = (
+                    f"Table not found. You may need to run data collection for {service['name']} first."
+                )
                 results['suggested_action'] = f"Deploy cloud function: fetch_{service_key}_data"
+
+                # Provide prescriptive next steps from documentation/best practices
+                guidance = self._build_default_guidance(service_key, service)
+                if guidance:
+                    results['recommended_actions'] = guidance
+
+                # Surface any learned documentation snippets
+                if HAS_DOC_PARSER:
+                    try:
+                        parser = ServiceDocumentationParser()
+                        learned = parser.parse_documentation_url(service.get('documentation_url', ''), force_refresh=False)
+                        if learned and not learned.get('error'):
+                            results['learned_summary'] = {
+                                'description': learned.get('description'),
+                                'capabilities': learned.get('capabilities', []),
+                                'permissions': learned.get('permissions', []),
+                            }
+                    except Exception as exc:  # pragma: no cover - informational only
+                        logger.debug(f"Could not enrich guidance for {service_key}: {exc}")
 
             except Exception as e:
                 results['error'] = str(e)
@@ -395,6 +417,37 @@ class GCPServiceDiscovery:
             results['available_analyses'] = list(queries.keys())
 
         return results
+
+    def _build_default_guidance(self, service_key: str, service: Dict[str, Any]) -> List[str]:
+        """Return actionable guidance when project telemetry is unavailable."""
+
+        guidance_catalog: Dict[str, List[str]] = {
+            'cloudrun': [
+                "Ensure the Cloud Run service agent `service-<PROJECT_NUMBER>@serverless-robot-prod.iam.gserviceaccount.com` has `roles/run.serviceAgent` plus VPC connector roles when private networking is required.",
+                "Grant the workload identity user (your deploying CI/CD SA) `roles/run.admin` and `roles/iam.serviceAccountUser` on the runtime service account only—avoid broad `editor` roles.",
+                "Lock ingress to `internal-and-cloud-load-balancing` when services do not need public endpoints; pair with Google-managed SSL or Identity-Aware Proxy where exposure is required.",
+                "Use organisation policies: `constraints/run.allowedIngress` and `constraints/run.allowedVpcConnectorEgressSettings` to enforce baseline posture across projects.",
+                "For VPC Service Controls, add the Cloud Run service project and associated Artifact Registry/Secret Manager projects to the same perimeter—include the Cloud Run service agent principal in access levels.",
+                "Enable Cloud Logging + Cloud Monitoring sinks filtered on `resource.type=cloud_run_revision` to drive anomaly detection dashboards.",
+                "Schedule `fetch_cloudrun_data` ingest after each deployment to populate the `security_insights` dataset with configuration snapshots and scaling metrics.",
+            ],
+            'cloudfunctions': [
+                "Ensure service agents have `roles/cloudfunctions.serviceAgent` and restrict invokers via IAM or HTTPS authorisation.",
+                "Capture build metadata via `fetch_cloudfunctions_data` to audit runtime dependencies and entry points.",
+            ],
+        }
+
+        normalized_key = service_key.lower()
+        if normalized_key in guidance_catalog:
+            return guidance_catalog[normalized_key]
+
+        # Provide generic guidance if we have nothing specific
+        name = service.get('name', service_key)
+        return [
+            f"Establish least-privilege IAM for all {name} service agents and CI/CD identities.",
+            f"Enable data ingest (`fetch_{normalized_key}_data`) so future analyses can reference real telemetry.",
+            "Review VPC Service Controls and organisation policies to confirm the service can operate within existing perimeters.",
+        ]
 
     def get_service_resources(self, service_key: str) -> List[Dict[str, Any]]:
         """Get all resources for a specific service"""
@@ -629,6 +682,26 @@ def analyze_gcp_service(
             output += f"⚠️ Error: {results['error']}\n"
             if 'suggested_action' in results:
                 output += f"💡 Suggestion: {results['suggested_action']}\n"
+            if results.get('recommended_actions'):
+                output += "\n🔒 Recommended Next Steps:\n"
+                for idx, action in enumerate(results['recommended_actions'], 1):
+                    output += f"  {idx}. {action}\n"
+            if results.get('learned_summary'):
+                learned = results['learned_summary']
+                output += "\n📚 Service Baseline (from documentation):\n"
+                if learned.get('description'):
+                    output += f"  • Summary: {learned['description']}\n"
+                if learned.get('capabilities'):
+                    output += f"  • Capabilities: {', '.join(learned['capabilities'][:6])}\n"
+                if learned.get('permissions'):
+                    perms = [
+                        perm for perm in learned['permissions']
+                        if any(token in perm for token in ('run', 'iam', 'roles/'))
+                    ]
+                    perms = [perm for perm in perms if '/' in perm or '.' in perm][:5]
+                    if perms:
+                        sample_perms = ", ".join(perms)
+                        output += f"  • Key IAM permissions: {sample_perms}\n"
             if 'available_analyses' in results:
                 output += f"Available analyses: {', '.join(results['available_analyses'])}\n"
             if 'available_services' in results:

@@ -57,10 +57,11 @@ from ._tools.service_discovery import (
 from ._tools.msa_analyzer import analyze_gcp_releases
 
 # Import Service Evaluation Framework
-from ._tools.service_evaluation import evaluate_new_service, check_service_compliance
+from ._tools.service_evaluation import check_service_compliance
 
 # Import configuration
 from ._tools.base import PROJECT_ID, DEFAULT_DATASET, DEFAULT_TABLE
+from ._tools.bigquery_tools import BigQueryTool
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,9 @@ def _load_instruction() -> str:
             "insights from the security_insights dataset and maintain a friendly, helpful tone."
         )
         return _apply_instruction_tokens(fallback)
+
+# Shared tool instances
+bigquery_toolset = BigQueryTool()
 
 # Wrap functions as tools
 tools = [
@@ -126,7 +130,7 @@ tools = [
     # MSA (Multi-Service Analyzer) - Release notes impact analysis
     FunctionTool(analyze_gcp_releases),
     # Service Evaluation Framework - Comprehensive service security assessment
-    FunctionTool(evaluate_new_service),
+    FunctionTool(bigquery_toolset.evaluate_service),
     # Compliance Checker - Validate controls against BigQuery (actual environment state)
     FunctionTool(check_service_compliance),
     # Standard BigQuery tools

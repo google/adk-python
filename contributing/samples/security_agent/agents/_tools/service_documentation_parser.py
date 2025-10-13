@@ -495,7 +495,8 @@ class ServiceDocumentationParser:
                 bigquery.SchemaField("regions", "STRING", mode="REPEATED"),
                 bigquery.SchemaField("documentation_url", "STRING"),
                 bigquery.SchemaField("discovered_at", "TIMESTAMP"),
-                bigquery.SchemaField("raw_data", "JSON"),
+                # Use STRING to avoid JSON beta limitations / schema mismatches
+                bigquery.SchemaField("raw_data", "STRING"),
             ]
 
             # Create table if it doesn't exist
@@ -517,7 +518,7 @@ class ServiceDocumentationParser:
                 "regions": service_info.get('regions', []),
                 "documentation_url": service_info.get('url', ''),
                 "discovered_at": datetime.now().isoformat(),
-                "raw_data": service_info,
+                "raw_data": json.dumps(service_info),
             }]
 
             errors = self.bq_client.insert_rows_json(table_ref, rows)

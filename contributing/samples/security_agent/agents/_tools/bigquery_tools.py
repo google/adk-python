@@ -1,13 +1,23 @@
-"""
-Standard BigQuery operations and utilities
-"""
+"""Standard BigQuery operations and utilities."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from google.cloud import bigquery
 
 from .base import (
-    bq_client, check_client, PROJECT_ID,
-    DEFAULT_DATASET, DEFAULT_TABLE, MAX_RESULTS,
-    logger
+    DEFAULT_DATASET,
+    DEFAULT_TABLE,
+    MAX_RESULTS,
+    PROJECT_ID,
+    bq_client,
+    check_client,
+    logger,
 )
-from google.cloud import bigquery
+from .service_evaluation.evaluator import evaluate_new_service
+
+SAMPLE_LIMIT = 20
 
 def hello_world() -> str:
     """Execute a Hello World query in BigQuery"""
@@ -227,3 +237,77 @@ def get_table_sample(dataset_id: str = "", table_id: str = "", limit: int = 0) -
     return run_query(query)
 
 
+class BigQueryTool:
+    """Convenience wrapper for structured BigQuery interactions."""
+
+    def __init__(
+        self,
+        project_id: str = PROJECT_ID,
+        default_dataset: str = DEFAULT_DATASET,
+        default_table: str = DEFAULT_TABLE,
+    ) -> None:
+        self.project_id = project_id
+        self.default_dataset = default_dataset
+        self.default_table = default_table
+
+    def execute_query(
+        self, query: str, *, max_results: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Run a SQL query and return JSON-serialisable results."""
+
+        try:
+            check_client()
+        except Exception as exc:  # pragma: no cover - depends on credentials
+            return {"success": False, "error": str(exc), "query": query}
+
+        try:
+            job = bq_client.query(query)
+            results = list(job.result())
+        except Exception as exc:  # pragma: no cover - surfaces runtime errors
+            logger.exception("BigQueryTool execute_query failed")
+            return {"success": False, "error": str(exc), "query": query}
+
+        rows = [dict(row) for row in results]
+        if max_results is not None:
+            rows = rows[:max_results]
+
+        metadata: Dict[str, Any] = {
+            "project_id": self.project_id,
+            "default_dataset": self.default_dataset,
+            "row_count": len(rows),
+            "bytes_processed": getattr(job, "total_bytes_processed", None),
+            "slot_millis": getattr(job, "slot_millis", None),
+        }
+
+        return {
+            "success": True,
+            "query": query,
+            "data": rows,
+            "metadata": metadata,
+        }
+
+    def evaluate_service(
+        self,
+        service_name: str,
+        service_type: str,
+        service_profile: Optional[str] = None,
+        use_case: Optional[str] = None,
+        data_classification: Optional[str] = None,
+        check_current_compliance: bool = False,
+    ) -> Dict[str, Any]:
+        """Delegate to the service evaluation framework with structured output."""
+
+        result = evaluate_new_service(
+            service_name=service_name,
+            service_type=service_type,
+            service_profile=service_profile,
+            use_case=use_case,
+            data_classification=data_classification,
+            check_current_compliance=check_current_compliance,
+            return_format="dict",
+        )
+
+        return {
+            "success": True,
+            "data": result,
+        }
