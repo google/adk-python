@@ -4,7 +4,7 @@ Matches custom roles to built-in roles and identifies permission gaps
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set, Any
 from google.cloud import iam_admin_v1
 from google.cloud import bigquery
 import json
@@ -48,6 +48,7 @@ class CustomRoleAnalyzer:
 
         # Find best matches
         matches = self._find_best_matches(custom_permissions, builtin_roles)
+        bundle = self._find_role_bundle(custom_permissions, builtin_roles)
 
         # Generate analysis
         analysis = {
@@ -59,8 +60,9 @@ class CustomRoleAnalyzer:
                 "permissions": sorted(list(custom_permissions))
             },
             "best_matches": matches[:5],
+            "best_role_bundle": bundle,
             "recommendations": self._generate_recommendations(
-                custom_permissions, matches[0] if matches else None
+                custom_permissions, matches[0] if matches else None, bundle
             ),
             "security_assessment": self._assess_security_risks(custom_permissions),
             "analysis_timestamp": datetime.utcnow().isoformat()
@@ -187,10 +189,71 @@ class CustomRoleAnalyzer:
             return f"{title} is close with {missing} missing and {extra} extra permission(s)"
         return f"{title} diverges by {difference} permission(s)"
 
+    def _find_role_bundle(
+        self,
+        custom_permissions: Set[str],
+        builtin_roles: List[iam_admin_v1.Role],
+        max_roles: int = 3,
+    ) -> Optional[Dict[str, Any]]:
+        if not custom_permissions or not builtin_roles:
+            return None
+
+        role_perms = [
+            (role, set(getattr(role, "included_permissions", []) or []))
+            for role in builtin_roles
+        ]
+
+        selected = []
+        covered: Set[str] = set()
+
+        for _ in range(max_roles):
+            best_role = None
+            best_gain = 0
+
+            for role, perms in role_perms:
+                if role.name in {r["role"] for r in selected}:
+                    continue
+                gain = len((perms - covered) & custom_permissions)
+                if gain > best_gain:
+                    best_gain = gain
+                    best_role = (role, perms)
+
+            if not best_role or best_gain == 0:
+                break
+
+            selected.append(
+                {
+                    "role": best_role[0].name,
+                    "title": best_role[0].title,
+                    "added_permissions": sorted(list((best_role[1] & custom_permissions) - covered))[:5],
+                }
+            )
+            covered |= best_role[1]
+
+            if custom_permissions <= covered:
+                break
+
+        if not selected:
+            return None
+
+        missing = custom_permissions - covered
+        extra = (covered - custom_permissions)
+        coverage = len(custom_permissions - missing) / len(custom_permissions)
+
+        return {
+            "roles": selected,
+            "coverage": round(coverage * 100, 2),
+            "missing_permissions": sorted(list(missing))[:10],
+            "missing_count": len(missing),
+            "extra_permissions": sorted(list(extra))[:10],
+            "extra_count": len(extra),
+        }
+
     def _generate_recommendations(
         self,
         custom_permissions: Set[str],
-        best_match: Optional[Dict]
+        best_match: Optional[Dict],
+        bundle: Optional[Dict]
     ) -> Dict:
         """Generate recommendations based on analysis"""
         recommendations = {
@@ -263,6 +326,16 @@ class CustomRoleAnalyzer:
                 "Document why custom role is required"
             )
             recommendations["risk_level"] = "low" if len(custom_permissions) < 50 else "medium"
+
+            if bundle and bundle.get("roles"):
+                recommendations["actions"].append(
+                    "Consider refactoring using the following built-in roles: "
+                    + ", ".join(r["role"] for r in bundle["roles"])
+                )
+                recommendations["actions"].append(
+                    f"Remaining custom permissions to keep: {bundle['missing_count']}"
+                )
+                recommendations["bundle"] = bundle
 
         # Check for dangerous permissions
         dangerous_perms = self._check_dangerous_permissions(custom_permissions)
@@ -366,6 +439,7 @@ class CustomRoleAnalyzer:
                 "best_match_similarity": analysis["best_matches"][0]["similarity_score"] if analysis["best_matches"] else 0,
                 "best_match_difference": analysis["best_matches"][0]["difference_count"] if analysis["best_matches"] else None,
                 "best_match_type": analysis["best_matches"][0]["match_type"] if analysis["best_matches"] else None,
+                "bundle_roles": json.dumps(analysis.get("best_role_bundle")),
                 "recommendations": json.dumps(analysis["recommendations"]),
                 "security_assessment": json.dumps(analysis["security_assessment"]),
                 "full_analysis": json.dumps(analysis),

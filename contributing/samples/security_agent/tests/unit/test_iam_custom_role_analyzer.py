@@ -99,4 +99,11 @@ def test_custom_role_near_match(monkeypatch):
     ]
     summary = analysis["recommendations"]["summary"]
     assert "only 2 permission" in summary
-    assert any("Adopt roles/discoveryengine.admin" in action for action in analysis["recommendations"]["actions"])
+    actions = analysis["recommendations"]["actions"]
+    assert any("Adopt roles/discoveryengine.admin" in action or "Adopt roles/discoveryengine.admin" in action for action in actions)
+
+    bundle = analysis["best_role_bundle"]
+    assert bundle is not None
+    assert bundle["roles"][0]["role"] == "roles/discoveryengine.admin"
+    assert bundle["missing_count"] == 0
+    assert bundle["extra_count"] == 2
