@@ -327,6 +327,27 @@ class ServiceDocumentationParser:
         for perm in perm_matches:
             # Validate it looks like a permission
             parts = perm.split('.')
+            if len(parts) != 3:
+                continue
+
+            if parts[0] in {"www", "developer", "cloud", "docs"}:
+                continue
+
+            if parts[2] in {"com", "net", "org", "app"}:
+                continue
+
+            if len(parts[2]) <= 3 and parts[2] not in {"get", "list", "use", "run", "actAs", "view"}:
+                continue
+
+            if len(parts[0]) <= 1 or len(parts[1]) <= 1 or len(parts[2]) <= 1:
+                continue
+
+            if any(char.isdigit() for char in parts[0]):
+                continue
+
+            if any(token in perm for token in ("youtube", "hashicorp")):
+                continue
+
             if len(parts) == 3 and all(len(p) > 1 for p in parts):
                 permissions.add(perm)
 

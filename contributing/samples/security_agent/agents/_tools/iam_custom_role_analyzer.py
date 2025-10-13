@@ -22,6 +22,7 @@ class CustomRoleAnalyzer:
         self.bq_client = bigquery.Client(project=project_id)
         self.dataset_id = "iam_analysis"
         self.table_id = "custom_role_analysis"
+        self._builtin_role_cache: Optional[List[iam_admin_v1.Role]] = None
 
     def analyze_custom_role(self, custom_role_name: str) -> Dict:
         """
@@ -84,6 +85,9 @@ class CustomRoleAnalyzer:
 
     def _get_builtin_roles(self) -> List[iam_admin_v1.Role]:
         """Fetch all available built-in roles"""
+        if self._builtin_role_cache is not None:
+            return self._builtin_role_cache
+
         roles = []
         try:
             request = iam_admin_v1.ListRolesRequest(
@@ -98,6 +102,7 @@ class CustomRoleAnalyzer:
             logger.error(f"Failed to fetch built-in roles: {e}")
 
         logger.info(f"Fetched {len(roles)} built-in roles")
+        self._builtin_role_cache = roles
         return roles
 
     def _find_best_matches(
@@ -129,6 +134,17 @@ class CustomRoleAnalyzer:
             # Calculate coverage (what % of custom permissions are covered)
             coverage = len(overlap) / len(custom_permissions) if custom_permissions else 0
 
+            difference = len(extra_in_custom) + len(missing_from_custom)
+
+            if difference == 0:
+                match_type = "exact"
+            elif len(extra_in_custom) == 0 and len(missing_from_custom) <= 3:
+                match_type = "near"
+            elif difference <= 10:
+                match_type = "similar"
+            else:
+                match_type = "divergent"
+
             matches.append({
                 "role": role.name,
                 "title": role.title,
@@ -140,13 +156,36 @@ class CustomRoleAnalyzer:
                 "extra_permissions": sorted(list(extra_in_custom)),
                 "extra_count": len(extra_in_custom),
                 "missing_permissions": sorted(list(missing_from_custom)),
-                "missing_count": len(missing_from_custom)
+                "missing_count": len(missing_from_custom),
+                "difference_count": difference,
+                "match_type": match_type,
+                "missing_preview": sorted(list(missing_from_custom))[:5],
+                "extra_preview": sorted(list(extra_in_custom))[:5],
+                "summary": self._summarise_match(role.title or role.name, match_type, difference, len(extra_in_custom), len(missing_from_custom))
             })
 
         # Sort by similarity score descending
-        matches.sort(key=lambda x: (x["similarity_score"], x["coverage_score"]), reverse=True)
+        matches.sort(
+            key=lambda x: (
+                x["match_type"] == "exact",
+                x["match_type"] == "near",
+                x["similarity_score"],
+                -x["difference_count"],
+            ),
+            reverse=True,
+        )
 
         return matches
+
+    @staticmethod
+    def _summarise_match(title: str, match_type: str, difference: int, extra: int, missing: int) -> str:
+        if match_type == "exact":
+            return f"{title} matches exactly"
+        if match_type == "near":
+            return f"{title} differs by {missing} permission(s) that must be added"
+        if match_type == "similar":
+            return f"{title} is close with {missing} missing and {extra} extra permission(s)"
+        return f"{title} diverges by {difference} permission(s)"
 
     def _generate_recommendations(
         self,
@@ -173,26 +212,44 @@ class CustomRoleAnalyzer:
         coverage = best_match["coverage_score"]
 
         # High similarity - suggest using built-in role
-        if similarity > 80:
-            recommendations["summary"] = f"Consider using built-in role: {best_match['title']}"
+        difference = best_match.get("difference_count", best_match["extra_count"] + best_match["missing_count"])
+        match_type = best_match.get("match_type", "unknown")
+
+        if match_type == "exact":
+            recommendations["summary"] = f"Built-in role {best_match['title']} matches exactly. Replace the custom role with it."
             recommendations["actions"].append(
-                f"Replace custom role with {best_match['role']}"
+                f"Migrate bindings from {best_match['role']} to remove the custom role."
             )
-            if best_match["extra_count"] > 0:
+            recommendations["risk_level"] = "low"
+
+        elif match_type == "near":
+            missing_preview = best_match.get("missing_preview", [])
+            recommendations["summary"] = (
+                f"{best_match['title']} is only {best_match['missing_count']} permission(s) away."
+            )
+            recommendations["actions"].append(
+                f"Adopt {best_match['role']} and grant the missing permissions individually: {', '.join(missing_preview)}"
+            )
+            if best_match["extra_count"]:
                 recommendations["actions"].append(
-                    f"Add {best_match['extra_count']} additional permissions if needed"
+                    f"Revoke custom-only permissions: {', '.join(best_match.get('extra_preview', []))}"
                 )
             recommendations["risk_level"] = "low"
 
         # Medium similarity - suggest combination
-        elif similarity > 50:
-            recommendations["summary"] = "Consider using built-in role with modifications"
+        elif similarity > 50 or match_type == "similar":
+            missing_preview = best_match.get("missing_preview", [])
+            recommendations["summary"] = "Consider refactoring using a built-in role with a thin custom overlay."
             recommendations["actions"].append(
                 f"Use {best_match['role']} as base"
             )
             recommendations["actions"].append(
                 "Create minimal custom role for additional permissions"
             )
+            if missing_preview:
+                recommendations["actions"].append(
+                    f"Address missing permissions: {', '.join(missing_preview)}"
+                )
             recommendations["alternative_approach"] = "Use multiple built-in roles instead"
             recommendations["risk_level"] = "medium"
 
@@ -307,6 +364,8 @@ class CustomRoleAnalyzer:
                 "permission_count": analysis["custom_role"]["permission_count"],
                 "best_match_role": analysis["best_matches"][0]["role"] if analysis["best_matches"] else None,
                 "best_match_similarity": analysis["best_matches"][0]["similarity_score"] if analysis["best_matches"] else 0,
+                "best_match_difference": analysis["best_matches"][0]["difference_count"] if analysis["best_matches"] else None,
+                "best_match_type": analysis["best_matches"][0]["match_type"] if analysis["best_matches"] else None,
                 "recommendations": json.dumps(analysis["recommendations"]),
                 "security_assessment": json.dumps(analysis["security_assessment"]),
                 "full_analysis": json.dumps(analysis),
