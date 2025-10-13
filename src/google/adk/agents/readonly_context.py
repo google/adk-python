@@ -55,21 +55,6 @@ class ReadonlyContext:
     return MappingProxyType(self._invocation_context.session.state)
 
   @property
-  def user_id(self) -> str:
-    """The user ID for the current invocation."""
-    return self._invocation_context.user_id
-
-  @property
-  def app_name(self) -> str:
-    """The application name for the current invocation."""
-    return self._invocation_context.app_name
-
-  @property
-  def session_id(self) -> str:
-    """The session ID for the current invocation."""
-    return self._invocation_context.session.id
-
-  @property
-  def branch(self) -> Optional[str]:
-    """The branch name for the current invocation, if any."""
-    return self._invocation_context.branch
+  def session(self) -> Session:
+    """The current session for this invocation."""
+    return self._invocation_context.session

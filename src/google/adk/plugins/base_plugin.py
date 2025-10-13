@@ -111,61 +111,11 @@ class BasePlugin(ABC):
     super().__init__()
     self.name = name
 
-  if TYPE_CHECKING:
-
-    async def on_user_message_callback(
-        self,
-        *,
-        callback_context: Optional[CallbackContext] = None,
-        user_message: types.Content,
-        invocation_context: Optional[InvocationContext] = None,
-    ) -> Optional[types.Content]:
-      """Callback executed when a user message is received before an invocation starts.
-
-      Plugins can implement this with either callback_context (new) or
-      invocation_context (deprecated) or both.
-      """
-
-    async def before_run_callback(
-        self,
-        *,
-        callback_context: Optional[CallbackContext] = None,
-        invocation_context: Optional[InvocationContext] = None,
-    ) -> Optional[types.Content]:
-      """Callback executed before the ADK runner runs.
-
-      Plugins can implement this with either callback_context (new) or
-      invocation_context (deprecated) or both.
-      """
-
-    async def on_event_callback(
-        self,
-        *,
-        callback_context: Optional[CallbackContext] = None,
-        event: Event,
-        invocation_context: Optional[InvocationContext] = None,
-    ) -> Optional[Event]:
-      """Callback executed after an event is yielded from runner.
-
-      Plugins can implement this with either callback_context (new) or
-      invocation_context (deprecated) or both.
-      """
-
-    async def after_run_callback(
-        self,
-        *,
-        callback_context: Optional[CallbackContext] = None,
-        invocation_context: Optional[InvocationContext] = None,
-    ) -> None:
-      """Callback executed after an ADK runner run has completed.
-
-      Plugins can implement this with either callback_context (new) or
-      invocation_context (deprecated) or both.
-      """
-
-  # Runtime implementation accepts both via **kwargs
   async def on_user_message_callback(
-      self, **kwargs: Any
+      self,
+      *,
+      invocation_context: InvocationContext,
+      user_message: types.Content,
   ) -> Optional[types.Content]:
     """Callback executed when a user message is received before an invocation starts.
 
@@ -173,63 +123,69 @@ class BasePlugin(ABC):
     runner starts the invocation.
 
     Args:
-      callback_context: The context for the callback execution.
+      invocation_context: The context for the entire invocation.
       user_message: The message content input by user.
-      invocation_context: DEPRECATED. Use callback_context instead. The context
-        for the entire invocation. This parameter is maintained for backward
-        compatibility and will be removed in a future version.
 
     Returns:
-      The modified user message or None if no modification is needed.
+      An optional `types.Content` to be returned to the ADK. Returning a
+      value to replace the user message. Returning `None` to proceed
+      normally.
     """
-    return None
+    pass
 
-  async def before_run_callback(self, **kwargs: Any) -> Optional[types.Content]:
+  async def before_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> Optional[types.Content]:
     """Callback executed before the ADK runner runs.
 
-    This is the first lifecycle hook and is ideal for global setup, logging,
-    or checks that may stop the invocation from running.
+    This is the first callback to be called in the lifecycle, ideal for global
+    setup or initialization tasks.
 
     Args:
-      callback_context: The context for the callback execution.
-      invocation_context: DEPRECATED. Use callback_context instead. The context
-        for the entire invocation. This parameter is maintained for backward
-        compatibility and will be removed in a future version.
+      invocation_context: The context for the entire invocation, containing
+        session information, the root agent, etc.
 
     Returns:
-      Optional `types.Content` to halt execution and return the value to the
-      caller. Return `None` to proceed normally.
+      An optional `Event` to be returned to the ADK. Returning a value to
+      halt execution of the runner and ends the runner with that event. Return
+      `None` to proceed normally.
     """
-    return None
+    pass
 
-  async def on_event_callback(self, **kwargs: Any) -> Optional[Event]:
+  async def on_event_callback(
+      self, *, invocation_context: InvocationContext, event: Event
+  ) -> Optional[Event]:
     """Callback executed after an event is yielded from runner.
 
+    This is the ideal place to make modification to the event before the event
+    is handled by the underlying agent app.
+
     Args:
-      callback_context: The context for the callback execution.
+      invocation_context: The context for the entire invocation.
       event: The event raised by the runner.
-      invocation_context: DEPRECATED. Use callback_context instead. The context
-        for the entire invocation. This parameter is maintained for backward
-        compatibility and will be removed in a future version.
 
     Returns:
-      The modified event or None if no modification is needed.
+      An optional value. A non-`None` return may be used by the framework to
+      modify or replace the response. Returning `None` allows the original
+      response to be used.
     """
-    return None
+    pass
 
-  async def after_run_callback(self, **kwargs: Any) -> None:
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
     """Callback executed after an ADK runner run has completed.
 
+    This is the final callback in the ADK lifecycle, suitable for cleanup, final
+    logging, or reporting tasks.
+
     Args:
-      callback_context: The context for the callback execution.
-      invocation_context: DEPRECATED. Use callback_context instead. The context
-        for the entire invocation. This parameter is maintained for backward
-        compatibility and will be removed in a future version.
+      invocation_context: The context for the entire invocation.
 
     Returns:
       None
     """
-    return None
+    pass
 
   async def before_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext

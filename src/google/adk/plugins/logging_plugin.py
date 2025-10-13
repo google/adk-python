@@ -69,32 +69,38 @@ class LoggingPlugin(BasePlugin):
   async def on_user_message_callback(
       self,
       *,
-      callback_context: CallbackContext,
+      invocation_context: InvocationContext,
       user_message: types.Content,
   ) -> Optional[types.Content]:
     """Log user message and invocation start."""
     self._log(f"🚀 USER MESSAGE RECEIVED")
-    self._log(f"   Invocation ID: {callback_context.invocation_id}")
-    self._log(f"   Session ID: {callback_context.session_id}")
-    self._log(f"   User ID: {callback_context.user_id}")
-    self._log(f"   App Name: {callback_context.app_name}")
-    self._log(f"   Root Agent: {callback_context.agent_name}")
+    self._log(f"   Invocation ID: {invocation_context.invocation_id}")
+    self._log(f"   Session ID: {invocation_context.session.id}")
+    self._log(f"   User ID: {invocation_context.user_id}")
+    self._log(f"   App Name: {invocation_context.app_name}")
+    self._log(
+        "   Root Agent:"
+        f" {invocation_context.agent.name if hasattr(invocation_context.agent, 'name') else 'Unknown'}"
+    )
     self._log(f"   User Content: {self._format_content(user_message)}")
-    if callback_context.branch:
-      self._log(f"   Branch: {callback_context.branch}")
+    if invocation_context.branch:
+      self._log(f"   Branch: {invocation_context.branch}")
     return None
 
   async def before_run_callback(
-      self, *, callback_context: CallbackContext
+      self, *, invocation_context: InvocationContext
   ) -> Optional[types.Content]:
     """Log invocation start."""
     self._log(f"🏃 INVOCATION STARTING")
-    self._log(f"   Invocation ID: {callback_context.invocation_id}")
-    self._log(f"   Starting Agent: {callback_context.agent_name}")
+    self._log(f"   Invocation ID: {invocation_context.invocation_id}")
+    self._log(
+        "   Starting Agent:"
+        f" {invocation_context.agent.name if hasattr(invocation_context.agent, 'name') else 'Unknown'}"
+    )
     return None
 
   async def on_event_callback(
-      self, *, callback_context: CallbackContext, event: Event
+      self, *, invocation_context: InvocationContext, event: Event
   ) -> Optional[Event]:
     """Log events yielded from the runner."""
     self._log(f"📢 EVENT YIELDED")
@@ -117,12 +123,15 @@ class LoggingPlugin(BasePlugin):
     return None
 
   async def after_run_callback(
-      self, *, callback_context: CallbackContext
+      self, *, invocation_context: InvocationContext
   ) -> Optional[None]:
     """Log invocation completion."""
     self._log(f"✅ INVOCATION COMPLETED")
-    self._log(f"   Invocation ID: {callback_context.invocation_id}")
-    self._log(f"   Final Agent: {callback_context.agent_name}")
+    self._log(f"   Invocation ID: {invocation_context.invocation_id}")
+    self._log(
+        "   Final Agent:"
+        f" {invocation_context.agent.name if hasattr(invocation_context.agent, 'name') else 'Unknown'}"
+    )
     return None
 
   async def before_agent_callback(
@@ -132,8 +141,8 @@ class LoggingPlugin(BasePlugin):
     self._log(f"🤖 AGENT STARTING")
     self._log(f"   Agent Name: {callback_context.agent_name}")
     self._log(f"   Invocation ID: {callback_context.invocation_id}")
-    if callback_context.branch:
-      self._log(f"   Branch: {callback_context.branch}")
+    if callback_context._invocation_context.branch:
+      self._log(f"   Branch: {callback_context._invocation_context.branch}")
     return None
 
   async def after_agent_callback(

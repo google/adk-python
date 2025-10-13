@@ -43,7 +43,7 @@ async def test_global_instruction_plugin_with_string():
   mock_invocation_context.session = mock_session
 
   mock_callback_context = Mock(spec=CallbackContext)
-  mock_callback_context._invocation_context = mock_invocation_context
+  mock_callback_context.invocation_context = mock_invocation_context
 
   llm_request = LlmRequest(
       model="gemini-1.5-flash",
@@ -70,7 +70,7 @@ async def test_global_instruction_plugin_with_instruction_provider():
   """Test GlobalInstructionPlugin with an InstructionProvider function."""
 
   async def build_global_instruction(readonly_context: ReadonlyContext) -> str:
-    return f"You are assistant for user {readonly_context.user_id}."
+    return f"You are assistant for user {readonly_context.session.user_id}."
 
   plugin = GlobalInstructionPlugin(global_instruction=build_global_instruction)
 
@@ -83,8 +83,7 @@ async def test_global_instruction_plugin_with_instruction_provider():
   mock_invocation_context.session = mock_session
 
   mock_callback_context = Mock(spec=CallbackContext)
-  mock_callback_context._invocation_context = mock_invocation_context
-  mock_callback_context.user_id = "alice"
+  mock_callback_context.invocation_context = mock_invocation_context
 
   llm_request = LlmRequest(
       model="gemini-1.5-flash",
@@ -120,7 +119,7 @@ async def test_global_instruction_plugin_empty_instruction():
   mock_invocation_context.session = mock_session
 
   mock_callback_context = Mock(spec=CallbackContext)
-  mock_callback_context._invocation_context = mock_invocation_context
+  mock_callback_context.invocation_context = mock_invocation_context
 
   llm_request = LlmRequest(
       model="gemini-1.5-flash",
@@ -157,7 +156,7 @@ async def test_global_instruction_plugin_leads_existing():
   mock_invocation_context.session = mock_session
 
   mock_callback_context = Mock(spec=CallbackContext)
-  mock_callback_context._invocation_context = mock_invocation_context
+  mock_callback_context.invocation_context = mock_invocation_context
 
   llm_request = LlmRequest(
       model="gemini-1.5-flash",
@@ -192,7 +191,7 @@ async def test_global_instruction_plugin_prepends_to_list():
   mock_invocation_context.session = mock_session
 
   mock_callback_context = Mock(spec=CallbackContext)
-  mock_callback_context._invocation_context = mock_invocation_context
+  mock_callback_context.invocation_context = mock_invocation_context
 
   llm_request = LlmRequest(
       model="gemini-1.5-flash",
