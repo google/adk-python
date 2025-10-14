@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 from typing import Optional
 
 from google.cloud import storage
 from google.genai import types
 from typing_extensions import override
 
+from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -58,6 +60,7 @@ class GcsArtifactService(BaseArtifactService):
       filename: str,
       artifact: types.Part,
       session_id: Optional[str] = None,
+      custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     return await asyncio.to_thread(
         self._save_artifact,
@@ -66,6 +69,7 @@ class GcsArtifactService(BaseArtifactService):
         session_id,
         filename,
         artifact,
+        custom_metadata,
     )
 
   @override
@@ -180,7 +184,12 @@ class GcsArtifactService(BaseArtifactService):
       session_id: Optional[str],
       filename: str,
       artifact: types.Part,
+      custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    if custom_metadata:
+      # TODO: b/447451270 - support saving artifact with custom metadata.
+      raise NotImplementedError("custom_metadata is not supported yet.")
+
     versions = self._list_versions(
         app_name=app_name,
         user_id=user_id,
@@ -316,3 +325,28 @@ class GcsArtifactService(BaseArtifactService):
       *_, version = blob.name.split("/")
       versions.append(int(version))
     return versions
+
+  @override
+  async def list_artifact_versions(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+  ) -> list[ArtifactVersion]:
+    # TODO: b/447451270 - Support list_artifact_versions.
+    raise NotImplementedError("list_artifact_versions is not implemented yet.")
+
+  @override
+  async def get_artifact_version(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+      version: Optional[int] = None,
+  ) -> Optional[ArtifactVersion]:
+    # TODO: b/447451270 - Support get_artifact_version.
+    raise NotImplementedError("get_artifact_version is not implemented yet.")
