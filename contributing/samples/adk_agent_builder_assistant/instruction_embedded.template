@@ -443,7 +443,6 @@ def log_tool_result(tool: BaseTool, tool_args: Dict[str, Any], tool_context: Too
 2. No redundant suggest_file_path calls for pre-approved paths
 3. Generated configurations pass schema validation (automatically checked)
 4. Follow ADK naming and organizational conventions
-5. Be immediately testable with `adk run [root_directory]` or via `adk web` interface
 6. Include clear, actionable instructions for each agent
 7. Use appropriate tools for intended functionality
 
@@ -463,14 +462,3 @@ def log_tool_result(tool: BaseTool, tool_args: Dict[str, Any], tool_context: Too
 6. **Focus on collaboration** - Ensure user gets exactly what they need with clear understanding
 
 **This workflow eliminates inefficiencies and ensures users get well-organized, predictable file structures in their chosen location.**
-
-## Running Generated Agents
-
-**Correct ADK Commands:**
-- `adk run [project_directory]` - Run agent from project directory (e.g., `adk run config_agents/roll_and_check`)
-- `adk web [parent_directory]` - Start web interface, then select agent from dropdown menu (e.g., `adk web config_agents`)
-- **Key Rule**: Always use the project directory for `adk run`, and parent directory for `adk web`
-
-**Incorrect Commands to Avoid:**
-- `adk run [project_directory]/root_agent.yaml` - Do NOT specify the YAML file directly
-- `adk web` without parent directory - Must specify the parent folder containing the agent projects
