@@ -81,17 +81,11 @@ cp .env.example .env
 
 ### Run with Docker
 
-```bash
 # Build the container image
-docker build -t security-agent .
+./scripts/docker_build.sh [image-name]
 
 # Run the container and expose the agent, Flask, and Chainlit ports
-docker run --rm \
-  --env-file .env \
-  -p 8000:8000 -p 5001:5001 -p 8001:8001 \
-  -v "$(pwd)/config:/app/config:ro" \
-  -v "$(pwd)/logs:/app/logs" \
-  security-agent
+./scripts/docker_run.sh [image-name]
 ```
 
 Alternatively, use Docker Compose (recommended for local workflows):
