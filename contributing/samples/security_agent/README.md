@@ -79,6 +79,25 @@ cp .env.example .env
 | **Flask UI** | http://localhost:5001 | Custom web interface, dashboards |
 | **Chainlit UI** | http://localhost:8001 | Modern chat interface (recommended for end users) |
 
+### Run with Docker
+
+# Build the container image
+./scripts/docker_build.sh [image-name]
+
+# Run the container and expose the agent, Flask, and Chainlit ports
+./scripts/docker_run.sh [image-name]
+```
+
+Alternatively, use Docker Compose (recommended for local workflows):
+
+```bash
+docker compose up --build
+```
+
+> **Heads up:** The container expects valid cloud credentials. Make sure your
+> `.env` points to a service-account JSON that is mounted into the container
+> (for example, via the `config/` volume shown above).
+
 ## 🛠️ Comprehensive Tool Suite
 
 The platform includes **53 specialized tools** organized into 10 categories:

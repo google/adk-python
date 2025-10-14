@@ -376,6 +376,7 @@ benchmarks/
 .dockerignore
 docker-compose.override.yml
 .docker/
+!contributing/samples/security_agent/.dockerignore
 
 # =============================================================================
 # Development and Testing

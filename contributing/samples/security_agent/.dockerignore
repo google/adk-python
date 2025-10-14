@@ -1,0 +1,25 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.env/
+
+# Logs & local artifacts
+logs/
+.code/
+*.log
+
+# Git metadata
+.git
+.gitignore
+
+# Credentials (mount at runtime instead)
+config/*.json
+
+# Node/build residues
+node_modules/
+
+# Docker build cache
+.dockerignore

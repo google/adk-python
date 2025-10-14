@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  security-agent:
+    build: .
+    ports:
+      - "8000:8000"
+      - "5001:5001"
+      - "8001:8001"
+    env_file:
+      - .env
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
