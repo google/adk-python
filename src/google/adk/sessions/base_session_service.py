@@ -83,18 +83,9 @@ class BaseSessionService(abc.ABC):
 
   @abc.abstractmethod
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
-    """Lists all the sessions for a user.
-
-    Args:
-      app_name: The name of the app.
-      user_id: The ID of the user. If not provided, lists all sessions for all
-        users.
-
-    Returns:
-      A ListSessionsResponse containing the sessions.
-    """
+    """Lists all the sessions."""
 
   @abc.abstractmethod
   async def delete_session(

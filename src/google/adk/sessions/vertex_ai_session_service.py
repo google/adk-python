@@ -200,25 +200,22 @@ class VertexAiSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     api_client = self._get_api_client()
 
     sessions = []
-    config = {}
-    if user_id is not None:
-      config['filter'] = f'user_id="{user_id}"'
     sessions_iterator = api_client.agent_engines.sessions.list(
         name=f'reasoningEngines/{reasoning_engine_id}',
-        config=config,
+        config={'filter': f'user_id="{user_id}"'},
     )
 
     for api_session in sessions_iterator:
       sessions.append(
           Session(
               app_name=app_name,
-              user_id=api_session.user_id,
+              user_id=user_id,
               id=api_session.name.split('/')[-1],
               state=getattr(api_session, 'session_state', None) or {},
               last_update_time=api_session.update_time.timestamp(),

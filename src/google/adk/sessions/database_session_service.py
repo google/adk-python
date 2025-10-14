@@ -554,42 +554,30 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str
   ) -> ListSessionsResponse:
     with self.database_session_factory() as sql_session:
-      query = sql_session.query(StorageSession).filter(
-          StorageSession.app_name == app_name
+      results = (
+          sql_session.query(StorageSession)
+          .filter(StorageSession.app_name == app_name)
+          .filter(StorageSession.user_id == user_id)
+          .all()
       )
-      if user_id is not None:
-        query = query.filter(StorageSession.user_id == user_id)
-      results = query.all()
 
-      # Fetch app state from storage
+      # Fetch states from storage
       storage_app_state = sql_session.get(StorageAppState, (app_name))
-      app_state = storage_app_state.state if storage_app_state else {}
+      storage_user_state = sql_session.get(
+          StorageUserState, (app_name, user_id)
+      )
 
-      # Fetch user state(s) from storage
-      user_states_map = {}
-      if user_id is not None:
-        storage_user_state = sql_session.get(
-            StorageUserState, (app_name, user_id)
-        )
-        if storage_user_state:
-          user_states_map[user_id] = storage_user_state.state
-      else:
-        all_user_states_for_app = (
-            sql_session.query(StorageUserState)
-            .filter(StorageUserState.app_name == app_name)
-            .all()
-        )
-        for storage_user_state in all_user_states_for_app:
-          user_states_map[storage_user_state.user_id] = storage_user_state.state
+      app_state = storage_app_state.state if storage_app_state else {}
+      user_state = storage_user_state.state if storage_user_state else {}
 
       sessions = []
       for storage_session in results:
         session_state = storage_session.state
-        user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
+
         sessions.append(storage_session.to_session(state=merged_state))
       return ListSessionsResponse(sessions=sessions)
 
