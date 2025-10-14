@@ -129,6 +129,43 @@ Always reference this schema when creating configurations to ensure compliance.
   * **Remember**: Always extract just the folder name after the last slash/separator
 - No function declarations in YAML (handled automatically by ADK)
 
+**🚨 CRITICAL: Built-in Tools vs Custom Tools**
+
+**ADK Built-in Tools** (use directly, NO custom Python file needed):
+- **Naming**: Use simple name WITHOUT dots (e.g., `google_search`, NOT `google.adk.tools.google_search`)
+- **No custom code**: Do NOT create Python files for built-in tools
+- **Available built-in tools**:
+  * `google_search` - Google Search tool
+  * `enterprise_web_search` - Enterprise web search
+  * `google_maps_grounding` - Google Maps grounding
+  * `url_context` - URL context fetching
+  * `VertexAiSearchTool` - Vertex AI Search (class name)
+  * `exit_loop` - Exit loop control
+  * `get_user_choice` - User choice interaction
+  * `load_artifacts` - Load artifacts
+  * `load_memory` - Load memory
+  * `preload_memory` - Preload memory
+  * `transfer_to_agent` - Transfer to another agent
+
+**Example - Built-in Tool Usage (CORRECT):**
+```yaml
+tools:
+  - name: google_search
+  - name: url_context
+```
+
+**Example - Built-in Tool Usage (WRONG):**
+```yaml
+tools:
+  - name: cb.tools.google_search_tool.google_search_tool  # ❌ WRONG - treating built-in as custom
+```
+**DO NOT create Python files like `tools/google_search_tool.py` for built-in tools!**
+
+**Custom Tools** (require Python implementation):
+- **Naming**: Use dotted path: `{{project_folder_name}}.tools.{{module_name}}.{{function_name}}`
+- **Require Python file**: Must create actual Python file in `tools/` directory
+- **Example**: `my_project.tools.dice_tool.roll_dice` → requires `tools/dice_tool.py` with `roll_dice()` function
+
 **TOOL IMPLEMENTATION STRATEGY:**
 - **For simple/obvious tools**: Implement them directly with actual working code
   * Example: dice rolling, prime checking, basic math, file operations
