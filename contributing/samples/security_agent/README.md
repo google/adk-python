@@ -32,6 +32,28 @@ The GCP Security Intelligence Platform provides a unified AI agent that queries 
 gcloud services enable bigquery.googleapis.com
 gcloud services enable cloudfunctions.googleapis.com
 gcloud services enable cloudscheduler.googleapis.com
+gcloud services enable aiplatform.googleapis.com
+
+# Recommended BigQuery tables (created automatically by deployment script)
+#   agent_conversations
+#   agent_evaluations
+
+# Service account permissions (replace SERVICE_ACCOUNT with your email)
+gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT \
+  --member serviceAccount:SERVICE_ACCOUNT \
+  --role roles/logging.logWriter
+
+gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT \
+  --member serviceAccount:SERVICE_ACCOUNT \
+  --role roles/bigquery.dataEditor
+
+gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT \
+  --member serviceAccount:SERVICE_ACCOUNT \
+  --role roles/bigquery.jobUser
+
+gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT \
+  --member serviceAccount:SERVICE_ACCOUNT \
+  --role roles/aiplatform.user
 ```
 
 ### Installation
