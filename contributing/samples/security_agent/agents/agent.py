@@ -58,6 +58,7 @@ from ._tools.msa_analyzer import analyze_gcp_releases
 
 # Import Service Evaluation Framework
 from ._tools.service_evaluation import check_service_compliance
+from ._tools.evaluation_tools import run_session_genai_evaluation
 
 # Import configuration
 from ._tools.base import PROJECT_ID, DEFAULT_DATASET, DEFAULT_TABLE
@@ -133,6 +134,8 @@ tools = [
     FunctionTool(bigquery_toolset.evaluate_service),
     # Compliance Checker - Validate controls against BigQuery (actual environment state)
     FunctionTool(check_service_compliance),
+    # GenAI Evaluation - Evaluate logged sessions with Vertex AI tooling
+    FunctionTool(run_session_genai_evaluation),
     # Standard BigQuery tools
     FunctionTool(hello_world),
     FunctionTool(list_datasets),

@@ -52,6 +52,8 @@ import chainlit as cl
 import requests
 from dotenv import load_dotenv
 
+from backend.api.agent_observability import log_interaction
+
 # Load environment variables
 load_dotenv()
 
@@ -242,7 +244,7 @@ Start here for **documentation and policy** questions. I have full access to:
 
         welcome_msg = agent_welcomes.get(
             profile_name, agent_welcomes["GCP Security Agent"]
-        ).format(session_id[:8] + "...")
+        ).format(session_id)
 
         return welcome_msg
 
@@ -283,6 +285,21 @@ Start here for **documentation and policy** questions. I have full access to:
         # Update message with response
         msg.content = response_text
         await msg.update()
+
+        # Persist the exchange for observability and evaluation
+        interaction_index = cl.user_session.get("interaction_index", 0) + 1
+        cl.user_session.set("interaction_index", interaction_index)
+        try:
+            log_interaction(
+                session_id=session_id,
+                interaction_index=interaction_index,
+                user_prompt=message.content,
+                agent_response=response_text,
+            )
+        except Exception as exc:
+            # Logging failures should not break the chat experience, but surface
+            # a warning in the Chainlit console for debugging.
+            print(f"[security_agent] Failed to log interaction: {exc}")
 
     @classmethod
     async def on_chat_end(cls):

@@ -104,6 +104,9 @@ from .performance_tools import (
     clear_query_cache
 )
 
+# GenAI Evaluation Tools
+from .evaluation_tools import run_session_genai_evaluation
+
 __all__ = [
     # Security Analysis Tools (6)
     'get_security_insights_summary',
@@ -182,4 +185,7 @@ __all__ = [
     # Performance Tools (2)
     'get_cache_statistics',
     'clear_query_cache',
+
+    # GenAI Evaluation Tools (1)
+    'run_session_genai_evaluation',
 ]

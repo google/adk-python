@@ -120,6 +120,9 @@ frontend/.streamlit/
 .claude/
 .claude-flow/
 .adk/
+.code/
+.mcp.json
+.swarm/
 .playwright-mcp/
 docs/archive/
 
