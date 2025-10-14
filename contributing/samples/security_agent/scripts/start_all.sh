@@ -124,16 +124,16 @@ start_service() {
 # Start ADK Backend (required for all interfaces)
 echo -e "${BLUE}=== Starting Core Services ===${NC}"
 echo ""
-start_service "ADK Backend" "adk web" $ADK_PORT
+start_service "ADK Backend" "adk web --host=0.0.0.0 --port=$ADK_PORT" $ADK_PORT
 
 # Start Flask UI
 echo -e "${BLUE}=== Starting Web Interfaces ===${NC}"
 echo ""
-start_service "Flask UI" "python3 app.py --port=$FLASK_PORT" $FLASK_PORT
+start_service "Flask UI" "python3 app.py --host=0.0.0.0 --port=$FLASK_PORT" $FLASK_PORT
 
 # Start Chainlit UI (optional)
 if command -v chainlit &> /dev/null; then
-    start_service "Chainlit UI" "chainlit run chainlit_app.py --port=$CHAINLIT_PORT" $CHAINLIT_PORT
+    start_service "Chainlit UI" "chainlit run chainlit_app.py --host=0.0.0.0 --port=$CHAINLIT_PORT" $CHAINLIT_PORT
 else
     echo -e "${YELLOW}⚠️  Chainlit not installed (optional)${NC}"
     echo -e "  ${BLUE}→${NC} Install with: pip install chainlit==1.0.0"
