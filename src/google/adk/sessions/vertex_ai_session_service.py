@@ -206,16 +206,21 @@ class VertexAiSessionService(BaseSessionService):
     api_client = self._get_api_client()
 
     sessions = []
+    config = {}
+    
+    if user_id:
+      config = {'filter': f'user_id="{user_id}"'}
+
     sessions_iterator = api_client.agent_engines.sessions.list(
         name=f'reasoningEngines/{reasoning_engine_id}',
-        config={'filter': f'user_id="{user_id}"'},
+        config=config,
     )
 
     for api_session in sessions_iterator:
       sessions.append(
           Session(
               app_name=app_name,
-              user_id=api_session.get('userId', None),
+              user_id=getattr(api_session, "user_id", None),
               id=api_session.name.split('/')[-1],
               state=getattr(api_session, 'session_state', None) or {},
               last_update_time=api_session.update_time.timestamp(),
