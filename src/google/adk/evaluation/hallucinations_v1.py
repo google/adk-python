@@ -694,7 +694,7 @@ class HallucinationsV1Evaluator(Evaluator):
     if not valid_results:
       return EvaluationResult(
           overall_score=None,
-          overall_eval_status=EvalStatus.FAILED,
+          overall_eval_status=EvalStatus.NOT_EVALUATED,
           per_invocation_results=per_invocation_results,
       )
 
