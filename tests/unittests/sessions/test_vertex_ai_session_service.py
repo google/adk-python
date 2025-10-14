@@ -252,19 +252,22 @@ class MockApiClient:
   def _list_sessions(self, name: str, config: dict[str, Any]):
     filter_val = config.get('filter', '')
     user_id_match = re.search(r'user_id="([^"]+)"', filter_val)
-    if not user_id_match:
-      raise ValueError(f'Could not find user_id in filter: {filter_val}')
-    user_id = user_id_match.group(1)
-
-    if user_id == 'user_with_pages':
+    if user_id_match:
+      user_id = user_id_match.group(1)
+      if user_id == 'user_with_pages':
+        return [
+            _convert_to_object(MOCK_SESSION_JSON_PAGE1),
+            _convert_to_object(MOCK_SESSION_JSON_PAGE2),
+        ]
       return [
-          _convert_to_object(MOCK_SESSION_JSON_PAGE1),
-          _convert_to_object(MOCK_SESSION_JSON_PAGE2),
+          _convert_to_object(session)
+          for session in self.session_dict.values()
+          if session['user_id'] == user_id
       ]
+
+    # No user filter, return all sessions
     return [
-        _convert_to_object(session)
-        for session in self.session_dict.values()
-        if session['user_id'] == user_id
+        _convert_to_object(session) for session in self.session_dict.values()
     ]
 
   def _delete_session(self, name: str):
@@ -473,6 +476,15 @@ async def test_list_sessions_with_pagination():
   assert len(sessions.sessions) == 2
   assert sessions.sessions[0].id == 'page1'
   assert sessions.sessions[1].id == 'page2'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_list_sessions_all_users():
+  session_service = mock_vertex_ai_session_service()
+  sessions = await session_service.list_sessions(app_name='123', user_id=None)
+  assert len(sessions.sessions) == 5
+  assert {s.id for s in sessions.sessions} == {'1', '2', '3', 'page1', 'page2'}
 
 
 @pytest.mark.asyncio
