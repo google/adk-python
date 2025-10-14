@@ -42,6 +42,13 @@ roll_agent = Agent(
             ),
         ]
     ),
+    speech_config=types.SpeechConfig(
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                voice_name="Kore",
+            )
+        )
+    ),
 )
 
 
@@ -85,6 +92,13 @@ prime_agent = Agent(
             ),
         ]
     ),
+    speech_config=types.SpeechConfig(
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                voice_name="Puck",
+            )
+        )
+    ),
 )
 
 
@@ -100,8 +114,8 @@ def get_current_weather(location: str):
 
 root_agent = Agent(
     # find supported models here: https://google.github.io/adk-docs/get-started/streaming/quickstart-streaming/
-    model="gemini-2.0-flash-live-preview-04-09",  # for Vertex project
-    # model="gemini-live-2.5-flash-preview",  # for AI studio key
+    # model="gemini-2.0-flash-live-preview-04-09",  # for Vertex project
+    model="gemini-live-2.5-flash-preview",  # for AI studio key
     name="root_agent",
     instruction="""
       You are a helpful assistant that can check time, roll dice and check if numbers are prime.
@@ -125,5 +139,12 @@ root_agent = Agent(
                 threshold=types.HarmBlockThreshold.OFF,
             ),
         ]
+    ),
+    speech_config=types.SpeechConfig(
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                voice_name="Zephyr",
+            )
+        )
     ),
 )
