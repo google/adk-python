@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from datetime import datetime
 from typing import Any
 from typing import Optional
 
@@ -28,6 +29,10 @@ class ArtifactVersion(BaseModel):
 
   version: int
   """The version number of the artifact."""
+  create_time: float = Field(default_factory=lambda: datetime.now().timestamp())
+  """The creation time of the artifact version."""
+  mime_type: Optional[str] = None
+  """The MIME type of the artifact version."""
   canonical_uri: str
   """The canonical URI of the artifact version."""
   custom_metadata: dict[str, Any] = Field(default_factory=dict)
