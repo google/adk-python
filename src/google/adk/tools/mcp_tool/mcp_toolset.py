@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import Callable
+from typing import Dict
 from typing import List
 from typing import Optional
 from typing import TextIO
@@ -104,6 +106,7 @@ class McpToolset(BaseToolset):
       errlog: TextIO = sys.stderr,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
+      require_confirmation: Union[bool, Callable[..., bool]] = False,
   ):
     """Initializes the MCPToolset.
 
@@ -124,6 +127,9 @@ class McpToolset(BaseToolset):
       errlog: TextIO stream for error logging.
       auth_scheme: The auth scheme of the tool for tool calling
       auth_credential: The auth credential of the tool for tool calling
+      require_confirmation: Whether tools in this toolset require
+        confirmation. Can be a single boolean or a callable to apply to all
+        tools.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
@@ -140,6 +146,7 @@ class McpToolset(BaseToolset):
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._require_confirmation = require_confirmation
 
   @retry_on_closed_resource
   async def get_tools(
@@ -169,6 +176,7 @@ class McpToolset(BaseToolset):
           mcp_session_manager=self._mcp_session_manager,
           auth_scheme=self._auth_scheme,
           auth_credential=self._auth_credential,
+          require_confirmation=self._require_confirmation,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):
