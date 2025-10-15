@@ -78,10 +78,11 @@ class LlmResponse(BaseModel):
   Only used for streaming mode.
   """
 
-  finish_reason: Optional[Union[types.FinishReason, str]] = None
+  finish_reason: Optional[types.FinishReason] = None
   """The finish reason of the response.
 
-  Can be either a types.FinishReason enum (from Gemini) or a string (from LiteLLM).
+  Always a types.FinishReason enum. String values from underlying model providers
+  are mapped to corresponding enum values (with fallback to OTHER for unknown values).
   """
 
   error_code: Optional[str] = None

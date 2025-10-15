@@ -64,6 +64,19 @@ logger = logging.getLogger("google_adk." + __name__)
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 
+# Mapping of LiteLLM finish_reason strings to FinishReason enum values
+# Note: tool_calls/function_call map to STOP because:
+# 1. FinishReason.TOOL_CALL enum does not exist (as of google-genai 0.8.0)
+# 2. Tool calls represent normal completion (model stopped to invoke tools)
+# 3. Gemini native responses use STOP for tool calls (see lite_llm.py:910)
+_FINISH_REASON_MAPPING = {
+    "length": types.FinishReason.MAX_TOKENS,
+    "stop": types.FinishReason.STOP,
+    "tool_calls": types.FinishReason.STOP,  # Normal completion with tool invocation
+    "function_call": types.FinishReason.STOP,  # Legacy function call variant
+    "content_filter": types.FinishReason.SAFETY,
+}
+
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
@@ -508,18 +521,9 @@ def _model_response_to_generate_content_response(
     # Map LiteLLM finish_reason strings to FinishReason enum
     # This provides type consistency with Gemini native responses and avoids warnings
     finish_reason_str = str(finish_reason).lower()
-    if finish_reason_str == "length":
-      llm_response.finish_reason = types.FinishReason.MAX_TOKENS
-    elif finish_reason_str == "stop":
-      llm_response.finish_reason = types.FinishReason.STOP
-    elif "tool" in finish_reason_str or "function" in finish_reason_str:
-      # Handle tool_calls, function_call variants
-      llm_response.finish_reason = types.FinishReason.STOP
-    elif finish_reason_str == "content_filter":
-      llm_response.finish_reason = types.FinishReason.SAFETY
-    else:
-      # For unknown reasons, use OTHER
-      llm_response.finish_reason = types.FinishReason.OTHER
+    llm_response.finish_reason = _FINISH_REASON_MAPPING.get(
+        finish_reason_str, types.FinishReason.OTHER
+    )
   if response.get("usage", None):
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=response["usage"].get("prompt_tokens", 0),
