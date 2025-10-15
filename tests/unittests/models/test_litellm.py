@@ -1967,17 +1967,16 @@ async def test_finish_reason_propagation(
 
   async for response in lite_llm_instance.generate_content_async(llm_request):
     assert response.content.role == "model"
-    # Verify finish_reason is mapped to FinishReason enum, not raw string
+    # Verify finish_reason is mapped to FinishReason enum
     assert isinstance(response.finish_reason, types.FinishReason)
-    # Verify correct enum mapping
-    if finish_reason == "length":
-      assert response.finish_reason == types.FinishReason.MAX_TOKENS
-    elif finish_reason == "stop":
-      assert response.finish_reason == types.FinishReason.STOP
-    elif finish_reason == "tool_calls":
-      assert response.finish_reason == types.FinishReason.STOP
-    elif finish_reason == "content_filter":
-      assert response.finish_reason == types.FinishReason.SAFETY
+    # Verify correct enum mapping using dictionary
+    expected_mapping = {
+        "length": types.FinishReason.MAX_TOKENS,
+        "stop": types.FinishReason.STOP,
+        "tool_calls": types.FinishReason.STOP,
+        "content_filter": types.FinishReason.SAFETY,
+    }
+    assert response.finish_reason == expected_mapping[finish_reason]
     if expected_content:
       assert response.content.parts[0].text == expected_content
     if has_tool_calls:

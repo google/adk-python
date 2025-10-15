@@ -303,11 +303,8 @@ def trace_call_llm(
           llm_response.usage_metadata.candidates_token_count,
       )
   if llm_response.finish_reason:
-    if isinstance(llm_response.finish_reason, types.FinishReason):
-      finish_reason_str = llm_response.finish_reason.name.lower()
-    else:
-      # Defensive fallback for string values (should never occur - all values mapped to enum)
-      finish_reason_str = str(llm_response.finish_reason).lower()
+    # finish_reason is always FinishReason enum
+    finish_reason_str = llm_response.finish_reason.name.lower()
     span.set_attribute(
         'gen_ai.response.finish_reasons',
         [finish_reason_str],
