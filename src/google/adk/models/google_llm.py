@@ -263,10 +263,7 @@ class Gemini(BaseLlm):
           self._live_api_version
       )
 
-    if (
-        llm_request.live_connect_config
-        and llm_request.live_connect_config.speech_config is None
-    ):
+    if self.speech_config is not None:
       llm_request.live_connect_config.speech_config = self.speech_config
 
     llm_request.live_connect_config.system_instruction = types.Content(

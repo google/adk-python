@@ -1908,7 +1908,7 @@ async def test_connect_uses_gemini_speech_config_when_request_is_none(
 
 
 @pytest.mark.asyncio
-async def test_connect_request_speech_config_overrides_gemini_config(
+async def test_connect_request_gemini_config_overrides_speech_config(
     gemini_llm, llm_request
 ):
   """Tests that live_connect_config's speech_config is preserved even if Gemini has one."""
@@ -1952,11 +1952,11 @@ async def test_connect_request_speech_config_overrides_gemini_config(
       call_args = mock_live_client.aio.live.connect.call_args
       config_arg = call_args.kwargs["config"]
 
-      # Verify the speech_config from the request ("Zephyr") was preserved and not overwritten
+      # Verify the speech_config from the request ("Zephyr") was overwritten by Gemini's speech_config ("Puck")
       assert config_arg.speech_config is not None
       assert (
           config_arg.speech_config.voice_config.prebuilt_voice_config.voice_name
-          == "Zephyr"
+          == "Puck"
       )
       assert isinstance(connection, GeminiLlmConnection)
 
