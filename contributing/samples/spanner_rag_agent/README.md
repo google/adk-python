@@ -39,10 +39,10 @@ CREATE TABLE products (
   productDescription STRING(MAX) NOT NULL,
   productDescriptionEmbedding ARRAY<FLOAT32>,
   createTime TIMESTAMP NOT NULL OPTIONS (
-  allow_commit_timestamp = true
-),
-inventoryCount INT64 NOT NULL,
-priceInCents INT64,
+    allow_commit_timestamp = true
+  ),
+  inventoryCount INT64 NOT NULL,
+  priceInCents INT64,
 ) PRIMARY KEY(categoryId, productId);
 ```
 
@@ -184,3 +184,43 @@ type.
 * I'd like to buy a starter bike for my 3 year old child, can you show me the recommendation?
 
 ![Spanner RAG Sample Agent](Spanner_RAG_Sample_Agent.png)
+
+## Which tool to use and When?
+
+There are a few options to perform similarity search (see the `agent.py` for
+implementation details):
+
+1. Wraps the built-in `similarity_search` in the Spanner Toolset.
+
+   - This provides an easy and controlled way to perform similarity search.
+     You can specify different configurations related to vector search based
+     on your need without having to figure out all the details for a vector
+     search query.
+
+2. Wraps the built-in `execute_sql` in the Spanner Toolset.
+
+   - `execute_sql` is a lower-level tool that you can have more control over
+     with. With the flexibility, you can specify a complicated (parameterized)
+     SQL query for your need, and let the `LlmAgent` pass the parameters.
+
+3. Use the Spanner Toolset (and all the tools that come with it) directly.
+
+   - The most flexible and generic way. Instead of fixing configurations via
+     code, you can also specify the configurations via `instruction` to
+     the `LlmAgent` and let LLM to decide which tool to use and what parameters
+     to pass to different tools. It might even combine different tools together!
+     Note that in this usage, SQL generation is powered by the LlmAgent, which
+     can be more suitable for data analysis and assistant scenarios.
+   - To restrict the ability of an `LlmAgent`, `SpannerToolSet` also supports
+     `tool_filter` to explicitly specify allowed tools. As an example, the
+     following code specifies that only `execute_sql` and `get_table_schema`
+     are allowed:
+
+     ```py
+     toolset = SpannerToolset(
+       credentials_config=credentials_config,
+       tool_filter=["execute_sql", "get_table_schema"],
+       spanner_tool_settings=SpannerToolSettings(),
+     )
+     ```
+

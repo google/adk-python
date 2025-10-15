@@ -283,7 +283,6 @@ async def build_graph(
 
 
 async def get_agent_graph(root_agent, highlights_pairs, image=False):
-  print('build graph')
   graph = graphviz.Digraph(
       graph_attr={'rankdir': 'LR', 'bgcolor': '#333537'}, strict=True
   )

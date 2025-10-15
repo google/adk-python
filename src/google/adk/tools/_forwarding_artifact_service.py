@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
 
+from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
 
 if TYPE_CHECKING:
@@ -39,9 +41,10 @@ class ForwardingArtifactService(BaseArtifactService):
       *,
       app_name: str,
       user_id: str,
-      session_id: str,
       filename: str,
       artifact: types.Part,
+      session_id: Optional[str] = None,
+      custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     return await self.tool_context.save_artifact(
         filename=filename, artifact=artifact
@@ -53,8 +56,8 @@ class ForwardingArtifactService(BaseArtifactService):
       *,
       app_name: str,
       user_id: str,
-      session_id: str,
       filename: str,
+      session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[types.Part]:
     return await self.tool_context.load_artifact(
@@ -63,13 +66,18 @@ class ForwardingArtifactService(BaseArtifactService):
 
   @override
   async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: str
+      self, *, app_name: str, user_id: str, session_id: Optional[str] = None
   ) -> list[str]:
     return await self.tool_context.list_artifacts()
 
   @override
   async def delete_artifact(
-      self, *, app_name: str, user_id: str, session_id: str, filename: str
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
   ) -> None:
     del app_name, user_id, session_id
     if self._invocation_context.artifact_service is None:
@@ -83,7 +91,12 @@ class ForwardingArtifactService(BaseArtifactService):
 
   @override
   async def list_versions(
-      self, *, app_name: str, user_id: str, session_id: str, filename: str
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
   ) -> list[int]:
     del app_name, user_id, session_id
     if self._invocation_context.artifact_service is None:
@@ -94,3 +107,26 @@ class ForwardingArtifactService(BaseArtifactService):
         session_id=self._invocation_context.session.id,
         filename=filename,
     )
+
+  @override
+  async def list_artifact_versions(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+  ) -> list[ArtifactVersion]:
+    raise NotImplementedError("list_artifact_versions is not implemented yet.")
+
+  @override
+  async def get_artifact_version(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+      version: Optional[int] = None,
+  ) -> Optional[ArtifactVersion]:
+    raise NotImplementedError("get_artifact_version is not implemented yet.")

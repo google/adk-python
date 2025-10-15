@@ -3,10 +3,14 @@ name: ADK Answering Agent for Discussions
 on:
   discussion:
     types: [created]
+  discussion_comment:
+    types: [created]
 
 jobs:
   agent-answer-questions:
-    if: github.event.discussion.category.name == 'Q&A'
+    if: >-
+      (github.event_name == 'discussion' && github.event.discussion.category.name == 'Q&A') ||
+      (github.event_name == 'discussion_comment' && contains(github.event.comment.body, '@adk-bot') && github.event.sender.login != 'adk-bot')
     runs-on: ubuntu-latest
 
     steps:
@@ -42,4 +46,9 @@ jobs:
           REPO: 'adk-python'
           INTERACTIVE: 0
           PYTHONPATH: contributing/samples
-        run: python -m adk_answering_agent.main --discussion '${{ toJson(github.event.discussion) }}'
+        run: |
+          # Write discussion data to temporary file to avoid secret masking issues
+          cat > /tmp/discussion.json << 'EOF'
+          ${{ toJson(github.event.discussion) }}
+          EOF
+          python -m adk_answering_agent.main --discussion-file /tmp/discussion.json

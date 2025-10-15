@@ -111,6 +111,11 @@ class McpTool(BaseAuthenticatedTool):
     )
     return function_decl
 
+  @property
+  def raw_mcp_tool(self) -> McpBaseTool:
+    """Returns the raw MCP tool."""
+    return self._mcp_tool
+
   @retry_on_closed_resource
   @override
   async def _run_async_impl(
@@ -131,7 +136,7 @@ class McpTool(BaseAuthenticatedTool):
     # Get the session from the session manager
     session = await self._mcp_session_manager.create_session(headers=headers)
 
-    response = await session.call_tool(self.name, arguments=args)
+    response = await session.call_tool(self._mcp_tool.name, arguments=args)
     return response
 
   async def _get_headers(

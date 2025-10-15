@@ -22,6 +22,7 @@ from typing import Optional
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 from pydantic import field_validator
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -47,8 +48,15 @@ class RunConfig(BaseModel):
   response_modalities: Optional[list[str]] = None
   """The output modalities. If not set, it's default to AUDIO."""
 
-  save_input_blobs_as_artifacts: bool = False
-  """Whether or not to save the input blobs as artifacts."""
+  save_input_blobs_as_artifacts: bool = Field(
+      default=False,
+      deprecated=True,
+      description=(
+          'Whether or not to save the input blobs as artifacts. DEPRECATED: Use'
+          ' SaveFilesAsArtifactsPlugin instead for better control and'
+          ' flexibility. See google.adk.plugins.SaveFilesAsArtifactsPlugin.'
+      ),
+  )
 
   support_cfc: bool = False
   """
@@ -64,10 +72,14 @@ class RunConfig(BaseModel):
   streaming_mode: StreamingMode = StreamingMode.NONE
   """Streaming mode, None or StreamingMode.SSE or StreamingMode.BIDI."""
 
-  output_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
+  output_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+      default_factory=types.AudioTranscriptionConfig
+  )
   """Output transcription for live agents with audio response."""
 
-  input_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
+  input_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+      default_factory=types.AudioTranscriptionConfig
+  )
   """Input transcription for live agents with audio input from user."""
 
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
@@ -81,6 +93,12 @@ class RunConfig(BaseModel):
 
   session_resumption: Optional[types.SessionResumptionConfig] = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
+
+  save_live_audio: bool = False
+  """Saves live video and audio data to session and artifact service.
+
+  Right now, only audio is supported.
+  """
 
   max_llm_calls: int = 500
   """

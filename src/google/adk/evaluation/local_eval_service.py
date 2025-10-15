@@ -40,6 +40,7 @@ from .base_eval_service import InferenceStatus
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
+from .eval_metrics import EvalMetricResultDetails
 from .eval_metrics import EvalMetricResultPerInvocation
 from .eval_result import EvalCaseResult
 from .eval_set import EvalCase
@@ -68,14 +69,19 @@ class LocalEvalService(BaseEvalService):
       self,
       root_agent: BaseAgent,
       eval_sets_manager: EvalSetsManager,
-      metric_evaluator_registry: MetricEvaluatorRegistry = DEFAULT_METRIC_EVALUATOR_REGISTRY,
-      session_service: BaseSessionService = InMemorySessionService(),
-      artifact_service: BaseArtifactService = InMemoryArtifactService(),
+      metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
+      session_service: Optional[BaseSessionService] = None,
+      artifact_service: Optional[BaseArtifactService] = None,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       session_id_supplier: Callable[[], str] = _get_session_id,
   ):
     self._root_agent = root_agent
     self._eval_sets_manager = eval_sets_manager
+    metric_evaluator_registry = (
+        metric_evaluator_registry or DEFAULT_METRIC_EVALUATOR_REGISTRY
+    )
+    session_service = session_service or InMemorySessionService()
+    artifact_service = artifact_service or InMemoryArtifactService()
     self._metric_evaluator_registry = metric_evaluator_registry
     self._session_service = session_service
     self._artifact_service = artifact_service
@@ -234,12 +240,15 @@ class LocalEvalService(BaseEvalService):
       )
 
       # Track overall scrore across all invocations.
+      eval_metric_result_details = EvalMetricResultDetails(
+          rubric_scores=evaluation_result.overall_rubric_scores
+      )
       overall_eval_metric_results.append(
           EvalMetricResult(
-              metric_name=eval_metric.metric_name,
-              threshold=eval_metric.threshold,
               score=evaluation_result.overall_score,
               eval_status=evaluation_result.overall_eval_status,
+              details=eval_metric_result_details,
+              **eval_metric.model_dump(),
           )
       )
 
@@ -257,12 +266,15 @@ class LocalEvalService(BaseEvalService):
           evaluation_result.per_invocation_results,
           eval_metric_result_per_invocation,
       ):
+        eval_metric_result_details = EvalMetricResultDetails(
+            rubric_scores=invocation_result.rubric_scores
+        )
         invocation.eval_metric_results.append(
             EvalMetricResult(
-                metric_name=eval_metric.metric_name,
-                threshold=eval_metric.threshold,
                 score=invocation_result.score,
                 eval_status=invocation_result.eval_status,
+                details=eval_metric_result_details,
+                **eval_metric.model_dump(),
             )
         )
 
