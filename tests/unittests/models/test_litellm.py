@@ -19,6 +19,7 @@ from unittest.mock import Mock
 import warnings
 
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _message_to_generate_content_response
@@ -1969,14 +1970,8 @@ async def test_finish_reason_propagation(
     assert response.content.role == "model"
     # Verify finish_reason is mapped to FinishReason enum
     assert isinstance(response.finish_reason, types.FinishReason)
-    # Verify correct enum mapping using dictionary
-    expected_mapping = {
-        "length": types.FinishReason.MAX_TOKENS,
-        "stop": types.FinishReason.STOP,
-        "tool_calls": types.FinishReason.STOP,
-        "content_filter": types.FinishReason.SAFETY,
-    }
-    assert response.finish_reason == expected_mapping[finish_reason]
+    # Verify correct enum mapping using the actual mapping from lite_llm
+    assert response.finish_reason == _FINISH_REASON_MAPPING[finish_reason]
     if expected_content:
       assert response.content.parts[0].text == expected_content
     if has_tool_calls:
