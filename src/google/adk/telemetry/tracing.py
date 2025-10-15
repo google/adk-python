@@ -306,6 +306,7 @@ def trace_call_llm(
     if isinstance(llm_response.finish_reason, types.FinishReason):
       finish_reason_str = llm_response.finish_reason.name.lower()
     else:
+      # Fallback for string values (should not occur with LiteLLM after enum mapping)
       finish_reason_str = str(llm_response.finish_reason).lower()
     span.set_attribute(
         'gen_ai.response.finish_reasons',

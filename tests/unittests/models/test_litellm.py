@@ -1967,7 +1967,17 @@ async def test_finish_reason_propagation(
 
   async for response in lite_llm_instance.generate_content_async(llm_request):
     assert response.content.role == "model"
-    assert response.finish_reason == finish_reason
+    # Verify finish_reason is mapped to FinishReason enum, not raw string
+    assert isinstance(response.finish_reason, types.FinishReason)
+    # Verify correct enum mapping
+    if finish_reason == "length":
+      assert response.finish_reason == types.FinishReason.MAX_TOKENS
+    elif finish_reason == "stop":
+      assert response.finish_reason == types.FinishReason.STOP
+    elif finish_reason == "tool_calls":
+      assert response.finish_reason == types.FinishReason.STOP
+    elif finish_reason == "content_filter":
+      assert response.finish_reason == types.FinishReason.SAFETY
     if expected_content:
       assert response.content.parts[0].text == expected_content
     if has_tool_calls:
@@ -1975,3 +1985,40 @@ async def test_finish_reason_propagation(
       assert response.content.parts[-1].function_call.name == "test_function"
 
   mock_acompletion.assert_called_once()
+
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_unknown_maps_to_other(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that unknown finish_reason values map to FinishReason.OTHER."""
+  mock_response = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="Test response",
+              ),
+              finish_reason="unknown_reason_type",
+          )
+      ]
+  )
+  mock_acompletion.return_value = mock_response
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    # Unknown finish_reason should map to OTHER
+    assert isinstance(response.finish_reason, types.FinishReason)
+    assert response.finish_reason == types.FinishReason.OTHER
+
+  mock_acompletion.assert_called_once()
+

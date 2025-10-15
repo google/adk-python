@@ -505,7 +505,21 @@ def _model_response_to_generate_content_response(
 
   llm_response = _message_to_generate_content_response(message)
   if finish_reason:
-    llm_response.finish_reason = finish_reason
+    # Map LiteLLM finish_reason strings to FinishReason enum
+    # This provides type consistency with Gemini native responses and avoids warnings
+    finish_reason_str = str(finish_reason).lower()
+    if finish_reason_str == "length":
+      llm_response.finish_reason = types.FinishReason.MAX_TOKENS
+    elif finish_reason_str == "stop":
+      llm_response.finish_reason = types.FinishReason.STOP
+    elif "tool" in finish_reason_str or "function" in finish_reason_str:
+      # Handle tool_calls, function_call variants
+      llm_response.finish_reason = types.FinishReason.STOP
+    elif finish_reason_str == "content_filter":
+      llm_response.finish_reason = types.FinishReason.SAFETY
+    else:
+      # For unknown reasons, use OTHER
+      llm_response.finish_reason = types.FinishReason.OTHER
   if response.get("usage", None):
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=response["usage"].get("prompt_tokens", 0),
