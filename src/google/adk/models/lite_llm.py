@@ -508,7 +508,7 @@ def _model_response_to_generate_content_response(
 
   message = None
   finish_reason = None
-  if choices := response.get("choices"):
+  if (choices := response.get("choices")) and choices:
     first_choice = choices[0]
     message = first_choice.get("message", None)
     finish_reason = first_choice.get("finish_reason", None)
