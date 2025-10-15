@@ -1908,6 +1908,54 @@ async def test_connect_uses_gemini_speech_config_when_request_is_none(
 
 
 @pytest.mark.asyncio
+async def test_connect_uses_request_speech_config_when_gemini_is_none(
+    gemini_llm, llm_request
+):
+  """Tests that request's speech_config is used when Gemini's is None."""
+  # Arrange: Set a speech_config on the request instance with the voice "Kore"
+  gemini_llm.speech_config = None
+  request_speech_config = types.SpeechConfig(
+      voice_config=types.VoiceConfig(
+          prebuilt_voice_config=types.PrebuiltVoiceConfig(
+              voice_name="Kore",
+          )
+      )
+  )
+  llm_request.live_connect_config = types.LiveConnectConfig(
+      speech_config=request_speech_config
+  )
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    # Act
+    async with gemini_llm.connect(llm_request) as connection:
+      # Assert
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      # Verify the speech_config from the request instance was used
+      assert config_arg.speech_config is not None
+      assert (
+          config_arg.speech_config.voice_config.prebuilt_voice_config.voice_name
+          == "Kore"
+      )
+      assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
 async def test_connect_request_gemini_config_overrides_speech_config(
     gemini_llm, llm_request
 ):
