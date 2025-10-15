@@ -188,7 +188,3 @@ Example:
   generate_content_config: Optional[types.GenerateContentConfig] = Field(
       default=None, description='Optional. LlmAgent.generate_content_config.'
   )
-
-  speech_config: Optional[types.SpeechConfig] = Field(
-      default=None, description='Optional. LlmAgent.speech_config'
-  )

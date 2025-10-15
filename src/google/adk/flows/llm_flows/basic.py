@@ -58,11 +58,9 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     llm_request.live_connect_config.response_modalities = (
         invocation_context.run_config.response_modalities
     )
-
     llm_request.live_connect_config.speech_config = (
         invocation_context.run_config.speech_config
     )
-
     llm_request.live_connect_config.output_audio_transcription = (
         invocation_context.run_config.output_audio_transcription
     )

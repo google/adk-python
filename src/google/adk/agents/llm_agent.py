@@ -263,9 +263,6 @@ class LlmAgent(BaseAgent):
   settings, etc.
   """
 
-  speech_config: Optional[types.SpeechConfig] = None
-  """The agent's speech configurations."""
-
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
   """Disallows LLM-controlled transferring to the parent agent.
@@ -700,7 +697,6 @@ class LlmAgent(BaseAgent):
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
     self.__check_output_schema()
-    self.__check_speech_config()
     return self
 
   def __check_output_schema(self):
@@ -724,16 +720,6 @@ class LlmAgent(BaseAgent):
       raise ValueError(
           f'Invalid config for agent {self.name}: if output_schema is set,'
           ' sub_agents must be empty to disable agent transfer.'
-      )
-
-  def __check_speech_config(self):
-    if self.speech_config:
-      logger.warning(
-          'Agent %s has a speech_config set. This configuration is only'
-          ' effective when using the agent in a live/streaming mode'
-          ' (e.g., via run_live) and with a model that supports speech'
-          ' input/output.',
-          self.name,
       )
 
   @field_validator('generate_content_config', mode='after')
@@ -865,8 +851,6 @@ class LlmAgent(BaseAgent):
       )
     if config.generate_content_config:
       kwargs['generate_content_config'] = config.generate_content_config
-    if config.speech_config:
-      kwargs['speech_config'] = config.speech_config
 
     return kwargs
 
