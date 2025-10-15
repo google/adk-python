@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Consent</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body {
+background-color: #f8f9fa;
+}
+.consent-container {
+max-width: 600px;
+margin-top: 50px;
+padding: 30px;
+border-radius: 10px;
+box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+background-color: #fff;
+}
+.scope-list li {
+font-size: 1rem;
+margin-bottom: 5px;
+}
+</style>
+</head>
+<body>
+<div class="container d-flex justify-content-center">
+<div class="consent-container">
+<h2 class="text-center mb-4">Authorize Application</h2>
+<p class="lead">The application <strong>{{ auth_request.get('client_name', 'Unknown Client') }}</strong> is requesting access to your data. Do you want to grant it?</p>
+
+        <h4 class="mt-4">Requested Scopes:</h4>
+        <ul class="list-unstyled scope-list">
+            {% for scope in auth_request.get('scope', '').split() %}
+                <li>- {{ scope }}</li>
+            {% endfor %}
+        </ul>
+
+        <form method="post" action="/consent" class="mt-4">
+            <input type="hidden" name="consent" value="true">
+            <div class="d-grid gap-2">
+                <button type="submit" class="btn btn-success">Allow Access</button>
+                <a href="/consent?consent=false" class="btn btn-outline-danger">Deny Access</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+</body>
+</html>

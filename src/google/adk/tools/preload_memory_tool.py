@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
@@ -25,9 +26,14 @@ from .tool_context import ToolContext
 if TYPE_CHECKING:
   from ..models import LlmRequest
 
+logger = logging.getLogger('google_adk.' + __name__)
+
 
 class PreloadMemoryTool(BaseTool):
   """A tool that preloads the memory for the current user.
+
+  This tool will be automatically executed for each llm_request, and it won't be
+  called by the model.
 
   NOTE: Currently this tool only uses text part from the memory.
   """
@@ -53,7 +59,12 @@ class PreloadMemoryTool(BaseTool):
       return
 
     user_query: str = user_content.parts[0].text
-    response = await tool_context.search_memory(user_query)
+    try:
+      response = await tool_context.search_memory(user_query)
+    except Exception:
+      logging.warning('Failed to preload memory for query: %s', user_query)
+      return
+
     if not response.memories:
       return
 

@@ -41,10 +41,10 @@ from ...agents.loop_agent import LoopAgent
 from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...tools.example_tool import ExampleTool
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 
 
-@experimental
+@a2a_experimental
 class AgentCardBuilder:
   """Builder class for creating agent cards from ADK agents.
 

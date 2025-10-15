@@ -56,7 +56,7 @@ def test_streaming():
   assert llm_request_sent_to_mock.live_connect_config is not None
   assert (
       llm_request_sent_to_mock.live_connect_config.output_audio_transcription
-      is None
+      is not None
   )
 
 

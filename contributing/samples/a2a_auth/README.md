@@ -157,12 +157,43 @@ You can extend this sample by:
 - Adding audit logging for authentication events
 - Implementing multi-tenant OAuth token management
 
+## Deployment to Other Environments
+
+When deploying the remote BigQuery A2A agent to different environments (e.g., Cloud Run, different hosts/ports), you **must** update the `url` field in the agent card JSON file:
+
+### Local Development
+```json
+{
+  "url": "http://localhost:8001/a2a/bigquery_agent",
+  ...
+}
+```
+
+### Cloud Run Example
+```json
+{
+  "url": "https://your-bigquery-service-abc123-uc.a.run.app/a2a/bigquery_agent",
+  ...
+}
+```
+
+### Custom Host/Port Example
+```json
+{
+  "url": "https://your-domain.com:9000/a2a/bigquery_agent",
+  ...
+}
+```
+
+**Important:** The `url` field in `remote_a2a/bigquery_agent/agent.json` must point to the actual RPC endpoint where your remote BigQuery A2A agent is deployed and accessible.
+
 ## Troubleshooting
 
 **Connection Issues:**
 - Ensure the local ADK web server is running on port 8000
 - Ensure the remote A2A server is running on port 8001
 - Check that no firewall is blocking localhost connections
+- **Verify the `url` field in `remote_a2a/bigquery_agent/agent.json` matches the actual deployed location of your remote A2A server**
 - Verify the agent card URL passed to RemoteA2AAgent constructor matches the running A2A server
 
 
@@ -182,3 +213,4 @@ You can extend this sample by:
 - Check the logs for both the local ADK web server and remote A2A server
 - Verify OAuth tokens are properly passed between agents
 - Ensure agent instructions are clear about authentication requirements
+- **Double-check that the RPC URL in the agent.json file is correct and accessible**

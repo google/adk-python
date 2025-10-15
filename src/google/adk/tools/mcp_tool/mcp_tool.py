@@ -15,8 +15,13 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import logging
+from typing import Any
+from typing import Callable
 from typing import Optional
+from typing import Union
+import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
@@ -52,7 +57,7 @@ from ..tool_context import ToolContext
 logger = logging.getLogger("google_adk." + __name__)
 
 
-class MCPTool(BaseAuthenticatedTool):
+class McpTool(BaseAuthenticatedTool):
   """Turns an MCP Tool into an ADK Tool.
 
   Internally, the tool initializes from a MCP Tool, and uses the MCP Session to
@@ -69,6 +74,7 @@ class MCPTool(BaseAuthenticatedTool):
       mcp_session_manager: MCPSessionManager,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
+      require_confirmation: Union[bool, Callable[..., bool]] = False,
   ):
     """Initializes an MCPTool.
 
@@ -80,6 +86,10 @@ class MCPTool(BaseAuthenticatedTool):
         mcp_session_manager: The MCP session manager to use for communication.
         auth_scheme: The authentication scheme to use.
         auth_credential: The authentication credential to use.
+        require_confirmation: Whether this tool requires confirmation. A boolean
+          or a callable that takes the function's arguments and returns a
+          boolean. If the callable returns True, the tool will require
+          confirmation from the user.
 
     Raises:
         ValueError: If mcp_tool or mcp_session_manager is None.
@@ -95,6 +105,7 @@ class MCPTool(BaseAuthenticatedTool):
     )
     self._mcp_tool = mcp_tool
     self._mcp_session_manager = mcp_session_manager
+    self._require_confirmation = require_confirmation
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -109,6 +120,62 @@ class MCPTool(BaseAuthenticatedTool):
         name=self.name, description=self.description, parameters=parameters
     )
     return function_decl
+
+  @property
+  def raw_mcp_tool(self) -> McpBaseTool:
+    """Returns the raw MCP tool."""
+    return self._mcp_tool
+
+  async def _invoke_callable(
+      self, target: Callable[..., Any], args_to_call: dict[str, Any]
+  ) -> Any:
+    """Invokes a callable, handling both sync and async cases."""
+
+    # Functions are callable objects, but not all callable objects are functions
+    # checking coroutine function is not enough. We also need to check whether
+    # Callable's __call__ function is a coroutine funciton
+    is_async = inspect.iscoroutinefunction(target) or (
+        hasattr(target, "__call__")
+        and inspect.iscoroutinefunction(target.__call__)
+    )
+    if is_async:
+      return await target(**args_to_call)
+    else:
+      return target(**args_to_call)
+
+  @override
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    if isinstance(self._require_confirmation, Callable):
+      require_confirmation = await self._invoke_callable(
+          self._require_confirmation, args
+      )
+    else:
+      require_confirmation = bool(self._require_confirmation)
+
+    if require_confirmation:
+      if not tool_context.tool_confirmation:
+        args_to_show = args.copy()
+        if "tool_context" in args_to_show:
+          args_to_show.pop("tool_context")
+
+        tool_context.request_confirmation(
+            hint=(
+                f"Please approve or reject the tool call {self.name}() by"
+                " responding with a FunctionResponse with an expected"
+                " ToolConfirmation payload."
+            ),
+        )
+        return {
+            "error": (
+                "This tool call requires confirmation, please approve or"
+                " reject."
+            )
+        }
+      elif not tool_context.tool_confirmation.confirmed:
+        return {"error": "This tool call is rejected."}
+    return await super().run_async(args=args, tool_context=tool_context)
 
   @retry_on_closed_resource
   @override
@@ -130,7 +197,7 @@ class MCPTool(BaseAuthenticatedTool):
     # Get the session from the session manager
     session = await self._mcp_session_manager.create_session(headers=headers)
 
-    response = await session.call_tool(self.name, arguments=args)
+    response = await session.call_tool(self._mcp_tool.name, arguments=args)
     return response
 
   async def _get_headers(
@@ -216,3 +283,15 @@ class MCPTool(BaseAuthenticatedTool):
         )
 
     return headers
+
+
+class MCPTool(McpTool):
+  """Deprecated name, use `McpTool` instead."""
+
+  def __init__(self, *args, **kwargs):
+    warnings.warn(
+        "MCPTool class is deprecated, use `McpTool` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    super().__init__(*args, **kwargs)
