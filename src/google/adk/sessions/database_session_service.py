@@ -23,6 +23,7 @@ from typing import Any
 from typing import Optional
 import uuid
 
+from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
@@ -252,6 +253,12 @@ class StorageEvent(Base):
   custom_metadata: Mapped[dict[str, Any]] = mapped_column(
       DynamicJSON, nullable=True
   )
+  usage_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  citation_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
 
   partial: Mapped[bool] = mapped_column(Boolean, nullable=True)
   turn_complete: Mapped[bool] = mapped_column(Boolean, nullable=True)
@@ -318,6 +325,14 @@ class StorageEvent(Base):
       )
     if event.custom_metadata:
       storage_event.custom_metadata = event.custom_metadata
+    if event.usage_metadata:
+      storage_event.usage_metadata = event.usage_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.citation_metadata:
+      storage_event.citation_metadata = event.citation_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
     return storage_event
 
   def to_event(self) -> Event:
@@ -328,17 +343,23 @@ class StorageEvent(Base):
         branch=self.branch,
         actions=self.actions,
         timestamp=self.timestamp.timestamp(),
-        content=_session_util.decode_content(self.content),
         long_running_tool_ids=self.long_running_tool_ids,
         partial=self.partial,
         turn_complete=self.turn_complete,
         error_code=self.error_code,
         error_message=self.error_message,
         interrupted=self.interrupted,
-        grounding_metadata=_session_util.decode_grounding_metadata(
-            self.grounding_metadata
-        ),
         custom_metadata=self.custom_metadata,
+        content=_session_util.decode_model(self.content, types.Content),
+        grounding_metadata=_session_util.decode_model(
+            self.grounding_metadata, types.GroundingMetadata
+        ),
+        usage_metadata=_session_util.decode_model(
+            self.usage_metadata, types.GenerateContentResponseUsageMetadata
+        ),
+        citation_metadata=_session_util.decode_model(
+            self.citation_metadata, types.CitationMetadata
+        ),
     )
 
 

@@ -390,6 +390,11 @@ async def test_append_event_complete(service_type):
       error_code='error_code',
       error_message='error_message',
       interrupted=True,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=1, candidates_token_count=1, total_token_count=2
+      ),
+      citation_metadata=types.CitationMetadata(),
+      custom_metadata={'custom_key': 'custom_value'},
   )
   await session_service.append_event(session=session, event=event)
 
