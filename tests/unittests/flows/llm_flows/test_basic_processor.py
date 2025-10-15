@@ -21,7 +21,6 @@ from google.adk.flows.llm_flows.basic import _BasicLlmRequestProcessor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
-from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 import pytest
@@ -39,9 +38,7 @@ def dummy_tool(query: str) -> str:
   return f'Result: {query}'
 
 
-async def _create_invocation_context(
-    agent: LlmAgent, run_config: RunConfig = RunConfig()
-) -> InvocationContext:
+async def _create_invocation_context(agent: LlmAgent) -> InvocationContext:
   """Helper to create InvocationContext for testing."""
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -52,7 +49,7 @@ async def _create_invocation_context(
       agent=agent,
       session=session,
       session_service=session_service,
-      run_config=run_config,
+      run_config=RunConfig(),
   )
 
 
@@ -146,122 +143,3 @@ class TestBasicLlmRequestProcessor:
 
     # Should have set the model name
     assert llm_request.model == 'gemini-1.5-flash'
-
-  @pytest.mark.asyncio
-  async def test_speech_config_agent_overrides_run_config(self):
-    """Tests that agent's speech_config is prioritized over the RunConfig's."""
-    agent_speech_config = types.SpeechConfig(
-        voice_config=types.VoiceConfig(
-            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                voice_name='Kore',
-            )
-        )
-    )
-    run_speech_config = types.SpeechConfig(
-        voice_config=types.VoiceConfig(
-            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                voice_name='Puck',
-            )
-        )
-    )
-
-    agent = LlmAgent(
-        name='test_agent',
-        model='gemini-1.5-flash',
-        speech_config=agent_speech_config,
-    )
-    run_config = RunConfig(speech_config=run_speech_config)
-    invocation_context = await _create_invocation_context(agent, run_config)
-    llm_request = LlmRequest()
-    processor = _BasicLlmRequestProcessor()
-
-    # Process the request
-    async for _ in processor.run_async(invocation_context, llm_request):
-      pass
-
-    # Assert that the agent's override was used
-    assert llm_request.live_connect_config.speech_config == agent_speech_config
-    assert (
-        llm_request.live_connect_config.speech_config.voice_config.prebuilt_voice_config.voice_name
-        == 'Kore'
-    )
-
-  @pytest.mark.asyncio
-  async def test_speech_config_uses_agent_as_fallback(self):
-    """Tests that the agent's speech_config is used when RunConfig's is None."""
-    agent_speech_config = types.SpeechConfig(
-        voice_config=types.VoiceConfig(
-            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                voice_name='Kore',
-            )
-        )
-    )
-
-    agent = LlmAgent(
-        name='test_agent',
-        model='gemini-1.5-flash',
-        speech_config=agent_speech_config,
-    )
-    run_config = RunConfig(speech_config=None)  # No runtime config
-    invocation_context = await _create_invocation_context(agent, run_config)
-    llm_request = LlmRequest()
-    processor = _BasicLlmRequestProcessor()
-
-    # Process the request
-    async for _ in processor.run_async(invocation_context, llm_request):
-      pass
-
-    # Assert that the agent's config was used as a fallback
-    assert llm_request.live_connect_config.speech_config == agent_speech_config
-    assert (
-        llm_request.live_connect_config.speech_config.voice_config.prebuilt_voice_config.voice_name
-        == 'Kore'
-    )
-
-  @pytest.mark.asyncio
-  async def test_speech_config_uses_run_config_when_agent_is_none(self):
-    """Tests that RunConfig's speech_config is used when the agent's is None."""
-    run_speech_config = types.SpeechConfig(
-        voice_config=types.VoiceConfig(
-            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                voice_name='Puck',
-            )
-        )
-    )
-
-    agent = LlmAgent(
-        name='test_agent', model='gemini-1.5-flash', speech_config=None
-    )  # No agent config
-    run_config = RunConfig(speech_config=run_speech_config)
-    invocation_context = await _create_invocation_context(agent, run_config)
-    llm_request = LlmRequest()
-    processor = _BasicLlmRequestProcessor()
-
-    # Process the request
-    async for _ in processor.run_async(invocation_context, llm_request):
-      pass
-
-    # Assert that the runtime config was used
-    assert llm_request.live_connect_config.speech_config == run_speech_config
-    assert (
-        llm_request.live_connect_config.speech_config.voice_config.prebuilt_voice_config.voice_name
-        == 'Puck'
-    )
-
-  @pytest.mark.asyncio
-  async def test_speech_config_is_none_when_both_are_none(self):
-    """Tests that speech_config is None when neither agent nor RunConfig has it."""
-    agent = LlmAgent(
-        name='test_agent', model='gemini-1.5-flash', speech_config=None
-    )
-    run_config = RunConfig(speech_config=None)  # No runtime config
-    invocation_context = await _create_invocation_context(agent, run_config)
-    llm_request = LlmRequest()
-    processor = _BasicLlmRequestProcessor()
-
-    # Process the request
-    async for _ in processor.run_async(invocation_context, llm_request):
-      pass
-
-    # Assert that the final config is None
-    assert llm_request.live_connect_config.speech_config is None

@@ -59,10 +59,9 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
         invocation_context.run_config.response_modalities
     )
 
-    speech_config_to_use = (
-        agent.speech_config or invocation_context.run_config.speech_config
+    llm_request.live_connect_config.speech_config = (
+        invocation_context.run_config.speech_config
     )
-    llm_request.live_connect_config.speech_config = speech_config_to_use
 
     llm_request.live_connect_config.output_audio_transcription = (
         invocation_context.run_config.output_audio_transcription

@@ -167,32 +167,6 @@ async def test_async_canonical_global_instruction():
   assert bypass_state_injection
 
 
-def test_speech_config_logs_warning(caplog: pytest.LogCaptureFixture):
-  with caplog.at_level('WARNING'):
-
-    agent = LlmAgent(
-        name='test_agent',
-        speech_config=types.SpeechConfig(
-            voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                    voice_name='Kore',
-                )
-            )
-        ),
-    )
-
-    assert agent.speech_config is not None
-    assert (
-        agent.speech_config.voice_config.prebuilt_voice_config.voice_name
-        == 'Kore'
-    )
-    assert (
-        'Agent test_agent has a speech_config set.' in caplog.text
-        and 'only effective when using the agent in a live/streaming mode'
-        in caplog.text
-    )
-
-
 def test_output_schema_will_disable_transfer(caplog: pytest.LogCaptureFixture):
   with caplog.at_level('WARNING'):
 

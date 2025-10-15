@@ -60,6 +60,8 @@ class Gemini(BaseLlm):
 
   model: str = 'gemini-2.5-flash'
 
+  speech_config: Optional[types.SpeechConfig] = None
+
   retry_options: Optional[types.HttpRetryOptions] = None
   """Allow Gemini to retry failed responses.
 
@@ -260,6 +262,12 @@ class Gemini(BaseLlm):
       llm_request.live_connect_config.http_options.api_version = (
           self._live_api_version
       )
+
+    if (
+        llm_request.live_connect_config
+        and llm_request.live_connect_config.speech_config is None
+    ):
+      llm_request.live_connect_config.speech_config = self.speech_config
 
     llm_request.live_connect_config.system_instruction = types.Content(
         role='system',
