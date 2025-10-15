@@ -30,7 +30,7 @@ The GCP Security Intelligence Platform is fully operational and ready for custom
 | ADK Backend | ✅ Running | 8000 | Agent orchestration & API |
 | Flask UI | ✅ Running | 5001 | Web interface |
 | Chainlit UI | ✅ Ready | 8001 | Chat interface |
-| MCP Server | ✅ Ready | stdio | Claude Desktop integration |
+| MCP Server | ✅ Ready | stdio | MCP desktop client integration |
 
 ### Agent Capabilities
 
@@ -175,7 +175,7 @@ adk eval agents/ evals/security_agent_eval.json
 | [SETUP_AND_TROUBLESHOOTING.md](docs/SETUP_AND_TROUBLESHOOTING.md) | Installation & troubleshooting |
 | [CHAINLIT_INTEGRATION.md](docs/CHAINLIT_INTEGRATION.md) | Chainlit standalone app guide |
 | [CHAINLIT_PLUGIN_INTEGRATION.md](docs/CHAINLIT_PLUGIN_INTEGRATION.md) | **Plug-and-play integration** |
-| [MCP_SERVER_INTEGRATION.md](docs/MCP_SERVER_INTEGRATION.md) | MCP server for Claude Desktop |
+| [MCP_SERVER_INTEGRATION.md](docs/MCP_SERVER_INTEGRATION.md) | MCP server for desktop MCP clients |
 | [TOOLS.md](docs/TOOLS.md) | Complete tool reference |
 | [TEST_SUMMARY.md](TEST_SUMMARY.md) | Test results & validation |
 

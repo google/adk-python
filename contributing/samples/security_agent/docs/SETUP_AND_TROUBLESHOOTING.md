@@ -235,13 +235,13 @@ chainlit run chainlit_app.py
 # Access at: http://localhost:8001
 ```
 
-### Option 4: MCP Server (for Claude Desktop, Continue, Cursor)
+### Option 4: MCP Server (for desktop MCP clients like Continue or Cursor)
 
 ```bash
 # Run standalone (testing)
 python3 mcp_server.py
 
-# Or configure in Claude Desktop (see docs/MCP_SERVER_INTEGRATION.md)
+# Or configure in your MCP desktop client (see docs/MCP_SERVER_INTEGRATION.md)
 ```
 
 ## 🔧 Common Issues

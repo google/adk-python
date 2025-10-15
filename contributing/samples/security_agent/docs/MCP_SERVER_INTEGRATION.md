@@ -1,6 +1,6 @@
 # MCP Server Integration Guide
 
-This document explains how to use the Model Context Protocol (MCP) Server to expose your GCP Security Intelligence Platform to MCP clients like Claude Desktop, Continue, and other AI development tools.
+This document explains how to use the Model Context Protocol (MCP) Server to expose your GCP Security Intelligence Platform to MCP clients such as Continue, Cursor, and other AI development tools.
 
 ## 🎯 What is MCP?
 
@@ -16,7 +16,7 @@ This document explains how to use the Model Context Protocol (MCP) Server to exp
 
 ```
 ┌─────────────────┐
-│  MCP Client     │  (Claude Desktop, Continue, Cursor, etc.)
+│  MCP Client     │  (desktop MCP clients like Continue, Cursor, etc.)
 │  (AI Assistant) │
 └────────┬────────┘
          │ stdio
@@ -61,7 +61,7 @@ Query security data from GCP including IAM, assets, and security findings.
   - `exploration` - General data exploration
 - `force_live_update` (optional): Force fetch from live GCP APIs (default: false)
 
-**Example Usage in Claude Desktop:**
+**Example usage in an MCP client:**
 ```
 Query: "Show me all IAM accounts with admin privileges"
 Tool: query_security_data
@@ -166,12 +166,11 @@ python3 mcp_server.py
 # The server will start in stdio mode and wait for MCP client connections
 ```
 
-#### With Claude Desktop
+#### With desktop MCP clients
 
-Add to your Claude Desktop configuration file:
+Add the following snippet to your MCP client configuration file (refer to the client documentation for the exact location):
 
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+See your MCP client's documentation for platform-specific configuration file locations.
 
 ```json
 {
@@ -191,7 +190,7 @@ Add to your Claude Desktop configuration file:
 }
 ```
 
-**Restart Claude Desktop** after updating the configuration.
+After saving the configuration, restart your MCP client.
 
 #### With Continue (VS Code Extension)
 
@@ -296,21 +295,21 @@ python3 test_mcp_server.py
 # ✓ search_documentation tool
 ```
 
-### Testing with Claude Desktop
+### Testing with desktop MCP client
 
-1. Configure MCP server in Claude Desktop (see Setup section)
-2. Restart Claude Desktop
+1. Configure MCP server in desktop MCP client (see Setup section)
+2. Restart desktop MCP client
 3. Open a new conversation
 4. You should see "🔧" icon indicating tools are available
 5. Try asking: "What IAM accounts do I have with admin privileges?"
-6. Claude will automatically use the `query_security_data` tool
+6. The client will automatically use the `query_security_data` tool
 
 ## 📊 Comparison: MCP Server vs Other Interfaces
 
 | Feature | MCP Server | Chainlit UI | Flask UI | ADK Backend |
 |---------|-----------|-------------|----------|-------------|
 | **Use Case** | AI tool integration | End user chat | Custom web UI | Direct API access |
-| **Client** | Claude Desktop, Continue, Cursor | Web browser | Web browser | HTTP API |
+| **Client** | desktop MCP client, Continue, Cursor | Web browser | Web browser | HTTP API |
 | **Tools** | 4 high-level | All 32 | All 32 | All 32 |
 | **Setup** | Config file | `chainlit run` | `python app.py` | `adk web` |
 | **Auth** | Service account | .env file | .env file | .env file |
@@ -403,17 +402,15 @@ except Exception as e:
 
 ## 🐛 Troubleshooting
 
-### Issue: MCP server not appearing in Claude Desktop
+### Issue: MCP server not appearing in desktop MCP client
 
 **Symptoms:** Tools not available, no 🔧 icon
 
 **Solutions:**
 1. Check config file syntax (must be valid JSON)
 2. Verify Python path in `command` field
-3. Check Claude Desktop logs:
-   - macOS: `~/Library/Logs/Claude/`
-   - Windows: `%APPDATA%\Claude\logs\`
-4. Restart Claude Desktop
+3. Review your MCP client's log files (refer to the client documentation for locations)
+4. Restart desktop MCP client
 5. Test server standalone: `python3 mcp_server.py`
 
 ### Issue: "Module not found" errors
@@ -495,7 +492,7 @@ which python3
 
 4. **Logging**
    - MCP server logs to stdout
-   - Claude Desktop captures logs automatically
+   - desktop MCP client captures logs automatically
    - Review logs regularly for anomalies
 
 5. **Network Security**
@@ -575,7 +572,7 @@ async def handle_long_query(arguments):
 
 - [MCP Protocol Specification](https://modelcontextprotocol.io/docs/specification)
 - [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
-- [Claude Desktop MCP Guide](https://docs.anthropic.com/claude/docs/mcp)
+- [Anthropic MCP Client Guide](https://docs.anthropic.com/en/docs/mcp)
 - [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 - [Example MCP Servers](https://github.com/modelcontextprotocol/servers)
 

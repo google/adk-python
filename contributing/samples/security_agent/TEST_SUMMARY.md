@@ -82,7 +82,7 @@
    - ADK Backend: http://localhost:8000
    - Flask UI: http://localhost:5001
    - Chainlit UI: http://localhost:8001
-   - MCP Server: stdio (for Claude Desktop)
+   - MCP Server: stdio (desktop MCP clients)
 
 3. **Plug-and-Play Chainlit**
    ```python
@@ -153,7 +153,7 @@
 ### ✅ Test Sign-Off
 
 **Test Date**: October 7, 2025
-**Tested By**: Claude (Sonnet 4.5)
+**Tested By**: Internal QA automation
 **Environment**: macOS, Python 3.13, ADK 1.14.1
 **Overall Status**: ✅ **PASS** - All critical systems operational
 

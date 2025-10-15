@@ -117,8 +117,6 @@ Thumbs.db
 # Application Specific
 backend/cache/
 frontend/.streamlit/
-.claude/
-.claude-flow/
 .adk/
 .code/
 .mcp.json

@@ -156,7 +156,7 @@ The tools existed in the codebase since earlier versions but were not registered
 - **ADK Backend** - Agent orchestration & API (port 8000)
 - **Flask UI** - Web interface (port 5001)
 - **Chainlit UI** - Chat interface (port 8001)
-- **MCP Server** - Claude Desktop integration (stdio)
+- **MCP Server** - Desktop MCP client integration (stdio)
 
 ---
 

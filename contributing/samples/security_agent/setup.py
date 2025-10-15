@@ -241,7 +241,7 @@ def print_next_steps():
     print("3. Open browser:       http://localhost:8501")
     print()
     print("📚 Documentation:")
-    print("• Check CLAUDE.md for architecture details")
+    print("• Review docs/IAM_ANALYSIS_ARCHITECTURE.md for architecture details")
     print("• Use 'refresh data' in the frontend to populate cache")
     print("• View API docs at http://localhost:8000/docs")
     print()
