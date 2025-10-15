@@ -37,7 +37,7 @@ class StreamingMode(Enum):
 class RunConfig(BaseModel):
   """Configs for runtime behavior of agents.
 
-  The configs here will be overriden by agent-spcific configurations.
+  The configs here will be overriden by agent-specific configurations.
   """
 
   model_config = ConfigDict(
