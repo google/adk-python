@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(
 try:
   from a2a.server.agent_execution import RequestContext
   from google.adk.a2a.converters.request_converter import _get_user_id
-  from google.adk.a2a.converters.request_converter import convert_a2a_request_to_adk_run_args
+  from google.adk.a2a.converters.request_converter import convert_a2a_request_to_agent_run_request
   from google.adk.runners import RunConfig
   from google.genai import types as genai_types
 except ImportError as e:
@@ -143,11 +143,11 @@ class TestGetUserId:
     assert result == "A2A_USER_None"
 
 
-class TestConvertA2aRequestToAdkRunArgs:
-  """Test cases for convert_a2a_request_to_adk_run_args function."""
+class TestConvertA2aRequestToAgentRunRequest:
+  """Test cases for convert_a2a_request_to_agent_run_request function."""
 
   def test_convert_a2a_request_basic(self):
-    """Test basic conversion of A2A request to ADK run args."""
+    """Test basic conversion of A2A request to ADK AgentRunRequest."""
     # Arrange
     mock_part1 = Mock()
     mock_part2 = Mock()
@@ -173,16 +173,18 @@ class TestConvertA2aRequestToAdkRunArgs:
     mock_convert_part.side_effect = [mock_genai_part1, mock_genai_part2]
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
+    result = convert_a2a_request_to_agent_run_request(
+        request, mock_convert_part
+    )
 
     # Assert
     assert result is not None
-    assert result["user_id"] == "test_user"
-    assert result["session_id"] == "test_context_123"
-    assert isinstance(result["new_message"], genai_types.Content)
-    assert result["new_message"].role == "user"
-    assert result["new_message"].parts == [mock_genai_part1, mock_genai_part2]
-    assert isinstance(result["run_config"], RunConfig)
+    assert result.user_id == "test_user"
+    assert result.session_id == "test_context_123"
+    assert isinstance(result.new_message, genai_types.Content)
+    assert result.new_message.role == "user"
+    assert result.new_message.parts == [mock_genai_part1, mock_genai_part2]
+    assert isinstance(result.run_config, RunConfig)
 
     # Verify calls
     assert mock_convert_part.call_count == 2
@@ -197,7 +199,7 @@ class TestConvertA2aRequestToAdkRunArgs:
 
     # Act & Assert
     with pytest.raises(ValueError, match="Request message cannot be None"):
-      convert_a2a_request_to_adk_run_args(request)
+      convert_a2a_request_to_agent_run_request(request)
 
   def test_convert_a2a_request_empty_parts(self):
     """Test conversion with empty parts list."""
@@ -212,16 +214,18 @@ class TestConvertA2aRequestToAdkRunArgs:
     request.call_context = None
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
+    result = convert_a2a_request_to_agent_run_request(
+        request, mock_convert_part
+    )
 
     # Assert
     assert result is not None
-    assert result["user_id"] == "A2A_USER_test_context_123"
-    assert result["session_id"] == "test_context_123"
-    assert isinstance(result["new_message"], genai_types.Content)
-    assert result["new_message"].role == "user"
-    assert result["new_message"].parts == []
-    assert isinstance(result["run_config"], RunConfig)
+    assert result.user_id == "A2A_USER_test_context_123"
+    assert result.session_id == "test_context_123"
+    assert isinstance(result.new_message, genai_types.Content)
+    assert result.new_message.role == "user"
+    assert result.new_message.parts == []
+    assert isinstance(result.run_config, RunConfig)
 
     # Verify convert_part wasn't called
     mock_convert_part.assert_not_called()
@@ -244,16 +248,18 @@ class TestConvertA2aRequestToAdkRunArgs:
     mock_convert_part.return_value = mock_genai_part
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
+    result = convert_a2a_request_to_agent_run_request(
+        request, mock_convert_part
+    )
 
     # Assert
     assert result is not None
-    assert result["user_id"] == "A2A_USER_None"
-    assert result["session_id"] is None
-    assert isinstance(result["new_message"], genai_types.Content)
-    assert result["new_message"].role == "user"
-    assert result["new_message"].parts == [mock_genai_part]
-    assert isinstance(result["run_config"], RunConfig)
+    assert result.user_id == "A2A_USER_None"
+    assert result.session_id is None
+    assert isinstance(result.new_message, genai_types.Content)
+    assert result.new_message.role == "user"
+    assert result.new_message.parts == [mock_genai_part]
+    assert isinstance(result.run_config, RunConfig)
 
   def test_convert_a2a_request_no_auth(self):
     """Test conversion when no authentication is available."""
@@ -273,16 +279,18 @@ class TestConvertA2aRequestToAdkRunArgs:
     mock_convert_part.return_value = mock_genai_part
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
+    result = convert_a2a_request_to_agent_run_request(
+        request, mock_convert_part
+    )
 
     # Assert
     assert result is not None
-    assert result["user_id"] == "A2A_USER_session_123"
-    assert result["session_id"] == "session_123"
-    assert isinstance(result["new_message"], genai_types.Content)
-    assert result["new_message"].role == "user"
-    assert result["new_message"].parts == [mock_genai_part]
-    assert isinstance(result["run_config"], RunConfig)
+    assert result.user_id == "A2A_USER_session_123"
+    assert result.session_id == "session_123"
+    assert isinstance(result.new_message, genai_types.Content)
+    assert result.new_message.role == "user"
+    assert result.new_message.parts == [mock_genai_part]
+    assert isinstance(result.run_config, RunConfig)
 
 
 class TestIntegration:
@@ -312,16 +320,18 @@ class TestIntegration:
     mock_convert_part.return_value = mock_genai_part
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
+    result = convert_a2a_request_to_agent_run_request(
+        request, mock_convert_part
+    )
 
     # Assert
     assert result is not None
-    assert result["user_id"] == "auth_user"  # Should use authenticated user
-    assert result["session_id"] == "mysession"
-    assert isinstance(result["new_message"], genai_types.Content)
-    assert result["new_message"].role == "user"
-    assert result["new_message"].parts == [mock_genai_part]
-    assert isinstance(result["run_config"], RunConfig)
+    assert result.user_id == "auth_user"  # Should use authenticated user
+    assert result.session_id == "mysession"
+    assert isinstance(result.new_message, genai_types.Content)
+    assert result.new_message.role == "user"
+    assert result.new_message.parts == [mock_genai_part]
+    assert isinstance(result.run_config, RunConfig)
 
   def test_end_to_end_conversion_with_fallback_user(self):
     """Test end-to-end conversion with fallback user ID."""
@@ -341,15 +351,17 @@ class TestIntegration:
     mock_convert_part.return_value = mock_genai_part
 
     # Act
-    result = convert_a2a_request_to_adk_run_args(request, mock_convert_part)
+    result = convert_a2a_request_to_agent_run_request(
+        request, mock_convert_part
+    )
 
     # Assert
     assert result is not None
     assert (
-        result["user_id"] == "A2A_USER_test_session_456"
+        result.user_id == "A2A_USER_test_session_456"
     )  # Should fallback to context ID
-    assert result["session_id"] == "test_session_456"
-    assert isinstance(result["new_message"], genai_types.Content)
-    assert result["new_message"].role == "user"
-    assert result["new_message"].parts == [mock_genai_part]
-    assert isinstance(result["run_config"], RunConfig)
+    assert result.session_id == "test_session_456"
+    assert isinstance(result.new_message, genai_types.Content)
+    assert result.new_message.role == "user"
+    assert result.new_message.parts == [mock_genai_part]
+    assert isinstance(result.run_config, RunConfig)
