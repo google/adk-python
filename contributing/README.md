@@ -14,3 +14,7 @@ The [adk_project_overview_and_architecture.md](adk_project_overview_and_architec
 
 This is helpful for contributors to understand the project and design philosophy.
  It can also be feed into LLMs for vibe-coding.
+
+## Common Patterns
+
+The [common_patterns.md](common_patterns.md) provides reusable patterns and best practices for building ADK agents, including handling file uploads, multi-agent orchestration, and more.
