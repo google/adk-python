@@ -79,6 +79,9 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     llm_request.live_connect_config.session_resumption = (
         invocation_context.run_config.session_resumption
     )
+    llm_request.live_connect_config.context_window_compression = (
+        invocation_context.run_config.context_window_compression
+    )
 
     # TODO: handle tool append here, instead of in BaseTool.process_llm_request.
 

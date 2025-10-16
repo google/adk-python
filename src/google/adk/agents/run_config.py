@@ -94,6 +94,11 @@ class RunConfig(BaseModel):
   session_resumption: Optional[types.SessionResumptionConfig] = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
 
+  context_window_compression: Optional[types.ContextWindowCompressionConfig] = (
+      None
+  )
+  """Configuration for context window compression. If set, this will enable context window compression for LLM input."""
+
   save_live_audio: bool = False
   """Saves live video and audio data to session and artifact service.
 

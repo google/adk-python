@@ -201,31 +201,41 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     return self._list_sessions_impl(app_name=app_name, user_id=user_id)
 
   def list_sessions_sync(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._list_sessions_impl(app_name=app_name, user_id=user_id)
 
   def _list_sessions_impl(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     empty_response = ListSessionsResponse()
     if app_name not in self.sessions:
       return empty_response
-    if user_id not in self.sessions[app_name]:
+    if user_id is not None and user_id not in self.sessions[app_name]:
       return empty_response
 
     sessions_without_events = []
-    for session in self.sessions[app_name][user_id].values():
-      copied_session = copy.deepcopy(session)
-      copied_session.events = []
-      copied_session = self._merge_state(app_name, user_id, copied_session)
-      sessions_without_events.append(copied_session)
+
+    if user_id is None:
+      for user_id in self.sessions[app_name]:
+        for session_id in self.sessions[app_name][user_id]:
+          session = self.sessions[app_name][user_id][session_id]
+          copied_session = copy.deepcopy(session)
+          copied_session.events = []
+          copied_session = self._merge_state(app_name, user_id, copied_session)
+          sessions_without_events.append(copied_session)
+    else:
+      for session in self.sessions[app_name][user_id].values():
+        copied_session = copy.deepcopy(session)
+        copied_session.events = []
+        copied_session = self._merge_state(app_name, user_id, copied_session)
+        sessions_without_events.append(copied_session)
     return ListSessionsResponse(sessions=sessions_without_events)
 
   @override

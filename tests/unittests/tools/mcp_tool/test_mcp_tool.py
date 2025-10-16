@@ -549,6 +549,89 @@ class TestMCPTool:
           in logged_message
       )
 
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_true_no_confirmation(self):
+    """Test require_confirmation=True with no confirmation in context."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {
+        "error": (
+            "This tool call requires confirmation, please approve or reject."
+        )
+    }
+    tool_context.request_confirmation.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_true_rejected(self):
+    """Test require_confirmation=True with rejection in context."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = Mock(confirmed=False)
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {"error": "This tool call is rejected."}
+
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_true_confirmed(self):
+    """Test require_confirmation=True with confirmation in context."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = Mock(confirmed=True)
+    args = {"param1": "test_value"}
+
+    with patch(
+        "google.adk.tools.base_authenticated_tool.BaseAuthenticatedTool.run_async",
+        new_callable=AsyncMock,
+    ) as mock_super_run_async:
+      await tool.run_async(args=args, tool_context=tool_context)
+      mock_super_run_async.assert_called_once_with(
+          args=args, tool_context=tool_context
+      )
+
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_callable_true_no_confirmation(
+      self,
+  ):
+    """Test require_confirmation=callable with no confirmation in context."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=lambda **kwargs: True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {
+        "error": (
+            "This tool call requires confirmation, please approve or reject."
+        )
+    }
+    tool_context.request_confirmation.assert_called_once()
+
   def test_init_validation(self):
     """Test that initialization validates required parameters."""
     # This test ensures that the MCPTool properly handles its dependencies
