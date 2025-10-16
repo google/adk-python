@@ -23,3 +23,14 @@ async def test_eval_agent():
       eval_dataset_file_path_or_dir="tests/integration/fixture/home_automation_agent/simple_test.test.json",
       num_runs=4,
   )
+
+
+@pytest.mark.asyncio
+async def test_eval_agent_async():
+  await AgentEvaluator.evaluate(
+      agent_module="tests.integration.fixture.hello_world_agent_async",
+      eval_dataset_file_path_or_dir=(
+          "tests/integration/fixture/hello_world_agent_async/roll_die.test.json"
+      ),
+      num_runs=4,
+  )
