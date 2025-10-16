@@ -14,17 +14,23 @@
 
 """Tests for the artifact service."""
 
+from datetime import datetime
 import enum
 from typing import Optional
 from typing import Union
 from unittest import mock
+from unittest.mock import patch
 
+from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.genai import types
 import pytest
 
 Enum = enum.Enum
+
+# Define a fixed datetime object to be returned by datetime.now()
+FIXED_DATETIME = datetime(2025, 1, 1, 12, 0, 0)
 
 
 class ArtifactServiceType(Enum):
@@ -195,6 +201,15 @@ async def test_save_load_delete(service_type):
       == artifact
   )
 
+  # Attempt to load a version that doesn't exist
+  assert not await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=3,
+  )
+
   await artifact_service.delete_artifact(
       app_name=app_name,
       user_id=user_id,
@@ -322,3 +337,171 @@ async def test_list_keys_preserves_user_prefix():
   # Should contain prefixed names and session file
   expected_keys = ["user:document.pdf", "user:image.png", "session_file.txt"]
   assert sorted(artifact_keys) == sorted(expected_keys)
+
+
+@pytest.mark.asyncio
+async def test_list_artifact_versions_and_get_artifact_version():
+  """Tests listing artifact versions and getting a specific version."""
+  artifact_service = InMemoryArtifactService()
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  filename = "filename"
+  versions = [
+      types.Part.from_bytes(
+          data=i.to_bytes(2, byteorder="big"), mime_type="text/plain"
+      )
+      for i in range(4)
+  ]
+
+  with patch(
+      "google.adk.artifacts.base_artifact_service.datetime"
+  ) as mock_datetime:
+    mock_datetime.now.return_value = FIXED_DATETIME
+
+    for i in range(4):
+      await artifact_service.save_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+          artifact=versions[i],
+          custom_metadata={"key": "value" + str(i)},
+      )
+
+    artifact_versions = await artifact_service.list_artifact_versions(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+    )
+
+    expected_artifact_versions = [
+        ArtifactVersion(
+            version=i,
+            canonical_uri=(
+                f"memory://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{filename}/versions/{i}"
+            ),
+            custom_metadata={"key": "value" + str(i)},
+            mime_type="text/plain",
+            create_time=FIXED_DATETIME.timestamp(),
+        )
+        for i in range(4)
+    ]
+    assert artifact_versions == expected_artifact_versions
+
+    # Get latest artifact version when version is not specified
+    assert (
+        await artifact_service.get_artifact_version(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+        )
+        == expected_artifact_versions[-1]
+    )
+
+    # Get artifact version by version number
+    assert (
+        await artifact_service.get_artifact_version(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            version=2,
+        )
+        == expected_artifact_versions[2]
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_artifact_versions_with_user_prefix():
+  """Tests listing artifact versions with user prefix."""
+  artifact_service = InMemoryArtifactService()
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  user_scoped_filename = "user:document.pdf"
+  versions = [
+      types.Part.from_bytes(
+          data=i.to_bytes(2, byteorder="big"), mime_type="text/plain"
+      )
+      for i in range(4)
+  ]
+
+  with patch(
+      "google.adk.artifacts.base_artifact_service.datetime"
+  ) as mock_datetime:
+    mock_datetime.now.return_value = FIXED_DATETIME
+
+    for i in range(4):
+      # Save artifacts with "user:" prefix (cross-session artifacts)
+      await artifact_service.save_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=user_scoped_filename,
+          artifact=versions[i],
+          custom_metadata={"key": "value" + str(i)},
+      )
+
+    artifact_versions = await artifact_service.list_artifact_versions(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=user_scoped_filename,
+    )
+
+    expected_artifact_versions = [
+        ArtifactVersion(
+            version=i,
+            canonical_uri=(
+                f"memory://apps/{app_name}/users/{user_id}/artifacts/{user_scoped_filename}/versions/{i}"
+            ),
+            custom_metadata={"key": "value" + str(i)},
+            mime_type="text/plain",
+            create_time=FIXED_DATETIME.timestamp(),
+        )
+        for i in range(4)
+    ]
+    assert artifact_versions == expected_artifact_versions
+
+
+@pytest.mark.asyncio
+async def test_get_artifact_version_artifact_does_not_exist():
+  """Tests getting an artifact version when artifact does not exist."""
+  artifact_service = InMemoryArtifactService()
+  assert not await artifact_service.get_artifact_version(
+      app_name="test_app",
+      user_id="test_user",
+      session_id="session_id",
+      filename="filename",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_artifact_version_out_of_index():
+  """Tests loading an artifact with an out-of-index version."""
+  artifact_service = InMemoryArtifactService()
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  filename = "filename"
+  artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=artifact,
+  )
+
+  # Attempt to get a version that doesn't exist
+  assert not await artifact_service.get_artifact_version(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=3,
+  )
