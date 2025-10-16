@@ -24,13 +24,10 @@ def parse_document(doc_path: str = "uploaded_document") -> str:
   Returns:
     Success message with output path
   """
-  # Handle both uploaded file identifiers and full paths
-  if '/' in doc_path:
-    # Full path provided
-    run_id = os.path.basename(os.path.dirname(doc_path))
-  else:
-    # Uploaded file display name or simple identifier
-    run_id = doc_path.replace('.', '_')
+  # Get the base name, which is the final component of the path (e.g., "file.pdf").
+  base_name = os.path.basename(doc_path)
+  # Use the name without extension as the run_id (e.g., "file").
+  run_id, _ = os.path.splitext(base_name)
 
   output_path = f"output/{run_id}.xml"
   os.makedirs(os.path.dirname(output_path), exist_ok=True)
