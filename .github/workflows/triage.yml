@@ -3,8 +3,6 @@ name: ADK Issue Triaging Agent
 on:
   issues:
     types: [opened, reopened]
-  schedule:
-    - cron: '0 */6 * * *' # every 6h
 
 jobs:
   agent-triage-issues:

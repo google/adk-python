@@ -381,12 +381,11 @@ class Runner:
               run_config=run_config,
               state_delta=state_delta,
           )
-          if invocation_context.end_of_agents.get(self.agent.name):
-            # Directly return if the root agent has already ended.
-            # TODO: Handle the case where the invocation-to-resume started from
-            # a sub_agent:
-            # invocation1: root_agent -> sub_agent1
-            # invocation2: sub_agent1 [paused][resume]
+          if invocation_context.end_of_agents.get(
+              invocation_context.agent.name
+          ):
+            # Directly return if the current agent in invocation context is
+            # already final.
             return
         else:
           invocation_context = await self._setup_context_for_new_invocation(
@@ -869,6 +868,13 @@ class Runner:
       )
     # Step 4: Populate agent states for the current invocation.
     invocation_context.populate_invocation_agent_states()
+    # Step 5: Set agent to run for the invocation.
+    #
+    # If the root agent is not found in end_of_agents, it means the invocation
+    # started from a sub-agent and paused on a sub-agent.
+    # We should find the appropriate agent to run to continue the invocation.
+    if self.agent.name not in invocation_context.end_of_agents:
+      invocation_context.agent = self._find_agent_to_run(session, self.agent)
     return invocation_context
 
   def _find_user_message_for_invocation(

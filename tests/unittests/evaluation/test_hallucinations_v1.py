@@ -1446,6 +1446,73 @@ async def test_evaluate_invocations_no_nl_response(hallucinations_metric):
 
 
 @pytest.mark.asyncio
+async def test_evaluate_all_invocations_not_evaluated(hallucinations_metric):
+  metric = hallucinations_metric
+  app_details = AppDetails(
+      agent_details={
+          "root": AgentDetails(
+              name="root",
+              instructions="Root agent instructions.",
+              tool_declarations=[],
+          ),
+      },
+  )
+  user_content = genai_types.Content(
+      parts=[genai_types.Part(text="User query.")]
+  )
+  actual_invocation = Invocation(
+      app_details=app_details,
+      user_content=user_content,
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="root",
+                  content=genai_types.Content(
+                      parts=[
+                          genai_types.Part(text="Intermediate NL response."),
+                      ]
+                  ),
+              ),
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Final response.")]
+      ),
+  )
+  expected_invocation = Invocation(
+      app_details=app_details,
+      user_content=user_content,
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Final response.")]
+      ),
+  )
+
+  async def mock_evaluate_nl_response(nl_response, context):
+    return None, "Judge model error."
+
+  with patch(
+      "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
+      side_effect=mock_evaluate_nl_response,
+  ):
+    result = await metric.evaluate_invocations(
+        [actual_invocation, actual_invocation],
+        [expected_invocation, expected_invocation],
+    )
+
+    assert len(result.per_invocation_results) == 2
+    assert result.per_invocation_results[0].score is None
+    assert (
+        result.per_invocation_results[0].eval_status == EvalStatus.NOT_EVALUATED
+    )
+    assert result.per_invocation_results[1].score is None
+    assert (
+        result.per_invocation_results[1].eval_status == EvalStatus.NOT_EVALUATED
+    )
+    assert result.overall_score is None
+    assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+
+
+@pytest.mark.asyncio
 async def test_evaluate_invocations_partial_failure(hallucinations_metric):
   metric = hallucinations_metric
   app_details = AppDetails(

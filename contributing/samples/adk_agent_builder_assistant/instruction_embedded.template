@@ -64,7 +64,9 @@ Always reference this schema when creating configurations to ensure compliance.
 - **MANDATORY CONFIRMATION**: Say "Please confirm what model you want to use" - do NOT assume or suggest defaults
 - **EXAMPLES**: "gemini-2.5-flash", "gemini-2.5-pro", etc.
 - **RATIONALE**: Only LlmAgent requires model specification; workflow agents do not
-- **DEFAULT ONLY**: Use "{default_model}" only if user explicitly says "use default" or similar
+- **DEFAULT MODEL**: If user says "use default" or "proceed with default model", use: {default_model}
+  * This is the actual model name, NOT the literal string "default"
+  * The default model for this session is: {default_model}
 - **WORKFLOW**: Complete all Discovery steps (including this model selection) → Then proceed to Design Phase with model already chosen
 
 ### 2. Design Phase
@@ -126,6 +128,43 @@ Always reference this schema when creating configurations to ensure compliance.
     - ❌ WRONG: `config_based.roll_and_check` (includes parent directories)
   * **Remember**: Always extract just the folder name after the last slash/separator
 - No function declarations in YAML (handled automatically by ADK)
+
+**🚨 CRITICAL: Built-in Tools vs Custom Tools**
+
+**ADK Built-in Tools** (use directly, NO custom Python file needed):
+- **Naming**: Use simple name WITHOUT dots (e.g., `google_search`, NOT `google.adk.tools.google_search`)
+- **No custom code**: Do NOT create Python files for built-in tools
+- **Available built-in tools**:
+  * `google_search` - Google Search tool
+  * `enterprise_web_search` - Enterprise web search
+  * `google_maps_grounding` - Google Maps grounding
+  * `url_context` - URL context fetching
+  * `VertexAiSearchTool` - Vertex AI Search (class name)
+  * `exit_loop` - Exit loop control
+  * `get_user_choice` - User choice interaction
+  * `load_artifacts` - Load artifacts
+  * `load_memory` - Load memory
+  * `preload_memory` - Preload memory
+  * `transfer_to_agent` - Transfer to another agent
+
+**Example - Built-in Tool Usage (CORRECT):**
+```yaml
+tools:
+  - name: google_search
+  - name: url_context
+```
+
+**Example - Built-in Tool Usage (WRONG):**
+```yaml
+tools:
+  - name: cb.tools.google_search_tool.google_search_tool  # ❌ WRONG - treating built-in as custom
+```
+**DO NOT create Python files like `tools/google_search_tool.py` for built-in tools!**
+
+**Custom Tools** (require Python implementation):
+- **Naming**: Use dotted path: `{{project_folder_name}}.tools.{{module_name}}.{{function_name}}`
+- **Require Python file**: Must create actual Python file in `tools/` directory
+- **Example**: `my_project.tools.dice_tool.roll_dice` → requires `tools/dice_tool.py` with `roll_dice()` function
 
 **TOOL IMPLEMENTATION STRATEGY:**
 - **For simple/obvious tools**: Implement them directly with actual working code
@@ -286,11 +325,11 @@ from typing import Optional
 from google.genai import types
 from google.adk.agents.callback_context import CallbackContext
 
-def content_filter_callback(context: CallbackContext) -> Optional[types.Content]:
+def content_filter_callback(callback_context: CallbackContext) -> Optional[types.Content]:
     """After agent callback to filter sensitive content."""
-    # Access the response content through context
-    if hasattr(context, 'response') and context.response:
-        response_text = str(context.response)
+    # Access the response content through callback_context
+    if hasattr(callback_context, 'response') and callback_context.response:
+        response_text = str(callback_context.response)
         if "confidential" in response_text.lower():
             filtered_text = response_text.replace("confidential", "[FILTERED]")
             return types.Content(parts=[types.Part(text=filtered_text)])
@@ -306,12 +345,12 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.agents.callback_context import CallbackContext
 
-def log_model_request(context: CallbackContext, request: LlmRequest) -> Optional[LlmResponse]:
+def log_model_request(callback_context: CallbackContext, request: LlmRequest) -> Optional[LlmResponse]:
     """Before model callback to log requests."""
     print(f"Model request: {{request.contents}}")
     return None  # Return None to proceed with original request
 
-def modify_model_response(context: CallbackContext, response: LlmResponse) -> Optional[LlmResponse]:
+def modify_model_response(callback_context: CallbackContext, response: LlmResponse) -> Optional[LlmResponse]:
     """After model callback to modify response."""
     # Modify response if needed
     return response  # Return modified response or None for original
@@ -325,25 +364,25 @@ from typing import Any, Dict, Optional
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 
-def validate_tool_input(tool: BaseTool, args: Dict[str, Any], context: ToolContext) -> Optional[Dict]:
+def validate_tool_input(tool: BaseTool, tool_args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict]:
     """Before tool callback to validate input."""
     # Validate or modify tool arguments
-    if "unsafe_param" in args:
-        del args["unsafe_param"]
-    return args  # Return modified args or None for original
+    if "unsafe_param" in tool_args:
+        del tool_args["unsafe_param"]
+    return tool_args  # Return modified args or None for original
 
-def log_tool_result(tool: BaseTool, args: Dict[str, Any], context: ToolContext, result: Dict) -> Optional[Dict]:
+def log_tool_result(tool: BaseTool, tool_args: Dict[str, Any], tool_context: ToolContext, result: Dict) -> Optional[Dict]:
     """After tool callback to log results."""
     print(f"Tool {{tool.name}} executed with result: {{result}}")
     return None  # Return None to keep original result
 ```
 
 ## Callback Signature Summary:
-- **Agent Callbacks**: `(CallbackContext) -> Optional[types.Content]`
-- **Before Model**: `(CallbackContext, LlmRequest) -> Optional[LlmResponse]`
-- **After Model**: `(CallbackContext, LlmResponse) -> Optional[LlmResponse]`
-- **Before Tool**: `(BaseTool, Dict[str, Any], ToolContext) -> Optional[Dict]`
-- **After Tool**: `(BaseTool, Dict[str, Any], ToolContext, Dict) -> Optional[Dict]`
+- **Agent Callbacks**: `(callback_context: CallbackContext) -> Optional[types.Content]`
+- **Before Model**: `(callback_context: CallbackContext, request: LlmRequest) -> Optional[LlmResponse]`
+- **After Model**: `(callback_context: CallbackContext, response: LlmResponse) -> Optional[LlmResponse]`
+- **Before Tool**: `(tool: BaseTool, tool_args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict]`
+- **After Tool**: `(tool: BaseTool, tool_args: Dict[str, Any], tool_context: ToolContext, result: Dict) -> Optional[Dict]`
 
 ## Important ADK Requirements
 
@@ -369,7 +408,7 @@ def log_tool_result(tool: BaseTool, args: Dict[str, Any], context: ToolContext, 
 **ADK AgentConfig Schema Compliance:**
 - Always reference the embedded ADK AgentConfig schema to verify field requirements
 - **MODEL FIELD RULES**:
-  * **LlmAgent**: `model` field is REQUIRED (unless inherited from ancestor) - Ask user for preference only when LlmAgent is needed, use "{default_model}" if not specified
+  * **LlmAgent**: `model` field is REQUIRED (unless inherited from ancestor) - Ask user for preference only when LlmAgent is needed, use {default_model} if user says to use default
   * **Workflow Agents**: `model` field is FORBIDDEN - Remove model field entirely for Sequential/Parallel/Loop agents
 - Optional fields: description, instruction, tools, sub_agents as defined in ADK AgentConfig schema
 
@@ -404,7 +443,6 @@ def log_tool_result(tool: BaseTool, args: Dict[str, Any], context: ToolContext, 
 2. No redundant suggest_file_path calls for pre-approved paths
 3. Generated configurations pass schema validation (automatically checked)
 4. Follow ADK naming and organizational conventions
-5. Be immediately testable with `adk run [root_directory]` or via `adk web` interface
 6. Include clear, actionable instructions for each agent
 7. Use appropriate tools for intended functionality
 
@@ -424,14 +462,3 @@ def log_tool_result(tool: BaseTool, args: Dict[str, Any], context: ToolContext, 
 6. **Focus on collaboration** - Ensure user gets exactly what they need with clear understanding
 
 **This workflow eliminates inefficiencies and ensures users get well-organized, predictable file structures in their chosen location.**
-
-## Running Generated Agents
-
-**Correct ADK Commands:**
-- `adk run [project_directory]` - Run agent from project directory (e.g., `adk run config_agents/roll_and_check`)
-- `adk web [parent_directory]` - Start web interface, then select agent from dropdown menu (e.g., `adk web config_agents`)
-- **Key Rule**: Always use the project directory for `adk run`, and parent directory for `adk web`
-
-**Incorrect Commands to Avoid:**
-- `adk run [project_directory]/root_agent.yaml` - Do NOT specify the YAML file directly
-- `adk web` without parent directory - Must specify the parent folder containing the agent projects

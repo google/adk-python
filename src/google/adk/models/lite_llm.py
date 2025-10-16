@@ -65,8 +65,9 @@ _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 
 
-class ChatCompletionFileUrlObject(TypedDict):
+class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
+  file_id: str
   format: str
 
 
@@ -281,6 +282,16 @@ def _get_content(
         })
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
+    elif part.file_data and part.file_data.file_uri:
+      file_object: ChatCompletionFileUrlObject = {
+          "file_id": part.file_data.file_uri,
+      }
+      if part.file_data.mime_type:
+        file_object["format"] = part.file_data.mime_type
+      content_objects.append({
+          "type": "file",
+          "file": file_object,
+      })
 
   return content_objects
 

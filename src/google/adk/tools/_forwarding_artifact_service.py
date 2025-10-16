@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
 
+from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
 
 if TYPE_CHECKING:
@@ -42,6 +44,7 @@ class ForwardingArtifactService(BaseArtifactService):
       filename: str,
       artifact: types.Part,
       session_id: Optional[str] = None,
+      custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     return await self.tool_context.save_artifact(
         filename=filename, artifact=artifact
@@ -104,3 +107,26 @@ class ForwardingArtifactService(BaseArtifactService):
         session_id=self._invocation_context.session.id,
         filename=filename,
     )
+
+  @override
+  async def list_artifact_versions(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+  ) -> list[ArtifactVersion]:
+    raise NotImplementedError("list_artifact_versions is not implemented yet.")
+
+  @override
+  async def get_artifact_version(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+      version: Optional[int] = None,
+  ) -> Optional[ArtifactVersion]:
+    raise NotImplementedError("get_artifact_version is not implemented yet.")
