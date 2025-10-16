@@ -286,7 +286,7 @@ class BaseAgent(BaseModel):
       with tracer.start_as_current_span(f'invoke_agent {self.name}') as span:
         ctx = self._create_invocation_context(parent_context)
         tracing.trace_agent_invocation(span, self, ctx)
-        if event := await self.__handle_before_agent_callback(ctx):
+        if event := await self._handle_before_agent_callback(ctx):
           yield event
         if ctx.end_invocation:
           return
@@ -298,7 +298,7 @@ class BaseAgent(BaseModel):
         if ctx.end_invocation:
           return
 
-        if event := await self.__handle_after_agent_callback(ctx):
+        if event := await self._handle_after_agent_callback(ctx):
           yield event
 
     async with Aclosing(_run_with_trace()) as agen:
@@ -324,7 +324,7 @@ class BaseAgent(BaseModel):
       with tracer.start_as_current_span(f'invoke_agent {self.name}') as span:
         ctx = self._create_invocation_context(parent_context)
         tracing.trace_agent_invocation(span, self, ctx)
-        if event := await self.__handle_before_agent_callback(ctx):
+        if event := await self._handle_before_agent_callback(ctx):
           yield event
         if ctx.end_invocation:
           return
@@ -333,7 +333,7 @@ class BaseAgent(BaseModel):
           async for event in agen:
             yield event
 
-        if event := await self.__handle_after_agent_callback(ctx):
+        if event := await self._handle_after_agent_callback(ctx):
           yield event
 
     async with Aclosing(_run_with_trace()) as agen:
@@ -438,7 +438,7 @@ class BaseAgent(BaseModel):
       return self.after_agent_callback
     return [self.after_agent_callback]
 
-  async def __handle_before_agent_callback(
+  async def _handle_before_agent_callback(
       self, ctx: InvocationContext
   ) -> Optional[Event]:
     """Runs the before_agent_callback if it exists.
@@ -496,7 +496,7 @@ class BaseAgent(BaseModel):
 
     return None
 
-  async def __handle_after_agent_callback(
+  async def _handle_after_agent_callback(
       self, invocation_context: InvocationContext
   ) -> Optional[Event]:
     """Runs the after_agent_callback if it exists.
