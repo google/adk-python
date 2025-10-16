@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import logging
 import time
 
 from adk_pr_triaging_agent import agent
@@ -22,9 +23,12 @@ from adk_pr_triaging_agent.settings import REPO
 from adk_pr_triaging_agent.utils import call_agent_async
 from adk_pr_triaging_agent.utils import parse_number_string
 from google.adk.runners import InMemoryRunner
+from google.adk.utils import logs
 
 APP_NAME = "adk_pr_triaging_app"
 USER_ID = "adk_pr_triaging_user"
+
+logs.setup_adk_logger(level=logging.DEBUG)
 
 
 async def main():
