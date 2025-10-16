@@ -23,6 +23,7 @@ from typing import Any
 from typing import Optional
 import uuid
 
+from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
@@ -112,6 +113,8 @@ class DynamicPickleType(TypeDecorator):
   impl = PickleType
 
   def load_dialect_impl(self, dialect):
+    if dialect.name == "mysql":
+      return dialect.type_descriptor(mysql.LONGBLOB)
     if dialect.name == "spanner+spanner":
       from google.cloud.sqlalchemy_spanner.sqlalchemy_spanner import SpannerPickleType
 
@@ -250,6 +253,12 @@ class StorageEvent(Base):
   custom_metadata: Mapped[dict[str, Any]] = mapped_column(
       DynamicJSON, nullable=True
   )
+  usage_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  citation_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
 
   partial: Mapped[bool] = mapped_column(Boolean, nullable=True)
   turn_complete: Mapped[bool] = mapped_column(Boolean, nullable=True)
@@ -316,6 +325,14 @@ class StorageEvent(Base):
       )
     if event.custom_metadata:
       storage_event.custom_metadata = event.custom_metadata
+    if event.usage_metadata:
+      storage_event.usage_metadata = event.usage_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.citation_metadata:
+      storage_event.citation_metadata = event.citation_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
     return storage_event
 
   def to_event(self) -> Event:
@@ -326,17 +343,23 @@ class StorageEvent(Base):
         branch=self.branch,
         actions=self.actions,
         timestamp=self.timestamp.timestamp(),
-        content=_session_util.decode_content(self.content),
         long_running_tool_ids=self.long_running_tool_ids,
         partial=self.partial,
         turn_complete=self.turn_complete,
         error_code=self.error_code,
         error_message=self.error_message,
         interrupted=self.interrupted,
-        grounding_metadata=_session_util.decode_grounding_metadata(
-            self.grounding_metadata
-        ),
         custom_metadata=self.custom_metadata,
+        content=_session_util.decode_model(self.content, types.Content),
+        grounding_metadata=_session_util.decode_model(
+            self.grounding_metadata, types.GroundingMetadata
+        ),
+        usage_metadata=_session_util.decode_model(
+            self.usage_metadata, types.GenerateContentResponseUsageMetadata
+        ),
+        citation_metadata=_session_util.decode_model(
+            self.citation_metadata, types.CitationMetadata
+        ),
     )
 
 
@@ -554,30 +577,42 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     with self.database_session_factory() as sql_session:
-      results = (
-          sql_session.query(StorageSession)
-          .filter(StorageSession.app_name == app_name)
-          .filter(StorageSession.user_id == user_id)
-          .all()
+      query = sql_session.query(StorageSession).filter(
+          StorageSession.app_name == app_name
       )
+      if user_id is not None:
+        query = query.filter(StorageSession.user_id == user_id)
+      results = query.all()
 
-      # Fetch states from storage
+      # Fetch app state from storage
       storage_app_state = sql_session.get(StorageAppState, (app_name))
-      storage_user_state = sql_session.get(
-          StorageUserState, (app_name, user_id)
-      )
-
       app_state = storage_app_state.state if storage_app_state else {}
-      user_state = storage_user_state.state if storage_user_state else {}
+
+      # Fetch user state(s) from storage
+      user_states_map = {}
+      if user_id is not None:
+        storage_user_state = sql_session.get(
+            StorageUserState, (app_name, user_id)
+        )
+        if storage_user_state:
+          user_states_map[user_id] = storage_user_state.state
+      else:
+        all_user_states_for_app = (
+            sql_session.query(StorageUserState)
+            .filter(StorageUserState.app_name == app_name)
+            .all()
+        )
+        for storage_user_state in all_user_states_for_app:
+          user_states_map[storage_user_state.user_id] = storage_user_state.state
 
       sessions = []
       for storage_session in results:
         session_state = storage_session.state
+        user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
-
         sessions.append(storage_session.to_session(state=merged_state))
       return ListSessionsResponse(sessions=sessions)
 

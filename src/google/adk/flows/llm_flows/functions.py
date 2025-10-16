@@ -275,21 +275,37 @@ async def _execute_single_function_call_async(
     tool_confirmation: Optional[ToolConfirmation] = None,
 ) -> Optional[Event]:
   """Execute a single function call with thread safety for state modifications."""
-  tool, tool_context = _get_tool_and_context(
-      invocation_context,
-      function_call,
-      tools_dict,
-      tool_confirmation,
+  # Do not use "args" as the variable name, because it is a reserved keyword
+  # in python debugger.
+  # Make a deep copy to avoid being modified.
+  function_args = (
+      copy.deepcopy(function_call.args) if function_call.args else {}
   )
 
-  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
-    # Do not use "args" as the variable name, because it is a reserved keyword
-    # in python debugger.
-    # Make a deep copy to avoid being modified.
-    function_args = (
-        copy.deepcopy(function_call.args) if function_call.args else {}
-    )
+  tool_context = _create_tool_context(
+      invocation_context, function_call, tool_confirmation
+  )
 
+  try:
+    tool = _get_tool(function_call, tools_dict)
+  except ValueError as tool_error:
+    tool = BaseTool(name=function_call.name, description='Tool not found')
+    error_response = (
+        await invocation_context.plugin_manager.run_on_tool_error_callback(
+            tool=tool,
+            tool_args=function_args,
+            tool_context=tool_context,
+            error=tool_error,
+        )
+    )
+    if error_response is not None:
+      return __build_response_event(
+          tool, error_response, tool_context, invocation_context
+      )
+    else:
+      raise tool_error
+
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
     function_response = (
@@ -639,24 +655,45 @@ async def _process_function_live_helper(
   return function_response
 
 
+def _get_tool(
+    function_call: types.FunctionCall, tools_dict: dict[str, BaseTool]
+):
+  """Returns the tool corresponding to the function call."""
+  if function_call.name not in tools_dict:
+    raise ValueError(
+        f'Function {function_call.name} is not found in the tools_dict:'
+        f' {tools_dict.keys()}.'
+    )
+
+  return tools_dict[function_call.name]
+
+
+def _create_tool_context(
+    invocation_context: InvocationContext,
+    function_call: types.FunctionCall,
+    tool_confirmation: Optional[ToolConfirmation] = None,
+):
+  """Creates a ToolContext object."""
+  return ToolContext(
+      invocation_context=invocation_context,
+      function_call_id=function_call.id,
+      tool_confirmation=tool_confirmation,
+  )
+
+
 def _get_tool_and_context(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     tool_confirmation: Optional[ToolConfirmation] = None,
 ):
-  if function_call.name not in tools_dict:
-    raise ValueError(
-        f'Function {function_call.name} is not found in the tools_dict.'
-    )
-
-  tool_context = ToolContext(
-      invocation_context=invocation_context,
-      function_call_id=function_call.id,
-      tool_confirmation=tool_confirmation,
+  """Returns the tool and tool context corresponding to the function call."""
+  tool = _get_tool(function_call, tools_dict)
+  tool_context = _create_tool_context(
+      invocation_context,
+      function_call,
+      tool_confirmation,
   )
-
-  tool = tools_dict[function_call.name]
 
   return (tool, tool_context)
 

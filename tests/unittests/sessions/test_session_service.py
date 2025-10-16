@@ -116,9 +116,70 @@ async def test_create_and_list_sessions(service_type):
       app_name=app_name, user_id=user_id
   )
   sessions = list_sessions_response.sessions
-  for i in range(len(sessions)):
-    assert sessions[i].id == session_ids[i]
-    assert sessions[i].state == {'key': 'value' + session_ids[i]}
+  assert len(sessions) == len(session_ids)
+  assert {s.id for s in sessions} == set(session_ids)
+  for session in sessions:
+    assert session.state == {'key': 'value' + session.id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+)
+async def test_list_sessions_all_users(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id_1 = 'user1'
+  user_id_2 = 'user2'
+
+  await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id_1,
+      session_id='session1a',
+      state={'key': 'value1a'},
+  )
+  await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id_1,
+      session_id='session1b',
+      state={'key': 'value1b'},
+  )
+  await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id_2,
+      session_id='session2a',
+      state={'key': 'value2a'},
+  )
+
+  # List sessions for user1
+  list_sessions_response_1 = await session_service.list_sessions(
+      app_name=app_name, user_id=user_id_1
+  )
+  sessions_1 = list_sessions_response_1.sessions
+  assert len(sessions_1) == 2
+  assert {s.id for s in sessions_1} == {'session1a', 'session1b'}
+  for session in sessions_1:
+    if session.id == 'session1a':
+      assert session.state == {'key': 'value1a'}
+    else:
+      assert session.state == {'key': 'value1b'}
+
+  # List sessions for user2
+  list_sessions_response_2 = await session_service.list_sessions(
+      app_name=app_name, user_id=user_id_2
+  )
+  sessions_2 = list_sessions_response_2.sessions
+  assert len(sessions_2) == 1
+  assert sessions_2[0].id == 'session2a'
+  assert sessions_2[0].state == {'key': 'value2a'}
+
+  # List sessions for all users
+  list_sessions_response_all = await session_service.list_sessions(
+      app_name=app_name, user_id=None
+  )
+  sessions_all = list_sessions_response_all.sessions
+  assert len(sessions_all) == 3
+  assert {s.id for s in sessions_all} == {'session1a', 'session1b', 'session2a'}
 
 
 @pytest.mark.asyncio
@@ -329,6 +390,11 @@ async def test_append_event_complete(service_type):
       error_code='error_code',
       error_message='error_message',
       interrupted=True,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=1, candidates_token_count=1, total_token_count=2
+      ),
+      citation_metadata=types.CitationMetadata(),
+      custom_metadata={'custom_key': 'custom_value'},
   )
   await session_service.append_event(session=session, event=event)
 

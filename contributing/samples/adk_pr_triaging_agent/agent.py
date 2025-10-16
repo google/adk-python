@@ -69,8 +69,10 @@ def get_pull_request_details(pr_number: int) -> str:
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $prNumber) {
           id
+          number
           title
           body
+          state
           author {
             login
           }

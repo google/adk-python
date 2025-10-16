@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,9 @@ from opentelemetry import trace
 from .. import version
 from ..events.event import Event
 
+# By default some ADK spans include attributes with potential PII data.
+# This env, when set to false, allows to disable populating those attributes.
+ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS = 'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'
 # TODO: Replace with constant from opentelemetry.semconv when it reaches version 1.37 in g3.
 GEN_AI_AGENT_DESCRIPTION = 'gen_ai.agent.description'
 GEN_AI_AGENT_NAME = 'gen_ai.agent.name'
@@ -138,10 +142,13 @@ def trace_tool_call(
   span.set_attribute('gcp.vertex.agent.llm_request', '{}')
   span.set_attribute('gcp.vertex.agent.llm_response', '{}')
 
-  span.set_attribute(
-      'gcp.vertex.agent.tool_call_args',
-      _safe_json_serialize(args),
-  )
+  if _should_add_request_response_to_spans():
+    span.set_attribute(
+        'gcp.vertex.agent.tool_call_args',
+        _safe_json_serialize(args),
+    )
+  else:
+    span.set_attribute('gcp.vertex.agent.tool_call_args', {})
 
   # Tracing tool response
   tool_call_id = '<not specified>'
@@ -163,10 +170,13 @@ def trace_tool_call(
   if not isinstance(tool_response, dict):
     tool_response = {'result': tool_response}
   span.set_attribute('gcp.vertex.agent.event_id', function_response_event.id)
-  span.set_attribute(
-      'gcp.vertex.agent.tool_response',
-      _safe_json_serialize(tool_response),
-  )
+  if _should_add_request_response_to_spans():
+    span.set_attribute(
+        'gcp.vertex.agent.tool_response',
+        _safe_json_serialize(tool_response),
+    )
+  else:
+    span.set_attribute('gcp.vertex.agent.tool_response', {})
 
 
 def trace_merged_tool_calls(
@@ -200,10 +210,13 @@ def trace_merged_tool_calls(
   except Exception:  # pylint: disable=broad-exception-caught
     function_response_event_json = '<not serializable>'
 
-  span.set_attribute(
-      'gcp.vertex.agent.tool_response',
-      function_response_event_json,
-  )
+  if _should_add_request_response_to_spans():
+    span.set_attribute(
+        'gcp.vertex.agent.tool_response',
+        function_response_event_json,
+    )
+  else:
+    span.set_attribute('gcp.vertex.agent.tool_response', {})
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
   span.set_attribute('gcp.vertex.agent.llm_request', '{}')
@@ -243,10 +256,13 @@ def trace_call_llm(
   )
   span.set_attribute('gcp.vertex.agent.event_id', event_id)
   # Consider removing once GenAI SDK provides a way to record this info.
-  span.set_attribute(
-      'gcp.vertex.agent.llm_request',
-      _safe_json_serialize(_build_llm_request_for_trace(llm_request)),
-  )
+  if _should_add_request_response_to_spans():
+    span.set_attribute(
+        'gcp.vertex.agent.llm_request',
+        _safe_json_serialize(_build_llm_request_for_trace(llm_request)),
+    )
+  else:
+    span.set_attribute('gcp.vertex.agent.llm_request', {})
   # Consider removing once GenAI SDK provides a way to record this info.
   if llm_request.config:
     if llm_request.config.top_p:
@@ -265,10 +281,13 @@ def trace_call_llm(
   except Exception:  # pylint: disable=broad-exception-caught
     llm_response_json = '<not serializable>'
 
-  span.set_attribute(
-      'gcp.vertex.agent.llm_response',
-      llm_response_json,
-  )
+  if _should_add_request_response_to_spans():
+    span.set_attribute(
+        'gcp.vertex.agent.llm_response',
+        llm_response_json,
+    )
+  else:
+    span.set_attribute('gcp.vertex.agent.llm_response', {})
 
   if llm_response.usage_metadata is not None:
     span.set_attribute(
@@ -309,15 +328,18 @@ def trace_send_data(
   span.set_attribute('gcp.vertex.agent.event_id', event_id)
   # Once instrumentation is added to the GenAI SDK, consider whether this
   # information still needs to be recorded by the Agent Development Kit.
-  span.set_attribute(
-      'gcp.vertex.agent.data',
-      _safe_json_serialize([
-          types.Content(role=content.role, parts=content.parts).model_dump(
-              exclude_none=True
-          )
-          for content in data
-      ]),
-  )
+  if _should_add_request_response_to_spans():
+    span.set_attribute(
+        'gcp.vertex.agent.data',
+        _safe_json_serialize([
+            types.Content(role=content.role, parts=content.parts).model_dump(
+                exclude_none=True
+            )
+            for content in data
+        ]),
+    )
+  else:
+    span.set_attribute('gcp.vertex.agent.data', {})
 
 
 def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
@@ -350,3 +372,14 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
         )
     )
   return result
+
+
+# Defaults to true for now to preserve backward compatibility.
+# Once prompt and response logging is well established in ADK, we might start
+# a deprecation of request/response content in spans by switching the default
+# to false.
+def _should_add_request_response_to_spans() -> bool:
+  disabled_via_env_var = os.getenv(
+      ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'true'
+  ).lower() in ('false', '0')
+  return not disabled_via_env_var

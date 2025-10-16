@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any
 from typing import Optional
@@ -28,6 +29,19 @@ from .base_artifact_service import BaseArtifactService
 logger = logging.getLogger("google_adk." + __name__)
 
 
+@dataclasses.dataclass
+class _ArtifactEntry:
+  """Represents a single version of an artifact stored in memory.
+
+  Attributes:
+    data: The actual data of the artifact.
+    artifact_version: Metadata about this specific version of the artifact.
+  """
+
+  data: types.Part
+  artifact_version: ArtifactVersion
+
+
 class InMemoryArtifactService(BaseArtifactService, BaseModel):
   """An in-memory implementation of the artifact service.
 
@@ -35,7 +49,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
   testing and development only.
   """
 
-  artifacts: dict[str, list[types.Part]] = Field(default_factory=dict)
+  artifacts: dict[str, list[_ArtifactEntry]] = Field(default_factory=dict)
 
   def _file_has_user_namespace(self, filename: str) -> bool:
     """Checks if the filename has a user namespace.
@@ -87,15 +101,34 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
-    # TODO: b/447451270 - Support saving artifact with custom metadata.
-    if custom_metadata:
-      raise NotImplementedError("custom_metadata is not supported yet.")
-
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if path not in self.artifacts:
       self.artifacts[path] = []
     version = len(self.artifacts[path])
-    self.artifacts[path].append(artifact)
+    if self._file_has_user_namespace(filename):
+      canonical_uri = f"memory://apps/{app_name}/users/{user_id}/artifacts/{filename}/versions/{version}"
+    else:
+      canonical_uri = f"memory://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{filename}/versions/{version}"
+
+    artifact_version = ArtifactVersion(
+        version=version,
+        canonical_uri=canonical_uri,
+    )
+    if custom_metadata:
+      artifact_version.custom_metadata = custom_metadata
+
+    if artifact.inline_data is not None:
+      artifact_version.mime_type = artifact.inline_data.mime_type
+    elif artifact.text is not None:
+      artifact_version.mime_type = "text/plain"
+    elif artifact.file_data is not None:
+      artifact_version.mime_type = artifact.file_data.mime_type
+    else:
+      raise ValueError("Not supported artifact type.")
+
+    self.artifacts[path].append(
+        _ArtifactEntry(data=artifact, artifact_version=artifact_version)
+    )
     return version
 
   @override
@@ -114,7 +147,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       return None
     if version is None:
       version = -1
-    return versions[version]
+    try:
+      return versions[version].data
+    except IndexError:
+      return None
 
   @override
   async def list_artifact_keys(
@@ -172,8 +208,11 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       filename: str,
       session_id: Optional[str] = None,
   ) -> list[ArtifactVersion]:
-    # TODO: b/447451270 - Support list_artifact_versions.
-    raise NotImplementedError("list_artifact_versions is not implemented yet.")
+    path = self._artifact_path(app_name, user_id, filename, session_id)
+    entries = self.artifacts.get(path)
+    if not entries:
+      return []
+    return [entry.artifact_version for entry in entries]
 
   @override
   async def get_artifact_version(
@@ -185,5 +224,14 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[ArtifactVersion]:
-    # TODO: b/447451270 - Support get_artifact_version.
-    raise NotImplementedError("get_artifact_version is not implemented yet.")
+    path = self._artifact_path(app_name, user_id, filename, session_id)
+    entries = self.artifacts.get(path)
+    if not entries:
+      return None
+
+    if version is None:
+      version = -1
+    try:
+      return entries[version].artifact_version
+    except IndexError:
+      return None

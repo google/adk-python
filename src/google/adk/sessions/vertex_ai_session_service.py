@@ -200,22 +200,25 @@ class VertexAiSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     api_client = self._get_api_client()
 
     sessions = []
+    config = {}
+    if user_id is not None:
+      config['filter'] = f'user_id="{user_id}"'
     sessions_iterator = api_client.agent_engines.sessions.list(
         name=f'reasoningEngines/{reasoning_engine_id}',
-        config={'filter': f'user_id="{user_id}"'},
+        config=config,
     )
 
     for api_session in sessions_iterator:
       sessions.append(
           Session(
               app_name=app_name,
-              user_id=user_id,
+              user_id=api_session.user_id,
               id=api_session.name.split('/')[-1],
               state=getattr(api_session, 'session_state', None) or {},
               last_update_time=api_session.update_time.timestamp(),
@@ -373,8 +376,9 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     interrupted = getattr(event_metadata, 'interrupted', None)
     branch = getattr(event_metadata, 'branch', None)
     custom_metadata = getattr(event_metadata, 'custom_metadata', None)
-    grounding_metadata = _session_util.decode_grounding_metadata(
-        getattr(event_metadata, 'grounding_metadata', None)
+    grounding_metadata = _session_util.decode_model(
+        getattr(event_metadata, 'grounding_metadata', None),
+        types.GroundingMetadata,
     )
   else:
     long_running_tool_ids = None
@@ -390,8 +394,8 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
       invocation_id=api_event_obj.invocation_id,
       author=api_event_obj.author,
       actions=event_actions,
-      content=_session_util.decode_content(
-          getattr(api_event_obj, 'content', None)
+      content=_session_util.decode_model(
+          getattr(api_event_obj, 'content', None), types.Content
       ),
       timestamp=api_event_obj.timestamp.timestamp(),
       error_code=getattr(api_event_obj, 'error_code', None),
