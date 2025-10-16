@@ -226,9 +226,10 @@ class AgentLoader(BaseAgentLoader):
     # If no root_agent was found by any pattern
     # Check if user might be in the wrong directory
     hint = ""
-    if os.path.isfile(os.path.join(agents_dir, "agent.py")) or os.path.isfile(
-        os.path.join(agents_dir, "root_agent.yaml")
-    ):
+    agents_path = Path(agents_dir)
+    if agents_path.joinpath("agent.py").is_file() or agents_path.joinpath(
+        "root_agent.yaml"
+    ).is_file():
       hint = (
           "\n\nHINT: It looks like you might be running 'adk web' from inside an"
           " agent directory. Try running 'adk web .' from the parent directory"
