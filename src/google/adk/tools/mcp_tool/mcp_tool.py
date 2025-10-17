@@ -17,8 +17,10 @@ from __future__ import annotations
 import base64
 import inspect
 import logging
+import sys
 from typing import Any
 from typing import Callable
+from typing import Dict
 from typing import Optional
 from typing import Union
 import warnings
@@ -27,6 +29,7 @@ from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
+from ...agents.readonly_context import ReadonlyContext
 from .._gemini_schema_util import _to_gemini_schema
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
@@ -36,8 +39,6 @@ from .mcp_session_manager import retry_on_closed_resource
 try:
   from mcp.types import Tool as McpBaseTool
 except ImportError as e:
-  import sys
-
   if sys.version_info < (3, 10):
     raise ImportError(
         "MCP Tool requires Python 3.10 or above. Please upgrade your Python"
@@ -75,6 +76,9 @@ class McpTool(BaseAuthenticatedTool):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
   ):
     """Initializes an MCPTool.
 
@@ -106,6 +110,7 @@ class McpTool(BaseAuthenticatedTool):
     self._mcp_tool = mcp_tool
     self._mcp_session_manager = mcp_session_manager
     self._require_confirmation = require_confirmation
+    self._header_provider = header_provider
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -192,10 +197,24 @@ class McpTool(BaseAuthenticatedTool):
         Any: The response from the tool.
     """
     # Extract headers from credential for session pooling
-    headers = await self._get_headers(tool_context, credential)
+    auth_headers = await self._get_headers(tool_context, credential)
+    dynamic_headers = None
+    if self._header_provider:
+      dynamic_headers = self._header_provider(
+          ReadonlyContext(tool_context._invocation_context)
+      )
+
+    headers: Dict[str, str] = {}
+    if auth_headers:
+      headers.update(auth_headers)
+    if dynamic_headers:
+      headers.update(dynamic_headers)
+    final_headers = headers if headers else None
 
     # Get the session from the session manager
-    session = await self._mcp_session_manager.create_session(headers=headers)
+    session = await self._mcp_session_manager.create_session(
+        headers=final_headers
+    )
 
     response = await session.call_tool(self._mcp_tool.name, arguments=args)
     return response
