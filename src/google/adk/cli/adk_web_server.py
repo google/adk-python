@@ -72,6 +72,7 @@ from ..evaluation.eval_case import SessionInput
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
+from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
@@ -85,7 +86,6 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
 from .cli_eval import EVAL_SESSION_ID_PREFIX
-from .cli_eval import EvalStatus
 from .utils import cleanup
 from .utils import common
 from .utils import envs

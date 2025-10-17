@@ -80,7 +80,7 @@ class DiscoveryEngineSearchTool(FunctionTool):
       self,
       query: str,
   ) -> dict[str, Any]:
-    """Search the discovery engine.
+    """Search through Vertex AI Search's discovery engine search API.
 
     Args:
       query: The search query.
@@ -113,12 +113,22 @@ class DiscoveryEngineSearchTool(FunctionTool):
       response = self._discovery_engine_client.search(request)
       for item in response.results:
         chunk = item.chunk
-        if not chunk or not chunk.document_metadata:
+        if not chunk:
           continue
 
+        title = ""
+        uri = ""
+        doc_metadata = chunk.document_metadata
+        if doc_metadata:
+          title = doc_metadata.title
+          uri = doc_metadata.uri
+          # Prioritize URI from struct_data if it exists.
+          if doc_metadata.struct_data and "uri" in doc_metadata.struct_data:
+            uri = doc_metadata.struct_data["uri"]
+
         results.append({
-            "title": chunk.document_metadata.title,
-            "url": chunk.document_metadata.uri,
+            "title": title,
+            "url": uri,
             "content": chunk.content,
         })
     except GoogleAPICallError as e:

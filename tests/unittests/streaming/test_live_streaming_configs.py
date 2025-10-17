@@ -586,3 +586,59 @@ def test_streaming_with_session_resumption_config():
       llm_request_sent_to_mock.live_connect_config.session_resumption.transparent
       is True
   )
+
+
+def test_streaming_with_context_window_compression_config():
+  """Test streaming with context window compression config."""
+  response = LlmResponse(turn_complete=True)
+
+  mock_model = testing_utils.MockModel.create([response])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+
+  # Create run config with context window compression
+  run_config = RunConfig(
+      context_window_compression=types.ContextWindowCompressionConfig(
+          trigger_tokens=1000,
+          sliding_window=types.SlidingWindow(target_tokens=500),
+      )
+  )
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+  assert len(mock_model.requests) == 1
+
+  # Get the request that was captured
+  llm_request_sent_to_mock = mock_model.requests[0]
+
+  # Assert that the request contained the correct configuration
+  assert llm_request_sent_to_mock.live_connect_config is not None
+  assert (
+      llm_request_sent_to_mock.live_connect_config.context_window_compression
+      is not None
+  )
+  assert (
+      llm_request_sent_to_mock.live_connect_config.context_window_compression.trigger_tokens
+      == 1000
+  )
+  assert (
+      llm_request_sent_to_mock.live_connect_config.context_window_compression.sliding_window.target_tokens
+      == 500
+  )

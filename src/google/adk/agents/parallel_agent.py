@@ -187,10 +187,6 @@ class ParallelAgent(BaseAgent):
     agent_runs = []
     # Prepare and collect async generators for each sub-agent.
     for sub_agent in self.sub_agents:
-      if agent_state is None:
-        # Reset sub-agent state to make sure each sub-agent starts fresh.
-        ctx.set_agent_state(sub_agent.name)
-
       sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
 
       # Only include sub-agents that haven't finished in a previous run.
