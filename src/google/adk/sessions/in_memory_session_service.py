@@ -22,6 +22,7 @@ import uuid
 
 from typing_extensions import override
 
+from . import _session_util
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -88,6 +89,17 @@ class InMemorySessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
+    state_deltas = _session_util.extract_state_delta(state)
+    app_state_delta = state_deltas['app']
+    user_state_delta = state_deltas['user']
+    session_state = state_deltas['session']
+    if app_state_delta:
+      self.app_state.setdefault(app_name, {}).update(app_state_delta)
+    if user_state_delta:
+      self.user_state.setdefault(app_name, {}).setdefault(user_id, {}).update(
+          user_state_delta
+      )
+
     session_id = (
         session_id.strip()
         if session_id and session_id.strip()
@@ -97,7 +109,7 @@ class InMemorySessionService(BaseSessionService):
         app_name=app_name,
         user_id=user_id,
         id=session_id,
-        state=state or {},
+        state=session_state or {},
         last_update_time=time.time(),
     )
 
@@ -174,11 +186,13 @@ class InMemorySessionService(BaseSessionService):
         if i >= 0:
           copied_session.events = copied_session.events[i + 1 :]
 
+    # Return a copy of the session object with merged state.
     return self._merge_state(app_name, user_id, copied_session)
 
   def _merge_state(
       self, app_name: str, user_id: str, copied_session: Session
   ) -> Session:
+    """Merges app and user state into session state."""
     # Merge app state
     if app_name in self.app_state:
       for key in self.app_state[app_name].keys():
@@ -269,11 +283,9 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    # Update the in-memory session.
-    await super().append_event(session=session, event=event)
-    session.last_update_time = event.timestamp
+    if event.partial:
+      return event
 
-    # Update the storage session
     app_name = session.app_name
     user_id = session.user_id
     session_id = session.id
@@ -293,21 +305,29 @@ class InMemorySessionService(BaseSessionService):
       _warning(f'session_id {session_id} not in sessions[app_name][user_id]')
       return event
 
-    if event.actions and event.actions.state_delta:
-      for key in event.actions.state_delta:
-        if key.startswith(State.APP_PREFIX):
-          self.app_state.setdefault(app_name, {})[
-              key.removeprefix(State.APP_PREFIX)
-          ] = event.actions.state_delta[key]
+    # Update the in-memory session.
+    await super().append_event(session=session, event=event)
+    session.last_update_time = event.timestamp
 
-        if key.startswith(State.USER_PREFIX):
-          self.user_state.setdefault(app_name, {}).setdefault(user_id, {})[
-              key.removeprefix(State.USER_PREFIX)
-          ] = event.actions.state_delta[key]
-
+    # Update the storage session
     storage_session = self.sessions[app_name][user_id].get(session_id)
-    await super().append_event(session=storage_session, event=event)
-
+    storage_session.events.append(event)
     storage_session.last_update_time = event.timestamp
+
+    if event.actions and event.actions.state_delta:
+      state_deltas = _session_util.extract_state_delta(
+          event.actions.state_delta
+      )
+      app_state_delta = state_deltas['app']
+      user_state_delta = state_deltas['user']
+      session_state_delta = state_deltas['session']
+      if app_state_delta:
+        self.app_state.setdefault(app_name, {}).update(app_state_delta)
+      if user_state_delta:
+        self.user_state.setdefault(app_name, {}).setdefault(user_id, {}).update(
+            user_state_delta
+        )
+      if session_state_delta:
+        storage_session.state.update(session_state_delta)
 
     return event

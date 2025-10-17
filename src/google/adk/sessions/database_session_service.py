@@ -465,20 +465,14 @@ class DatabaseSessionService(BaseSessionService):
     # 5. Return the session
 
     with self.database_session_factory() as sql_session:
-
       # Fetch app and user states from storage
       storage_app_state = sql_session.get(StorageAppState, (app_name))
-      storage_user_state = sql_session.get(
-          StorageUserState, (app_name, user_id)
-      )
-
-      app_state = storage_app_state.state if storage_app_state else {}
-      user_state = storage_user_state.state if storage_user_state else {}
-
-      # Create state tables if not exist
       if not storage_app_state:
         storage_app_state = StorageAppState(app_name=app_name, state={})
         sql_session.add(storage_app_state)
+      storage_user_state = sql_session.get(
+          StorageUserState, (app_name, user_id)
+      )
       if not storage_user_state:
         storage_user_state = StorageUserState(
             app_name=app_name, user_id=user_id, state={}
@@ -486,19 +480,16 @@ class DatabaseSessionService(BaseSessionService):
         sql_session.add(storage_user_state)
 
       # Extract state deltas
-      app_state_delta, user_state_delta, session_state = _extract_state_delta(
-          state
-      )
+      state_deltas = _session_util.extract_state_delta(state)
+      app_state_delta = state_deltas["app"]
+      user_state_delta = state_deltas["user"]
+      session_state = state_deltas["session"]
 
       # Apply state delta
-      app_state.update(app_state_delta)
-      user_state.update(user_state_delta)
-
-      # Store app and user state
       if app_state_delta:
-        storage_app_state.state = app_state
+        storage_app_state.state = storage_app_state.state | app_state_delta
       if user_state_delta:
-        storage_user_state.state = user_state
+        storage_user_state.state = storage_user_state.state | user_state_delta
 
       # Store the session
       storage_session = StorageSession(
@@ -513,7 +504,9 @@ class DatabaseSessionService(BaseSessionService):
       sql_session.refresh(storage_session)
 
       # Merge states for response
-      merged_state = _merge_state(app_state, user_state, session_state)
+      merged_state = _merge_state(
+          storage_app_state.state, storage_user_state.state, session_state
+      )
       session = storage_session.to_session(state=merged_state)
     return session
 
@@ -536,19 +529,18 @@ class DatabaseSessionService(BaseSessionService):
       if storage_session is None:
         return None
 
+      query = sql_session.query(StorageEvent).filter(
+          StorageEvent.app_name == app_name,
+          StorageEvent.user_id == user_id,
+          StorageEvent.session_id == storage_session.id,
+      )
+
       if config and config.after_timestamp:
         after_dt = datetime.fromtimestamp(config.after_timestamp)
-        timestamp_filter = StorageEvent.timestamp >= after_dt
-      else:
-        timestamp_filter = True
+        query = query.filter(StorageEvent.timestamp >= after_dt)
 
       storage_events = (
-          sql_session.query(StorageEvent)
-          .filter(StorageEvent.app_name == app_name)
-          .filter(StorageEvent.session_id == storage_session.id)
-          .filter(StorageEvent.user_id == user_id)
-          .filter(timestamp_filter)
-          .order_by(StorageEvent.timestamp.desc())
+          query.order_by(StorageEvent.timestamp.desc())
           .limit(
               config.num_recent_events
               if config and config.num_recent_events
@@ -660,30 +652,21 @@ class DatabaseSessionService(BaseSessionService):
           StorageUserState, (session.app_name, session.user_id)
       )
 
-      app_state = storage_app_state.state if storage_app_state else {}
-      user_state = storage_user_state.state if storage_user_state else {}
-      session_state = storage_session.state
-
       # Extract state delta
-      app_state_delta = {}
-      user_state_delta = {}
-      session_state_delta = {}
-      if event.actions:
-        if event.actions.state_delta:
-          app_state_delta, user_state_delta, session_state_delta = (
-              _extract_state_delta(event.actions.state_delta)
-          )
-
-      # Merge state and update storage
-      if app_state_delta:
-        app_state.update(app_state_delta)
-        storage_app_state.state = app_state
-      if user_state_delta:
-        user_state.update(user_state_delta)
-        storage_user_state.state = user_state
-      if session_state_delta:
-        session_state.update(session_state_delta)
-        storage_session.state = session_state
+      if event.actions and event.actions.state_delta:
+        state_deltas = _session_util.extract_state_delta(
+            event.actions.state_delta
+        )
+        app_state_delta = state_deltas["app"]
+        user_state_delta = state_deltas["user"]
+        session_state_delta = state_deltas["session"]
+        # Merge state and update storage
+        if app_state_delta:
+          storage_app_state.state = storage_app_state.state | app_state_delta
+        if user_state_delta:
+          storage_user_state.state = storage_user_state.state | user_state_delta
+        if session_state_delta:
+          storage_session.state = storage_session.state | session_state_delta
 
       sql_session.add(StorageEvent.from_event(session, event))
 
@@ -696,21 +679,6 @@ class DatabaseSessionService(BaseSessionService):
     # Also update the in-memory session
     await super().append_event(session=session, event=event)
     return event
-
-
-def _extract_state_delta(state: dict[str, Any]):
-  app_state_delta = {}
-  user_state_delta = {}
-  session_state_delta = {}
-  if state:
-    for key in state.keys():
-      if key.startswith(State.APP_PREFIX):
-        app_state_delta[key.removeprefix(State.APP_PREFIX)] = state[key]
-      elif key.startswith(State.USER_PREFIX):
-        user_state_delta[key.removeprefix(State.USER_PREFIX)] = state[key]
-      elif not key.startswith(State.TEMP_PREFIX):
-        session_state_delta[key] = state[key]
-  return app_state_delta, user_state_delta, session_state_delta
 
 
 def _merge_state(app_state, user_state, session_state):
