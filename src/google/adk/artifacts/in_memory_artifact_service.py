@@ -18,6 +18,7 @@ import logging
 from typing import Any
 from typing import Optional
 
+from google.adk.artifacts import artifact_util
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
@@ -122,7 +123,15 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     elif artifact.text is not None:
       artifact_version.mime_type = "text/plain"
     elif artifact.file_data is not None:
-      artifact_version.mime_type = artifact.file_data.mime_type
+      if artifact_util.is_artifact_ref(artifact):
+        if not artifact_util.parse_artifact_uri(artifact.file_data.file_uri):
+          raise ValueError(
+              f"Invalid artifact reference URI: {artifact.file_data.file_uri}"
+          )
+        # If it's a valid artifact URI, we store the artifact part as-is.
+        # And we don't know the mime type until we load it.
+      else:
+        artifact_version.mime_type = artifact.file_data.mime_type
     else:
       raise ValueError("Not supported artifact type.")
 
@@ -147,10 +156,41 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       return None
     if version is None:
       version = -1
+
     try:
-      return versions[version].data
+      artifact_entry = versions[version]
     except IndexError:
       return None
+
+    if artifact_entry is None:
+      return None
+
+    # Resolve artifact reference if needed.
+    artifact_data = artifact_entry.data
+    if artifact_util.is_artifact_ref(artifact_data):
+      parsed_uri = artifact_util.parse_artifact_uri(
+          artifact_data.file_data.file_uri
+      )
+      if not parsed_uri:
+        raise ValueError(
+            "Invalid artifact reference URI:"
+            f" {artifact_data.file_data.file_uri}"
+        )
+      return await self.load_artifact(
+          app_name=parsed_uri.app_name,
+          user_id=parsed_uri.user_id,
+          filename=parsed_uri.filename,
+          session_id=parsed_uri.session_id,
+          version=parsed_uri.version,
+      )
+
+    if (
+        artifact_data == types.Part()
+        or artifact_data == types.Part(text="")
+        or (artifact_data.inline_data and not artifact_data.inline_data.data)
+    ):
+      return None
+    return artifact_data
 
   @override
   async def list_artifact_keys(
