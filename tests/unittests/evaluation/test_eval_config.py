@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from unittest import mock
-
 from google.adk.evaluation.eval_config import _DEFAULT_EVAL_CONFIG
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import get_eval_metrics_from_config
@@ -28,13 +26,14 @@ def test_get_evaluation_criteria_or_default_returns_default():
   assert get_evaluation_criteria_or_default("") == _DEFAULT_EVAL_CONFIG
 
 
-def test_get_evaluation_criteria_or_default_reads_from_file():
+def test_get_evaluation_criteria_or_default_reads_from_file(mocker):
   eval_config = EvalConfig(
       criteria={"tool_trajectory_avg_score": 0.5, "response_match_score": 0.5}
   )
-  mock_open = mock.mock_open(read_data=eval_config.model_dump_json())
-  with mock.patch("builtins.open", mock_open):
-    assert get_evaluation_criteria_or_default("dummy_path") == eval_config
+  mocker.patch(
+      "builtins.open", mocker.mock_open(read_data=eval_config.model_dump_json())
+  )
+  assert get_evaluation_criteria_or_default("dummy_path") == eval_config
 
 
 def test_get_eval_metrics_from_config():
