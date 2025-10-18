@@ -42,6 +42,7 @@ from ...tools.base_tool import BaseTool
 from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
+from ...utils.error_messages import format_not_found_error
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -660,45 +661,24 @@ def _get_tool(
 ):
   """Returns the tool corresponding to the function call."""
   if function_call.name not in tools_dict:
-    # Enhanced error message with actionable guidance
-    available_tools = list(tools_dict.keys())
-
-    # Truncate to first 20 for readability (prevents log overflow)
-    if len(available_tools) > 20:
-      tools_preview = ', '.join(available_tools[:20])
-      tools_msg = (
-          f'Available tools (showing first 20 of {len(available_tools)}):'
-          f' {tools_preview}...'
-      )
-    else:
-      tools_msg = f"Available tools: {', '.join(available_tools)}"
-
-    error_msg = (
-        f"Function '{function_call.name}' is not found in available"
-        ' tools.\n\n'
-        f'{tools_msg}\n\n'
-        'Possible causes:\n'
-        '  1. LLM hallucinated the function name - review agent'
-        ' instruction clarity\n'
-        '  2. Tool not registered - verify agent.tools list\n'
-        '  3. Name mismatch - check for typos\n\n'
-        'Suggested fixes:\n'
-        '  - Review agent instruction to ensure tool usage is clear\n'
-        '  - Verify tool is included in agent.tools list\n'
-        '  - Check for typos in function name\n'
+    error_msg = format_not_found_error(
+        item_name=function_call.name,
+        item_type='tool',
+        available_items=list(tools_dict.keys()),
+        causes=[
+            (
+                'LLM hallucinated the function name - review agent instruction'
+                ' clarity'
+            ),
+            'Tool not registered - verify agent.tools list',
+            'Name mismatch - check for typos',
+        ],
+        fixes=[
+            'Review agent instruction to ensure tool usage is clear',
+            'Verify tool is included in agent.tools list',
+            'Check for typos in function name',
+        ],
     )
-
-    # Fuzzy matching suggestion
-    from difflib import get_close_matches
-
-    close_matches = get_close_matches(
-        function_call.name, available_tools, n=3, cutoff=0.6
-    )
-    if close_matches:
-      error_msg += f'\nDid you mean one of these?\n'
-      for match in close_matches:
-        error_msg += f'  - {match}\n'
-
     raise ValueError(error_msg)
 
   return tools_dict[function_call.name]

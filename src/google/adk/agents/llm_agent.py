@@ -54,6 +54,7 @@ from ..tools.function_tool import FunctionTool
 from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
 from ..utils.context_utils import Aclosing
+from ..utils.error_messages import format_not_found_error
 from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
@@ -641,43 +642,21 @@ class LlmAgent(BaseAgent):
     """Find the agent to run under the root agent by name."""
     agent_to_run = self.root_agent.find_agent(agent_name)
     if not agent_to_run:
-      # Enhanced error message with agent tree context
-      available_agents = self._get_available_agent_names()
-
-      # Truncate to first 20 for readability (prevents log overflow)
-      if len(available_agents) > 20:
-        agents_preview = ', '.join(available_agents[:20])
-        agents_msg = (
-            f'Available agents (showing first 20 of {len(available_agents)}):'
-            f' {agents_preview}...'
-        )
-      else:
-        agents_msg = f"Available agents: {', '.join(available_agents)}"
-
-      error_msg = (
-          f"Agent '{agent_name}' not found in the agent tree.\n\n"
-          f'{agents_msg}\n\n'
-          'Possible causes:\n'
-          '  1. Agent not registered before being referenced\n'
-          '  2. Agent name mismatch (typo or case sensitivity)\n'
-          '  3. Timing issue (agent referenced before creation)\n\n'
-          'Suggested fixes:\n'
-          '  - Verify agent is registered with root agent\n'
-          '  - Check agent name spelling and case\n'
-          '  - Ensure agents are created before being referenced\n'
+      error_msg = format_not_found_error(
+          item_name=agent_name,
+          item_type='agent',
+          available_items=self._get_available_agent_names(),
+          causes=[
+              'Agent not registered before being referenced',
+              'Agent name mismatch (typo or case sensitivity)',
+              'Timing issue (agent referenced before creation)',
+          ],
+          fixes=[
+              'Verify agent is registered with root agent',
+              'Check agent name spelling and case',
+              'Ensure agents are created before being referenced',
+          ],
       )
-
-      # Fuzzy matching suggestion
-      from difflib import get_close_matches
-
-      close_matches = get_close_matches(
-          agent_name, available_agents, n=3, cutoff=0.6
-      )
-      if close_matches:
-        error_msg += f'\nDid you mean one of these?\n'
-        for match in close_matches:
-          error_msg += f'  - {match}\n'
-
       raise ValueError(error_msg)
     return agent_to_run
 
