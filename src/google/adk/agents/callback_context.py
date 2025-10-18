@@ -64,7 +64,7 @@ class CallbackContext(ReadonlyContext):
     Note: This property attempts to solve the TO DO (weisun) by making the invocation context public for ADK plugin development.
 
     Returns:
-      The InvocationContext instance for this callback.
+      The InvocationContext instance for this callback. 
     """
     return self._invocation_context
 
