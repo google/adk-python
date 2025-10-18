@@ -212,6 +212,11 @@ class GcsArtifactService(BaseArtifactService):
       blob.upload_from_string(
           data=artifact.text,
       )
+    elif artifact.file_data:
+      raise NotImplementedError(
+          "Saving artifact with file_data is not supported yet in"
+          " GcsArtifactService."
+      )
     else:
       raise ValueError("Artifact must have either inline_data or text.")
 

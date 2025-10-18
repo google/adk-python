@@ -28,6 +28,7 @@ from typing import Optional
 import warnings
 
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
+from google.adk.artifacts import artifact_util
 from google.genai import types
 
 from .agents.active_streaming_tool import ActiveStreamingTool
@@ -426,6 +427,146 @@ class Runner:
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
         yield event
+
+  async def rewind_async(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      rewind_before_invocation_id: str,
+  ) -> None:
+    """Rewinds the session to before the specified invocation."""
+    session = await self.session_service.get_session(
+        app_name=self.app_name, user_id=user_id, session_id=session_id
+    )
+    if not session:
+      raise ValueError(f'Session not found: {session_id}')
+
+    rewind_event_index = -1
+    for i, event in enumerate(session.events):
+      if event.invocation_id == rewind_before_invocation_id:
+        rewind_event_index = i
+        break
+
+    if rewind_event_index == -1:
+      raise ValueError(
+          f'Invocation ID not found: {rewind_before_invocation_id}'
+      )
+
+    # Compute state delta to reverse changes
+    state_delta = await self._compute_state_delta_for_rewind(
+        session, rewind_event_index
+    )
+
+    # Compute artifact delta to reverse changes
+    artifact_delta = await self._compute_artifact_delta_for_rewind(
+        session, rewind_event_index
+    )
+
+    # Create rewind event
+    rewind_event = Event(
+        invocation_id=new_invocation_context_id(),
+        author='user',
+        actions=EventActions(
+            rewind_before_invocation_id=rewind_before_invocation_id,
+            state_delta=state_delta,
+            artifact_delta=artifact_delta,
+        ),
+    )
+
+    logger.info('Rewinding session to invocation: %s', rewind_event)
+
+    await self.session_service.append_event(session=session, event=rewind_event)
+
+  async def _compute_state_delta_for_rewind(
+      self, session: Session, rewind_event_index: int
+  ) -> dict[str, Any]:
+    """Computes the state delta to reverse changes."""
+    state_at_rewind_point: dict[str, Any] = {}
+    for i in range(rewind_event_index):
+      if session.events[i].actions.state_delta:
+        for k, v in session.events[i].actions.state_delta.items():
+          if k.startswith('app:') or k.startswith('user:'):
+            continue
+          if v is None:
+            state_at_rewind_point.pop(k, None)
+          else:
+            state_at_rewind_point[k] = v
+
+    current_state = session.state
+    rewind_state_delta = {}
+
+    # 1. Add/update keys in rewind_state_delta to match state_at_rewind_point.
+    for key, value_at_rewind in state_at_rewind_point.items():
+      if key not in current_state or current_state[key] != value_at_rewind:
+        rewind_state_delta[key] = value_at_rewind
+
+    # 2. Set keys to None in rewind_state_delta if they are in current_state
+    #    but not in state_at_rewind_point. These keys were added after the
+    #    rewind point and need to be removed.
+    for key in current_state:
+      if key.startswith('app:') or key.startswith('user:'):
+        continue
+      if key not in state_at_rewind_point:
+        rewind_state_delta[key] = None
+
+    return rewind_state_delta
+
+  async def _compute_artifact_delta_for_rewind(
+      self, session: Session, rewind_event_index: int
+  ) -> dict[str, int]:
+    """Computes the artifact delta to reverse changes."""
+    if not self.artifact_service:
+      return {}
+
+    versions_at_rewind_point: dict[str, int] = {}
+    for i in range(rewind_event_index):
+      event = session.events[i]
+      if event.actions.artifact_delta:
+        versions_at_rewind_point.update(event.actions.artifact_delta)
+
+    current_versions: dict[str, int] = {}
+    for event in session.events:
+      if event.actions.artifact_delta:
+        current_versions.update(event.actions.artifact_delta)
+
+    rewind_artifact_delta = {}
+    for filename, vn in current_versions.items():
+      if filename.startswith('user:'):
+        # User artifacts are not restored on rewind.
+        continue
+      vt = versions_at_rewind_point.get(filename)
+      if vt == vn:
+        continue
+
+      rewind_artifact_delta[filename] = vn + 1
+      if vt is None:
+        # Artifact did not exist at rewind point. Mark it as inaccessible.
+        artifact = types.Part(
+            inline_data=types.Blob(
+                mime_type='application/octet-stream', data=b''
+            )
+        )
+      else:
+        # Artifact version changed after rewind point. Restore to version at
+        # rewind point.
+        artifact_uri = artifact_util.get_artifact_uri(
+            app_name=self.app_name,
+            user_id=session.user_id,
+            session_id=session.id,
+            filename=filename,
+            version=vt,
+        )
+        artifact = types.Part(file_data=types.FileData(file_uri=artifact_uri))
+      await self.artifact_service.save_artifact(
+          app_name=self.app_name,
+          user_id=session.user_id,
+          session_id=session.id,
+          filename=filename,
+          artifact=artifact,
+      )
+
+    return rewind_artifact_delta
 
   async def _run_compaction_default(self, session: Session):
     """Runs compaction for other types of compactors.
@@ -1083,7 +1224,7 @@ class InMemoryRunner(Runner):
       self,
       agent: Optional[BaseAgent] = None,
       *,
-      app_name: Optional[str] = 'InMemoryRunner',
+      app_name: Optional[str] = None,
       plugins: Optional[list[BasePlugin]] = None,
       app: Optional[App] = None,
   ):
@@ -1094,6 +1235,8 @@ class InMemoryRunner(Runner):
         app_name: The application name of the runner. Defaults to
           'InMemoryRunner'.
     """
+    if app is None and app_name is None:
+      app_name = 'InMemoryRunner'
     super().__init__(
         app_name=app_name,
         agent=agent,

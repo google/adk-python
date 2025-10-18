@@ -325,6 +325,63 @@ async def test_confirmation_events_are_filtered():
 
 
 @pytest.mark.asyncio
+async def test_rewind_events_are_filtered_out():
+  """Test that events are filtered based on rewind action."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("Second response"),
+      ),
+      Event(
+          invocation_id="rewind_inv",
+          author="test_agent",
+          actions=EventActions(rewind_before_invocation_id="inv2"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Third message"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify rewind correctly filters conversation history
+  assert llm_request.contents == [
+      types.UserContent("First message"),
+      types.ModelContent("First response"),
+      types.UserContent("Third message"),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_events_with_empty_content_are_skipped():
   """Test that events with empty content (state-only changes) are skipped."""
   agent = Agent(model="gemini-2.5-flash", name="test_agent")

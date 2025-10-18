@@ -16,10 +16,14 @@ from typing import Any
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import Mock
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.plugins.reflect_retry_tool_plugin import REFLECT_AND_RETRY_RESPONSE_TYPE
 from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
+from google.genai import types
+
+from .. import testing_utils
 
 
 class MockTool(BaseTool):
@@ -524,3 +528,56 @@ class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
         result=custom_error,
     )
     self.assertEqual(result4["retry_count"], 1)
+
+  async def test_hallucinating_tool_name(self):
+    """Test that hallucinating tool name is handled correctly."""
+    wrong_function_call = types.Part.from_function_call(
+        name="increase_by_one", args={"x": 1}
+    )
+    correct_function_call = types.Part.from_function_call(
+        name="increase", args={"x": 1}
+    )
+    responses: list[types.Content] = [
+        wrong_function_call,
+        correct_function_call,
+        "response1",
+    ]
+    mock_model = testing_utils.MockModel.create(responses=responses)
+
+    function_called = 0
+
+    def increase(x: int) -> int:
+      nonlocal function_called
+      function_called += 1
+      return x + 1
+
+    agent = LlmAgent(name="root_agent", model=mock_model, tools=[increase])
+    runner = testing_utils.TestInMemoryRunner(
+        agent=agent, plugins=[self.get_plugin()]
+    )
+
+    events = await runner.run_async_with_new_session("test")
+
+    # Assert that the first event is a function call with the wrong name
+    assert events[0].content.parts[0].function_call.name == "increase_by_one"
+
+    # Assert that the second event is a function response with the
+    # reflection_guidance
+    assert (
+        events[1].content.parts[0].function_response.response["error_type"]
+        == "ValueError"
+    )
+    assert (
+        events[1].content.parts[0].function_response.response["retry_count"]
+        == 1
+    )
+    assert (
+        "Wrong Function Name"
+        in events[1]
+        .content.parts[0]
+        .function_response.response["reflection_guidance"]
+    )
+
+    # Assert that the third event is a function call with the correct name
+    assert events[2].content.parts[0].function_call.name == "increase"
+    self.assertEqual(function_called, 1)

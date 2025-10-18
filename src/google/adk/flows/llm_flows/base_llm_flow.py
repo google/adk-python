@@ -438,6 +438,10 @@ class BaseLlmFlow(ABC):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
+    if not isinstance(agent, LlmAgent):
+      raise TypeError(
+          f'Expected agent to be an LlmAgent, but got {type(agent)}'
+      )
 
     # Runs processors.
     for processor in self.request_processors:
@@ -468,7 +472,7 @@ class BaseLlmFlow(ABC):
       tools = await _convert_tool_union_to_tools(
           tool_union,
           ReadonlyContext(invocation_context),
-          llm_request.model,
+          agent.model,
           multiple_tools,
       )
       for tool in tools:

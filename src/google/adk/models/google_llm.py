@@ -115,10 +115,18 @@ class Gemini(BaseLlm):
     cache_metadata = None
     cache_manager = None
     if llm_request.cache_config:
+      from ..telemetry.tracing import tracer
       from .gemini_context_cache_manager import GeminiContextCacheManager
 
-      cache_manager = GeminiContextCacheManager(self.api_client)
-      cache_metadata = await cache_manager.handle_context_caching(llm_request)
+      with tracer.start_as_current_span('handle_context_caching') as span:
+        cache_manager = GeminiContextCacheManager(self.api_client)
+        cache_metadata = await cache_manager.handle_context_caching(llm_request)
+        if cache_metadata:
+          if cache_metadata.cache_name:
+            span.set_attribute('cache_action', 'active_cache')
+            span.set_attribute('cache_name', cache_metadata.cache_name)
+          else:
+            span.set_attribute('cache_action', 'fingerprint_only')
 
     logger.info(
         'Sending out request, model: %s, backend: %s, stream: %s',
