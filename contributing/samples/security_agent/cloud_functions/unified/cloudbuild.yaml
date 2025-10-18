@@ -1,0 +1,41 @@
+# Cloud Build configuration for unified Cloud Function
+# This enables CI/CD deployment through Cloud Build
+
+steps:
+  # Install dependencies
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'pip'
+    args: ['install', '-r', 'requirements.txt', '-t', '.']
+
+  # Run tests (if present)
+  - name: 'python:3.11'
+    entrypoint: 'python'
+    args: ['-m', 'pytest', 'tests/', '--tb=short']
+    env:
+      - 'ENABLE_SAMPLE_DATA=true'
+      - 'PROJECT_ID=$PROJECT_ID'
+
+  # Deploy Cloud Function
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'functions'
+      - 'deploy'
+      - 'unified-security-fetcher'
+      - '--gen2'
+      - '--runtime=python311'
+      - '--region=${_REGION}'
+      - '--source=.'
+      - '--entry-point=unified_handler'
+      - '--trigger-http'
+      - '--allow-unauthenticated'
+      - '--memory=1024MB'
+      - '--timeout=540s'
+      - '--max-instances=10'
+      - '--set-env-vars=PROJECT_ID=$PROJECT_ID,BQ_DATASET_ID=security_insights,BQ_LOCATION=${_REGION},ENABLE_SAMPLE_DATA=true'
+
+substitutions:
+  _REGION: us-central1
+
+options:
+  logging: CLOUD_LOGGING_ONLY

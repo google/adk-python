@@ -1,0 +1,20 @@
+# Core dependencies
+fastapi>=0.104.0
+vellox>=0.1.0
+pydantic>=2.0.0
+uvicorn>=0.24.0
+
+# Google Cloud dependencies
+google-cloud-bigquery>=3.11.0
+google-cloud-iam>=2.12.0
+google-cloud-compute>=1.14.0
+google-cloud-storage>=2.10.0
+google-cloud-securitycenter>=1.24.0
+google-cloud-resource-manager>=1.10.0
+
+# Cloud Functions framework (fallback)
+functions-framework>=3.4.0
+
+# Utilities
+python-dateutil>=2.8.2
+pytz>=2023.3

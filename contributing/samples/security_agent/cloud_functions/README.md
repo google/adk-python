@@ -4,6 +4,9 @@
 
 This directory contains **modular, independent Cloud Functions** that fetch GCP data and store it in BigQuery. Each function runs independently on its own schedule, giving you complete control over what data to collect.
 
+> **New unified option**
+> The `unified/` directory packages all fetchers behind a single FastAPI app wrapped by Vellox. Deploy it when you prefer one Cloud Function with per-fetcher routes for Cloud Scheduler. See `cloud_functions/unified/README.md` for setup instructions.
+
 **Key Principle:** The Security Agent queries BigQuery directly - it never calls these functions. These are background data fetchers that keep your BigQuery tables fresh.
 
 ---
