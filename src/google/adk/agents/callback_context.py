@@ -54,6 +54,21 @@ class CallbackContext(ReadonlyContext):
     )
 
   @property
+  def invocation_context(self) -> InvocationContext:
+    """The invocation context for this callback.
+
+    This property provides access to the invocation context for Agent Development
+    Kit plugins that need to interact with the underlying context. This is
+    intended for ADK plugin development and not for general user consumption.
+
+    Note: This property attempts to solve the TO DO (weisun) by making the invocation context public for ADK plugin development.
+
+    Returns:
+      The InvocationContext instance for this callback.
+    """
+    return self._invocation_context
+
+  @property
   @override
   def state(self) -> State:
     """The delta-aware state of the current session.
