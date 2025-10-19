@@ -14,8 +14,6 @@
 
 """Utility functions for code execution."""
 
-from __future__ import annotations
-
 import base64
 import binascii
 import copy
@@ -36,9 +34,9 @@ class File:
   The name of the file with file extension (e.g., "file.csv").
   """
 
-  content: str | bytes
+  content: str
   """
-  The base64-encoded bytes of the file content or the original bytes of the file content.
+  The base64-encoded bytes of the file content.
   """
 
   mime_type: str = 'text/plain'
