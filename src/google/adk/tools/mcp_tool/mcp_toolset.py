@@ -155,6 +155,7 @@ class McpToolset(BaseToolset):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
+    self._loaded_mcp_tools: List[BaseTool] | None = None
 
   @retry_on_closed_resource
   async def get_tools(
@@ -170,6 +171,9 @@ class McpToolset(BaseToolset):
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
     """
+    if self._loaded_mcp_tools is not None:
+        return self._loaded_mcp_tools
+
     headers = (
         self._header_provider(readonly_context)
         if self._header_provider and readonly_context
@@ -195,6 +199,8 @@ class McpToolset(BaseToolset):
 
       if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
+
+    self._loaded_mcp_tools = tools
     return tools
 
   async def close(self) -> None:
