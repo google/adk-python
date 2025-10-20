@@ -166,7 +166,16 @@ class FunctionTool(BaseTool):
       args_to_call['tool_context'] = tool_context
 
     # Filter args_to_call to only include valid parameters for the function
-    args_to_call = {k: v for k, v in args_to_call.items() if k in valid_params}
+    has_kwargs = any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    )
+
+    # If no **kwargs, filter
+    if not has_kwargs:
+      args_to_call = {
+          k: v for k, v in args_to_call.items() if k in valid_params
+      }
 
     # Before invoking the function, we check for if the list of args passed in
     # has all the mandatory arguments or not.
