@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from unittest import mock
-
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
@@ -206,17 +204,17 @@ class TestConvertEventsToEvalInvocation:
 class TestGetAppDetailsByInvocationId:
   """Test cases for EvaluationGenerator._get_app_details_by_invocation_id method."""
 
-  def test_get_app_details_by_invocation_id_empty(self):
+  def test_get_app_details_by_invocation_id_empty(self, mocker):
     """Tests with an empty list of events."""
-    mock_request_intercepter = mock.MagicMock(spec=_RequestIntercepterPlugin)
+    mock_request_intercepter = mocker.MagicMock(spec=_RequestIntercepterPlugin)
     app_details = EvaluationGenerator._get_app_details_by_invocation_id(
         [], mock_request_intercepter
     )
     assert app_details == {}
 
-  def test_get_app_details_by_invocation_id_no_model_requests(self):
+  def test_get_app_details_by_invocation_id_no_model_requests(self, mocker):
     """Tests when request_intercepter returns no model requests."""
-    mock_request_intercepter = mock.MagicMock(spec=_RequestIntercepterPlugin)
+    mock_request_intercepter = mocker.MagicMock(spec=_RequestIntercepterPlugin)
     mock_request_intercepter.get_model_request.return_value = None
     events = [
         _build_event("user", [types.Part(text="Hello")], "inv1"),
@@ -230,9 +228,9 @@ class TestGetAppDetailsByInvocationId:
         events[1]
     )
 
-  def test_get_app_details_single_invocation_single_agent(self):
+  def test_get_app_details_single_invocation_single_agent(self, mocker):
     """Tests a single invocation with one agent."""
-    mock_request_intercepter = mock.MagicMock(spec=_RequestIntercepterPlugin)
+    mock_request_intercepter = mocker.MagicMock(spec=_RequestIntercepterPlugin)
     mock_llm_request = LlmRequest(model="test")
     mock_llm_request.config.system_instruction = "instruction1"
     mock_llm_request.config.tools = [types.Tool()]
@@ -262,9 +260,9 @@ class TestGetAppDetailsByInvocationId:
         events[1]
     )
 
-  def test_get_app_details_multiple_invocations_multiple_agents(self):
+  def test_get_app_details_multiple_invocations_multiple_agents(self, mocker):
     """Tests multiple invocations with multiple agents."""
-    mock_request_intercepter = mock.MagicMock(spec=_RequestIntercepterPlugin)
+    mock_request_intercepter = mocker.MagicMock(spec=_RequestIntercepterPlugin)
 
     def get_model_request_side_effect(event):
       mock_llm_request = LlmRequest(model="test")

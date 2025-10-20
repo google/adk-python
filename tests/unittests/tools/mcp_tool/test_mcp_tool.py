@@ -549,6 +549,89 @@ class TestMCPTool:
           in logged_message
       )
 
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_true_no_confirmation(self):
+    """Test require_confirmation=True with no confirmation in context."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {
+        "error": (
+            "This tool call requires confirmation, please approve or reject."
+        )
+    }
+    tool_context.request_confirmation.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_true_rejected(self):
+    """Test require_confirmation=True with rejection in context."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = Mock(confirmed=False)
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {"error": "This tool call is rejected."}
+
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_true_confirmed(self):
+    """Test require_confirmation=True with confirmation in context."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = Mock(confirmed=True)
+    args = {"param1": "test_value"}
+
+    with patch(
+        "google.adk.tools.base_authenticated_tool.BaseAuthenticatedTool.run_async",
+        new_callable=AsyncMock,
+    ) as mock_super_run_async:
+      await tool.run_async(args=args, tool_context=tool_context)
+      mock_super_run_async.assert_called_once_with(
+          args=args, tool_context=tool_context
+      )
+
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_callable_true_no_confirmation(
+      self,
+  ):
+    """Test require_confirmation=callable with no confirmation in context."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=lambda **kwargs: True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {
+        "error": (
+            "This tool call requires confirmation, please approve or reject."
+        )
+    }
+    tool_context.request_confirmation.assert_called_once()
+
   def test_init_validation(self):
     """Test that initialization validates required parameters."""
     # This test ensures that the MCPTool properly handles its dependencies
@@ -557,3 +640,74 @@ class TestMCPTool:
 
     with pytest.raises(TypeError):
       MCPTool(mcp_tool=self.mock_mcp_tool)  # Missing session manager
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_header_provider_no_auth(self):
+    """Test running tool with header_provider but no auth."""
+    expected_headers = {"X-Tenant-ID": "test-tenant"}
+    header_provider = Mock(return_value=expected_headers)
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        header_provider=header_provider,
+    )
+
+    expected_response = {"result": "success"}
+    self.mock_session.call_tool = AsyncMock(return_value=expected_response)
+
+    tool_context = Mock(spec=ToolContext)
+    tool_context._invocation_context = Mock()
+    args = {"param1": "test_value"}
+
+    result = await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    assert result == expected_response
+    header_provider.assert_called_once()
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=expected_headers
+    )
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool", arguments=args
+    )
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_header_provider_and_oauth2(self):
+    """Test running tool with header_provider and OAuth2 auth."""
+    dynamic_headers = {"X-Tenant-ID": "test-tenant"}
+    header_provider = Mock(return_value=dynamic_headers)
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        header_provider=header_provider,
+    )
+
+    oauth2_auth = OAuth2Auth(access_token="test_access_token")
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2, oauth2=oauth2_auth
+    )
+
+    expected_response = {"result": "success"}
+    self.mock_session.call_tool = AsyncMock(return_value=expected_response)
+
+    tool_context = Mock(spec=ToolContext)
+    tool_context._invocation_context = Mock()
+    args = {"param1": "test_value"}
+
+    result = await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=credential
+    )
+
+    assert result == expected_response
+    header_provider.assert_called_once()
+    self.mock_session_manager.create_session.assert_called_once()
+    call_args = self.mock_session_manager.create_session.call_args
+    headers = call_args[1]["headers"]
+    assert headers == {
+        "Authorization": "Bearer test_access_token",
+        "X-Tenant-ID": "test-tenant",
+    }
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool", arguments=args
+    )

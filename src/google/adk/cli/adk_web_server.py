@@ -741,7 +741,7 @@ class AdkWebServer:
           is not None
       ):
         raise HTTPException(
-            status_code=400, detail=f"Session already exists: {session_id}"
+            status_code=409, detail=f"Session already exists: {session_id}"
         )
       session = await self.session_service.create_session(
           app_name=app_name, user_id=user_id, state=state, session_id=session_id
@@ -761,6 +761,13 @@ class AdkWebServer:
       if not req:
         return await self.session_service.create_session(
             app_name=app_name, user_id=user_id
+        )
+
+      if req.session_id and await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=req.session_id
+      ):
+        raise HTTPException(
+            status_code=409, detail=f"Session already exists: {req.session_id}"
         )
 
       session = await self.session_service.create_session(

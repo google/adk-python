@@ -118,7 +118,7 @@ class AgentEvaluator:
     Args:
       agent_module: The path to python module that contains the definition of
         the agent. There is convention in place here, where the code is going to
-        look for 'root_agent' in the loaded module.
+        look for 'root_agent' or `get_agent_async` in the loaded module.
       eval_set: The eval set.
       criteria: Evauation criterias, a dictionary of metric names to their
         respective thresholds. This field is deprecated.
@@ -144,7 +144,7 @@ class AgentEvaluator:
     if eval_config is None:
       raise ValueError("`eval_config` is required.")
 
-    agent_for_eval = AgentEvaluator._get_agent_for_eval(
+    agent_for_eval = await AgentEvaluator._get_agent_for_eval(
         module_name=agent_module, agent_name=agent_name
     )
     eval_metrics = get_eval_metrics_from_config(eval_config)
@@ -200,7 +200,7 @@ class AgentEvaluator:
     Args:
       agent_module: The path to python module that contains the definition of
         the agent. There is convention in place here, where the code is going to
-        look for 'root_agent' in the loaded module.
+        look for 'root_agent' or 'get_agent_async' in the loaded module.
       eval_dataset_file_path_or_dir: The eval data set. This can be either a
         string representing full path to the file containing eval dataset, or a
         directory that is recursively explored for all files that have a
@@ -466,12 +466,26 @@ class AgentEvaluator:
     return "\n".join([str(t) for t in tool_calls])
 
   @staticmethod
-  def _get_agent_for_eval(
+  async def _get_agent_for_eval(
       module_name: str, agent_name: Optional[str] = None
   ) -> BaseAgent:
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
-    root_agent = agent_module.agent.root_agent
+    print(dir(agent_module))
+    if hasattr(agent_module, "agent"):
+      if hasattr(agent_module.agent, "root_agent"):
+        root_agent = agent_module.agent.root_agent
+      elif hasattr(agent_module.agent, "get_agent_async"):
+        root_agent, _ = await agent_module.agent.get_agent_async()
+      else:
+        raise ValueError(
+            f"Module {module_name} does not have a root_agent or"
+            " get_agent_async method."
+        )
+    else:
+      raise ValueError(
+          f"Module {module_name} does not have a member named `agent`."
+      )
 
     agent_for_eval = root_agent
     if agent_name:
