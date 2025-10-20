@@ -486,6 +486,12 @@ class AdkWebServer:
     self.runner_dict[app_name] = runner
     return runner
 
+  def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
+    """Extract root agent from either a BaseAgent or App object."""
+    if isinstance(agent_or_app, App):
+      return agent_or_app.root_agent
+    return agent_or_app
+
   def _create_runner(self, agentic_app: App) -> Runner:
     """Create a runner with common services."""
     return Runner(
@@ -933,9 +939,8 @@ class AdkWebServer:
 
       # Populate the session with initial session state.
       agent_or_app = self.agent_loader.load_agent(app_name)
-      if isinstance(agent_or_app, App):
-        agent_or_app = agent_or_app.root_agent
-      initial_session_state = create_empty_state(agent_or_app)
+      root_agent = self._get_root_agent(agent_or_app)
+      initial_session_state = create_empty_state(root_agent)
 
       new_eval_case = EvalCase(
           eval_id=req.eval_id,
@@ -1096,7 +1101,8 @@ class AdkWebServer:
               status_code=400, detail=f"Eval set `{eval_set_id}` not found."
           )
 
-        root_agent = self.agent_loader.load_agent(app_name)
+        agent_or_app = self.agent_loader.load_agent(app_name)
+        root_agent = self._get_root_agent(agent_or_app)
 
         eval_case_results = []
 
@@ -1437,13 +1443,7 @@ class AdkWebServer:
       function_calls = event.get_function_calls()
       function_responses = event.get_function_responses()
       agent_or_app = self.agent_loader.load_agent(app_name)
-      # The loader may return an App; unwrap to its root agent so the graph builder
-      # receives a BaseAgent instance.
-      root_agent = (
-          agent_or_app.root_agent
-          if isinstance(agent_or_app, App)
-          else agent_or_app
-      )
+      root_agent = self._get_root_agent(agent_or_app)
       dot_graph = None
       if function_calls:
         function_call_highlights = []
