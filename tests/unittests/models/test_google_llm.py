@@ -1858,3 +1858,189 @@ def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
   # Should still succeed using repr()
   assert "Config:" in log_output
   assert "GenerateContentConfig" in log_output
+
+
+@pytest.mark.asyncio
+async def test_connect_uses_gemini_speech_config_when_request_is_none(
+    gemini_llm, llm_request
+):
+  """Tests that Gemini's speech_config is used when live_connect_config's is None."""
+  # Arrange: Set a speech_config on the Gemini instance with the voice "Kore"
+  gemini_llm.speech_config = types.SpeechConfig(
+      voice_config=types.VoiceConfig(
+          prebuilt_voice_config=types.PrebuiltVoiceConfig(
+              voice_name="Kore",
+          )
+      )
+  )
+  llm_request.live_connect_config = (
+      types.LiveConnectConfig()
+  )  # speech_config is None
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    # Act
+    async with gemini_llm.connect(llm_request) as connection:
+      # Assert
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      # Verify the speech_config from the Gemini instance was used
+      assert config_arg.speech_config is not None
+      assert (
+          config_arg.speech_config.voice_config.prebuilt_voice_config.voice_name
+          == "Kore"
+      )
+      assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_connect_uses_request_speech_config_when_gemini_is_none(
+    gemini_llm, llm_request
+):
+  """Tests that request's speech_config is used when Gemini's is None."""
+  # Arrange: Set a speech_config on the request instance with the voice "Kore"
+  gemini_llm.speech_config = None
+  request_speech_config = types.SpeechConfig(
+      voice_config=types.VoiceConfig(
+          prebuilt_voice_config=types.PrebuiltVoiceConfig(
+              voice_name="Kore",
+          )
+      )
+  )
+  llm_request.live_connect_config = types.LiveConnectConfig(
+      speech_config=request_speech_config
+  )
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    # Act
+    async with gemini_llm.connect(llm_request) as connection:
+      # Assert
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      # Verify the speech_config from the request instance was used
+      assert config_arg.speech_config is not None
+      assert (
+          config_arg.speech_config.voice_config.prebuilt_voice_config.voice_name
+          == "Kore"
+      )
+      assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_connect_request_gemini_config_overrides_speech_config(
+    gemini_llm, llm_request
+):
+  """Tests that live_connect_config's speech_config is preserved even if Gemini has one."""
+  # Arrange: Set different speech_configs on both the Gemini instance ("Puck") and the request ("Zephyr")
+  gemini_llm.speech_config = types.SpeechConfig(
+      voice_config=types.VoiceConfig(
+          prebuilt_voice_config=types.PrebuiltVoiceConfig(
+              voice_name="Puck",
+          )
+      )
+  )
+  request_speech_config = types.SpeechConfig(
+      voice_config=types.VoiceConfig(
+          prebuilt_voice_config=types.PrebuiltVoiceConfig(
+              voice_name="Zephyr",
+          )
+      )
+  )
+  llm_request.live_connect_config = types.LiveConnectConfig(
+      speech_config=request_speech_config
+  )
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    # Act
+    async with gemini_llm.connect(llm_request) as connection:
+      # Assert
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      # Verify the speech_config from the request ("Zephyr") was overwritten by Gemini's speech_config ("Puck")
+      assert config_arg.speech_config is not None
+      assert (
+          config_arg.speech_config.voice_config.prebuilt_voice_config.voice_name
+          == "Puck"
+      )
+      assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_connect_speech_config_remains_none_when_both_are_none(
+    gemini_llm, llm_request
+):
+  """Tests that speech_config is None when neither Gemini nor the request has it."""
+  # Arrange: Ensure both Gemini instance and request have no speech_config
+  gemini_llm.speech_config = None
+  llm_request.live_connect_config = (
+      types.LiveConnectConfig()
+  )  # speech_config is None
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    # Act
+    async with gemini_llm.connect(llm_request) as connection:
+      # Assert
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      # Verify the final speech_config is still None
+      assert config_arg.speech_config is None
+      assert isinstance(connection, GeminiLlmConnection)
