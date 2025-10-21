@@ -73,7 +73,23 @@ class VertexAiSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      **kwargs: Any,
   ) -> Session:
+    """Creates a new session.
+
+    Args:
+      app_name: The name of the application.
+      user_id: The ID of the user.
+      state: The initial state of the session.
+      session_id: The ID of the session.
+      **kwargs: Additional arguments to pass to the session creation. E.g. set
+        expire_time='2025-10-01T00:00:00Z' to set the session expiration time.
+        See https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta1/projects.locations.reasoningEngines.sessions
+        for more details.
+    Returns:
+      The created session.
+    """
+
     if session_id:
       raise ValueError(
           'User-provided Session id is not supported for'
@@ -84,6 +100,7 @@ class VertexAiSessionService(BaseSessionService):
     api_client = self._get_api_client()
 
     config = {'session_state': state} if state else {}
+    config.update(kwargs)
 
     if _is_vertex_express_mode(self._project, self._location):
       config['wait_for_completion'] = False
