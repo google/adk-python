@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import copy
 import dataclasses
+import datetime
 import os
 import re
 from typing import AsyncGenerator
@@ -275,6 +276,43 @@ async def _run_post_processor(
     return
 
   if isinstance(code_executor, BuiltInCodeExecutor):
+    event_actions = EventActions()
+
+    # If an image is generated, save it to the artifact service and add it to
+    # the event actions.
+    for part in llm_response.content.parts:
+      if part.inline_data and part.inline_data.mime_type.startswith('image/'):
+        if invocation_context.artifact_service is None:
+          raise ValueError('Artifact service is not initialized.')
+
+        if part.inline_data.display_name:
+          file_name = part.inline_data.display_name
+        else:
+          now = datetime.datetime.now().astimezone()
+          timestamp = now.strftime('%Y%m%d_%H%M%S')
+          file_extension = part.inline_data.mime_type.split('/')[-1]
+          file_name = f'{timestamp}.{file_extension}'
+
+        version = await invocation_context.artifact_service.save_artifact(
+            app_name=invocation_context.app_name,
+            user_id=invocation_context.user_id,
+            session_id=invocation_context.session.id,
+            filename=file_name,
+            artifact=types.Part.from_bytes(
+                data=part.inline_data.data,
+                mime_type=part.inline_data.mime_type,
+            ),
+        )
+        event_actions.artifact_delta[file_name] = version
+        part.inline_data = None
+        part.text = f'artifact: {file_name}'
+
+    yield Event(
+        invocation_id=invocation_context.invocation_id,
+        author=agent.name,
+        branch=invocation_context.branch,
+        actions=event_actions,
+    )
     return
 
   code_executor_context = CodeExecutorContext(invocation_context.session.state)
