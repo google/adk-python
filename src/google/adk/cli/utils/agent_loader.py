@@ -241,10 +241,10 @@ class AgentLoader(BaseAgentLoader):
         or agents_path.joinpath("root_agent.yaml").is_file()
     ):
       hint = (
-          "\n\nHINT: It looks like you might be running 'adk web' from inside"
-          " an agent directory. Try running 'adk web .' from the parent"
-          " directory that contains your agent folder, not from within the"
-          " agent folder itself."
+          "\n\nHINT: It looks like this command might be running from inside an"
+          " agent directory. Run it from the parent directory that contains"
+          " your agent folder (for example the project root) so the loader can"
+          " locate your agents."
       )
 
     raise ValueError(
