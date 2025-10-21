@@ -242,6 +242,7 @@ class MockApiClient:
     self.agent_engines.sessions.create.side_effect = self._create_session
     self.agent_engines.sessions.events.list.side_effect = self._list_events
     self.agent_engines.sessions.events.append.side_effect = self._append_event
+    self.last_create_session_config: dict[str, Any] = {}
 
   def _get_session(self, name: str):
     session_id = name.split('/')[-1]
@@ -275,6 +276,7 @@ class MockApiClient:
     self.session_dict.pop(session_id)
 
   def _create_session(self, name: str, user_id: str, config: dict[str, Any]):
+    self.last_create_session_config = config
     new_session_id = '4'
     self.session_dict[new_session_id] = {
         'name': (
@@ -360,7 +362,8 @@ def mock_vertex_ai_session_service(agent_engine_id: Optional[str] = None):
 
 
 @pytest.fixture
-def mock_get_api_client():
+def mock_api_client_instance():
+  """Creates a mock API client instance for testing."""
   api_client = MockApiClient()
   api_client.session_dict = {
       '1': MOCK_SESSION_JSON_1,
@@ -373,9 +376,15 @@ def mock_get_api_client():
       '1': (copy.deepcopy(MOCK_EVENT_JSON), None),
       '2': (copy.deepcopy(MOCK_EVENT_JSON_2), 'my_token'),
   }
+  return api_client
+
+
+@pytest.fixture
+def mock_get_api_client(mock_api_client_instance):
+  """Mocks the _get_api_client method to return a mock API client."""
   with mock.patch(
       'google.adk.sessions.vertex_ai_session_service.VertexAiSessionService._get_api_client',
-      return_value=api_client,
+      return_value=mock_api_client_instance,
   ):
     yield
 
@@ -518,6 +527,21 @@ async def test_create_session_with_custom_session_id():
     )
   assert str(excinfo.value) == (
       'User-provided Session id is not supported for VertexAISessionService.'
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_custom_config(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  expire_time = '2025-12-12T12:12:12.123456Z'
+  await session_service.create_session(
+      app_name='123', user_id='user', expire_time=expire_time
+  )
+  assert (
+      mock_api_client_instance.last_create_session_config['expire_time']
+      == expire_time
   )
 
 
