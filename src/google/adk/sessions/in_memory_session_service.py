@@ -23,6 +23,7 @@ import uuid
 from typing_extensions import override
 
 from . import _session_util
+from ..errors.already_exists_error import AlreadyExistsError
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -89,6 +90,10 @@ class InMemorySessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
+    if session_id and self._get_session_impl(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    ):
+      raise AlreadyExistsError(f'Session with id {session_id} already exists.')
     state_deltas = _session_util.extract_state_delta(state)
     app_state_delta = state_deltas['app']
     user_state_delta = state_deltas['user']

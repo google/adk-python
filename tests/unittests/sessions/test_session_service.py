@@ -16,6 +16,7 @@ from datetime import datetime
 from datetime import timezone
 import enum
 
+from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.base_session_service import GetSessionConfig
@@ -334,6 +335,32 @@ async def test_get_session_respects_user_id(service_type):
   )
   assert session2_got.user_id == 'u2'
   assert len(session2_got.events) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+)
+async def test_create_session_with_existing_id_raises_error(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id = 'test_user'
+  session_id = 'existing_session'
+
+  # Create the first session
+  await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+  )
+
+  # Attempt to create a session with the same ID
+  with pytest.raises(AlreadyExistsError):
+    await session_service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+    )
 
 
 @pytest.mark.asyncio
