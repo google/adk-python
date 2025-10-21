@@ -22,7 +22,9 @@ from pydantic import Field
 from typing_extensions import override
 
 from ..events.event import Event
+from ..models.registry import LLMRegistry
 from ..utils.feature_decorator import experimental
+from .conversation_scenarios import ConversationScenario
 from .evaluator import Evaluator
 from .user_simulator import BaseUserSimulatorConfig
 from .user_simulator import NextUserMessage
@@ -37,52 +39,59 @@ class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
       description="The model to use for user simulation.",
   )
 
-  model_config: Optional[genai_types.GenerateContentConfig] = Field(
-      default=genai_types.GenerateContentConfig,
+  model_configuration: genai_types.GenerateContentConfig = Field(
+      default_factory=genai_types.GenerateContentConfig,
       description="The configuration for the model.",
   )
 
   max_allowed_invocations: int = Field(
       default=20,
       description="""Maximum number of invocations allowed by the simulated
-interaction.  This property allows us to stop a run-off conversation, where the
-agent and the user simulator get into an never ending loop.
+interaction. This property allows us to stop a run-off conversation, where the
+agent and the user simulator get into a never ending loop. The initial fixed
+prompt is also counted as an invocation.
 
-(Not recommended)If you don't want a limit, you can set the value to -1.
-      """,
+(Not recommended) If you don't want a limit, you can set the value to -1.""",
   )
 
 
 @experimental
 class LlmBackedUserSimulator(UserSimulator):
-  """A UserSimulator that uses a LLM to generate messages on behalf of the user."""
+  """A UserSimulator that uses an LLM to generate messages on behalf of the user."""
 
   config_type: ClassVar[type[LlmBackedUserSimulatorConfig]] = (
       LlmBackedUserSimulatorConfig
   )
 
-  def __init__(self, *, config: BaseUserSimulatorConfig):
+  def __init__(
+      self,
+      *,
+      config: BaseUserSimulatorConfig,
+      conversation_scenario: ConversationScenario,
+  ):
     super().__init__(config, config_type=LlmBackedUserSimulator.config_type)
+    self._conversation_scenario = conversation_scenario
 
   @override
   async def get_next_user_message(
       self,
-      conversation_plan: str,
       events: list[Event],
   ) -> NextUserMessage:
     """Returns the next user message to send to the agent with help from a LLM.
 
     Args:
-      conversation_plan: A plan that user simulation system needs to follow as
-        it plays out the conversation.
       events: The unaltered conversation history between the user and the
         agent(s) under evaluation.
+
+    Returns:
+      A NextUserMessage object containing the next user message to send to the
+      agent, or a status indicating why no message was generated.
     """
     raise NotImplementedError()
 
   @override
   def get_simulation_evaluator(
       self,
-  ) -> Evaluator:
+  ) -> Optional[Evaluator]:
     """Returns an Evaluator that evaluates if the simulation was successful or not."""
     raise NotImplementedError()

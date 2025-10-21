@@ -22,6 +22,8 @@ from typing import Callable
 from typing import Optional
 import uuid
 
+from google.genai.types import Content
+from google.genai.types import Part
 from typing_extensions import override
 
 from ..agents.base_agent import BaseAgent
@@ -51,6 +53,7 @@ from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from .metric_evaluator_registry import MetricEvaluatorRegistry
+from .user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -74,6 +77,7 @@ class LocalEvalService(BaseEvalService):
       artifact_service: Optional[BaseArtifactService] = None,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       session_id_supplier: Callable[[], str] = _get_session_id,
+      user_simulator_provider: UserSimulatorProvider = UserSimulatorProvider(),
   ):
     self._root_agent = root_agent
     self._eval_sets_manager = eval_sets_manager
@@ -87,6 +91,7 @@ class LocalEvalService(BaseEvalService):
     self._artifact_service = artifact_service
     self._eval_set_results_manager = eval_set_results_manager
     self._session_id_supplier = session_id_supplier
+    self._user_simulator_provider = user_simulator_provider
 
   @override
   async def perform_inference(
@@ -211,6 +216,48 @@ class LocalEvalService(BaseEvalService):
     # would be the score for the eval case.
     overall_eval_metric_results = []
 
+    user_id = (
+        eval_case.session_input.user_id
+        if eval_case.session_input and eval_case.session_input.user_id
+        else 'test_user_id'
+    )
+
+    if eval_case.conversation_scenario:
+      logger.warning(
+          'Skipping evaluation of variable-length conversation scenario in eval'
+          ' set/case %s/%s.',
+          inference_result.eval_set_id,
+          inference_result.eval_case_id,
+      )
+      for actual_invocation in inference_result.inferences:
+        eval_metric_result_per_invocation.append(
+            EvalMetricResultPerInvocation(
+                actual_invocation=actual_invocation,
+                expected_invocation=Invocation(
+                    user_content=actual_invocation.user_content,
+                    final_response=Content(
+                        parts=[Part(text='N/A')], role='model'
+                    ),
+                ),
+            )
+        )
+      eval_case_result = EvalCaseResult(
+          eval_set_file=inference_result.eval_set_id,
+          eval_set_id=inference_result.eval_set_id,
+          eval_id=inference_result.eval_case_id,
+          final_eval_status=EvalStatus.NOT_EVALUATED,
+          overall_eval_metric_results=overall_eval_metric_results,
+          eval_metric_result_per_invocation=eval_metric_result_per_invocation,
+          session_id=inference_result.session_id,
+          session_details=await self._session_service.get_session(
+              app_name=inference_result.app_name,
+              user_id=user_id,
+              session_id=inference_result.session_id,
+          ),
+          user_id=user_id,
+      )
+      return (inference_result, eval_case_result)
+
     if len(inference_result.inferences) != len(eval_case.conversation):
       raise ValueError(
           'Inferences should match conversations in eval case. Found'
@@ -280,11 +327,6 @@ class LocalEvalService(BaseEvalService):
 
     final_eval_status = self._generate_final_eval_status(
         overall_eval_metric_results
-    )
-    user_id = (
-        eval_case.session_input.user_id
-        if eval_case.session_input and eval_case.session_input.user_id
-        else 'test_user_id'
     )
 
     eval_case_result = EvalCaseResult(
@@ -373,8 +415,8 @@ class LocalEvalService(BaseEvalService):
     try:
       inferences = (
           await EvaluationGenerator._generate_inferences_from_root_agent(
-              invocations=eval_case.conversation,
               root_agent=root_agent,
+              user_simulator=self._user_simulator_provider.provide(eval_case),
               initial_session=initial_session,
               session_id=session_id,
               session_service=self._session_service,

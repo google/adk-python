@@ -686,6 +686,65 @@ class TestRestApiTool:
     # Make sure unknown parameters are ignored and do not raise errors.
     assert "unknown_param" not in request_params["params"]
 
+  def test_prepare_request_params_merges_default_headers(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+  ):
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    tool.set_default_headers({"developer-token": "token"})
+
+    request_params = tool._prepare_request_params([], {})
+
+    assert request_params["headers"]["developer-token"] == "token"
+
+  def test_prepare_request_params_preserves_existing_headers(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+      sample_api_parameters,
+  ):
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    tool.set_default_headers({
+        "Content-Type": "text/plain",
+        "developer-token": "token",
+        "User-Agent": "custom-default",
+    })
+
+    header_param = ApiParameter(
+        original_name="User-Agent",
+        py_name="user_agent",
+        param_location="header",
+        param_schema=OpenAPISchema(type="string"),
+    )
+
+    params = sample_api_parameters + [header_param]
+    kwargs = {"test_body_param": "value", "user_agent": "api-client"}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["headers"]["Content-Type"] == "application/json"
+    assert request_params["headers"]["developer-token"] == "token"
+    assert request_params["headers"]["User-Agent"] == "api-client"
+
   def test_prepare_request_params_base_url_handling(
       self, sample_auth_credential, sample_auth_scheme, sample_operation
   ):

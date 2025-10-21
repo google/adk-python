@@ -56,6 +56,14 @@ class TestGoogleApiTool:
     assert tool.is_long_running is False
     assert tool._rest_api_tool == mock_rest_api_tool
 
+  def test_init_with_additional_headers(self, mock_rest_api_tool):
+    """Test GoogleApiTool initialization with additional headers."""
+    headers = {"developer-token": "test-token"}
+
+    GoogleApiTool(mock_rest_api_tool, additional_headers=headers)
+
+    mock_rest_api_tool.set_default_headers.assert_called_once_with(headers)
+
   def test_get_declaration(self, mock_rest_api_tool):
     """Test _get_declaration method."""
     tool = GoogleApiTool(mock_rest_api_tool)

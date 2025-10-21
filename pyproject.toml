@@ -114,7 +114,7 @@ test = [
   "anthropic>=0.43.0",                      # For anthropic model tests
   "kubernetes>=29.0.0",                     # For GkeCodeExecutor
   "langchain-community>=0.3.17",
-  "langgraph>=0.2.60, <= 0.4.10",            # For LangGraphAgent
+  "langgraph>=0.2.60, <0.4.8",              # For LangGraphAgent
   "litellm>=1.75.5, <2.0.0",                # For LiteLLM tests
   "llama-index-readers-file>=0.4.0",        # For retrieval tests
   "openai>=1.100.2",                        # For LiteLLM
@@ -144,7 +144,7 @@ extensions = [
   "crewai[tools];python_version>='3.10'",      # For CrewaiTool
   "docker>=7.0.0",                             # For ContainerCodeExecutor
   "kubernetes>=29.0.0",                        # For GkeCodeExecutor
-  "langgraph>=0.2.60",                         # For LangGraphAgent
+  "langgraph>=0.2.60, <0.4.8",                 # For LangGraphAgent
   "litellm>=1.75.5",                           # For LiteLlm class. Currently has OpenAI limitations. TODO: once LiteLlm fix it
   "llama-index-readers-file>=0.4.0",           # For retrieval using LlamaIndex.
   "llama-index-embeddings-google-genai>=0.3.0",# For files retrieval using LlamaIndex.
