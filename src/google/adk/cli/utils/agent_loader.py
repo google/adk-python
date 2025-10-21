@@ -224,13 +224,30 @@ class AgentLoader(BaseAgentLoader):
       return root_agent
 
     # If no root_agent was found by any pattern
+    # Check if user might be in the wrong directory
+    hint = ""
+    agents_path = Path(agents_dir)
+    if (
+        agents_path.joinpath("agent.py").is_file()
+        or agents_path.joinpath("root_agent.yaml").is_file()
+    ):
+      hint = (
+          "\n\nHINT: It looks like you might be running 'adk web' from inside"
+          " an agent directory. Try running 'adk web .' from the parent"
+          " directory that contains your agent folder, not from within the"
+          " agent folder itself."
+      )
+
     raise ValueError(
         f"No root_agent found for '{agent_name}'. Searched in"
         f" '{actual_agent_name}.agent.root_agent',"
         f" '{actual_agent_name}.root_agent' and"
-        f" '{actual_agent_name}/root_agent.yaml'. Ensure"
-        f" '{agents_dir}/{actual_agent_name}' is structured correctly, an .env"
-        " file can be loaded if present, and a root_agent is exposed."
+        f" '{actual_agent_name}/root_agent.yaml'.\n\nExpected directory"
+        f" structure:\n  <agents_dir>/\n    {actual_agent_name}/\n     "
+        " agent.py (with root_agent) OR\n      root_agent.yaml\n\nThen run:"
+        f" adk web <agents_dir>\n\nEnsure '{agents_dir}/{actual_agent_name}' is"
+        " structured correctly, an .env file can be loaded if present, and a"
+        f" root_agent is exposed.{hint}"
     )
 
   def _ensure_app_name_matches(
