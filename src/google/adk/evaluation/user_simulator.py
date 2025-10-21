@@ -23,6 +23,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 from pydantic import ValidationError
 
 from ..events.event import Event
@@ -32,7 +33,7 @@ from .evaluator import Evaluator
 
 
 class BaseUserSimulatorConfig(BaseModel):
-  """Base class for configurations pertaining to User Simulator."""
+  """Base class for configurations pertaining to user simulator."""
 
   model_config = ConfigDict(
       alias_generator=alias_generators.to_camel,
@@ -60,13 +61,25 @@ not able to do so."""
   )
 
   user_message: Optional[genai_types.Content] = Field(
-      description="""The next user message."""
+      description="""The next user message.""", default=None
   )
+
+  @model_validator(mode="after")
+  def ensure_user_message_iff_success(self) -> NextUserMessage:
+    if (self.status == Status.SUCCESS) == (self.user_message is None):
+      raise ValueError(
+          "A user_message should be provided if and only if the status is"
+          " SUCCESS"
+      )
+    return self
 
 
 @experimental
 class UserSimulator(ABC):
-  """A user simulator for the purposes of automating interaction with an Agent."""
+  """A user simulator for the purposes of automating interaction with an Agent.
+
+  Typically, you must create one user simulator instance per eval case.
+  """
 
   def __init__(
       self,
@@ -82,21 +95,22 @@ class UserSimulator(ABC):
 
   async def get_next_user_message(
       self,
-      conversation_plan: str,
       events: list[Event],
   ) -> NextUserMessage:
     """Returns the next user message to send to the agent.
 
     Args:
-      conversation_plan: A plan that user simulation system needs to follow as
-        it plays out the conversation.
       events: The unaltered conversation history between the user and the
         agent(s) under evaluation.
+
+    Returns:
+      A NextUserMessage object containing the next user message to send to the
+      agent, or a status indicating why no message was generated.
     """
     raise NotImplementedError()
 
   def get_simulation_evaluator(
       self,
-  ) -> Evaluator:
-    """Returns an instnace of an Evaluator that evaluates if the simulation was successful or not."""
+  ) -> Optional[Evaluator]:
+    """Returns an instance of an Evaluator that evaluates if the user simulation was successful or not."""
     raise NotImplementedError()
