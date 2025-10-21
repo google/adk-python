@@ -18,14 +18,13 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from pydantic import BaseModel
-from pydantic import ConfigDict
 from pydantic import model_validator
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from ..agents.common_configs import AgentRefConfig
 from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
 from .tool_configs import BaseToolConfig
@@ -126,32 +125,48 @@ class AgentTool(BaseTool):
           role='user',
           parts=[types.Part.from_text(text=args['request'])],
       )
+    invocation_context = tool_context._invocation_context
+    parent_app_name = (
+        invocation_context.app_name if invocation_context else None
+    )
+    child_app_name = parent_app_name or self.agent.name
     runner = Runner(
-        app_name=self.agent.name,
+        app_name=child_app_name,
         agent=self.agent,
         artifact_service=ForwardingArtifactService(tool_context),
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
         credential_service=tool_context._invocation_context.credential_service,
+        plugins=list(tool_context._invocation_context.plugin_manager.plugins),
     )
+
+    state_dict = {
+        k: v
+        for k, v in tool_context.state.to_dict().items()
+        if not k.startswith('_adk')  # Filter out adk internal states
+    }
     session = await runner.session_service.create_session(
-        app_name=self.agent.name,
-        user_id='tmp_user',
-        state=tool_context.state.to_dict(),
+        app_name=child_app_name,
+        user_id=tool_context._invocation_context.user_id,
+        state=state_dict,
     )
 
-    last_event = None
-    async for event in runner.run_async(
-        user_id=session.user_id, session_id=session.id, new_message=content
-    ):
-      # Forward state delta to parent session.
-      if event.actions.state_delta:
-        tool_context.state.update(event.actions.state_delta)
-      last_event = event
+    last_content = None
+    async with Aclosing(
+        runner.run_async(
+            user_id=session.user_id, session_id=session.id, new_message=content
+        )
+    ) as agen:
+      async for event in agen:
+        # Forward state delta to parent session.
+        if event.actions.state_delta:
+          tool_context.state.update(event.actions.state_delta)
+        if event.content:
+          last_content = event.content
 
-    if not last_event or not last_event.content or not last_event.content.parts:
+    if not last_content:
       return ''
-    merged_text = '\n'.join(p.text for p in last_event.content.parts if p.text)
+    merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
           merged_text
@@ -160,8 +175,8 @@ class AgentTool(BaseTool):
       tool_result = merged_text
     return tool_result
 
-  @classmethod
   @override
+  @classmethod
   def from_config(
       cls, config: ToolArgsConfig, config_abs_path: str
   ) -> AgentTool:

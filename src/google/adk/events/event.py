@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -31,18 +32,6 @@ class Event(LlmResponse):
 
   It is used to store the content of the conversation, as well as the actions
   taken by the agents like function calls, etc.
-
-  Attributes:
-    invocation_id: Required. The invocation ID of the event. Should be non-empty
-      before appending to a session.
-    author: Required. "user" or the name of the agent, indicating who appended
-      the event to the session.
-    actions: The actions taken by the agent.
-    long_running_tool_ids: The ids of the long running function calls.
-    branch: The branch of the event.
-    id: The unique identifier of the event.
-    timestamp: The timestamp of the event.
-    get_function_calls: Returns the function calls in the event.
   """
 
   model_config = ConfigDict(

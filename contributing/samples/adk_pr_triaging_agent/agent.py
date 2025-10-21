@@ -15,7 +15,6 @@
 from pathlib import Path
 from typing import Any
 
-from adk_pr_triaging_agent.settings import BOT_LABEL
 from adk_pr_triaging_agent.settings import GITHUB_BASE_URL
 from adk_pr_triaging_agent.settings import IS_INTERACTIVE
 from adk_pr_triaging_agent.settings import OWNER
@@ -32,6 +31,7 @@ LABEL_TO_OWNER = {
     "documentation": "polong-lin",
     "services": "DeanChensj",
     "tools": "seanzhou1023",
+    "mcp": "seanzhou1023",
     "eval": "ankursharmas",
     "live": "hangfei",
     "models": "genquan9",
@@ -69,8 +69,10 @@ def get_pull_request_details(pr_number: int) -> str:
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $prNumber) {
           id
+          number
           title
           body
+          state
           author {
             login
           }
@@ -177,7 +179,7 @@ def add_label_and_reviewer_to_pr(pr_number: int, label: str) -> dict[str, Any]:
   label_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{pr_number}/labels"
   )
-  label_payload = [label, BOT_LABEL]
+  label_payload = [label]
 
   try:
     response = post_request(label_url, label_payload)
@@ -267,6 +269,7 @@ root_agent = Agent(
       - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
       - If it's agent orchestration, agent definition, label it with "core".
+      - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with "mcp".
       - If you can't find a appropriate labels for the PR, follow the previous instruction that starts with "IMPORTANT:".
 
       Here is the contribution guidelines:
@@ -297,7 +300,10 @@ root_agent = Agent(
       # 4. Steps
       When you are given a PR, here are the steps you should take:
       - Call the `get_pull_request_details` tool to get the details of the PR.
-      - Skip the PR (i.e. do not label or comment) if the PR is closed or is labeled with "{BOT_LABEL}" or "google-contributior".
+      - Skip the PR (i.e. do not label or comment) if any of the following is true:
+        - the PR is closed
+        - the PR is labeled with "google-contributior"
+        - the PR is already labelled with the above labels (e.g. "documentation", "services", "tools", etc.) and has a reviewer assigned.
       - Check if the PR is following the contribution guidelines.
         - If it's not following the guidelines, recommend or add a comment to the PR that points to the contribution guidelines (https://github.com/google/adk-python/blob/main/CONTRIBUTING.md).
         - If it's following the guidelines, recommend or add a label to the PR.

@@ -1,0 +1,538 @@
+{
+  "eval_set_id": "simple",
+  "name": "simple",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "penguins exploration",
+      "conversation": [
+        {
+          "invocation_id": "e-81734a2f-60dc-4c7e-9b05-29a2c18b7651",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "Hi, what can you do?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "I can help you with BigQuery. I can:\n* List datasets and tables in a project\n* Get information about datasets and tables\n* Execute SQL queries\n* Forecast time series data\n* Answer questions about data in BigQuery tables using natural language.\n\nWhat would you like to do?\n"
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757645225.080524
+        },
+        {
+          "invocation_id": "e-78026d6b-f3d5-4807-8122-8872efb024d6",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "which tools do you have access to?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": "CqsCAdHtim-ZZuTPQdEgbCYXWniB28PuU35grogIwz7a2X0PG9eopcLAT0hXOv90Zu5b9Q4iREsIAcV3znUrCjwMwRrW_G3QYH7jfaK5oEvunfD-yOUj-V9wjc_hAyKon4ogXs7nxX9v_sAfz1uh48cmiMBcNcJd1dkiBbCufChWQbHFsVghXAnetSRm21H2rRgPuxvpf4_mWXzxgYZddOuf6bYmUI3kEcwQDqbocOk2u-ghG44KnFAXOhqBBu8eUeJM8m7uUWevEtxXIclJ14crWCjWADzAof80VX_rLucQ5sPE5wfTvlFIDECuGapnxmxAVB8hNCw9iwlJEhNUVVSbPPfvjwDSq9s99w-Rbu8yLDA5YwSru-q1qIrxbXTWuNlh9fwCdKDQAgiXUo0=",
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "I have access to the following tools:\n\n*   `get_dataset_info(project_id, dataset_id)`: Get metadata information about a BigQuery dataset.\n*   `get_table_info(project_id, dataset_id, table_id)`: Get metadata information about a BigQuery table.\n*   `list_dataset_ids(project_id)`: List BigQuery dataset IDs in a Google Cloud project.\n*   `list_table_ids(project_id, dataset_id)`: List table IDs in a BigQuery dataset.\n*   `execute_sql(project_id, query)`: Run a BigQuery or BigQuery ML SQL query in the project and return the result.\n*   `forecast(project_id, history_data, timestamp_col, data_col, horizon, id_cols=None)`: Run a BigQuery AI time series forecast using AI.FORECAST.\n*   `ask_data_insights(project_id, user_query_with_context, table_references)`: Answers questions about structured data in BigQuery tables using natural language."
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757645280.602244
+        },
+        {
+          "invocation_id": "e-47aa5d37-6bba-4a2d-8eae-e79f47f347c4",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "Are there any ML datasets in the bigquery public data?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": "Cq8DAdHtim9T93wEXUnP9hCJ0SGm79kvsT5VJBWIL1xr8Z0TBLYIQSVqogdU3mB3XkwHkqKT7hBGBY11yuHwfcohBakiOco71gRXOlhf0XGlNZNIUUObnOdY2swLsmpJDbOtRLxgU9OZ0JhHlC0fkrQj9Ab2wt5A8VFkuBUQaEB-XcJYes8Zo0TfU79nrlKrfIINPHsXEuBdq4biDipPss57EZwgs8HiwdeUCXeMwcYS1NFquYUmFLqnsAf9Xik5k3yEx9iQyF7VtOPNGp9sKC2zh7Euz5bpgiHjRTV41hw5QWQk8Q38hKOS7G2jLLXPO8v63sn9LgIzCHNJUd9j-IU8v5gtgU9CNfG4o7icU7GD77KrJx6etaxHQiwSfMjPR_6tZ_ft4-eIh7kRQdJo-GrtyDJJBNV-5s61G0qMGqbS7JY4RfH5_cT8UUSEamkU1eJGN7pZIAKc7FXaCHlGUOQClx-9D7XXQMDd2gVk1pyQvMeruzmykywSGPffnDZJQ9kVwW9pl6urnk8hX4ZGnXM_DTjaFZFF_Gb1dhpr0Uuy0LWk1IqcfbS95YJIFipFXPo=",
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "Yes, there are a few ML-related datasets in the `bigquery-public-data` project:\n\n*   `aml_ai_input_dataset`\n*   `bigqueryml_ncaa`\n*   `ml_datasets`\n*   `ml_datasets_uscentral1`"
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": "adk-4d524ad4-6a3b-49dd-a44e-763f956f89c1",
+                "args": {
+                  "project_id": "bigquery-public-data"
+                },
+                "name": "list_dataset_ids"
+              }
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757645323.568069
+        },
+        {
+          "invocation_id": "e-76115967-fe7b-4aee-92c8-39d3fd1b35c0",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "When was ml_datasets created and which location it is in?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "The `ml_datasets` dataset was created on `1553208775542` (which is March 21, 2019, 19:12:55 UTC) and is located in the `US` region."
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": "adk-2cba4269-dde6-4b62-a38a-1004f05452a0",
+                "args": {
+                  "dataset_id": "ml_datasets",
+                  "project_id": "bigquery-public-data"
+                },
+                "name": "get_dataset_info"
+              }
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757645409.36703
+        },
+        {
+          "invocation_id": "e-9a5e0a24-f7cb-4e50-9a61-430a11837e82",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "alright, which tables does it have?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "The `ml_datasets` dataset contains the following tables:\n\n*   `census_adult_income`\n*   `census_adult_income_kmeans_predictions`\n*   `credit_card_default`\n*   `holidays_and_events_for_forecasting`\n*   `iris`\n*   `penguins`\n*   `ulb_fraud_detection`"
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": "adk-089bf143-422f-4516-b6d9-810773b03de7",
+                "args": {
+                  "dataset_id": "ml_datasets",
+                  "project_id": "bigquery-public-data"
+                },
+                "name": "list_table_ids"
+              }
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757645478.923206
+        },
+        {
+          "invocation_id": "e-05b241ed-9678-49dc-8ead-25baab6d4002",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "tell me more details about the penguins table"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "The `penguins` table was created on `1619804743188` (which is April 30, 2021, 00:25:43 UTC) and contains 344 rows. It has the following schema:\n\n*   `species`: STRING (REQUIRED)\n*   `island`: STRING (NULLABLE)\n*   `culmen_length_mm`: FLOAT (NULLABLE)\n*   `culmen_depth_mm`: FLOAT (NULLABLE)\n*   `flipper_length_mm`: FLOAT (NULLABLE)\n*   `body_mass_g`: FLOAT (NULLABLE)\n*   `sex`: STRING (NULLABLE)"
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": "adk-8893d916-9445-4458-8998-ea3e283d534d",
+                "args": {
+                  "dataset_id": "ml_datasets",
+                  "project_id": "bigquery-public-data",
+                  "table_id": "penguins"
+                },
+                "name": "get_table_info"
+              }
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757645526.958228
+        },
+        {
+          "invocation_id": "e-d7b85acb-b7f3-4b61-b66d-bba77c01e13e",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "can you tell me population of penguins per island?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "Here is the population of penguins per island:\n\n*   **Dream:** 124\n*   **Biscoe:** 168\n*   **Torgersen:** 52"
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": "adk-33ff1809-bbfb-45e7-a07c-25fc9c932260",
+                "args": {
+                  "query": "SELECT island, COUNT(*) AS population FROM bigquery-public-data.ml_datasets.penguins GROUP BY island",
+                  "project_id": "${GOOGLE_CLOUD_PROJECT}"
+                },
+                "name": "execute_sql"
+              }
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757645563.777316
+        },
+        {
+          "invocation_id": "e-3b46dd99-4d25-45e5-b16c-2f055de56f47",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "can you get me insights about any correlation between body mass and flipper length of penguins?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "Based on the data, there appears to be a positive correlation between the body mass and flipper length of penguins. Generally, as the flipper length in millimeters increases, the body mass in grams also tends to increase."
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": "adk-266b6452-50b8-4d3b-ae23-d09effa41e0b",
+                "args": {
+                  "project_id": "${GOOGLE_CLOUD_PROJECT}",
+                  "user_query_with_context": "Is there any correlation between body mass and flipper length of penguins?",
+                  "table_references": [
+                    {
+                      "datasetId": "ml_datasets",
+                      "tableId": "penguins",
+                      "projectId": "bigquery-public-data"
+                    }
+                  ]
+                },
+                "name": "ask_data_insights"
+              }
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757645706.447186
+        },
+        {
+          "invocation_id": "e-357fb858-adae-4a7c-80fc-fcadf52a20fd",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "how do the penguins tables in ml_datasets and ml_datasets_uscentral compare?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "Here's a comparison of the `penguins` tables in `ml_datasets` and `ml_datasets_uscentral1`:\n\n**`bigquery-public-data:ml_datasets.penguins`**\n\n*   **Creation Time:** 1619804743188 (April 30, 2021, 00:25:43 UTC)\n*   **Location:** US\n*   **Number of Rows:** 344\n*   **Schema:**\n    *   `species`: STRING (REQUIRED)\n    *   `island`: STRING (NULLABLE)\n    *   `culmen_length_mm`: FLOAT (NULLABLE)\n    *   `culmen_depth_mm`: FLOAT (NULLABLE)\n    *   `flipper_length_mm`: FLOAT (NULLABLE)\n    *   `body_mass_g`: FLOAT (NULLABLE)\n    *   `sex`: STRING (NULLABLE)\n\n**`bigquery-public-data:ml_datasets_uscentral1.penguins`**\n\n*   **Creation Time:** 1634583926374 (October 18, 2021, 23:05:26 UTC)\n*   **Location:** us-central1\n*   **Number of Rows:** 344\n*   **Schema:** (Identical to `ml_datasets.penguins`)\n    *   `species`: STRING (REQUIRED)\n    *   `island`: STRING (NULLABLE)\n    *   `culmen_length_mm`: FLOAT (NULLABLE)\n    *   `culmen_depth_mm`: FLOAT (NULLABLE)\n    *   `flipper_length_mm`: FLOAT (NULLABLE)\n    *   `body_mass_g`: FLOAT (NULLABLE)\n    *   `sex`: STRING (NULLABLE)\n\n**Key Differences:**\n\n*   **Creation Time:** The table in `ml_datasets` was created earlier (April 2021) than the one in `ml_datasets_uscentral1` (October 2021).\n*   **Location:** The `ml_datasets.penguins` table is in the `US` multi-region, while `ml_datasets_uscentral1.penguins` is specifically in the `us-central1` region.\n\n**Similarities:**\n\n*   Both tables have the **same number of rows (344)**.\n*   Both tables have an **identical schema**, with the same column names, types, and modes.\n\nIt appears that `bigquery-public-data:ml_datasets_uscentral1.penguins` is likely a regional copy or a later version of the `bigquery-public-data:ml_datasets.penguins` table."
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": "adk-8ff49a41-b42a-4f2b-8408-bda00712791b",
+                "args": {
+                  "project_id": "bigquery-public-data",
+                  "dataset_id": "ml_datasets",
+                  "table_id": "penguins"
+                },
+                "name": "get_table_info"
+              },
+              {
+                "id": "adk-c0e9a831-300d-4805-a127-6df1d7afc712",
+                "args": {
+                  "project_id": "bigquery-public-data",
+                  "dataset_id": "ml_datasets_uscentral1",
+                  "table_id": "penguins"
+                },
+                "name": "get_table_info"
+              }
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757646232.887191
+        },
+        {
+          "invocation_id": "e-72ddf0dd-4fee-41dd-adb6-26cd98baeb25",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "can you tell the population per island from the uscentral1 table?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "Here is the population of penguins per island from the `ml_datasets_uscentral1` table:\n\n*   **Dream:** 124\n*   **Biscoe:** 168\n*   **Torgersen:** 52"
+              }
+            ],
+            "role": null
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": "adk-febf7cf1-3465-4393-9882-ef860502238f",
+                "args": {
+                  "project_id": "${GOOGLE_CLOUD_PROJECT}",
+                  "query": "SELECT island, COUNT(*) AS population FROM `bigquery-public-data`.`ml_datasets_uscentral1`.`penguins` GROUP BY island"
+                },
+                "name": "execute_sql"
+              }
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1757646339.73431
+        }
+      ],
+      "session_input": {
+        "app_name": "bigquery_agent",
+        "user_id": "user",
+        "state": {}
+      },
+      "creation_timestamp": 1757648114.6285758
+    }
+  ],
+  "creation_timestamp": 1757648101.7927744
+}

@@ -230,6 +230,8 @@ async def test_output_schema_helper_functions():
   # Test create_final_model_response_event function
   final_event = create_final_model_response_event(invocation_context, test_json)
   assert final_event.author == 'test_agent'
+  assert final_event.invocation_id == invocation_context.invocation_id
+  assert final_event.branch == invocation_context.branch
   assert final_event.content.role == 'model'
   assert final_event.content.parts[0].text == test_json
 
@@ -250,6 +252,39 @@ async def test_output_schema_helper_functions():
 
   extracted_json = get_structured_model_response(other_function_response_event)
   assert extracted_json is None
+
+
+@pytest.mark.asyncio
+async def test_get_structured_model_response_with_non_ascii():
+  """Test get_structured_model_response with non-ASCII characters."""
+  from google.adk.events.event import Event
+  from google.adk.flows.llm_flows._output_schema_processor import get_structured_model_response
+  from google.genai import types
+
+  # Test with a dictionary containing non-ASCII characters
+  test_dict = {'city': 'São Paulo'}
+  expected_json = '{"city": "São Paulo"}'
+
+  # Create a function response event
+  function_response_event = Event(
+      author='test_agent',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='set_model_response', response=test_dict
+                  )
+              )
+          ],
+      ),
+  )
+
+  # Get the structured response
+  extracted_json = get_structured_model_response(function_response_event)
+
+  # Assert that the output is the expected JSON string without escaped characters
+  assert extracted_json == expected_json
 
 
 @pytest.mark.asyncio
@@ -348,6 +383,8 @@ async def test_flow_yields_both_events_for_set_model_response():
   # Second event should be the final model response with JSON
   second_event = events[1]
   assert second_event.author == 'test_agent'
+  assert second_event.invocation_id == invocation_context.invocation_id
+  assert second_event.branch == invocation_context.branch
   assert second_event.content.role == 'model'
   assert (
       second_event.content.parts[0].text

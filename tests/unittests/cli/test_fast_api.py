@@ -21,12 +21,15 @@ import sys
 import tempfile
 import time
 from typing import Any
+from typing import Optional
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.apps.app import App
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
@@ -34,8 +37,10 @@ from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
+from google.adk.sessions.session import Session
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -94,6 +99,14 @@ def _event_3():
   )
 
 
+def _event_state_delta(state_delta: dict[str, Any]):
+  return Event(
+      author="dummy agent",
+      invocation_id="invocation_id",
+      actions=EventActions(state_delta=state_delta),
+  )
+
+
 # Define mocked async generator functions for the Runner
 async def dummy_run_live(self, session, live_request_queue):
   yield _event_1()
@@ -110,8 +123,10 @@ async def dummy_run_async(
     user_id,
     session_id,
     new_message,
-    run_config: RunConfig = RunConfig(),
+    state_delta=None,
+    run_config: Optional[RunConfig] = None,
 ):
+  run_config = run_config or RunConfig()
   yield _event_1()
   await asyncio.sleep(0)
 
@@ -119,6 +134,10 @@ async def dummy_run_async(
   await asyncio.sleep(0)
 
   yield _event_3()
+  await asyncio.sleep(0)
+
+  if state_delta is not None:
+    yield _event_state_delta(state_delta)
 
 
 # Define a local mock for EvalCaseResult specific to fast_api tests
@@ -132,28 +151,6 @@ class _MockEvalCaseResult(BaseModel):
   eval_metric_results: list = {}
   overall_eval_metric_results: list = ({},)
   eval_metric_result_per_invocation: list = {}
-
-
-# Mock for the run_evals function, tailored for test_run_eval
-async def mock_run_evals_for_fast_api(*args, **kwargs):
-  # This is what the test_run_eval expects for its assertions
-  yield _MockEvalCaseResult(
-      eval_set_id="test_eval_set_id",  # Matches expected in verify_eval_case_result
-      eval_id="test_eval_case_id",  # Matches expected
-      final_eval_status=1,  # Matches expected (assuming 1 is PASSED)
-      user_id="test_user",  # Placeholder, adapt if needed
-      session_id="test_session_for_eval_case",  # Placeholder
-      eval_set_file="test_eval_set_file",  # Placeholder
-      overall_eval_metric_results=[{  # Matches expected
-          "metricName": "tool_trajectory_avg_score",
-          "threshold": 0.5,
-          "score": 1.0,
-          "evalStatus": 1,
-      }],
-      # Provide other fields if RunEvalResult or subsequent processing needs them
-      eval_metric_results=[],
-      eval_metric_result_per_invocation=[],
-  )
 
 
 #################################################
@@ -271,6 +268,22 @@ def mock_session_service():
       ):
         del session_data[app_name][user_id][session_id]
 
+    async def append_event(self, session, event):
+      """Append an event to a session."""
+      # Update session state if event has state_delta
+      if event.actions and event.actions.state_delta:
+        session["state"].update(event.actions.state_delta)
+
+      # Add event to session events
+      session["events"].append(event.model_dump())
+
+      # Update the session in storage
+      session_data[session["app_name"]][session["user_id"]][
+          session["id"]
+      ] = session
+
+      return event
+
   # Return an instance of our mock service
   return MockSessionService()
 
@@ -328,7 +341,7 @@ def mock_artifact_service():
 @pytest.fixture
 def mock_memory_service():
   """Create a mock memory service."""
-  return MagicMock()
+  return AsyncMock()
 
 
 @pytest.fixture
@@ -417,10 +430,6 @@ def test_app(
       patch(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
-      ),
-      patch(
-          "google.adk.cli.cli_eval.run_evals",  # Patch where it's imported in fast_api.py
-          new=mock_run_evals_for_fast_api,
       ),
   ):
     # Get the FastAPI app, but don't actually run it
@@ -569,10 +578,6 @@ def test_app_with_a2a(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
-      patch(
-          "google.adk.cli.cli_eval.run_evals",
-          new=mock_run_evals_for_fast_api,
-      ),
       patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store,
       patch(
           "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
@@ -708,6 +713,80 @@ def test_delete_session(test_app, create_test_session):
   logger.info("Session deleted successfully")
 
 
+def test_update_session(test_app, create_test_session):
+  """Test patching a session state."""
+  info = create_test_session
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}"
+
+  # Get the original session
+  response = test_app.get(url)
+  assert response.status_code == 200
+  original_session = response.json()
+  original_state = original_session.get("state", {})
+
+  # Prepare state delta
+  state_delta = {"test_key": "test_value", "counter": 42}
+
+  # Patch the session
+  response = test_app.patch(url, json={"state_delta": state_delta})
+  assert response.status_code == 200
+
+  # Verify the response
+  patched_session = response.json()
+  assert patched_session["id"] == info["session_id"]
+
+  # Verify state was updated correctly
+  expected_state = {**original_state, **state_delta}
+  assert patched_session["state"] == expected_state
+
+  # Verify the session was actually updated in storage
+  response = test_app.get(url)
+  assert response.status_code == 200
+  retrieved_session = response.json()
+  assert retrieved_session["state"] == expected_state
+
+  # Verify an event was created for the state change
+  events = retrieved_session.get("events", [])
+  assert len(events) > len(original_session.get("events", []))
+
+  # Find the state patch event (looking for "p-" prefix pattern)
+  state_patch_events = [
+      event
+      for event in events
+      if (
+          event.get("invocationId") or event.get("invocation_id", "")
+      ).startswith("p-")
+  ]
+
+  assert len(state_patch_events) == 1, (
+      f"Expected 1 state_patch event, found {len(state_patch_events)}. Events:"
+      f" {events}"
+  )
+  state_patch_event = state_patch_events[0]
+  assert state_patch_event["author"] == "user"
+
+  # Check for actions in both camelCase and snake_case
+  actions = state_patch_event.get("actions") or state_patch_event.get("actions")
+  assert actions is not None, f"No actions found in event: {state_patch_event}"
+  state_delta_in_event = actions.get("state_delta") or actions.get("stateDelta")
+  assert state_delta_in_event == state_delta
+
+  logger.info("Session state patched successfully")
+
+
+def test_patch_session_not_found(test_app, test_session_info):
+  """Test patching a non-existent session."""
+  info = test_session_info
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/nonexistent"
+
+  state_delta = {"test_key": "test_value"}
+  response = test_app.patch(url, json={"state_delta": state_delta})
+
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+  logger.info("Patch session not found test passed")
+
+
 def test_agent_run(test_app, create_test_session):
   """Test running an agent with a message."""
   info = create_test_session
@@ -742,6 +821,29 @@ def test_agent_run(test_app, create_test_session):
   assert data[2]["interrupted"] == True
 
   logger.info("Agent run test completed successfully")
+
+
+def test_agent_run_passes_state_delta(test_app, create_test_session):
+  """Test /run forwards state_delta and surfaces it in events."""
+  info = create_test_session
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+      "state_delta": {"k": "v", "count": 1},
+  }
+
+  # Verify the response
+  response = test_app.post("/run", json=payload)
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, list)
+  assert len(data) == 4
+
+  # Verify we got the expected event
+  assert data[3]["actions"]["stateDelta"] == payload["state_delta"]
 
 
 def test_list_artifact_names(test_app, create_test_session):
@@ -801,6 +903,7 @@ def test_run_eval(test_app, create_test_eval_set):
             "threshold": 0.5,
             "score": 1.0,
             "evalStatus": 1,
+            "details": {},
         }],
     }
     for k, v in expected_eval_case_result.items():
@@ -845,18 +948,20 @@ def test_run_eval(test_app, create_test_eval_set):
   assert data == [f"{info['app_name']}_test_eval_set_id_eval_result"]
 
 
-def test_list_eval_metrics(test_app):
-  """Test listing eval metrics."""
-  url = "/apps/test_app/eval_metrics"
+def test_list_metrics_info(test_app):
+  """Test listing metrics info."""
+  url = "/apps/test_app/metrics-info"
   response = test_app.get(url)
 
   # Verify the response
   assert response.status_code == 200
   data = response.json()
-  assert isinstance(data, list)
+  metrics_info_key = "metricsInfo"
+  assert metrics_info_key in data
+  assert isinstance(data[metrics_info_key], list)
   # Add more assertions based on the expected metrics
-  assert len(data) > 0
-  for metric in data:
+  assert len(data[metrics_info_key]) > 0
+  for metric in data[metrics_info_key]:
     assert "metricName" in metric
     assert "description" in metric
     assert "metricValueInfo" in metric
@@ -872,6 +977,56 @@ def test_debug_trace(test_app):
   # Verify we get a 404 for a nonexistent trace
   assert response.status_code == 404
   logger.info("Debug trace test completed successfully")
+
+
+def test_get_event_graph_returns_dot_src_for_app_agent():
+  """Ensure graph endpoint unwraps App instances before building the graph."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  root_agent = DummyAgent(name="dummy_agent")
+  app_agent = App(name="test_app", root_agent=root_agent)
+
+  class Loader:
+
+    def load_agent(self, app_name):
+      return app_agent
+
+    def list_agents(self):
+      return [app_agent.name]
+
+  session_service = AsyncMock()
+  session = Session(
+      id="session_id",
+      app_name="test_app",
+      user_id="user",
+      state={},
+      events=[Event(author="dummy_agent")],
+  )
+  event_id = session.events[0].id
+  session_service.get_session.return_value = session
+
+  adk_web_server = AdkWebServer(
+      agent_loader=Loader(),
+      session_service=session_service,
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=MagicMock(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+
+  client = TestClient(fast_api_app)
+  response = client.get(
+      f"/apps/test_app/users/user/sessions/session_id/events/{event_id}/graph"
+  )
+  assert response.status_code == 200
+  assert "dotSrc" in response.json()
 
 
 @pytest.mark.skipif(
@@ -895,6 +1050,19 @@ def test_a2a_disabled_by_default(test_app):
   response = test_app.get("/list-apps")
   assert response.status_code == 200
   logger.info("A2A disabled by default test passed")
+
+
+def test_patch_memory(test_app, create_test_session, mock_memory_service):
+  """Test adding a session to memory."""
+  info = create_test_session
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/memory"
+  payload = {"session_id": info["session_id"]}
+  response = test_app.patch(url, json=payload)
+
+  # Verify the response
+  assert response.status_code == 200
+  mock_memory_service.add_session_to_memory.assert_called_once()
+  logger.info("Add session to memory test completed successfully")
 
 
 if __name__ == "__main__":

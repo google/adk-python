@@ -12,13 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pytest
+
+# TODO: Re-enable this test after verifying LangchainTool and
+# LangGraphAgent against langchain's 1.0.0 release.
+pytest.skip(
+    allow_module_level=True,
+    reason="Langchain just made 1.0.0 release that breaks existing import.",
+)
+
+
 from unittest.mock import MagicMock
 
 from google.adk.tools.langchain_tool import LangchainTool
 from langchain.tools import tool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import BaseModel
-import pytest
 
 
 @tool

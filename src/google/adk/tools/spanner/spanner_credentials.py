@@ -18,7 +18,10 @@ from ...utils.feature_decorator import experimental
 from .._google_credentials import BaseGoogleCredentialsConfig
 
 SPANNER_TOKEN_CACHE_KEY = "spanner_token_cache"
-SPANNER_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/spanner.data"]
+SPANNER_DEFAULT_SCOPE = [
+    "https://www.googleapis.com/auth/spanner.admin",
+    "https://www.googleapis.com/auth/spanner.data",
+]
 
 
 @experimental
