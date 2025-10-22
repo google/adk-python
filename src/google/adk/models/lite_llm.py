@@ -806,6 +806,15 @@ class LiteLlm(BaseLlm):
         _get_completion_inputs(llm_request)
     )
 
+    if not messages:
+      messages = [
+          ChatCompletionUserMessage(
+              role="user",
+              content="Handle the requests as specified in the System Instruction."
+          )
+      ]
+
+
     if "functions" in self._additional_args:
       # LiteLLM does not support both tools and functions together.
       tools = None
