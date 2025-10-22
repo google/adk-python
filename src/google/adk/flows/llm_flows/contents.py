@@ -639,7 +639,7 @@ def _is_live_model_audio_event(event: Event) -> bool:
       Part(
         inline_data=Blob(
           data=b'\x01\x00\x00...',
-          mime_type='audio/pcm'
+          mime_type='audio/pcm;rate=24000'
         )
       ),
     ],
@@ -653,9 +653,17 @@ def _is_live_model_audio_event(event: Event) -> bool:
     return False
   # If it's audio data, then one event only has one part of audio.
   for part in event.content.parts:
-    if part.inline_data and part.inline_data.mime_type == 'audio/pcm':
+    if (
+        part.inline_data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith('audio/')
+    ):
       return True
-    if part.file_data and part.file_data.mime_type == 'audio/pcm':
+    if (
+        part.file_data
+        and part.file_data.mime_type
+        and part.file_data.mime_type.startswith('audio/')
+    ):
       return True
   return False
 
