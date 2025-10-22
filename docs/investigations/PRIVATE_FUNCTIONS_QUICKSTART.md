@@ -20,9 +20,23 @@ This guide provides a quick reference for migrating Cloud Functions to private, 
 
 ## Quick Migration Steps
 
+### ⚠️ CRITICAL: Check Organization Policies First
+
+Before attempting migration, verify your organization's policies allow private Cloud Functions:
+
+```bash
+# Check organization policy compliance
+./scripts/deployment/check_org_policies.sh
+```
+
+**If compliance check fails**, see [`ORGANIZATION_POLICY_COMPLIANCE.md`](./ORGANIZATION_POLICY_COMPLIANCE.md) for resolution steps.
+
 ### Option 1: Automated Migration (Recommended)
 
 ```bash
+# Step 0: Verify organization policy compliance
+./scripts/deployment/check_org_policies.sh
+
 # Step 1: Setup VPC infrastructure
 ./scripts/deployment/setup_vpc_infrastructure.sh
 
@@ -140,6 +154,13 @@ response = requests.post(
 
 ## Verification Checklist
 
+### Pre-Deployment
+- [ ] Organization policies checked and compliant
+- [ ] VPC infrastructure created
+- [ ] Service accounts created with minimal permissions
+- [ ] Required APIs enabled
+
+### Post-Deployment
 - [ ] Public access returns 403 Forbidden
 - [ ] Authenticated access returns 200 OK
 - [ ] Cloud Scheduler jobs trigger successfully
@@ -241,6 +262,8 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 |------|---------|
 | `docs/investigations/private-cloud-functions-migration.md` | Comprehensive migration guide |
 | `docs/investigations/PRIVATE_FUNCTIONS_QUICKSTART.md` | This quick start guide |
+| `docs/investigations/ORGANIZATION_POLICY_COMPLIANCE.md` | Organization policy compliance assessment |
+| `scripts/deployment/check_org_policies.sh` | Organization policy compliance checker |
 | `scripts/deployment/setup_vpc_infrastructure.sh` | VPC setup automation |
 | `scripts/deployment/deploy_private_cloud_functions.sh` | Private function deployment |
 | `scripts/testing/test_private_functions.sh` | Validation test suite |
