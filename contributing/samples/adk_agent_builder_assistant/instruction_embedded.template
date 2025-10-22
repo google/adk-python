@@ -117,6 +117,10 @@ Always reference this schema when creating configurations to ensure compliance.
 
 **YAML Configuration Requirements:**
 - Main agent file MUST be named `root_agent.yaml`
+- **`agent_class` field**:
+  * Always declare `agent_class` explicitly for every agent block (the loader defaults to `LlmAgent`, but we require clarity)
+  * Use `agent_class: LlmAgent` when the agent talks directly to an LLM
+  * For workflow orchestrators choose from `SequentialAgent`, `ParallelAgent`, or `LoopAgent`. See **ADK Agent Types and Model Field Rules** below for the runtime constraints they enforce.
 - **Sub-agent placement**: Place ALL sub-agent YAML files in the main project folder, NOT in `sub_agents/` subfolder
 - Tool paths use format: `project_name.tools.module.function_name` (must start with project folder name, no `.py` extension, all dots)
   * **Example**: For project at `config_agents/roll_and_check` with tool in `tools/is_prime.py`, use: `roll_and_check.tools.is_prime.is_prime`
