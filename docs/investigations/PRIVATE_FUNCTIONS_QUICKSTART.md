@@ -40,11 +40,17 @@ Before attempting migration, verify your organization's policies allow private C
 # Step 1: Setup VPC infrastructure
 ./scripts/deployment/setup_vpc_infrastructure.sh
 
-# Step 2: Deploy private cloud functions
+# Step 2: (Optional) Setup VPC Service Controls for maximum security
+./scripts/deployment/setup_vpc_service_controls.sh
+
+# Step 3: Deploy private cloud functions
 ./scripts/deployment/deploy_private_cloud_functions.sh
 
-# Step 3: Test authentication and connectivity
+# Step 4: Test authentication and connectivity
 ./scripts/testing/test_private_functions.sh
+
+# Step 5: (If VPC-SC enabled) Test VPC Service Controls compliance
+./scripts/testing/test_vpc_service_controls.sh
 ```
 
 ### Option 2: Manual Migration
@@ -240,13 +246,16 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 
 ## Security Improvements
 
-| Control | Before | After |
-|---------|--------|-------|
-| Public access | ❌ Yes | ✅ No |
-| Authentication | ❌ None | ✅ OIDC tokens |
-| Network isolation | ❌ No | ✅ VPC isolated |
-| Service account | ⚠️ Default (Editor) | ✅ Dedicated (least privilege) |
-| Audit logging | ⚠️ Partial | ✅ Complete |
+| Control | Before | After (Private) | After (+ VPC-SC) |
+|---------|--------|----------------|------------------|
+| Public access | ❌ Yes | ✅ No | ✅ No |
+| Authentication | ❌ None | ✅ OIDC tokens | ✅ OIDC tokens |
+| Network isolation | ❌ No | ✅ VPC isolated | ✅ VPC isolated |
+| Service account | ⚠️ Default (Editor) | ✅ Dedicated | ✅ Dedicated |
+| Audit logging | ⚠️ Partial | ✅ Complete | ✅ Complete |
+| **Data exfiltration prevention** | ❌ No | ⚠️ Limited | ✅ Org-level perimeter |
+| **Cross-project access control** | ❌ No | ⚠️ IAM only | ✅ Perimeter enforced |
+| **Compliance** | ⚠️ Basic | ✅ Good | ✅ HIPAA/PCI-DSS/SOC2 |
 
 ## Next Steps
 
@@ -263,10 +272,13 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 | `docs/investigations/private-cloud-functions-migration.md` | Comprehensive migration guide |
 | `docs/investigations/PRIVATE_FUNCTIONS_QUICKSTART.md` | This quick start guide |
 | `docs/investigations/ORGANIZATION_POLICY_COMPLIANCE.md` | Organization policy compliance assessment |
+| `docs/investigations/VPC_SERVICE_CONTROLS_GUIDE.md` | VPC Service Controls comprehensive guide |
 | `scripts/deployment/check_org_policies.sh` | Organization policy compliance checker |
 | `scripts/deployment/setup_vpc_infrastructure.sh` | VPC setup automation |
+| `scripts/deployment/setup_vpc_service_controls.sh` | VPC Service Controls setup automation |
 | `scripts/deployment/deploy_private_cloud_functions.sh` | Private function deployment |
 | `scripts/testing/test_private_functions.sh` | Validation test suite |
+| `scripts/testing/test_vpc_service_controls.sh` | VPC-SC compliance test suite |
 
 ## Support
 
