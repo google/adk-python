@@ -95,7 +95,10 @@ def get_fast_api_app(
           "Unsupported memory service URI: %s" % memory_service_uri
       )
   else:
-    memory_service = InMemoryMemoryService()
+    # Set to None to match Runner implementation where memory_service is optional.
+    # This prevents unnecessary memory accumulation and potential OOM issues.
+    # See: https://github.com/google/adk-python/issues/3251
+    memory_service = None
 
   # Build the Session service
   if session_service_uri:

@@ -990,5 +990,197 @@ def test_patch_memory(test_app, create_test_session, mock_memory_service):
   logger.info("Add session to memory test completed successfully")
 
 
+#################################################
+# Test Cases for Issue #3251: Memory Service Initialization
+#################################################
+
+
+def test_memory_service_none_when_no_uri_provided():
+  """Test that memory_service is None when --memory_service_uri is not specified.
+
+  This test verifies that when no memory_service_uri is provided,
+  the CLI defaults to None instead of creating an InMemoryMemoryService.
+  This aligns with the Runner class implementation.
+
+  Related to: https://github.com/google/adk-python/issues/3251
+  """
+  mock_session_service = InMemorySessionService()
+  mock_artifact_service = MagicMock()
+  mock_agent_loader = MagicMock()
+  mock_eval_sets_manager = InMemoryEvalSetsManager()
+  mock_eval_set_results_manager = MagicMock()
+
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.InMemorySessionService",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.InMemoryArtifactService",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch("google.adk.cli.fast_api.InMemoryMemoryService") as mock_memory_class,
+  ):
+    # Call get_fast_api_app without memory_service_uri
+    app = get_fast_api_app(
+        agents_dir=".",
+        web=False,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri=None,  # Explicitly None
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    # Verify that InMemoryMemoryService was NOT instantiated
+    mock_memory_class.assert_not_called()
+
+    # Verify the app was created successfully
+    assert app is not None
+    logger.info("Memory service None test completed successfully")
+
+
+def test_memory_service_created_when_uri_provided():
+  """Test that memory_service is created when --memory_service_uri is specified.
+
+  This test verifies that when a valid memory_service_uri is provided,
+  the appropriate memory service is created.
+
+  Related to: https://github.com/google/adk-python/issues/3251
+  """
+  mock_session_service = InMemorySessionService()
+  mock_artifact_service = MagicMock()
+  mock_memory_service = MagicMock()
+  mock_agent_loader = MagicMock()
+  mock_eval_sets_manager = InMemoryEvalSetsManager()
+  mock_eval_set_results_manager = MagicMock()
+  mock_service_registry = MagicMock()
+  mock_service_registry.create_memory_service.return_value = mock_memory_service
+
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.InMemorySessionService",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.InMemoryArtifactService",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.get_service_registry",
+          return_value=mock_service_registry,
+      ),
+  ):
+    # Call get_fast_api_app with memory_service_uri
+    app = get_fast_api_app(
+        agents_dir=".",
+        web=False,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="memory://test",
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    # Verify that service_registry.create_memory_service was called
+    mock_service_registry.create_memory_service.assert_called_once_with(
+        "memory://test", agents_dir="."
+    )
+
+    # Verify the app was created successfully
+    assert app is not None
+    logger.info("Memory service creation test completed successfully")
+
+
+def test_invalid_memory_service_uri_raises_exception():
+  """Test that invalid --memory_service_uri raises a ClickException.
+
+  This test verifies that when an invalid memory_service_uri is provided,
+  the CLI raises a ClickException.
+
+  Related to: https://github.com/google/adk-python/issues/3251
+  """
+  mock_session_service = InMemorySessionService()
+  mock_artifact_service = MagicMock()
+  mock_agent_loader = MagicMock()
+  mock_eval_sets_manager = InMemoryEvalSetsManager()
+  mock_eval_set_results_manager = MagicMock()
+  mock_service_registry = MagicMock()
+  # Simulate unsupported URI by returning None
+  mock_service_registry.create_memory_service.return_value = None
+
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.InMemorySessionService",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.InMemoryArtifactService",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.get_service_registry",
+          return_value=mock_service_registry,
+      ),
+  ):
+    # Verify that ClickException is raised
+    with pytest.raises(click.ClickException) as exc_info:
+      get_fast_api_app(
+          agents_dir=".",
+          web=False,
+          session_service_uri="",
+          artifact_service_uri="",
+          memory_service_uri="invalid://uri",
+          a2a=False,
+          host="127.0.0.1",
+          port=8000,
+      )
+
+    # Verify the exception message
+    assert "Unsupported memory service URI" in str(exc_info.value)
+    logger.info("Invalid memory service URI test completed successfully")
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])
