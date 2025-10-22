@@ -1,0 +1,5 @@
+# Ignore all JSON credential files
+*.json
+
+# Allow README files
+!README.md
