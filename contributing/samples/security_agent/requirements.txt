@@ -22,6 +22,13 @@ flask==3.0.0
 flask-cors==4.0.0
 gunicorn
 
+# Unified Cloud Function (FastAPI + Vellox)
+fastapi==0.115.5
+uvicorn==0.30.6
+vellox>=0.1.0
+pydantic==2.9.2
+httpx==0.27.2
+
 # Chainlit UI (modern chat interface)
 chainlit
 
