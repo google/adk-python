@@ -4,9 +4,9 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# Install runtime prerequisites
+# Install runtime prerequisites (bash for scripts, lsof for port checks, curl for healthchecks)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash \
+    && apt-get install -y --no-install-recommends bash lsof curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

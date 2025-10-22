@@ -103,22 +103,75 @@ cp .env.example .env
 
 ### Run with Docker
 
-# Build the container image
-./scripts/docker_build.sh [image-name]
+**Prerequisites** (one-time setup):
 
-# Run the container and expose the agent, Flask, and Chainlit ports
-./scripts/docker_run.sh [image-name]
+```bash
+# 1. Run the preflight check to validate your setup
+./scripts/docker_preflight.sh
+
+# This checks for:
+# - config/ directory exists
+# - .env file is configured
+# - Service account JSON is present
+# - Docker is installed and running
 ```
 
-Alternatively, use Docker Compose (recommended for local workflows):
+**First-time setup if preflight fails:**
+
+```bash
+# Create config directory
+mkdir -p config
+
+# Copy environment template
+cp .env.example .env
+
+# Edit .env with your GCP project details
+# Minimum required:
+#   GOOGLE_CLOUD_PROJECT=your-project-id
+#   GOOGLE_APPLICATION_CREDENTIALS=config/service-account-key.json
+#   BQ_DEFAULT_DATASET=security_insights
+#   BQ_DEFAULT_TABLE=security_findings
+
+# Place your GCP service account JSON in config/
+# See config/README.md for detailed instructions on creating a service account
+cp /path/to/your-key.json config/service-account-key.json
+chmod 600 config/service-account-key.json
+```
+
+**Build and run with Docker Compose** (recommended):
 
 ```bash
 docker compose up --build
+
+# Or run in detached mode
+docker compose up -d --build
+
+# View logs
+docker compose logs -f
+
+# Stop services
+docker compose down
 ```
 
-> **Heads up:** The container expects valid cloud credentials. Make sure your
-> `.env` points to a service-account JSON that is mounted into the container
-> (for example, via the `config/` volume shown above).
+**Alternative: Build and run with scripts:**
+
+```bash
+# Build the container image
+./scripts/docker_build.sh [image-name]
+
+# Run the container
+./scripts/docker_run.sh [image-name]
+```
+
+**Access the interfaces:**
+- ADK Backend API: http://localhost:8000
+- Flask Web UI: http://localhost:5001
+- Chainlit Chat UI: http://localhost:8001
+
+**Troubleshooting:**
+- Run `./scripts/docker_preflight.sh` to diagnose issues
+- Check logs: `docker compose logs -f` or `tail -f logs/*.log`
+- Verify credentials: See `config/README.md` for setup guide
 
 ## 🛠️ Comprehensive Tool Suite
 
