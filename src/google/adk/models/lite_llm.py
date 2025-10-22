@@ -831,7 +831,7 @@ class LiteLlm(BaseLlm):
               content=(
                   llm_request.config.system_instruction
                   if llm_request.config.system_instruction
-                  else "Handle the requests as specified in the System Instruction."
+                  else "Provide a helpful response."
               )
           )
       ]
