@@ -156,9 +156,9 @@ def cli_conformance_record(
 
   Examples:
 
-  Use default directory: adk conformance create
+  Use default directory: adk conformance record
 
-  Custom directories: adk conformance create tests/core tests/tools
+  Custom directories: adk conformance record tests/core tests/tools
   """
 
   try:
