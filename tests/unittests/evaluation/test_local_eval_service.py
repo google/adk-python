@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import asyncio
 import sys
 
@@ -246,6 +248,7 @@ async def test_evaluate_success(
 
   mock_eval_case = mocker.MagicMock(spec=EvalCase)
   mock_eval_case.conversation = []
+  mock_eval_case.conversation_scenario = None
   mock_eval_case.session_input = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
@@ -321,6 +324,7 @@ async def test_evaluate_single_inference_result(
       invocation.model_copy(deep=True),
       invocation.model_copy(deep=True),
   ]
+  mock_eval_case.conversation_scenario = None
   mock_eval_case.session_input = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
@@ -350,6 +354,51 @@ async def test_evaluate_single_inference_result(
     assert metric_result.metric_name == "fake_metric"
     assert metric_result.score == 0.9
     assert metric_result.eval_status == EvalStatus.PASSED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_single_inference_result_skipped_for_conversation_scenario(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  """To be removed once evaluation is implemented for conversation scenarios."""
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=[invocation.model_copy(deep=True)],
+      session_id="session1",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = None
+  mock_eval_case.conversation_scenario = mocker.MagicMock()
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+  assert isinstance(result, EvalCaseResult)
+  assert result.eval_id == "case1"
+  assert result.final_eval_status == EvalStatus.NOT_EVALUATED
+  assert not result.overall_eval_metric_results
+  assert len(result.eval_metric_result_per_invocation) == 1
+  invocation_result = result.eval_metric_result_per_invocation[0]
+  assert not invocation_result.eval_metric_results
+  assert (
+      invocation_result.expected_invocation.final_response.parts[0].text
+      == "N/A"
+  )
 
 
 def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
