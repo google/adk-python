@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any
-from typing import AsyncIterator
 from typing import Callable
 from typing import Dict
 from typing import List
@@ -73,7 +71,7 @@ class McpToolset(BaseToolset):
 
   Usage::
 
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=StdioServerParameters(
             command='npx',
             args=["-y", "@modelcontextprotocol/server-filesystem"],
@@ -113,7 +111,7 @@ class McpToolset(BaseToolset):
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
   ):
-    """Initializes the MCPToolset.
+    """Initializes the McpToolset.
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
@@ -141,7 +139,7 @@ class McpToolset(BaseToolset):
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
     if not connection_params:
-      raise ValueError("Missing connection params in MCPToolset.")
+      raise ValueError("Missing connection params in McpToolset.")
 
     self._connection_params = connection_params
     self._errlog = errlog
@@ -208,14 +206,14 @@ class McpToolset(BaseToolset):
       await self._mcp_session_manager.close()
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
-      print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
+      print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
 
   @override
   @classmethod
   def from_config(
-      cls: type[MCPToolset], config: ToolArgsConfig, config_abs_path: str
-  ) -> MCPToolset:
-    """Creates an MCPToolset from a configuration object."""
+      cls: type[McpToolset], config: ToolArgsConfig, config_abs_path: str
+  ) -> McpToolset:
+    """Creates an McpToolset from a configuration object."""
     mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
 
     if mcp_toolset_config.stdio_server_params:
@@ -227,7 +225,7 @@ class McpToolset(BaseToolset):
     elif mcp_toolset_config.streamable_http_connection_params:
       connection_params = mcp_toolset_config.streamable_http_connection_params
     else:
-      raise ValueError("No connection params found in MCPToolsetConfig.")
+      raise ValueError("No connection params found in McpToolsetConfig.")
 
     return cls(
         connection_params=connection_params,
@@ -251,7 +249,7 @@ class MCPToolset(McpToolset):
 
 
 class McpToolsetConfig(BaseToolConfig):
-  """The config for MCPToolset."""
+  """The config for McpToolset."""
 
   stdio_server_params: Optional[StdioServerParameters] = None
 

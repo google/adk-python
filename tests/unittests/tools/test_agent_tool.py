@@ -12,15 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
 from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.plugin_manager import PluginManager
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.types import Part
@@ -49,6 +57,120 @@ function_response_no_schema = Part.from_function_response(
 def change_state_callback(callback_context: CallbackContext):
   callback_context.state['state_1'] = 'changed_value'
   print('change_state_callback: ', callback_context.state)
+
+
+@mark.asyncio
+async def test_agent_tool_inherits_parent_app_name(monkeypatch):
+  parent_app_name = 'parent_app'
+  captured: dict[str, str] = {}
+
+  class RecordingSessionService(InMemorySessionService):
+
+    async def create_session(
+        self,
+        *,
+        app_name: str,
+        user_id: str,
+        state: Optional[dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+    ):
+      captured['session_app_name'] = app_name
+      return await super().create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
+      )
+
+  monkeypatch.setattr(
+      'google.adk.sessions.in_memory_session_service.InMemorySessionService',
+      RecordingSessionService,
+  )
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent: Agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del artifact_service, memory_service, credential_service
+      captured['runner_app_name'] = app_name
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id: Optional[str] = None,
+        new_message: Optional[types.Content] = None,
+        state_delta: Optional[dict[str, Any]] = None,
+        run_config: Optional[RunConfig] = None,
+    ):
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          new_message,
+          state_delta,
+          run_config,
+      )
+      return _empty_async_generator()
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model='test-model',
+  )
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(
+      name='root_agent',
+      model='test-model',
+      tools=[agent_tool],
+  )
+
+  artifact_service = InMemoryArtifactService()
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name=parent_app_name,
+      user_id='user',
+  )
+  invocation_context = InvocationContext(
+      artifact_service=artifact_service,
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='invocation-id',
+      agent=root_agent,
+      session=parent_session,
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  assert tool_context._invocation_context.app_name == parent_app_name
+
+  await agent_tool.run_async(
+      args={'request': 'hello'},
+      tool_context=tool_context,
+  )
+
+  assert captured['runner_app_name'] == parent_app_name
+  assert captured['session_app_name'] == parent_app_name
 
 
 def test_no_schema():

@@ -39,8 +39,9 @@ from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsMa
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
-from google.adk.sessions.base_session_service import ListSessionsResponse
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.sessions.state import State
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -194,98 +195,8 @@ def mock_agent_loader():
 
 @pytest.fixture
 def mock_session_service():
-  """Create a mock session service that uses an in-memory dictionary."""
-
-  # In-memory database to store sessions during testing
-  session_data = {
-      "test_app": {
-          "test_user": {
-              "test_session": {
-                  "id": "test_session",
-                  "app_name": "test_app",
-                  "user_id": "test_user",
-                  "events": [],
-                  "state": {},
-                  "created_at": time.time(),
-              }
-          }
-      }
-  }
-
-  # Mock session service class that operates on the in-memory database
-  class MockSessionService:
-
-    async def get_session(self, app_name, user_id, session_id):
-      """Retrieve a session by ID."""
-      if (
-          app_name in session_data
-          and user_id in session_data[app_name]
-          and session_id in session_data[app_name][user_id]
-      ):
-        return session_data[app_name][user_id][session_id]
-      return None
-
-    async def create_session(
-        self, app_name, user_id, state=None, session_id=None
-    ):
-      """Create a new session."""
-      if session_id is None:
-        session_id = f"session_{int(time.time())}"
-
-      # Initialize app_name and user_id if they don't exist
-      if app_name not in session_data:
-        session_data[app_name] = {}
-      if user_id not in session_data[app_name]:
-        session_data[app_name][user_id] = {}
-
-      # Create the session
-      session = {
-          "id": session_id,
-          "app_name": app_name,
-          "user_id": user_id,
-          "events": [],
-          "state": state or {},
-      }
-
-      session_data[app_name][user_id][session_id] = session
-      return session
-
-    async def list_sessions(self, app_name, user_id):
-      """List all sessions for a user."""
-      if app_name not in session_data or user_id not in session_data[app_name]:
-        return {"sessions": []}
-
-      return ListSessionsResponse(
-          sessions=list(session_data[app_name][user_id].values())
-      )
-
-    async def delete_session(self, app_name, user_id, session_id):
-      """Delete a session."""
-      if (
-          app_name in session_data
-          and user_id in session_data[app_name]
-          and session_id in session_data[app_name][user_id]
-      ):
-        del session_data[app_name][user_id][session_id]
-
-    async def append_event(self, session, event):
-      """Append an event to a session."""
-      # Update session state if event has state_delta
-      if event.actions and event.actions.state_delta:
-        session["state"].update(event.actions.state_delta)
-
-      # Add event to session events
-      session["events"].append(event.model_dump())
-
-      # Update the session in storage
-      session_data[session["app_name"]][session["user_id"]][
-          session["id"]
-      ] = session
-
-      return event
-
-  # Return an instance of our mock service
-  return MockSessionService()
+  """Create an in-memory session service instance for testing."""
+  return InMemorySessionService()
 
 
 @pytest.fixture
@@ -465,7 +376,7 @@ async def create_test_session(
       state={},
   )
 
-  logger.info(f"Created test session: {session['id']}")
+  logger.info(f"Created test session: {session.id}")
   return test_session_info
 
 
@@ -654,6 +565,22 @@ def test_create_session_with_id(test_app, test_session_info):
   logger.info(f"Created session with ID: {data['id']}")
 
 
+def test_create_session_with_id_already_exists(test_app, test_session_info):
+  """Test creating a session with an ID that already exists."""
+  session_id = "existing_session_id"
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions/{session_id}"
+
+  # Create the session for the first time
+  response = test_app.post(url, json={"state": {}})
+  assert response.status_code == 200
+
+  # Attempt to create it again
+  response = test_app.post(url, json={"state": {}})
+  assert response.status_code == 409
+  assert "Session already exists" in response.json()["detail"]
+  logger.info("Verified 409 on duplicate session creation.")
+
+
 def test_create_session_without_id(test_app, test_session_info):
   """Test creating a session with a generated ID."""
   url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
@@ -753,9 +680,7 @@ def test_update_session(test_app, create_test_session):
   state_patch_events = [
       event
       for event in events
-      if (
-          event.get("invocationId") or event.get("invocation_id", "")
-      ).startswith("p-")
+      if event.get("invocationId", "").startswith("p-")
   ]
 
   assert len(state_patch_events) == 1, (
@@ -766,9 +691,9 @@ def test_update_session(test_app, create_test_session):
   assert state_patch_event["author"] == "user"
 
   # Check for actions in both camelCase and snake_case
-  actions = state_patch_event.get("actions") or state_patch_event.get("actions")
+  actions = state_patch_event.get("actions")
   assert actions is not None, f"No actions found in event: {state_patch_event}"
-  state_delta_in_event = actions.get("state_delta") or actions.get("stateDelta")
+  state_delta_in_event = actions.get("stateDelta")
   assert state_delta_in_event == state_delta
 
   logger.info("Session state patched successfully")
@@ -818,7 +743,7 @@ def test_agent_run(test_app, create_test_session):
   )
 
   # Third event should have interrupted flag
-  assert data[2]["interrupted"] == True
+  assert data[2]["interrupted"] is True
 
   logger.info("Agent run test completed successfully")
 
