@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Union
@@ -45,6 +46,8 @@ class GoogleApiToolset(BaseToolset):
     tool_filter: Optional filter to include only specific tools or use a predicate function.
     service_account: Optional service account for authentication.
     tool_name_prefix: Optional prefix to add to all tool names in this toolset.
+    additional_headers: Optional dict of HTTP headers to inject into every request
+      executed by this toolset.
   """
 
   def __init__(
@@ -56,6 +59,8 @@ class GoogleApiToolset(BaseToolset):
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       service_account: Optional[ServiceAccount] = None,
       tool_name_prefix: Optional[str] = None,
+      *,
+      additional_headers: Optional[Dict[str, str]] = None,
   ):
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self.api_name = api_name
@@ -63,6 +68,7 @@ class GoogleApiToolset(BaseToolset):
     self._client_id = client_id
     self._client_secret = client_secret
     self._service_account = service_account
+    self._additional_headers = additional_headers
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
 
   @override
@@ -72,7 +78,11 @@ class GoogleApiToolset(BaseToolset):
     """Get all tools in the toolset."""
     return [
         GoogleApiTool(
-            tool, self._client_id, self._client_secret, self._service_account
+            tool,
+            self._client_id,
+            self._client_secret,
+            self._service_account,
+            additional_headers=self._additional_headers,
         )
         for tool in await self._openapi_toolset.get_tools(readonly_context)
         if self._is_tool_selected(tool, readonly_context)

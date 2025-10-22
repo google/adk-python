@@ -14,7 +14,6 @@
 
 from typing import Any
 
-from adk_triaging_agent.settings import BOT_LABEL
 from adk_triaging_agent.settings import GITHUB_BASE_URL
 from adk_triaging_agent.settings import IS_INTERACTIVE
 from adk_triaging_agent.settings import OWNER
@@ -103,7 +102,7 @@ def add_label_and_owner_to_issue(
   label_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/labels"
   )
-  label_payload = [label, BOT_LABEL]
+  label_payload = [label]
 
   try:
     response = post_request(label_url, label_payload)

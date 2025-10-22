@@ -3,10 +3,16 @@ name: ADK Pull Request Triaging Agent
 on:
   pull_request_target:
     types: [opened, reopened, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'The Pull Request number to triage'
+        required: true
+        type: 'string'
 
 jobs:
   agent-triage-pull-request:
-    if: "!contains(github.event.pull_request.labels.*.name, 'bot triaged') && !contains(github.event.pull_request.labels.*.name, 'google-contributor')"
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.pull_request.labels.*.name, 'google-contributor')
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -33,7 +39,7 @@ jobs:
           GOOGLE_GENAI_USE_VERTEXAI: 0
           OWNER: 'google'
           REPO: 'adk-python'
-          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
           INTERACTIVE: ${{ vars.PR_TRIAGE_INTERACTIVE }}
           PYTHONPATH: contributing/samples
         run: python -m adk_pr_triaging_agent.main

@@ -19,6 +19,7 @@ import json
 import types
 from typing import Callable
 from typing import Optional
+import uuid
 
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
@@ -37,6 +38,7 @@ def execute_sql(
     credentials: Credentials,
     settings: BigQueryToolConfig,
     tool_context: ToolContext,
+    dry_run: bool = False,
 ) -> dict:
   """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
 
@@ -47,12 +49,17 @@ def execute_sql(
       credentials (Credentials): The credentials to use for the request.
       settings (BigQueryToolConfig): The settings for the tool.
       tool_context (ToolContext): The context for the tool.
+      dry_run (bool, default False): If True, the query will not be executed.
+        Instead, the query will be validated and information about the query
+        will be returned. Defaults to False.
 
   Returns:
-      dict: Dictionary representing the result of the query.
-            If the result contains the key "result_is_likely_truncated" with
-            value True, it means that there may be additional rows matching the
-            query not returned in the result.
+      dict: If `dry_run` is False, dictionary representing the result of the
+            query. If the result contains the key "result_is_likely_truncated"
+            with value True, it means that there may be additional rows matching
+            the query not returned in the result.
+            If `dry_run` is True, dictionary with "dry_run_info" field
+            containing query information returned by BigQuery.
 
   Examples:
       Fetch data or insights from a table:
@@ -76,6 +83,39 @@ def execute_sql(
                     "population": 52
                 }
             ]
+          }
+
+      Validate a query and estimate costs without executing it:
+
+          >>> execute_sql(
+          ...     "my_project",
+          ...     "SELECT island FROM "
+          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     dry_run=True
+          ... )
+          {
+            "status": "SUCCESS",
+            "dry_run_info": {
+              "configuration": {
+                "dryRun": True,
+                "jobType": "QUERY",
+                "query": {
+                  "destinationTable": {
+                    "datasetId": "_...",
+                    "projectId": "my_project",
+                    "tableId": "anon..."
+                  },
+                  "priority": "INTERACTIVE",
+                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "useLegacySql": False,
+                  "writeDisposition": "WRITE_TRUNCATE"
+                }
+              },
+              "jobReference": {
+                "location": "US",
+                "projectId": "my_project"
+              }
+            }
           }
   """
   try:
@@ -167,6 +207,18 @@ def execute_sql(
         }
 
     # Finally execute the query and fetch the result
+    if dry_run:
+      job_config_kwargs = {"dry_run": True}
+      if bq_connection_properties:
+        job_config_kwargs["connection_properties"] = bq_connection_properties
+      job_config = bigquery.QueryJobConfig(**job_config_kwargs)
+      dry_run_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=job_config,
+      )
+      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
+
     job_config = (
         bigquery.QueryJobConfig(connection_properties=bq_connection_properties)
         if bq_connection_properties
@@ -214,12 +266,17 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       credentials (Credentials): The credentials to use for the request.
       settings (BigQueryToolConfig): The settings for the tool.
       tool_context (ToolContext): The context for the tool.
+      dry_run (bool, default False): If True, the query will not be executed.
+        Instead, the query will be validated and information about the query
+        will be returned. Defaults to False.
 
   Returns:
-      dict: Dictionary representing the result of the query.
-            If the result contains the key "result_is_likely_truncated" with
-            value True, it means that there may be additional rows matching the
-            query not returned in the result.
+      dict: If `dry_run` is False, dictionary representing the result of the
+            query. If the result contains the key "result_is_likely_truncated"
+            with value True, it means that there may be additional rows matching
+            the query not returned in the result.
+            If `dry_run` is True, dictionary with "dry_run_info" field
+            containing query information returned by BigQuery.
 
   Examples:
       Fetch data or insights from a table:
@@ -243,6 +300,39 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
                     "population": 52
                 }
             ]
+          }
+
+      Validate a query and estimate costs without executing it:
+
+          >>> execute_sql(
+          ...     "my_project",
+          ...     "SELECT island FROM "
+          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     dry_run=True
+          ... )
+          {
+            "status": "SUCCESS",
+            "dry_run_info": {
+              "configuration": {
+                "dryRun": True,
+                "jobType": "QUERY",
+                "query": {
+                  "destinationTable": {
+                    "datasetId": "_...",
+                    "projectId": "my_project",
+                    "tableId": "anon..."
+                  },
+                  "priority": "INTERACTIVE",
+                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "useLegacySql": False,
+                  "writeDisposition": "WRITE_TRUNCATE"
+                }
+              },
+              "jobReference": {
+                "location": "US",
+                "projectId": "my_project"
+              }
+            }
           }
 
       Create a table with schema prescribed:
@@ -396,12 +486,17 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       credentials (Credentials): The credentials to use for the request.
       settings (BigQueryToolConfig): The settings for the tool.
       tool_context (ToolContext): The context for the tool.
+      dry_run (bool, default False): If True, the query will not be executed.
+        Instead, the query will be validated and information about the query
+        will be returned. Defaults to False.
 
   Returns:
-      dict: Dictionary representing the result of the query.
-            If the result contains the key "result_is_likely_truncated" with
-            value True, it means that there may be additional rows matching the
-            query not returned in the result.
+      dict: If `dry_run` is False, dictionary representing the result of the
+            query. If the result contains the key "result_is_likely_truncated"
+            with value True, it means that there may be additional rows matching
+            the query not returned in the result.
+            If `dry_run` is True, dictionary with "dry_run_info" field
+            containing query information returned by BigQuery.
 
   Examples:
       Fetch data or insights from a table:
@@ -425,6 +520,39 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
                     "population": 52
                 }
             ]
+          }
+
+      Validate a query and estimate costs without executing it:
+
+          >>> execute_sql(
+          ...     "my_project",
+          ...     "SELECT island FROM "
+          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     dry_run=True
+          ... )
+          {
+            "status": "SUCCESS",
+            "dry_run_info": {
+              "configuration": {
+                "dryRun": True,
+                "jobType": "QUERY",
+                "query": {
+                  "destinationTable": {
+                    "datasetId": "_...",
+                    "projectId": "my_project",
+                    "tableId": "anon..."
+                  },
+                  "priority": "INTERACTIVE",
+                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "useLegacySql": False,
+                  "writeDisposition": "WRITE_TRUNCATE"
+                }
+              },
+              "jobReference": {
+                "location": "US",
+                "projectId": "my_project"
+              }
+            }
           }
 
       Create a temporary table with schema prescribed:
@@ -765,3 +893,202 @@ def forecast(
   )
   """
   return execute_sql(project_id, query, credentials, settings, tool_context)
+
+
+def analyze_contribution(
+    project_id: str,
+    input_data: str,
+    contribution_metric: str,
+    dimension_id_cols: list[str],
+    is_test_col: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    tool_context: ToolContext,
+    top_k_insights: int = 30,
+    pruning_method: str = "PRUNE_REDUNDANT_INSIGHTS",
+) -> dict:
+  """Run a BigQuery ML contribution analysis using ML.CREATE_MODEL and ML.GET_INSIGHTS.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      input_data (str): The data that contain the test and control data to
+        analyze. Can be a fully qualified BigQuery table ID or a SQL query.
+      dimension_id_cols (list[str]): The column names of the dimension columns.
+      contribution_metric (str): The name of the column that contains the metric
+        to analyze. Provides the expression to use to calculate the metric you
+        are analyzing. To calculate a summable metric, the expression must be in
+        the form SUM(metric_column_name), where metric_column_name is a numeric
+        data type.  To calculate a summable ratio metric, the expression must be
+        in the form
+        SUM(numerator_metric_column_name)/SUM(denominator_metric_column_name),
+        where numerator_metric_column_name and denominator_metric_column_name
+        are numeric data types.  To calculate a summable by category metric, the
+        expression must be in the form
+        SUM(metric_sum_column_name)/COUNT(DISTINCT categorical_column_name). The
+        summed column must be a numeric data type. The categorical column must
+        have type BOOL, DATE, DATETIME, TIME, TIMESTAMP, STRING, or INT64.
+      is_test_col (str): The name of the column to use to determine whether a
+        given row is test data or control data. The column must have a BOOL data
+        type.
+      credentials: The credentials to use for the request.
+      settings: The settings for the tool.
+      tool_context: The context for the tool.
+      top_k_insights (int, optional): The number of top insights to return,
+        ranked by apriori support. Defaults to 30.
+      pruning_method (str, optional): The method to use for pruning redundant
+        insights. Can be 'NO_PRUNING' or 'PRUNE_REDUNDANT_INSIGHTS'. Defaults to
+        "PRUNE_REDUNDANT_INSIGHTS".
+
+  Returns:
+      dict: Dictionary representing the result of the contribution analysis.
+
+  Examples:
+      Analyze the contribution of different dimensions to the total sales:
+
+          >>> analyze_contribution(
+          ...     project_id="my-gcp-project",
+          ...     input_data="my-dataset.my-sales-table",
+          ...     dimension_id_cols=["store_id", "product_category"],
+          ...     contribution_metric="SUM(total_sales)",
+          ...     is_test_col="is_test"
+          ... )
+          The return is:
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "store_id": "S1",
+                "product_category": "Electronics",
+                "contributors": ["S1", "Electronics"],
+                "metric_test": 120,
+                "metric_control": 100,
+                "difference": 20,
+                "relative_difference": 0.2,
+                "unexpected_difference": 5,
+                "relative_unexpected_difference": 0.043,
+                "apriori_support": 0.15
+              },
+              ...
+            ]
+          }
+
+      Analyze the contribution of different dimensions to the total sales using
+      a SQL query as input:
+
+          >>> analyze_contribution(
+          ...     project_id="my-gcp-project",
+          ...     input_data="SELECT store_id, product_category, total_sales, "
+          ...     "is_test FROM `my-project.my-dataset.my-sales-table` "
+          ...     "WHERE transaction_date > '2025-01-01'"
+          ...     dimension_id_cols=["store_id", "product_category"],
+          ...     contribution_metric="SUM(total_sales)",
+          ...     is_test_col="is_test"
+          ... )
+          The return is:
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "store_id": "S2",
+                "product_category": "Groceries",
+                "contributors": ["S2", "Groceries"],
+                "metric_test": 250,
+                "metric_control": 200,
+                "difference": 50,
+                "relative_difference": 0.25,
+                "unexpected_difference": 10,
+                "relative_unexpected_difference": 0.041,
+                "apriori_support": 0.22
+              },
+              ...
+            ]
+          }
+  """
+  if not all(isinstance(item, str) for item in dimension_id_cols):
+    return {
+        "status": "ERROR",
+        "error_details": "All elements in dimension_id_cols must be strings.",
+    }
+
+  # Generate a unique temporary model name
+  model_name = (
+      f"contribution_analysis_model_{str(uuid.uuid4()).replace('-', '_')}"
+  )
+
+  id_cols_str = "[" + ", ".join([f"'{col}'" for col in dimension_id_cols]) + "]"
+  options = [
+      "MODEL_TYPE = 'CONTRIBUTION_ANALYSIS'",
+      f"CONTRIBUTION_METRIC = '{contribution_metric}'",
+      f"IS_TEST_COL = '{is_test_col}'",
+      f"DIMENSION_ID_COLS = {id_cols_str}",
+  ]
+
+  options.append(f"TOP_K_INSIGHTS_BY_APRIORI_SUPPORT = {top_k_insights}")
+
+  upper_pruning = pruning_method.upper()
+  if upper_pruning not in ["NO_PRUNING", "PRUNE_REDUNDANT_INSIGHTS"]:
+    return {
+        "status": "ERROR",
+        "error_details": f"Invalid pruning_method: {pruning_method}",
+    }
+  options.append(f"PRUNING_METHOD = '{upper_pruning}'")
+
+  options_str = ", ".join(options)
+
+  trimmed_upper_input_data = input_data.strip().upper()
+  if trimmed_upper_input_data.startswith(
+      "SELECT"
+  ) or trimmed_upper_input_data.startswith("WITH"):
+    input_data_source = f"({input_data})"
+  else:
+    input_data_source = f"SELECT * FROM `{input_data}`"
+
+  create_model_query = f"""
+  CREATE TEMP MODEL {model_name}
+    OPTIONS ({options_str})
+  AS {input_data_source}
+  """
+
+  get_insights_query = f"""
+  SELECT * FROM ML.GET_INSIGHTS(MODEL {model_name})
+  """
+
+  # Create a session and run the create model query.
+  original_write_mode = settings.write_mode
+  try:
+    if settings.write_mode == WriteMode.BLOCKED:
+      raise ValueError("analyze_contribution is not allowed in this session.")
+    elif original_write_mode != WriteMode.PROTECTED:
+      # Running create temp model requires a session. So we set the write mode
+      # to PROTECTED to run the create model query and job query in the same
+      # session.
+      settings.write_mode = WriteMode.PROTECTED
+
+    result = execute_sql(
+        project_id,
+        create_model_query,
+        credentials,
+        settings,
+        tool_context,
+    )
+    if result["status"] != "SUCCESS":
+      return result
+
+    result = execute_sql(
+        project_id,
+        get_insights_query,
+        credentials,
+        settings,
+        tool_context,
+    )
+  except Exception as ex:  # pylint: disable=broad-except
+    return {
+        "status": "ERROR",
+        "error_details": f"Error during analyze_contribution: {str(ex)}",
+    }
+  finally:
+    # Restore the original write mode.
+    settings.write_mode == original_write_mode
+
+  return result

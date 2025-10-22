@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 """Tests for the Response Evaluator."""
-from unittest.mock import patch
 
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
@@ -24,14 +25,14 @@ import pytest
 from vertexai import types as vertexai_types
 
 
-@patch(
-    "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
-)
 class TestResponseEvaluator:
   """A class to help organize "patch" that are applicable to all tests."""
 
-  def test_evaluate_invocations_rouge_metric(self, mock_perform_eval):
+  def test_evaluate_invocations_rouge_metric(self, mocker):
     """Test evaluate_invocations function for Rouge metric."""
+    mock_perform_eval = mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
     actual_invocations = [
         Invocation(
             user_content=genai_types.Content(
@@ -67,10 +68,11 @@ class TestResponseEvaluator:
     assert evaluation_result.overall_eval_status == EvalStatus.FAILED
     mock_perform_eval.assert_not_called()  # Ensure _perform_eval was not called
 
-  def test_evaluate_invocations_coherence_metric_passed(
-      self, mock_perform_eval
-  ):
+  def test_evaluate_invocations_coherence_metric_passed(self, mocker):
     """Test evaluate_invocations function for Coherence metric."""
+    mock_perform_eval = mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
     actual_invocations = [
         Invocation(
             user_content=genai_types.Content(
@@ -115,7 +117,7 @@ class TestResponseEvaluator:
         vertexai_types.PrebuiltMetric.COHERENCE.name
     ]
 
-  def test_get_metric_info_response_evaluation_score(self, mock_perform_eval):
+  def test_get_metric_info_response_evaluation_score(self):
     """Test get_metric_info function for response evaluation metric."""
     metric_info = ResponseEvaluator.get_metric_info(
         PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
@@ -127,7 +129,7 @@ class TestResponseEvaluator:
     assert metric_info.metric_value_info.interval.min_value == 1.0
     assert metric_info.metric_value_info.interval.max_value == 5.0
 
-  def test_get_metric_info_response_match_score(self, mock_perform_eval):
+  def test_get_metric_info_response_match_score(self):
     """Test get_metric_info function for response match metric."""
     metric_info = ResponseEvaluator.get_metric_info(
         PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
@@ -136,7 +138,7 @@ class TestResponseEvaluator:
     assert metric_info.metric_value_info.interval.min_value == 0.0
     assert metric_info.metric_value_info.interval.max_value == 1.0
 
-  def test_get_metric_info_invalid(self, mock_perform_eval):
+  def test_get_metric_info_invalid(self):
     """Test get_metric_info function for invalid metric."""
     with pytest.raises(ValueError):
       ResponseEvaluator.get_metric_info("invalid_metric")

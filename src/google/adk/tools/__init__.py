@@ -18,11 +18,13 @@ from ..auth.auth_tool import AuthToolArguments
 from .agent_tool import AgentTool
 from .apihub_tool.apihub_toolset import APIHubToolset
 from .base_tool import BaseTool
+from .discovery_engine_search_tool import DiscoveryEngineSearchTool
 from .enterprise_search_tool import enterprise_web_search_tool as enterprise_web_search
 from .example_tool import ExampleTool
 from .exit_loop_tool import exit_loop
 from .function_tool import FunctionTool
 from .get_user_choice_tool import get_user_choice_tool as get_user_choice
+from .google_maps_grounding_tool import google_maps_grounding
 from .google_search_tool import google_search
 from .load_artifacts_tool import load_artifacts_tool as load_artifacts
 from .load_memory_tool import load_memory_tool as load_memory
@@ -38,7 +40,9 @@ __all__ = [
     'APIHubToolset',
     'AuthToolArguments',
     'BaseTool',
+    'DiscoveryEngineSearchTool',
     'enterprise_web_search',
+    'google_maps_grounding',
     'google_search',
     'url_context',
     'VertexAiSearchTool',
@@ -63,7 +67,9 @@ if sys.version_info < (3, 10):
   )
 else:
   from .mcp_tool.mcp_toolset import MCPToolset
+  from .mcp_tool.mcp_toolset import McpToolset
 
   __all__.extend([
       'MCPToolset',
+      'McpToolset',
   ])

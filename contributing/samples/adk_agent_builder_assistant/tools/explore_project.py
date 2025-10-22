@@ -19,23 +19,24 @@ from typing import Any
 from typing import Dict
 from typing import List
 
+from google.adk.tools.tool_context import ToolContext
 
-async def explore_project(root_directory: str) -> Dict[str, Any]:
+from ..utils.resolve_root_directory import resolve_file_path
+
+
+async def explore_project(tool_context: ToolContext) -> Dict[str, Any]:
   """Analyze project structure and suggest optimal file paths for ADK agents.
 
   This tool performs comprehensive project analysis to understand the existing
   structure and recommend appropriate locations for new agent configurations,
   tools, and related files following ADK best practices.
 
-  Args:
-    root_directory: Absolute or relative path to the root directory to explore
-      and analyze
+  The tool automatically determines the project directory from session state.
 
   Returns:
-    Dict containing analysis results:
+    Dict containing analysis results with ALL PATHS RELATIVE TO PROJECT FOLDER:
       Always included:
         - success: bool indicating if exploration succeeded
-        - root_path: absolute path to the analyzed directory
 
       Success cases only (success=True):
         - project_info: dict with basic project metadata. Contains:
@@ -54,8 +55,7 @@ async def explore_project(root_directory: str) -> Dict[str, Any]:
         - existing_configs: list of dicts for found YAML configuration files.
                            Each dict contains:
                            • "filename": name of the config file
-                           • "path": absolute path to the file
-                           • "relative_path": path relative to project root
+                           • "relative_path": path relative to project folder
                            • "size": file size in bytes
                            • "is_valid_yaml": bool indicating if YAML parses
                            correctly
@@ -80,7 +80,7 @@ async def explore_project(root_directory: str) -> Dict[str, Any]:
 
   Examples:
     Basic project exploration:
-      result = await explore_project("/path/to/my_adk_project")
+      result = await explore_project(tool_context)
 
     Check project structure:
       if result["project_info"]["has_tools_directory"]:
@@ -96,20 +96,21 @@ async def explore_project(root_directory: str) -> Dict[str, Any]:
       directories = result["suggestions"]["directories"]["tools"]
   """
   try:
-    root_path = Path(root_directory).resolve()
+    # Resolve root directory using session state (use "." as current project directory)
+    session_state = tool_context._invocation_context.session.state
+    resolved_path = resolve_file_path(".", session_state)
+    root_path = resolved_path.resolve()
 
     if not root_path.exists():
       return {
           "success": False,
-          "error": f"Root directory does not exist: {root_directory}",
-          "root_path": str(root_path),
+          "error": f"Project directory does not exist: {root_path}",
       }
 
     if not root_path.is_dir():
       return {
           "success": False,
-          "error": f"Path is not a directory: {root_directory}",
-          "root_path": str(root_path),
+          "error": f"Path is not a directory: {root_path}",
       }
 
     # Analyze project structure
@@ -121,7 +122,6 @@ async def explore_project(root_directory: str) -> Dict[str, Any]:
 
     return {
         "success": True,
-        "root_path": str(root_path),
         "project_info": project_info,
         "existing_configs": existing_configs,
         "directory_structure": directory_structure,
@@ -132,14 +132,12 @@ async def explore_project(root_directory: str) -> Dict[str, Any]:
   except PermissionError:
     return {
         "success": False,
-        "error": f"Permission denied accessing directory: {root_directory}",
-        "root_path": root_directory,
+        "error": "Permission denied accessing project directory",
     }
   except Exception as e:
     return {
         "success": False,
         "error": f"Error exploring project: {str(e)}",
-        "root_path": root_directory,
     }
 
 
@@ -191,12 +189,12 @@ def _find_existing_configs(root_path: Path) -> List[Dict[str, Any]]:
     # Look for YAML files in root directory (ADK convention)
     for yaml_file in root_path.glob("*.yaml"):
       if yaml_file.is_file():
-        config_info = _analyze_config_file(yaml_file)
+        config_info = _analyze_config_file(yaml_file, root_path)
         configs.append(config_info)
 
     for yml_file in root_path.glob("*.yml"):
       if yml_file.is_file():
-        config_info = _analyze_config_file(yml_file)
+        config_info = _analyze_config_file(yml_file, root_path)
         configs.append(config_info)
 
     # Sort by name for consistent ordering
@@ -209,12 +207,18 @@ def _find_existing_configs(root_path: Path) -> List[Dict[str, Any]]:
   return configs
 
 
-def _analyze_config_file(config_path: Path) -> Dict[str, Any]:
+def _analyze_config_file(config_path: Path, root_path: Path) -> Dict[str, Any]:
   """Analyze a single configuration file."""
+  # Compute relative path from project root
+  try:
+    relative_path = config_path.relative_to(root_path)
+  except ValueError:
+    # Fallback if not relative to root_path
+    relative_path = config_path.name
+
   info = {
       "filename": config_path.name,
-      "path": str(config_path),
-      "relative_path": config_path.name,  # In root directory
+      "relative_path": str(relative_path),
       "size": 0,
       "is_valid_yaml": False,
       "agent_name": None,
@@ -300,10 +304,10 @@ def _generate_path_suggestions(
         "root_agent.yaml",
     ]
 
-  # Directory suggestions
+  # Directory suggestions (relative paths)
   directories = {
       "tools": {
-          "path": str(root_path / "tools"),
+          "path": "tools",
           "exists": (root_path / "tools").exists(),
           "purpose": "Custom tool implementations",
           "example_files": [
@@ -312,7 +316,7 @@ def _generate_path_suggestions(
           ],
       },
       "callbacks": {
-          "path": str(root_path / "callbacks"),
+          "path": "callbacks",
           "exists": (root_path / "callbacks").exists(),
           "purpose": "Custom callback functions",
           "example_files": ["logging.py", "security.py"],

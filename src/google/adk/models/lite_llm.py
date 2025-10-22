@@ -65,8 +65,9 @@ _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 
 
-class ChatCompletionFileUrlObject(TypedDict):
+class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
+  file_id: str
   format: str
 
 
@@ -281,6 +282,16 @@ def _get_content(
         })
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
+    elif part.file_data and part.file_data.file_uri:
+      file_object: ChatCompletionFileUrlObject = {
+          "file_id": part.file_data.file_uri,
+      }
+      if part.file_data.mime_type:
+        file_object["format"] = part.file_data.mime_type
+      content_objects.append({
+          "type": "file",
+          "file": file_object,
+      })
 
   return content_objects
 
@@ -437,10 +448,17 @@ def _model_response_to_chunk(
       for tool_call in message.get("tool_calls"):
         # aggregate tool_call
         if tool_call.type == "function":
+          func_name = tool_call.function.name
+          func_args = tool_call.function.arguments
+
+          # Ignore empty chunks that don't carry any information.
+          if not func_name and not func_args:
+            continue
+
           yield FunctionChunk(
               id=tool_call.id,
-              name=tool_call.function.name,
-              args=tool_call.function.arguments,
+              name=func_name,
+              args=func_args,
               index=tool_call.index,
           ), finish_reason
 

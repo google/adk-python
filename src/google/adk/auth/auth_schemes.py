@@ -12,16 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from enum import Enum
 from typing import List
 from typing import Optional
 from typing import Union
 
+from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import SecurityBase
 from fastapi.openapi.models import SecurityScheme
 from fastapi.openapi.models import SecuritySchemeType
 from pydantic import Field
+
+from ..utils.feature_decorator import experimental
 
 
 class OpenIdConnectWithConfig(SecurityBase):
@@ -65,3 +70,10 @@ class OAuthGrantType(str, Enum):
 
 # AuthSchemeType re-exports SecuritySchemeType from OpenAPI 3.0.
 AuthSchemeType = SecuritySchemeType
+
+
+@experimental
+class ExtendedOAuth2(OAuth2):
+  """OAuth2 scheme that incorporates auto-discovery for endpoints."""
+
+  issuer_url: Optional[str] = None  # Used for endpoint-discovery
