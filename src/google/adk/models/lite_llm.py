@@ -828,7 +828,11 @@ class LiteLlm(BaseLlm):
       messages = [
           ChatCompletionUserMessage(
               role="user",
-              content="Handle the requests as specified in the System Instruction."
+              content=(
+                  llm_request.config.system_instruction
+                  if llm_request.config.system_instruction
+                  else "Handle the requests as specified in the System Instruction."
+              )
           )
       ]
 
