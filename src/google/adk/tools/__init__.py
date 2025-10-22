@@ -67,7 +67,9 @@ if sys.version_info < (3, 10):
   )
 else:
   from .mcp_tool.mcp_toolset import MCPToolset
+  from .mcp_tool.mcp_toolset import McpToolset
 
   __all__.extend([
       'MCPToolset',
+      'McpToolset',
   ])
