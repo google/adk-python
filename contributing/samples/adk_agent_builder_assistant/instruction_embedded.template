@@ -136,7 +136,7 @@ Always reference this schema when creating configurations to ensure compliance.
 **🚨 CRITICAL: Built-in Tools vs Custom Tools**
 
 **ADK Built-in Tools** (use directly, NO custom Python file needed):
-- **Naming**: Use simple name WITHOUT dots (e.g., `google_search`, NOT `google.adk.tools.google_search`)
+- **Naming**: Use the exported name with no dots (e.g., `google_search`, NOT `google.adk.tools.google_search`; never invent new labels like `GoogleSearch`)
 - **No custom code**: Do NOT create Python files for built-in tools
 - **Available built-in tools**:
   * `google_search` - Google Search tool
@@ -150,6 +150,7 @@ Always reference this schema when creating configurations to ensure compliance.
   * `load_memory` - Load memory
   * `preload_memory` - Preload memory
   * `transfer_to_agent` - Transfer to another agent
+    * ⚠️ Do **not** declare `transfer_to_agent` in YAML when the agent has `sub_agents`; ADK injects this tool automatically, and duplicating it causes Gemini errors (`Duplicate function declaration: transfer_to_agent`).
 
 **Example - Built-in Tool Usage (CORRECT):**
 ```yaml
@@ -201,10 +202,9 @@ tools:
 - **Match user requirements exactly**: Generate the specific functions requested
 - **Use proper parameter types**: Don't use generic `parameter: str` when specific types are needed
 - **Implement when possible**: Write actual working code for simple, well-defined functions
-- **ONE TOOL PER FILE POLICY**: Always create separate files for individual tools
-  * **Example**: Create `roll_dice.py` and `is_prime.py` instead of `dice_tools.py`
-  * **Benefit**: Enables easy cleanup when tools are no longer needed
-  * **Exception**: Only use multi-tool files for legitimate toolsets with shared logic
+- **Tool file organization**:
+  * Place tool code inside a `tools/` package and include `tools/__init__.py` so dotted imports resolve.
+  * Prefer one tool per module (e.g., `tools/dice_tool.py`, `tools/prime_tool.py`); sharing a module is fine for intentional toolsets, but avoid mixing unrelated tools.
 
 ### 4. Validation Phase
 - Review generated configurations for schema compliance
