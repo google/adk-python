@@ -105,7 +105,7 @@ async def _create_conformance_test_files(
     return generated_session_file
 
 
-async def run_conformance_create(paths: list[Path]) -> None:
+async def run_conformance_record(paths: list[Path]) -> None:
   """Generate conformance tests from TestCaseInput files.
 
   Args:
