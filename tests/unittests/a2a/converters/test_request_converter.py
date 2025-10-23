@@ -165,6 +165,7 @@ class TestConvertA2aRequestToAgentRunRequest:
     request.message = mock_message
     request.context_id = "test_context_123"
     request.call_context = mock_call_context
+    request.metadata = {"test_key": "test_value"}
 
     # Create proper genai_types.Part objects instead of mocks
     mock_genai_part1 = genai_types.Part(text="test part 1")
@@ -185,6 +186,9 @@ class TestConvertA2aRequestToAgentRunRequest:
     assert result.new_message.role == "user"
     assert result.new_message.parts == [mock_genai_part1, mock_genai_part2]
     assert isinstance(result.run_config, RunConfig)
+    assert result.run_config.custom_metadata == {
+        "a2a_metadata": {"test_key": "test_value"}
+    }
 
     # Verify calls
     assert mock_convert_part.call_count == 2
@@ -212,6 +216,7 @@ class TestConvertA2aRequestToAgentRunRequest:
     request.message = mock_message
     request.context_id = "test_context_123"
     request.call_context = None
+    request.metadata = {}
 
     # Act
     result = convert_a2a_request_to_agent_run_request(
@@ -241,6 +246,7 @@ class TestConvertA2aRequestToAgentRunRequest:
     request.message = mock_message
     request.context_id = None
     request.call_context = None
+    request.metadata = {}
 
     # Create proper genai_types.Part object instead of mock
     mock_genai_part = genai_types.Part(text="test part")
@@ -272,6 +278,7 @@ class TestConvertA2aRequestToAgentRunRequest:
     request.message = mock_message
     request.context_id = "session_123"
     request.call_context = None
+    request.metadata = {}
 
     # Create proper genai_types.Part object instead of mock
     mock_genai_part = genai_types.Part(text="test part")
@@ -313,6 +320,7 @@ class TestIntegration:
     request.call_context = mock_call_context
     request.message = mock_message
     request.context_id = "mysession"
+    request.metadata = {}
 
     # Create proper genai_types.Part object instead of mock
     mock_genai_part = genai_types.Part(text="test part")
@@ -344,6 +352,7 @@ class TestIntegration:
     request.call_context = None
     request.message = mock_message
     request.context_id = "test_session_456"
+    request.metadata = {}
 
     # Create proper genai_types.Part object instead of mock
     mock_genai_part = genai_types.Part(text="test part")
