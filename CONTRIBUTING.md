@@ -57,7 +57,9 @@ information on using pull requests.
 ### Requirement for PRs
 
 -   All PRs, other than small documentation or typo fixes, should have a Issue
-    associated. If not, please create one.
+    associated. If a relevant issue doesn't exist, please create one first or
+    you may instead describe the bug or feature directly within the PR
+    description, following the structure of our issue templates.
 -   Small, focused PRs. Keep changes minimal—one concern per PR.
 -   For bug fixes or features, please provide logs or screenshot after the fix
     is applied to help reviewers better understand the fix.

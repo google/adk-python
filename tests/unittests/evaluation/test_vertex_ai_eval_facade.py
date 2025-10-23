@@ -18,12 +18,14 @@ from __future__ import annotations
 import math
 import random
 
+from google.adk.dependencies.vertexai import vertexai
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.vertex_ai_eval_facade import _VertexAiEvalFacade
 from google.genai import types as genai_types
 import pytest
-from vertexai import types as vertexai_types
+
+vertexai_types = vertexai.types
 
 
 class TestVertexAiEvalFacade:

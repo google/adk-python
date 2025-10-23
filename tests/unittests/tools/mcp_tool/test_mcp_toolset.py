@@ -301,7 +301,7 @@ class TestMCPToolset:
 
     # Should log the error
     error_output = custom_errlog.getvalue()
-    assert "Warning: Error during MCPToolset cleanup" in error_output
+    assert "Warning: Error during McpToolset cleanup" in error_output
     assert "Cleanup error" in error_output
 
   @pytest.mark.asyncio

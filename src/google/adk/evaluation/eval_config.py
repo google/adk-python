@@ -73,7 +73,7 @@ the third one uses `LlmAsAJudgeCriterion`.
 
   user_simulator_config: Optional[BaseUserSimulatorConfig] = Field(
       default=None,
-      description="""Config to be used by the user simulator.""",
+      description="Config to be used by the user simulator.",
   )
 
 

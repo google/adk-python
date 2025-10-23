@@ -53,6 +53,7 @@ from typing_extensions import override
 from tzlocal import get_localzone
 
 from . import _session_util
+from ..errors.already_exists_error import AlreadyExistsError
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -465,6 +466,12 @@ class DatabaseSessionService(BaseSessionService):
     # 5. Return the session
 
     with self.database_session_factory() as sql_session:
+      if session_id and sql_session.get(
+          StorageSession, (app_name, user_id, session_id)
+      ):
+        raise AlreadyExistsError(
+            f"Session with id {session_id} already exists."
+        )
       # Fetch app and user states from storage
       storage_app_state = sql_session.get(StorageAppState, (app_name))
       if not storage_app_state:

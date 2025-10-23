@@ -63,6 +63,7 @@ from ..agents.run_config import StreamingMode
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -583,6 +584,33 @@ class AdkWebServer:
           "Failed to write runtime config file %s: %s", runtime_config_path, e
       )
 
+  async def _create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str] = None,
+      state: Optional[dict[str, Any]] = None,
+  ) -> Session:
+    try:
+      session = await self.session_service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
+      )
+      logger.info("New session created: %s", session.id)
+      return session
+    except AlreadyExistsError as e:
+      raise HTTPException(
+          status_code=409, detail=f"Session already exists: {session_id}"
+      ) from e
+    except Exception as e:
+      logger.error(
+          "Internal server error during session creation: %s", e, exc_info=True
+      )
+      raise HTTPException(status_code=500, detail=str(e)) from e
+
   def get_fast_api_app(
       self,
       lifespan: Optional[Lifespan[FastAPI]] = None,
@@ -740,20 +768,12 @@ class AdkWebServer:
         session_id: str,
         state: Optional[dict[str, Any]] = None,
     ) -> Session:
-      if (
-          await self.session_service.get_session(
-              app_name=app_name, user_id=user_id, session_id=session_id
-          )
-          is not None
-      ):
-        raise HTTPException(
-            status_code=409, detail=f"Session already exists: {session_id}"
-        )
-      session = await self.session_service.create_session(
-          app_name=app_name, user_id=user_id, state=state, session_id=session_id
+      return await self._create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
       )
-      logger.info("New session created: %s", session_id)
-      return session
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions",
@@ -765,18 +785,9 @@ class AdkWebServer:
         req: Optional[CreateSessionRequest] = None,
     ) -> Session:
       if not req:
-        return await self.session_service.create_session(
-            app_name=app_name, user_id=user_id
-        )
+        return await self._create_session(app_name=app_name, user_id=user_id)
 
-      if req.session_id and await self.session_service.get_session(
-          app_name=app_name, user_id=user_id, session_id=req.session_id
-      ):
-        raise HTTPException(
-            status_code=409, detail=f"Session already exists: {req.session_id}"
-        )
-
-      session = await self.session_service.create_session(
+      session = await self._create_session(
           app_name=app_name,
           user_id=user_id,
           state=req.state,
