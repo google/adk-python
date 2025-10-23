@@ -95,8 +95,13 @@ async def test_builtin_code_executor_image_artifact_creation(mock_datetime):
   assert not events[0].content
   assert llm_response.content is not None
   assert len(llm_response.content.parts) == 3
-  assert llm_response.content.parts[0].text == 'artifact: image_1.png'
+  assert (
+      llm_response.content.parts[0].text == 'Saved as artifact: image_1.png. '
+  )
   assert not llm_response.content.parts[0].inline_data
   assert llm_response.content.parts[1].text == 'this is text'
-  assert llm_response.content.parts[2].text == f'artifact: {expected_filename2}'
+  assert (
+      llm_response.content.parts[2].text
+      == f'Saved as artifact: {expected_filename2}. '
+  )
   assert not llm_response.content.parts[2].inline_data
