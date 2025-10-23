@@ -127,7 +127,7 @@ def conformance():
   pass
 
 
-@conformance.command("create", cls=HelpfulCommand)
+@conformance.command("record", cls=HelpfulCommand)
 @click.argument(
     "paths",
     nargs=-1,
@@ -136,7 +136,7 @@ def conformance():
     ),
 )
 @click.pass_context
-def cli_conformance_create(
+def cli_conformance_record(
     ctx,
     paths: tuple[str, ...],
 ):
@@ -156,13 +156,13 @@ def cli_conformance_create(
 
   Examples:
 
-  Use default directory: adk conformance create
+  Use default directory: adk conformance record
 
-  Custom directories: adk conformance create tests/core tests/tools
+  Custom directories: adk conformance record tests/core tests/tools
   """
 
   try:
-    from .conformance.cli_create import run_conformance_create
+    from .conformance.cli_record import run_conformance_record
   except ImportError as e:
     click.secho(
         f"Error: Missing conformance testing dependencies: {e}",
@@ -178,7 +178,7 @@ def cli_conformance_create(
 
   # Default to tests/ directory if no paths provided
   test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
-  asyncio.run(run_conformance_create(test_paths))
+  asyncio.run(run_conformance_record(test_paths))
 
 
 @conformance.command("test", cls=HelpfulCommand)
