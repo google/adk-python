@@ -432,9 +432,10 @@ class LocalEvalService(BaseEvalService):
       # We intentionally catch the Exception as we don't failures to affect
       # other inferences.
       logger.error(
-          'Inference failed for eval case `%s` with error %s',
+          'Inference failed for eval case `%s` with error %s.',
           eval_case.eval_id,
           e,
+          exc_info=True,
       )
       inference_result.status = InferenceStatus.FAILURE
       inference_result.error_message = str(e)
