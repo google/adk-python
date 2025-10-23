@@ -28,13 +28,11 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 ## 🔥 What's new
 
-- **Context compaction**: Supports context compaction to reduce context length. Here is a [sample](https://github.com/google/adk-python/blob/main/contributing/samples/hello_world_app/agent.py#L156) and [compaction config](https://github.com/google/adk-python/blob/main/src/google/adk/apps/app.py#L51).
+- **Custom Service Registration**: Add a service registry to provide a generic way to register custom service implementations to be used in FastAPI server. See short instruction [here](https://github.com/google/adk-python/discussions/3175#discussioncomment-14745120). ([391628f](https://github.com/google/adk-python/commit/391628fcdc7b950c6835f64ae3ccab197163c990))
 
-- **Resumability**: Support pause and resume an invocation in ADK.
+- **Rewind**: Add the ability to rewind a session to before a previous invocation ([9dce06f](https://github.com/google/adk-python/commit/9dce06f9b00259ec42241df4f6638955e783a9d1)).
 
-- **ReflectRetryToolPlugin**: Add [`ReflectRetryToolPlugin`](https://github.com/google/adk-python/blob/main/src/google/adk/plugins/reflect_retry_tool_plugin.py) to reflect from errors and retry with different arguments when tool errors.
-
-- **Search tool**: Support using Google built-in search and built-in `VertexAiSearchTool` with other tools in the same agent.
+- **New CodeExecutor**: Introduces a new AgentEngineSandboxCodeExecutor class that supports executing agent-generated code using the Vertex AI Code Execution Sandbox API ([ee39a89](https://github.com/google/adk-python/commit/ee39a891106316b790621795b5cc529e89815a98))
 
 ## ✨ Key Features
 
