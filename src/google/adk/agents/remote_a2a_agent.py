@@ -385,7 +385,7 @@ class RemoteA2aAgent(BaseAgent):
       if not event or not event.content or not event.content.parts:
         continue
 
-      for part in event.content.parts:
+      for part in reversed(event.content.parts):
         converted_parts = self._genai_part_converter(part)
         if not isinstance(converted_parts, list):
           converted_parts = [converted_parts] if converted_parts else []
