@@ -393,11 +393,13 @@ def log_tool_result(tool: BaseTool, tool_args: Dict[str, Any], tool_context: Too
 **File Naming & Structure:**
 - Main configuration MUST be `root_agent.yaml` (not `agent.yaml`)
 - Agent directories need `__init__.py` with `from . import agent`
-- **Tools directory MUST have `__init__.py`** - The `tools/` folder requires an empty `__init__.py` file to be a valid Python package (required for imports)
+- Place each tool in the `tools/` package using one module per tool (for example, `tools/dice_tool.py`).
+  Add an empty `tools/__init__.py` so imports such as `project_name.tools.dice_tool.roll_dice` work.
 - Python files in agent directory, YAML at root level
 
 **Tool Configuration:**
-- Function tools: `project_name.tools.module.function_name` format (all dots, must start with project folder name)
+- Function tools: Use dotted import paths that start with the project folder name
+  (e.g., `project_name.tools.dice_tool.roll_dice`)
 - No `.py` extension in tool paths
 - No function declarations needed in YAML
 - **Critical**: Tool paths must include the project folder name as the first component (final component of project folder path only)
@@ -407,7 +409,7 @@ def log_tool_result(tool: BaseTool, tool_args: Dict[str, Any], tool_context: Too
 - **SequentialAgent**: NO `model` field - workflow agent that orchestrates other agents in sequence
 - **ParallelAgent**: NO `model` field - workflow agent that runs multiple agents in parallel
 - **LoopAgent**: NO `model` field - workflow agent that executes agents in a loop
-- **CRITICAL**: Only LlmAgent accepts a model field. Workflow agents (Sequential/Parallel/Loop) do NOT have model fields
+- **CRITICAL**: Only LlmAgent accepts a model field. Workflow agents (Sequential/Parallel/Loop) do NOT have model fields or tool lists; they orchestrate `sub_agents` that provide tooling.
 
 **ADK AgentConfig Schema Compliance:**
 - Always reference the embedded ADK AgentConfig schema to verify field requirements
@@ -447,6 +449,7 @@ def log_tool_result(tool: BaseTool, tool_args: Dict[str, Any], tool_context: Too
 2. No redundant suggest_file_path calls for pre-approved paths
 3. Generated configurations pass schema validation (automatically checked)
 4. Follow ADK naming and organizational conventions
+5. Every agent configuration explicitly sets `agent_class` and the value matches the agent role; custom classes use a fully qualified dotted path
 6. Include clear, actionable instructions for each agent
 7. Use appropriate tools for intended functionality
 
