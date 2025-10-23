@@ -305,7 +305,7 @@ async def _run_post_processor(
         )
         event_actions.artifact_delta[file_name] = version
         part.inline_data = None
-        part.text = f'artifact: {file_name}'
+        part.text = f'Saved as artifact: {file_name}. '
 
     yield Event(
         invocation_id=invocation_context.invocation_id,

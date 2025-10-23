@@ -16,13 +16,15 @@ from __future__ import annotations
 
 """Tests for the Response Evaluator."""
 
+from google.adk.dependencies.vertexai import vertexai
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.response_evaluator import ResponseEvaluator
 from google.genai import types as genai_types
 import pytest
-from vertexai import types as vertexai_types
+
+vertexai_types = vertexai.types
 
 
 class TestResponseEvaluator:
