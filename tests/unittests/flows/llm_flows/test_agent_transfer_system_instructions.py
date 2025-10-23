@@ -102,43 +102,40 @@ async def test_agent_transfer_includes_sorted_agent_names_in_system_instructions
 
   # The NOTE should contain agents in alphabetical order: sub-agents + parent + peers
   expected_content = """\
+## Available Agents for Transfer
 
-You have a list of other agents to transfer to:
+You can delegate tasks to the following specialized agents. Carefully review each agent's description and skills to determine the best match for the user's request.
 
+### Agent: z_agent
+Description: Last agent
 
-Agent name: z_agent
-Agent description: Last agent
+### Agent: a_agent
+Description: First agent
 
+### Agent: m_agent
+Description: Middle agent
 
-Agent name: a_agent
-Agent description: First agent
+### Agent: parent_agent
+Description: Parent agent
 
+### Agent: peer_agent
+Description: Peer agent
 
-Agent name: m_agent
-Agent description: Middle agent
+## Decision Criteria
 
+1. **Assess your own capability**: If you are the best agent to handle this request based on your own description and capabilities, answer it directly.
 
-Agent name: parent_agent
-Agent description: Parent agent
+2. **Consider specialized agents**: If another agent has more relevant skills or expertise for this request, call the `transfer_to_agent` function to transfer to that agent. Match the user's needs with the agent's skills and descriptions above.
 
+3. **When transferring**: Only call the function - do not generate any additional text.
 
-Agent name: peer_agent
-Agent description: Peer agent
-
-
-If you are the best to answer the question according to your description, you
-can answer it.
-
-If another agent is better for answering the question according to its
-description, call `transfer_to_agent` function to transfer the
-question to that agent. When transferring, do not generate any text other than
-the function call.
-
-**NOTE**: the only available agents for `transfer_to_agent` function are `a_agent`, `m_agent`, `parent_agent`, `peer_agent`, `z_agent`.
-
-If neither you nor the other agents are best for the question, transfer to your parent agent parent_agent."""
+**IMPORTANT**: The only valid agent names for `transfer_to_agent` are: `a_agent`, `m_agent`, `parent_agent`, `peer_agent`, `z_agent`
+"""
 
   assert expected_content in instructions
+
+  # Also verify the parent escalation instruction is present
+  assert '4. **Escalate to parent**: If neither you nor the specialized agents are suitable for this request, transfer to your parent agent `parent_agent` for broader assistance.' in instructions
 
 
 @pytest.mark.asyncio
@@ -177,29 +174,31 @@ async def test_agent_transfer_system_instructions_without_parent():
 
   # Direct multiline string assertion showing the exact expected content
   expected_content = """\
+## Available Agents for Transfer
 
-You have a list of other agents to transfer to:
+You can delegate tasks to the following specialized agents. Carefully review each agent's description and skills to determine the best match for the user's request.
 
+### Agent: agent1
+Description: First sub-agent
 
-Agent name: agent1
-Agent description: First sub-agent
+### Agent: agent2
+Description: Second sub-agent
 
+## Decision Criteria
 
-Agent name: agent2
-Agent description: Second sub-agent
+1. **Assess your own capability**: If you are the best agent to handle this request based on your own description and capabilities, answer it directly.
 
+2. **Consider specialized agents**: If another agent has more relevant skills or expertise for this request, call the `transfer_to_agent` function to transfer to that agent. Match the user's needs with the agent's skills and descriptions above.
 
-If you are the best to answer the question according to your description, you
-can answer it.
+3. **When transferring**: Only call the function - do not generate any additional text.
 
-If another agent is better for answering the question according to its
-description, call `transfer_to_agent` function to transfer the
-question to that agent. When transferring, do not generate any text other than
-the function call.
-
-**NOTE**: the only available agents for `transfer_to_agent` function are `agent1`, `agent2`."""
+**IMPORTANT**: The only valid agent names for `transfer_to_agent` are: `agent1`, `agent2`
+"""
 
   assert expected_content in instructions
+
+  # Verify no parent escalation instruction is present
+  assert 'Escalate to parent' not in instructions
 
 
 @pytest.mark.asyncio
@@ -236,31 +235,31 @@ async def test_agent_transfer_simplified_parent_instructions():
 
   # Direct multiline string assertion showing the exact expected content
   expected_content = """\
+## Available Agents for Transfer
 
-You have a list of other agents to transfer to:
+You can delegate tasks to the following specialized agents. Carefully review each agent's description and skills to determine the best match for the user's request.
 
+### Agent: sub_agent
+Description: Sub agent
 
-Agent name: sub_agent
-Agent description: Sub agent
+### Agent: parent_agent
+Description: Parent agent
 
+## Decision Criteria
 
-Agent name: parent_agent
-Agent description: Parent agent
+1. **Assess your own capability**: If you are the best agent to handle this request based on your own description and capabilities, answer it directly.
 
+2. **Consider specialized agents**: If another agent has more relevant skills or expertise for this request, call the `transfer_to_agent` function to transfer to that agent. Match the user's needs with the agent's skills and descriptions above.
 
-If you are the best to answer the question according to your description, you
-can answer it.
+3. **When transferring**: Only call the function - do not generate any additional text.
 
-If another agent is better for answering the question according to its
-description, call `transfer_to_agent` function to transfer the
-question to that agent. When transferring, do not generate any text other than
-the function call.
-
-**NOTE**: the only available agents for `transfer_to_agent` function are `parent_agent`, `sub_agent`.
-
-If neither you nor the other agents are best for the question, transfer to your parent agent parent_agent."""
+**IMPORTANT**: The only valid agent names for `transfer_to_agent` are: `parent_agent`, `sub_agent`
+"""
 
   assert expected_content in instructions
+
+  # Also verify the parent escalation instruction is present
+  assert '4. **Escalate to parent**: If neither you nor the specialized agents are suitable for this request, transfer to your parent agent `parent_agent` for broader assistance.' in instructions
 
 
 @pytest.mark.asyncio

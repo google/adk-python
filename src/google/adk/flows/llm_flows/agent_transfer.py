@@ -30,8 +30,11 @@ from ...tools.transfer_to_agent_tool import transfer_to_agent
 from ._base_llm_processor import BaseLlmRequestProcessor
 
 if typing.TYPE_CHECKING:
+  from a2a.types import AgentCard
+
   from ...agents import BaseAgent
   from ...agents import LlmAgent
+  from ...agents.remote_a2a_agent import RemoteA2aAgent
 
 
 class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -50,11 +53,11 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
     if not transfer_targets:
       return
 
-    llm_request.append_instructions([
-        _build_target_agents_instructions(
-            invocation_context.agent, transfer_targets
-        )
-    ])
+    # Build instructions asynchronously to support A2A agent card resolution
+    instructions = await _build_target_agents_instructions(
+        invocation_context.agent, transfer_targets
+    )
+    llm_request.append_instructions([instructions])
 
     transfer_to_agent_tool = FunctionTool(func=transfer_to_agent)
     tool_context = ToolContext(invocation_context)
@@ -69,19 +72,114 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
 request_processor = _AgentTransferLlmRequestProcessor()
 
 
+def _build_target_agent_info_from_card(
+    target_agent: RemoteA2aAgent, agent_card: AgentCard
+) -> str:
+  """Build rich agent info from A2A Agent Card.
+
+  Args:
+    target_agent: The RemoteA2aAgent instance
+    agent_card: The resolved A2A Agent Card
+
+  Returns:
+    Formatted string with detailed agent information from the card,
+    optimized for LLM consumption when selecting subagents.
+  """
+  info_parts = []
+
+  # Start with a clear header for the agent
+  info_parts.append(f'### Agent: {target_agent.name}')
+
+  # Include both RemoteA2aAgent description and agent card description
+  # This provides both the locally-configured context and the remote agent's self-description
+  descriptions = []
+  if target_agent.description:
+    descriptions.append(f'Description: {target_agent.description}')
+  if agent_card.description and agent_card.description != target_agent.description:
+    descriptions.append(f'Agent card description: {agent_card.description}')
+
+  if descriptions:
+    info_parts.append('\n'.join(descriptions))
+
+  # Add skills in a structured, LLM-friendly format
+  if agent_card.skills:
+    info_parts.append('\nSkills:')
+    for skill in agent_card.skills:
+      # Format: "- skill_name: description (tags: tag1, tag2)"
+      skill_parts = [f'  - **{skill.name}**']
+      if skill.description:
+        skill_parts.append(f': {skill.description}')
+      if skill.tags:
+        skill_parts.append(f' [Tags: {", ".join(skill.tags)}]')
+      info_parts.append(''.join(skill_parts))
+
+  return '\n'.join(info_parts)
+
+
+async def _build_target_agents_info_async(target_agent: BaseAgent) -> str:
+  """Build agent info, using A2A Agent Card if available.
+
+  Args:
+    target_agent: The agent to build info for
+
+  Returns:
+    Formatted string with agent information
+  """
+  from ...agents.remote_a2a_agent import RemoteA2aAgent
+
+  # Check if this is a RemoteA2aAgent and ensure it's resolved
+  if isinstance(target_agent, RemoteA2aAgent):
+    try:
+      # Ensure the agent card is resolved
+      await target_agent._ensure_resolved()
+
+      # If we have an agent card, use it to build rich info
+      if target_agent._agent_card:
+        return _build_target_agent_info_from_card(
+            target_agent, target_agent._agent_card
+        )
+    except Exception:
+      # If resolution fails, fall through to default behavior
+      pass
+
+  # Fallback to original behavior for non-A2A agents or if card unavailable
+  return _build_target_agents_info(target_agent)
+
+
 def _build_target_agents_info(target_agent: BaseAgent) -> str:
-  return f"""
-Agent name: {target_agent.name}
-Agent description: {target_agent.description}
-"""
+  """Build basic agent info (fallback for non-A2A agents).
+
+  Args:
+    target_agent: The agent to build info for
+
+  Returns:
+    Formatted string with basic agent information, matching the enhanced format
+    for consistency with A2A agent cards.
+  """
+  info_parts = [f'### Agent: {target_agent.name}']
+
+  if target_agent.description:
+    info_parts.append(f'Description: {target_agent.description}')
+
+  return '\n'.join(info_parts)
 
 
 line_break = '\n'
 
 
-def _build_target_agents_instructions(
+async def _build_target_agents_instructions(
     agent: LlmAgent, target_agents: list[BaseAgent]
 ) -> str:
+  """Build instructions for agent transfer with detailed agent information.
+
+  Args:
+    agent: The current agent
+    target_agents: List of agents that can be transferred to
+
+  Returns:
+    Formatted instructions string with agent transfer information,
+    optimized for LLM decision-making about which subagent to use.
+  """
   # Build list of available agent names for the NOTE
   # target_agents already includes parent agent if applicable, so no need to add it again
   available_agent_names = [target_agent.name for target_agent in target_agents]
@@ -94,27 +192,36 @@ def _build_target_agents_instructions(
       f'`{name}`' for name in available_agent_names
   )
 
+  # Build agent info asynchronously to support A2A agent card resolution
+  agent_info_list = []
+  for target_agent in target_agents:
+    agent_info = await _build_target_agents_info_async(target_agent)
+    agent_info_list.append(agent_info)
+
+  # Create a separator for visual clarity
+  agents_section = '\n\n'.join(agent_info_list)
+
   si = f"""
-You have a list of other agents to transfer to:
+## Available Agents for Transfer
 
-{line_break.join([
-    _build_target_agents_info(target_agent) for target_agent in target_agents
-])}
+You can delegate tasks to the following specialized agents. Carefully review each agent's description and skills to determine the best match for the user's request.
 
-If you are the best to answer the question according to your description, you
-can answer it.
+{agents_section}
 
-If another agent is better for answering the question according to its
-description, call `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` function to transfer the
-question to that agent. When transferring, do not generate any text other than
-the function call.
+## Decision Criteria
 
-**NOTE**: the only available agents for `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` function are {formatted_agent_names}.
+1. **Assess your own capability**: If you are the best agent to handle this request based on your own description and capabilities, answer it directly.
+
+2. **Consider specialized agents**: If another agent has more relevant skills or expertise for this request, call the `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` function to transfer to that agent. Match the user's needs with the agent's skills and descriptions above.
+
+3. **When transferring**: Only call the function - do not generate any additional text.
+
+**IMPORTANT**: The only valid agent names for `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` are: {formatted_agent_names}
 """
 
   if agent.parent_agent and not agent.disallow_transfer_to_parent:
     si += f"""
-If neither you nor the other agents are best for the question, transfer to your parent agent {agent.parent_agent.name}.
+4. **Escalate to parent**: If neither you nor the specialized agents are suitable for this request, transfer to your parent agent `{agent.parent_agent.name}` for broader assistance.
 """
   return si
 
