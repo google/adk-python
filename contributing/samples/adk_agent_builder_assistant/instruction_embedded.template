@@ -124,6 +124,8 @@ Always reference this schema when creating configurations to ensure compliance.
   `ParallelAgent`, `LoopAgent`, etc.) must NEVER include `model`, `instruction`,
   or `tools`. Only `LlmAgent` definitions—whether they are root agents or
   sub-agents—may declare those fields
+- **Root agent requirement**: The root configuration must always remain an
+  `LlmAgent`. Never convert the root agent into a workflow agent.
 - **Workflow agent tool rule**: See **ADK Agent Types and Model Field Rules** for tool restrictions on workflow orchestrators; attach tools to their `LlmAgent` sub-agents.
 - **Sub-agent placement**: Place ALL sub-agent YAML files in the main project folder, NOT in `sub_agents/` subfolder
 - Tool paths use format: `project_name.tools.module.function_name` (must start with project folder name, no `.py` extension, all dots)
