@@ -166,7 +166,7 @@ def _sanitize_schema_formats_for_gemini(
 
 
 def _to_gemini_schema(openapi_schema: dict[str, Any]) -> Schema:
-  """Converts an OpenAPI schema dictionary to a Gemini Schema object."""
+  """Converts an OpenAPI v3.1. schema dictionary to a Gemini Schema object."""
   if openapi_schema is None:
     return None
 
