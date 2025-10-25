@@ -184,10 +184,10 @@ class LocalEvalService(BaseEvalService):
   async def _evaluate_single_inference_result(
       self, inference_result: InferenceResult, evaluate_config: EvaluateConfig
   ) -> tuple[InferenceResult, EvalCaseResult]:
-    """Returns EvalCaseResult for the given inference result.
+    """Returns the inference result and its corresponding EvalCaseResult.
 
     A single inference result can have multiple invocations. For each
-    invocaiton, this method evaluates the metrics present in evaluate config.
+    invocation, this method evaluates the metrics present in evaluate config.
 
     The EvalCaseResult contains scores for each metric per invocation and the
     overall score.
@@ -432,9 +432,10 @@ class LocalEvalService(BaseEvalService):
       # We intentionally catch the Exception as we don't failures to affect
       # other inferences.
       logger.error(
-          'Inference failed for eval case `%s` with error %s',
+          'Inference failed for eval case `%s` with error %s.',
           eval_case.eval_id,
           e,
+          exc_info=True,
       )
       inference_result.status = InferenceStatus.FAILURE
       inference_result.error_message = str(e)
