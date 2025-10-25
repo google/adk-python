@@ -20,6 +20,7 @@ from typing import Union
 
 from google.genai import types as genai_types
 from pydantic import Field
+from pydantic import model_validator
 from typing_extensions import TypeAlias
 
 from .app_details import AppDetails
@@ -121,7 +122,7 @@ class SessionInput(EvalBaseModel):
 
 
 StaticConversation: TypeAlias = list[Invocation]
-"""A conversation where user's query for each invocation is already specified."""
+"""A conversation where the user's queries for each invocation are already specified."""
 
 
 class EvalCase(EvalBaseModel):
@@ -157,6 +158,15 @@ class EvalCase(EvalBaseModel):
       default=None,
   )
   """A list of rubrics that are applicable to all the invocations in the conversation of this eval case."""
+
+  @model_validator(mode="after")
+  def ensure_conversation_xor_conversation_scenario(self) -> EvalCase:
+    if (self.conversation is None) == (self.conversation_scenario is None):
+      raise ValueError(
+          "Exactly one of conversation and conversation_scenario must be"
+          " provided in an EvalCase."
+      )
+    return self
 
 
 def get_all_tool_calls(

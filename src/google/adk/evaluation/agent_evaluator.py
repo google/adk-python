@@ -50,6 +50,7 @@ from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from .local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
+from .user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -149,12 +150,17 @@ class AgentEvaluator:
     )
     eval_metrics = get_eval_metrics_from_config(eval_config)
 
+    user_simulator_provider = UserSimulatorProvider(
+        user_simulator_config=eval_config.user_simulator_config
+    )
+
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
         agent_for_eval=agent_for_eval,
         eval_set=eval_set,
         eval_metrics=eval_metrics,
         num_runs=num_runs,
+        user_simulator_provider=user_simulator_provider,
     )
 
     # Step 2: Post-process the results!
@@ -471,20 +477,27 @@ class AgentEvaluator:
   ) -> BaseAgent:
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
-    print(dir(agent_module))
-    if hasattr(agent_module, "agent"):
-      if hasattr(agent_module.agent, "root_agent"):
-        root_agent = agent_module.agent.root_agent
-      elif hasattr(agent_module.agent, "get_agent_async"):
-        root_agent, _ = await agent_module.agent.get_agent_async()
-      else:
-        raise ValueError(
-            f"Module {module_name} does not have a root_agent or"
-            " get_agent_async method."
-        )
+
+    # One of the two things should be satisfied, either the module should have
+    # an "agent" as a member in it or the module name itself should end with
+    # ".agent".
+    if not (hasattr(agent_module, "agent") or module_name.endswith(".agent")):
+      raise ValueError(
+          f"Module {module_name} does not have a member named `agent` or the"
+          " name should endwith `.agent`."
+      )
+
+    agent_module_with_agent = (
+        agent_module.agent if hasattr(agent_module, "agent") else agent_module
+    )
+    if hasattr(agent_module_with_agent, "root_agent"):
+      root_agent = agent_module_with_agent.root_agent
+    elif hasattr(agent_module_with_agent, "get_agent_async"):
+      root_agent, _ = await agent_module_with_agent.get_agent_async()
     else:
       raise ValueError(
-          f"Module {module_name} does not have a member named `agent`."
+          f"Module {module_name} does not have a root_agent or"
+          " get_agent_async method."
       )
 
     agent_for_eval = root_agent
@@ -518,6 +531,7 @@ class AgentEvaluator:
       eval_set: EvalSet,
       eval_metrics: list[EvalMetric],
       num_runs: int,
+      user_simulator_provider: UserSimulatorProvider,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -541,6 +555,7 @@ class AgentEvaluator:
         eval_sets_manager=AgentEvaluator._get_eval_sets_manager(
             app_name=app_name, eval_set=eval_set
         ),
+        user_simulator_provider=user_simulator_provider,
     )
 
     inference_requests = [

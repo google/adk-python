@@ -24,45 +24,15 @@
 
 Agent Development Kit (ADK) is a flexible and modular framework for developing and deploying AI agents. While optimized for Gemini and the Google ecosystem, ADK is model-agnostic, deployment-agnostic, and is built for compatibility with other frameworks. ADK was designed to make agent development feel more like software development, to make it easier for developers to create, deploy, and orchestrate agentic architectures that range from simple tasks to complex workflows.
 
-
----
-## 🔥 ADK's very first community call on Oct 15
-
-Join our ADK Community Call! Our first virtual community call is on Oct 15!
-Meet our team, and talk with us about our roadmap and how to contribute.
-
-First Call Details:
-
-Topic: ADK Roadmap
-
-Date: October 15, 2025
-
-Time: 9:30-10:30am PST
-
-Meeting link:
-[Join the call](http://meet.google.com/gjm-gfim-ctz)
-
-Add to your calendar
-[Event calendar invite](https://calendar.google.com/calendar/event?action=TEMPLATE&tmeid=MDUydWo1dHV1dHFtNzJuM3E0bmEyMW12ZnZfMjAyNTEwMTVUMTYzMDAwWiBjXzljNWVjODhhMmQyYWU5YjY5Mzk4ODU1MGZkNDA5MjVmYjgxYjM4MTI1NGNjYTgzNmRkMjMwNzRiMjNmYzcyZDVAZw&tmsrc=c_9c5ec88a2d2ae9b693988550fd40925fb81b381254cca836dd23074b23fc72d5%40group.calendar.google.com), [.ics file](https://calendar.google.com/calendar/ical/c_9c5ec88a2d2ae9b693988550fd40925fb81b381254cca836dd23074b23fc72d5%40group.calendar.google.com/public/basic.ics), [ADK community calendar](https://calendar.google.com/calendar/embed?src=c_9c5ec88a2d2ae9b693988550fd40925fb81b381254cca836dd23074b23fc72d5%40group.calendar.google.com&ctz=America%2FLos_Angeles), [ADK Community Call RSVP](https://google.qualtrics.com/jfe/form/SV_3K0RJZ64H1BexqS)
-
-Agenda:
-[Julia] ADK Roadmap
-[ Bo & Hangfei] Eng Deep Dive: Context Caching
-[Kris] How to Contribute
-
-[Shubham] Upcoming Events
-
 ---
 
 ## 🔥 What's new
 
-- **Context compaction**: Supports context compaction to reduce context length. Here is a [sample](https://github.com/google/adk-python/blob/main/contributing/samples/hello_world_app/agent.py#L156) and [compaction config](https://github.com/google/adk-python/blob/main/src/google/adk/apps/app.py#L51).
+- **Custom Service Registration**: Add a service registry to provide a generic way to register custom service implementations to be used in FastAPI server. See short instruction [here](https://github.com/google/adk-python/discussions/3175#discussioncomment-14745120). ([391628f](https://github.com/google/adk-python/commit/391628fcdc7b950c6835f64ae3ccab197163c990))
 
-- **Resumability**: Support pause and resume an invocation in ADK.
+- **Rewind**: Add the ability to rewind a session to before a previous invocation ([9dce06f](https://github.com/google/adk-python/commit/9dce06f9b00259ec42241df4f6638955e783a9d1)).
 
-- **ReflectRetryToolPlugin**: Add [`ReflectRetryToolPlugin`](https://github.com/google/adk-python/blob/main/src/google/adk/plugins/reflect_retry_tool_plugin.py) to reflect from errors and retry with different arguments when tool errors.
-
-- **Search tool**: Support using Google built-in search and built-in `VertexAiSearchTool` with other tools in the same agent.
+- **New CodeExecutor**: Introduces a new AgentEngineSandboxCodeExecutor class that supports executing agent-generated code using the Vertex AI Code Execution Sandbox API ([ee39a89](https://github.com/google/adk-python/commit/ee39a891106316b790621795b5cc529e89815a98))
 
 ## ✨ Key Features
 
@@ -184,6 +154,10 @@ We welcome contributions from the community! Whether it's bug reports, feature r
 ## Vibe Coding
 
 If you are to develop agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to LLM. While the former one is a summarized one and the later one has the full information in case your LLM has big enough context window.
+
+## Community Events
+
+- [Completed] ADK's 1st community meeting on Wednesday, October 15, 2025. Remember to [join our group](https://groups.google.com/g/adk-community) to get access to the [recording](https://drive.google.com/file/d/1rpXDq5NSH8-MyMeYI6_5pZ3Lhn0X9BQf/view), and [deck](https://docs.google.com/presentation/d/1_b8LG4xaiadbUUDzyNiapSFyxanc9ZgFdw7JQ6zmZ9Q/edit?slide=id.g384e60cdaca_0_658&resourcekey=0-tjFFv0VBQhpXBPCkZr0NOg#slide=id.g384e60cdaca_0_658).
 
 ## 📄 License
 

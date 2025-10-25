@@ -14,22 +14,19 @@
 
 from __future__ import annotations
 
-from typing import Union
-
-from google.genai import types as genai_types
 from pydantic import Field
 
 from .common import EvalBaseModel
 
 
 class ConversationScenario(EvalBaseModel):
-  """Scenario for a conversation between a simulated user and the Agent."""
+  """Scenario for a conversation between a simulated user and the Agent under test."""
 
-  starting_prompt: Union[str, genai_types.Content]
+  starting_prompt: str
   """Starting prompt for the conversation.
 
-  This prompt acts as the first user message that is given to the Agent. Any
-  subsequent user messages are obtained by the system that is simulating the
+  This prompt acts as the fixed first user message that is given to the Agent.
+  Any subsequent user messages are obtained by the system that is simulating the
   user.
   """
 

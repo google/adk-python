@@ -17,9 +17,9 @@ from __future__ import annotations
 from typing import Optional
 
 from google.genai import types as genai_types
-from rouge_score import rouge_scorer
 from typing_extensions import override
 
+from ..dependencies.rouge_scorer import rouge_scorer
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval

@@ -106,6 +106,10 @@ def convert_a2a_request_to_agent_run_request(
   if not request.message:
     raise ValueError('Request message cannot be None')
 
+  custom_metadata = {}
+  if request.metadata:
+    custom_metadata['a2a_metadata'] = request.metadata
+
   return AgentRunRequest(
       user_id=_get_user_id(request),
       session_id=request.context_id,
@@ -113,5 +117,5 @@ def convert_a2a_request_to_agent_run_request(
           role='user',
           parts=[part_converter(part) for part in request.message.parts],
       ),
-      run_config=RunConfig(),
+      run_config=RunConfig(custom_metadata=custom_metadata),
   )

@@ -17,6 +17,7 @@ from __future__ import annotations
 from enum import Enum
 import logging
 import sys
+from typing import Any
 from typing import Optional
 
 from google.genai import types
@@ -35,7 +36,10 @@ class StreamingMode(Enum):
 
 
 class RunConfig(BaseModel):
-  """Configs for runtime behavior of agents."""
+  """Configs for runtime behavior of agents.
+
+  The configs here will be overriden by agent-specific configurations.
+  """
 
   model_config = ConfigDict(
       extra='forbid',
@@ -114,6 +118,9 @@ class RunConfig(BaseModel):
       calls is enforced, if the value is set in this range.
     - Less than or equal to 0: This allows for unbounded number of llm calls.
   """
+
+  custom_metadata: Optional[dict[str, Any]] = None
+  """Custom metadata for the current invocation."""
 
   @field_validator('max_llm_calls', mode='after')
   @classmethod
