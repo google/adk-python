@@ -65,7 +65,7 @@ class TestToGeminiSchema:
             "nonnullable_string": {"type": ["string"]},
             "nullable_string": {"type": ["string", "null"]},
             "nullable_number": {"type": ["null", "integer"]},
-            "object_nullable": {"type": "null"},
+            "object_nullable": {"type": ["object", "null"]},
             "multi_types_nullable": {"type": ["string", "null", "integer"]},
             "empty_default_object": {},
         },
@@ -87,7 +87,10 @@ class TestToGeminiSchema:
     assert gemini_schema.properties["object_nullable"].type == Type.OBJECT
     assert gemini_schema.properties["object_nullable"].nullable
 
-    assert gemini_schema.properties["multi_types_nullable"].type == Type.STRING
+    assert gemini_schema.properties["multi_types_nullable"].any_of == [
+        Schema(type=Type.STRING),
+        Schema(type=Type.INTEGER),
+    ]
     assert gemini_schema.properties["multi_types_nullable"].nullable
 
     assert gemini_schema.properties["empty_default_object"].type == Type.OBJECT
@@ -145,6 +148,14 @@ class TestToGeminiSchema:
     assert len(gemini_schema.any_of) == 2
     assert gemini_schema.any_of[0].type == Type.STRING
     assert gemini_schema.any_of[1].type == Type.INTEGER
+
+  def test_to_gemini_schema_any_of_nullable(self):
+    openapi_schema = {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.nullable == True
 
   def test_to_gemini_schema_general_list(self):
     openapi_schema = {
@@ -523,51 +534,6 @@ class TestToGeminiSchema:
         "string",
         "null",
     ]
-
-  def test_sanitize_schema_formats_for_gemini_nullable(self):
-    openapi_schema = {
-        "properties": {
-            "case_id": {
-                "description": "The ID of the case.",
-                "title": "Case Id",
-                "type": "string",
-            },
-            "next_page_token": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "default": None,
-                "description": (
-                    "The nextPageToken to fetch the next page of results."
-                ),
-                "title": "Next Page Token",
-            },
-        },
-        "required": ["case_id"],
-        "title": "list_alerts_by_caseArguments",
-        "type": "object",
-    }
-    openapi_schema = _sanitize_schema_formats_for_gemini(openapi_schema)
-    assert openapi_schema == {
-        "properties": {
-            "case_id": {
-                "description": "The ID of the case.",
-                "title": "Case Id",
-                "type": "string",
-            },
-            "next_page_token": {
-                "any_of": [
-                    {"type": "string"},
-                    {"type": ["object", "null"]},
-                ],
-                "description": (
-                    "The nextPageToken to fetch the next page of results."
-                ),
-                "title": "Next Page Token",
-            },
-        },
-        "required": ["case_id"],
-        "title": "list_alerts_by_caseArguments",
-        "type": "object",
-    }
 
   def test_to_gemini_schema_properties_is_none(self):
     """Tests schema conversion when 'properties' field is None."""
