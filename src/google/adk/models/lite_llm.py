@@ -824,14 +824,12 @@ class LiteLlm(BaseLlm):
         _get_completion_inputs(llm_request)
     )
 
+    # Ensure messages list is not empty (aligns with _maybe_append_user_content fallback)
     if not messages:
       messages = [
           ChatCompletionUserMessage(
               role="user",
-              content=(
-                  llm_request.config.system_instruction[:200] # Truncate to 200 characters
-                  if llm_request.config.system_instruction
-                  else "Provide a helpful response."
+              content="Handle the requests as specified in the System Instruction."
           )
       ]
 
