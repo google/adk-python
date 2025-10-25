@@ -65,8 +65,9 @@ class TestToGeminiSchema:
             "nonnullable_string": {"type": ["string"]},
             "nullable_string": {"type": ["string", "null"]},
             "nullable_number": {"type": ["null", "integer"]},
-            "object_nullable": {"type": ["object", "null"]},
+            "nullable_object": {"type": ["object", "null"]},
             "multi_types_nullable": {"type": ["string", "null", "integer"]},
+            "only_null": {"type": "null"},
             "empty_default_object": {},
         },
     }
@@ -84,14 +85,17 @@ class TestToGeminiSchema:
     assert gemini_schema.properties["nullable_number"].type == Type.INTEGER
     assert gemini_schema.properties["nullable_number"].nullable
 
-    assert gemini_schema.properties["object_nullable"].type == Type.OBJECT
-    assert gemini_schema.properties["object_nullable"].nullable
+    assert gemini_schema.properties["nullable_object"].type == Type.OBJECT
+    assert gemini_schema.properties["nullable_object"].nullable
 
     assert gemini_schema.properties["multi_types_nullable"].any_of == [
         Schema(type=Type.STRING),
         Schema(type=Type.INTEGER),
     ]
     assert gemini_schema.properties["multi_types_nullable"].nullable
+    
+    assert gemini_schema.properties["only_null"].type is None
+    assert gemini_schema.properties["only_null"].nullable
 
     assert gemini_schema.properties["empty_default_object"].type == Type.OBJECT
     assert gemini_schema.properties["empty_default_object"].nullable is None
