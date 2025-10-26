@@ -425,9 +425,14 @@ class TestVertexAiSearchTool:
         retrieval_tool.retrieval.vertex_ai_search.datastore == 'test_data_store'
     )
 
-    assert 'Adding Vertex AI Search tool config to LLM request' in caplog.text
-    assert 'datastore=test_data_store' in caplog.text
-    assert 'engine=None' in caplog.text
-    assert 'filter=None' in caplog.text
-    assert 'max_results=None' in caplog.text
-    assert 'data_store_specs=None' in caplog.text
+    debug_records = [
+        r for r in caplog.records if 'Adding Vertex AI Search tool config' in r.message
+    ]
+    assert len(debug_records) == 1
+    log_message = debug_records[0].getMessage()
+    assert 'Adding Vertex AI Search tool config to LLM request' in log_message
+    assert 'datastore=test_data_store' in log_message
+    assert 'engine=None' in log_message
+    assert 'filter=None' in log_message
+    assert 'max_results=None' in log_message
+    assert 'data_store_specs=None' in log_message
