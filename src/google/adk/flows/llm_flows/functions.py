@@ -305,7 +305,9 @@ async def _execute_single_function_call_async(
     else:
       raise tool_error
 
-  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+  async def _run_with_trace():
+    nonlocal function_args
+
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
     function_response = (
@@ -391,12 +393,22 @@ async def _execute_single_function_call_async(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    trace_tool_call(
-        tool=tool,
-        args=function_args,
-        function_response_event=function_response_event,
-    )
     return function_response_event
+
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    try:
+      function_response_event = await _run_with_trace()
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+      )
+      return function_response_event
+    except:
+      trace_tool_call(
+          tool=tool, args=function_args, function_response_event=None
+      )
+      raise
 
 
 async def handle_function_calls_live(
@@ -467,13 +479,17 @@ async def _execute_single_function_call_live(
   tool, tool_context = _get_tool_and_context(
       invocation_context, function_call, tools_dict
   )
-  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+
+  function_args = (
+      copy.deepcopy(function_call.args) if function_call.args else {}
+  )
+
+  async def _run_with_trace():
+    nonlocal function_args
+
     # Do not use "args" as the variable name, because it is a reserved keyword
     # in python debugger.
     # Make a deep copy to avoid being modified.
-    function_args = (
-        copy.deepcopy(function_call.args) if function_call.args else {}
-    )
     function_response = None
 
     # Handle before_tool_callbacks - iterate through the canonical callback
@@ -527,12 +543,22 @@ async def _execute_single_function_call_live(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    trace_tool_call(
-        tool=tool,
-        args=function_args,
-        function_response_event=function_response_event,
-    )
     return function_response_event
+
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    try:
+      function_response_event = await _run_with_trace()
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+      )
+      return function_response_event
+    except:
+      trace_tool_call(
+          tool=tool, args=function_args, function_response_event=None
+      )
+      raise
 
 
 async def _process_function_live_helper(
