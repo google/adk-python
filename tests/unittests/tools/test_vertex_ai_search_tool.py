@@ -215,16 +215,17 @@ class TestVertexAiSearchTool:
     assert retrieval_tool.retrieval.vertex_ai_search.data_store_specs is None
 
     # Check for debug log message and its components
-    debug_messages = [
-        r.message for r in caplog.records if r.levelno == logging.DEBUG
+    debug_records = [
+        r for r in caplog.records if 'Adding Vertex AI Search tool config' in r.message
     ]
-    debug_message = '\n'.join(debug_messages)
-    assert 'Adding Vertex AI Search tool config to LLM request' in debug_message
-    assert 'datastore=test_data_store' in debug_message
-    assert 'engine=None' in debug_message
-    assert 'filter=f' in debug_message
-    assert 'max_results=5' in debug_message
-    assert 'data_store_specs=None' in debug_message
+    assert len(debug_records) == 1
+    log_message = debug_records[0].getMessage()
+    assert 'Adding Vertex AI Search tool config to LLM request' in log_message
+    assert 'datastore=test_data_store' in log_message
+    assert 'engine=None' in log_message
+    assert 'filter=f' in log_message
+    assert 'max_results=5' in log_message
+    assert 'data_store_specs=None' in log_message
 
   @pytest.mark.asyncio
   async def test_process_llm_request_with_path_based_gemini_model(self, caplog):
