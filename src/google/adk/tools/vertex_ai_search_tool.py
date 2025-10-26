@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,8 @@ from ..utils.model_name_utils import is_gemini_1_model
 from ..utils.model_name_utils import is_gemini_model
 from .base_tool import BaseTool
 from .tool_context import ToolContext
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
   from ..models import LlmRequest
@@ -36,6 +39,26 @@ class VertexAiSearchTool(BaseTool):
     data_store_id: The Vertex AI search data store resource ID.
     search_engine_id: The Vertex AI search engine resource ID.
   """
+
+  @staticmethod
+  def _extract_resource_id(resource_path: str, resource_type: str) -> str:
+    """Extracts the resource ID from a full resource path.
+
+    Args:
+      resource_path: The full resource path (e.g., "projects/p/locations/l/collections/c/engines/e")
+      resource_type: The type of resource to extract (e.g., 'engines', 'dataStores')
+
+    Returns:
+      The extracted resource ID
+    """
+    parts = resource_path.split('/')
+    try:
+      resource_index = parts.index(resource_type)
+      if resource_index + 1 < len(parts):
+        return parts[resource_index + 1]
+    except ValueError:
+      pass
+    return resource_path  # Return original if pattern not matched
 
   def __init__(
       self,
@@ -83,6 +106,11 @@ class VertexAiSearchTool(BaseTool):
     self.data_store_id = data_store_id
     self.data_store_specs = data_store_specs
     self.search_engine_id = search_engine_id
+    self._search_engine_name = (
+        self._extract_resource_id(search_engine_id, 'engines')
+        if search_engine_id
+        else None
+    )
     self.filter = filter
     self.max_results = max_results
     self.bypass_multi_tools_limit = bypass_multi_tools_limit
@@ -102,6 +130,15 @@ class VertexAiSearchTool(BaseTool):
         )
       llm_request.config = llm_request.config or types.GenerateContentConfig()
       llm_request.config.tools = llm_request.config.tools or []
+      _logger.debug(
+          'Adding Vertex AI Search tool config to LLM request: datastore=%s,'
+          ' engine=%s, filter=%s, max_results=%s, data_store_specs=%s',
+          self.data_store_id,
+          self._search_engine_name or self.search_engine_id,
+          self.filter,
+          self.max_results,
+          self.data_store_specs,
+      )
       llm_request.config.tools.append(
           types.Tool(
               retrieval=types.Retrieval(
