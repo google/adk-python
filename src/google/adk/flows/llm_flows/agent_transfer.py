@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import typing
 from typing import AsyncGenerator
 
@@ -35,6 +37,8 @@ if typing.TYPE_CHECKING:
   from ...agents import BaseAgent
   from ...agents import LlmAgent
   from ...agents.remote_a2a_agent import RemoteA2aAgent
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -138,10 +142,14 @@ async def _build_target_agents_info_async(target_agent: BaseAgent) -> str:
         return _build_target_agent_info_from_card(
             target_agent, target_agent._agent_card
         )
-    except Exception:
+    except Exception as e:
       # If resolution fails, fall through to default behavior
+      logger.warning(
+          'Failed to resolve A2A agent card for agent "%s", falling back to' ' basic info. Error: %s',
+          target_agent.name,
+          e,
+      )
       pass
-
   # Fallback to original behavior for non-A2A agents or if card unavailable
   return _build_target_agents_info(target_agent)
 
@@ -192,11 +200,12 @@ async def _build_target_agents_instructions(
       f'`{name}`' for name in available_agent_names
   )
 
-  # Build agent info asynchronously to support A2A agent card resolution
-  agent_info_list = []
-  for target_agent in target_agents:
-    agent_info = await _build_target_agents_info_async(target_agent)
-    agent_info_list.append(agent_info)
+  # Build agent info asynchronously and concurrently to support A2A agent card resolution
+  tasks = [
+      _build_target_agents_info_async(target_agent)
+      for target_agent in target_agents
+  ]
+  agent_info_list = await asyncio.gather(*tasks)
 
   # Create a separator for visual clarity
   agents_section = '\n\n'.join(agent_info_list)
