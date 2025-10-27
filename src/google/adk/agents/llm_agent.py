@@ -105,6 +105,16 @@ AfterToolCallback: TypeAlias = Union[
     list[_SingleAfterToolCallback],
 ]
 
+_SingleOnToolErrorCallback: TypeAlias = Callable[
+    [BaseTool, dict[str, Any], ToolContext, Exception],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
+]
+
+OnToolErrorCallback: TypeAlias = Union[
+    _SingleOnToolErrorCallback,
+    list[_SingleOnToolErrorCallback],
+]
+
 InstructionProvider: TypeAlias = Callable[
     [ReadonlyContext], Union[str, Awaitable[str]]
 ]
@@ -384,6 +394,21 @@ class LlmAgent(BaseAgent):
   Returns:
     When present, the returned dict will be used as tool result.
   """
+  on_tool_error_callback: Optional[OnToolErrorCallback] = None
+  """Callback or list of callbacks to be called when a tool call encounters an error.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
+
+  Args:
+    tool: The tool to be called.
+    args: The arguments to the tool.
+    tool_context: ToolContext,
+    error: The error from the tool call.
+
+  Returns:
+    When present, the returned dict will be used as tool result.
+  """
   # Callbacks - End
 
   @override
@@ -581,6 +606,20 @@ class LlmAgent(BaseAgent):
     if isinstance(self.after_tool_callback, list):
       return self.after_tool_callback
     return [self.after_tool_callback]
+
+  @property
+  def canonical_on_tool_error_callbacks(
+      self,
+  ) -> list[OnToolErrorCallback]:
+    """The resolved self.on_tool_error_callback field as a list of OnToolErrorCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.on_tool_error_callback:
+      return []
+    if isinstance(self.on_tool_error_callback, list):
+      return self.on_tool_error_callback
+    return [self.on_tool_error_callback]
 
   @property
   def _llm_flow(self) -> BaseLlmFlow:
