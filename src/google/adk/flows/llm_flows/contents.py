@@ -233,7 +233,10 @@ def _contains_empty_content(event: Event) -> bool:
       or event.content.parts[0].text == ''
   ) and (not event.output_transcription and not event.input_transcription)
 
-def _should_include_event_in_context(current_branch: Optional[str], event: Event) -> bool:
+
+def _should_include_event_in_context(
+    current_branch: Optional[str], event: Event
+) -> bool:
   """Determines if an event should be included in the LLM context.
 
   This filters out events that are considered empty (e.g., no text, function
@@ -248,12 +251,12 @@ def _should_include_event_in_context(current_branch: Optional[str], event: Event
     True if the event should be included in the context, False otherwise.
   """
   return not (
-    _contains_empty_content(event)
-    or not _is_event_belongs_to_branch(current_branch, event)
-    or _is_auth_event(event)
-    or _is_request_confirmation_event(event)
+      _contains_empty_content(event)
+      or not _is_event_belongs_to_branch(current_branch, event)
+      or _is_auth_event(event)
+      or _is_request_confirmation_event(event)
   )
-  
+
 
 def _process_compaction_events(events: list[Event]) -> list[Event]:
   """Processes events by applying compaction.
@@ -356,10 +359,10 @@ def _get_contents(
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
   raw_filtered_events = [
-    e for e in rewind_filtered_events
-    if _should_include_event_in_context(current_branch, e)
+      e
+      for e in rewind_filtered_events
+      if _should_include_event_in_context(current_branch, e)
   ]
-  
 
   if has_compaction_events:
     events_to_process = _process_compaction_events(raw_filtered_events)
@@ -452,12 +455,8 @@ def _get_current_turn_contents(
   # Find the latest event that starts the current turn and process from there
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
-    if (
-      _should_include_event_in_context(current_branch, event)
-      and (
-        event.author == 'user'
-        or _is_other_agent_reply(agent_name, event)
-      )
+    if _should_include_event_in_context(current_branch, event) and (
+        event.author == 'user' or _is_other_agent_reply(agent_name, event)
     ):
       return _get_contents(current_branch, events[i:], agent_name)
 
