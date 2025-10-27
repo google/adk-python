@@ -155,8 +155,8 @@ class BaseAgent(BaseModel):
 
   Returns:
     Optional[types.Content]: The content to return to the user.
-      When the content is present, the provided content will be used as agent
-      response and appended to event history as agent response.
+      When the content is present, an additional event with the provided content
+      will be appended to event history as an additional agent response.
   """
 
   def _load_agent_state(

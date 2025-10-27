@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -118,7 +119,7 @@ def trace_agent_invocation(
 def trace_tool_call(
     tool: BaseTool,
     args: dict[str, Any],
-    function_response_event: Event,
+    function_response_event: Optional[Event],
 ):
   """Traces tool call.
 
@@ -154,7 +155,8 @@ def trace_tool_call(
   tool_call_id = '<not specified>'
   tool_response = '<not specified>'
   if (
-      function_response_event.content is not None
+      function_response_event is not None
+      and function_response_event.content is not None
       and function_response_event.content.parts
   ):
     response_parts = function_response_event.content.parts
@@ -169,7 +171,8 @@ def trace_tool_call(
 
   if not isinstance(tool_response, dict):
     tool_response = {'result': tool_response}
-  span.set_attribute('gcp.vertex.agent.event_id', function_response_event.id)
+  if function_response_event is not None:
+    span.set_attribute('gcp.vertex.agent.event_id', function_response_event.id)
   if _should_add_request_response_to_spans():
     span.set_attribute(
         'gcp.vertex.agent.tool_response',

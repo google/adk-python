@@ -465,7 +465,7 @@ async def _post_process_code_execution_result(
         session_id=invocation_context.session.id,
         filename=output_file.name,
         artifact=types.Part.from_bytes(
-            data=base64.b64decode(output_file.content),
+            data=get_content_as_bytes(output_file.content),
             mime_type=output_file.mime_type,
         ),
     )
@@ -478,6 +478,25 @@ async def _post_process_code_execution_result(
       content=result_content,
       actions=event_actions,
   )
+
+
+def get_content_as_bytes(output_content: str | bytes) -> bytes:
+  """Converts output_content to bytes.
+
+  - If output_content is already bytes, it's returned as is.
+  - If output_content is a string: convert base64-decoded to bytes.
+
+  Args:
+    output_content: The content, which can be a str or bytes.
+
+  Returns:
+    The content as a bytes object.
+  """
+  if isinstance(output_content, bytes):
+    # Already bytes, no conversion needed.
+    return output_content
+
+  return base64.b64decode(output_content)
 
 
 def _get_data_file_preprocessing_code(file: File) -> Optional[str]:
