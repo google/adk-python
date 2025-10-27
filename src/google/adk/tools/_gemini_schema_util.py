@@ -75,26 +75,28 @@ def _to_snake_case(text: str) -> str:
 
 
 def _sanitize_schema_type(schema: dict[str, Any]) -> dict[str, Any]:
-  if ("type" not in schema or not schema["type"]) and schema.keys().isdisjoint(
-      schema
-  ):
+  if not schema:
     schema["type"] = "object"
   if isinstance(schema.get("type"), list):
-    nullable = False
-    non_null_type = None
-    for t in schema["type"]:
-      if t == "null":
-        nullable = True
-      elif not non_null_type:
-        non_null_type = t
-    if not non_null_type:
-      non_null_type = "object"
+    types_no_null = [t for t in schema["type"] if t != "null"]
+    nullable = len(types_no_null) != len(schema["type"])
+    if "array" in types_no_null:
+      non_null_type = "array"
+    else:
+      non_null_type = types_no_null[0] if types_no_null else "object"
     if nullable:
       schema["type"] = [non_null_type, "null"]
     else:
       schema["type"] = non_null_type
   elif schema.get("type") == "null":
     schema["type"] = ["object", "null"]
+
+  schema_type = schema.get("type")
+  is_array = schema_type == "array" or (
+      isinstance(schema_type, list) and "array" in schema_type
+  )
+  if is_array and "items" not in schema:
+    schema["items"] = {"type": "string"}
 
   return schema
 

@@ -68,6 +68,11 @@ class TestToGeminiSchema:
             "object_nullable": {"type": "null"},
             "multi_types_nullable": {"type": ["string", "null", "integer"]},
             "empty_default_object": {},
+            "empty_list_type": {"type": []},
+            "multi_type_with_array_nullable": {
+                "type": ["string", "array", "null"]
+            },
+            "multi_type_with_array_nonnullable": {"type": ["integer", "array"]},
         },
     }
     gemini_schema = _to_gemini_schema(openapi_schema)
@@ -92,6 +97,23 @@ class TestToGeminiSchema:
 
     assert gemini_schema.properties["empty_default_object"].type == Type.OBJECT
     assert gemini_schema.properties["empty_default_object"].nullable is None
+
+    assert gemini_schema.properties["empty_list_type"].type == Type.OBJECT
+    assert not gemini_schema.properties["empty_list_type"].nullable
+
+    assert (
+        gemini_schema.properties["multi_type_with_array_nullable"].type
+        == Type.ARRAY
+    )
+    assert gemini_schema.properties["multi_type_with_array_nullable"].nullable
+
+    assert (
+        gemini_schema.properties["multi_type_with_array_nonnullable"].type
+        == Type.ARRAY
+    )
+    assert not gemini_schema.properties[
+        "multi_type_with_array_nonnullable"
+    ].nullable
 
   def test_to_gemini_schema_nested_objects(self):
     openapi_schema = {
@@ -136,6 +158,20 @@ class TestToGeminiSchema:
     }
     gemini_schema = _to_gemini_schema(openapi_schema)
     assert gemini_schema.items.properties["name"].type == Type.STRING
+
+  def test_to_gemini_schema_array_without_items_gets_default(self):
+    openapi_schema = {"type": "array"}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.ARRAY
+    assert not gemini_schema.nullable
+    assert gemini_schema.items.type == Type.STRING
+
+  def test_to_gemini_schema_nullable_array_without_items_gets_default(self):
+    openapi_schema = {"type": ["array", "null"]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.ARRAY
+    assert gemini_schema.nullable
+    assert gemini_schema.items.type == Type.STRING
 
   def test_to_gemini_schema_any_of(self):
     openapi_schema = {
@@ -533,8 +569,10 @@ class TestToGeminiSchema:
                 "type": "string",
             },
             "next_page_token": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "default": None,
+                "any_of": [
+                    {"type": "string"},
+                    {"type": ["object", "null"]},
+                ],
                 "description": (
                     "The nextPageToken to fetch the next page of results."
                 ),
