@@ -267,8 +267,9 @@ class LlmAgent(BaseAgent):
   disallow_transfer_to_parent: bool = False
   """Disallows LLM-controlled transferring to the parent agent.
 
-  NOTE: Setting this as True also prevents this agent to continue reply to the
-  end-user. This behavior prevents one-way transfer, in which end-user may be
+  NOTE: Setting this as True also prevents this agent from continuing to reply
+  to the end-user, and will transfer control back to the parent agent in the
+  next turn. This behavior prevents one-way transfer, in which end-user may be
   stuck with one agent that cannot transfer to other agents in the agent tree.
   """
   disallow_transfer_to_peers: bool = False
