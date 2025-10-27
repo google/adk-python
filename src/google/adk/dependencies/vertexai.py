@@ -15,3 +15,4 @@
 from __future__ import annotations
 
 import vertexai
+from vertexai.preview import rag
