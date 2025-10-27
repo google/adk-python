@@ -37,8 +37,6 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
 
     llm_request.model = (
         agent.canonical_model
@@ -52,7 +50,7 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     )
     # Only set output_schema if no tools are specified. as of now, model don't
     # support output_schema and tools together. we have a workaround to support
-    # both outoput_schema and tools at the same time. see
+    # both output_schema and tools at the same time. see
     # _output_schema_processor.py for details
     if agent.output_schema and not agent.tools:
       llm_request.set_output_schema(agent.output_schema)
@@ -80,6 +78,9 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     )
     llm_request.live_connect_config.session_resumption = (
         invocation_context.run_config.session_resumption
+    )
+    llm_request.live_connect_config.context_window_compression = (
+        invocation_context.run_config.context_window_compression
     )
 
     # TODO: handle tool append here, instead of in BaseTool.process_llm_request.

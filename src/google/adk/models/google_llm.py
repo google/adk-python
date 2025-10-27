@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 from functools import cached_property
 import logging
 import os
@@ -28,7 +29,6 @@ from typing import Union
 
 from google.genai import Client
 from google.genai import types
-from google.genai.types import FinishReason
 from typing_extensions import override
 
 from .. import version
@@ -58,7 +58,9 @@ class Gemini(BaseLlm):
     model: The name of the Gemini model.
   """
 
-  model: str = 'gemini-1.5-flash'
+  model: str = 'gemini-2.5-flash'
+
+  speech_config: Optional[types.SpeechConfig] = None
 
   retry_options: Optional[types.HttpRetryOptions] = None
   """Allow Gemini to retry failed responses.
@@ -110,6 +112,24 @@ class Gemini(BaseLlm):
     """
     await self._preprocess_request(llm_request)
     self._maybe_append_user_content(llm_request)
+
+    # Handle context caching if configured
+    cache_metadata = None
+    cache_manager = None
+    if llm_request.cache_config:
+      from ..telemetry.tracing import tracer
+      from .gemini_context_cache_manager import GeminiContextCacheManager
+
+      with tracer.start_as_current_span('handle_context_caching') as span:
+        cache_manager = GeminiContextCacheManager(self.api_client)
+        cache_metadata = await cache_manager.handle_context_caching(llm_request)
+        if cache_metadata:
+          if cache_metadata.cache_name:
+            span.set_attribute('cache_action', 'active_cache')
+            span.set_attribute('cache_name', cache_metadata.cache_name)
+          else:
+            span.set_attribute('cache_action', 'fingerprint_only')
+
     logger.info(
         'Sending out request, model: %s, backend: %s, stream: %s',
         llm_request.model,
@@ -135,7 +155,7 @@ class Gemini(BaseLlm):
           config=llm_request.config,
       )
 
-      # for sse, similar as bidi (see receive method in gemini_llm_connecton.py),
+      # for sse, similar as bidi (see receive method in gemini_llm_connection.py),
       # we need to mark those text content as partial and after all partial
       # contents are sent, we send an accumulated event which contains all the
       # previous partial content. The only difference is bidi rely on
@@ -150,6 +170,11 @@ class Gemini(BaseLlm):
             async for llm_response in aggregator_gen:
               yield llm_response
       if (close_result := aggregator.close()) is not None:
+        # Populate cache metadata in the final aggregated response for streaming
+        if cache_metadata:
+          cache_manager.populate_cache_metadata_in_response(
+              close_result, cache_metadata
+          )
         yield close_result
 
     else:
@@ -160,7 +185,13 @@ class Gemini(BaseLlm):
       )
       logger.info('Response received from the model.')
       logger.debug(_build_response_log(response))
-      yield LlmResponse.create(response)
+
+      llm_response = LlmResponse.create(response)
+      if cache_metadata:
+        cache_manager.populate_cache_metadata_in_response(
+            llm_response, cache_metadata
+        )
+      yield llm_response
 
   @cached_property
   def api_client(self) -> Client:
@@ -240,6 +271,9 @@ class Gemini(BaseLlm):
           self._live_api_version
       )
 
+    if self.speech_config is not None:
+      llm_request.live_connect_config.speech_config = self.speech_config
+
     llm_request.live_connect_config.system_instruction = types.Content(
         role='system',
         parts=[
@@ -280,18 +314,19 @@ class Gemini(BaseLlm):
           if not content.parts:
             continue
           for part in content.parts:
-            _remove_display_name_if_present(part.inline_data)
-            _remove_display_name_if_present(part.file_data)
+            # Create copies to avoid mutating the original objects
+            if part.inline_data:
+              part.inline_data = copy.copy(part.inline_data)
+              _remove_display_name_if_present(part.inline_data)
+            if part.file_data:
+              part.file_data = copy.copy(part.file_data)
+              _remove_display_name_if_present(part.file_data)
 
     # Initialize config if needed
     if llm_request.config and llm_request.config.tools:
       # Check if computer use is configured
       for tool in llm_request.config.tools:
-        if (
-            isinstance(tool, (types.Tool, types.ToolDict))
-            and hasattr(tool, 'computer_use')
-            and tool.computer_use
-        ):
+        if isinstance(tool, types.Tool) and tool.computer_use:
           llm_request.config.system_instruction = None
           await self._adapt_computer_use_tool(llm_request)
 
@@ -329,10 +364,19 @@ def _build_function_declaration_log(
 
 
 def _build_request_log(req: LlmRequest) -> str:
-  function_decls: list[types.FunctionDeclaration] = cast(
-      list[types.FunctionDeclaration],
-      req.config.tools[0].function_declarations if req.config.tools else [],
-  )
+  # Find which tool contains function_declarations
+  function_decls: list[types.FunctionDeclaration] = []
+  function_decl_tool_index: Optional[int] = None
+
+  if req.config.tools:
+    for idx, tool in enumerate(req.config.tools):
+      if tool.function_declarations:
+        function_decls = cast(
+            list[types.FunctionDeclaration], tool.function_declarations
+        )
+        function_decl_tool_index = idx
+        break
+
   function_logs = (
       [
           _build_function_declaration_log(func_decl)
@@ -353,11 +397,34 @@ def _build_request_log(req: LlmRequest) -> str:
       for content in req.contents
   ]
 
+  # Build exclusion dict for config logging
+  tools_exclusion = (
+      {function_decl_tool_index: {'function_declarations'}}
+      if function_decl_tool_index is not None
+      else True
+  )
+
+  try:
+    config_log = str(
+        req.config.model_dump(
+            exclude_none=True,
+            exclude={
+                'system_instruction': True,
+                'tools': tools_exclusion if req.config.tools else True,
+            },
+        )
+    )
+  except Exception:
+    config_log = repr(req.config)
+
   return f"""
 LLM Request:
 -----------------------------------------------------------
 System Instruction:
 {req.config.system_instruction}
+-----------------------------------------------------------
+Config:
+{config_log}
 -----------------------------------------------------------
 Contents:
 {_NEW_LINE.join(contents_logs)}

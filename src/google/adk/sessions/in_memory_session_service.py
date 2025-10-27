@@ -22,6 +22,8 @@ import uuid
 
 from typing_extensions import override
 
+from . import _session_util
+from ..errors.already_exists_error import AlreadyExistsError
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -88,6 +90,21 @@ class InMemorySessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
+    if session_id and self._get_session_impl(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    ):
+      raise AlreadyExistsError(f'Session with id {session_id} already exists.')
+    state_deltas = _session_util.extract_state_delta(state)
+    app_state_delta = state_deltas['app']
+    user_state_delta = state_deltas['user']
+    session_state = state_deltas['session']
+    if app_state_delta:
+      self.app_state.setdefault(app_name, {}).update(app_state_delta)
+    if user_state_delta:
+      self.user_state.setdefault(app_name, {}).setdefault(user_id, {}).update(
+          user_state_delta
+      )
+
     session_id = (
         session_id.strip()
         if session_id and session_id.strip()
@@ -97,7 +114,7 @@ class InMemorySessionService(BaseSessionService):
         app_name=app_name,
         user_id=user_id,
         id=session_id,
-        state=state or {},
+        state=session_state or {},
         last_update_time=time.time(),
     )
 
@@ -174,11 +191,13 @@ class InMemorySessionService(BaseSessionService):
         if i >= 0:
           copied_session.events = copied_session.events[i + 1 :]
 
+    # Return a copy of the session object with merged state.
     return self._merge_state(app_name, user_id, copied_session)
 
   def _merge_state(
       self, app_name: str, user_id: str, copied_session: Session
   ) -> Session:
+    """Merges app and user state into session state."""
     # Merge app state
     if app_name in self.app_state:
       for key in self.app_state[app_name].keys():
@@ -201,31 +220,41 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     return self._list_sessions_impl(app_name=app_name, user_id=user_id)
 
   def list_sessions_sync(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._list_sessions_impl(app_name=app_name, user_id=user_id)
 
   def _list_sessions_impl(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     empty_response = ListSessionsResponse()
     if app_name not in self.sessions:
       return empty_response
-    if user_id not in self.sessions[app_name]:
+    if user_id is not None and user_id not in self.sessions[app_name]:
       return empty_response
 
     sessions_without_events = []
-    for session in self.sessions[app_name][user_id].values():
-      copied_session = copy.deepcopy(session)
-      copied_session.events = []
-      copied_session = self._merge_state(app_name, user_id, copied_session)
-      sessions_without_events.append(copied_session)
+
+    if user_id is None:
+      for user_id in self.sessions[app_name]:
+        for session_id in self.sessions[app_name][user_id]:
+          session = self.sessions[app_name][user_id][session_id]
+          copied_session = copy.deepcopy(session)
+          copied_session.events = []
+          copied_session = self._merge_state(app_name, user_id, copied_session)
+          sessions_without_events.append(copied_session)
+    else:
+      for session in self.sessions[app_name][user_id].values():
+        copied_session = copy.deepcopy(session)
+        copied_session.events = []
+        copied_session = self._merge_state(app_name, user_id, copied_session)
+        sessions_without_events.append(copied_session)
     return ListSessionsResponse(sessions=sessions_without_events)
 
   @override
@@ -259,11 +288,9 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    # Update the in-memory session.
-    await super().append_event(session=session, event=event)
-    session.last_update_time = event.timestamp
+    if event.partial:
+      return event
 
-    # Update the storage session
     app_name = session.app_name
     user_id = session.user_id
     session_id = session.id
@@ -283,21 +310,29 @@ class InMemorySessionService(BaseSessionService):
       _warning(f'session_id {session_id} not in sessions[app_name][user_id]')
       return event
 
-    if event.actions and event.actions.state_delta:
-      for key in event.actions.state_delta:
-        if key.startswith(State.APP_PREFIX):
-          self.app_state.setdefault(app_name, {})[
-              key.removeprefix(State.APP_PREFIX)
-          ] = event.actions.state_delta[key]
+    # Update the in-memory session.
+    await super().append_event(session=session, event=event)
+    session.last_update_time = event.timestamp
 
-        if key.startswith(State.USER_PREFIX):
-          self.user_state.setdefault(app_name, {}).setdefault(user_id, {})[
-              key.removeprefix(State.USER_PREFIX)
-          ] = event.actions.state_delta[key]
-
+    # Update the storage session
     storage_session = self.sessions[app_name][user_id].get(session_id)
-    await super().append_event(session=storage_session, event=event)
-
+    storage_session.events.append(event)
     storage_session.last_update_time = event.timestamp
+
+    if event.actions and event.actions.state_delta:
+      state_deltas = _session_util.extract_state_delta(
+          event.actions.state_delta
+      )
+      app_state_delta = state_deltas['app']
+      user_state_delta = state_deltas['user']
+      session_state_delta = state_deltas['session']
+      if app_state_delta:
+        self.app_state.setdefault(app_name, {}).update(app_state_delta)
+      if user_state_delta:
+        self.user_state.setdefault(app_name, {}).setdefault(user_id, {}).update(
+            user_state_delta
+        )
+      if session_state_delta:
+        storage_session.state.update(session_state_delta)
 
     return event

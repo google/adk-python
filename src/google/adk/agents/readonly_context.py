@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from google.genai import types
 
+  from ..sessions.session import Session
   from .invocation_context import InvocationContext
 
 
@@ -53,6 +54,11 @@ class ReadonlyContext:
     """The state of the current session. READONLY field."""
     return MappingProxyType(self._invocation_context.session.state)
 
+  @property
+  def session(self) -> Session:
+    """The current session for this invocation."""
+    return self._invocation_context.session
+  
   @property
   def user_id(self) -> str:
     """The id of the user. READONLY field."""
