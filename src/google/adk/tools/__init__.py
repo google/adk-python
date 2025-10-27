@@ -18,6 +18,7 @@ from ..auth.auth_tool import AuthToolArguments
 from .agent_tool import AgentTool
 from .apihub_tool.apihub_toolset import APIHubToolset
 from .base_tool import BaseTool
+from .discovery_engine_search_tool import DiscoveryEngineSearchTool
 from .enterprise_search_tool import enterprise_web_search_tool as enterprise_web_search
 from .example_tool import ExampleTool
 from .exit_loop_tool import exit_loop
@@ -39,6 +40,7 @@ __all__ = [
     'APIHubToolset',
     'AuthToolArguments',
     'BaseTool',
+    'DiscoveryEngineSearchTool',
     'enterprise_web_search',
     'google_maps_grounding',
     'google_search',
@@ -65,7 +67,9 @@ if sys.version_info < (3, 10):
   )
 else:
   from .mcp_tool.mcp_toolset import MCPToolset
+  from .mcp_tool.mcp_toolset import McpToolset
 
   __all__.extend([
       'MCPToolset',
+      'McpToolset',
   ])

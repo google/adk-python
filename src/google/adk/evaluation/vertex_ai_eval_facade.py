@@ -21,14 +21,16 @@ from typing import Optional
 from google.genai import types as genai_types
 import pandas as pd
 from typing_extensions import override
-from vertexai import Client as VertexAiClient
-from vertexai import types as vertexai_types
 
+from ..dependencies.vertexai import vertexai
 from .eval_case import Invocation
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+
+vertexai_types = vertexai.types
+VertexAiClient = vertexai.Client
 
 _ERROR_MESSAGE_SUFFIX = """
 You should specify both project id and location. This metric uses Vertex Gen AI

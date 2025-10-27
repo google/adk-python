@@ -24,15 +24,15 @@
 
 Agent Development Kit (ADK) is a flexible and modular framework for developing and deploying AI agents. While optimized for Gemini and the Google ecosystem, ADK is model-agnostic, deployment-agnostic, and is built for compatibility with other frameworks. ADK was designed to make agent development feel more like software development, to make it easier for developers to create, deploy, and orchestrate agentic architectures that range from simple tasks to complex workflows.
 
-
 ---
 
 ## 🔥 What's new
 
-- **Agent Config**: Build agents without code. Check out the
-  [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+- **Custom Service Registration**: Add a service registry to provide a generic way to register custom service implementations to be used in FastAPI server. See short instruction [here](https://github.com/google/adk-python/discussions/3175#discussioncomment-14745120). ([391628f](https://github.com/google/adk-python/commit/391628fcdc7b950c6835f64ae3ccab197163c990))
 
-- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input
+- **Rewind**: Add the ability to rewind a session to before a previous invocation ([9dce06f](https://github.com/google/adk-python/commit/9dce06f9b00259ec42241df4f6638955e783a9d1)).
+
+- **New CodeExecutor**: Introduces a new AgentEngineSandboxCodeExecutor class that supports executing agent-generated code using the Vertex AI Code Execution Sandbox API ([ee39a89](https://github.com/google/adk-python/commit/ee39a891106316b790621795b5cc529e89815a98))
 
 ## ✨ Key Features
 
@@ -42,6 +42,11 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 - **Code-First Development**: Define agent logic, tools, and orchestration
   directly in Python for ultimate flexibility, testability, and versioning.
+
+- **Agent Config**: Build agents without code. Check out the
+  [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+
+- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input.
 
 - **Modular Multi-Agent Systems**: Design scalable applications by composing
   multiple specialized agents into flexible hierarchies.
@@ -149,6 +154,10 @@ We welcome contributions from the community! Whether it's bug reports, feature r
 ## Vibe Coding
 
 If you are to develop agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to LLM. While the former one is a summarized one and the later one has the full information in case your LLM has big enough context window.
+
+## Community Events
+
+- [Completed] ADK's 1st community meeting on Wednesday, October 15, 2025. Remember to [join our group](https://groups.google.com/g/adk-community) to get access to the [recording](https://drive.google.com/file/d/1rpXDq5NSH8-MyMeYI6_5pZ3Lhn0X9BQf/view), and [deck](https://docs.google.com/presentation/d/1_b8LG4xaiadbUUDzyNiapSFyxanc9ZgFdw7JQ6zmZ9Q/edit?slide=id.g384e60cdaca_0_658&resourcekey=0-tjFFv0VBQhpXBPCkZr0NOg#slide=id.g384e60cdaca_0_658).
 
 ## 📄 License
 

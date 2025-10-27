@@ -20,9 +20,14 @@ import shutil
 from typing import Any
 from typing import Dict
 
+from google.adk.tools.tool_context import ToolContext
+
+from ..utils.resolve_root_directory import resolve_file_path
+
 
 async def write_files(
     files: Dict[str, str],
+    tool_context: ToolContext,
     create_backup: bool = False,
     create_directories: bool = True,
 ) -> Dict[str, Any]:
@@ -50,6 +55,9 @@ async def write_files(
       - errors: list of general error messages
   """
   try:
+    # Get session state for path resolution
+    session_state = tool_context._invocation_context.session.state
+
     result = {
         "success": True,
         "files": {},
@@ -59,7 +67,9 @@ async def write_files(
     }
 
     for file_path, content in files.items():
-      file_path_obj = Path(file_path).resolve()
+      # Resolve file path using session state
+      resolved_path = resolve_file_path(file_path, session_state)
+      file_path_obj = resolved_path.resolve()
       file_info = {
           "file_size": 0,
           "existed_before": False,
