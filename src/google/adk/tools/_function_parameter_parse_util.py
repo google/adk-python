@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 import inspect
 import logging
 import types as typing_types
@@ -27,7 +28,6 @@ from typing import Union
 
 from google.genai import types
 import pydantic
-from enum import Enum
 
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -147,15 +147,19 @@ def _parse_schema_from_parameter(
     _raise_if_schema_unsupported(variant, schema)
     return schema
   if isinstance(param.annotation, type) and issubclass(param.annotation, Enum):
-      schema.type = types.Type.STRING
-      schema.enum = [e.value for e in param.annotation]
-      if param.default is not inspect.Parameter.empty:
-          default_value = param.default.value if isinstance(param.default, Enum) else param.default
-          if default_value not in schema.enum:
-              raise ValueError(default_value_error_msg)
-          schema.default = default_value
-      _raise_if_schema_unsupported(variant, schema)
-      return schema
+    schema.type = types.Type.STRING
+    schema.enum = [e.value for e in param.annotation]
+    if param.default is not inspect.Parameter.empty:
+      default_value = (
+          param.default.value
+          if isinstance(param.default, Enum)
+          else param.default
+      )
+      if default_value not in schema.enum:
+        raise ValueError(default_value_error_msg)
+      schema.default = default_value
+    _raise_if_schema_unsupported(variant, schema)
+    return schema
   if (
       get_origin(param.annotation) is Union
       # only parse simple UnionType, example int | str | float | bool
