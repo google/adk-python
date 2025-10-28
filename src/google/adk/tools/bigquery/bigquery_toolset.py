@@ -83,6 +83,7 @@ class BigQueryToolset(BaseToolset):
             query_tool.get_execute_sql(self._tool_settings),
             query_tool.forecast,
             query_tool.analyze_contribution,
+            query_tool.detect_anomalies,
             data_insights_tool.ask_data_insights,
         ]
     ]
