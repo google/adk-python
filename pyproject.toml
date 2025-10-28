@@ -112,16 +112,17 @@ test = [
   # go/keep-sorted start
   "a2a-sdk>=0.3.0,<0.4.0;python_version>='3.10'",
   "anthropic>=0.43.0",                            # For anthropic model tests
+  "crewai[tools];python_version>='3.10'",         # For CrewaiTool tests
   "kubernetes>=29.0.0",                           # For GkeCodeExecutor
   "langchain-community>=0.3.17",
   "langgraph>=0.2.60, <0.4.8",                    # For LangGraphAgent
   "litellm>=1.75.5, <2.0.0",                      # For LiteLLM tests
   "llama-index-readers-file>=0.4.0",              # For retrieval tests
   "openai>=1.100.2",                              # For LiteLLM
-  "pytest>=8.3.4",
   "pytest-asyncio>=0.25.0",
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
+  "pytest>=8.3.4",
   "python-multipart>=0.0.9",
   "rouge-score>=0.1.2",
   "tabulate>=0.9.0",
