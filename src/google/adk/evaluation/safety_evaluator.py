@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from typing_extensions import override
 
 from ..dependencies.vertexai import vertexai
@@ -66,7 +68,7 @@ class SafetyEvaluatorV1(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
     return _VertexAiEvalFacade(
         threshold=self._eval_metric.threshold,
