@@ -44,7 +44,7 @@ def _transfer_call_part(agent_name: str) -> Part:
 
 
 def test_tool() -> str:
-  return ""
+  return "result"
 
 
 class _TestingAgent(BaseAgent):
@@ -126,6 +126,12 @@ class TestPauseInvocationWithSingleLlmAgent(BasePauseInvocationTest):
     """Tests that a single LlmAgent pauses on long running function call."""
     assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
         ("root_agent", Part.from_function_call(name="test_tool", args={})),
+        (
+            "root_agent",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
 
 
@@ -168,6 +174,12 @@ class TestPauseInvocationWithSequentialAgent(BasePauseInvocationTest):
             ),
         ),
         ("sub_agent_1", Part.from_function_call(name="test_tool", args={})),
+        (
+            "sub_agent_1",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
 
   @pytest.mark.asyncio
@@ -195,7 +207,7 @@ class TestPauseInvocationWithSequentialAgent(BasePauseInvocationTest):
         (
             "sub_agent_1",
             Part.from_function_response(
-                name="test_tool", response={"result": ""}
+                name="test_tool", response={"result": "result"}
             ),
         ),
         ("sub_agent_1", "model response after tool call"),
@@ -207,6 +219,12 @@ class TestPauseInvocationWithSequentialAgent(BasePauseInvocationTest):
             ),
         ),
         ("sub_agent_2", Part.from_function_call(name="test_tool", args={})),
+        (
+            "sub_agent_2",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
 
 
@@ -384,6 +402,12 @@ class TestPauseInvocationWithLoopAgent(BasePauseInvocationTest):
             ),
         ),
         ("sub_agent_2", Part.from_function_call(name="test_tool", args={})),
+        (
+            "sub_agent_2",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
 
 
@@ -435,6 +459,12 @@ class TestPauseInvocationWithLlmAgentTree(BasePauseInvocationTest):
         ("sub_llm_agent_1", _transfer_call_part("sub_llm_agent_2")),
         ("sub_llm_agent_1", _TRANSFER_RESPONSE_PART),
         ("sub_llm_agent_2", Part.from_function_call(name="test_tool", args={})),
+        (
+            "sub_llm_agent_2",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
 
 
@@ -489,4 +519,10 @@ class TestPauseInvocationWithWithTransferLoop(BasePauseInvocationTest):
         ("sub_llm_agent_2", _transfer_call_part("root_agent")),
         ("sub_llm_agent_2", _TRANSFER_RESPONSE_PART),
         ("root_agent", Part.from_function_call(name="test_tool", args={})),
+        (
+            "root_agent",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
