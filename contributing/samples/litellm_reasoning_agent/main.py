@@ -14,7 +14,8 @@
 
 import asyncio
 
-from agent import agent, inspector
+from agent import agent
+from agent import inspector
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types

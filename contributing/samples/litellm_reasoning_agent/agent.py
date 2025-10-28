@@ -18,6 +18,8 @@ from google.adk.agents import Agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.llm_response import LlmResponse
+
+
 def create_inspector():
   """Callback to capture finish_reason."""
   captured = {"finish_reason": None}
