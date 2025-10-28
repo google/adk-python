@@ -1,4 +1,4 @@
-# Finish Reason Test Agent
+# LiteLLM Reasoning Agent
 
 This sample contains a script to verify that the `finish_reason` from a LiteLLM model is correctly propagated to the `LlmResponse` object.
 
@@ -6,9 +6,9 @@ The script is configured to use the `openai/gpt-3.5-turbo` model through LiteLLM
 
 ## Running the test
 
-To run this sample, you will need to have an OpenAI API key set as an environment variable. Then, run the `agent.py` script directly.
+To run this sample, you will need to have an OpenAI API key set as an environment variable. Then, run the `main.py` script directly.
 
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
-python agent.py
+python main.py
 ```
