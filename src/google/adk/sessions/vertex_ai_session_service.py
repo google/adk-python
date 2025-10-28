@@ -35,6 +35,7 @@ import vertexai
 from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
+from ..utils.env_utils import is_env_enabled
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -364,7 +365,7 @@ def _is_vertex_express_mode(
 ) -> bool:
   """Check if Vertex AI and API key are both enabled replacing project and location, meaning the user is using the Vertex Express Mode."""
   return (
-      os.environ.get('GOOGLE_GENAI_USE_VERTEXAI', '0').lower() in ['true', '1']
+      is_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
       and os.environ.get('GOOGLE_API_KEY', None) is not None
       and project is None
       and location is None
