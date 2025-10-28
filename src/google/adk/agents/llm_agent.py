@@ -21,6 +21,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import ClassVar
 from typing import Dict
 from typing import Literal
@@ -104,6 +105,16 @@ AfterToolCallback: TypeAlias = Union[
     list[_SingleAfterToolCallback],
 ]
 
+_SingleOnToolErrorCallback: TypeAlias = Callable[
+    [BaseTool, dict[str, Any], ToolContext, Exception],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
+]
+
+OnToolErrorCallback: TypeAlias = Union[
+    _SingleOnToolErrorCallback,
+    list[_SingleOnToolErrorCallback],
+]
+
 InstructionProvider: TypeAlias = Callable[
     [ReadonlyContext], Union[str, Awaitable[str]]
 ]
@@ -117,16 +128,38 @@ async def _convert_tool_union_to_tools(
     model: Union[str, BaseLlm],
     multiple_tools: bool = False,
 ) -> list[BaseTool]:
-  from ..tools.google_search_tool import google_search
+  from ..tools.google_search_tool import GoogleSearchTool
+  from ..tools.vertex_ai_search_tool import VertexAiSearchTool
 
   # Wrap google_search tool with AgentTool if there are multiple tools because
   # the built-in tools cannot be used together with other tools.
   # TODO(b/448114567): Remove once the workaround is no longer needed.
-  if multiple_tools and tool_union is google_search:
+  if multiple_tools and isinstance(tool_union, GoogleSearchTool):
     from ..tools.google_search_agent_tool import create_google_search_agent
     from ..tools.google_search_agent_tool import GoogleSearchAgentTool
 
-    return [GoogleSearchAgentTool(create_google_search_agent(model))]
+    search_tool = cast(GoogleSearchTool, tool_union)
+    if search_tool.bypass_multi_tools_limit:
+      return [GoogleSearchAgentTool(create_google_search_agent(model))]
+
+  # Replace VertexAiSearchTool with DiscoveryEngineSearchTool if there are
+  # multiple tools because the built-in tools cannot be used together with
+  # other tools.
+  # TODO(b/448114567): Remove once the workaround is no longer needed.
+  if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
+    from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
+
+    vais_tool = cast(VertexAiSearchTool, tool_union)
+    if vais_tool.bypass_multi_tools_limit:
+      return [
+          DiscoveryEngineSearchTool(
+              data_store_id=vais_tool.data_store_id,
+              data_store_specs=vais_tool.data_store_specs,
+              search_engine_id=vais_tool.search_engine_id,
+              filter=vais_tool.filter,
+              max_results=vais_tool.max_results,
+          )
+      ]
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]
@@ -176,7 +209,7 @@ class LlmAgent(BaseAgent):
   or personality.
   """
 
-  static_instruction: Optional[types.Content] = None
+  static_instruction: Optional[types.ContentUnion] = None
   """Static instruction content sent literally as system instruction at the beginning.
 
   This field is for content that never changes and doesn't contain placeholders.
@@ -203,11 +236,20 @@ class LlmAgent(BaseAgent):
   For explicit caching control, configure context_cache_config at App level.
 
   **Content Support:**
-  Can contain text, files, binaries, or any combination as types.Content
-  supports multiple part types (text, inline_data, file_data, etc.).
+  Accepts types.ContentUnion which includes:
+  - str: Simple text instruction
+  - types.Content: Rich content object
+  - types.Part: Single part (text, inline_data, file_data, etc.)
+  - PIL.Image.Image: Image object
+  - types.File: File reference
+  - list[PartUnion]: List of parts
 
-  **Example:**
+  **Examples:**
   ```python
+  # Simple string instruction
+  static_instruction = "You are a helpful assistant."
+
+  # Rich content with files
   static_instruction = types.Content(
       role='user',
       parts=[
@@ -235,8 +277,9 @@ class LlmAgent(BaseAgent):
   disallow_transfer_to_parent: bool = False
   """Disallows LLM-controlled transferring to the parent agent.
 
-  NOTE: Setting this as True also prevents this agent to continue reply to the
-  end-user. This behavior prevents one-way transfer, in which end-user may be
+  NOTE: Setting this as True also prevents this agent from continuing to reply
+  to the end-user, and will transfer control back to the parent agent in the
+  next turn. This behavior prevents one-way transfer, in which end-user may be
   stuck with one agent that cannot transfer to other agents in the agent tree.
   """
   disallow_transfer_to_peers: bool = False
@@ -351,6 +394,21 @@ class LlmAgent(BaseAgent):
   Returns:
     When present, the returned dict will be used as tool result.
   """
+  on_tool_error_callback: Optional[OnToolErrorCallback] = None
+  """Callback or list of callbacks to be called when a tool call encounters an error.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
+
+  Args:
+    tool: The tool to be called.
+    args: The arguments to the tool.
+    tool_context: ToolContext,
+    error: The error from the tool call.
+
+  Returns:
+    When present, the returned dict will be used as tool result.
+  """
   # Callbacks - End
 
   @override
@@ -368,18 +426,33 @@ class LlmAgent(BaseAgent):
         async for event in agen:
           yield event
 
-      yield self._create_agent_state_event(ctx, end_of_agent=True)
+      ctx.set_agent_state(self.name, end_of_agent=True)
+      yield self._create_agent_state_event(ctx)
       return
 
+    should_pause = False
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
       async for event in agen:
         self.__maybe_save_output_to_state(event)
         yield event
         if ctx.should_pause_invocation(event):
-          return
+          # Do not pause immediately, wait until the long running tool call is
+          # executed.
+          should_pause = True
+    if should_pause:
+      return
 
     if ctx.is_resumable:
-      yield self._create_agent_state_event(ctx, end_of_agent=True)
+      events = ctx._get_events(current_invocation=True, current_branch=True)
+      if events and (
+          ctx.should_pause_invocation(events[-1])
+          or ctx.should_pause_invocation(events[-2])
+      ):
+        return
+      # Only yield an end state if the last event is no longer a long running
+      # tool call.
+      ctx.set_agent_state(self.name, end_of_agent=True)
+      yield self._create_agent_state_event(ctx)
 
   @override
   async def _run_live_impl(
@@ -541,6 +614,20 @@ class LlmAgent(BaseAgent):
     if isinstance(self.after_tool_callback, list):
       return self.after_tool_callback
     return [self.after_tool_callback]
+
+  @property
+  def canonical_on_tool_error_callbacks(
+      self,
+  ) -> list[OnToolErrorCallback]:
+    """The resolved self.on_tool_error_callback field as a list of OnToolErrorCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.on_tool_error_callback:
+      return []
+    if isinstance(self.on_tool_error_callback, list):
+      return self.on_tool_error_callback
+    return [self.on_tool_error_callback]
 
   @property
   def _llm_flow(self) -> BaseLlmFlow:

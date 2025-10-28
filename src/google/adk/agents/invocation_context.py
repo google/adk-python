@@ -217,10 +217,56 @@ class InvocationContext(BaseModel):
         and self.resumability_config.is_resumable
     )
 
-  def reset_agent_state(self, agent_name: str) -> None:
-    """Resets the state of an agent, allowing it to be re-run."""
-    self.agent_states.pop(agent_name, None)
-    self.end_of_agents.pop(agent_name, None)
+  def set_agent_state(
+      self,
+      agent_name: str,
+      *,
+      agent_state: Optional[BaseAgentState] = None,
+      end_of_agent: bool = False,
+  ) -> None:
+    """Sets the state of an agent in this invocation.
+
+    * If end_of_agent is True, will set the end_of_agent flag to True and
+      clear the agent_state.
+    * Otherwise, if agent_state is not None, will set the agent_state and
+      reset the end_of_agent flag to False.
+    * Otherwise, will clear the agent_state and end_of_agent flag, to allow the
+      agent to re-run.
+
+    Args:
+      agent_name: The name of the agent.
+      agent_state: The state of the agent. Will be ignored if end_of_agent is
+        True.
+      end_of_agent: Whether the agent has finished running.
+    """
+    if end_of_agent:
+      self.end_of_agents[agent_name] = True
+      self.agent_states.pop(agent_name, None)
+    elif agent_state is not None:
+      self.agent_states[agent_name] = agent_state.model_dump(mode="json")
+      self.end_of_agents[agent_name] = False
+    else:
+      self.end_of_agents.pop(agent_name, None)
+      self.agent_states.pop(agent_name, None)
+
+  def reset_sub_agent_states(
+      self,
+      agent_name: str,
+  ) -> None:
+    """Resets the state of all sub-agents of the given agent in this invocation.
+
+    Args:
+      agent_name: The name of the agent whose sub-agent states need to be reset.
+    """
+    agent = self.agent.find_agent(agent_name)
+    if not agent:
+      return
+
+    for sub_agent in agent.sub_agents:
+      # Reset the sub-agent's state in the context to ensure that each
+      # sub-agent starts fresh.
+      self.set_agent_state(sub_agent.name)
+      self.reset_sub_agent_states(sub_agent.name)
 
   def populate_invocation_agent_states(self) -> None:
     """Populates agent states for the current invocation if it is resumable.

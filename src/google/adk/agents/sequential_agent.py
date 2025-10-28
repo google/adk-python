@@ -70,11 +70,8 @@ class SequentialAgent(BaseAgent):
         # already been logged, so we should avoid yielding it again.
         if ctx.is_resumable:
           agent_state = SequentialAgentState(current_sub_agent=sub_agent.name)
-          yield self._create_agent_state_event(ctx, agent_state=agent_state)
-
-        # Reset the sub-agent's state in the context to ensure that each
-        # sub-agent starts fresh.
-        ctx.reset_agent_state(sub_agent.name)
+          ctx.set_agent_state(self.name, agent_state=agent_state)
+          yield self._create_agent_state_event(ctx)
 
       async with Aclosing(sub_agent.run_async(ctx)) as agen:
         async for event in agen:
@@ -90,7 +87,8 @@ class SequentialAgent(BaseAgent):
       resuming_sub_agent = False
 
     if ctx.is_resumable:
-      yield self._create_agent_state_event(ctx, end_of_agent=True)
+      ctx.set_agent_state(self.name, end_of_agent=True)
+      yield self._create_agent_state_event(ctx)
 
   def _get_start_index(
       self,

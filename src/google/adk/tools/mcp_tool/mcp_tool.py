@@ -15,14 +15,21 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import logging
+import sys
+from typing import Any
+from typing import Callable
+from typing import Dict
 from typing import Optional
+from typing import Union
 import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
 from typing_extensions import override
 
+from ...agents.readonly_context import ReadonlyContext
 from .._gemini_schema_util import _to_gemini_schema
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_closed_resource
@@ -32,8 +39,6 @@ from .mcp_session_manager import retry_on_closed_resource
 try:
   from mcp.types import Tool as McpBaseTool
 except ImportError as e:
-  import sys
-
   if sys.version_info < (3, 10):
     raise ImportError(
         "MCP Tool requires Python 3.10 or above. Please upgrade your Python"
@@ -70,8 +75,12 @@ class McpTool(BaseAuthenticatedTool):
       mcp_session_manager: MCPSessionManager,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
+      require_confirmation: Union[bool, Callable[..., bool]] = False,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
   ):
-    """Initializes an MCPTool.
+    """Initializes an McpTool.
 
     This tool wraps an MCP Tool interface and uses a session manager to
     communicate with the MCP server.
@@ -81,6 +90,10 @@ class McpTool(BaseAuthenticatedTool):
         mcp_session_manager: The MCP session manager to use for communication.
         auth_scheme: The authentication scheme to use.
         auth_credential: The authentication credential to use.
+        require_confirmation: Whether this tool requires confirmation. A boolean
+          or a callable that takes the function's arguments and returns a
+          boolean. If the callable returns True, the tool will require
+          confirmation from the user.
 
     Raises:
         ValueError: If mcp_tool or mcp_session_manager is None.
@@ -96,6 +109,8 @@ class McpTool(BaseAuthenticatedTool):
     )
     self._mcp_tool = mcp_tool
     self._mcp_session_manager = mcp_session_manager
+    self._require_confirmation = require_confirmation
+    self._header_provider = header_provider
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -116,11 +131,62 @@ class McpTool(BaseAuthenticatedTool):
     """Returns the raw MCP tool."""
     return self._mcp_tool
 
+  async def _invoke_callable(
+      self, target: Callable[..., Any], args_to_call: dict[str, Any]
+  ) -> Any:
+    """Invokes a callable, handling both sync and async cases."""
+
+    # Functions are callable objects, but not all callable objects are functions
+    # checking coroutine function is not enough. We also need to check whether
+    # Callable's __call__ function is a coroutine funciton
+    is_async = inspect.iscoroutinefunction(target) or (
+        hasattr(target, "__call__")
+        and inspect.iscoroutinefunction(target.__call__)
+    )
+    if is_async:
+      return await target(**args_to_call)
+    else:
+      return target(**args_to_call)
+
+  @override
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    if isinstance(self._require_confirmation, Callable):
+      require_confirmation = await self._invoke_callable(
+          self._require_confirmation, args
+      )
+    else:
+      require_confirmation = bool(self._require_confirmation)
+
+    if require_confirmation:
+      if not tool_context.tool_confirmation:
+        args_to_show = args.copy()
+        if "tool_context" in args_to_show:
+          args_to_show.pop("tool_context")
+
+        tool_context.request_confirmation(
+            hint=(
+                f"Please approve or reject the tool call {self.name}() by"
+                " responding with a FunctionResponse with an expected"
+                " ToolConfirmation payload."
+            ),
+        )
+        return {
+            "error": (
+                "This tool call requires confirmation, please approve or"
+                " reject."
+            )
+        }
+      elif not tool_context.tool_confirmation.confirmed:
+        return {"error": "This tool call is rejected."}
+    return await super().run_async(args=args, tool_context=tool_context)
+
   @retry_on_closed_resource
   @override
   async def _run_async_impl(
       self, *, args, tool_context: ToolContext, credential: AuthCredential
-  ):
+  ) -> Dict[str, Any]:
     """Runs the tool asynchronously.
 
     Args:
@@ -131,13 +197,27 @@ class McpTool(BaseAuthenticatedTool):
         Any: The response from the tool.
     """
     # Extract headers from credential for session pooling
-    headers = await self._get_headers(tool_context, credential)
+    auth_headers = await self._get_headers(tool_context, credential)
+    dynamic_headers = None
+    if self._header_provider:
+      dynamic_headers = self._header_provider(
+          ReadonlyContext(tool_context._invocation_context)
+      )
+
+    headers: Dict[str, str] = {}
+    if auth_headers:
+      headers.update(auth_headers)
+    if dynamic_headers:
+      headers.update(dynamic_headers)
+    final_headers = headers if headers else None
 
     # Get the session from the session manager
-    session = await self._mcp_session_manager.create_session(headers=headers)
+    session = await self._mcp_session_manager.create_session(
+        headers=final_headers
+    )
 
     response = await session.call_tool(self._mcp_tool.name, arguments=args)
-    return response
+    return response.model_dump(exclude_none=True, mode="json")
 
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential
@@ -202,7 +282,7 @@ class McpTool(BaseAuthenticatedTool):
             != APIKeyIn.header
         ):
           error_msg = (
-              "MCPTool only supports header-based API key authentication."
+              "McpTool only supports header-based API key authentication."
               " Configured location:"
               f" {self._credentials_manager._auth_config.auth_scheme.in_}"
           )

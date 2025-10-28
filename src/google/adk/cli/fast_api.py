@@ -33,18 +33,16 @@ from opentelemetry.sdk.trace import TracerProvider
 from starlette.types import Lifespan
 from watchdog.observers import Observer
 
-from ..artifacts.gcs_artifact_service import GcsArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..memory.in_memory_memory_service import InMemoryMemoryService
-from ..memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
 from ..runners import Runner
 from ..sessions.in_memory_session_service import InMemorySessionService
-from ..sessions.vertex_ai_session_service import VertexAiSessionService
 from ..utils.feature_decorator import working_in_progress
 from .adk_web_server import AdkWebServer
+from .service_registry import get_service_registry
 from .utils import envs
 from .utils import evals
 from .utils.agent_change_handler import AgentChangeEventHandler
@@ -85,54 +83,14 @@ def get_fast_api_app(
     eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
     eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
-  def _parse_agent_engine_resource_name(agent_engine_id_or_resource_name):
-    if not agent_engine_id_or_resource_name:
-      raise click.ClickException(
-          "Agent engine resource name or resource id can not be empty."
-      )
-
-    # "projects/my-project/locations/us-central1/reasoningEngines/1234567890",
-    if "/" in agent_engine_id_or_resource_name:
-      # Validate resource name.
-      if len(agent_engine_id_or_resource_name.split("/")) != 6:
-        raise click.ClickException(
-            "Agent engine resource name is mal-formatted. It should be of"
-            " format :"
-            " projects/{project_id}/locations/{location}/reasoningEngines/{resource_id}"
-        )
-      project = agent_engine_id_or_resource_name.split("/")[1]
-      location = agent_engine_id_or_resource_name.split("/")[3]
-      agent_engine_id = agent_engine_id_or_resource_name.split("/")[-1]
-    else:
-      envs.load_dotenv_for_agent("", agents_dir)
-      project = os.environ["GOOGLE_CLOUD_PROJECT"]
-      location = os.environ["GOOGLE_CLOUD_LOCATION"]
-      agent_engine_id = agent_engine_id_or_resource_name
-    return project, location, agent_engine_id
+  service_registry = get_service_registry()
 
   # Build the Memory service
   if memory_service_uri:
-    if memory_service_uri.startswith("rag://"):
-      from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
-
-      rag_corpus = memory_service_uri.split("://")[1]
-      if not rag_corpus:
-        raise click.ClickException("Rag corpus can not be empty.")
-      envs.load_dotenv_for_agent("", agents_dir)
-      memory_service = VertexAiRagMemoryService(
-          rag_corpus=f'projects/{os.environ["GOOGLE_CLOUD_PROJECT"]}/locations/{os.environ["GOOGLE_CLOUD_LOCATION"]}/ragCorpora/{rag_corpus}'
-      )
-    elif memory_service_uri.startswith("agentengine://"):
-      agent_engine_id_or_resource_name = memory_service_uri.split("://")[1]
-      project, location, agent_engine_id = _parse_agent_engine_resource_name(
-          agent_engine_id_or_resource_name
-      )
-      memory_service = VertexAiMemoryBankService(
-          project=project,
-          location=location,
-          agent_engine_id=agent_engine_id,
-      )
-    else:
+    memory_service = service_registry.create_memory_service(
+        memory_service_uri, agents_dir=agents_dir
+    )
+    if not memory_service:
       raise click.ClickException(
           "Unsupported memory service URI: %s" % memory_service_uri
       )
@@ -141,34 +99,27 @@ def get_fast_api_app(
 
   # Build the Session service
   if session_service_uri:
-    if session_service_uri.startswith("agentengine://"):
-      agent_engine_id_or_resource_name = session_service_uri.split("://")[1]
-      project, location, agent_engine_id = _parse_agent_engine_resource_name(
-          agent_engine_id_or_resource_name
-      )
-      session_service = VertexAiSessionService(
-          project=project,
-          location=location,
-          agent_engine_id=agent_engine_id,
-      )
-    else:
+    session_kwargs = session_db_kwargs or {}
+    session_service = service_registry.create_session_service(
+        session_service_uri, agents_dir=agents_dir, **session_kwargs
+    )
+    if not session_service:
+      # Fallback to DatabaseSessionService if the service registry doesn't
+      # support the session service URI scheme.
       from ..sessions.database_session_service import DatabaseSessionService
 
-      # Database session additional settings
-      if session_db_kwargs is None:
-        session_db_kwargs = {}
       session_service = DatabaseSessionService(
-          db_url=session_service_uri, **session_db_kwargs
+          db_url=session_service_uri, **session_kwargs
       )
   else:
     session_service = InMemorySessionService()
 
   # Build the Artifact service
   if artifact_service_uri:
-    if artifact_service_uri.startswith("gs://"):
-      gcs_bucket = artifact_service_uri.split("://")[1]
-      artifact_service = GcsArtifactService(bucket_name=gcs_bucket)
-    else:
+    artifact_service = service_registry.create_artifact_service(
+        artifact_service_uri, agents_dir=agents_dir
+    )
+    if not artifact_service:
       raise click.ClickException(
           "Unsupported artifact service URI: %s" % artifact_service_uri
       )

@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+from pathlib import Path
 import queue
 from typing import Any
 from typing import AsyncGenerator
@@ -25,6 +27,8 @@ from typing import List
 from typing import Optional
 import warnings
 
+from google.adk.apps.compaction import _run_compaction_for_sliding_window
+from google.adk.artifacts import artifact_util
 from google.genai import types
 
 from .agents.active_streaming_tool import ActiveStreamingTool
@@ -134,6 +138,7 @@ class Runner:
         ValueError: If `app` is provided along with `app_name` or `plugins`, or
           if `app` is not provided but either `app_name` or `agent` is missing.
     """
+    self.app = app
     (
         self.app_name,
         self.agent,
@@ -146,6 +151,12 @@ class Runner:
     self.memory_service = memory_service
     self.credential_service = credential_service
     self.plugin_manager = PluginManager(plugins=plugins)
+    (
+        self._agent_origin_app_name,
+        self._agent_origin_dir,
+    ) = self._infer_agent_origin(self.agent)
+    self._app_name_alignment_hint: Optional[str] = None
+    self._enforce_app_name_alignment()
 
   def _validate_runner_params(
       self,
@@ -207,6 +218,60 @@ class Runner:
           DeprecationWarning,
       )
     return app_name, agent, context_cache_config, resumability_config, plugins
+
+  def _infer_agent_origin(
+      self, agent: BaseAgent
+  ) -> tuple[Optional[str], Optional[Path]]:
+    module = inspect.getmodule(agent.__class__)
+    if not module:
+      return None, None
+    module_file = getattr(module, '__file__', None)
+    if not module_file:
+      return None, None
+    module_path = Path(module_file).resolve()
+    project_root = Path.cwd()
+    try:
+      relative_path = module_path.relative_to(project_root)
+    except ValueError:
+      return None, module_path.parent
+    origin_dir = module_path.parent
+    if 'agents' not in relative_path.parts:
+      return None, origin_dir
+    origin_name = origin_dir.name
+    if origin_name.startswith('.'):
+      return None, origin_dir
+    return origin_name, origin_dir
+
+  def _enforce_app_name_alignment(self) -> None:
+    origin_name = self._agent_origin_app_name
+    origin_dir = self._agent_origin_dir
+    if not origin_name or origin_name.startswith('__'):
+      self._app_name_alignment_hint = None
+      return
+    if origin_name == self.app_name:
+      self._app_name_alignment_hint = None
+      return
+    origin_location = str(origin_dir) if origin_dir else origin_name
+    mismatch_details = (
+        'The runner is configured with app name '
+        f'"{self.app_name}", but the root agent was loaded from '
+        f'"{origin_location}", which implies app name "{origin_name}".'
+    )
+    resolution = (
+        'Ensure the runner app_name matches that directory or pass app_name '
+        'explicitly when constructing the runner.'
+    )
+    self._app_name_alignment_hint = f'{mismatch_details} {resolution}'
+    logger.warning('App name mismatch detected. %s', mismatch_details)
+
+  def _format_session_not_found_message(self, session_id: str) -> str:
+    message = f'Session not found: {session_id}'
+    if not self._app_name_alignment_hint:
+      return message
+    return (
+        f'{message}. {self._app_name_alignment_hint} '
+        'The mismatch prevents the runner from locating the session.'
+    )
 
   def run(
       self,
@@ -310,7 +375,8 @@ class Runner:
             app_name=self.app_name, user_id=user_id, session_id=session_id
         )
         if not session:
-          raise ValueError(f'Session not found: {session_id}')
+          message = self._format_session_not_found_message(session_id)
+          raise ValueError(message)
         if not invocation_id and not new_message:
           raise ValueError('Both invocation_id and new_message are None.')
 
@@ -330,12 +396,11 @@ class Runner:
               run_config=run_config,
               state_delta=state_delta,
           )
-          if invocation_context.end_of_agents.get(self.agent.name):
-            # Directly return if the root agent has already ended.
-            # TODO: Handle the case where the invocation-to-resume started from
-            # a sub_agent:
-            # invocation1: root_agent -> sub_agent1
-            # invocation2: sub_agent1 [paused][resume]
+          if invocation_context.end_of_agents.get(
+              invocation_context.agent.name
+          ):
+            # Directly return if the current agent in invocation context is
+            # already final.
             return
         else:
           invocation_context = await self._setup_context_for_new_invocation(
@@ -360,10 +425,181 @@ class Runner:
         ) as agen:
           async for event in agen:
             yield event
+        # Run compaction after all events are yielded from the agent.
+        # (We don't compact in the middle of an invocation, we only compact at the end of an invocation.)
+        if self.app and self.app.events_compaction_config:
+          logger.info('Running event compactor.')
+          # Run compaction in a separate task to avoid blocking the main thread.
+          # So the users can still finish the event loop from the agent while the
+          # compaction is running.
+          asyncio.create_task(
+              _run_compaction_for_sliding_window(
+                  self.app, session, self.session_service
+              )
+          )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
         yield event
+
+  async def rewind_async(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      rewind_before_invocation_id: str,
+  ) -> None:
+    """Rewinds the session to before the specified invocation."""
+    session = await self.session_service.get_session(
+        app_name=self.app_name, user_id=user_id, session_id=session_id
+    )
+    if not session:
+      raise ValueError(f'Session not found: {session_id}')
+
+    rewind_event_index = -1
+    for i, event in enumerate(session.events):
+      if event.invocation_id == rewind_before_invocation_id:
+        rewind_event_index = i
+        break
+
+    if rewind_event_index == -1:
+      raise ValueError(
+          f'Invocation ID not found: {rewind_before_invocation_id}'
+      )
+
+    # Compute state delta to reverse changes
+    state_delta = await self._compute_state_delta_for_rewind(
+        session, rewind_event_index
+    )
+
+    # Compute artifact delta to reverse changes
+    artifact_delta = await self._compute_artifact_delta_for_rewind(
+        session, rewind_event_index
+    )
+
+    # Create rewind event
+    rewind_event = Event(
+        invocation_id=new_invocation_context_id(),
+        author='user',
+        actions=EventActions(
+            rewind_before_invocation_id=rewind_before_invocation_id,
+            state_delta=state_delta,
+            artifact_delta=artifact_delta,
+        ),
+    )
+
+    logger.info('Rewinding session to invocation: %s', rewind_event)
+
+    await self.session_service.append_event(session=session, event=rewind_event)
+
+  async def _compute_state_delta_for_rewind(
+      self, session: Session, rewind_event_index: int
+  ) -> dict[str, Any]:
+    """Computes the state delta to reverse changes."""
+    state_at_rewind_point: dict[str, Any] = {}
+    for i in range(rewind_event_index):
+      if session.events[i].actions.state_delta:
+        for k, v in session.events[i].actions.state_delta.items():
+          if k.startswith('app:') or k.startswith('user:'):
+            continue
+          if v is None:
+            state_at_rewind_point.pop(k, None)
+          else:
+            state_at_rewind_point[k] = v
+
+    current_state = session.state
+    rewind_state_delta = {}
+
+    # 1. Add/update keys in rewind_state_delta to match state_at_rewind_point.
+    for key, value_at_rewind in state_at_rewind_point.items():
+      if key not in current_state or current_state[key] != value_at_rewind:
+        rewind_state_delta[key] = value_at_rewind
+
+    # 2. Set keys to None in rewind_state_delta if they are in current_state
+    #    but not in state_at_rewind_point. These keys were added after the
+    #    rewind point and need to be removed.
+    for key in current_state:
+      if key.startswith('app:') or key.startswith('user:'):
+        continue
+      if key not in state_at_rewind_point:
+        rewind_state_delta[key] = None
+
+    return rewind_state_delta
+
+  async def _compute_artifact_delta_for_rewind(
+      self, session: Session, rewind_event_index: int
+  ) -> dict[str, int]:
+    """Computes the artifact delta to reverse changes."""
+    if not self.artifact_service:
+      return {}
+
+    versions_at_rewind_point: dict[str, int] = {}
+    for i in range(rewind_event_index):
+      event = session.events[i]
+      if event.actions.artifact_delta:
+        versions_at_rewind_point.update(event.actions.artifact_delta)
+
+    current_versions: dict[str, int] = {}
+    for event in session.events:
+      if event.actions.artifact_delta:
+        current_versions.update(event.actions.artifact_delta)
+
+    rewind_artifact_delta = {}
+    for filename, vn in current_versions.items():
+      if filename.startswith('user:'):
+        # User artifacts are not restored on rewind.
+        continue
+      vt = versions_at_rewind_point.get(filename)
+      if vt == vn:
+        continue
+
+      rewind_artifact_delta[filename] = vn + 1
+      if vt is None:
+        # Artifact did not exist at rewind point. Mark it as inaccessible.
+        artifact = types.Part(
+            inline_data=types.Blob(
+                mime_type='application/octet-stream', data=b''
+            )
+        )
+      else:
+        # Artifact version changed after rewind point. Restore to version at
+        # rewind point.
+        artifact_uri = artifact_util.get_artifact_uri(
+            app_name=self.app_name,
+            user_id=session.user_id,
+            session_id=session.id,
+            filename=filename,
+            version=vt,
+        )
+        artifact = types.Part(file_data=types.FileData(file_uri=artifact_uri))
+      await self.artifact_service.save_artifact(
+          app_name=self.app_name,
+          user_id=session.user_id,
+          session_id=session.id,
+          filename=filename,
+          artifact=artifact,
+      )
+
+    return rewind_artifact_delta
+
+  async def _run_compaction_default(self, session: Session):
+    """Runs compaction for other types of compactors.
+
+    This method calls `maybe_compact_events` on the compactor with all
+    events in the session.
+
+    Args:
+      session: The session containing events to compact.
+    """
+    compaction_event = (
+        await self.app.events_compaction_config.compactor.maybe_compact_events(
+            events=session.events
+        )
+    )
+    if compaction_event:
+      await self.session_service.append_event(
+          session=session, event=compaction_event
+      )
 
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""
@@ -534,6 +770,10 @@ class Runner:
         Either `session` or both `user_id` and `session_id` must be provided.
     """
     run_config = run_config or RunConfig()
+    # Some native audio models requires the modality to be set. So we set it to
+    # AUDIO by default.
+    if run_config.response_modalities is None:
+      run_config.response_modalities = ['AUDIO']
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
@@ -783,6 +1023,13 @@ class Runner:
       )
     # Step 4: Populate agent states for the current invocation.
     invocation_context.populate_invocation_agent_states()
+    # Step 5: Set agent to run for the invocation.
+    #
+    # If the root agent is not found in end_of_agents, it means the invocation
+    # started from a sub-agent and paused on a sub-agent.
+    # We should find the appropriate agent to run to continue the invocation.
+    if self.agent.name not in invocation_context.end_of_agents:
+      invocation_context.agent = self._find_agent_to_run(session, self.agent)
     return invocation_context
 
   def _find_user_message_for_invocation(
@@ -991,7 +1238,7 @@ class InMemoryRunner(Runner):
       self,
       agent: Optional[BaseAgent] = None,
       *,
-      app_name: Optional[str] = 'InMemoryRunner',
+      app_name: Optional[str] = None,
       plugins: Optional[list[BasePlugin]] = None,
       app: Optional[App] = None,
   ):
@@ -1002,6 +1249,8 @@ class InMemoryRunner(Runner):
         app_name: The application name of the runner. Defaults to
           'InMemoryRunner'.
     """
+    if app is None and app_name is None:
+      app_name = 'InMemoryRunner'
     super().__init__(
         app_name=app_name,
         agent=agent,

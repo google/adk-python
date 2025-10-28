@@ -15,18 +15,19 @@
 """Unit tests for canonical_xxx fields in LlmAgent."""
 
 from typing import Any
-from typing import cast
 from typing import Optional
+from unittest import mock
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.google_search_tool import google_search
+from google.adk.tools.google_search_tool import GoogleSearchTool
+from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -298,7 +299,7 @@ class TestCanonicalTools:
         model='gemini-pro',
         tools=[
             self._my_tool,
-            google_search,
+            GoogleSearchTool(bypass_multi_tools_limit=True),
         ],
     )
     ctx = await _create_readonly_context(agent)
@@ -306,8 +307,28 @@ class TestCanonicalTools:
 
     assert len(tools) == 2
     assert tools[0].name == '_my_tool'
+    assert tools[0].__class__.__name__ == 'FunctionTool'
     assert tools[1].name == 'google_search_agent'
     assert tools[1].__class__.__name__ == 'GoogleSearchAgentTool'
+
+  async def test_handle_google_search_with_other_tools_no_bypass(self):
+    """Test that google_search is not wrapped into an agent."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            GoogleSearchTool(bypass_multi_tools_limit=False),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[0].name == '_my_tool'
+    assert tools[0].__class__.__name__ == 'FunctionTool'
+    assert tools[1].name == 'google_search'
+    assert tools[1].__class__.__name__ == 'GoogleSearchTool'
 
   async def test_handle_google_search_only(self):
     """Test that google_search is not wrapped into an agent."""
@@ -325,8 +346,8 @@ class TestCanonicalTools:
     assert tools[0].name == 'google_search'
     assert tools[0].__class__.__name__ == 'GoogleSearchTool'
 
-  async def test_no_google_search(self):
-    """Test other tools are not affected."""
+  async def test_function_tool_only(self):
+    """Test that function tool is not affected."""
     agent = LlmAgent(
         name='test_agent',
         model='gemini-pro',
@@ -340,3 +361,67 @@ class TestCanonicalTools:
     assert len(tools) == 1
     assert tools[0].name == '_my_tool'
     assert tools[0].__class__.__name__ == 'FunctionTool'
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_handle_vais_with_other_tools(self):
+    """Test that VertexAiSearchTool is replaced with Discovery Engine Search."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[0].name == '_my_tool'
+    assert tools[0].__class__.__name__ == 'FunctionTool'
+    assert tools[1].name == 'discovery_engine_search'
+    assert tools[1].__class__.__name__ == 'DiscoveryEngineSearchTool'
+
+  async def test_handle_vais_with_other_tools_no_bypass(self):
+    """Test that VertexAiSearchTool is not replaced."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=False,
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[0].name == '_my_tool'
+    assert tools[0].__class__.__name__ == 'FunctionTool'
+    assert tools[1].name == 'vertex_ai_search'
+    assert tools[1].__class__.__name__ == 'VertexAiSearchTool'
+
+  async def test_handle_vais_only(self):
+    """Test that VertexAiSearchTool is not wrapped into an agent."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            VertexAiSearchTool(data_store_id='test_data_store_id'),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'vertex_ai_search'
+    assert tools[0].__class__.__name__ == 'VertexAiSearchTool'

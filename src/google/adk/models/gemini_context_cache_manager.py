@@ -69,11 +69,8 @@ class GeminiContextCacheManager:
     # Check if we have existing cache metadata and if it's valid
     if llm_request.cache_metadata:
       logger.debug(
-          "Found existing cache metadata: cache_name=%s, invocations_used=%d,"
-          " cached_contents_count=%d",
-          llm_request.cache_metadata.cache_name,
-          llm_request.cache_metadata.invocations_used,
-          llm_request.cache_metadata.cached_contents_count,
+          "Found existing cache metadata: %s",
+          llm_request.cache_metadata,
       )
       if await self._is_cache_valid(llm_request):
         # Valid cache found - use it
@@ -82,46 +79,69 @@ class GeminiContextCacheManager:
             llm_request.cache_metadata.cache_name,
         )
         cache_name = llm_request.cache_metadata.cache_name
-        cache_contents_count = llm_request.cache_metadata.cached_contents_count
+        cache_contents_count = llm_request.cache_metadata.contents_count
         self._apply_cache_to_request(
             llm_request, cache_name, cache_contents_count
         )
         return llm_request.cache_metadata.model_copy()
       else:
-        # Invalid cache - clean it up
-        logger.debug(
-            "Cache is invalid, cleaning up: %s",
-            llm_request.cache_metadata.cache_name,
+        # Invalid cache - clean it up and check if we should create new one
+        old_cache_metadata = llm_request.cache_metadata
+
+        # Only cleanup if there's an active cache
+        if old_cache_metadata.cache_name is not None:
+          logger.debug(
+              "Cache is invalid, cleaning up: %s",
+              old_cache_metadata.cache_name,
+          )
+          await self.cleanup_cache(old_cache_metadata.cache_name)
+
+        # Calculate current fingerprint using contents count from old metadata
+        cache_contents_count = old_cache_metadata.contents_count
+        current_fingerprint = self._generate_cache_fingerprint(
+            llm_request, cache_contents_count
         )
-        await self.cleanup_cache(llm_request.cache_metadata.cache_name)
-        llm_request.cache_metadata = None
 
-    # Find contents to cache for new cache creation
-    cache_contents_count = self._find_count_of_contents_to_cache(
-        llm_request.contents
-    )
+        # If fingerprints match, create new cache (expired but same content)
+        if current_fingerprint == old_cache_metadata.fingerprint:
+          logger.debug(
+              "Fingerprints match after invalidation, creating new cache"
+          )
+          cache_metadata = await self._create_new_cache_with_contents(
+              llm_request, cache_contents_count
+          )
+          if cache_metadata:
+            self._apply_cache_to_request(
+                llm_request, cache_metadata.cache_name, cache_contents_count
+            )
+            return cache_metadata
+
+        # Fingerprints don't match - recalculate with total contents
+        logger.debug(
+            "Fingerprints don't match, returning fingerprint-only metadata"
+        )
+        total_contents_count = len(llm_request.contents)
+        fingerprint_for_all = self._generate_cache_fingerprint(
+            llm_request, total_contents_count
+        )
+        return CacheMetadata(
+            fingerprint=fingerprint_for_all,
+            contents_count=total_contents_count,
+        )
+
+    # No existing cache metadata - return fingerprint-only metadata
+    # We don't create cache without previous fingerprint to match
     logger.debug(
-        "Determined to cache %d contents from %d total contents",
-        cache_contents_count,
-        len(llm_request.contents),
+        "No existing cache metadata, creating fingerprint-only metadata"
     )
-
-    # Create new cache with the determined contents
-    cache_metadata = await self._create_new_cache_with_contents(
-        llm_request, cache_contents_count
+    total_contents_count = len(llm_request.contents)
+    fingerprint = self._generate_cache_fingerprint(
+        llm_request, total_contents_count
     )
-    if not cache_metadata:
-      return None
-
-    # Set up request to use the new cache
-    self._apply_cache_to_request(
-        llm_request, cache_metadata.cache_name, cache_contents_count
+    return CacheMetadata(
+        fingerprint=fingerprint,
+        contents_count=total_contents_count,
     )
-    logger.debug(
-        "Successfully applied cache to request: %s", cache_metadata.cache_name
-    )
-
-    return cache_metadata
 
   def _find_count_of_contents_to_cache(
       self, contents: list[types.Content]
@@ -158,7 +178,8 @@ class GeminiContextCacheManager:
   async def _is_cache_valid(self, llm_request: LlmRequest) -> bool:
     """Check if the cache from request metadata is still valid.
 
-    Validates expiry, cache intervals, and fingerprint compatibility.
+    Validates that it's an active cache (not fingerprint-only), checks expiry,
+    cache intervals, and fingerprint compatibility.
 
     Args:
         llm_request: Request containing cache metadata to validate
@@ -168,6 +189,10 @@ class GeminiContextCacheManager:
     """
     cache_metadata = llm_request.cache_metadata
     if not cache_metadata:
+      return False
+
+    # Fingerprint-only metadata is not a valid active cache
+    if cache_metadata.cache_name is None:
       return False
 
     # Check if cache has expired
@@ -190,7 +215,7 @@ class GeminiContextCacheManager:
 
     # Check if fingerprint matches using cached contents count
     current_fingerprint = self._generate_cache_fingerprint(
-        llm_request, cache_metadata.cached_contents_count
+        llm_request, cache_metadata.contents_count
     )
     if current_fingerprint != cache_metadata.fingerprint:
       logger.debug("Cache content fingerprint mismatch")
@@ -328,57 +353,66 @@ class GeminiContextCacheManager:
     Returns:
         Cache metadata with precise creation timestamp
     """
-    # Prepare cache contents (first N contents + system instruction + tools)
-    cache_contents = llm_request.contents[:cache_contents_count]
+    from ..telemetry.tracing import tracer
 
-    cache_config = types.CreateCachedContentConfig(
-        contents=cache_contents,
-        ttl=llm_request.cache_config.ttl_string,
-        display_name=(
-            f"adk-cache-{int(time.time())}-{cache_contents_count}contents"
-        ),
-    )
+    with tracer.start_as_current_span("create_cache") as span:
+      # Prepare cache contents (first N contents + system instruction + tools)
+      cache_contents = llm_request.contents[:cache_contents_count]
 
-    # Add system instruction if present
-    if llm_request.config and llm_request.config.system_instruction:
-      cache_config.system_instruction = llm_request.config.system_instruction
-      logger.debug(
-          "Added system instruction to cache config (length=%d)",
-          len(llm_request.config.system_instruction),
+      cache_config = types.CreateCachedContentConfig(
+          contents=cache_contents,
+          ttl=llm_request.cache_config.ttl_string,
+          display_name=(
+              f"adk-cache-{int(time.time())}-{cache_contents_count}contents"
+          ),
       )
 
-    # Add tools if present
-    if llm_request.config and llm_request.config.tools:
-      cache_config.tools = llm_request.config.tools
+      # Add system instruction if present
+      if llm_request.config and llm_request.config.system_instruction:
+        cache_config.system_instruction = llm_request.config.system_instruction
+        logger.debug(
+            "Added system instruction to cache config (length=%d)",
+            len(llm_request.config.system_instruction),
+        )
 
-    # Add tool config if present
-    if llm_request.config and llm_request.config.tool_config:
-      cache_config.tool_config = llm_request.config.tool_config
+      # Add tools if present
+      if llm_request.config and llm_request.config.tools:
+        cache_config.tools = llm_request.config.tools
 
-    logger.debug(
-        "Creating cache with model %s and config: %s",
-        llm_request.model,
-        cache_config,
-    )
-    cached_content = await self.genai_client.aio.caches.create(
-        model=llm_request.model,
-        config=cache_config,
-    )
-    # Set precise creation timestamp right after cache creation
-    created_at = time.time()
-    logger.info("Cache created successfully: %s", cached_content.name)
+      # Add tool config if present
+      if llm_request.config and llm_request.config.tool_config:
+        cache_config.tool_config = llm_request.config.tool_config
 
-    # Return complete cache metadata with precise timing
-    return CacheMetadata(
-        cache_name=cached_content.name,
-        expire_time=created_at + llm_request.cache_config.ttl_seconds,
-        fingerprint=self._generate_cache_fingerprint(
-            llm_request, cache_contents_count
-        ),
-        invocations_used=1,
-        cached_contents_count=cache_contents_count,
-        created_at=created_at,
-    )
+      span.set_attribute("cache_contents_count", cache_contents_count)
+      span.set_attribute("model", llm_request.model)
+      span.set_attribute("ttl_seconds", llm_request.cache_config.ttl_seconds)
+
+      logger.debug(
+          "Creating cache with model %s and config: %s",
+          llm_request.model,
+          cache_config,
+      )
+      cached_content = await self.genai_client.aio.caches.create(
+          model=llm_request.model,
+          config=cache_config,
+      )
+      # Set precise creation timestamp right after cache creation
+      created_at = time.time()
+      logger.info("Cache created successfully: %s", cached_content.name)
+
+      span.set_attribute("cache_name", cached_content.name)
+
+      # Return complete cache metadata with precise timing
+      return CacheMetadata(
+          cache_name=cached_content.name,
+          expire_time=created_at + llm_request.cache_config.ttl_seconds,
+          fingerprint=self._generate_cache_fingerprint(
+              llm_request, cache_contents_count
+          ),
+          invocations_used=1,
+          contents_count=cache_contents_count,
+          created_at=created_at,
+      )
 
   async def cleanup_cache(self, cache_name: str) -> None:
     """Clean up cache by deleting it.

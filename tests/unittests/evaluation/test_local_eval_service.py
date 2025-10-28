@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import asyncio
 import sys
-from unittest import mock
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.errors.not_found_error import NotFoundError
@@ -47,8 +48,8 @@ import pytest
 
 
 @pytest.fixture
-def mock_eval_sets_manager():
-  return mock.create_autospec(EvalSetsManager)
+def mock_eval_sets_manager(mocker):
+  return mocker.create_autospec(EvalSetsManager)
 
 
 @pytest.fixture
@@ -58,8 +59,8 @@ def dummy_agent():
 
 
 @pytest.fixture
-def mock_eval_set_results_manager():
-  return mock.create_autospec(EvalSetResultsManager)
+def mock_eval_set_results_manager(mocker):
+  return mocker.create_autospec(EvalSetResultsManager)
 
 
 @pytest.fixture
@@ -118,6 +119,7 @@ async def test_perform_inference_success(
     eval_service,
     dummy_agent,
     mock_eval_sets_manager,
+    mocker,
 ):
   eval_set = EvalSet(
       eval_set_id="test_eval_set",
@@ -128,8 +130,8 @@ async def test_perform_inference_success(
   )
   mock_eval_sets_manager.get_eval_set.return_value = eval_set
 
-  mock_inference_result = mock.MagicMock()
-  eval_service._perform_inference_sigle_eval_item = mock.AsyncMock(
+  mock_inference_result = mocker.MagicMock()
+  eval_service._perform_inference_sigle_eval_item = mocker.AsyncMock(
       return_value=mock_inference_result
   )
 
@@ -157,6 +159,7 @@ async def test_perform_inference_with_case_ids(
     eval_service,
     dummy_agent,
     mock_eval_sets_manager,
+    mocker,
 ):
   eval_set = EvalSet(
       eval_set_id="test_eval_set",
@@ -168,8 +171,8 @@ async def test_perform_inference_with_case_ids(
   )
   mock_eval_sets_manager.get_eval_set.return_value = eval_set
 
-  mock_inference_result = mock.MagicMock()
-  eval_service._perform_inference_sigle_eval_item = mock.AsyncMock(
+  mock_inference_result = mocker.MagicMock()
+  eval_service._perform_inference_sigle_eval_item = mocker.AsyncMock(
       return_value=mock_inference_result
   )
 
@@ -219,7 +222,7 @@ async def test_perform_inference_eval_set_not_found(
 
 @pytest.mark.asyncio
 async def test_evaluate_success(
-    eval_service, mock_eval_sets_manager, mock_eval_set_results_manager
+    eval_service, mock_eval_sets_manager, mock_eval_set_results_manager, mocker
 ):
   inference_results = [
       InferenceResult(
@@ -243,8 +246,9 @@ async def test_evaluate_success(
       evaluate_config=EvaluateConfig(eval_metrics=[eval_metric], parallelism=2),
   )
 
-  mock_eval_case = mock.MagicMock(spec=EvalCase)
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
   mock_eval_case.conversation = []
+  mock_eval_case.conversation_scenario = None
   mock_eval_case.session_input = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
@@ -290,7 +294,7 @@ async def test_evaluate_eval_case_not_found(
 
 @pytest.mark.asyncio
 async def test_evaluate_single_inference_result(
-    eval_service, mock_eval_sets_manager, mock_eval_set_results_manager
+    eval_service, mock_eval_sets_manager, mock_eval_set_results_manager, mocker
 ):
   invocation = Invocation(
       user_content=genai_types.Content(
@@ -314,12 +318,13 @@ async def test_evaluate_single_inference_result(
   eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
   evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
 
-  mock_eval_case = mock.MagicMock(spec=EvalCase)
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
   mock_eval_case.conversation = [
       invocation.model_copy(deep=True),
       invocation.model_copy(deep=True),
       invocation.model_copy(deep=True),
   ]
+  mock_eval_case.conversation_scenario = None
   mock_eval_case.session_input = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
@@ -351,6 +356,51 @@ async def test_evaluate_single_inference_result(
     assert metric_result.eval_status == EvalStatus.PASSED
 
 
+@pytest.mark.asyncio
+async def test_evaluate_single_inference_result_skipped_for_conversation_scenario(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  """To be removed once evaluation is implemented for conversation scenarios."""
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=[invocation.model_copy(deep=True)],
+      session_id="session1",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = None
+  mock_eval_case.conversation_scenario = mocker.MagicMock()
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+  assert isinstance(result, EvalCaseResult)
+  assert result.eval_id == "case1"
+  assert result.final_eval_status == EvalStatus.NOT_EVALUATED
+  assert not result.overall_eval_metric_results
+  assert len(result.eval_metric_result_per_invocation) == 1
+  invocation_result = result.eval_metric_result_per_invocation[0]
+  assert not invocation_result.eval_metric_results
+  assert (
+      invocation_result.expected_invocation.final_response.parts[0].text
+      == "N/A"
+  )
+
+
 def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
   # How to fix if this test case fails?
   # This test case has failed mainly because a new EvalStatus got added. You
@@ -370,7 +420,7 @@ def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
 @pytest.mark.skipif(
     sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
 )
-async def test_mcp_stdio_agent_no_runtime_error():
+async def test_mcp_stdio_agent_no_runtime_error(mocker):
   """Test that LocalEvalService can handle MCP stdio agents without RuntimeError.
 
   This is a regression test for GitHub issue #2196:
@@ -421,7 +471,7 @@ async def test_mcp_stdio_agent_no_runtime_error():
     )
 
     # Create a mock eval sets manager that returns an eval case
-    mock_eval_sets_manager = mock.create_autospec(EvalSetsManager)
+    mock_eval_sets_manager = mocker.create_autospec(EvalSetsManager)
     test_eval_case = EvalCase(
         eval_id="test_mcp_case",
         conversation=[

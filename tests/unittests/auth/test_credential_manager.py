@@ -105,6 +105,9 @@ class TestCredentialManager:
     auth_config = Mock(spec=AuthConfig)
     auth_config.raw_auth_credential = None
     auth_config.exchanged_auth_credential = None
+    # Add auth_scheme for the _is_client_credentials_flow method
+    auth_config.auth_scheme = Mock()
+    auth_config.auth_scheme.flows = None
 
     callback_context = Mock()
 
@@ -561,6 +564,109 @@ class TestCredentialManager:
     assert not await manager._populate_auth_scheme()  # no-op
 
     assert manager._auth_config.auth_scheme == implicit_oauth2_scheme
+
+  def test_is_client_credentials_flow_oauth2_with_client_credentials(self):
+    """Test _is_client_credentials_flow returns True for OAuth2 with client credentials."""
+    from fastapi.openapi.models import OAuth2
+    from fastapi.openapi.models import OAuthFlowClientCredentials
+    from fastapi.openapi.models import OAuthFlows
+
+    # Create OAuth2 scheme with client credentials flow
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token"
+            )
+        )
+    )
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is True
+
+  def test_is_client_credentials_flow_oauth2_without_client_credentials(self):
+    """Test _is_client_credentials_flow returns False for OAuth2 without client credentials."""
+    from fastapi.openapi.models import OAuth2
+    from fastapi.openapi.models import OAuthFlowAuthorizationCode
+    from fastapi.openapi.models import OAuthFlows
+
+    # Create OAuth2 scheme with authorization code flow only
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="https://example.com/auth",
+                tokenUrl="https://example.com/token",
+            )
+        )
+    )
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is False
+
+  def test_is_client_credentials_flow_oidc_with_client_credentials(self):
+    """Test _is_client_credentials_flow returns True for OIDC with client credentials."""
+    from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
+
+    # Create OIDC scheme with client credentials support
+    auth_scheme = OpenIdConnectWithConfig(
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        grant_types_supported=["authorization_code", "client_credentials"],
+    )
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is True
+
+  def test_is_client_credentials_flow_oidc_without_client_credentials(self):
+    """Test _is_client_credentials_flow returns False for OIDC without client credentials."""
+    from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
+
+    # Create OIDC scheme without client credentials support
+    auth_scheme = OpenIdConnectWithConfig(
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        grant_types_supported=["authorization_code"],
+    )
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is False
+
+  def test_is_client_credentials_flow_other_scheme(self):
+    """Test _is_client_credentials_flow returns False for other auth schemes."""
+    # Create a non-OAuth2/OIDC scheme
+    auth_scheme = Mock()
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is False
 
 
 @pytest.fixture

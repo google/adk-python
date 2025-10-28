@@ -104,3 +104,6 @@ class EventActions(BaseModel):
 
   agent_state: Optional[dict[str, Any]] = None
   """The agent state at the current event."""
+
+  rewind_before_invocation_id: Optional[str] = None
+  """The invocation id to rewind to. This is only set for rewind event."""

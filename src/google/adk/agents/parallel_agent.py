@@ -181,15 +181,12 @@ class ParallelAgent(BaseAgent):
 
     agent_state = self._load_agent_state(ctx, BaseAgentState)
     if ctx.is_resumable and agent_state is None:
-      yield self._create_agent_state_event(ctx, agent_state=BaseAgentState())
+      ctx.set_agent_state(self.name, agent_state=BaseAgentState())
+      yield self._create_agent_state_event(ctx)
 
     agent_runs = []
     # Prepare and collect async generators for each sub-agent.
     for sub_agent in self.sub_agents:
-      if agent_state is None:
-        # Reset sub-agent state to make sure each sub-agent starts fresh.
-        ctx.reset_agent_state(sub_agent.name)
-
       sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
 
       # Only include sub-agents that haven't finished in a previous run.
@@ -215,8 +212,11 @@ class ParallelAgent(BaseAgent):
         return
 
       # Once all sub-agents are done, mark the ParallelAgent as final.
-      if ctx.is_resumable:
-        yield self._create_agent_state_event(ctx, end_of_agent=True)
+      if ctx.is_resumable and all(
+          ctx.end_of_agents.get(sub_agent.name) for sub_agent in self.sub_agents
+      ):
+        ctx.set_agent_state(self.name, end_of_agent=True)
+        yield self._create_agent_state_event(ctx)
 
     finally:
       for sub_agent_run in agent_runs:

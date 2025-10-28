@@ -214,7 +214,8 @@ def _contains_empty_content(event: Event) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
   This can happen to the evnets that only changed session state.
-  When both content and transcriptions are empty, the event will be considered as empty.
+  When both content and transcriptions are empty, the event will be considered
+  as empty.
 
   Args:
     event: The event to check.
@@ -222,12 +223,73 @@ def _contains_empty_content(event: Event) -> bool:
   Returns:
     True if the event should be skipped, False otherwise.
   """
+  if event.actions and event.actions.compaction:
+    return False
+
   return (
       not event.content
       or not event.content.role
       or not event.content.parts
       or event.content.parts[0].text == ''
   ) and (not event.output_transcription and not event.input_transcription)
+
+
+def _process_compaction_events(events: list[Event]) -> list[Event]:
+  """Processes events by applying compaction.
+
+  Identifies compacted ranges and filters out events that are covered by
+  compaction summaries.
+
+  Args:
+    events: A list of events to process.
+
+  Returns:
+    A list of events with compaction applied.
+  """
+  # example of compaction events:
+  # [event_1(timestamp=1), event_2(timestamp=2),
+  # compaction_1(event_1, event_2, timestamp=3), event_3(timestamp=4),
+  # compaction_2(event_2, event_3, timestamp=5), event_4(timestamp=6)]
+  # for each compaction event, it only covers the events at most between the
+  # current compaction and the previous compaction. So during copmaction, we
+  # don't have to go across compaction boundaries.
+  # Compaction events are always strictly in order based on event timestamp.
+  events_to_process = []
+  last_compaction_start_time = float('inf')
+
+  # Iterate in reverse to easily handle overlapping compactions.
+  for event in reversed(events):
+    if event.actions and event.actions.compaction:
+      compaction = event.actions.compaction
+      if (
+          compaction.start_timestamp is not None
+          and compaction.end_timestamp is not None
+      ):
+        # Create a new event for the compacted summary.
+        new_event = Event(
+            timestamp=compaction.end_timestamp,
+            author='model',
+            content=compaction.compacted_content,
+            branch=event.branch,
+            invocation_id=event.invocation_id,
+            actions=event.actions,
+        )
+        # Prepend to maintain chronological order in the final list.
+        events_to_process.insert(0, new_event)
+        # Update the boundary for filtering. Events with timestamps greater than
+        # or equal to this start time have been compacted.
+        last_compaction_start_time = min(
+            last_compaction_start_time, compaction.start_timestamp
+        )
+    elif event.timestamp < last_compaction_start_time:
+      # This event is not a compaction and is before the current compaction
+      # range. Prepend to maintain chronological order.
+      events_to_process.insert(0, event)
+    else:
+      # skip the event
+      pass
+
+  return events_to_process
 
 
 def _get_contents(
@@ -248,10 +310,30 @@ def _get_contents(
   accumulated_input_transcription = ''
   accumulated_output_transcription = ''
 
+  # Filter out events that are annulled by a rewind.
+  # By iterating backward, when a rewind event is found, we skip all events
+  # from that point back to the `rewind_before_invocation_id`, thus removing
+  # them from the history used for the LLM request.
+  rewind_filtered_events = []
+  i = len(events) - 1
+  while i >= 0:
+    event = events[i]
+    if event.actions and event.actions.rewind_before_invocation_id:
+      rewind_invocation_id = event.actions.rewind_before_invocation_id
+      for j in range(0, i, 1):
+        if events[j].invocation_id == rewind_invocation_id:
+          i = j
+          break
+    else:
+      rewind_filtered_events.append(event)
+    i -= 1
+  rewind_filtered_events.reverse()
+
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
   raw_filtered_events = []
-  for event in events:
+  has_compaction_events = False
+  for event in rewind_filtered_events:
     if _contains_empty_content(event):
       continue
     if not _is_event_belongs_to_branch(current_branch, event):
@@ -264,20 +346,27 @@ def _get_contents(
       # Skip request confirmation events.
       continue
 
+    if event.actions and event.actions.compaction:
+      has_compaction_events = True
     raw_filtered_events.append(event)
+
+  if has_compaction_events:
+    events_to_process = _process_compaction_events(raw_filtered_events)
+  else:
+    events_to_process = raw_filtered_events
 
   filtered_events = []
   # aggregate transcription events
-  for i in range(len(raw_filtered_events)):
-    event = raw_filtered_events[i]
+  for i in range(len(events_to_process)):
+    event = events_to_process[i]
     if not event.content:
       # Convert transcription into normal event
       if event.input_transcription and event.input_transcription.text:
         accumulated_input_transcription += event.input_transcription.text
         if (
-            i != len(raw_filtered_events) - 1
-            and raw_filtered_events[i + 1].input_transcription
-            and raw_filtered_events[i + 1].input_transcription.text
+            i != len(events_to_process) - 1
+            and events_to_process[i + 1].input_transcription
+            and events_to_process[i + 1].input_transcription.text
         ):
           continue
         event = event.model_copy(deep=True)
@@ -290,9 +379,9 @@ def _get_contents(
       elif event.output_transcription and event.output_transcription.text:
         accumulated_output_transcription += event.output_transcription.text
         if (
-            i != len(raw_filtered_events) - 1
-            and raw_filtered_events[i + 1].output_transcription
-            and raw_filtered_events[i + 1].output_transcription.text
+            i != len(events_to_process) - 1
+            and events_to_process[i + 1].output_transcription
+            and events_to_process[i + 1].output_transcription.text
         ):
           continue
         event = event.model_copy(deep=True)
@@ -321,8 +410,9 @@ def _get_contents(
   contents = []
   for event in result_events:
     content = copy.deepcopy(event.content)
-    remove_client_function_call_id(content)
-    contents.append(content)
+    if content:
+      remove_client_function_call_id(content)
+      contents.append(content)
   return contents
 
 
@@ -549,12 +639,13 @@ def _is_live_model_audio_event(event: Event) -> bool:
       Part(
         inline_data=Blob(
           data=b'\x01\x00\x00...',
-          mime_type='audio/pcm'
+          mime_type='audio/pcm;rate=24000'
         )
       ),
     ],
     role='model'
-  ) grounding_metadata=None partial=None turn_complete=None finish_reason=None error_code=None error_message=None ...
+  ) grounding_metadata=None partial=None turn_complete=None finish_reason=None
+  error_code=None error_message=None ...
   """
   if not event.content:
     return False
@@ -562,9 +653,17 @@ def _is_live_model_audio_event(event: Event) -> bool:
     return False
   # If it's audio data, then one event only has one part of audio.
   for part in event.content.parts:
-    if part.inline_data and part.inline_data.mime_type == 'audio/pcm':
+    if (
+        part.inline_data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith('audio/')
+    ):
       return True
-    if part.file_data and part.file_data.mime_type == 'audio/pcm':
+    if (
+        part.file_data
+        and part.file_data.mime_type
+        and part.file_data.mime_type.startswith('audio/')
+    ):
       return True
   return False
 
@@ -576,8 +675,10 @@ async def _add_instructions_to_user_content(
 ) -> None:
   """Insert instruction-related contents at proper position in conversation.
 
-  This function inserts instruction-related contents (passed as parameter) at the
-  proper position in the conversation flow, specifically before the last continuous
+  This function inserts instruction-related contents (passed as parameter) at
+  the
+  proper position in the conversation flow, specifically before the last
+  continuous
   batch of user content to maintain conversation context.
 
   Args:

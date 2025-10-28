@@ -87,7 +87,7 @@ class TestGeminiContextCacheManager:
     )
 
   def create_cache_metadata(
-      self, invocations_used=0, expired=False, cached_contents_count=3
+      self, invocations_used=0, expired=False, contents_count=3
   ):
     """Helper to create test CacheMetadata."""
     current_time = time.time()
@@ -98,7 +98,7 @@ class TestGeminiContextCacheManager:
         expire_time=expire_time,
         fingerprint="test_fingerprint",
         invocations_used=invocations_used,
-        cached_contents_count=cached_contents_count,
+        contents_count=contents_count,
         created_at=current_time - 600,
     )
 
@@ -109,45 +109,26 @@ class TestGeminiContextCacheManager:
     assert manager is not None
     assert manager.genai_client == mock_client
 
-  async def test_handle_context_caching_new_cache(self):
-    """Test handling context caching with no existing cache."""
-    # Setup mocks
-    mock_cached_content = AsyncMock()
-    mock_cached_content.name = (
-        "projects/test/locations/us-central1/cachedContents/new123"
-    )
-    self.manager.genai_client.aio.caches.create = AsyncMock(
-        return_value=mock_cached_content
-    )
-
-    llm_request = self.create_llm_request()
-    llm_request.cacheable_contents_token_count = (
-        2048  # Add token count for cache creation
-    )
-    start_time = time.time()
+  async def test_handle_context_caching_no_existing_cache(self):
+    """Test handling context caching with no existing cache returns fingerprint-only metadata."""
+    llm_request = self.create_llm_request(contents_count=5)
 
     with patch.object(
         self.manager, "_generate_cache_fingerprint", return_value="test_fp"
     ):
       result = await self.manager.handle_context_caching(llm_request)
 
-    end_time = time.time()
-
     assert result is not None
-    # Verify new cache metadata is created with fresh values
-    assert (
-        result.cache_name
-        == "projects/test/locations/us-central1/cachedContents/new123"
-    )
-    assert result.invocations_used == 1  # New cache starts with 1 invocation
+    # Should return fingerprint-only metadata (no active cache)
+    assert result.cache_name is None
+    assert result.expire_time is None
+    assert result.invocations_used is None
+    assert result.created_at is None
     assert result.fingerprint == "test_fp"
+    assert result.contents_count == 5  # Total contents count
 
-    # Verify timestamps are recent (within test execution time)
-    assert start_time <= result.created_at <= end_time
-    assert result.expire_time > time.time()  # Should be in the future
-
-    # Verify cache creation was called
-    self.manager.genai_client.aio.caches.create.assert_called_once()
+    # No cache should be created
+    self.manager.genai_client.aio.caches.create.assert_not_called()
 
   async def test_handle_context_caching_valid_existing_cache(self):
     """Test handling context caching with valid existing cache."""
@@ -181,8 +162,8 @@ class TestGeminiContextCacheManager:
     # Should not create new cache
     self.manager.genai_client.aio.caches.create.assert_not_called()
 
-  async def test_handle_context_caching_invalid_existing_cache(self):
-    """Test handling context caching with invalid existing cache."""
+  async def test_handle_context_caching_invalid_cache_fingerprint_match(self):
+    """Test invalid cache with matching fingerprint creates new cache."""
     # Setup mocks
     mock_cached_content = AsyncMock()
     mock_cached_content.name = (
@@ -205,19 +186,57 @@ class TestGeminiContextCacheManager:
         patch.object(self.manager, "_is_cache_valid", return_value=False),
         patch.object(self.manager, "cleanup_cache") as mock_cleanup,
         patch.object(
-            self.manager, "_generate_cache_fingerprint", return_value="new_fp"
+            self.manager,
+            "_generate_cache_fingerprint",
+            return_value="test_fingerprint",  # Match old fingerprint
         ),
     ):
 
       result = await self.manager.handle_context_caching(llm_request)
 
     assert result is not None
+    # Should create new cache when fingerprints match
     assert (
         result.cache_name
         == "projects/test/locations/us-central1/cachedContents/new456"
     )
     mock_cleanup.assert_called_once_with(existing_cache.cache_name)
     self.manager.genai_client.aio.caches.create.assert_called_once()
+
+  async def test_handle_context_caching_invalid_cache_fingerprint_mismatch(
+      self,
+  ):
+    """Test invalid cache with mismatched fingerprint returns fingerprint-only metadata."""
+    # Create request with invalid existing cache
+    existing_cache = self.create_cache_metadata(
+        invocations_used=15, contents_count=3
+    )  # Exceeds cache_intervals
+    llm_request = self.create_llm_request(
+        cache_metadata=existing_cache, contents_count=5
+    )
+
+    with (
+        patch.object(self.manager, "_is_cache_valid", return_value=False),
+        patch.object(self.manager, "cleanup_cache") as mock_cleanup,
+        patch.object(
+            self.manager,
+            "_generate_cache_fingerprint",
+            side_effect=["old_fp", "new_fp"],  # Different fingerprints
+        ),
+    ):
+
+      result = await self.manager.handle_context_caching(llm_request)
+
+    assert result is not None
+    # Should return fingerprint-only metadata
+    assert result.cache_name is None
+    assert result.expire_time is None
+    assert result.invocations_used is None
+    assert result.created_at is None
+    assert result.fingerprint == "new_fp"
+    assert result.contents_count == 5  # Total contents count
+    mock_cleanup.assert_called_once_with(existing_cache.cache_name)
+    self.manager.genai_client.aio.caches.create.assert_not_called()
 
   async def test_is_cache_valid_fingerprint_mismatch(self):
     """Test cache validation with fingerprint mismatch."""
@@ -246,6 +265,21 @@ class TestGeminiContextCacheManager:
       result = await self.manager._is_cache_valid(llm_request)
 
     assert result is False
+
+  async def test_is_cache_valid_fingerprint_only_metadata(self):
+    """Test cache validation with fingerprint-only metadata (no active cache)."""
+    # Create fingerprint-only metadata (cache_name is None)
+    cache_metadata = CacheMetadata(
+        fingerprint="test_fingerprint",
+        contents_count=5,
+    )
+    llm_request = self.create_llm_request(cache_metadata=cache_metadata)
+
+    result = await self.manager._is_cache_valid(llm_request)
+
+    assert (
+        result is False
+    )  # Fingerprint-only metadata is not a valid active cache
 
   async def test_is_cache_valid_cache_intervals_exceeded(self):
     """Test cache validation with max invocations exceeded."""
@@ -537,16 +571,8 @@ class TestGeminiContextCacheManager:
     return llm_request
 
   async def test_cache_creation_with_sufficient_token_count(self):
-    """Test cache creation succeeds when token count meets minimum."""
-    # Setup mocks
-    mock_cached_content = AsyncMock()
-    mock_cached_content.name = (
-        "projects/test/locations/us-central1/cachedContents/token123"
-    )
-    self.manager.genai_client.aio.caches.create = AsyncMock(
-        return_value=mock_cached_content
-    )
-
+    """Test that fingerprint-only metadata is returned even with sufficient tokens."""
+    # With new prefix matching logic, no cache is created without existing metadata
     # Create request with sufficient token count
     llm_request = self.create_llm_request_with_token_count(token_count=2048)
 
@@ -555,13 +581,15 @@ class TestGeminiContextCacheManager:
     ):
       result = await self.manager.handle_context_caching(llm_request)
 
-    # Should succeed in creating cache
+    # Should return fingerprint-only metadata (no cache creation)
     assert result is not None
-    assert result.cache_name == mock_cached_content.name
-    self.manager.genai_client.aio.caches.create.assert_called_once()
+    assert result.cache_name is None  # Fingerprint-only state
+    assert result.fingerprint == "test_fp"
+    assert result.contents_count == 3
+    self.manager.genai_client.aio.caches.create.assert_not_called()
 
   async def test_cache_creation_with_insufficient_token_count(self):
-    """Test cache creation fails when token count is below minimum."""
+    """Test that fingerprint-only metadata is returned even with insufficient tokens."""
     # Set higher minimum token requirement
     self.manager.cache_config = ContextCacheConfig(
         cache_intervals=10,
@@ -573,19 +601,29 @@ class TestGeminiContextCacheManager:
     llm_request = self.create_llm_request_with_token_count(token_count=1024)
     llm_request.cache_config = self.manager.cache_config
 
-    result = await self.manager.handle_context_caching(llm_request)
+    with patch.object(
+        self.manager, "_generate_cache_fingerprint", return_value="test_fp"
+    ):
+      result = await self.manager.handle_context_caching(llm_request)
 
-    # Should not create cache
-    assert result is None
+    # Should return fingerprint-only metadata
+    assert result is not None
+    assert result.cache_name is None
+    assert result.fingerprint == "test_fp"
     self.manager.genai_client.aio.caches.create.assert_not_called()
 
   async def test_cache_creation_without_token_count(self):
-    """Test cache creation is skipped when no token count is available."""
+    """Test that fingerprint-only metadata is returned even without token count."""
     # Create request without token count (initial request)
     llm_request = self.create_llm_request_with_token_count(token_count=None)
 
-    result = await self.manager.handle_context_caching(llm_request)
+    with patch.object(
+        self.manager, "_generate_cache_fingerprint", return_value="test_fp"
+    ):
+      result = await self.manager.handle_context_caching(llm_request)
 
-    # Should skip cache creation for initial request
-    assert result is None
+    # Should return fingerprint-only metadata
+    assert result is not None
+    assert result.cache_name is None
+    assert result.fingerprint == "test_fp"
     self.manager.genai_client.aio.caches.create.assert_not_called()
