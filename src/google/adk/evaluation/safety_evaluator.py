@@ -15,8 +15,8 @@
 from __future__ import annotations
 
 from typing_extensions import override
-from vertexai import types as vertexai_types
 
+from ..dependencies.vertexai import vertexai
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval
@@ -26,6 +26,8 @@ from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .vertex_ai_eval_facade import _VertexAiEvalFacade
+
+vertexai_types = vertexai.types
 
 
 class SafetyEvaluatorV1(Evaluator):

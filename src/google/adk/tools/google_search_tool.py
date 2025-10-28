@@ -35,9 +35,17 @@ class GoogleSearchTool(BaseTool):
   local code execution.
   """
 
-  def __init__(self):
+  def __init__(self, *, bypass_multi_tools_limit: bool = False):
+    """Initializes the Google search tool.
+
+    Args:
+      bypass_multi_tools_limit: Whether to bypass the multi tools limitation,
+        so that the tool can be used with other tools in the same agent.
+    """
+
     # Name and description are not used because this is a model built-in tool.
     super().__init__(name='google_search', description='google_search')
+    self.bypass_multi_tools_limit = bypass_multi_tools_limit
 
   @override
   async def process_llm_request(

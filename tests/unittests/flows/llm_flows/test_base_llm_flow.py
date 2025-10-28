@@ -14,17 +14,24 @@
 
 """Unit tests for BaseLlmFlow toolset integration."""
 
+from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 import pytest
 
 from ... import testing_utils
+
+google_search = GoogleSearchTool(bypass_multi_tools_limit=True)
 
 
 class BaseLlmFlowForTesting(BaseLlmFlow):
@@ -88,7 +95,6 @@ async def test_preprocess_calls_toolset_process_llm_request():
 async def test_preprocess_handles_mixed_tools_and_toolsets():
   """Test that _preprocess_async properly handles both tools and toolsets."""
   from google.adk.tools.base_tool import BaseTool
-  from google.adk.tools.function_tool import FunctionTool
 
   # Create a mock tool
   class _MockTool(BaseTool):
@@ -148,3 +154,262 @@ async def test_preprocess_handles_mixed_tools_and_toolsets():
   # Verify that process_llm_request was called on both tools and toolsets
   assert mock_tool.process_llm_request_called
   assert mock_toolset.process_llm_request_called
+
+
+# TODO(b/448114567): Remove the following test_preprocess_with_google_search
+# tests once the workaround is no longer needed.
+@pytest.mark.asyncio
+async def test_preprocess_with_google_search_only():
+  """Test _preprocess_async with only the google_search tool."""
+  agent = Agent(name='test_agent', model='gemini-pro', tools=[google_search])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  flow = BaseLlmFlowForTesting()
+  llm_request = LlmRequest(model='gemini-pro')
+  async for _ in flow._preprocess_async(invocation_context, llm_request):
+    pass
+
+  assert len(llm_request.config.tools) == 1
+  assert llm_request.config.tools[0].google_search is not None
+
+
+@pytest.mark.asyncio
+async def test_preprocess_with_google_search_workaround():
+  """Test _preprocess_async with google_search and another tool."""
+
+  def _my_tool(sides: int) -> int:
+    """A simple tool."""
+    return sides
+
+  agent = Agent(
+      name='test_agent', model='gemini-pro', tools=[_my_tool, google_search]
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  flow = BaseLlmFlowForTesting()
+  llm_request = LlmRequest(model='gemini-pro')
+  async for _ in flow._preprocess_async(invocation_context, llm_request):
+    pass
+
+  assert len(llm_request.config.tools) == 1
+  declarations = llm_request.config.tools[0].function_declarations
+  assert len(declarations) == 2
+  assert {d.name for d in declarations} == {'_my_tool', 'google_search_agent'}
+
+
+@pytest.mark.asyncio
+async def test_preprocess_calls_convert_tool_union_to_tools():
+  """Test that _preprocess_async calls _convert_tool_union_to_tools."""
+
+  class _MockTool:
+    process_llm_request = AsyncMock()
+
+  mock_tool_instance = _MockTool()
+
+  def _my_tool(sides: int) -> int:
+    """A simple tool."""
+    return sides
+
+  with mock.patch(
+      'google.adk.agents.llm_agent._convert_tool_union_to_tools',
+      new_callable=AsyncMock,
+  ) as mock_convert:
+    mock_convert.return_value = [mock_tool_instance]
+
+    model = Gemini(model='gemini-2')
+    agent = Agent(
+        name='test_agent', model=model, tools=[_my_tool, google_search]
+    )
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content='test message'
+    )
+    flow = BaseLlmFlowForTesting()
+    llm_request = LlmRequest(model='gemini-2')
+
+    async for _ in flow._preprocess_async(invocation_context, llm_request):
+      pass
+
+    mock_convert.assert_called_with(
+        google_search,
+        mock.ANY,  # ReadonlyContext(invocation_context)
+        model,
+        True,  # multiple_tools
+    )
+
+
+# TODO(b/448114567): Remove the following
+# test_handle_after_model_callback_grounding tests once the workaround
+# is no longer needed.
+def dummy_tool():
+  pass
+
+
+@pytest.mark.parametrize(
+    'tools, state_metadata, expect_metadata',
+    [
+        ([], None, False),
+        ([google_search, dummy_tool], {'foo': 'bar'}, True),
+        ([dummy_tool], {'foo': 'bar'}, False),
+        ([google_search, dummy_tool], None, False),
+    ],
+    ids=[
+        'no_search_no_grounding',
+        'with_search_with_grounding',
+        'no_search_with_grounding',
+        'with_search_no_grounding',
+    ],
+)
+@pytest.mark.asyncio
+async def test_handle_after_model_callback_grounding_with_no_callbacks(
+    tools, state_metadata, expect_metadata
+):
+  """Test handling grounding metadata when there are no callbacks."""
+  agent = Agent(name='test_agent', tools=tools)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  if state_metadata:
+    invocation_context.session.state['temp:_adk_grounding_metadata'] = (
+        state_metadata
+    )
+
+  llm_response = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text='response')])
+  )
+  event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  flow = BaseLlmFlowForTesting()
+
+  result = await flow._handle_after_model_callback(
+      invocation_context, llm_response, event
+  )
+
+  if expect_metadata:
+    llm_response.grounding_metadata = state_metadata
+    assert result == llm_response
+  else:
+    assert result is None
+
+
+@pytest.mark.parametrize(
+    'tools, state_metadata, expect_metadata',
+    [
+        ([], None, False),
+        ([google_search, dummy_tool], {'foo': 'bar'}, True),
+        ([dummy_tool], {'foo': 'bar'}, False),
+        ([google_search, dummy_tool], None, False),
+    ],
+    ids=[
+        'no_search_no_grounding',
+        'with_search_with_grounding',
+        'no_search_with_grounding',
+        'with_search_no_grounding',
+    ],
+)
+@pytest.mark.asyncio
+async def test_handle_after_model_callback_grounding_with_callback_override(
+    tools, state_metadata, expect_metadata
+):
+  """Test handling grounding metadata when there is a callback override."""
+  agent_response = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text='agent')])
+  )
+  agent_callback = AsyncMock(return_value=agent_response)
+
+  agent = Agent(
+      name='test_agent', tools=tools, after_model_callback=[agent_callback]
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  if state_metadata:
+    invocation_context.session.state['temp:_adk_grounding_metadata'] = (
+        state_metadata
+    )
+
+  llm_response = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text='response')])
+  )
+  event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  flow = BaseLlmFlowForTesting()
+
+  result = await flow._handle_after_model_callback(
+      invocation_context, llm_response, event
+  )
+
+  if expect_metadata:
+    agent_response.grounding_metadata = state_metadata
+
+  assert result == agent_response
+  agent_callback.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    'tools, state_metadata, expect_metadata',
+    [
+        ([], None, False),
+        ([google_search, dummy_tool], {'foo': 'bar'}, True),
+        ([dummy_tool], {'foo': 'bar'}, False),
+        ([google_search, dummy_tool], None, False),
+    ],
+    ids=[
+        'no_search_no_grounding',
+        'with_search_with_grounding',
+        'no_search_with_grounding',
+        'with_search_no_grounding',
+    ],
+)
+@pytest.mark.asyncio
+async def test_handle_after_model_callback_grounding_with_plugin_override(
+    tools, state_metadata, expect_metadata
+):
+  """Test handling grounding metadata when there is a plugin override."""
+  plugin_response = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text='plugin')])
+  )
+
+  class _MockPlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name='mock_plugin')
+
+    after_model_callback = AsyncMock(return_value=plugin_response)
+
+  plugin = _MockPlugin()
+  agent = Agent(name='test_agent', tools=tools)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, plugins=[plugin]
+  )
+  if state_metadata:
+    invocation_context.session.state['temp:_adk_grounding_metadata'] = (
+        state_metadata
+    )
+
+  llm_response = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text='response')])
+  )
+  event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  flow = BaseLlmFlowForTesting()
+
+  result = await flow._handle_after_model_callback(
+      invocation_context, llm_response, event
+  )
+
+  if expect_metadata:
+    plugin_response.grounding_metadata = state_metadata
+
+  assert result == plugin_response
+  plugin.after_model_callback.assert_called_once()

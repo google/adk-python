@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
 import os
 from pathlib import Path
@@ -205,23 +206,95 @@ class AgentLoader(BaseAgentLoader):
     envs.load_dotenv_for_agent(actual_agent_name, str(agents_dir))
 
     if root_agent := self._load_from_module_or_package(actual_agent_name):
+      self._record_origin_metadata(
+          loaded=root_agent,
+          expected_app_name=actual_agent_name,
+          module_name=actual_agent_name,
+          agents_dir=agents_dir,
+      )
       return root_agent
 
     if root_agent := self._load_from_submodule(actual_agent_name):
+      self._record_origin_metadata(
+          loaded=root_agent,
+          expected_app_name=actual_agent_name,
+          module_name=f"{actual_agent_name}.agent",
+          agents_dir=agents_dir,
+      )
       return root_agent
 
     if root_agent := self._load_from_yaml_config(actual_agent_name, agents_dir):
+      self._record_origin_metadata(
+          loaded=root_agent,
+          expected_app_name=actual_agent_name,
+          module_name=None,
+          agents_dir=agents_dir,
+      )
       return root_agent
 
     # If no root_agent was found by any pattern
+    # Check if user might be in the wrong directory
+    hint = ""
+    agents_path = Path(agents_dir)
+    if (
+        agents_path.joinpath("agent.py").is_file()
+        or agents_path.joinpath("root_agent.yaml").is_file()
+    ):
+      hint = (
+          "\n\nHINT: It looks like this command might be running from inside an"
+          " agent directory. Run it from the parent directory that contains"
+          " your agent folder (for example the project root) so the loader can"
+          " locate your agents."
+      )
+
     raise ValueError(
         f"No root_agent found for '{agent_name}'. Searched in"
         f" '{actual_agent_name}.agent.root_agent',"
         f" '{actual_agent_name}.root_agent' and"
-        f" '{actual_agent_name}/root_agent.yaml'. Ensure"
-        f" '{agents_dir}/{actual_agent_name}' is structured correctly, an .env"
-        " file can be loaded if present, and a root_agent is exposed."
+        f" '{actual_agent_name}/root_agent.yaml'.\n\nExpected directory"
+        f" structure:\n  <agents_dir>/\n    {actual_agent_name}/\n     "
+        " agent.py (with root_agent) OR\n      root_agent.yaml\n\nThen run:"
+        f" adk web <agents_dir>\n\nEnsure '{agents_dir}/{actual_agent_name}' is"
+        " structured correctly, an .env file can be loaded if present, and a"
+        f" root_agent is exposed.{hint}"
     )
+
+  def _record_origin_metadata(
+      self,
+      *,
+      loaded: Union[BaseAgent, App],
+      expected_app_name: str,
+      module_name: Optional[str],
+      agents_dir: str,
+  ) -> None:
+    """Annotates loaded agent/App with its origin for later diagnostics."""
+
+    # Do not attach metadata for built-in agents (double underscore names).
+    if expected_app_name.startswith("__"):
+      return
+
+    origin_path: Optional[Path] = None
+    if module_name:
+      spec = importlib.util.find_spec(module_name)
+      if spec and spec.origin:
+        module_origin = Path(spec.origin).resolve()
+        origin_path = (
+            module_origin.parent if module_origin.is_file() else module_origin
+        )
+
+    if origin_path is None:
+      candidate = Path(agents_dir, expected_app_name)
+      origin_path = candidate if candidate.exists() else Path(agents_dir)
+
+    def _attach_metadata(target: Union[BaseAgent, App]) -> None:
+      setattr(target, "_adk_origin_app_name", expected_app_name)
+      setattr(target, "_adk_origin_path", origin_path)
+
+    if isinstance(loaded, App):
+      _attach_metadata(loaded)
+      _attach_metadata(loaded.root_agent)
+    else:
+      _attach_metadata(loaded)
 
   @override
   def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:

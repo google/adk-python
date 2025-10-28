@@ -17,8 +17,8 @@ from __future__ import annotations
 from typing import Optional
 
 from typing_extensions import override
-from vertexai import types as vertexai_types
 
+from ..dependencies.vertexai import vertexai
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval
@@ -29,6 +29,8 @@ from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .final_response_match_v1 import RougeEvaluator
 from .vertex_ai_eval_facade import _VertexAiEvalFacade
+
+vertexai_types = vertexai.types
 
 
 class ResponseEvaluator(Evaluator):

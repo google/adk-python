@@ -23,6 +23,7 @@ from typing_extensions import TypeAlias
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalStatus
+from .eval_rubrics import RubricScore
 
 # Redefining the type here for backward compatibility.
 EvalStatus: TypeAlias = EvalStatus
@@ -35,6 +36,7 @@ class PerInvocationResult(BaseModel):
   expected_invocation: Invocation
   score: Optional[float] = None
   eval_status: EvalStatus = EvalStatus.NOT_EVALUATED
+  rubric_scores: Optional[list[RubricScore]] = None
 
 
 class EvaluationResult(BaseModel):
@@ -45,6 +47,10 @@ class EvaluationResult(BaseModel):
   """Overall status, based on each invocation."""
 
   per_invocation_results: list[PerInvocationResult] = []
+  """Detailed results per invocation."""
+
+  overall_rubric_scores: Optional[list[RubricScore]] = None
+  """Overall rubric, based on each invocation."""
 
 
 class Evaluator(ABC):

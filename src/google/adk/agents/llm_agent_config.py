@@ -35,6 +35,10 @@ class LlmAgentConfig(BaseAgentConfig):
 
   model_config = ConfigDict(
       extra='forbid',
+      # Allow arbitrary types to support types.ContentUnion for static_instruction.
+      # ContentUnion includes PIL.Image.Image which doesn't have Pydantic schema
+      # support, but we validate it at runtime using google.genai._transformers.t_content()
+      arbitrary_types_allowed=True,
   )
 
   agent_class: str = Field(
@@ -53,7 +57,26 @@ class LlmAgentConfig(BaseAgentConfig):
       ),
   )
 
-  instruction: str = Field(description='Required. LlmAgent.instruction.')
+  instruction: str = Field(
+      description=(
+          'Required. LlmAgent.instruction. Dynamic instructions with'
+          ' placeholder support. Behavior: if static_instruction is None, goes'
+          ' to system_instruction; if static_instruction is set, goes to user'
+          ' content after static content.'
+      )
+  )
+
+  static_instruction: Optional[types.ContentUnion] = Field(
+      default=None,
+      description=(
+          'Optional. LlmAgent.static_instruction. Static content sent literally'
+          ' at position 0 without placeholder processing. When set, changes'
+          ' instruction behavior to go to user content instead of'
+          ' system_instruction. Supports context caching. Accepts'
+          ' types.ContentUnion (str, types.Content, types.Part,'
+          ' PIL.Image.Image, types.File, or list[PartUnion]).'
+      ),
+  )
 
   disallow_transfer_to_parent: Optional[bool] = Field(
       default=None,
@@ -120,7 +143,7 @@ Examples:
 
     ```
     # tools.py
-    my_mcp_toolset = MCPToolset(
+    my_mcp_toolset = McpToolset(
         connection_params=StdioServerParameters(
             command="npx",
             args=["-y", "@notionhq/notion-mcp-server"],
