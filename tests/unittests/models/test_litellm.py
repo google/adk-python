@@ -1981,7 +1981,6 @@ async def test_finish_reason_propagation(
   mock_acompletion.assert_called_once()
 
 
-
 @pytest.mark.asyncio
 async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance
@@ -2015,4 +2014,3 @@ async def test_finish_reason_unknown_maps_to_other(
     assert response.finish_reason == types.FinishReason.OTHER
 
   mock_acompletion.assert_called_once()
-

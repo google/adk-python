@@ -72,7 +72,9 @@ _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _FINISH_REASON_MAPPING = {
     "length": types.FinishReason.MAX_TOKENS,
     "stop": types.FinishReason.STOP,
-    "tool_calls": types.FinishReason.STOP,  # Normal completion with tool invocation
+    "tool_calls": (
+        types.FinishReason.STOP
+    ),  # Normal completion with tool invocation
     "function_call": types.FinishReason.STOP,  # Legacy function call variant
     "content_filter": types.FinishReason.SAFETY,
 }
