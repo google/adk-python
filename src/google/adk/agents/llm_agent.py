@@ -430,16 +430,24 @@ class LlmAgent(BaseAgent):
       yield self._create_agent_state_event(ctx)
       return
 
+    should_pause = False
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
       async for event in agen:
         self.__maybe_save_output_to_state(event)
         yield event
         if ctx.should_pause_invocation(event):
-          return
+          # Do not pause immediately, wait until the long running tool call is
+          # executed.
+          should_pause = True
+    if should_pause:
+      return
 
     if ctx.is_resumable:
       events = ctx._get_events(current_invocation=True, current_branch=True)
-      if events and ctx.should_pause_invocation(events[-1]):
+      if events and (
+          ctx.should_pause_invocation(events[-1])
+          or ctx.should_pause_invocation(events[-2])
+      ):
         return
       # Only yield an end state if the last event is no longer a long running
       # tool call.
