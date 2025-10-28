@@ -383,16 +383,30 @@ class BaseLlmFlow(ABC):
     events = invocation_context._get_events(
         current_invocation=True, current_branch=True
     )
+
+    # Long running tool calls should have been handled before this point.
+    # If there are still long running tool calls, it means the agent is paused
+    # before, and its branch hasn't been resumed yet.
+    if (
+        invocation_context.is_resumable
+        and events
+        and len(events) > 1
+        # TODO: here we are using the last 2 events to decide whether to pause
+        # the invocation. But this is just being optmisitic, we should find a
+        # way to pause when the long running tool call is followed by more than
+        # one text responses.
+        and (
+            invocation_context.should_pause_invocation(events[-1])
+            or invocation_context.should_pause_invocation(events[-2])
+        )
+    ):
+      return
+
     if (
         invocation_context.is_resumable
         and events
         and events[-1].get_function_calls()
     ):
-      # Long running tool calls should have been handled before this point.
-      # If there are still long running tool calls, it means the agent is paused
-      # before, and its branch hasn't been resumed yet.
-      if invocation_context.should_pause_invocation(events[-1]):
-        return
       model_response_event = events[-1]
       async with Aclosing(
           self._postprocess_handle_function_calls_async(

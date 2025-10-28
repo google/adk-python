@@ -16,7 +16,7 @@ When users ask informational questions like "find me examples", "show me samples
 
 **NON-NEGOTIABLE**: `root_agent.yaml` MUST always declare `agent_class: LlmAgent`.
 **NEVER** set `root_agent.yaml` to any workflow agent type (SequentialAgent,
-ParallelAgent, LoopAgent). All workflow coordination must stay in sub-agents, not the root file.
+ParallelAgent, LoopAgent.) All workflow coordination must stay in sub-agents, not the root file.
 **MODEL CONTRACT**: Every `LlmAgent` (root and sub-agents) must explicitly set
 `model` to the confirmed model choice (use `{default_model}` only when the user
 asks for the default). Never omit this field or rely on a global default.
@@ -347,6 +347,12 @@ uncertainty about architecture, or you otherwise need authoritative guidance.
 8. **Follow current ADK patterns**: Always search for and reference the latest examples from contributing/samples
 9. **Gemini API Usage**: If generating Python code that interacts with Gemini models, use `import google.genai as genai`, not `google.generativeai`.
 
+### ✅ Fully Qualified Paths Required
+- Every tool or callback reference in YAML must be a fully qualified dotted path that starts with the project folder name. Use `{project_folder_name}.callbacks.privacy_callbacks.censor_content`, **never** `callbacks.privacy_callbacks.censor_content`.
+- Only reference packages that actually exist. Before you emit a dotted path, confirm the directory contains an `__init__.py` so Python can import it. Create `__init__.py` files for each subdirectory that should be importable (for example `callbacks/` or `tools/`). The project root itself does not need an `__init__.py`.
+- When you generate Python modules with `write_files`, make sure the tool adds these `__init__.py` markers for the package directories (skip the project root) so future imports succeed.
+- If the user already has bare paths like `callbacks.foo`, explain why they must be rewritten with the project prefix and add the missing `__init__.py` files when you generate the Python modules.
+
 ### 🚨 CRITICAL: Callback Correct Signatures
 ADK supports different callback types with DIFFERENT signatures. Use FUNCTION-based callbacks (never classes):
 
@@ -378,16 +384,48 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.agents.callback_context import CallbackContext
 
-def log_model_request(callback_context: CallbackContext, request: LlmRequest) -> Optional[LlmResponse]:
+def log_model_request(
+    *, callback_context: CallbackContext, llm_request: LlmRequest
+) -> Optional[LlmResponse]:
     """Before model callback to log requests."""
-    print(f"Model request: {{request.contents}}")
+    print(f"Model request: {{llm_request.contents}}")
     return None  # Return None to proceed with original request
 
-def modify_model_response(callback_context: CallbackContext, response: LlmResponse) -> Optional[LlmResponse]:
+from google.adk.events.event import Event
+
+def modify_model_response(
+    *,
+    callback_context: CallbackContext,
+    llm_response: LlmResponse,
+    model_response_event: Optional[Event] = None,
+) -> Optional[LlmResponse]:
     """After model callback to modify response."""
-    # Modify response if needed
-    return response  # Return modified response or None for original
+    _ = callback_context  # Access context if you need state or metadata
+    _ = model_response_event  # Available for tracing and event metadata
+    if (
+        not llm_response
+        or not llm_response.content
+        or not llm_response.content.parts
+    ):
+        return llm_response
+
+    updated_parts = []
+    for part in llm_response.content.parts:
+        text = getattr(part, "text", None)
+        if text:
+            updated_parts.append(
+                types.Part(text=text.replace("dolphins", "[CENSORED]"))
+            )
+        else:
+            updated_parts.append(part)
+
+    llm_response.content = types.Content(
+        parts=updated_parts, role=llm_response.content.role
+    )
+    return llm_response
 ```
+
+**Callback content handling**: `LlmResponse` exposes a single `content` field (a `types.Content`). ADK already extracts the first candidate for you and does not expose `llm_response.candidates`. When filtering or rewriting output, check `llm_response.content` and mutate its `parts`. Preserve non-text parts and reassign a new `types.Content` rather than mutating undefined attributes.
 
 ## 3. Tool Callbacks (before_tool_callbacks / after_tool_callbacks)
 
@@ -412,10 +450,12 @@ def log_tool_result(tool: BaseTool, tool_args: Dict[str, Any], tool_context: Too
 
 ## Callback Signature Summary:
 - **Agent Callbacks**: `(callback_context: CallbackContext) -> Optional[types.Content]`
-- **Before Model**: `(callback_context: CallbackContext, request: LlmRequest) -> Optional[LlmResponse]`
-- **After Model**: `(callback_context: CallbackContext, response: LlmResponse) -> Optional[LlmResponse]`
+- **Before Model**: `(*, callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]`
+- **After Model**: `(*, callback_context: CallbackContext, llm_response: LlmResponse, model_response_event: Optional[Event] = None) -> Optional[LlmResponse]`
 - **Before Tool**: `(tool: BaseTool, tool_args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict]`
 - **After Tool**: `(tool: BaseTool, tool_args: Dict[str, Any], tool_context: ToolContext, result: Dict) -> Optional[Dict]`
+
+**Name Matching Matters**: ADK passes callback arguments by keyword. Always name parameters exactly `callback_context`, `llm_request`, `llm_response`, and `model_response_event` (when used) so they bind correctly. Returning `None` keeps the original value; otherwise return the modified `LlmResponse`.
 
 ## Important ADK Requirements
 

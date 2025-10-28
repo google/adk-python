@@ -55,23 +55,38 @@ class _VertexAiEvalFacade(Evaluator):
   """
 
   def __init__(
-      self, threshold: float, metric_name: vertexai_types.PrebuiltMetric
+      self,
+      threshold: float,
+      metric_name: vertexai_types.PrebuiltMetric,
+      expected_invocations_required=False,
   ):
     self._threshold = threshold
     self._metric_name = metric_name
+    self._expected_invocations_required = expected_invocations_required
 
   @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
+    if self._expected_invocations_required and expected_invocations is None:
+      raise ValueError("expected_invocations is needed by this metric.")
+
+    # If expected_invocation are not required by the metric and if they are not
+    # supplied, we provide an a list of None.
+    expected_invocations = (
+        [None] * len(actual_invocations)
+        if expected_invocations is None
+        else expected_invocations
+    )
+
     total_score = 0.0
     num_invocations = 0
     per_invocation_results = []
     for actual, expected in zip(actual_invocations, expected_invocations):
-      prompt = self._get_text(expected.user_content)
-      reference = self._get_text(expected.final_response)
+      prompt = self._get_text(actual.user_content)
+      reference = self._get_text(expected.final_response) if expected else None
       response = self._get_text(actual.final_response)
       eval_case = {
           "prompt": prompt,

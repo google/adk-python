@@ -36,6 +36,16 @@ import pytest
 
 from .. import testing_utils
 
+HINT_TEXT = (
+    "Please approve or reject the tool call _test_function() by"
+    " responding with a FunctionResponse with an"
+    " expected ToolConfirmation payload."
+)
+
+TOOL_CALL_ERROR_RESPONSE = {
+    "error": "This tool call requires confirmation, please approve or reject."
+}
+
 
 def _create_llm_response_from_tools(
     tools: list[FunctionTool],
@@ -57,13 +67,9 @@ def _create_llm_response_from_text(text: str) -> GenerateContentResponse:
   )
 
 
-def _test_request_confirmation_function(
+def _test_function(
     tool_context: ToolContext,
 ) -> dict[str, str]:
-  """A test tool function that requests confirmation."""
-  if not tool_context.tool_confirmation:
-    tool_context.request_confirmation(hint="test hint for request_confirmation")
-    return {"error": "test error for request_confirmation"}
   return {"result": f"confirmed={tool_context.tool_confirmation.confirmed}"}
 
 
@@ -82,7 +88,7 @@ def _test_request_confirmation_function_with_custom_schema(
             }
         },
     )
-    return {"error": "test error for request_confirmation"}
+    return TOOL_CALL_ERROR_RESPONSE
   return {
       "result": f"confirmed={tool_context.tool_confirmation.confirmed}",
       "custom_payload": tool_context.tool_confirmation.payload,
@@ -104,7 +110,7 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
   @pytest.fixture
   def tools(self) -> list[FunctionTool]:
     """Provides the tools for the agent."""
-    return [FunctionTool(func=_test_request_confirmation_function)]
+    return [FunctionTool(func=_test_function, require_confirmation=True)]
 
   @pytest.fixture
   def llm_responses(
@@ -114,9 +120,6 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
     return [
         _create_llm_response_from_tools(tools),
         _create_llm_response_from_text("test llm response after tool call"),
-        _create_llm_response_from_text(
-            "test llm response after final tool call"
-        ),
     ]
 
   @pytest.fixture
@@ -163,7 +166,7 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
                             "args": {},
                         },
                         "toolConfirmation": {
-                            "hint": "test hint for request_confirmation",
+                            "hint": HINT_TEXT,
                             "confirmed": False,
                         },
                     },
@@ -174,12 +177,10 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
             agent.name,
             Part(
                 function_response=FunctionResponse(
-                    name=tools[0].name,
-                    response={"error": "test error for request_confirmation"},
+                    name=tools[0].name, response=TOOL_CALL_ERROR_RESPONSE
                 )
             ),
         ),
-        (agent.name, "test llm response after tool call"),
     ]
 
     simplified = testing_utils.simplify_events(copy.deepcopy(events))
@@ -208,11 +209,13 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
             Part(
                 function_response=FunctionResponse(
                     name=tools[0].name,
-                    response={"result": f"confirmed={tool_call_confirmed}"},
+                    response={"result": f"confirmed={tool_call_confirmed}"}
+                    if tool_call_confirmed
+                    else {"error": "This tool call is rejected."},
                 )
             ),
         ),
-        (agent.name, "test llm response after final tool call"),
+        (agent.name, "test llm response after tool call"),
     ]
     for event in events:
       assert event.invocation_id != invocation_id
@@ -312,8 +315,7 @@ class TestHITLConfirmationFlowWithCustomPayloadSchema(BaseHITLTest):
             agent.name,
             Part(
                 function_response=FunctionResponse(
-                    name=tools[0].name,
-                    response={"error": "test error for request_confirmation"},
+                    name=tools[0].name, response=TOOL_CALL_ERROR_RESPONSE
                 )
             ),
         ),
@@ -380,7 +382,7 @@ class TestHITLConfirmationFlowWithResumableApp:
   @pytest.fixture
   def tools(self) -> list[FunctionTool]:
     """Provides the tools for the agent."""
-    return [FunctionTool(func=_test_request_confirmation_function)]
+    return [FunctionTool(func=_test_function, require_confirmation=True)]
 
   @pytest.fixture
   def llm_responses(
@@ -409,8 +411,8 @@ class TestHITLConfirmationFlowWithResumableApp:
   @pytest.fixture
   def runner(self, agent: LlmAgent) -> testing_utils.InMemoryRunner:
     """Provides an in-memory runner for the agent."""
-    # Mark the app as resumable. So that the invocation will be paused after the
-    # long running tool call.
+    # Mark the app as resumable. So that the invocation will be paused when
+    # tool confirmation is requested.
     app = App(
         name="test_app",
         resumability_config=ResumabilityConfig(is_resumable=True),
@@ -427,8 +429,8 @@ class TestHITLConfirmationFlowWithResumableApp:
     """Tests HITL flow where all tool calls are confirmed."""
     events = runner.run("test user query")
 
-    # Verify that the invocation is paused after the long running tool call.
-    # So that no intermediate function response and llm response is generated.
+    # Verify that the invocation is paused when tool confirmation is requested.
+    # The tool call returns error response, and summarization was skipped.
     assert testing_utils.simplify_resumable_app_events(
         copy.deepcopy(events)
     ) == [
@@ -448,10 +450,18 @@ class TestHITLConfirmationFlowWithResumableApp:
                             "args": {},
                         },
                         "toolConfirmation": {
-                            "hint": "test hint for request_confirmation",
+                            "hint": HINT_TEXT,
                             "confirmed": False,
                         },
                     },
+                )
+            ),
+        ),
+        (
+            agent.name,
+            Part(
+                function_response=FunctionResponse(
+                    name=agent.tools[0].name, response=TOOL_CALL_ERROR_RESPONSE
                 )
             ),
         ),
@@ -499,7 +509,7 @@ class TestHITLConfirmationFlowWithSequentialAgentAndResumableApp:
   @pytest.fixture
   def tools(self) -> list[FunctionTool]:
     """Provides the tools for the agent."""
-    return [FunctionTool(func=_test_request_confirmation_function)]
+    return [FunctionTool(func=_test_function, require_confirmation=True)]
 
   @pytest.fixture
   def llm_responses(
@@ -535,8 +545,8 @@ class TestHITLConfirmationFlowWithSequentialAgentAndResumableApp:
   @pytest.fixture
   def runner(self, agent: SequentialAgent) -> testing_utils.InMemoryRunner:
     """Provides an in-memory runner for the agent."""
-    # Mark the app as resumable. So that the invocation will be paused after the
-    # long running tool call.
+    # Mark the app as resumable. So that the invocation will be paused when
+    # tool confirmation is requested.
     app = App(
         name="test_app",
         resumability_config=ResumabilityConfig(is_resumable=True),
@@ -558,8 +568,8 @@ class TestHITLConfirmationFlowWithSequentialAgentAndResumableApp:
     #   - sub_agent1 has a tool call that asks for HITL confirmation.
     #   - sub_agent2 does not have any tool calls.
     # - The test will:
-    #   - Run the query and verify that the invocation is paused after the long
-    #     running tool call, at sub_agent1.
+    #   - Run the query and verify that the invocation is paused when tool
+    #     confirmation is requested, at sub_agent1.
     #   - Resume the invocation and execute the tool call from sub_agent1.
     #   - Verify that root_agent continues to run sub_agent2.
 
@@ -568,8 +578,8 @@ class TestHITLConfirmationFlowWithSequentialAgentAndResumableApp:
     sub_agent2 = agent.sub_agents[1]
 
     # Step 1:
-    # Verify that the invocation is paused after the long running tool call.
-    # So that no intermediate function response and llm response is generated.
+    # Verify that the invocation is paused when tool confirmation is requested.
+    # So that no intermediate llm response is generated.
     # And the second sub agent is not started.
     assert testing_utils.simplify_resumable_app_events(
         copy.deepcopy(events)
@@ -600,10 +610,19 @@ class TestHITLConfirmationFlowWithSequentialAgentAndResumableApp:
                             "args": {},
                         },
                         "toolConfirmation": {
-                            "hint": "test hint for request_confirmation",
+                            "hint": HINT_TEXT,
                             "confirmed": False,
                         },
                     },
+                )
+            ),
+        ),
+        (
+            sub_agent1.name,
+            Part(
+                function_response=FunctionResponse(
+                    name=sub_agent1.tools[0].name,
+                    response=TOOL_CALL_ERROR_RESPONSE,
                 )
             ),
         ),
@@ -664,7 +683,7 @@ class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
   @pytest.fixture
   def tools(self) -> list[FunctionTool]:
     """Provides the tools for the agent."""
-    return [FunctionTool(func=_test_request_confirmation_function)]
+    return [FunctionTool(func=_test_function, require_confirmation=True)]
 
   @pytest.fixture
   def llm_responses(
@@ -702,8 +721,8 @@ class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
   @pytest.fixture
   def runner(self, agent: ParallelAgent) -> testing_utils.InMemoryRunner:
     """Provides an in-memory runner for the agent."""
-    # Mark the app as resumable. So that the invocation will be paused after the
-    # long running tool call.
+    # Mark the app as resumable. So that the invocation will be paused when
+    # tool confirmation is requested.
     app = App(
         name="test_app",
         resumability_config=ResumabilityConfig(is_resumable=True),
@@ -725,15 +744,15 @@ class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
     #   sub_agent2.
     # - Both sub_agents have a tool call that asks for HITL confirmation.
     # - The test will:
-    #   - Run the query and verify that each branch is paused after the long
-    #     running tool call.
+    #   - Run the query and verify that each branch is paused when tool
+    #     confirmation is requested.
     #   - Resume the invocation and execute the tool call of each branch.
 
     sub_agent1 = agent.sub_agents[0]
     sub_agent2 = agent.sub_agents[1]
 
     # Verify that each branch is paused after the long running tool call.
-    # So that no intermediate function response and llm response is generated.
+    # So that no intermediate llm response is generated.
     root_agent_events = [event for event in events if event.branch is None]
     sub_agent1_branch_events = [
         event
@@ -776,10 +795,19 @@ class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
                             "args": {},
                         },
                         "toolConfirmation": {
-                            "hint": "test hint for request_confirmation",
+                            "hint": HINT_TEXT,
                             "confirmed": False,
                         },
                     },
+                )
+            ),
+        ),
+        (
+            sub_agent1.name,
+            Part(
+                function_response=FunctionResponse(
+                    name=sub_agent1.tools[0].name,
+                    response=TOOL_CALL_ERROR_RESPONSE,
                 )
             ),
         ),
@@ -807,10 +835,19 @@ class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
                             "args": {},
                         },
                         "toolConfirmation": {
-                            "hint": "test hint for request_confirmation",
+                            "hint": HINT_TEXT,
                             "confirmed": False,
                         },
                     },
+                )
+            ),
+        ),
+        (
+            sub_agent2.name,
+            Part(
+                function_response=FunctionResponse(
+                    name=sub_agent2.tools[0].name,
+                    response=TOOL_CALL_ERROR_RESPONSE,
                 )
             ),
         ),
@@ -893,7 +930,7 @@ class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
             sub_agent2.name,
             Part(
                 function_response=FunctionResponse(
-                    name=sub_agent1.tools[0].name,
+                    name=sub_agent2.tools[0].name,
                     response={"result": "confirmed=True"},
                 )
             ),

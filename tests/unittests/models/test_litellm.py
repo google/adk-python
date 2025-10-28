@@ -548,6 +548,41 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
   )
 
 
+@pytest.mark.asyncio
+async def test_generate_content_async_adds_fallback_user_message(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  user_messages = [
+      message for message in kwargs["messages"] if message["role"] == "user"
+  ]
+  assert any(
+      message.get("content")
+      == "Handle the requests as specified in the System Instruction."
+      for message in user_messages
+  )
+  assert (
+      sum(1 for content in llm_request.contents if content.role == "user") == 1
+  )
+  assert llm_request.contents[-1].parts[0].text == (
+      "Handle the requests as specified in the System Instruction."
+  )
+
+
 litellm_append_user_content_test_cases = [
     pytest.param(
         LlmRequest(
