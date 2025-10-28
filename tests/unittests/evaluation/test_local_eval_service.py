@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import Optional
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.errors.not_found_error import NotFoundError
@@ -70,6 +71,10 @@ def eval_service(
   DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
       metric_info=FakeEvaluator.get_metric_info(), evaluator=FakeEvaluator
   )
+  DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
+      metric_info=FakeSingleSidedEvaluator.get_metric_info(),
+      evaluator=FakeSingleSidedEvaluator,
+  )
   return LocalEvalService(
       root_agent=dummy_agent,
       eval_sets_manager=mock_eval_sets_manager,
@@ -95,8 +100,10 @@ class FakeEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ):
+    if expected_invocations is None:
+      raise ValueError("expected_invocations is required for this metric.")
     per_invocation_results = []
     for actual, expected in zip(actual_invocations, expected_invocations):
       per_invocation_results.append(
@@ -109,6 +116,42 @@ class FakeEvaluator(Evaluator):
       )
     return EvaluationResult(
         overall_score=0.9,
+        overall_eval_status=EvalStatus.PASSED,
+        per_invocation_results=per_invocation_results,
+    )
+
+
+class FakeSingleSidedEvaluator(Evaluator):
+
+  def __init__(self, eval_metric: EvalMetric):
+    self._eval_metric = eval_metric
+
+  @staticmethod
+  def get_metric_info() -> MetricInfo:
+    return MetricInfo(
+        metric_name="fake_single_sided_metric",
+        description="Fake single sided metric description",
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )
+
+  def evaluate_invocations(
+      self,
+      actual_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
+  ):
+    per_invocation_results = []
+    for actual in actual_invocations:
+      per_invocation_results.append(
+          PerInvocationResult(
+              actual_invocation=actual,
+              score=0.995,
+              eval_status=EvalStatus.PASSED,
+          )
+      )
+    return EvaluationResult(
+        overall_score=0.95,
         overall_eval_status=EvalStatus.PASSED,
         per_invocation_results=per_invocation_results,
     )
@@ -224,19 +267,27 @@ async def test_perform_inference_eval_set_not_found(
 async def test_evaluate_success(
     eval_service, mock_eval_sets_manager, mock_eval_set_results_manager, mocker
 ):
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
   inference_results = [
       InferenceResult(
           app_name="test_app",
           eval_set_id="test_eval_set",
           eval_case_id="case1",
-          inferences=[],
+          inferences=[invocation.model_copy(deep=True)],
           session_id="session1",
       ),
       InferenceResult(
           app_name="test_app",
           eval_set_id="test_eval_set",
           eval_case_id="case2",
-          inferences=[],
+          inferences=[invocation.model_copy(deep=True)],
           session_id="session2",
       ),
   ]
@@ -247,7 +298,7 @@ async def test_evaluate_success(
   )
 
   mock_eval_case = mocker.MagicMock(spec=EvalCase)
-  mock_eval_case.conversation = []
+  mock_eval_case.conversation = [invocation.model_copy(deep=True)]
   mock_eval_case.conversation_scenario = None
   mock_eval_case.session_input = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
@@ -357,7 +408,7 @@ async def test_evaluate_single_inference_result(
 
 
 @pytest.mark.asyncio
-async def test_evaluate_single_inference_result_skipped_for_conversation_scenario(
+async def test_evaluate_single_inference_result_for_conversation_scenario(
     eval_service, mock_eval_sets_manager, mocker
 ):
   """To be removed once evaluation is implemented for conversation scenarios."""
@@ -373,10 +424,16 @@ async def test_evaluate_single_inference_result_skipped_for_conversation_scenari
       app_name="test_app",
       eval_set_id="test_eval_set",
       eval_case_id="case1",
-      inferences=[invocation.model_copy(deep=True)],
+      inferences=[
+          invocation.model_copy(deep=True),
+          invocation.model_copy(deep=True),
+          invocation.model_copy(deep=True),
+      ],
       session_id="session1",
   )
-  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  eval_metric = EvalMetric(
+      metric_name="fake_single_sided_metric", threshold=0.5
+  )
   evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
 
   mock_eval_case = mocker.MagicMock(spec=EvalCase)
@@ -390,15 +447,77 @@ async def test_evaluate_single_inference_result_skipped_for_conversation_scenari
   )
   assert isinstance(result, EvalCaseResult)
   assert result.eval_id == "case1"
-  assert result.final_eval_status == EvalStatus.NOT_EVALUATED
-  assert not result.overall_eval_metric_results
-  assert len(result.eval_metric_result_per_invocation) == 1
-  invocation_result = result.eval_metric_result_per_invocation[0]
-  assert not invocation_result.eval_metric_results
+  assert result.final_eval_status == EvalStatus.PASSED
+  assert len(result.overall_eval_metric_results) == 1
   assert (
-      invocation_result.expected_invocation.final_response.parts[0].text
-      == "N/A"
+      result.overall_eval_metric_results[0].metric_name
+      == "fake_single_sided_metric"
   )
+  assert result.overall_eval_metric_results[0].score == 0.95
+  mock_eval_sets_manager.get_eval_case.assert_called_once_with(
+      app_name="test_app", eval_set_id="test_eval_set", eval_case_id="case1"
+  )
+
+  assert len(result.eval_metric_result_per_invocation) == 3
+  for i in range(3):
+    invocation_result = result.eval_metric_result_per_invocation[i]
+    assert invocation_result.actual_invocation == inference_result.inferences[i]
+    assert invocation_result.expected_invocation == None
+    assert len(invocation_result.eval_metric_results) == 1
+    metric_result = invocation_result.eval_metric_results[0]
+    assert metric_result.metric_name == "fake_single_sided_metric"
+    assert metric_result.score == 0.995
+    assert metric_result.eval_status == EvalStatus.PASSED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_single_inference_result_for_conversation_scenario_with_unsupported_metric(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  """To be removed once evaluation is implemented for conversation scenarios."""
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=[
+          invocation.model_copy(deep=True),
+          invocation.model_copy(deep=True),
+          invocation.model_copy(deep=True),
+      ],
+      session_id="session1",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.eval_id = "case1"
+  mock_eval_case.conversation = None
+  mock_eval_case.conversation_scenario = mocker.MagicMock()
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+  assert isinstance(result, EvalCaseResult)
+  assert result.eval_id == "case1"
+  assert result.final_eval_status == EvalStatus.NOT_EVALUATED
+  assert len(result.overall_eval_metric_results) == 1
+  assert result.overall_eval_metric_results[0].metric_name == "fake_metric"
+  assert result.overall_eval_metric_results[0].score is None
+  mock_eval_sets_manager.get_eval_case.assert_called_once_with(
+      app_name="test_app", eval_set_id="test_eval_set", eval_case_id="case1"
+  )
+
+  assert len(result.eval_metric_result_per_invocation) == 3
 
 
 def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
@@ -424,9 +543,11 @@ async def test_mcp_stdio_agent_no_runtime_error(mocker):
   """Test that LocalEvalService can handle MCP stdio agents without RuntimeError.
 
   This is a regression test for GitHub issue #2196:
-  "RuntimeError: Attempted to exit cancel scope in a different task than it was entered in"
+  "RuntimeError: Attempted to exit cancel scope in a different task than it was
+  entered in"
 
-  The fix ensures that Runner.close() is called to properly cleanup MCP connections.
+  The fix ensures that Runner.close() is called to properly cleanup MCP
+  connections.
   """
   import tempfile
 

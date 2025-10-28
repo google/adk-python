@@ -33,7 +33,7 @@ class PerInvocationResult(BaseModel):
   """Metric evaluation score per invocation."""
 
   actual_invocation: Invocation
-  expected_invocation: Invocation
+  expected_invocation: Optional[Invocation] = None
   score: Optional[float] = None
   eval_status: EvalStatus = EvalStatus.NOT_EVALUATED
   rubric_scores: Optional[list[RubricScore]] = None
@@ -61,7 +61,16 @@ class Evaluator(ABC):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
-    """Returns EvaluationResult after performing evaluations using actual and expected invocations."""
+    """Returns EvaluationResult after performing evaluations using actual and expected invocations.
+
+    Args:
+      actual_invocations: These are the invocations that are obtained from the
+        agent under test.
+      expected_invocations: An optional list of invocations, if specified,
+        usually act as a benchmark/golden response. If these are specified
+        usually the expectation is that the length of this list and actual
+        invocaiton is the same.
+    """
     raise NotImplementedError()
