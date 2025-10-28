@@ -806,6 +806,17 @@ class LiteLlm(BaseLlm):
         _get_completion_inputs(llm_request)
     )
 
+    # Fix for include_contents='none' resulting in empty content error
+    # Ensure messages list is not empty (aligns with _maybe_append_user_content fallback)
+    if not messages:
+        messages = [
+            ChatCompletionUserMessage(
+                role="user",
+                content="Handle the requests as specified in the System Instruction."
+            )
+        ]
+
+
     if "functions" in self._additional_args:
       # LiteLLM does not support both tools and functions together.
       tools = None
