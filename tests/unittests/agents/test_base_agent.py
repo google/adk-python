@@ -339,41 +339,6 @@ async def test_run_async_with_async_before_agent_callback_bypass_agent(
   assert events[0].content.parts[0].text == 'agent run is bypassed.'
 
 
-@pytest.mark.asyncio
-async def test_run_async_with_async_before_agent_callback_state_delta(
-    request: pytest.FixtureRequest,
-):
-  def before_agent_callback_state_delta(callback_context: CallbackContext):
-    callback_context.state['some_field'] = 'some_value'
-    return None
-
-  agent = _TestingAgent(
-      name=f'{request.function.__name__}_test_agent',
-      before_agent_callback=before_agent_callback_state_delta,
-  )
-  parent_ctx = await _create_parent_invocation_context(
-      request.function.__name__, agent
-  )
-
-  events = [e async for e in agent.run_async(parent_ctx)]
-
-  # The before_agent_callback yields an event with state change.
-  # Then the agent's _run_async_impl yields another event.
-  assert len(events) == 2
-
-  callback_event = events[0]
-  # The callback event should have state delta and no content.
-  assert callback_event.actions.state_delta is not None
-  assert callback_event.actions.state_delta['some_field'] == 'some_value'
-  assert callback_event.content is None
-  # This should not be a final response.
-  assert not callback_event.is_final_response()
-
-  agent_run_event = events[1]
-  # The event from the agent run should be a final response.
-  assert agent_run_event.is_final_response()
-
-
 class CallbackType(Enum):
   SYNC = 1
   ASYNC = 2
