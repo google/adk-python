@@ -27,6 +27,7 @@ from google.genai import Client
 from google.genai import types
 from typing_extensions import override
 
+from ..utils.env_utils import is_env_enabled
 from .google_llm import Gemini
 
 if TYPE_CHECKING:
@@ -142,10 +143,7 @@ def _identify_vertexai(model: str) -> bool:
   """Returns True if the model spec starts with apigee/vertex_ai."""
   return not model.startswith('apigee/gemini/') and (
       model.startswith('apigee/vertex_ai/')
-      or os.environ.get(
-          _GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME, '0'
-      ).lower()
-      in ['true', '1']
+      or is_env_enabled(_GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME)
   )
 
 
