@@ -356,12 +356,18 @@ class MockApiClient:
       self.event_dict[session_id] = ([event_json], None)
 
 
-def mock_vertex_ai_session_service(agent_engine_id: Optional[str] = None):
+def mock_vertex_ai_session_service(
+    project: Optional[str] = 'test-project',
+    location: Optional[str] = 'test-location',
+    agent_engine_id: Optional[str] = None,
+    express_mode_api_key: Optional[str] = None,
+):
   """Creates a mock Vertex AI Session service for testing."""
   return VertexAiSessionService(
-      project='test-project',
-      location='test-location',
+      project=project,
+      location=location,
       agent_engine_id=agent_engine_id,
+      express_mode_api_key=express_mode_api_key,
   )
 
 
@@ -391,6 +397,21 @@ def mock_get_api_client(mock_api_client_instance):
       return_value=mock_api_client_instance,
   ):
     yield
+
+
+@pytest.mark.asyncio
+async def test_initialize_with_project_location_and_api_key_error():
+  with pytest.raises(ValueError) as excinfo:
+    mock_vertex_ai_session_service(
+        project='test-project',
+        location='test-location',
+        express_mode_api_key='test-api-key',
+    )
+  assert (
+      'Cannot specify project or location and express_mode_api_key. Either use'
+      ' project and location, or just the express_mode_api_key.'
+      in str(excinfo.value)
+  )
 
 
 @pytest.mark.asyncio
