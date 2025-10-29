@@ -17,7 +17,6 @@ import asyncio
 import datetime
 import json
 import logging
-import os
 import re
 from typing import Any
 from typing import Optional
@@ -35,7 +34,8 @@ import vertexai
 from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from ..utils.env_utils import is_env_enabled
+from ..utils.vertex_ai_utils import get_express_mode_api_key
+from ..utils.vertex_ai_utils import is_vertex_express_mode
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -55,6 +55,8 @@ class VertexAiSessionService(BaseSessionService):
       project: Optional[str] = None,
       location: Optional[str] = None,
       agent_engine_id: Optional[str] = None,
+      *,
+      express_mode_api_key: Optional[str] = None,
   ):
     """Initializes the VertexAiSessionService.
 
@@ -62,10 +64,19 @@ class VertexAiSessionService(BaseSessionService):
       project: The project id of the project to use.
       location: The location of the project to use.
       agent_engine_id: The resource ID of the agent engine to use.
+      express_mode_api_key: The API key to use for Express Mode. If not
+        provided, the API key from the GOOGLE_API_KEY environment variable will
+        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
+        Do not use Google AI Studio API key for this field. For more details,
+        visit
+        https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
+    self._express_mode_api_key = get_express_mode_api_key(
+        project, location, express_mode_api_key
+    )
 
   @override
   async def create_session(
@@ -104,7 +115,9 @@ class VertexAiSessionService(BaseSessionService):
     config = {'session_state': state} if state else {}
     config.update(kwargs)
 
-    if _is_vertex_express_mode(self._project, self._location):
+    if is_vertex_express_mode(
+        self._project, self._location, self._express_mode_api_key
+    ):
       config['wait_for_completion'] = False
       api_response = await api_client.aio.agent_engines.sessions.create(
           name=f'reasoningEngines/{reasoning_engine_id}',
@@ -351,25 +364,14 @@ class VertexAiSessionService(BaseSessionService):
     """Instantiates an API client for the given project and location.
 
     Returns:
-      An API client for the given project and location.
+      An API client for the given project and location or express mode api key.
     """
     return vertexai.Client(
         project=self._project,
         location=self._location,
         http_options=self._api_client_http_options_override(),
+        api_key=self._express_mode_api_key,
     )
-
-
-def _is_vertex_express_mode(
-    project: Optional[str], location: Optional[str]
-) -> bool:
-  """Check if Vertex AI and API key are both enabled replacing project and location, meaning the user is using the Vertex Express Mode."""
-  return (
-      is_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
-      and os.environ.get('GOOGLE_API_KEY', None) is not None
-      and project is None
-      and location is None
-  )
 
 
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:

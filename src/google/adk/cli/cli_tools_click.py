@@ -754,10 +754,8 @@ def cli_create_eval_set(
     type=click.Path(
         exists=True, dir_okay=False, file_okay=True, resolve_path=True
     ),
-    help=(
-        "Optional. Path to session file containing SessionInput in JSON format."
-    ),
-    default=None,
+    help="Path to session file containing SessionInput in JSON format.",
+    required=True,
 )
 @eval_options()
 def cli_add_eval_case(
@@ -787,10 +785,8 @@ def cli_add_eval_case(
   eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
 
   try:
-    session_input = None
-    if session_input_file:
-      with open(session_input_file, "r") as f:
-        session_input = SessionInput.model_validate_json(f.read())
+    with open(session_input_file, "r") as f:
+      session_input = SessionInput.model_validate_json(f.read())
 
     with open(scenarios_file, "r") as f:
       conversation_scenarios = ConversationScenarios.model_validate_json(
