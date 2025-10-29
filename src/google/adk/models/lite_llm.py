@@ -247,13 +247,15 @@ def _content_to_message_param(
 
   # Handle user or assistant messages
   role = _to_litellm_role(content.role)
-  message_content = _get_content(content.parts) or None
 
   if role == "user":
+    message_content = _get_content(content.parts) or None
     return ChatCompletionUserMessage(role="user", content=message_content)
   else:  # assistant/model
     tool_calls = []
-    content_present = False
+    thinking_blocks = []
+    other_parts = []
+
     for part in content.parts:
       if part.function_call:
         tool_calls.append(
@@ -266,23 +268,40 @@ def _content_to_message_param(
                 ),
             )
         )
-      elif part.text or part.inline_data:
-        content_present = True
+      elif part.thought:
+        if (
+            part.thought_signature
+            and part.thought_signature.decode("utf-8") == "redacted_thinking"
+        ):
+          thinking_block = {
+              "type": "redacted_thinking",
+              "data": part.text,
+          }
+        else:
+          thinking_block = {"type": "thinking"}
+          if part.thought_signature:
+            thinking_block["signature"] = part.thought_signature.decode("utf-8")
+          if part.text:
+            thinking_block["thinking"] = part.text
+        thinking_blocks.append(thinking_block)
+      else:
+        other_parts.append(part)
 
-    final_content = message_content if content_present else None
-    if final_content and isinstance(final_content, list):
+    message_content = _get_content(other_parts) or None
+    if message_content and isinstance(message_content, list):
       # when the content is a single text object, we can use it directly.
       # this is needed for ollama_chat provider which fails if content is a list
-      final_content = (
-          final_content[0].get("text", "")
-          if final_content[0].get("type", None) == "text"
-          else final_content
+      message_content = (
+          message_content[0].get("text", "")
+          if message_content[0].get("type", None) == "text"
+          else message_content
       )
 
     return ChatCompletionAssistantMessage(
         role=role,
-        content=final_content,
+        content=message_content,
         tool_calls=tool_calls or None,
+        thinking_blocks=thinking_blocks or None,
     )
 
 
@@ -602,6 +621,31 @@ def _message_to_generate_content_response(
   if message.get("content", None):
     parts.append(types.Part.from_text(text=message.get("content")))
 
+  if message.get("thinking_blocks"):
+    for block in message.get("thinking_blocks"):
+      if block.get("type") == "thinking":
+        signature = block.get("signature")
+        thought = block.get("thinking")
+        part = types.Part(
+          thought=True,
+          thought_signature=signature.encode("utf-8") if signature else None,
+          text=thought,
+        )
+        parts.append(part)
+      elif  block.get("type") == "redacted_thinking":
+        # Part doesn't have redacted thinking type
+        # therefore use signature field to show redacted thinking
+        signature="redacted_thinking"
+        thought = block.get("data")
+        part = types.Part(
+          thought=True,
+          thought_signature=signature.encode("utf-8") if signature else None,
+          text=thought,
+        )
+        parts.append(part)
+      else:
+        logging.warning(f'ignoring unsupported thinking block type {type(block)}')
+
   if message.get("tool_calls", None):
     for tool_call in message.get("tool_calls"):
       if tool_call.type == "function":
@@ -611,7 +655,6 @@ def _message_to_generate_content_response(
         )
         part.function_call.id = tool_call.id
         parts.append(part)
-
   return LlmResponse(
       content=types.Content(role="model", parts=parts), partial=is_partial
   )
