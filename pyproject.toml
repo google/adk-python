@@ -25,43 +25,43 @@ classifiers = [ # List of https://pypi.org/classifiers/
 ]
 dependencies = [
   # go/keep-sorted start
-  "PyYAML>=6.0.2, <7.0.0",                                  # For APIHubToolset.
-  "absolufy-imports>=0.3.1, <1.0.0",                        # For Agent Engine deployment.
-  "anyio>=4.9.0, <5.0.0;python_version>='3.10'",            # For MCP Session Manager
-  "authlib>=1.5.1, <2.0.0",                                 # For RestAPI Tool
-  "click>=8.1.8, <9.0.0",                                   # For CLI tools
-  "fastapi>=0.115.0, <1.0.0",                               # FastAPI framework
-  "google-api-python-client>=2.157.0, <3.0.0",              # Google API client discovery
-  "google-cloud-aiplatform[agent_engines]>=1.121.0, <2.0.0",# For VertexAI integrations, e.g. example store.
-  "google-cloud-bigtable>=2.32.0",                          # For Bigtable database
-  "google-cloud-discoveryengine>=0.13.12, <0.14.0",         # For Discovery Engine Search Tool
-  "google-cloud-secret-manager>=2.22.0, <3.0.0",            # Fetching secrets in RestAPI Tool
-  "google-cloud-spanner>=3.56.0, <4.0.0",                   # For Spanner database
-  "google-cloud-speech>=2.30.0, <3.0.0",                    # For Audio Transcription
-  "google-cloud-storage>=2.18.0, <3.0.0",                   # For GCS Artifact service
-  "google-genai>=1.41.0, <2.0.0",                                   # Google GenAI SDK
-  "graphviz>=0.20.2, <1.0.0",                               # Graphviz for graph rendering
-  "mcp>=1.8.0, <2.0.0;python_version>='3.10'",              # For MCP Toolset
-  "opentelemetry-api>=1.37.0, <=1.37.0",                    # OpenTelemetry - limit upper version for sdk and api to not risk breaking changes from unstable _logs package.
+  "PyYAML>=6.0.2, <7.0.0",                                   # For APIHubToolset.
+  "absolufy-imports>=0.3.1, <1.0.0",                         # For Agent Engine deployment.
+  "anyio>=4.9.0, <5.0.0;python_version>='3.10'",             # For MCP Session Manager
+  "authlib>=1.5.1, <2.0.0",                                  # For RestAPI Tool
+  "click>=8.1.8, <9.0.0",                                    # For CLI tools
+  "fastapi>=0.115.0, <1.119.0",                              # FastAPI framework
+  "google-api-python-client>=2.157.0, <3.0.0",               # Google API client discovery
+  "google-cloud-aiplatform[agent_engines]>=1.121.0, <2.0.0", # For VertexAI integrations, e.g. example store.
+  "google-cloud-bigtable>=2.32.0",                           # For Bigtable database
+  "google-cloud-discoveryengine>=0.13.12, <0.14.0",          # For Discovery Engine Search Tool
+  "google-cloud-secret-manager>=2.22.0, <3.0.0",             # Fetching secrets in RestAPI Tool
+  "google-cloud-spanner>=3.56.0, <4.0.0",                    # For Spanner database
+  "google-cloud-speech>=2.30.0, <3.0.0",                     # For Audio Transcription
+  "google-cloud-storage>=2.18.0, <3.0.0",                    # For GCS Artifact service
+  "google-genai>=1.45.0, <2.0.0",                            # Google GenAI SDK
+  "graphviz>=0.20.2, <1.0.0",                                # Graphviz for graph rendering
+  "mcp>=1.8.0, <2.0.0;python_version>='3.10'",               # For MCP Toolset
+  "opentelemetry-api>=1.37.0, <=1.37.0",                     # OpenTelemetry - limit upper version for sdk and api to not risk breaking changes from unstable _logs package.
   "opentelemetry-exporter-gcp-logging>=1.9.0a0, <2.0.0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0, <2.0.0",
   "opentelemetry-exporter-gcp-trace>=1.9.0, <2.0.0",
   "opentelemetry-exporter-otlp-proto-http>=1.36.0",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
   "opentelemetry-sdk>=1.37.0, <=1.37.0",
-  "pydantic>=2.0, <3.0.0",                                  # For data validation/models
-  "python-dateutil>=2.9.0.post0, <3.0.0",                   # For Vertext AI Session Service
-  "python-dotenv>=1.0.0, <2.0.0",                           # To manage environment variables
+  "pydantic>=2.0, <3.0.0",                                   # For data validation/models
+  "python-dateutil>=2.9.0.post0, <3.0.0",                    # For Vertext AI Session Service
+  "python-dotenv>=1.0.0, <2.0.0",                            # To manage environment variables
   "requests>=2.32.4, <3.0.0",
-  "sqlalchemy-spanner>=1.14.0",                             # Spanner database session service
-  "sqlalchemy>=2.0, <3.0.0",                                # SQL database ORM
-  "starlette>=0.46.2, <1.0.0",                              # For FastAPI CLI
-  "tenacity>=8.0.0, <9.0.0",                                # For Retry management
+  "sqlalchemy-spanner>=1.14.0",                              # Spanner database session service
+  "sqlalchemy>=2.0, <3.0.0",                                 # SQL database ORM
+  "starlette>=0.46.2, <1.0.0",                               # For FastAPI CLI
+  "tenacity>=9.0.0, <10.0.0",                                # For Retry management
   "typing-extensions>=4.5, <5",
-  "tzlocal>=5.3, <6.0",                                     # Time zone utilities
-  "uvicorn>=0.34.0, <1.0.0",                                # ASGI server for FastAPI
-  "watchdog>=6.0.0, <7.0.0",                                # For file change detection and hot reload
-  "websockets>=15.0.1, <16.0.0",                            # For BaseLlmFlow
+  "tzlocal>=5.3, <6.0",                                      # Time zone utilities
+  "uvicorn>=0.34.0, <1.0.0",                                 # ASGI server for FastAPI
+  "watchdog>=6.0.0, <7.0.0",                                 # For file change detection and hot reload
+  "websockets>=15.0.1, <16.0.0",                             # For BaseLlmFlow
   # go/keep-sorted end
 ]
 dynamic = ["version"]
@@ -111,17 +111,18 @@ eval = [
 test = [
   # go/keep-sorted start
   "a2a-sdk>=0.3.0,<0.4.0;python_version>='3.10'",
-  "anthropic>=0.43.0",                      # For anthropic model tests
-  "kubernetes>=29.0.0",                     # For GkeCodeExecutor
+  "anthropic>=0.43.0",                            # For anthropic model tests
+  "crewai[tools];python_version>='3.10'",         # For CrewaiTool tests
+  "kubernetes>=29.0.0",                           # For GkeCodeExecutor
   "langchain-community>=0.3.17",
-  "langgraph>=0.2.60, <0.4.8",              # For LangGraphAgent
-  "litellm>=1.75.5, <2.0.0",                # For LiteLLM tests
-  "llama-index-readers-file>=0.4.0",        # For retrieval tests
-  "openai>=1.100.2",                        # For LiteLLM
-  "pytest>=8.3.4",
+  "langgraph>=0.2.60, <0.4.8",                    # For LangGraphAgent
+  "litellm>=1.75.5, <2.0.0",                      # For LiteLLM tests
+  "llama-index-readers-file>=0.4.0",              # For retrieval tests
+  "openai>=1.100.2",                              # For LiteLLM
   "pytest-asyncio>=0.25.0",
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
+  "pytest>=8.3.4",
   "python-multipart>=0.0.9",
   "rouge-score>=0.1.2",
   "tabulate>=0.9.0",
@@ -139,22 +140,20 @@ docs = [
 
 # Optional extensions
 extensions = [
-  "anthropic>=0.43.0",                         # For anthropic model support
-  "beautifulsoup4>=3.2.2",                     # For load_web_page tool.
-  "crewai[tools];python_version>='3.10'",      # For CrewaiTool
-  "docker>=7.0.0",                             # For ContainerCodeExecutor
-  "kubernetes>=29.0.0",                        # For GkeCodeExecutor
-  "langgraph>=0.2.60, <0.4.8",                 # For LangGraphAgent
-  "litellm>=1.75.5",                           # For LiteLlm class. Currently has OpenAI limitations. TODO: once LiteLlm fix it
-  "llama-index-readers-file>=0.4.0",           # For retrieval using LlamaIndex.
-  "llama-index-embeddings-google-genai>=0.3.0",# For files retrieval using LlamaIndex.
-  "lxml>=5.3.0",                               # For load_web_page tool.
-  "toolbox-core>=0.1.0",                       # For tools.toolbox_toolset.ToolboxToolset
+  "anthropic>=0.43.0",                          # For anthropic model support
+  "beautifulsoup4>=3.2.2",                      # For load_web_page tool.
+  "crewai[tools];python_version>='3.10'",       # For CrewaiTool
+  "docker>=7.0.0",                              # For ContainerCodeExecutor
+  "kubernetes>=29.0.0",                         # For GkeCodeExecutor
+  "langgraph>=0.2.60, <0.4.8",                  # For LangGraphAgent
+  "litellm>=1.75.5",                            # For LiteLlm class. Currently has OpenAI limitations. TODO: once LiteLlm fix it
+  "llama-index-readers-file>=0.4.0",            # For retrieval using LlamaIndex.
+  "llama-index-embeddings-google-genai>=0.3.0", # For files retrieval using LlamaIndex.
+  "lxml>=5.3.0",                                # For load_web_page tool.
+  "toolbox-core>=0.1.0",                        # For tools.toolbox_toolset.ToolboxToolset
 ]
 
-otel-gcp = [
-  "opentelemetry-instrumentation-google-genai>=0.3b0, <1.0.0",
-]
+otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.3b0, <1.0.0"]
 
 
 [tool.pyink]

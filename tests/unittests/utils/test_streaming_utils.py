@@ -179,3 +179,24 @@ class TestStreamingResponseAggregator:
     assert closed_response.content.parts[0].text == "Error"
     assert closed_response.error_code == types.FinishReason.RECITATION
     assert closed_response.error_message == "Recitation error"
+
+  @pytest.mark.asyncio
+  async def test_process_response_with_none_content(self):
+    """Test that StreamingResponseAggregator handles content=None."""
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    response = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=types.Content(parts=[]),
+                finish_reason=types.FinishReason.STOP,
+            )
+        ]
+    )
+    results = []
+    async for r in aggregator.process_response(response):
+      results.append(r)
+    assert len(results) == 1
+    assert results[0].content is not None
+
+    closed_response = aggregator.close()
+    assert closed_response is None

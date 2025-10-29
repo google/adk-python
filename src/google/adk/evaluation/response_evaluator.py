@@ -100,7 +100,7 @@ class ResponseEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
     # If the metric is response_match_score, just use the RougeEvaluator.
     if self._metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value:
@@ -112,5 +112,7 @@ class ResponseEvaluator(Evaluator):
       )
 
     return _VertexAiEvalFacade(
-        threshold=self._threshold, metric_name=self._metric_name
+        threshold=self._threshold,
+        metric_name=self._metric_name,
+        expected_invocations_required=True,
     ).evaluate_invocations(actual_invocations, expected_invocations)

@@ -22,6 +22,7 @@ from google.genai import types
 from typing_extensions import override
 import vertexai
 
+from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -40,6 +41,8 @@ class VertexAiMemoryBankService(BaseMemoryService):
       project: Optional[str] = None,
       location: Optional[str] = None,
       agent_engine_id: Optional[str] = None,
+      *,
+      express_mode_api_key: Optional[str] = None,
   ):
     """Initializes a VertexAiMemoryBankService.
 
@@ -49,10 +52,19 @@ class VertexAiMemoryBankService(BaseMemoryService):
       agent_engine_id: The ID of the agent engine to use for the Memory Bank.
         e.g. '456' in
         'projects/my-project/locations/us-central1/reasoningEngines/456'.
+      express_mode_api_key: The API key to use for Express Mode. If not
+        provided, the API key from the GOOGLE_API_KEY environment variable will
+        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
+        Do not use Google AI Studio API key for this field. For more details,
+        visit
+        https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
+    self._express_mode_api_key = get_express_mode_api_key(
+        project, location, express_mode_api_key
+    )
 
   @override
   async def add_session_to_memory(self, session: Session):
@@ -123,11 +135,14 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
     It needs to be instantiated inside each request so that the event loop
     management can be properly propagated.
-
     Returns:
-      An API client for the given project and location.
+      An API client for the given project and location or express mode api key.
     """
-    return vertexai.Client(project=self._project, location=self._location)
+    return vertexai.Client(
+        project=self._project,
+        location=self._location,
+        api_key=self._express_mode_api_key,
+    )
 
 
 def _should_filter_out_event(content: types.Content) -> bool:
