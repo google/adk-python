@@ -21,6 +21,9 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
 
   Fetches metadata about a BigQuery table.
 
+5. `get_job_info`
+  Fetches metadata about a BigQuery job.
+
 5. `execute_sql`
 
   Runs or dry-runs a SQL query in BigQuery.
