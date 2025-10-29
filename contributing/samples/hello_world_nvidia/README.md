@@ -1,20 +1,23 @@
-# Using NVIDIA Models with ADK via LiteLLM
+# Using NVIDIA Models with ADK and LiteLLM
 
 This example demonstrates how to use NVIDIA NIM (NVIDIA Inference Microservices) models with ADK through LiteLLM integration.
 
-For comprehensive information about using NVIDIA models with LiteLLM, refer to the [official LiteLLM NVIDIA NIM documentation](https://github.com/BerriAI/litellm/blob/main/docs/my-website/docs/providers/nvidia_nim.md?plain=1).
+For comprehensive information about using NVIDIA models with LiteLLM, refer to the [official LiteLLM documentation](https://github.com/BerriAI/litellm/blob/main/docs/my-website/docs/providers/nvidia_nim.md).
 
 ## Setup
 
-### 1. Get NVIDIA NIM API Key
+Use the following procedure to get an NVIDIA NIM API key.
+
 
 1. Sign up at [NVIDIA AI Foundation](https://www.nvidia.com/en-us/ai-data-science/cloud/)
 2. Navigate to API section and generate an API key
 3. Copy your API key
 
-### 2. Ensure LiteLLM is Installed
+### 2. Install LiteLLM
 
-Install LiteLLM if you haven't already:
+Install LiteLLM by running the following code.
+
+
 
 ```bash
 pip install litellm

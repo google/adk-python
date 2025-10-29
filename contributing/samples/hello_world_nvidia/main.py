@@ -33,7 +33,7 @@ logs.log_to_tmp_folder()
 async def main():
   # Check for NVIDIA NIM API key
   if not os.environ.get("NVIDIA_NIM_API_KEY"):
-    print(" NVIDIA_NIM_API_KEY not set. Please set it before running:")
+    print(" Your NVIDIA_NIM_API_KEY is not set. Set it before you continue by running the following code:")
     print(" export NVIDIA_NIM_API_KEY='your-nvidia-api-key'")
     return
 
@@ -74,7 +74,7 @@ async def main():
   await run_prompt(
       session_11,
       'Run the following request 5 times: roll a die with 20 sides and check'
-      ' if it is prime',
+      'if the result is prime',
   )
   end_time = time.time()
   print('------------------------------------')
