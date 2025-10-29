@@ -724,3 +724,10 @@ async def _add_instructions_to_user_content(
       elif i == 0:
         # All content from start is user content
         insert_index = 0
+        break
+  else:
+    # No contents remaining, just append at the end
+    insert_index = 0
+
+  # Insert all instruction contents at the proper position using efficient slicing
+  llm_request.contents[insert_index:insert_index] = instruction_contents
