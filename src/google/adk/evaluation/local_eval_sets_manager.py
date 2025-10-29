@@ -324,6 +324,7 @@ class LocalEvalSetsManager(EvalSetsManager):
       )
 
   def _write_eval_set_to_path(self, eval_set_path: str, eval_set: EvalSet):
+    os.makedirs(os.path.dirname(eval_set_path), exist_ok=True)
     with open(eval_set_path, "w", encoding="utf-8") as f:
       f.write(
           eval_set.model_dump_json(

@@ -1092,3 +1092,214 @@ def analyze_contribution(
     settings.write_mode == original_write_mode
 
   return result
+
+
+def detect_anomalies(
+    project_id: str,
+    history_data: str,
+    times_series_timestamp_col: str,
+    times_series_data_col: str,
+    horizon: Optional[int] = 10,
+    times_series_id_cols: Optional[list[str]] = None,
+    anomaly_prob_threshold: Optional[float] = 0.95,
+    *,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    tool_context: ToolContext,
+) -> dict:
+  """Run a BigQuery time series ARIMA_PLUS model training and anomaly detection using CREATE MODEL and ML.DETECT_ANOMALIES clauses.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      history_data (str): The table id of the BigQuery table containing the
+        history time series data or a query statement that select the history
+        data.
+      times_series_timestamp_col (str): The name of the colum containing the
+        timestamp for each data point.
+      times_series_data_col (str): The name of the column containing the
+        numerical values to be forecasted and anomaly detected.
+      horizon (int, optional): The number of time steps to forecast into the
+        future. Defaults to 10.
+      times_series_id_cols (list, optional): The column names of the id columns
+        to indicate each time series when there are multiple time series in the
+        table. All elements must be strings. Defaults to None.
+      anomaly_prob_threshold (float, optional): The probability threshold to
+        determine if a data point is an anomaly. Defaults to 0.95.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+
+  Returns:
+      dict: Dictionary representing the result of the anomaly detection. The
+            result contains the boolean value if the data point is anomaly or
+            not, lower bound, upper bound and anomaly probability for each data
+            point and also the probability of whether the data point is anomaly
+            or not.
+
+  Examples:
+      Detect Anomalies daily sales based on historical data from a BigQuery
+      table:
+
+          >>> detect_anomalies(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.my-sales-table",
+          ...     times_series_timestamp_col="sale_date",
+          ...     times_series_data_col="daily_sales"
+          ... )
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "ts_timestamp": "2021-01-01 00:00:01 UTC",
+                "ts_data": 125.3,
+                "is_anomaly": TRUE,
+                "lower_bound": 129.5,
+                "upper_bound": 133.6 ,
+                "anomaly_probability": 0.93
+              },
+              ...
+            ]
+          }
+
+      Detect Anomalies on multiple time series using a SQL query as input:
+
+          >>> history_query = (
+          ...     "SELECT unique_id, timestamp, value "
+          ...     "FROM `my-project.my-dataset.my-timeseries-table` "
+          ...     "WHERE timestamp > '1980-01-01'"
+          ... )
+          >>> detect_anomalies(
+          ...     project_id="my-gcp-project",
+          ...     history_data=history_query,
+          ...     times_series_timestamp_col="timestamp",
+          ...     times_series_data_col="value",
+          ...     times_series_id_cols=["unique_id"]
+          ... )
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "unique_id": "T1",
+                "ts_timestamp": "2021-01-01 00:00:01 UTC",
+                "ts_data": 125.3,
+                "is_anomaly": TRUE,
+                "lower_bound": 129.5,
+                "upper_bound": 133.6 ,
+                "anomaly_probability": 0.93
+              },
+              ...
+            ]
+          }
+
+      Error Scenarios:
+          When an element in `times_series_id_cols` is not a string:
+
+          >>> detect_anomalies(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.my-sales-table",
+          ...     times_series_timestamp_col="sale_date",
+          ...     times_series_data_col="daily_sales",
+          ...     times_series_id_cols=["store_id", 123]
+          ... )
+          {
+            "status": "ERROR",
+            "error_details": "All elements in times_series_id_cols must be
+            strings."
+          }
+
+          When `history_data` refers to a table that does not exist:
+
+          >>> detect_anomalies(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.non-existent-table",
+          ...     times_series_timestamp_col="sale_date",
+          ...     times_series_data_col="daily_sales"
+          ... )
+          {
+            "status": "ERROR",
+            "error_details": "Not found: Table
+            my-gcp-project:my-dataset.non-existent-table was not found in
+            location US"
+          }
+  """
+  trimmed_upper_history_data = history_data.strip().upper()
+  if trimmed_upper_history_data.startswith(
+      "SELECT"
+  ) or trimmed_upper_history_data.startswith("WITH"):
+    history_data_source = f"({history_data})"
+  else:
+    history_data_source = f"SELECT * FROM `{history_data}`"
+
+  options = [
+      "MODEL_TYPE = 'ARIMA_PLUS'",
+      f"TIME_SERIES_TIMESTAMP_COL = '{times_series_timestamp_col}'",
+      f"TIME_SERIES_DATA_COL = '{times_series_data_col}'",
+      f"HORIZON = {horizon}",
+  ]
+
+  if times_series_id_cols:
+    if not all(isinstance(item, str) for item in times_series_id_cols):
+      return {
+          "status": "ERROR",
+          "error_details": (
+              "All elements in times_series_id_cols must be strings."
+          ),
+      }
+    times_series_id_cols_str = (
+        "[" + ", ".join([f"'{col}'" for col in times_series_id_cols]) + "]"
+    )
+    options.append(f"TIME_SERIES_ID_COL = {times_series_id_cols_str}")
+
+  options_str = ", ".join(options)
+
+  model_name = f"detect_anomalies_model_{str(uuid.uuid4()).replace('-', '_')}"
+
+  create_model_query = f"""
+  CREATE TEMP MODEL {model_name}
+    OPTIONS ({options_str})
+  AS {history_data_source}
+  """
+
+  anomaly_detection_query = f"""
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold))
+  """
+
+  # Create a session and run the create model query.
+  original_write_mode = settings.write_mode
+  try:
+    if settings.write_mode == WriteMode.BLOCKED:
+      raise ValueError("anomaly detection is not allowed in this session.")
+    elif original_write_mode != WriteMode.PROTECTED:
+      # Running create temp model requires a session. So we set the write mode
+      # to PROTECTED to run the create model query and job query in the same
+      # session.
+      settings.write_mode = WriteMode.PROTECTED
+
+    result = execute_sql(
+        project_id,
+        create_model_query,
+        credentials,
+        settings,
+        tool_context,
+    )
+    if result["status"] != "SUCCESS":
+      return result
+
+    result = execute_sql(
+        project_id,
+        anomaly_detection_query,
+        credentials,
+        settings,
+        tool_context,
+    )
+  except Exception as ex:  # pylint: disable=broad-except
+    return {
+        "status": "ERROR",
+        "error_details": f"Error during anomaly detection: {str(ex)}",
+    }
+  finally:
+    # Restore the original write mode.
+    settings.write_mode == original_write_mode
+
+  return result

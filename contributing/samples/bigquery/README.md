@@ -46,6 +46,12 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
   `CONTRIBUTION_ANALYSIS` model and then querying it with
   `ML.GET_INSIGHTS` to find top contributors for a given metric.
 
+9. `detect_anomalies`
+
+  Perform time series anomaly detection in BigQuery by creating a temporary
+  `ARIMA_PLUS` model and then querying it with
+  `ML.DETECT_ANOMALIES` to detect time series data anomalies.
+
 ## How to use
 
 Set up environment variables in your `.env` file for using

@@ -155,6 +155,53 @@ def _safe_json_serialize(obj) -> str:
     return str(obj)
 
 
+def _part_has_payload(part: types.Part) -> bool:
+  """Checks whether a Part contains usable payload for the model."""
+  if part.text:
+    return True
+  if part.inline_data and part.inline_data.data:
+    return True
+  if part.file_data and (part.file_data.file_uri or part.file_data.data):
+    return True
+  return False
+
+
+def _append_fallback_user_content_if_missing(
+    llm_request: LlmRequest,
+) -> None:
+  """Ensures there is a user message with content for LiteLLM backends.
+
+  Args:
+    llm_request: The request that may need a fallback user message.
+  """
+  for content in reversed(llm_request.contents):
+    if content.role == "user":
+      parts = content.parts or []
+      if any(_part_has_payload(part) for part in parts):
+        return
+      if not parts:
+        content.parts = []
+      content.parts.append(
+          types.Part.from_text(
+              text="Handle the requests as specified in the System Instruction."
+          )
+      )
+      return
+  llm_request.contents.append(
+      types.Content(
+          role="user",
+          parts=[
+              types.Part.from_text(
+                  text=(
+                      "Handle the requests as specified in the System"
+                      " Instruction."
+                  )
+              ),
+          ],
+      )
+  )
+
+
 def _content_to_message_param(
     content: types.Content,
 ) -> Union[Message, list[Message]]:
@@ -818,6 +865,7 @@ class LiteLlm(BaseLlm):
     """
 
     self._maybe_append_user_content(llm_request)
+    _append_fallback_user_content_if_missing(llm_request)
     logger.debug(_build_request_log(llm_request))
 
     messages, tools, response_format, generation_params = (
