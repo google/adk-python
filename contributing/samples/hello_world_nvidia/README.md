@@ -6,6 +6,7 @@ For comprehensive information about using NVIDIA models with LiteLLM, refer to t
 
 ## Setup
 
+### 1. Get an NVIDIA NIM API Key
 Use the following procedure to get an NVIDIA NIM API key.
 
 
