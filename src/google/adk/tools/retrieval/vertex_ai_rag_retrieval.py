@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
-from vertexai.preview import rag
 
+from ...dependencies.vertexai import rag
 from ...utils.model_name_utils import is_gemini_2_or_above
 from ..tool_context import ToolContext
 from .base_retrieval_tool import BaseRetrievalTool
