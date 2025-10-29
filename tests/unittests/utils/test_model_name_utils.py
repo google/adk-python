@@ -16,7 +16,7 @@
 
 from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
-from google.adk.utils.model_name_utils import is_gemini_2_model
+from google.adk.utils.model_name_utils import is_gemini_2_or_above
 from google.adk.utils.model_name_utils import is_gemini_model
 
 
@@ -165,46 +165,51 @@ class TestIsGemini1Model:
 
 
 class TestIsGemini2Model:
-  """Test the is_gemini_2_model function."""
+  """Test the is_gemini_2_or_above function."""
 
-  def test_is_gemini_2_model_simple_names(self):
-    """Test Gemini 2.x model detection with simple model names."""
-    assert is_gemini_2_model('gemini-2.0-flash') is True
-    assert is_gemini_2_model('gemini-2.5-pro') is True
-    assert is_gemini_2_model('gemini-2.0-flash-001') is True
-    assert is_gemini_2_model('gemini-2.9-experimental') is True
-    assert is_gemini_2_model('gemini-1.5-flash') is False
-    assert is_gemini_2_model('gemini-1.0-pro') is False
-    assert is_gemini_2_model('gemini-3.0-pro') is False  # Only 2.x versions
-    assert is_gemini_2_model('claude-3-sonnet') is False
+  def test_is_gemini_2_or_above_simple_names(self):
+    """Test Gemini 2.0+ model detection with simple model names."""
+    assert is_gemini_2_or_above('gemini-2.0-flash') is True
+    assert is_gemini_2_or_above('gemini-2.5-pro') is True
+    assert is_gemini_2_or_above('gemini-2.0-flash-001') is True
+    assert is_gemini_2_or_above('gemini-2.9-experimental') is True
+    assert is_gemini_2_or_above('gemini-2-pro') is True
+    assert is_gemini_2_or_above('gemini-2') is True
+    assert is_gemini_2_or_above('gemini-3.0-pro') is True
+    assert is_gemini_2_or_above('gemini-1.5-flash') is False
+    assert is_gemini_2_or_above('gemini-1.0-pro') is False
+    assert is_gemini_2_or_above('claude-3-sonnet') is False
 
-  def test_is_gemini_2_model_path_based_names(self):
-    """Test Gemini 2.x model detection with path-based model names."""
+  def test_is_gemini_2_or_above_path_based_names(self):
+    """Test Gemini 2.0+ model detection with path-based model names."""
     gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
-    assert is_gemini_2_model(gemini_2_path) is True
+    assert is_gemini_2_or_above(gemini_2_path) is True
 
     gemini_2_path_2 = 'projects/12345/locations/us-east1/publishers/google/models/gemini-2.5-pro-preview'
-    assert is_gemini_2_model(gemini_2_path_2) is True
+    assert is_gemini_2_or_above(gemini_2_path_2) is True
 
     gemini_1_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash-001'
-    assert is_gemini_2_model(gemini_1_path) is False
+    assert is_gemini_2_or_above(gemini_1_path) is False
 
-  def test_is_gemini_2_model_edge_cases(self):
-    """Test edge cases for Gemini 2.x model detection."""
+    gemini_3_path = 'projects/12345/locations/us-east1/publishers/google/models/gemini-3.0-pro'
+    assert is_gemini_2_or_above(gemini_3_path) is True
+
+  def test_is_gemini_2_or_above_edge_cases(self):
+    """Test edge cases for Gemini 2.0+ model detection."""
     # Test with None
-    assert is_gemini_2_model(None) is False
+    assert is_gemini_2_or_above(None) is False
 
     # Test with empty string
-    assert is_gemini_2_model('') is False
+    assert is_gemini_2_or_above('') is False
 
     # Test with model names containing gemini-2 but not starting with it
-    assert is_gemini_2_model('my-gemini-2.5-model') is False
-    assert is_gemini_2_model('custom-gemini-2.0-flash') is False
+    assert is_gemini_2_or_above('my-gemini-2.5-model') is False
+    assert is_gemini_2_or_above('custom-gemini-2.0-flash') is False
 
     # Test with invalid versions
-    assert is_gemini_2_model('gemini-2') is False  # Missing dot
-    assert is_gemini_2_model('gemini-2-pro') is False  # Missing dot
-    assert is_gemini_2_model('gemini-2.') is False  # Missing version number
+    assert is_gemini_2_or_above('gemini-2.') is False  # Missing version number
+    assert is_gemini_2_or_above('gemini-0.9-test') is False
+    assert is_gemini_2_or_above('gemini-one') is False
 
 
 class TestModelNameUtilsIntegration:
@@ -216,32 +221,34 @@ class TestModelNameUtilsIntegration:
         'gemini-1.5-flash',
         'gemini-2.0-flash',
         'gemini-2.5-pro',
+        'gemini-3.0-pro',
         'projects/123/locations/us-central1/publishers/google/models/gemini-1.5-pro',
         'projects/123/locations/us-central1/publishers/google/models/gemini-2.0-flash',
+        'projects/123/locations/us-central1/publishers/google/models/gemini-3.0-pro',
         'claude-3-sonnet',
         'gpt-4',
     ]
 
     for model in test_models:
-      # A model can only be either Gemini 1.x or Gemini 2.x, not both
+      # A model can only be either Gemini 1.x or Gemini 2.0+, not both
       if is_gemini_1_model(model):
-        assert not is_gemini_2_model(
+        assert not is_gemini_2_or_above(
             model
-        ), f'Model {model} classified as both Gemini 1.x and 2.x'
+        ), f'Model {model} classified as both Gemini 1.x and 2.0+'
         assert is_gemini_model(
             model
         ), f'Model {model} is Gemini 1.x but not classified as Gemini'
 
-      if is_gemini_2_model(model):
+      if is_gemini_2_or_above(model):
         assert not is_gemini_1_model(
             model
-        ), f'Model {model} classified as both Gemini 1.x and 2.x'
+        ), f'Model {model} classified as both Gemini 1.x and 2.0+'
         assert is_gemini_model(
             model
-        ), f'Model {model} is Gemini 2.x but not classified as Gemini'
+        ), f'Model {model} is Gemini 2.0+ but not classified as Gemini'
 
-      # If it's neither Gemini 1.x nor 2.x, it should not be classified as Gemini
-      if not is_gemini_1_model(model) and not is_gemini_2_model(model):
+      # If it's neither Gemini 1.x nor 2.0+, it should not be classified as Gemini
+      if not is_gemini_1_model(model) and not is_gemini_2_or_above(model):
         if model and 'gemini-' not in extract_model_name(model):
           assert not is_gemini_model(
               model
@@ -263,6 +270,10 @@ class TestModelNameUtilsIntegration:
             'projects/123/locations/us-central1/publishers/google/models/gemini-2.5-pro',
         ),
         (
+            'gemini-3.0-pro',
+            'projects/123/locations/us-central1/publishers/google/models/gemini-3.0-pro',
+        ),
+        (
             'claude-3-sonnet',
             'projects/123/locations/us-central1/publishers/google/models/claude-3-sonnet',
         ),
@@ -278,7 +289,9 @@ class TestModelNameUtilsIntegration:
           f'Inconsistent Gemini 1.x classification for {simple_model} vs'
           f' {path_model}'
       )
-      assert is_gemini_2_model(simple_model) == is_gemini_2_model(path_model), (
-          f'Inconsistent Gemini 2.x classification for {simple_model} vs'
+      assert is_gemini_2_or_above(simple_model) == is_gemini_2_or_above(
+          path_model
+      ), (
+          f'Inconsistent Gemini 2.0+ classification for {simple_model} vs'
           f' {path_model}'
       )

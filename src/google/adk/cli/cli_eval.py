@@ -210,21 +210,23 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
 
   data = []
   for per_invocation_result in eval_result.eval_metric_result_per_invocation:
+    actual_invocation = per_invocation_result.actual_invocation
+    expected_invocation = per_invocation_result.expected_invocation
     row_data = {
-        "prompt": _convert_content_to_text(
-            per_invocation_result.expected_invocation.user_content
-        ),
+        "prompt": _convert_content_to_text(actual_invocation.user_content),
         "expected_response": _convert_content_to_text(
-            per_invocation_result.expected_invocation.final_response
+            expected_invocation.final_response if expected_invocation else None
         ),
         "actual_response": _convert_content_to_text(
-            per_invocation_result.actual_invocation.final_response
+            actual_invocation.final_response
         ),
         "expected_tool_calls": _convert_tool_calls_to_text(
-            per_invocation_result.expected_invocation.intermediate_data
+            expected_invocation.intermediate_data
+            if expected_invocation
+            else None
         ),
         "actual_tool_calls": _convert_tool_calls_to_text(
-            per_invocation_result.actual_invocation.intermediate_data
+            actual_invocation.intermediate_data
         ),
     }
     for metric_result in per_invocation_result.eval_metric_results:

@@ -127,7 +127,7 @@ def conformance():
   pass
 
 
-@conformance.command("create", cls=HelpfulCommand)
+@conformance.command("record", cls=HelpfulCommand)
 @click.argument(
     "paths",
     nargs=-1,
@@ -136,7 +136,7 @@ def conformance():
     ),
 )
 @click.pass_context
-def cli_conformance_create(
+def cli_conformance_record(
     ctx,
     paths: tuple[str, ...],
 ):
@@ -156,13 +156,13 @@ def cli_conformance_create(
 
   Examples:
 
-  Use default directory: adk conformance create
+  Use default directory: adk conformance record
 
-  Custom directories: adk conformance create tests/core tests/tools
+  Custom directories: adk conformance record tests/core tests/tools
   """
 
   try:
-    from .conformance.cli_create import run_conformance_create
+    from .conformance.cli_record import run_conformance_record
   except ImportError as e:
     click.secho(
         f"Error: Missing conformance testing dependencies: {e}",
@@ -178,7 +178,7 @@ def cli_conformance_create(
 
   # Default to tests/ directory if no paths provided
   test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
-  asyncio.run(run_conformance_create(test_paths))
+  asyncio.run(run_conformance_record(test_paths))
 
 
 @conformance.command("test", cls=HelpfulCommand)
@@ -549,6 +549,7 @@ def cli_eval(
     from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+    from ..evaluation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
     from .cli_eval import get_root_agent
@@ -638,11 +639,16 @@ def cli_eval(
           )
       )
 
+  user_simulator_provider = UserSimulatorProvider(
+      user_simulator_config=eval_config.user_simulator_config
+  )
+
   try:
     eval_service = LocalEvalService(
         root_agent=root_agent,
         eval_sets_manager=eval_sets_manager,
         eval_set_results_manager=eval_set_results_manager,
+        user_simulator_provider=user_simulator_provider,
     )
 
     inference_results = asyncio.run(

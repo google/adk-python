@@ -71,7 +71,7 @@ class McpToolset(BaseToolset):
 
   Usage::
 
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=StdioServerParameters(
             command='npx',
             args=["-y", "@modelcontextprotocol/server-filesystem"],
@@ -107,8 +107,11 @@ class McpToolset(BaseToolset):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
   ):
-    """Initializes the MCPToolset.
+    """Initializes the McpToolset.
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
@@ -130,14 +133,17 @@ class McpToolset(BaseToolset):
       require_confirmation: Whether tools in this toolset require
         confirmation. Can be a single boolean or a callable to apply to all
         tools.
+      header_provider: A callable that takes a ReadonlyContext and returns a
+        dictionary of headers to be used for the MCP session.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
     if not connection_params:
-      raise ValueError("Missing connection params in MCPToolset.")
+      raise ValueError("Missing connection params in McpToolset.")
 
     self._connection_params = connection_params
     self._errlog = errlog
+    self._header_provider = header_provider
 
     # Create the session manager that will handle the MCP connection
     self._mcp_session_manager = MCPSessionManager(
@@ -162,8 +168,13 @@ class McpToolset(BaseToolset):
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
     """
+    headers = (
+        self._header_provider(readonly_context)
+        if self._header_provider and readonly_context
+        else None
+    )
     # Get session from session manager
-    session = await self._mcp_session_manager.create_session()
+    session = await self._mcp_session_manager.create_session(headers=headers)
 
     # Fetch available tools from the MCP server
     tools_response: ListToolsResult = await session.list_tools()
@@ -177,6 +188,7 @@ class McpToolset(BaseToolset):
           auth_scheme=self._auth_scheme,
           auth_credential=self._auth_credential,
           require_confirmation=self._require_confirmation,
+          header_provider=self._header_provider,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):
@@ -194,14 +206,14 @@ class McpToolset(BaseToolset):
       await self._mcp_session_manager.close()
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
-      print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
+      print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
 
   @override
   @classmethod
   def from_config(
-      cls: type[MCPToolset], config: ToolArgsConfig, config_abs_path: str
-  ) -> MCPToolset:
-    """Creates an MCPToolset from a configuration object."""
+      cls: type[McpToolset], config: ToolArgsConfig, config_abs_path: str
+  ) -> McpToolset:
+    """Creates an McpToolset from a configuration object."""
     mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
 
     if mcp_toolset_config.stdio_server_params:
@@ -213,7 +225,7 @@ class McpToolset(BaseToolset):
     elif mcp_toolset_config.streamable_http_connection_params:
       connection_params = mcp_toolset_config.streamable_http_connection_params
     else:
-      raise ValueError("No connection params found in MCPToolsetConfig.")
+      raise ValueError("No connection params found in McpToolsetConfig.")
 
     return cls(
         connection_params=connection_params,
@@ -237,7 +249,7 @@ class MCPToolset(McpToolset):
 
 
 class McpToolsetConfig(BaseToolConfig):
-  """The config for MCPToolset."""
+  """The config for McpToolset."""
 
   stdio_server_params: Optional[StdioServerParameters] = None
 

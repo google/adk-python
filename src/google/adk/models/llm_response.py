@@ -148,7 +148,9 @@ class LlmResponse(BaseModel):
     usage_metadata = generate_content_response.usage_metadata
     if generate_content_response.candidates:
       candidate = generate_content_response.candidates[0]
-      if candidate.content and candidate.content.parts:
+      if (
+          candidate.content and candidate.content.parts
+      ) or candidate.finish_reason == types.FinishReason.STOP:
         return LlmResponse(
             content=candidate.content,
             grounding_metadata=candidate.grounding_metadata,

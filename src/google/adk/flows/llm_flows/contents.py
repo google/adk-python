@@ -310,11 +310,30 @@ def _get_contents(
   accumulated_input_transcription = ''
   accumulated_output_transcription = ''
 
+  # Filter out events that are annulled by a rewind.
+  # By iterating backward, when a rewind event is found, we skip all events
+  # from that point back to the `rewind_before_invocation_id`, thus removing
+  # them from the history used for the LLM request.
+  rewind_filtered_events = []
+  i = len(events) - 1
+  while i >= 0:
+    event = events[i]
+    if event.actions and event.actions.rewind_before_invocation_id:
+      rewind_invocation_id = event.actions.rewind_before_invocation_id
+      for j in range(0, i, 1):
+        if events[j].invocation_id == rewind_invocation_id:
+          i = j
+          break
+    else:
+      rewind_filtered_events.append(event)
+    i -= 1
+  rewind_filtered_events.reverse()
+
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
   raw_filtered_events = []
   has_compaction_events = False
-  for event in events:
+  for event in rewind_filtered_events:
     if _contains_empty_content(event):
       continue
     if not _is_event_belongs_to_branch(current_branch, event):
@@ -620,7 +639,7 @@ def _is_live_model_audio_event(event: Event) -> bool:
       Part(
         inline_data=Blob(
           data=b'\x01\x00\x00...',
-          mime_type='audio/pcm'
+          mime_type='audio/pcm;rate=24000'
         )
       ),
     ],
@@ -634,9 +653,17 @@ def _is_live_model_audio_event(event: Event) -> bool:
     return False
   # If it's audio data, then one event only has one part of audio.
   for part in event.content.parts:
-    if part.inline_data and part.inline_data.mime_type == 'audio/pcm':
+    if (
+        part.inline_data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith('audio/')
+    ):
       return True
-    if part.file_data and part.file_data.mime_type == 'audio/pcm':
+    if (
+        part.file_data
+        and part.file_data.mime_type
+        and part.file_data.mime_type.startswith('audio/')
+    ):
       return True
   return False
 

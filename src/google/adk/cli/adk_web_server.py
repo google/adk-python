@@ -63,6 +63,7 @@ from ..agents.run_config import StreamingMode
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -486,6 +487,12 @@ class AdkWebServer:
     self.runner_dict[app_name] = runner
     return runner
 
+  def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
+    """Extract root agent from either a BaseAgent or App object."""
+    if isinstance(agent_or_app, App):
+      return agent_or_app.root_agent
+    return agent_or_app
+
   def _create_runner(self, agentic_app: App) -> Runner:
     """Create a runner with common services."""
     return Runner(
@@ -576,6 +583,33 @@ class AdkWebServer:
       logger.error(
           "Failed to write runtime config file %s: %s", runtime_config_path, e
       )
+
+  async def _create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str] = None,
+      state: Optional[dict[str, Any]] = None,
+  ) -> Session:
+    try:
+      session = await self.session_service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
+      )
+      logger.info("New session created: %s", session.id)
+      return session
+    except AlreadyExistsError as e:
+      raise HTTPException(
+          status_code=409, detail=f"Session already exists: {session_id}"
+      ) from e
+    except Exception as e:
+      logger.error(
+          "Internal server error during session creation: %s", e, exc_info=True
+      )
+      raise HTTPException(status_code=500, detail=str(e)) from e
 
   def get_fast_api_app(
       self,
@@ -734,20 +768,12 @@ class AdkWebServer:
         session_id: str,
         state: Optional[dict[str, Any]] = None,
     ) -> Session:
-      if (
-          await self.session_service.get_session(
-              app_name=app_name, user_id=user_id, session_id=session_id
-          )
-          is not None
-      ):
-        raise HTTPException(
-            status_code=400, detail=f"Session already exists: {session_id}"
-        )
-      session = await self.session_service.create_session(
-          app_name=app_name, user_id=user_id, state=state, session_id=session_id
+      return await self._create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
       )
-      logger.info("New session created: %s", session_id)
-      return session
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions",
@@ -759,11 +785,9 @@ class AdkWebServer:
         req: Optional[CreateSessionRequest] = None,
     ) -> Session:
       if not req:
-        return await self.session_service.create_session(
-            app_name=app_name, user_id=user_id
-        )
+        return await self._create_session(app_name=app_name, user_id=user_id)
 
-      session = await self.session_service.create_session(
+      session = await self._create_session(
           app_name=app_name,
           user_id=user_id,
           state=req.state,
@@ -926,9 +950,8 @@ class AdkWebServer:
 
       # Populate the session with initial session state.
       agent_or_app = self.agent_loader.load_agent(app_name)
-      if isinstance(agent_or_app, App):
-        agent_or_app = agent_or_app.root_agent
-      initial_session_state = create_empty_state(agent_or_app)
+      root_agent = self._get_root_agent(agent_or_app)
+      initial_session_state = create_empty_state(root_agent)
 
       new_eval_case = EvalCase(
           eval_id=req.eval_id,
@@ -1089,7 +1112,8 @@ class AdkWebServer:
               status_code=400, detail=f"Eval set `{eval_set_id}` not found."
           )
 
-        root_agent = self.agent_loader.load_agent(app_name)
+        agent_or_app = self.agent_loader.load_agent(app_name)
+        root_agent = self._get_root_agent(agent_or_app)
 
         eval_case_results = []
 
@@ -1430,13 +1454,7 @@ class AdkWebServer:
       function_calls = event.get_function_calls()
       function_responses = event.get_function_responses()
       agent_or_app = self.agent_loader.load_agent(app_name)
-      # The loader may return an App; unwrap to its root agent so the graph builder
-      # receives a BaseAgent instance.
-      root_agent = (
-          agent_or_app.root_agent
-          if isinstance(agent_or_app, App)
-          else agent_or_app
-      )
+      root_agent = self._get_root_agent(agent_or_app)
       dot_graph = None
       if function_calls:
         function_call_highlights = []

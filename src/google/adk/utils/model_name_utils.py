@@ -19,6 +19,9 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from packaging.version import InvalidVersion
+from packaging.version import Version
+
 
 def extract_model_name(model_string: str) -> str:
   """Extract the actual model name from either simple or path-based format.
@@ -74,17 +77,29 @@ def is_gemini_1_model(model_string: Optional[str]) -> bool:
   return re.match(r'^gemini-1\.\d+', model_name) is not None
 
 
-def is_gemini_2_model(model_string: Optional[str]) -> bool:
-  """Check if the model is a Gemini 2.x model using regex patterns.
+def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini 2.0 or newer model using semantic versions.
 
   Args:
     model_string: Either a simple model name or path-based model name
 
   Returns:
-    True if it's a Gemini 2.x model, False otherwise
+    True if it's a Gemini 2.0+ model, False otherwise
   """
   if not model_string:
     return False
 
   model_name = extract_model_name(model_string)
-  return re.match(r'^gemini-2\.\d+', model_name) is not None
+  if not model_name.startswith('gemini-'):
+    return False
+
+  version_string = model_name[len('gemini-') :].split('-', 1)[0]
+  if not version_string:
+    return False
+
+  try:
+    parsed_version = Version(version_string)
+  except InvalidVersion:
+    return False
+
+  return parsed_version.major >= 2

@@ -29,6 +29,7 @@ from google.adk.tools.bigquery import BigQueryToolset
 from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.bigquery.config import WriteMode
 from google.adk.tools.bigquery.query_tool import analyze_contribution
+from google.adk.tools.bigquery.query_tool import detect_anomalies
 from google.adk.tools.bigquery.query_tool import execute_sql
 from google.adk.tools.bigquery.query_tool import forecast
 from google.adk.tools.tool_context import ToolContext
@@ -1399,5 +1400,134 @@ def test_analyze_contribution_with_invalid_dimension_id_cols():
   assert result["status"] == "ERROR"
   assert (
       "All elements in dimension_id_cols must be strings."
+      in result["error_details"]
+  )
+
+
+# detect_anomalies calls execute_sql twice. We need to test that
+# the queries are properly constructed and call execute_sql with the correct
+# parameters exactly twice.
+@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
+@mock.patch("uuid.uuid4", autospec=True)
+def test_detect_anomalies_with_table_id(mock_uuid, mock_execute_sql):
+  """Test time series anomaly detection tool invocation with a table id."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+  mock_uuid.return_value = "test_uuid"
+  mock_execute_sql.return_value = {"status": "SUCCESS"}
+
+  history_data_query = "SELECT * FROM `test-dataset.test-table`"
+  detect_anomalies(
+      project_id="test-project",
+      history_data=history_data_query,
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  expected_create_model_query = """
+  CREATE TEMP MODEL detect_anomalies_model_test_uuid
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 10)
+  AS (SELECT * FROM `test-dataset.test-table`)
+  """
+
+  expected_anomaly_detection_query = """
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold))
+  """
+
+  assert mock_execute_sql.call_count == 2
+  mock_execute_sql.assert_any_call(
+      "test-project",
+      expected_create_model_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+  mock_execute_sql.assert_any_call(
+      "test-project",
+      expected_anomaly_detection_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+
+
+# detect_anomalies calls execute_sql twice. We need to test that
+# the queries are properly constructed and call execute_sql with the correct
+# parameters exactly twice.
+@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
+@mock.patch("uuid.uuid4", autospec=True)
+def test_detect_anomalies_with_custom_params(mock_uuid, mock_execute_sql):
+  """Test time series anomaly detection tool invocation with a table id."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+  mock_uuid.return_value = "test_uuid"
+  mock_execute_sql.return_value = {"status": "SUCCESS"}
+
+  history_data_query = "SELECT * FROM `test-dataset.test-table`"
+  detect_anomalies(
+      project_id="test-project",
+      history_data=history_data_query,
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
+      times_series_id_cols=["dim1", "dim2"],
+      horizon=20,
+      anomaly_prob_threshold=0.8,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  expected_create_model_query = """
+  CREATE TEMP MODEL detect_anomalies_model_test_uuid
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 20, TIME_SERIES_ID_COL = ['dim1', 'dim2'])
+  AS (SELECT * FROM `test-dataset.test-table`)
+  """
+
+  expected_anomaly_detection_query = """
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold))
+  """
+
+  assert mock_execute_sql.call_count == 2
+  mock_execute_sql.assert_any_call(
+      "test-project",
+      expected_create_model_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+  mock_execute_sql.assert_any_call(
+      "test-project",
+      expected_anomaly_detection_query,
+      mock_credentials,
+      mock_settings,
+      mock_tool_context,
+  )
+
+
+def test_detect_anomalies__with_invalid_id_cols():
+  """Test time series anomaly detection tool invocation with invalid times_series_id_cols."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig()
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  result = detect_anomalies(
+      project_id="test-project",
+      history_data="test-dataset.test-table",
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
+      times_series_id_cols=["dim1", 123],
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  assert result["status"] == "ERROR"
+  assert (
+      "All elements in times_series_id_cols must be strings."
       in result["error_details"]
   )

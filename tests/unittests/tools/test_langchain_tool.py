@@ -15,7 +15,7 @@
 from unittest.mock import MagicMock
 
 from google.adk.tools.langchain_tool import LangchainTool
-from langchain.tools import tool
+from langchain_core.tools import tool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import BaseModel
 import pytest

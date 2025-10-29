@@ -235,21 +235,24 @@ class MockApiClient:
     """Initializes MockClient."""
     self.session_dict: dict[str, Any] = {}
     self.event_dict: dict[str, Tuple[List[Any], Optional[str]]] = {}
-    self.agent_engines = mock.Mock()
-    self.agent_engines.sessions.get.side_effect = self._get_session
-    self.agent_engines.sessions.list.side_effect = self._list_sessions
-    self.agent_engines.sessions.delete.side_effect = self._delete_session
-    self.agent_engines.sessions.create.side_effect = self._create_session
-    self.agent_engines.sessions.events.list.side_effect = self._list_events
-    self.agent_engines.sessions.events.append.side_effect = self._append_event
+    self.aio = mock.Mock()
+    self.aio.agent_engines.sessions.get.side_effect = self._get_session
+    self.aio.agent_engines.sessions.list.side_effect = self._list_sessions
+    self.aio.agent_engines.sessions.delete.side_effect = self._delete_session
+    self.aio.agent_engines.sessions.create.side_effect = self._create_session
+    self.aio.agent_engines.sessions.events.list.side_effect = self._list_events
+    self.aio.agent_engines.sessions.events.append.side_effect = (
+        self._append_event
+    )
+    self.last_create_session_config: dict[str, Any] = {}
 
-  def _get_session(self, name: str):
+  async def _get_session(self, name: str):
     session_id = name.split('/')[-1]
     if session_id in self.session_dict:
       return _convert_to_object(self.session_dict[session_id])
     raise api_core_exceptions.NotFound(f'Session not found: {session_id}')
 
-  def _list_sessions(self, name: str, config: dict[str, Any]):
+  async def _list_sessions(self, name: str, config: dict[str, Any]):
     filter_val = config.get('filter', '')
     user_id_match = re.search(r'user_id="([^"]+)"', filter_val)
     if user_id_match:
@@ -270,11 +273,14 @@ class MockApiClient:
         _convert_to_object(session) for session in self.session_dict.values()
     ]
 
-  def _delete_session(self, name: str):
+  async def _delete_session(self, name: str):
     session_id = name.split('/')[-1]
     self.session_dict.pop(session_id)
 
-  def _create_session(self, name: str, user_id: str, config: dict[str, Any]):
+  async def _create_session(
+      self, name: str, user_id: str, config: dict[str, Any]
+  ):
+    self.last_create_session_config = config
     new_session_id = '4'
     self.session_dict[new_session_id] = {
         'name': (
@@ -297,7 +303,7 @@ class MockApiClient:
         'response': self.session_dict['4'],
     })
 
-  def _list_events(self, name: str, **kwargs):
+  async def _list_events(self, name: str, **kwargs):
     session_id = name.split('/')[-1]
     events = []
     if session_id in self.event_dict:
@@ -320,7 +326,7 @@ class MockApiClient:
         ]
     return [_convert_to_object(event) for event in events]
 
-  def _append_event(
+  async def _append_event(
       self,
       name: str,
       author: str,
@@ -360,7 +366,8 @@ def mock_vertex_ai_session_service(agent_engine_id: Optional[str] = None):
 
 
 @pytest.fixture
-def mock_get_api_client():
+def mock_api_client_instance():
+  """Creates a mock API client instance for testing."""
   api_client = MockApiClient()
   api_client.session_dict = {
       '1': MOCK_SESSION_JSON_1,
@@ -373,9 +380,15 @@ def mock_get_api_client():
       '1': (copy.deepcopy(MOCK_EVENT_JSON), None),
       '2': (copy.deepcopy(MOCK_EVENT_JSON_2), 'my_token'),
   }
+  return api_client
+
+
+@pytest.fixture
+def mock_get_api_client(mock_api_client_instance):
+  """Mocks the _get_api_client method to return a mock API client."""
   with mock.patch(
       'google.adk.sessions.vertex_ai_session_service.VertexAiSessionService._get_api_client',
-      return_value=api_client,
+      return_value=mock_api_client_instance,
   ):
     yield
 
@@ -518,6 +531,21 @@ async def test_create_session_with_custom_session_id():
     )
   assert str(excinfo.value) == (
       'User-provided Session id is not supported for VertexAISessionService.'
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_custom_config(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  expire_time = '2025-12-12T12:12:12.123456Z'
+  await session_service.create_session(
+      app_name='123', user_id='user', expire_time=expire_time
+  )
+  assert (
+      mock_api_client_instance.last_create_session_config['expire_time']
+      == expire_time
   )
 
 
