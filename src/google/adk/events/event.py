@@ -89,13 +89,6 @@ class Event(LlmResponse):
     """
     if self.actions.skip_summarization or self.long_running_tool_ids:
       return True
-
-    # If we see state delta but no content, then this must be an event fired
-    # from callbacks that does not early exit / override response,
-    # thus the event itself cannot be final response.
-    if self.actions.state_delta and self.content is None:
-      return False
-
     return (
         not self.get_function_calls()
         and not self.get_function_responses()
