@@ -28,6 +28,8 @@ from __future__ import annotations
 from typing import Any
 
 import adk_agent
+from google.adk.models import llm_response
+from google.adk.plugins import base_plugin
 from google.genai import types
 from tau_bench import envs
 from tau_bench import types as tau_bench_types
@@ -64,6 +66,26 @@ def _convert_tool(tool_def: dict[str, Any]) -> types.FunctionDeclaration:
   return types.FunctionDeclaration(**tool_def['function'])
 
 
+_LLM_CALL_ERROR = 'llm_call_error'
+
+
+class _TauBenchPlugin(base_plugin.BasePlugin):
+  """Catches LLM errors and emits event with error code for downstream usage."""
+
+  async def on_model_error_callback(
+      self,
+      *,
+      callback_context: base_plugin.CallbackContext,
+      llm_request: base_plugin.LlmRequest,
+      error: Exception,
+  ) -> llm_response.LlmResponse:
+    del callback_context, llm_request  # Unused.
+    return llm_response.LlmResponse(
+        error_code=_LLM_CALL_ERROR,
+        error_message=str(error),
+    )
+
+
 class _ADKAgent(tool_calling_agent.ToolCallingAgent):
   """ADK agent implementation for Tau Bench."""
 
@@ -82,6 +104,9 @@ class _ADKAgent(tool_calling_agent.ToolCallingAgent):
 
     Returns:
       The result of the solve.
+
+    Raises:
+      - ValueError: If the LLM inference failed.
     """
     # Thought-signature is excluded from the message serialization for the
     # following reasons:
@@ -102,7 +127,11 @@ class _ADKAgent(tool_calling_agent.ToolCallingAgent):
         tools=[_convert_tool(t) for t in env.tools_info],
         task_index=task_index,
         max_num_steps=max_num_steps,
+        plugins=[_TauBenchPlugin(name='error_plugin')],
     ):
+      if event.error_code == _LLM_CALL_ERROR:
+        raise ValueError(f'Error {event.error_code=}: {event.error_message=}')
+
       if not event.content:
         continue
       messages.append(event.content.model_dump(exclude=content_exclusion))

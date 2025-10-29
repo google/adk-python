@@ -30,6 +30,7 @@ from google.adk.agents import base_agent
 from google.adk.agents import llm_agent
 from google.adk.agents import loop_agent
 from google.adk.events import event as event_lib
+from google.adk.models import google_llm
 from google.adk.tools import base_tool
 from google.genai import types
 
@@ -98,6 +99,15 @@ class _Tool(base_tool.BaseTool):
     return env_response.observation
 
 
+def _default_retry_options() -> types.HttpRetryOptions:
+  return types.HttpRetryOptions(
+      initial_delay=2,
+      attempts=4,
+      max_delay=None,
+      exp_base=2.0,
+  )
+
+
 def _adk_agent(
     instruction: str,
     tools: list[base_tool.BaseTool],
@@ -120,7 +130,10 @@ def _adk_agent(
   # TDOO - Allow more flexibility in configuring the agent used in the loop.
   return llm_agent.LlmAgent(
       name=name or 'agent',
-      model=model or 'gemini-2.5-flash',
+      model=google_llm.Gemini(
+          model=model or 'gemini-2.5-flash',
+          retry_options=_default_retry_options(),
+      ),
       instruction=instruction,
       tools=tools,
       generate_content_config=types.GenerateContentConfig(
@@ -129,6 +142,10 @@ def _adk_agent(
               function_calling_config=types.FunctionCallingConfig(
                   mode=types.FunctionCallingConfigMode.VALIDATED
               )
+          ),
+          http_options=types.HttpOptions(
+              timeout=30000,
+              retry_options=_default_retry_options(),
           ),
       ),
   )

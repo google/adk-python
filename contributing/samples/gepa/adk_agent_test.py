@@ -345,4 +345,4 @@ def test_model_name_is_set():
     )
     mock_runner_cls.assert_called_once()
     _, runner_kwargs = mock_runner_cls.call_args
-  assert runner_kwargs["agent"].sub_agents[0].model == "some-test-model"
+  assert runner_kwargs["agent"].sub_agents[0].model.model == "some-test-model"
