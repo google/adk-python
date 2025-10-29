@@ -686,6 +686,29 @@ async def _add_instructions_to_user_content(
     llm_request: The LLM request to modify
     instruction_contents: List of instruction-related contents to insert
   """
+
+  def is_valid_instruction_position(
+      llm_request: LlmRequest, index: int
+  ) -> bool:
+    """Checks if instructions can be inserted after a given index.
+
+    A valid insertion point is after a model response that is not a tool call.
+    This prevents injecting instructions in the middle of a user's turn or a
+    tool-use sequence.
+
+    Args:
+      llm_request: The LLM request containing the conversation contents.
+      index: The index of the content to check.
+
+    Returns:
+      True if the position after this index is a valid insertion point.
+    """
+    content_at_index = llm_request.contents[index]
+    is_user_message = content_at_index.role == 'user'
+    is_tool_request = any(part.function_call for part in content_at_index.parts)
+
+    return not is_user_message and not is_tool_request
+
   if not instruction_contents:
     return
 
@@ -695,36 +718,9 @@ async def _add_instructions_to_user_content(
 
   if llm_request.contents:
     for i in range(len(llm_request.contents) - 1, -1, -1):
-      if _is_valid_instruction_position(llm_request, i):
+      if is_valid_instruction_position(llm_request, i):
         insert_index = i + 1
         break
       elif i == 0:
         # All content from start is user content
         insert_index = 0
-        break
-  else:
-    # No contents remaining, just append at the end
-    insert_index = 0
-
-  # Insert all instruction contents at the proper position using efficient slicing
-  llm_request.contents[insert_index:insert_index] = instruction_contents
-
-def _is_valid_instruction_position(llm_request: LlmRequest, index: int) -> bool:
-  """Check if a position is valid for inserting instructions.
-  
-  Instructions should not be inserted before:
-  - User content
-  - Function call content
-  
-  Args:
-    llm_request: The LLM request containing contents
-    index: The index to check
-    
-  Returns:
-    True if this is a valid position to insert after, False otherwise
-  """
-  user_message = llm_request.contents[index].role == 'user'
-  tool_request = False
-  tool_request = any(part.function_call for part in llm_request.contents[index].parts)
-  
-  return not user_message and not tool_request
