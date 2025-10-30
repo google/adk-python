@@ -550,6 +550,53 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_with_model_override(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      model="overridden_model",
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    assert response.content.parts[0].text == "Test response"
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "overridden_model"
+  assert kwargs["messages"][0]["role"] == "user"
+  assert kwargs["messages"][0]["content"] == "Test prompt"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_without_model_override(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      model=None,
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "test_model"
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_adds_fallback_user_message(
     mock_acompletion, lite_llm_instance
 ):
@@ -1604,6 +1651,40 @@ async def test_generate_content_async_stream_with_usage_metadata(
       ]
       == "string"
   )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_usage_metadata_only(
+    mock_completion, lite_llm_instance
+):
+  streaming_model_response_with_usage_metadata = [
+      ModelResponse(
+          usage={
+              "prompt_tokens": 10,
+              "completion_tokens": 5,
+              "total_tokens": 15,
+          },
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(content=""),
+              )
+          ],
+      ),
+  ]
+  mock_completion.return_value = iter(
+      streaming_model_response_with_usage_metadata
+  )
+
+  unused_responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  mock_completion.assert_called_once()
+  _, kwargs = mock_completion.call_args
+  assert kwargs["stream_options"] == {"include_usage": True}
 
 
 @pytest.mark.asyncio

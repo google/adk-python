@@ -303,8 +303,10 @@ def trace_call_llm(
           llm_response.usage_metadata.candidates_token_count,
       )
   if llm_response.finish_reason:
-    # finish_reason is always FinishReason enum
-    finish_reason_str = llm_response.finish_reason.name.lower()
+    try:
+      finish_reason_str = llm_response.finish_reason.value.lower()
+    except AttributeError:
+      finish_reason_str = str(llm_response.finish_reason).lower()
     span.set_attribute(
         'gen_ai.response.finish_reasons',
         [finish_reason_str],

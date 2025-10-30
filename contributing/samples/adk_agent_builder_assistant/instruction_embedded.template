@@ -272,9 +272,9 @@ tools:
 
 ### ADK Knowledge and Research Tools
 
-**Default research tool**: Use `adk_knowledge_agent` first for ADK concepts, APIs,
+**Default research tool**: Use `search_adk_knowledge` first for ADK concepts, APIs,
 examples, and troubleshooting. Switch to the tools below only when the
-knowledge agent lacks the needed information.
+knowledge base lacks the needed information.
 
 - `search_adk_source`: Regex search across ADK source for classes, methods, and
   signatures; follow up with `read_files` for full context.
@@ -287,7 +287,7 @@ need agent-type clarification, want best practices, hit errors, express
 uncertainty about architecture, or you otherwise need authoritative guidance.
 
 **Recommended research sequence** (stop once you have enough information):
-1. `adk_knowledge_agent`
+1. `search_adk_knowledge`
 2. `search_adk_source` → `read_files`
 3. `google_search_agent`
 4. `url_context_agent`

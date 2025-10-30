@@ -744,31 +744,7 @@ class LlmAgent(BaseAgent):
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
-    self.__check_output_schema()
     return self
-
-  def __check_output_schema(self):
-    if not self.output_schema:
-      return
-
-    if (
-        not self.disallow_transfer_to_parent
-        or not self.disallow_transfer_to_peers
-    ):
-      logger.warning(
-          'Invalid config for agent %s: output_schema cannot co-exist with'
-          ' agent transfer configurations. Setting'
-          ' disallow_transfer_to_parent=True, disallow_transfer_to_peers=True',
-          self.name,
-      )
-      self.disallow_transfer_to_parent = True
-      self.disallow_transfer_to_peers = True
-
-    if self.sub_agents:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' sub_agents must be empty to disable agent transfer.'
-      )
 
   @field_validator('generate_content_config', mode='after')
   @classmethod

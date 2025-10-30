@@ -384,8 +384,8 @@ TYPE_LABELS = {
 
 
 def _schema_to_dict(schema: types.Schema) -> dict:
-  """
-  Recursively converts a types.Schema to a pure-python dict
+  """Recursively converts a types.Schema to a pure-python dict
+
   with all enum values written as lower-case strings.
 
   Args:
@@ -567,12 +567,15 @@ def _model_response_to_generate_content_response(
 
   llm_response = _message_to_generate_content_response(message)
   if finish_reason:
-    # Map LiteLLM finish_reason strings to FinishReason enum
-    # This provides type consistency with Gemini native responses and avoids warnings
-    finish_reason_str = str(finish_reason).lower()
-    llm_response.finish_reason = _FINISH_REASON_MAPPING.get(
-        finish_reason_str, types.FinishReason.OTHER
-    )
+    # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
+    # it directly. Otherwise, map the finish_reason string to the enum.
+    if isinstance(finish_reason, types.FinishReason):
+      llm_response.finish_reason = finish_reason
+    else:
+      finish_reason_str = str(finish_reason).lower()
+      llm_response.finish_reason = _FINISH_REASON_MAPPING.get(
+          finish_reason_str, types.FinishReason.OTHER
+      )
   if response.get("usage", None):
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=response["usage"].get("prompt_tokens", 0),
@@ -628,7 +631,8 @@ def _get_completion_inputs(
     llm_request: The LlmRequest to convert.
 
   Returns:
-    The litellm inputs (message list, tool dictionary, response format and generation params).
+    The litellm inputs (message list, tool dictionary, response format and
+    generation params).
   """
   # 1. Construct messages
   messages: List[Message] = []
@@ -902,7 +906,7 @@ class LiteLlm(BaseLlm):
       tools = None
 
     completion_args = {
-        "model": self.model,
+        "model": llm_request.model or self.model,
         "messages": messages,
         "tools": tools,
         "response_format": response_format,
@@ -917,6 +921,7 @@ class LiteLlm(BaseLlm):
       # Track function calls by index
       function_calls = {}  # index -> {name, args, id}
       completion_args["stream"] = True
+      completion_args["stream_options"] = {"include_usage": True}
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
