@@ -27,6 +27,7 @@ def test_get_evaluation_criteria_or_default_returns_default():
 
 
 def test_get_evaluation_criteria_or_default_reads_from_file(mocker):
+  mocker.patch("os.path.exists", return_value=True)
   eval_config = EvalConfig(
       criteria={"tool_trajectory_avg_score": 0.5, "response_match_score": 0.5}
   )
@@ -34,6 +35,15 @@ def test_get_evaluation_criteria_or_default_reads_from_file(mocker):
       "builtins.open", mocker.mock_open(read_data=eval_config.model_dump_json())
   )
   assert get_evaluation_criteria_or_default("dummy_path") == eval_config
+
+
+def test_get_evaluation_criteria_or_default_returns_default_if_file_not_found(
+    mocker,
+):
+  mocker.patch("os.path.exists", return_value=False)
+  assert (
+      get_evaluation_criteria_or_default("dummy_path") == _DEFAULT_EVAL_CONFIG
+  )
 
 
 def test_get_eval_metrics_from_config():

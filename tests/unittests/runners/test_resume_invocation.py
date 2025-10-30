@@ -18,6 +18,8 @@ import copy
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.genai.types import FunctionResponse
 from google.genai.types import Part
 import pytest
 
@@ -33,6 +35,10 @@ def transfer_call_part(agent_name: str) -> Part:
 TRANSFER_RESPONSE_PART = Part.from_function_response(
     name="transfer_to_agent", response={"result": None}
 )
+
+
+def test_tool() -> dict[str, str]:
+  return {"result": "test tool result"}
 
 
 @pytest.mark.asyncio
@@ -72,7 +78,7 @@ async def test_resume_invocation_from_sub_agent():
 
   # Step 2: Run the first invocation
   # Expect the invocation to start from root_agent and transferred to sub_agent.
-  invocation_1_events = runner.run("test user query")
+  invocation_1_events = await runner.run_async("test user query")
   assert testing_utils.simplify_resumable_app_events(
       copy.deepcopy(invocation_1_events)
   ) == [
@@ -100,7 +106,7 @@ async def test_resume_invocation_from_sub_agent():
 
   # Step 3: Run the second invocation
   # Expect the invocation to directly start from sub_agent.
-  invocation_2_events = runner.run(
+  invocation_2_events = await runner.run_async(
       "test user query 2",
   )
   assert testing_utils.simplify_resumable_app_events(
@@ -143,4 +149,106 @@ async def test_resume_invocation_from_sub_agent():
           "third response from sub_agent",
       ),
       (sub_agent.name, testing_utils.END_OF_AGENT),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_resume_any_invocation():
+  """A test case for resuming a previous invocation instead of the last one."""
+  # Step 1: Setup
+  long_running_test_tool = LongRunningFunctionTool(
+      func=test_tool,
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              Part.from_function_call(name="test_tool", args={}),
+              "llm response in invocation 2",
+              Part.from_function_call(name="test_tool", args={}),
+              "llm response after resuming invocation 1",
+          ]
+      ),
+      tools=[long_running_test_tool],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_app",
+          root_agent=root_agent,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
+
+  # Step 2: Run the first invocation, which pauses on the long running function.
+  invocation_1_events = await runner.run_async("test user query")
+  assert testing_utils.simplify_resumable_app_events(
+      copy.deepcopy(invocation_1_events)
+  ) == [
+      (
+          root_agent.name,
+          Part.from_function_call(name="test_tool", args={}),
+      ),
+      (
+          root_agent.name,
+          Part.from_function_response(
+              name="test_tool", response={"result": "test tool result"}
+          ),
+      ),
+  ]
+
+  # Step 3: Run the second invocation, expect it to finish normally.
+  invocation_2_events = await runner.run_async(
+      "test user query 2",
+  )
+  assert testing_utils.simplify_resumable_app_events(
+      copy.deepcopy(invocation_2_events)
+  ) == [
+      (
+          root_agent.name,
+          "llm response in invocation 2",
+      ),
+      (root_agent.name, testing_utils.END_OF_AGENT),
+  ]
+
+  # Step 4: Run the third invocation, which also pauses on the long running
+  # function.
+  invocation_3_events = await runner.run_async(
+      "test user query 3",
+  )
+  assert testing_utils.simplify_resumable_app_events(
+      copy.deepcopy(invocation_3_events)
+  ) == [
+      (
+          root_agent.name,
+          Part.from_function_call(name="test_tool", args={}),
+      ),
+      (
+          root_agent.name,
+          Part.from_function_response(
+              name="test_tool", response={"result": "test tool result"}
+          ),
+      ),
+  ]
+
+  # Step 5: Resume the first invocation with long running function response.
+  resumed_invocation_1_events = await runner.run_async(
+      invocation_id=invocation_1_events[0].invocation_id,
+      new_message=testing_utils.UserContent(
+          Part(
+              function_response=FunctionResponse(
+                  id=invocation_1_events[0].content.parts[0].function_call.id,
+                  name="test_tool",
+                  response={"result": "test tool update"},
+              )
+          ),
+      ),
+  )
+  assert testing_utils.simplify_resumable_app_events(
+      copy.deepcopy(resumed_invocation_1_events)
+  ) == [
+      (
+          root_agent.name,
+          "llm response after resuming invocation 1",
+      ),
+      (root_agent.name, testing_utils.END_OF_AGENT),
   ]

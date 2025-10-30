@@ -14,6 +14,7 @@
 import asyncio
 import time
 from typing import Literal
+from typing import Optional
 
 from google.adk.tools.computer_use.base_computer import BaseComputer
 from google.adk.tools.computer_use.base_computer import ComputerEnvironment
@@ -79,29 +80,61 @@ class PlaywrightComputer(BaseComputer):
       initial_url: str = "https://www.google.com",
       search_engine_url: str = "https://www.google.com",
       highlight_mouse: bool = False,
+      user_data_dir: Optional[str] = None,
   ):
     self._initial_url = initial_url
     self._screen_size = screen_size
     self._search_engine_url = search_engine_url
     self._highlight_mouse = highlight_mouse
+    self._user_data_dir = user_data_dir
 
   @override
   async def initialize(self):
     print("Creating session...")
     self._playwright = await async_playwright().start()
-    self._browser = await self._playwright.chromium.launch(
-        args=["--disable-blink-features=AutomationControlled"],
-        headless=False,
-    )
-    self._context = await self._browser.new_context(
-        viewport={
-            "width": self._screen_size[0],
-            "height": self._screen_size[1],
-        }
-    )
-    self._page = await self._context.new_page()
-    await self._page.goto(self._initial_url)
 
+    # Define common arguments for both launch types
+    browser_args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-gpu",
+    ]
+
+    if self._user_data_dir:
+      termcolor.cprint(
+          f"Starting playwright with persistent profile: {self._user_data_dir}",
+          color="yellow",
+          attrs=["bold"],
+      )
+      # Use a persistent context if user_data_dir is provided
+      self._context = await self._playwright.chromium.launch_persistent_context(
+          self._user_data_dir,
+          headless=False,
+          args=browser_args,
+      )
+      self._browser = self._context.browser
+    else:
+      termcolor.cprint(
+          "Starting playwright with a temporary profile.",
+          color="yellow",
+          attrs=["bold"],
+      )
+      # Launch a temporary browser instance if user_data_dir is not provided
+      self._browser = await self._playwright.chromium.launch(
+          args=browser_args,
+          headless=False,
+      )
+      self._context = await self._browser.new_context()
+
+    if not self._context.pages:
+      self._page = await self._context.new_page()
+      await self._page.goto(self._initial_url)
+    else:
+      self._page = self._context.pages[0]  # Use existing page if any
+
+    await self._page.set_viewport_size({
+        "width": self._screen_size[0],
+        "height": self._screen_size[1],
+    })
     termcolor.cprint(
         f"Started local playwright.",
         color="green",

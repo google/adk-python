@@ -216,10 +216,11 @@ class EvalMetricResultPerInvocation(EvalBaseModel):
       )
   )
 
-  expected_invocation: Invocation = Field(
+  expected_invocation: Optional[Invocation] = Field(
+      default=None,
       description=(
           "The expected invocation, usually the reference or golden invocation."
-      )
+      ),
   )
 
   eval_metric_results: list[EvalMetricResult] = Field(

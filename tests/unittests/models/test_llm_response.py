@@ -317,3 +317,20 @@ def test_llm_response_create_error_case_with_citation_metadata():
   assert (
       response.error_message == 'Response blocked due to recitation triggered'
   )
+
+
+def test_llm_response_create_empty_content_with_stop_reason():
+  """Test LlmResponse.create() with empty content and stop finish reason."""
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(parts=[]),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.error_code is None
+  assert response.content is not None
