@@ -26,18 +26,6 @@ from typing import Optional
 from ..utils.env_utils import is_env_enabled
 
 
-def is_vertex_express_mode(
-    project: Optional[str], location: Optional[str], api_key: Optional[str]
-) -> bool:
-  """Check if Vertex AI and API key are both enabled replacing project and location, meaning the user is using the Vertex Express Mode."""
-  return (
-      is_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
-      and api_key is not None
-      and project is None
-      and location is None
-  )
-
-
 def get_express_mode_api_key(
     project: Optional[str],
     location: Optional[str],
