@@ -923,6 +923,41 @@ async def test_no_dynamic_instructions_when_no_static(llm_backend):
   assert llm_request.contents[0].parts[0].text == "Hello world"
 
 
+@pytest.mark.asyncio
+async def test_instructions_insert_after_function_response():
+  """Ensure instruction insertion does not split tool_use/tool_result pairs."""
+  agent = LlmAgent(name="test_agent")
+  invocation_context = await _create_invocation_context(agent)
+
+  tool_call = types.Part.from_function_call(
+      name="echo_tool", args={"echo": "value"}
+  )
+  tool_response = types.Part.from_function_response(
+      name="echo_tool", response={"result": "value"}
+  )
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role="assistant", parts=[tool_call]),
+          types.Content(role="user", parts=[tool_response]),
+      ]
+  )
+  instruction_contents = [
+      types.Content(
+          role="user", parts=[types.Part.from_text(text="Dynamic instruction")]
+      )
+  ]
+
+  await _add_instructions_to_user_content(
+      invocation_context, llm_request, instruction_contents
+  )
+
+  assert len(llm_request.contents) == 3
+  assert llm_request.contents[0].parts[0].function_call
+  assert llm_request.contents[1].parts[0].function_response
+  assert llm_request.contents[2].parts[0].text == "Dynamic instruction"
+
+
 @pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
 async def test_static_instruction_with_files_and_text(llm_backend):
