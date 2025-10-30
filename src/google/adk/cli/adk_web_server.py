@@ -436,6 +436,7 @@ class AdkWebServer:
       extra_plugins: Optional[list[str]] = None,
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
+      root_path: Optional[str] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -452,6 +453,7 @@ class AdkWebServer:
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
+    self.root_path = root_path
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -559,6 +561,7 @@ class AdkWebServer:
           " overwritten.",
           runtime_config_path,
       )
+    runtime_config["backendUrl"] = self.root_path if self.root_path else ""
 
     # Set custom logo config.
     if self.logo_text or self.logo_image_url:
@@ -1562,6 +1565,9 @@ class AdkWebServer:
       mimetypes.add_type("application/javascript", ".js", True)
       mimetypes.add_type("text/javascript", ".js", True)
 
+      devRedirectUrl = "/dev-ui/"
+      if self.root_path:
+        devRedirectUrl = self.root_path + "/dev-ui/"
       @app.get("/dev-ui/config")
       async def get_ui_config():
         return {
@@ -1571,11 +1577,11 @@ class AdkWebServer:
 
       @app.get("/")
       async def redirect_root_to_dev_ui():
-        return RedirectResponse("/dev-ui/")
+        return RedirectResponse(devRedirectUrl)
 
       @app.get("/dev-ui")
       async def redirect_dev_ui_add_slash():
-        return RedirectResponse("/dev-ui/")
+        return RedirectResponse(devRedirectUrl)
 
       app.mount(
           "/dev-ui/",

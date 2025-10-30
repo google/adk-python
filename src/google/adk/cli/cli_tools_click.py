@@ -1028,6 +1028,11 @@ def fast_api_common_options():
         ),
         multiple=True,
     )
+    @click.option(
+        "--root_path",
+        type=str,
+        default = None,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -1065,6 +1070,7 @@ def cli_web(
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
+    root_path: str = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload: bool = True,
@@ -1128,6 +1134,7 @@ def cli_web(
       a2a=a2a,
       host=host,
       port=port,
+      root_path=root_path,
       reload_agents=reload_agents,
       extra_plugins=extra_plugins,
       logo_text=logo_text,
