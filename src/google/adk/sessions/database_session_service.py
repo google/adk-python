@@ -125,14 +125,14 @@ class DynamicPickleType(TypeDecorator):
   def process_bind_param(self, value, dialect):
     """Ensures the pickled value is a bytes object before passing it to the database dialect."""
     if value is not None:
-      if dialect.name == "spanner+spanner":
+      if dialect.name in ("spanner+spanner", "mysql"):
         return pickle.dumps(value)
     return value
 
   def process_result_value(self, value, dialect):
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
-      if dialect.name == "spanner+spanner":
+      if dialect.name in ("spanner+spanner", "mysql"):
         return pickle.loads(value)
     return value
 
