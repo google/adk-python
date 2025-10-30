@@ -46,6 +46,7 @@ from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
+from .errors.already_exists_error import AlreadyExistsError
 from .events.event import Event
 from .events.event import EventActions
 from .flows.llm_flows import contents
@@ -930,6 +931,215 @@ class Runner:
         return False
       agent = agent.parent_agent
     return True
+
+  # Constants for debug output truncation
+  _DEBUG_ARGS_MAX_LEN = 50  # Keep arg previews short for readability
+  _DEBUG_RESPONSE_MAX_LEN = 100  # Show more of response for context
+  _DEBUG_OUTPUT_MAX_LEN = 100  # Same as response for consistency
+
+  async def run_debug(
+      self,
+      user_queries: str | list[str] | None = None,
+      *,
+      user_id: str = 'default',
+      session_name: str = 'default',
+      print_output: bool = True,
+      return_events: bool = False,
+      verbose: bool = False,
+      run_config: RunConfig | None = None,
+  ) -> list[Event] | None:
+    """Debug helper for quick agent experimentation and testing.
+
+    This convenience method is designed for developers getting started with ADK
+    who want to quickly test agents without dealing with session management,
+    content formatting, or event streaming. It automatically handles common
+    boilerplate while hiding complexity.
+
+    IMPORTANT: This is for debugging and experimentation only. For production
+    use, please use the standard run_async() method which provides full control
+    over session management, event streaming, and error handling.
+
+    Args:
+        user_queries: Question(s) to ask the agent. Can be:
+            - None: Creates/retrieves session without sending messages
+            - Single string: "What is 2+2?"
+            - List of strings: ["Hello!", "What's my name?"]
+        user_id: User identifier. Defaults to "default".
+        session_name: Session identifier for conversation persistence.
+            Defaults to "default". Reuse the same name to continue a conversation.
+        print_output: If True, prints the conversation to stdout. Defaults to True.
+        return_events: If True, returns a list of all events. Defaults to False.
+        verbose: If True, shows detailed tool calls and responses. Defaults to False
+            for cleaner output showing only final agent responses.
+        run_config: Optional configuration for the agent execution.
+
+    Returns:
+        None by default when return_events=False (just prints output).
+        list[Event] if return_events=True, containing all events from all queries.
+        Returns empty list [] if return_events=True and no queries provided.
+
+    Raises:
+        ValueError: If session creation/retrieval fails.
+
+    Examples:
+        Quick debugging:
+        >>> runner = InMemoryRunner(agent=my_agent)
+        >>> await runner.run_debug("What is 2+2?")
+
+        Multiple queries in conversation:
+        >>> await runner.run_debug(["Hello!", "What's my name?"])
+
+        Continue a debug session:
+        >>> await runner.run_debug("What did we discuss?")  # Continues default session
+
+        Separate debug sessions:
+        >>> await runner.run_debug("Hi", user_id="alice", session_name="debug1")
+        >>> await runner.run_debug("Hi", user_id="bob", session_name="debug2")
+
+        Capture events for inspection:
+        >>> events = await runner.run_debug("Analyze this", return_events=True)
+        >>> for event in events:
+        ...     inspect_event(event)
+
+    Note:
+        For production applications requiring:
+        - Custom session/memory services (Spanner, Cloud SQL, etc.)
+        - Fine-grained event processing and streaming
+        - Error recovery and resumability
+        - Performance optimization
+        Please use run_async() with proper configuration.
+    """
+    # Display session identifier if printing enabled
+    if print_output:
+      print(f'\n ### Session: {session_name}')
+
+    # Attempt to create a new session or retrieve existing one
+    try:
+      session = await self.session_service.create_session(
+          app_name=self.app_name, user_id=user_id, session_id=session_name
+      )
+      # Debug logging follows print_output for consistency - when user requests
+      # silent mode, we suppress all output including debug logs
+      if print_output:
+        logger.debug(f'Created new session: {session_name}')
+    except AlreadyExistsError:
+      # Session exists, retrieve it
+      session = await self.session_service.get_session(
+          app_name=self.app_name, user_id=user_id, session_id=session_name
+      )
+      # Debug logging follows print_output for consistency - when user requests
+      # silent mode, we suppress all output including debug logs
+      if print_output:
+        logger.debug(f'Retrieved existing session: {session_name}')
+
+    # Validate session was created/retrieved successfully
+    if not session:
+      raise ValueError(
+          f"Failed to create or retrieve session '{session_name}' "
+          f"for user '{user_id}' in app '{self.app_name}'"
+      )
+
+    # Only allocate list when needed to save memory in common case
+    collected_events = [] if return_events else None
+
+    # Process queries if provided
+    if user_queries:
+      # Normalize input to list for uniform processing
+      if isinstance(user_queries, str):
+        user_queries = [user_queries]
+
+      # Process each query sequentially
+      for query in user_queries:
+        # Display user query if printing enabled
+        if print_output:
+          print(f'\nUser > {query}')
+
+        # Convert query string to Content format required by Runner
+        content = types.Content(
+            role='user', parts=[types.Part.from_text(text=query)]
+        )
+
+        # Stream agent responses
+        async for event in self.run_async(
+            user_id=user_id,
+            session_id=session.id,
+            new_message=content,
+            run_config=run_config,
+        ):
+          # Print response if enabled and event contains content
+          if print_output and event.content and event.content.parts:
+            for part in event.content.parts:
+              # Text parts are always shown regardless of verbose setting
+              # because they contain the actual agent responses users expect
+              # Filter out None strings that some models return as placeholders
+              text = getattr(part, 'text', None)
+              if text and text != 'None':
+                print(f'{event.author} > {text}')
+              # Non-text parts (tool calls, code, etc.) are hidden by default
+              # to reduce clutter and show only what matters: the final results
+              elif verbose:
+                # Tool invocations show the behind-the-scenes processing
+                func_call = getattr(part, 'function_call', None)
+                func_resp = getattr(part, 'function_response', None)
+                executable_code = getattr(part, 'executable_code', None)
+                code_result = getattr(part, 'code_execution_result', None)
+                inline_data = getattr(part, 'inline_data', None)
+                file_data = getattr(part, 'file_data', None)
+
+                if func_call:
+                  args_str = str(func_call.args)
+                  args_preview = (
+                      args_str[: self._DEBUG_ARGS_MAX_LEN] + '...'
+                      if len(args_str) > self._DEBUG_ARGS_MAX_LEN
+                      else args_str
+                  )
+                  print(
+                      f'{event.author} > [Calling tool:'
+                      f' {func_call.name}({args_preview})]'
+                  )
+                # Handle function response parts (tool results)
+                elif func_resp:
+                  resp_str = str(func_resp.response)
+                  resp_preview = (
+                      resp_str[: self._DEBUG_RESPONSE_MAX_LEN] + '...'
+                      if len(resp_str) > self._DEBUG_RESPONSE_MAX_LEN
+                      else resp_str
+                  )
+                  print(f'{event.author} > [Tool result: {resp_preview}]')
+                # Handle executable code parts
+                elif executable_code:
+                  lang = getattr(executable_code, 'language', 'code')
+                  print(f'{event.author} > [Executing {lang} code...]')
+                # Handle code execution result parts
+                elif code_result:
+                  output = getattr(code_result, 'output', 'result')
+                  output_str = str(output)
+                  output_preview = (
+                      output_str[: self._DEBUG_OUTPUT_MAX_LEN] + '...'
+                      if len(output_str) > self._DEBUG_OUTPUT_MAX_LEN
+                      else output_str
+                  )
+                  print(f'{event.author} > [Code output: {output_preview}]')
+                # Handle inline data (images, files)
+                elif inline_data:
+                  mime_type = getattr(inline_data, 'mime_type', 'data')
+                  print(f'{event.author} > [Inline data: {mime_type}]')
+                # Handle file data
+                elif file_data:
+                  uri = getattr(file_data, 'file_uri', 'file')
+                  print(f'{event.author} > [File: {uri}]')
+
+          # Collect events if requested
+          if return_events:
+            collected_events.append(event)
+
+    else:
+      # No queries provided, just session setup
+      if print_output:
+        print('Session ready. No queries provided.')
+
+    # Return collected events or None
+    return collected_events
 
   async def _setup_context_for_new_invocation(
       self,
