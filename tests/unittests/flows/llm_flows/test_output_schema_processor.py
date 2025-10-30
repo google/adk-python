@@ -73,6 +73,24 @@ async def test_output_schema_with_tools_validation_removed():
 
 
 @pytest.mark.asyncio
+async def test_output_schema_with_sub_agents():
+  """Test that LlmAgent now allows output_schema with sub_agents."""
+  sub_agent = LlmAgent(
+      name='sub_agent',
+      model='gemini-1.5-flash',
+  )
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-1.5-flash',
+      output_schema=PersonSchema,
+      sub_agents=[sub_agent],
+  )
+
+  assert agent.output_schema == PersonSchema
+  assert len(agent.sub_agents) == 1
+
+
+@pytest.mark.asyncio
 async def test_basic_processor_skips_output_schema_with_tools():
   """Test that basic processor doesn't set output_schema when tools are present."""
   from google.adk.flows.llm_flows.basic import _BasicLlmRequestProcessor
