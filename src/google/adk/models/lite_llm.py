@@ -920,6 +920,7 @@ class LiteLlm(BaseLlm):
       # Track function calls by index
       function_calls = {}  # index -> {name, args, id}
       completion_args["stream"] = True
+      completion_args["stream_options"] = {"include_usage": True}
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
