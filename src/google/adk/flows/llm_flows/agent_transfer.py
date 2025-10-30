@@ -82,6 +82,18 @@ line_break = '\n'
 def _build_target_agents_instructions(
     agent: LlmAgent, target_agents: list[BaseAgent]
 ) -> str:
+  # Build list of available agent names for the NOTE
+  # target_agents already includes parent agent if applicable, so no need to add it again
+  available_agent_names = [target_agent.name for target_agent in target_agents]
+
+  # Sort for consistency
+  available_agent_names.sort()
+
+  # Format agent names with backticks for clarity
+  formatted_agent_names = ', '.join(
+      f'`{name}`' for name in available_agent_names
+  )
+
   si = f"""
 You have a list of other agents to transfer to:
 
@@ -96,13 +108,13 @@ If another agent is better for answering the question according to its
 description, call `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` function to transfer the
 question to that agent. When transferring, do not generate any text other than
 the function call.
+
+**NOTE**: the only available agents for `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` function are {formatted_agent_names}.
 """
 
   if agent.parent_agent and not agent.disallow_transfer_to_parent:
     si += f"""
-Your parent agent is {agent.parent_agent.name}. If neither the other agents nor
-you are best for answering the question according to the descriptions, transfer
-to your parent agent.
+If neither you nor the other agents are best for the question, transfer to your parent agent {agent.parent_agent.name}.
 """
   return si
 

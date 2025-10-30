@@ -19,6 +19,7 @@ module containing utilities for conversion betwen A2A Part and Google GenAI Part
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 import json
 import logging
 from typing import Optional
@@ -39,7 +40,7 @@ except ImportError as e:
 
 from google.genai import types as genai_types
 
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -51,7 +52,15 @@ A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = 'code_execution_result'
 A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
 
 
-@experimental
+A2APartToGenAIPartConverter = Callable[
+    [a2a_types.Part], Optional[genai_types.Part]
+]
+GenAIPartToA2APartConverter = Callable[
+    [genai_types.Part], Optional[a2a_types.Part]
+]
+
+
+@a2a_experimental
 def convert_a2a_part_to_genai_part(
     a2a_part: a2a_types.Part,
 ) -> Optional[genai_types.Part]:
@@ -84,11 +93,11 @@ def convert_a2a_part_to_genai_part(
       return None
 
   if isinstance(part, a2a_types.DataPart):
-    # Conver the Data Part to funcall and function reponse.
+    # Convert the Data Part to funcall and function response.
     # This is mainly for converting human in the loop and auth request and
     # response.
-    # TODO once A2A defined how to suervice such information, migrate below
-    # logic accordinlgy
+    # TODO once A2A defined how to service such information, migrate below
+    # logic accordingly
     if (
         part.metadata
         and _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
@@ -140,7 +149,7 @@ def convert_a2a_part_to_genai_part(
   return None
 
 
-@experimental
+@a2a_experimental
 def convert_genai_part_to_a2a_part(
     part: genai_types.Part,
 ) -> Optional[a2a_types.Part]:
@@ -179,11 +188,11 @@ def convert_genai_part_to_a2a_part(
 
     return a2a_types.Part(root=a2a_part)
 
-  # Conver the funcall and function reponse to A2A DataPart.
+  # Convert the funcall and function response to A2A DataPart.
   # This is mainly for converting human in the loop and auth request and
   # response.
   # TODO once A2A defined how to suervice such information, migrate below
-  # logic accordinlgy
+  # logic accordingly
   if part.function_call:
     return a2a_types.Part(
         root=a2a_types.DataPart(

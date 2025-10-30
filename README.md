@@ -1,6 +1,7 @@
 # Agent Development Kit (ADK)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/google-adk)](https://pypi.org/project/google-adk/)
 [![Python Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/google/adk-python)
@@ -14,7 +15,7 @@
     </h3>
     <h3 align="center">
       Important Links:
-      <a href="https://google.github.io/adk-docs/">Docs</a>, 
+      <a href="https://google.github.io/adk-docs/">Docs</a>,
       <a href="https://github.com/google/adk-samples">Samples</a>,
       <a href="https://github.com/google/adk-java">Java ADK</a> &
       <a href="https://github.com/google/adk-web">ADK Web</a>.
@@ -25,6 +26,43 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 
 ---
+## 🔥 ADK's very first community call on Oct 15
+
+Join our ADK Community Call! Our first virtual community call is on Oct 15!
+Meet our team, and talk with us about our roadmap and how to contribute.
+
+First Call Details:
+
+Topic: ADK Roadmap
+
+Date: October 15, 2025
+
+Time: 9:30-10:30am PST
+
+Meeting link:
+[Join the call](http://meet.google.com/gjm-gfim-ctz)
+
+Add to your calendar
+[Event calendar invite](https://calendar.google.com/calendar/event?action=TEMPLATE&tmeid=MDUydWo1dHV1dHFtNzJuM3E0bmEyMW12ZnZfMjAyNTEwMTVUMTYzMDAwWiBjXzljNWVjODhhMmQyYWU5YjY5Mzk4ODU1MGZkNDA5MjVmYjgxYjM4MTI1NGNjYTgzNmRkMjMwNzRiMjNmYzcyZDVAZw&tmsrc=c_9c5ec88a2d2ae9b693988550fd40925fb81b381254cca836dd23074b23fc72d5%40group.calendar.google.com), [.ics file](https://calendar.google.com/calendar/ical/c_9c5ec88a2d2ae9b693988550fd40925fb81b381254cca836dd23074b23fc72d5%40group.calendar.google.com/public/basic.ics), [ADK community calendar](https://calendar.google.com/calendar/embed?src=c_9c5ec88a2d2ae9b693988550fd40925fb81b381254cca836dd23074b23fc72d5%40group.calendar.google.com&ctz=America%2FLos_Angeles), [ADK Community Call RSVP](https://google.qualtrics.com/jfe/form/SV_3K0RJZ64H1BexqS)
+
+Agenda:
+[Julia] ADK Roadmap
+[ Bo & Hangfei] Eng Deep Dive: Context Caching
+[Kris] How to Contribute
+
+[Shubham] Upcoming Events
+
+---
+
+## 🔥 What's new
+
+- **Context compaction**: Supports context compaction to reduce context length. Here is a [sample](https://github.com/google/adk-python/blob/main/contributing/samples/hello_world_app/agent.py#L156) and [compaction config](https://github.com/google/adk-python/blob/main/src/google/adk/apps/app.py#L51).
+
+- **Resumability**: Support pause and resume an invocation in ADK.
+
+- **ReflectRetryToolPlugin**: Add [`ReflectRetryToolPlugin`](https://github.com/google/adk-python/blob/main/src/google/adk/plugins/reflect_retry_tool_plugin.py) to reflect from errors and retry with different arguments when tool errors.
+
+- **Search tool**: Support using Google built-in search and built-in `VertexAiSearchTool` with other tools in the same agent.
 
 ## ✨ Key Features
 
@@ -34,6 +72,11 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 - **Code-First Development**: Define agent logic, tools, and orchestration
   directly in Python for ultimate flexibility, testability, and versioning.
+
+- **Agent Config**: Build agents without code. Check out the
+  [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+
+- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input.
 
 - **Modular Multi-Agent Systems**: Design scalable applications by composing
   multiple specialized agents into flexible hierarchies.
@@ -58,7 +101,7 @@ You can install the latest stable version of ADK using `pip`:
 pip install google-adk
 ```
 
-The release cadence is weekly.
+The release cadence is roughly bi-weekly.
 
 This version is recommended for most users as it represents the most recent official release.
 
@@ -88,7 +131,7 @@ from google.adk.tools import google_search
 
 root_agent = Agent(
     name="search_assistant",
-    model="gemini-2.0-flash", # Or your preferred Gemini model
+    model="gemini-2.5-flash", # Or your preferred Gemini model
     instruction="You are a helpful assistant. Answer user questions using Google Search when needed.",
     description="An assistant that can search the web.",
     tools=[google_search]
@@ -103,13 +146,13 @@ Define a multi-agent system with coordinator agent, greeter agent, and task exec
 from google.adk.agents import LlmAgent, BaseAgent
 
 # Define individual agents
-greeter = LlmAgent(name="greeter", model="gemini-2.0-flash", ...)
-task_executor = LlmAgent(name="task_executor", model="gemini-2.0-flash", ...)
+greeter = LlmAgent(name="greeter", model="gemini-2.5-flash", ...)
+task_executor = LlmAgent(name="task_executor", model="gemini-2.5-flash", ...)
 
 # Create parent agent and assign children via sub_agents
 coordinator = LlmAgent(
     name="Coordinator",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description="I coordinate greetings and tasks.",
     sub_agents=[ # Assign sub_agents here
         greeter,

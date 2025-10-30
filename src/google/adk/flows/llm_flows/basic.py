@@ -37,8 +37,6 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
 
     llm_request.model = (
         agent.canonical_model
@@ -50,7 +48,11 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
         if agent.generate_content_config
         else types.GenerateContentConfig()
     )
-    if agent.output_schema:
+    # Only set output_schema if no tools are specified. as of now, model don't
+    # support output_schema and tools together. we have a workaround to support
+    # both output_schema and tools at the same time. see
+    # _output_schema_processor.py for details
+    if agent.output_schema and not agent.tools:
       llm_request.set_output_schema(agent.output_schema)
 
     llm_request.live_connect_config.response_modalities = (

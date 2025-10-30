@@ -21,6 +21,7 @@ from typing import Union
 from google.genai import live
 from google.genai import types
 
+from ..utils.context_utils import Aclosing
 from .base_llm_connection import BaseLlmConnection
 from .llm_response import LlmResponse
 
@@ -115,7 +116,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
 
-  def __build_full_text_response(self, text: str):
+  def __build_full_text_response(self, text: str, model_thought: bool = None):
     """Builds a full text response.
 
     The text should not partial and the returned LlmResponse is not be
@@ -127,12 +128,14 @@ class GeminiLlmConnection(BaseLlmConnection):
     Returns:
       An LlmResponse containing the full text.
     """
+    
     return LlmResponse(
         content=types.Content(
             role='model',
-            parts=[types.Part.from_text(text=text)],
+            parts=[types.Part.from_text(text=text),
+            types.Part(thought=model_thought)],
         ),
-    )
+      )
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Receives the model response using the llm server connection.
@@ -141,129 +144,158 @@ class GeminiLlmConnection(BaseLlmConnection):
       LlmResponse: The model response.
     """
     text = ''
-    user_text = ''
-    async for message in self._gemini_session.receive():
-      logger.debug('Got LLM Live message: %s', message)
+    input_transcription = ''
+    output_transcription = ''
+    model_thought = None
+    async with Aclosing(self._gemini_session.receive()) as agen:
+      # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
+      # partial content and emit responses as needed.
+      async for message in agen:
+        logger.debug('Got LLM Live message: %s', message)
 
-      model_turn_has_content = False
-      if message.server_content and message.server_content.model_turn:
-        content = message.server_content.model_turn
-        if content and content.parts:
-          model_turn_has_content = any(
-              p.text or p.inline_data for p in content.parts
-          )
-
-      model_is_replying = (
-          message.tool_call
-          or (
-              message.server_content
-              and message.server_content.output_transcription
-          )
-          or model_turn_has_content
-      )
-
-      if user_text and model_is_replying:
-        yield LlmResponse(
-            content=types.Content(
-                role='user',
-                parts=[types.Part.from_text(text=user_text)],
+        # Check if model is replying to determine when to yield accumulated user text
+        model_turn_has_content = False
+        if message.server_content and message.server_content.model_turn:
+          content = message.server_content.model_turn
+          if content and content.parts:
+            model_turn_has_content = any(
+                p.text or p.inline_data for p in content.parts
             )
+
+        model_is_replying = (
+            message.tool_call
+            or model_turn_has_content
         )
-        user_text = ''
 
-      if message.server_content:
-        content = message.server_content.model_turn
-        if content and content.parts:
-          llm_response = LlmResponse(
-              content=content, interrupted=message.server_content.interrupted
-          )
-          if content.parts[0].text:
-            text += content.parts[0].text
-            llm_response.partial = True
-          if content.parts[0].inline_data:
-            llm_response.partial = True
-          # don't yield the merged text event when receiving audio data
-          elif text and not content.parts[0].inline_data:
-            yield self.__build_full_text_response(text)
-            text = ''
-          yield llm_response
-        if (
-            message.server_content.input_transcription
-            and message.server_content.input_transcription.text
-        ):
-          user_text_fragment = message.server_content.input_transcription.text
-          user_text += user_text_fragment
-          parts = [
-              types.Part.from_text(
-                  text=user_text_fragment,
-              )
-          ]
-          llm_response = LlmResponse(
-              content=types.Content(role='user', parts=parts), partial=True
-          )
-          yield llm_response
-        if (
-            message.server_content.output_transcription
-            and message.server_content.output_transcription.text
-        ):
-          # TODO: Right now, we just support output_transcription without
-          # changing interface and data protocol. Later, we can consider to
-          # support output_transcription as a separate field in LlmResponse.
-
-          # Transcription is always considered as partial event
-          # We rely on other control signals to determine when to yield the
-          # full text response(turn_complete, interrupted, or tool_call).
-          text += message.server_content.output_transcription.text
-          parts = [
-              types.Part.from_text(
-                  text=message.server_content.output_transcription.text
-              )
-          ]
-          llm_response = LlmResponse(
-              content=types.Content(role='model', parts=parts), partial=True
-          )
-          yield llm_response
-
-        if message.server_content.turn_complete:
-          if text:
-            yield self.__build_full_text_response(text)
-            text = ''
+        # Yield accumulated user text when model starts replying
+        if input_transcription and model_is_replying:
           yield LlmResponse(
-              turn_complete=True, interrupted=message.server_content.interrupted
+              input_transcription=types.Transcription(text=input_transcription)
           )
-          break
-        if message.server_content.generation_complete:
-          if text:
-            yield self.__build_full_text_response(text)
+          input_transcription = ''
+
+        if message.server_content:
+          content = message.server_content.model_turn
+          if content and content.parts:
+            llm_response = LlmResponse(
+                content=content, interrupted=message.server_content.interrupted
+            )
+
+            if content.parts[0].thought:
+              model_thought = True
+
+
+            if content.parts[0].text and not content.parts[0].thought:
+              text += content.parts[0].text
+              llm_response.partial = True
+            # don't yield the merged text event when receiving audio data
+            elif text and not content.parts[0].inline_data:
+              yield self.__build_full_text_response(text, model_thought)
+              text = ''
+              model_thought = None
+            llm_response.partial = True
+            yield llm_response
+            
+          if (
+              message.server_content.input_transcription
+              and message.server_content.input_transcription.text
+          ):
+            # Accumulate user text for conversation flow management
+            input_transcription += message.server_content.input_transcription.text
+            # Keep current protocol: yield transcription as separate field
+            llm_response = LlmResponse(
+                input_transcription=message.server_content.input_transcription,
+                partial=True,  # Partial speech fragments
+            )
+            yield llm_response
+          if (
+              message.server_content.output_transcription
+              and message.server_content.output_transcription.text
+          ):
+            llm_response = LlmResponse(
+                output_transcription=message.server_content.output_transcription,
+                partial=True
+            )
+            # Buffer model output transcription instead of yielding immediately
+            output_transcription += (
+                message.server_content.output_transcription.text
+            )
+            yield llm_response
+          if message.server_content.turn_complete:
+            if text:
+              yield self.__build_full_text_response(text, model_thought)
+              text = ''
+              model_thought = None
+            # Flush buffered model output transcription as non-partial
+            if output_transcription:
+              yield LlmResponse(
+                output_transcription=types.Transcription(text=output_transcription),
+                content=types.Content(
+                      role='model',
+                      parts=[types.Part(thought=model_thought)],
+                    ),
+              )
+              model_thought = None
+              output_transcription = ''
+            yield LlmResponse(
+                turn_complete=True,
+                interrupted=message.server_content.interrupted,
+            )
+            break
+          if message.server_content.generation_complete:
+            if text:
+              yield self.__build_full_text_response(text, model_thought)
+              text = ''
+              model_thought = None
+            # Flush buffered model output transcription at generation_complete
+            if output_transcription:
+              yield LlmResponse(
+                output_transcription=types.Transcription(text=output_transcription),
+                content=types.Content(
+                      role='model',
+                      parts=[types.Part(thought=model_thought)],
+                    ),
+              )
+              model_thought = None
+              output_transcription = ''
+            yield LlmResponse(generation_complete=True, partial=True)
+          # in case of empty content or parts, we sill surface it
+          # in case it's an interrupted message, we merge the previous partial
+          # text. Other we don't merge. because content can be none when model
+          # safety threshold is triggered
+          if message.server_content.interrupted and text:
+            yield self.__build_full_text_response(text, model_thought)
             text = ''
-          #yield LlmResponse(generation_complete=True, partial=True)
-          yield LlmResponse(
-              content=types.Content(
-                  role='model',
-                  parts=[
-                      types.Part.from_text(text='[SYSTEM] Hand off to second agent')
-                  ],
-              ),
-              generation_complete=True,
-              partial = True 
+            model_thought = None
+          # Flush buffered model output transcription at interrupted
+          if message.server_content.interrupted and output_transcription:
+            yield LlmResponse(
+                output_transcription=types.Transcription(text=output_transcription),
+                      content=types.Content(
+                      role='model',
+                      parts=[types.Part(thought=model_thought)],
+                    ),
+              )
+            model_thought = None
+            output_transcription = ''
+          yield LlmResponse(interrupted=message.server_content.interrupted)
+        if message.tool_call:
+          if text:
+            yield self.__build_full_text_response(text, model_thought)
+            text = ''
+            model_thought = None
+          parts = [
+              types.Part(function_call=function_call)
+              for function_call in message.tool_call.function_calls
+          ]
+          yield LlmResponse(content=types.Content(role='model', parts=parts))
+        if message.session_resumption_update:
+          logger.info('Redeived session reassumption message: %s', message)
+          yield (
+              LlmResponse(
+                  live_session_resumption_update=message.session_resumption_update
+              )
           )
-        # in case of empty content or parts, we sill surface it
-        # in case it's an interrupted message, we merge the previous partial
-        # text. Other we don't merge. because content can be none when model
-        # safety threshold is triggered
-        if message.server_content.interrupted and text:
-          yield self.__build_full_text_response(text)
-          text = ''
-        yield LlmResponse(interrupted=message.server_content.interrupted)
-      if message.tool_call:
-        if text:
-          yield self.__build_full_text_response(text)
-          text = ''
-        parts = [
-            types.Part(function_call=function_call)
-            for function_call in message.tool_call.function_calls
-        ]
-        yield LlmResponse(content=types.Content(role='model', parts=parts))
 
   async def close(self):
     """Closes the llm server connection."""

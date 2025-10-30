@@ -62,6 +62,7 @@ def test_generate_files_with_api_key(agent_folder: Path) -> None:
       str(agent_folder),
       google_api_key="dummy-key",
       model="gemini-2.0-flash-001",
+      type="code",
   )
 
   env_content = (agent_folder / ".env").read_text()
@@ -78,6 +79,7 @@ def test_generate_files_with_gcp(agent_folder: Path) -> None:
       google_cloud_project="proj",
       google_cloud_region="us-central1",
       model="gemini-2.0-flash-001",
+      type="code",
   )
 
   env_content = (agent_folder / ".env").read_text()
@@ -95,6 +97,7 @@ def test_generate_files_overwrite(agent_folder: Path) -> None:
       str(agent_folder),
       google_api_key="new-key",
       model="gemini-2.0-flash-001",
+      type="code",
   )
 
   assert "GOOGLE_API_KEY=new-key" in (agent_folder / ".env").read_text()
@@ -108,12 +111,16 @@ def test_generate_files_permission_error(
       os, "makedirs", lambda *a, **k: (_ for _ in ()).throw(PermissionError())
   )
   with pytest.raises(PermissionError):
-    cli_create._generate_files(str(agent_folder), model="gemini-2.0-flash-001")
+    cli_create._generate_files(
+        str(agent_folder), model="gemini-2.0-flash-001", type="code"
+    )
 
 
 def test_generate_files_no_params(agent_folder: Path) -> None:
   """No backend parameters → minimal .env file is generated."""
-  cli_create._generate_files(str(agent_folder), model="gemini-2.0-flash-001")
+  cli_create._generate_files(
+      str(agent_folder), model="gemini-2.0-flash-001", type="code"
+  )
 
   env_content = (agent_folder / ".env").read_text()
   for key in (
@@ -147,7 +154,7 @@ def test_run_cmd_overwrite_reject(
         google_api_key=None,
         google_cloud_project=None,
         google_cloud_region=None,
-        type=cli_create.Type.CODE,
+        type="code",
     )
 
 
@@ -166,7 +173,7 @@ def test_run_cmd_with_type_config(
       google_api_key="test-key",
       google_cloud_project=None,
       google_cloud_region=None,
-      type=cli_create.Type.CONFIG,
+      type="config",
   )
 
   agent_dir = tmp_path / agent_name

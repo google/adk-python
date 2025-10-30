@@ -51,26 +51,33 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
       return
 
     request_euc_function_call_ids = set()
-    for k in range(len(events) - 1, -1, -1):
-      event = events[k]
-      # look for first event authored by user
-      if not event.author or event.author != 'user':
-        continue
-      responses = event.get_function_responses()
-      if not responses:
-        return
+    # find the last event with non-None content
+    last_event_with_content = None
+    for i in range(len(events) - 1, -1, -1):
+      event = events[i]
+      if event.content is not None:
+        last_event_with_content = event
+        break
 
-      for function_call_response in responses:
-        if function_call_response.name != REQUEST_EUC_FUNCTION_CALL_NAME:
-          continue
-        # found the function call response for the system long running request euc
-        # function call
-        request_euc_function_call_ids.add(function_call_response.id)
-        auth_config = AuthConfig.model_validate(function_call_response.response)
-        await AuthHandler(
-            auth_config=auth_config
-        ).parse_and_store_auth_response(state=invocation_context.session.state)
-      break
+    # check if the last event with content is authored by user
+    if not last_event_with_content or last_event_with_content.author != 'user':
+      return
+
+    responses = last_event_with_content.get_function_responses()
+    if not responses:
+      return
+
+    # look for auth response
+    for function_call_response in responses:
+      if function_call_response.name != REQUEST_EUC_FUNCTION_CALL_NAME:
+        continue
+      # found the function call response for the system long running request euc
+      # function call
+      request_euc_function_call_ids.add(function_call_response.id)
+      auth_config = AuthConfig.model_validate(function_call_response.response)
+      await AuthHandler(auth_config=auth_config).parse_and_store_auth_response(
+          state=invocation_context.session.state
+      )
 
     if not request_euc_function_call_ids:
       return

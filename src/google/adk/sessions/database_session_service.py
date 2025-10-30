@@ -18,14 +18,15 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
+import pickle
 from typing import Any
 from typing import Optional
 import uuid
 
-from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
+from sqlalchemy import event
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
 from sqlalchemy import Text
@@ -105,6 +106,33 @@ class PreciseTimestamp(TypeDecorator):
     return self.impl
 
 
+class DynamicPickleType(TypeDecorator):
+  """Represents a type that can be pickled."""
+
+  impl = PickleType
+
+  def load_dialect_impl(self, dialect):
+    if dialect.name == "spanner+spanner":
+      from google.cloud.sqlalchemy_spanner.sqlalchemy_spanner import SpannerPickleType
+
+      return dialect.type_descriptor(SpannerPickleType)
+    return self.impl
+
+  def process_bind_param(self, value, dialect):
+    """Ensures the pickled value is a bytes object before passing it to the database dialect."""
+    if value is not None:
+      if dialect.name == "spanner+spanner":
+        return pickle.dumps(value)
+    return value
+
+  def process_result_value(self, value, dialect):
+    """Ensures the raw bytes from the database are unpickled back into a Python object."""
+    if value is not None:
+      if dialect.name == "spanner+spanner":
+        return pickle.loads(value)
+    return value
+
+
 class Base(DeclarativeBase):
   """Base class for database tables."""
 
@@ -132,9 +160,11 @@ class StorageSession(Base):
       MutableDict.as_mutable(DynamicJSON), default={}
   )
 
-  create_time: Mapped[DateTime] = mapped_column(DateTime(), default=func.now())
-  update_time: Mapped[DateTime] = mapped_column(
-      DateTime(), default=func.now(), onupdate=func.now()
+  create_time: Mapped[datetime] = mapped_column(
+      PreciseTimestamp, default=func.now()
+  )
+  update_time: Mapped[datetime] = mapped_column(
+      PreciseTimestamp, default=func.now(), onupdate=func.now()
   )
 
   storage_events: Mapped[list[StorageEvent]] = relationship(
@@ -201,21 +231,26 @@ class StorageEvent(Base):
 
   invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
   author: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
+  actions: Mapped[MutableDict[str, Any]] = mapped_column(DynamicPickleType)
+  long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
+      Text, nullable=True
+  )
   branch: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
   )
   timestamp: Mapped[PreciseTimestamp] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
-  content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
-  actions: Mapped[MutableDict[str, Any]] = mapped_column(PickleType)
 
-  long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
-      Text, nullable=True
-  )
+  # === Fileds from llm_response.py ===
+  content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
   grounding_metadata: Mapped[dict[str, Any]] = mapped_column(
       DynamicJSON, nullable=True
   )
+  custom_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+
   partial: Mapped[bool] = mapped_column(Boolean, nullable=True)
   turn_complete: Mapped[bool] = mapped_column(Boolean, nullable=True)
   error_code: Mapped[str] = mapped_column(
@@ -279,6 +314,8 @@ class StorageEvent(Base):
       storage_event.grounding_metadata = event.grounding_metadata.model_dump(
           exclude_none=True, mode="json"
       )
+    if event.custom_metadata:
+      storage_event.custom_metadata = event.custom_metadata
     return storage_event
 
   def to_event(self) -> Event:
@@ -299,6 +336,7 @@ class StorageEvent(Base):
         grounding_metadata=_session_util.decode_grounding_metadata(
             self.grounding_metadata
         ),
+        custom_metadata=self.custom_metadata,
     )
 
 
@@ -313,8 +351,8 @@ class StorageAppState(Base):
   state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default={}
   )
-  update_time: Mapped[DateTime] = mapped_column(
-      DateTime(), default=func.now(), onupdate=func.now()
+  update_time: Mapped[datetime] = mapped_column(
+      PreciseTimestamp, default=func.now(), onupdate=func.now()
   )
 
 
@@ -332,9 +370,15 @@ class StorageUserState(Base):
   state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default={}
   )
-  update_time: Mapped[DateTime] = mapped_column(
-      DateTime(), default=func.now(), onupdate=func.now()
+  update_time: Mapped[datetime] = mapped_column(
+      PreciseTimestamp, default=func.now(), onupdate=func.now()
   )
+
+
+def set_sqlite_pragma(dbapi_connection, connection_record):
+  cursor = dbapi_connection.cursor()
+  cursor.execute("PRAGMA foreign_keys=ON")
+  cursor.close()
 
 
 class DatabaseSessionService(BaseSessionService):
@@ -345,9 +389,13 @@ class DatabaseSessionService(BaseSessionService):
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
     # 3. Initialize all properties
-
     try:
       db_engine = create_engine(db_url, **kwargs)
+
+      if db_engine.dialect.name == "sqlite":
+        # Set sqlite pragma to enable foreign keys constraints
+        event.listen(db_engine, "connect", set_sqlite_pragma)
+
     except Exception as e:
       if isinstance(e, ArgumentError):
         raise ValueError(
@@ -363,7 +411,7 @@ class DatabaseSessionService(BaseSessionService):
 
     # Get the local timezone
     local_timezone = get_localzone()
-    logger.info(f"Local timezone: {local_timezone}")
+    logger.info("Local timezone: %s", local_timezone)
 
     self.db_engine: Engine = db_engine
     self.metadata: MetaData = MetaData()
@@ -548,10 +596,11 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    logger.info(f"Append event: {event} to session {session.id}")
-
     if event.partial:
       return event
+
+    # Trim temp state before persisting
+    event = self._trim_temp_delta_state(event)
 
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config

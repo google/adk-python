@@ -16,16 +16,16 @@
 
 from __future__ import annotations
 
-from typing import Literal
 from typing import Optional
 
 from pydantic import ConfigDict
+from pydantic import Field
 
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .base_agent_config import BaseAgentConfig
 
 
-@working_in_progress('LoopAgentConfig is not ready for use.')
+@experimental
 class LoopAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a LoopAgent."""
 
@@ -33,7 +33,11 @@ class LoopAgentConfig(BaseAgentConfig):
       extra='forbid',
   )
 
-  agent_class: Literal['LoopAgent'] = 'LoopAgent'
+  agent_class: str = Field(
+      default='LoopAgent',
+      description='The value is used to uniquely identify the LoopAgent class.',
+  )
 
-  max_iterations: Optional[int] = None
-  """Optional. LoopAgent.max_iterations."""
+  max_iterations: Optional[int] = Field(
+      default=None, description='Optional. LoopAgent.max_iterations.'
+  )

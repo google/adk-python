@@ -322,12 +322,12 @@ class TestGoogleSearchTool:
       )
 
   @pytest.mark.asyncio
-  async def test_process_llm_request_with_none_config(self):
+  async def test_process_llm_request_with_no_config(self):
     """Test processing LLM request with None config."""
     tool = GoogleSearchTool()
     tool_context = await _create_tool_context()
 
-    llm_request = LlmRequest(model='gemini-2.0-flash', config=None)
+    llm_request = LlmRequest(model='gemini-2.0-flash')
 
     await tool.process_llm_request(
         tool_context=tool_context, llm_request=llm_request

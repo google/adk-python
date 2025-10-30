@@ -298,9 +298,10 @@ def test_function_no_return_annotation_vertex_ai():
   assert function_decl.name == 'function_no_return'
   assert function_decl.parameters.type == 'OBJECT'
   assert function_decl.parameters.properties['param'].type == 'STRING'
-  # VERTEX_AI should have response schema for None return
+  # VERTEX_AI should have response schema for functions with no return annotation
+  # Changed: Now uses Any type instead of NULL for no return annotation
   assert function_decl.response is not None
-  assert function_decl.response.type == types.Type.NULL
+  assert function_decl.response.type is None  # Any type maps to None in schema
 
 
 def test_function_explicit_none_return_vertex_ai():
@@ -359,8 +360,8 @@ def test_function_regular_return_type_vertex_ai():
   assert function_decl.response.type == types.Type.STRING
 
 
-def test_transfer_to_agent_like_function():
-  """Test a function similar to transfer_to_agent that caused the original issue."""
+def test_fucntion_with_no_response_annotations():
+  """Test a function that has no response annotations."""
 
   def transfer_to_agent(agent_name: str, tool_context: ToolContext):
     """Transfer the question to another agent."""
@@ -376,6 +377,7 @@ def test_transfer_to_agent_like_function():
   assert function_decl.parameters.type == 'OBJECT'
   assert function_decl.parameters.properties['agent_name'].type == 'STRING'
   assert 'tool_context' not in function_decl.parameters.properties
-  # This should now have a response schema for VERTEX_AI variant
+  # This function has no return annotation, so it gets Any type instead of NULL
+  # Changed: Now uses Any type instead of NULL for no return annotation
   assert function_decl.response is not None
-  assert function_decl.response.type == types.Type.NULL
+  assert function_decl.response.type is None  # Any type maps to None in schema

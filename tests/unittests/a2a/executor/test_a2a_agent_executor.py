@@ -21,7 +21,7 @@ import pytest
 
 # Skip all tests in this module if Python version is less than 3.10
 pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A tool requires Python 3.10+"
+    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
 )
 
 # Import dependencies with version checking
@@ -37,23 +37,10 @@ try:
   from google.adk.runners import Runner
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    RequestContext = DummyTypes()
-    EventQueue = DummyTypes()
-    Message = DummyTypes()
-    Role = DummyTypes()
-    TaskState = DummyTypes()
-    TaskStatus = DummyTypes()
-    TaskStatusUpdateEvent = DummyTypes()
-    TextPart = DummyTypes()
-    A2aAgentExecutor = DummyTypes()
-    A2aAgentExecutorConfig = DummyTypes()
-    Event = DummyTypes()
-    Runner = DummyTypes()
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 
@@ -69,7 +56,12 @@ class TestA2aAgentExecutor:
     self.mock_runner._new_invocation_context = Mock()
     self.mock_runner.run_async = AsyncMock()
 
-    self.mock_config = Mock(spec=A2aAgentExecutorConfig)
+    self.mock_a2a_part_converter = Mock()
+    self.mock_gen_ai_part_converter = Mock()
+    self.mock_config = A2aAgentExecutorConfig(
+        a2a_part_converter=self.mock_a2a_part_converter,
+        gen_ai_part_converter=self.mock_gen_ai_part_converter,
+    )
     self.executor = A2aAgentExecutor(
         runner=self.mock_runner, config=self.mock_config
     )

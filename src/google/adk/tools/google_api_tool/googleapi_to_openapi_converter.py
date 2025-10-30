@@ -393,7 +393,7 @@ class GoogleApiToOpenApiConverter:
 
       param = {
           "name": param_name,
-          "in": "query",
+          "in": param_data.get("location", "query"),
           "description": param_data.get("description", ""),
           "required": param_data.get("required", False),
           "schema": self._convert_parameter_schema(param_data),

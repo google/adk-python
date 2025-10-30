@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import logging
 from typing import Optional
+import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
@@ -52,7 +53,7 @@ from ..tool_context import ToolContext
 logger = logging.getLogger("google_adk." + __name__)
 
 
-class MCPTool(BaseAuthenticatedTool):
+class McpTool(BaseAuthenticatedTool):
   """Turns an MCP Tool into an ADK Tool.
 
   Internally, the tool initializes from a MCP Tool, and uses the MCP Session to
@@ -110,6 +111,11 @@ class MCPTool(BaseAuthenticatedTool):
     )
     return function_decl
 
+  @property
+  def raw_mcp_tool(self) -> McpBaseTool:
+    """Returns the raw MCP tool."""
+    return self._mcp_tool
+
   @retry_on_closed_resource
   @override
   async def _run_async_impl(
@@ -130,7 +136,7 @@ class MCPTool(BaseAuthenticatedTool):
     # Get the session from the session manager
     session = await self._mcp_session_manager.create_session(headers=headers)
 
-    response = await session.call_tool(self.name, arguments=args)
+    response = await session.call_tool(self._mcp_tool.name, arguments=args)
     return response
 
   async def _get_headers(
@@ -216,3 +222,15 @@ class MCPTool(BaseAuthenticatedTool):
         )
 
     return headers
+
+
+class MCPTool(McpTool):
+  """Deprecated name, use `McpTool` instead."""
+
+  def __init__(self, *args, **kwargs):
+    warnings.warn(
+        "MCPTool class is deprecated, use `McpTool` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    super().__init__(*args, **kwargs)

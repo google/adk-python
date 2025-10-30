@@ -39,7 +39,7 @@ class GoogleLLMVariant(Enum):
   """For using API Key from Google AI Studio"""
 
 
-def get_google_llm_variant() -> str:
+def get_google_llm_variant() -> GoogleLLMVariant:
   return (
       GoogleLLMVariant.VERTEX_AI
       if os.environ.get('GOOGLE_GENAI_USE_VERTEXAI', '0').lower()
