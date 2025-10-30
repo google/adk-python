@@ -63,6 +63,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
+_REDACTED_THINKING_SIGNATURE = "redacted_thinking"
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
 # Note: tool_calls/function_call map to STOP because:
@@ -271,7 +272,7 @@ def _content_to_message_param(
       elif part.thought:
         if (
             part.thought_signature
-            and part.thought_signature.decode("utf-8") == "redacted_thinking"
+            and part.thought_signature.decode("utf-8") == _REDACTED_THINKING_SIGNATURE
         ):
           thinking_block = {
               "type": "redacted_thinking",
@@ -623,28 +624,28 @@ def _message_to_generate_content_response(
 
   if message.get("thinking_blocks"):
     for block in message.get("thinking_blocks"):
+      block_type = block.get("type")
+      signature = None
+      thought = None
       if block.get("type") == "thinking":
         signature = block.get("signature")
         thought = block.get("thinking")
-        part = types.Part(
-          thought=True,
-          thought_signature=signature.encode("utf-8") if signature else None,
-          text=thought,
-        )
-        parts.append(part)
       elif  block.get("type") == "redacted_thinking":
         # Part doesn't have redacted thinking type
         # therefore use signature field to show redacted thinking
-        signature="redacted_thinking"
+        signature=_REDACTED_THINKING_SIGNATURE
         thought = block.get("data")
-        part = types.Part(
-          thought=True,
-          thought_signature=signature.encode("utf-8") if signature else None,
-          text=thought,
-        )
-        parts.append(part)
       else:
-        logging.warning(f'ignoring unsupported thinking block type {type(block)}')
+        logging.warning(f'ignoring unsupported thinking block type {block.get("type")}')
+        continue
+
+      part = types.Part(
+        thought=True,
+        thought_signature=signature.encode("utf-8") if signature else None,
+        text=thought,
+      )
+      parts.append(part)
+
 
   if message.get("tool_calls", None):
     for tool_call in message.get("tool_calls"):
