@@ -26,7 +26,6 @@ from google.adk.tools import AgentTool
 from google.adk.tools import FunctionTool
 from google.genai import types
 
-from .sub_agents.adk_knowledge_agent import create_adk_knowledge_agent
 from .sub_agents.google_search_agent import create_google_search_agent
 from .sub_agents.url_context_agent import create_url_context_agent
 from .tools.cleanup_unused_files import cleanup_unused_files
@@ -34,6 +33,7 @@ from .tools.delete_files import delete_files
 from .tools.explore_project import explore_project
 from .tools.read_config_files import read_config_files
 from .tools.read_files import read_files
+from .tools.search_adk_knowledge import search_adk_knowledge
 from .tools.search_adk_source import search_adk_source
 from .tools.write_config_files import write_config_files
 from .tools.write_files import write_files
@@ -69,11 +69,9 @@ class AgentBuilderAssistant:
     # - Maintains compatibility with existing ADK tool ecosystem
 
     # Built-in ADK tools wrapped as sub-agents
-    adk_knowledge_agent = create_adk_knowledge_agent()
     google_search_agent = create_google_search_agent()
     url_context_agent = create_url_context_agent()
     agent_tools = [
-        AgentTool(adk_knowledge_agent),
         AgentTool(google_search_agent),
         AgentTool(url_context_agent),
     ]
@@ -99,6 +97,8 @@ class AgentBuilderAssistant:
         FunctionTool(cleanup_unused_files),
         # ADK source code search (regex-based)
         FunctionTool(search_adk_source),  # Search ADK source with regex
+        # ADK knowledge search
+        FunctionTool(search_adk_knowledge),  # Search ADK knowledge base
     ]
 
     # Combine all tools
