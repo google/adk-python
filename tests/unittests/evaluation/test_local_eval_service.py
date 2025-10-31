@@ -173,8 +173,8 @@ async def test_perform_inference_success(
   )
   mock_eval_sets_manager.get_eval_set.return_value = eval_set
 
-  mock_inference_result = mock.MagicMock()
-  eval_service._perform_inference_single_eval_item = mock.AsyncMock(
+  mock_inference_result = mocker.MagicMock()
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
       return_value=mock_inference_result
   )
 
@@ -214,8 +214,8 @@ async def test_perform_inference_with_case_ids(
   )
   mock_eval_sets_manager.get_eval_set.return_value = eval_set
 
-  mock_inference_result = mock.MagicMock()
-  eval_service._perform_inference_single_eval_item = mock.AsyncMock(
+  mock_inference_result = mocker.MagicMock()
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
       return_value=mock_inference_result
   )
 
