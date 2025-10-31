@@ -16,8 +16,10 @@
 import json
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
+import warnings
 
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _message_to_generate_content_response
@@ -266,6 +268,77 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
 ]
 
 
+STREAM_WITH_EMPTY_CHUNK = [
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id="call_abc",
+                            function=Function(
+                                name="test_function",
+                                arguments='{"test_arg":',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments=' "value"}',
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    # This is the problematic empty chunk that should be ignored.
+    ModelResponse(
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                delta=Delta(
+                    role="assistant",
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            type="function",
+                            id=None,
+                            function=Function(
+                                name=None,
+                                arguments="",
+                            ),
+                            index=0,
+                        )
+                    ],
+                ),
+            )
+        ]
+    ),
+    ModelResponse(
+        choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+    ),
+]
+
+
 @pytest.fixture
 def mock_response():
   return ModelResponse(
@@ -476,6 +549,88 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
   )
 
 
+@pytest.mark.asyncio
+async def test_generate_content_async_with_model_override(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      model="overridden_model",
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    assert response.content.parts[0].text == "Test response"
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "overridden_model"
+  assert kwargs["messages"][0]["role"] == "user"
+  assert kwargs["messages"][0]["content"] == "Test prompt"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_without_model_override(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      model=None,
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "test_model"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_adds_fallback_user_message(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  user_messages = [
+      message for message in kwargs["messages"] if message["role"] == "user"
+  ]
+  assert any(
+      message.get("content")
+      == "Handle the requests as specified in the System Instruction."
+      for message in user_messages
+  )
+  assert (
+      sum(1 for content in llm_request.contents if content.role == "user") == 1
+  )
+  assert llm_request.contents[-1].parts[0].text == (
+      "Handle the requests as specified in the System Instruction."
+  )
+
+
 litellm_append_user_content_test_cases = [
     pytest.param(
         LlmRequest(
@@ -558,8 +713,10 @@ function_declaration_test_cases = [
                             "nested_key1": types.Schema(type=types.Type.STRING),
                             "nested_key2": types.Schema(type=types.Type.STRING),
                         },
+                        required=["nested_key1"],
                     ),
                 },
+                required=["nested_arg"],
             ),
         ),
         {
@@ -581,8 +738,10 @@ function_declaration_test_cases = [
                                 "nested_key2": {"type": "string"},
                             },
                             "type": "object",
+                            "required": ["nested_key1"],
                         },
                     },
+                    "required": ["nested_arg"],
                 },
             },
         },
@@ -721,6 +880,52 @@ function_declaration_test_cases = [
                             },
                             "type": "array",
                         },
+                    },
+                },
+            },
+        },
+    ),
+    (
+        "no_parameters",
+        types.FunctionDeclaration(
+            name="test_function_no_params",
+            description="Test function with no parameters",
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "test_function_no_params",
+                "description": "Test function with no parameters",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        },
+    ),
+    (
+        "parameters_without_required",
+        types.FunctionDeclaration(
+            name="test_function_no_required",
+            description="Test function with parameters but no required field",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "optional_arg": types.Schema(type=types.Type.STRING),
+                },
+            ),
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "test_function_no_required",
+                "description": (
+                    "Test function with parameters but no required field"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "optional_arg": {"type": "string"},
                     },
                 },
             },
@@ -883,6 +1088,47 @@ def test_content_to_message_param_user_message():
   assert message["content"] == "Test prompt"
 
 
+def test_content_to_message_param_user_message_with_file_uri():
+  file_part = types.Part.from_uri(
+      file_uri="gs://bucket/document.pdf", mime_type="application/pdf"
+  )
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part.from_text(text="Summarize this file."),
+          file_part,
+      ],
+  )
+
+  message = _content_to_message_param(content)
+  assert message["role"] == "user"
+  assert isinstance(message["content"], list)
+  assert message["content"][0]["type"] == "text"
+  assert message["content"][0]["text"] == "Summarize this file."
+  assert message["content"][1]["type"] == "file"
+  assert message["content"][1]["file"]["file_id"] == "gs://bucket/document.pdf"
+  assert message["content"][1]["file"]["format"] == "application/pdf"
+
+
+def test_content_to_message_param_user_message_file_uri_only():
+  file_part = types.Part.from_uri(
+      file_uri="gs://bucket/only.pdf", mime_type="application/pdf"
+  )
+  content = types.Content(
+      role="user",
+      parts=[
+          file_part,
+      ],
+  )
+
+  message = _content_to_message_param(content)
+  assert message["role"] == "user"
+  assert isinstance(message["content"], list)
+  assert message["content"][0]["type"] == "file"
+  assert message["content"][0]["file"]["file_id"] == "gs://bucket/only.pdf"
+  assert message["content"][0]["file"]["format"] == "application/pdf"
+
+
 def test_content_to_message_param_multi_part_function_response():
   part1 = types.Part.from_function_response(
       name="function_one",
@@ -1032,7 +1278,7 @@ def test_get_content_image():
       content[0]["image_url"]["url"]
       == "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
   )
-  assert content[0]["image_url"]["format"] == "png"
+  assert content[0]["image_url"]["format"] == "image/png"
 
 
 def test_get_content_video():
@@ -1045,7 +1291,46 @@ def test_get_content_video():
       content[0]["video_url"]["url"]
       == "data:video/mp4;base64,dGVzdF92aWRlb19kYXRh"
   )
-  assert content[0]["video_url"]["format"] == "mp4"
+  assert content[0]["video_url"]["format"] == "video/mp4"
+
+
+def test_get_content_pdf():
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "file"
+  assert (
+      content[0]["file"]["file_data"]
+      == "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ=="
+  )
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+def test_get_content_file_uri():
+  parts = [
+      types.Part.from_uri(
+          file_uri="gs://bucket/document.pdf",
+          mime_type="application/pdf",
+      )
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "gs://bucket/document.pdf"
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+def test_get_content_audio():
+  parts = [
+      types.Part.from_bytes(data=b"test_audio_data", mime_type="audio/mpeg")
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "audio_url"
+  assert (
+      content[0]["audio_url"]["url"]
+      == "data:audio/mpeg;base64,dGVzdF9hdWRpb19kYXRh"
+  )
+  assert content[0]["audio_url"]["format"] == "audio/mpeg"
 
 
 def test_to_litellm_role():
@@ -1369,6 +1654,40 @@ async def test_generate_content_async_stream_with_usage_metadata(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_with_usage_metadata_only(
+    mock_completion, lite_llm_instance
+):
+  streaming_model_response_with_usage_metadata = [
+      ModelResponse(
+          usage={
+              "prompt_tokens": 10,
+              "completion_tokens": 5,
+              "total_tokens": 15,
+          },
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(content=""),
+              )
+          ],
+      ),
+  ]
+  mock_completion.return_value = iter(
+      streaming_model_response_with_usage_metadata
+  )
+
+  unused_responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  mock_completion.assert_called_once()
+  _, kwargs = mock_completion.call_args
+  assert kwargs["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_multiple_function_calls(
     mock_completion, lite_llm_instance
 ):
@@ -1515,6 +1834,34 @@ async def test_generate_content_async_non_compliant_multiple_function_calls(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_with_empty_chunk(
+    mock_completion, lite_llm_instance
+):
+  """Tests that empty tool call chunks in a stream are ignored."""
+  mock_completion.return_value = iter(STREAM_WITH_EMPTY_CHUNK)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  final_response = responses[0]
+  assert final_response.content.role == "model"
+
+  # Crucially, assert that only ONE tool call was generated,
+  # proving the empty chunk was ignored.
+  assert len(final_response.content.parts) == 1
+
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.id == "call_abc"
+  assert function_call.args == {"test_arg": "value"}
+
+
+@pytest.mark.asyncio
 def test_get_completion_inputs_generation_params():
   # Test that generation_params are extracted and mapped correctly
   req = LlmRequest(
@@ -1544,3 +1891,242 @@ def test_get_completion_inputs_generation_params():
   # Should not include max_output_tokens
   assert "max_output_tokens" not in generation_params
   assert "stop_sequences" not in generation_params
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_empty_generation_params():
+  # Test that generation_params is None when no generation parameters are set
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_minimal_config():
+  # Test that generation_params is None when config has no generation parameters
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          system_instruction="test instruction"  # Non-generation parameter
+      ),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+def test_get_completion_inputs_partial_generation_params():
+  # Test that generation_params is correctly built even with only some parameters
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          # Only temperature is set, others are None/default
+      ),
+  )
+  from google.adk.models.lite_llm import _get_completion_inputs
+
+  _, _, _, generation_params = _get_completion_inputs(req)
+  assert generation_params is not None
+  assert generation_params["temperature"] == 0.7
+  # Should only contain the temperature parameter
+  assert len(generation_params) == 1
+
+
+def test_function_declaration_to_tool_param_edge_cases():
+  """Test edge cases for function declaration conversion that caused the original bug."""
+  from google.adk.models.lite_llm import _function_declaration_to_tool_param
+
+  # Test function with None parameters (the original bug scenario)
+  func_decl = types.FunctionDeclaration(
+      name="test_function_none_params",
+      description="Function with None parameters",
+      parameters=None,
+  )
+  result = _function_declaration_to_tool_param(func_decl)
+  expected = {
+      "type": "function",
+      "function": {
+          "name": "test_function_none_params",
+          "description": "Function with None parameters",
+          "parameters": {
+              "type": "object",
+              "properties": {},
+          },
+      },
+  }
+  assert result == expected
+
+  # Verify no 'required' field is added when parameters is None
+  assert "required" not in result["function"]["parameters"]
+
+
+def test_gemini_via_litellm_warning(monkeypatch):
+  """Test that Gemini via LiteLLM shows warning."""
+  # Ensure environment variable is not set
+  monkeypatch.delenv("ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", raising=False)
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with Google AI Studio Gemini via LiteLLM
+    LiteLlm(model="gemini/gemini-2.5-pro-exp-03-25")
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[GEMINI_VIA_LITELLM]" in str(w[0].message)
+    assert "better performance" in str(w[0].message)
+    assert "gemini-2.5-pro-exp-03-25" in str(w[0].message)
+    assert "ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS" in str(w[0].message)
+
+
+def test_gemini_via_litellm_warning_vertex_ai(monkeypatch):
+  """Test that Vertex AI Gemini via LiteLLM shows warning."""
+  # Ensure environment variable is not set
+  monkeypatch.delenv("ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", raising=False)
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with Vertex AI Gemini via LiteLLM
+    LiteLlm(model="vertex_ai/gemini-1.5-flash")
+    assert len(w) == 1
+    assert issubclass(w[0].category, UserWarning)
+    assert "[GEMINI_VIA_LITELLM]" in str(w[0].message)
+    assert "vertex_ai/gemini-1.5-flash" in str(w[0].message)
+
+
+def test_gemini_via_litellm_warning_suppressed(monkeypatch):
+  """Test that Gemini via LiteLLM warning can be suppressed."""
+  monkeypatch.setenv("ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS", "true")
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    LiteLlm(model="gemini/gemini-2.5-pro-exp-03-25")
+    assert len(w) == 0
+
+
+def test_non_gemini_litellm_no_warning():
+  """Test that non-Gemini models via LiteLLM don't show warning."""
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with non-Gemini model
+    LiteLlm(model="openai/gpt-4o")
+    assert len(w) == 0
+
+
+@pytest.mark.parametrize(
+    "finish_reason,response_content,expected_content,has_tool_calls",
+    [
+        ("length", "Test response", "Test response", False),
+        ("stop", "Complete response", "Complete response", False),
+        (
+            "tool_calls",
+            "",
+            "",
+            True,
+        ),
+        ("content_filter", "", "", False),
+    ],
+    ids=["length", "stop", "tool_calls", "content_filter"],
+)
+@pytest.mark.asyncio
+async def test_finish_reason_propagation(
+    mock_acompletion,
+    lite_llm_instance,
+    finish_reason,
+    response_content,
+    expected_content,
+    has_tool_calls,
+):
+  """Test that finish_reason is properly propagated from LiteLLM response."""
+  tool_calls = None
+  if has_tool_calls:
+    tool_calls = [
+        ChatCompletionMessageToolCall(
+            type="function",
+            id="test_id",
+            function=Function(
+                name="test_function",
+                arguments='{"arg": "value"}',
+            ),
+        )
+    ]
+
+  mock_response = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content=response_content,
+                  tool_calls=tool_calls,
+              ),
+              finish_reason=finish_reason,
+          )
+      ]
+  )
+  mock_acompletion.return_value = mock_response
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    # Verify finish_reason is mapped to FinishReason enum
+    assert isinstance(response.finish_reason, types.FinishReason)
+    # Verify correct enum mapping using the actual mapping from lite_llm
+    assert response.finish_reason == _FINISH_REASON_MAPPING[finish_reason]
+    if expected_content:
+      assert response.content.parts[0].text == expected_content
+    if has_tool_calls:
+      assert len(response.content.parts) > 0
+      assert response.content.parts[-1].function_call.name == "test_function"
+
+  mock_acompletion.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_unknown_maps_to_other(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that unknown finish_reason values map to FinishReason.OTHER."""
+  mock_response = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="Test response",
+              ),
+              finish_reason="unknown_reason_type",
+          )
+      ]
+  )
+  mock_acompletion.return_value = mock_response
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    # Unknown finish_reason should map to OTHER
+    assert isinstance(response.finish_reason, types.FinishReason)
+    assert response.finish_reason == types.FinishReason.OTHER
+
+  mock_acompletion.assert_called_once()

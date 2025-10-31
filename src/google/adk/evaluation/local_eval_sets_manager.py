@@ -205,8 +205,12 @@ class LocalEvalSetsManager(EvalSetsManager):
       return None
 
   @override
-  def create_eval_set(self, app_name: str, eval_set_id: str):
-    """Creates an empty EvalSet given the app_name and eval_set_id."""
+  def create_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
+    """Creates and returns an empty EvalSet given the app_name and eval_set_id.
+
+    Raises:
+      ValueError: If eval set id is not valid or an eval set already exists.
+    """
     self._validate_id(id_name="Eval Set Id", id_value=eval_set_id)
 
     # Define the file path
@@ -224,6 +228,11 @@ class LocalEvalSetsManager(EvalSetsManager):
           creation_timestamp=time.time(),
       )
       self._write_eval_set_to_path(new_eval_set_path, new_eval_set)
+      return new_eval_set
+
+    raise ValueError(
+        f"EvalSet {eval_set_id} already exists for app {app_name}."
+    )
 
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
@@ -315,8 +324,16 @@ class LocalEvalSetsManager(EvalSetsManager):
       )
 
   def _write_eval_set_to_path(self, eval_set_path: str, eval_set: EvalSet):
+    os.makedirs(os.path.dirname(eval_set_path), exist_ok=True)
     with open(eval_set_path, "w", encoding="utf-8") as f:
-      f.write(eval_set.model_dump_json(indent=2))
+      f.write(
+          eval_set.model_dump_json(
+              indent=2,
+              exclude_unset=True,
+              exclude_defaults=True,
+              exclude_none=True,
+          )
+      )
 
   def _save_eval_set(self, app_name: str, eval_set_id: str, eval_set: EvalSet):
     eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)

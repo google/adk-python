@@ -18,8 +18,8 @@ from typing import Optional
 from typing import Union
 
 from google.genai import types
-from langchain.agents import Tool
 from langchain_core.tools import BaseTool as LangchainBaseTool
+from langchain_core.tools import Tool
 from langchain_core.tools.structured import StructuredTool
 from typing_extensions import override
 

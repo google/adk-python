@@ -6,7 +6,7 @@ This agent can be operated in three distinct modes:
 
 - An interactive mode for local use.
 - A batch script mode for oncall use.
-- A fully automated GitHub Actions workflow (TBD).
+- A fully automated GitHub Actions workflow.
 
 ---
 
@@ -31,26 +31,37 @@ This will start a local server and provide a URL to access the agent's web inter
 
 ## Batch Script Mode
 
-The `answer_discussions.py` is created for ADK oncall team to batch process discussions.
+The `main.py` script supports batch processing for ADK oncall team to process discussions.
 
 ### Features
-* **Batch Process**: Taken either a number as the count of the recent discussions or a list of discussion numbers, the script will invoke the agent to answer all the specified discussions in one single run.
+* **Single Discussion**: Process a specific discussion by providing its number.
+* **Batch Process**: Process the N most recently updated discussions.
+* **Direct Discussion Data**: Process a discussion using JSON data directly (optimized for GitHub Actions).
 
-### Running in Interactive Mode
-To run the agent in batch script mode, first set the required environment variables. Then, execute the following command in your terminal:
+### Running in Batch Script Mode
+To run the agent in batch script mode, first set the required environment variables. Then, execute one of the following commands:
 
 ```bash
 export PYTHONPATH=contributing/samples
-python -m adk_answering_agent.answer_discussions --numbers 27 36 # Answer specified discussions
-```
 
-Or `python -m adk_answering_agent.answer_discussions --recent 10` to answer the 10 most recent updated discussions.
+# Answer a specific discussion
+python -m adk_answering_agent.main --discussion_number 27
+
+# Answer the 10 most recent updated discussions
+python -m adk_answering_agent.main --recent 10
+
+# Answer a discussion using direct JSON data (saves API calls)
+python -m adk_answering_agent.main --discussion '{"number": 27, "title": "How to...", "body": "I need help with...", "author": {"login": "username"}}'
+```
 
 ---
 
 ## GitHub Workflow Mode
 
-The `main.py` is reserved for the Github Workflow. The detailed setup for the automatic workflow is TBD.
+The `main.py` script is automatically triggered by GitHub Actions when new discussions are created in the Q&A category. The workflow is configured in `.github/workflows/discussion_answering.yml` and automatically processes discussions using the `--discussion` flag with JSON data from the GitHub event payload.
+
+### Optimization
+The GitHub Actions workflow passes discussion data directly from `github.event.discussion` using `toJson()`, eliminating the need for additional API calls to fetch discussion information that's already available in the event payload. This makes the workflow faster and more reliable.
 
 ---
 

@@ -14,11 +14,12 @@ assignees: ''
 A clear and concise description of what the bug is.
 
 **To Reproduce**
+Please share a minimal code and data to reproduce your problem.
 Steps to reproduce the behavior:
 1. Install '...'
 2. Run '....'
 3. Open '....'
-4. See error
+4. Provie error or stacktrace
 
 **Expected behavior**
 A clear and concise description of what you expected to happen.
@@ -27,12 +28,13 @@ A clear and concise description of what you expected to happen.
 If applicable, add screenshots to help explain your problem.
 
 **Desktop (please complete the following information):**
- - OS: [e.g. iOS]
+ - OS: [e.g. macOS, Linux, Windows]
  - Python version(python -V):
  - ADK version(pip show google-adk):
 
  **Model Information:**
- For example, which model is being used.
+ - Are you using LiteLLM: Yes/No
+ - Which model is being used(e.g. gemini-2.5-pro)
 
 **Additional context**
 Add any other context about the problem here.

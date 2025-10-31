@@ -15,14 +15,15 @@
 from __future__ import annotations
 
 from typing import Optional
-from unittest.mock import MagicMock
 
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
+from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import PerInvocationResult
+from google.adk.evaluation.llm_as_judge import AutoRaterScore
 from google.adk.evaluation.llm_as_judge import LlmAsJudge
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
@@ -40,8 +41,8 @@ class MockLlmAsJudge(LlmAsJudge):
 
   def convert_auto_rater_response_to_score(
       self, llm_response: LlmResponse
-  ) -> Optional[float]:
-    return 1.0
+  ) -> AutoRaterScore:
+    return AutoRaterScore(score=1.0)
 
   def aggregate_per_invocation_samples(
       self,
@@ -60,15 +61,19 @@ class MockLlmAsJudge(LlmAsJudge):
 @pytest.fixture
 def mock_llm_as_judge():
   return MockLlmAsJudge(
-      EvalMetric(
+      eval_metric=EvalMetric(
           metric_name="test_metric",
           threshold=0.5,
-          judge_model_options=JudgeModelOptions(
-              judge_model="gemini-2.5-flash",
-              judge_model_config=genai_types.GenerateContentConfig(),
-              num_samples=3,
+          criterion=LlmAsAJudgeCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  judge_model_config=genai_types.GenerateContentConfig(),
+                  num_samples=3,
+              ),
           ),
       ),
+      criterion_type=LlmAsAJudgeCriterion,
   )
 
 
@@ -94,10 +99,11 @@ def test_get_eval_status():
   assert get_eval_status(score=None, threshold=0.8) == EvalStatus.NOT_EVALUATED
 
 
-def test_llm_as_judge_init_missing_judge_model_options():
+def test_llm_as_judge_init_missing_criterion():
   with pytest.raises(ValueError):
     MockLlmAsJudge(
         EvalMetric(metric_name="test_metric", threshold=0.8),
+        criterion_type=LlmAsAJudgeCriterion,
     )
 
 
@@ -107,16 +113,22 @@ def test_llm_as_judge_init_unregistered_model():
         EvalMetric(
             metric_name="test_metric",
             threshold=0.8,
-            judge_model_options=JudgeModelOptions(
-                judge_model="unregistered_model",
+            criterion=LlmAsAJudgeCriterion(
+                threshold=0.5,
+                judge_model_options=JudgeModelOptions(
+                    judge_model="unregistered_model",
+                    judge_model_config=genai_types.GenerateContentConfig(),
+                    num_samples=3,
+                ),
             ),
         ),
+        criterion_type=LlmAsAJudgeCriterion,
     )
 
 
 @pytest.fixture
-def mock_judge_model():
-  mock_judge_model = MagicMock()
+def mock_judge_model(mocker):
+  mock_judge_model = mocker.MagicMock()
 
   async def mock_generate_content_async(llm_request):
     yield LlmResponse(
@@ -131,30 +143,30 @@ def mock_judge_model():
 
 @pytest.mark.asyncio
 async def test_evaluate_invocations_with_mock(
-    mock_llm_as_judge, mock_judge_model
+    mock_llm_as_judge, mock_judge_model, mocker
 ):
   mock_llm_as_judge._judge_model = mock_judge_model
 
-  mock_format_auto_rater_prompt = MagicMock(
+  mock_format_auto_rater_prompt = mocker.MagicMock(
       wraps=mock_llm_as_judge.format_auto_rater_prompt
   )
   mock_llm_as_judge.format_auto_rater_prompt = mock_format_auto_rater_prompt
 
-  mock_convert_auto_rater_response_to_score = MagicMock(
+  mock_convert_auto_rater_response_to_score = mocker.MagicMock(
       wraps=mock_llm_as_judge.convert_auto_rater_response_to_score
   )
   mock_llm_as_judge.convert_auto_rater_response_to_score = (
       mock_convert_auto_rater_response_to_score
   )
 
-  mock_aggregate_per_invocation_samples = MagicMock(
+  mock_aggregate_per_invocation_samples = mocker.MagicMock(
       wraps=mock_llm_as_judge.aggregate_per_invocation_samples
   )
   mock_llm_as_judge.aggregate_per_invocation_samples = (
       mock_aggregate_per_invocation_samples
   )
 
-  mock_aggregate_invocation_results = MagicMock(
+  mock_aggregate_invocation_results = mocker.MagicMock(
       wraps=mock_llm_as_judge.aggregate_invocation_results
   )
   mock_llm_as_judge.aggregate_invocation_results = (

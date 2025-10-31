@@ -26,6 +26,7 @@ from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 import google.oauth2.credentials
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import model_validator
 
 from ..auth.auth_credential import AuthCredential
@@ -44,8 +45,7 @@ class BaseGoogleCredentialsConfig(BaseModel):
   """
 
   # Configure the model to allow arbitrary types like Credentials
-  model_config = {"arbitrary_types_allowed": True}
-
+  model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
   credentials: Optional[google.auth.credentials.Credentials] = None
   """The existing auth credentials to use. If set, this credential will be used
   for every end user, end users don't need to be involved in the oauthflow. This
