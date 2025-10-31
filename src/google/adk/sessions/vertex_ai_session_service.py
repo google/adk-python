@@ -35,7 +35,6 @@ from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..utils.vertex_ai_utils import get_express_mode_api_key
-from ..utils.vertex_ai_utils import is_vertex_express_mode
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -115,53 +114,14 @@ class VertexAiSessionService(BaseSessionService):
     config = {'session_state': state} if state else {}
     config.update(kwargs)
 
-    if is_vertex_express_mode(
-        self._project, self._location, self._express_mode_api_key
-    ):
-      config['wait_for_completion'] = False
-      api_response = await api_client.aio.agent_engines.sessions.create(
-          name=f'reasoningEngines/{reasoning_engine_id}',
-          user_id=user_id,
-          config=config,
-      )
-      logger.info('Create session response received.')
-      session_id = api_response.name.split('/')[-3]
-
-      # Express mode doesn't support LRO, so we need to poll
-      # the session resource.
-      # TODO: remove this once LRO polling is supported in Express mode.
-      @retry(
-          stop=stop_after_attempt(6),
-          wait=wait_exponential(multiplier=1, min=1, max=3),
-          retry=retry_if_result(lambda response: not response),
-          reraise=True,
-      )
-      async def _poll_session_resource():
-        try:
-          return await api_client.aio.agent_engines.sessions.get(
-              name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
-          )
-        except ClientError:
-          logger.info('Polling session resource')
-          return None
-
-      try:
-        await _poll_session_resource()
-      except Exception as exc:
-        raise ValueError('Failed to create session.') from exc
-
-      get_session_response = await api_client.aio.agent_engines.sessions.get(
-          name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
-      )
-    else:
-      api_response = await api_client.aio.agent_engines.sessions.create(
-          name=f'reasoningEngines/{reasoning_engine_id}',
-          user_id=user_id,
-          config=config,
-      )
-      logger.debug('Create session response: %s', api_response)
-      get_session_response = api_response.response
-      session_id = get_session_response.name.split('/')[-1]
+    api_response = await api_client.aio.agent_engines.sessions.create(
+        name=f'reasoningEngines/{reasoning_engine_id}',
+        user_id=user_id,
+        config=config,
+    )
+    logger.debug('Create session response: %s', api_response)
+    get_session_response = api_response.response
+    session_id = get_session_response.name.split('/')[-1]
 
     session = Session(
         app_name=app_name,
