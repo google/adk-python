@@ -22,6 +22,8 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from .cache_metadata import CacheMetadata
+
 
 class LlmResponse(BaseModel):
   """LLM response class that provides the first candidate response from the
@@ -40,6 +42,10 @@ class LlmResponse(BaseModel):
     interrupted: Flag indicating that LLM was interrupted when generating the
       content. Usually it's due to user interruption during a bidi streaming.
     custom_metadata: The custom metadata of the LlmResponse.
+    input_transcription: Audio transcription of user input.
+    output_transcription: Audio transcription of model output.
+    avg_logprobs: Average log probability of the generated tokens.
+    logprobs_result: Detailed log probabilities for chosen and top candidate tokens.
   """
 
   model_config = ConfigDict(
@@ -50,7 +56,11 @@ class LlmResponse(BaseModel):
   """The pydantic model config."""
 
   content: Optional[types.Content] = None
-  """The content of the response."""
+  """The generative content of the response.
+
+  This should only contain content from the user or the model, and not any
+  framework or system-generated data.
+  """
 
   grounding_metadata: Optional[types.GroundingMetadata] = None
   """The grounding metadata of the response."""
@@ -66,6 +76,9 @@ class LlmResponse(BaseModel):
 
   Only used for streaming mode.
   """
+
+  finish_reason: Optional[types.FinishReason] = None
+  """The finish reason of the response."""
 
   error_code: Optional[str] = None
   """Error code if the response is an error. Code varies by model."""
@@ -94,10 +107,35 @@ class LlmResponse(BaseModel):
   ] = None
   """The session resumption update of the LlmResponse"""
 
+  input_transcription: Optional[types.Transcription] = None
+  """Audio transcription of user input."""
+
+  output_transcription: Optional[types.Transcription] = None
+  """Audio transcription of model output."""
+
+  avg_logprobs: Optional[float] = None
+  """Average log probability of the generated tokens."""
+
+  logprobs_result: Optional[types.LogprobsResult] = None
+  """Detailed log probabilities for chosen and top candidate tokens."""
+
+  cache_metadata: Optional[CacheMetadata] = None
+  """Context cache metadata if caching was used for this response.
+
+  Contains cache identification, usage tracking, and lifecycle information.
+  This field is automatically populated when context caching is enabled.
+  """
+
+  citation_metadata: Optional[types.CitationMetadata] = None
+  """Citation metadata for the response.
+
+  This field is automatically populated when citation is enabled.
+  """
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
-  ) -> 'LlmResponse':
+  ) -> LlmResponse:
     """Creates an LlmResponse from a GenerateContentResponse.
 
     Args:
@@ -110,17 +148,27 @@ class LlmResponse(BaseModel):
     usage_metadata = generate_content_response.usage_metadata
     if generate_content_response.candidates:
       candidate = generate_content_response.candidates[0]
-      if candidate.content and candidate.content.parts:
+      if (
+          candidate.content and candidate.content.parts
+      ) or candidate.finish_reason == types.FinishReason.STOP:
         return LlmResponse(
             content=candidate.content,
             grounding_metadata=candidate.grounding_metadata,
             usage_metadata=usage_metadata,
+            finish_reason=candidate.finish_reason,
+            citation_metadata=candidate.citation_metadata,
+            avg_logprobs=candidate.avg_logprobs,
+            logprobs_result=candidate.logprobs_result,
         )
       else:
         return LlmResponse(
             error_code=candidate.finish_reason,
             error_message=candidate.finish_message,
+            citation_metadata=candidate.citation_metadata,
             usage_metadata=usage_metadata,
+            finish_reason=candidate.finish_reason,
+            avg_logprobs=candidate.avg_logprobs,
+            logprobs_result=candidate.logprobs_result,
         )
     else:
       if generate_content_response.prompt_feedback:

@@ -17,8 +17,8 @@ from __future__ import annotations
 from typing import Optional
 
 from typing_extensions import override
-from vertexai import types as vertexai_types
 
+from ..dependencies.vertexai import vertexai
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval
@@ -29,6 +29,8 @@ from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .final_response_match_v1 import RougeEvaluator
 from .vertex_ai_eval_facade import _VertexAiEvalFacade
+
+vertexai_types = vertexai.types
 
 
 class ResponseEvaluator(Evaluator):
@@ -98,7 +100,7 @@ class ResponseEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
     # If the metric is response_match_score, just use the RougeEvaluator.
     if self._metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value:
@@ -110,5 +112,7 @@ class ResponseEvaluator(Evaluator):
       )
 
     return _VertexAiEvalFacade(
-        threshold=self._threshold, metric_name=self._metric_name
+        threshold=self._threshold,
+        metric_name=self._metric_name,
+        expected_invocations_required=True,
     ).evaluate_invocations(actual_invocations, expected_invocations)

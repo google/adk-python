@@ -126,12 +126,14 @@ class TestGoogleApiToolset:
 
     client_id = "test_client_id"
     client_secret = "test_client_secret"
+    additional_headers = {"developer-token": "abc123"}
 
     tool_set = GoogleApiToolset(
         api_name=TEST_API_NAME,
         api_version=TEST_API_VERSION,
         client_id=client_id,
         client_secret=client_secret,
+        additional_headers=additional_headers,
     )
 
     assert tool_set.api_name == TEST_API_NAME
@@ -141,6 +143,7 @@ class TestGoogleApiToolset:
     assert tool_set._service_account is None
     assert tool_set.tool_filter is None
     assert tool_set._openapi_toolset == mock_openapi_toolset_instance
+    assert tool_set._additional_headers == additional_headers
 
     mock_converter_class.assert_called_once_with(
         TEST_API_NAME, TEST_API_VERSION
@@ -191,6 +194,7 @@ class TestGoogleApiToolset:
     client_id = "cid"
     client_secret = "csecret"
     sa_mock = mock.MagicMock(spec=ServiceAccount)
+    additional_headers = {"developer-token": "token"}
 
     tool_set = GoogleApiToolset(
         api_name=TEST_API_NAME,
@@ -198,6 +202,7 @@ class TestGoogleApiToolset:
         client_id=client_id,
         client_secret=client_secret,
         service_account=sa_mock,
+        additional_headers=additional_headers,
     )
 
     tools = await tool_set.get_tools(mock_readonly_context)
@@ -209,7 +214,11 @@ class TestGoogleApiToolset:
 
     for i, rest_tool in enumerate(mock_rest_api_tools):
       mock_google_api_tool_class.assert_any_call(
-          rest_tool, client_id, client_secret, sa_mock
+          rest_tool,
+          client_id,
+          client_secret,
+          sa_mock,
+          additional_headers=additional_headers,
       )
       assert tools[i] is mock_google_api_tool_instances[i]
 
@@ -425,3 +434,29 @@ class TestGoogleApiToolset:
 
     tool_set.set_tool_filter(new_filter_predicate)
     assert tool_set.tool_filter == new_filter_predicate
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  def test_init_with_tool_name_prefix(
+      self,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    """Test GoogleApiToolset initialization with tool_name_prefix."""
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    tool_name_prefix = "test_prefix"
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME,
+        api_version=TEST_API_VERSION,
+        tool_name_prefix=tool_name_prefix,
+    )
+
+    assert tool_set.tool_name_prefix == tool_name_prefix

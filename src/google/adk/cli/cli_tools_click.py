@@ -15,12 +15,14 @@
 from __future__ import annotations
 
 import asyncio
-import collections
 from contextlib import asynccontextmanager
 from datetime import datetime
 import functools
+import hashlib
+import json
 import logging
 import os
+from pathlib import Path
 import tempfile
 from typing import Optional
 
@@ -117,6 +119,159 @@ def main():
 def deploy():
   """Deploys agent to hosted environments."""
   pass
+
+
+@main.group()
+def conformance():
+  """Conformance testing tools for ADK."""
+  pass
+
+
+@conformance.command("record", cls=HelpfulCommand)
+@click.argument(
+    "paths",
+    nargs=-1,
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.pass_context
+def cli_conformance_record(
+    ctx,
+    paths: tuple[str, ...],
+):
+  """Generate ADK conformance test YAML files from TestCaseInput specifications.
+
+  NOTE: this is work in progress.
+
+  This command reads TestCaseInput specifications from input.yaml files,
+  executes the specified test cases against agents, and generates conformance
+  test files with recorded agent interactions as test.yaml files.
+
+  Expected directory structure:
+  category/name/input.yaml (TestCaseInput) -> category/name/test.yaml (TestCase)
+
+  PATHS: One or more directories containing test case specifications.
+  If no paths are provided, defaults to 'tests/' directory.
+
+  Examples:
+
+  Use default directory: adk conformance record
+
+  Custom directories: adk conformance record tests/core tests/tools
+  """
+
+  try:
+    from .conformance.cli_record import run_conformance_record
+  except ImportError as e:
+    click.secho(
+        f"Error: Missing conformance testing dependencies: {e}",
+        fg="red",
+        err=True,
+    )
+    click.secho(
+        "Please install the required conformance testing package dependencies.",
+        fg="yellow",
+        err=True,
+    )
+    ctx.exit(1)
+
+  # Default to tests/ directory if no paths provided
+  test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
+  asyncio.run(run_conformance_record(test_paths))
+
+
+@conformance.command("test", cls=HelpfulCommand)
+@click.argument(
+    "paths",
+    nargs=-1,
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.option(
+    "--mode",
+    type=click.Choice(["replay", "live"], case_sensitive=False),
+    default="replay",
+    show_default=True,
+    help=(
+        "Test mode: 'replay' verifies against recorded interactions, 'live'"
+        " runs evaluation-based verification."
+    ),
+)
+@click.pass_context
+def cli_conformance_test(
+    ctx,
+    paths: tuple[str, ...],
+    mode: str,
+):
+  """Run conformance tests to verify agent behavior consistency.
+
+  Validates that agents produce consistent outputs by comparing against recorded
+  interactions or evaluating live execution results.
+
+  PATHS can be any number of folder paths. Each folder can either:
+  - Contain a spec.yaml file directly (single test case)
+  - Contain subdirectories with spec.yaml files (multiple test cases)
+
+  If no paths are provided, defaults to searching the 'tests' folder.
+
+  TEST MODES:
+
+  \b
+  replay  : Verifies agent interactions match previously recorded behaviors
+            exactly. Compares LLM requests/responses and tool calls/results.
+  live    : Runs evaluation-based verification (not yet implemented)
+
+  DIRECTORY STRUCTURE:
+
+  Test cases must follow this structure:
+
+  \b
+  category/
+    test_name/
+      spec.yaml                    # Test specification
+      generated-recordings.yaml    # Recorded interactions (replay mode)
+      generated-session.yaml       # Session data (replay mode)
+
+  EXAMPLES:
+
+  \b
+  # Run all tests in current directory's 'tests' folder
+  adk conformance test
+
+  \b
+  # Run tests from specific folders
+  adk conformance test tests/core tests/tools
+
+  \b
+  # Run a single test case
+  adk conformance test tests/core/description_001
+
+  \b
+  # Run in live mode (when available)
+  adk conformance test --mode=live tests/core
+  """
+
+  try:
+    from .conformance.cli_test import run_conformance_test
+  except ImportError as e:
+    click.secho(
+        f"Error: Missing conformance testing dependencies: {e}",
+        fg="red",
+        err=True,
+    )
+    click.secho(
+        "Please install the required conformance testing package dependencies.",
+        fg="yellow",
+        err=True,
+    )
+    ctx.exit(1)
+
+  # Convert to Path objects, use default if empty (paths are already resolved by Click)
+  test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
+
+  asyncio.run(run_conformance_test(test_paths=test_paths, mode=mode.lower()))
 
 
 @main.command("create", cls=HelpfulCommand)
@@ -280,6 +435,28 @@ def cli_run(
   )
 
 
+def eval_options():
+  """Decorator to add common eval options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--eval_storage_uri",
+        type=str,
+        help=(
+            "Optional. The evals storage URI to store agent evals,"
+            " supported URIs: gs://<bucket name>."
+        ),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
 @main.command("eval", cls=HelpfulCommand)
 @click.argument(
     "agent_module_file_path",
@@ -296,15 +473,7 @@ def cli_run(
     default=False,
     help="Optional. Whether to print detailed results on console or not.",
 )
-@click.option(
-    "--eval_storage_uri",
-    type=str,
-    help=(
-        "Optional. The evals storage URI to store agent evals,"
-        " supported URIs: gs://<bucket name>."
-    ),
-    default=None,
-)
+@eval_options()
 def cli_eval(
     agent_module_file_path: str,
     eval_set_file_path_or_id: list[str],
@@ -371,8 +540,8 @@ def cli_eval(
   try:
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
-    from ..evaluation.eval_metrics import EvalMetric
-    from ..evaluation.eval_metrics import JudgeModelOptions
+    from ..evaluation.eval_config import get_eval_metrics_from_config
+    from ..evaluation.eval_config import get_evaluation_criteria_or_default
     from ..evaluation.eval_result import EvalCaseResult
     from ..evaluation.evaluator import EvalStatus
     from ..evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
@@ -380,26 +549,18 @@ def cli_eval(
     from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+    from ..evaluation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
-    from .cli_eval import get_evaluation_criteria_or_default
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
+    from .cli_eval import pretty_print_eval_result
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  evaluation_criteria = get_evaluation_criteria_or_default(config_file_path)
-  eval_metrics = []
-  for metric_name, threshold in evaluation_criteria.items():
-    eval_metrics.append(
-        EvalMetric(
-            metric_name=metric_name,
-            threshold=threshold,
-            judge_model_options=JudgeModelOptions(),
-        )
-    )
-
-  print(f"Using evaluation criteria: {evaluation_criteria}")
+  eval_config = get_evaluation_criteria_or_default(config_file_path)
+  print(f"Using evaluation criteria: {eval_config}")
+  eval_metrics = get_eval_metrics_from_config(eval_config)
 
   root_agent = get_root_agent(agent_module_file_path)
   app_name = os.path.basename(agent_module_file_path)
@@ -478,11 +639,16 @@ def cli_eval(
           )
       )
 
+  user_simulator_provider = UserSimulatorProvider(
+      user_simulator_config=eval_config.user_simulator_config
+  )
+
   try:
     eval_service = LocalEvalService(
         root_agent=root_agent,
         eval_sets_manager=eval_sets_manager,
         eval_set_results_manager=eval_set_results_manager,
+        user_simulator_provider=user_simulator_provider,
     )
 
     inference_results = asyncio.run(
@@ -500,7 +666,9 @@ def cli_eval(
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  print("*********************************************************************")
+  click.echo(
+      "*********************************************************************"
+  )
   eval_run_summary = {}
 
   for eval_result in eval_results:
@@ -513,9 +681,9 @@ def cli_eval(
       eval_run_summary[eval_result.eval_set_id][0] += 1
     else:
       eval_run_summary[eval_result.eval_set_id][1] += 1
-  print("Eval Run Summary")
+  click.echo("Eval Run Summary")
   for eval_set_id, pass_fail_count in eval_run_summary.items():
-    print(
+    click.echo(
         f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
         f" failed: {pass_fail_count[1]}"
     )
@@ -523,10 +691,166 @@ def cli_eval(
   if print_detailed_results:
     for eval_result in eval_results:
       eval_result: EvalCaseResult
-      print(
-          "*********************************************************************"
+      click.echo(
+          "********************************************************************"
       )
-      print(eval_result.model_dump_json(indent=2))
+      pretty_print_eval_result(eval_result)
+
+
+@main.group("eval_set")
+def eval_set():
+  """Manage Eval Sets."""
+  pass
+
+
+@eval_set.command("create", cls=HelpfulCommand)
+@click.argument(
+    "agent_module_file_path",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.argument("eval_set_id", type=str, required=True)
+@eval_options()
+def cli_create_eval_set(
+    agent_module_file_path: str,
+    eval_set_id: str,
+    eval_storage_uri: Optional[str] = None,
+):
+  """Creates an empty EvalSet given the agent_module_file_path and eval_set_id."""
+  from .cli_eval import get_eval_sets_manager
+
+  app_name = os.path.basename(agent_module_file_path)
+  agents_dir = os.path.dirname(agent_module_file_path)
+  eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
+
+  try:
+    eval_sets_manager.create_eval_set(
+        app_name=app_name, eval_set_id=eval_set_id
+    )
+    click.echo(f"Eval set '{eval_set_id}' created for app '{app_name}'.")
+  except ValueError as e:
+    raise click.ClickException(str(e))
+
+
+@eval_set.command("add_eval_case", cls=HelpfulCommand)
+@click.argument(
+    "agent_module_file_path",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.argument("eval_set_id", type=str, required=True)
+@click.option(
+    "--scenarios_file",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help="A path to file containing JSON serialized ConversationScenarios.",
+    required=True,
+)
+@click.option(
+    "--session_input_file",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help="Path to session file containing SessionInput in JSON format.",
+    required=True,
+)
+@eval_options()
+def cli_add_eval_case(
+    agent_module_file_path: str,
+    eval_set_id: str,
+    scenarios_file: str,
+    eval_storage_uri: Optional[str] = None,
+    session_input_file: Optional[str] = None,
+):
+  """Adds eval cases to the given eval set.
+
+  There are several ways that an eval case can be created, for now this method
+  only supports adding one using a conversation scenarios file.
+
+  If an eval case for the generated id already exists, then we skip adding it.
+  """
+  try:
+    from ..evaluation.conversation_scenarios import ConversationScenarios
+    from ..evaluation.eval_case import EvalCase
+    from ..evaluation.eval_case import SessionInput
+    from .cli_eval import get_eval_sets_manager
+  except ModuleNotFoundError as mnf:
+    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+
+  app_name = os.path.basename(agent_module_file_path)
+  agents_dir = os.path.dirname(agent_module_file_path)
+  eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
+
+  try:
+    with open(session_input_file, "r") as f:
+      session_input = SessionInput.model_validate_json(f.read())
+
+    with open(scenarios_file, "r") as f:
+      conversation_scenarios = ConversationScenarios.model_validate_json(
+          f.read()
+      )
+
+    for scenario in conversation_scenarios.scenarios:
+      scenario_str = json.dumps(scenario.model_dump(), sort_keys=True)
+      eval_id = hashlib.sha256(scenario_str.encode("utf-8")).hexdigest()[:8]
+      eval_case = EvalCase(
+          eval_id=eval_id,
+          conversation_scenario=scenario,
+          session_input=session_input,
+          creation_timestamp=datetime.now().timestamp(),
+      )
+
+      if (
+          eval_sets_manager.get_eval_case(
+              app_name=app_name, eval_set_id=eval_set_id, eval_case_id=eval_id
+          )
+          is None
+      ):
+        eval_sets_manager.add_eval_case(
+            app_name=app_name, eval_set_id=eval_set_id, eval_case=eval_case
+        )
+        click.echo(
+            f"Eval case '{eval_case.eval_id}' added to eval set"
+            f" '{eval_set_id}'."
+        )
+      else:
+        click.echo(
+            f"Eval case '{eval_case.eval_id}' already exists in eval set"
+            f" '{eval_set_id}', skipped adding."
+        )
+  except Exception as e:
+    raise click.ClickException(f"Failed to add eval case(s): {e}") from e
+
+
+def web_options():
+  """Decorator to add web UI options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--logo-text",
+        type=str,
+        help="Optional. The text to display in the logo of the web UI.",
+        default=None,
+    )
+    @click.option(
+        "--logo-image-url",
+        type=str,
+        help=(
+            "Optional. The URL of the image to display in the logo of the"
+            " web UI."
+        ),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
 
 
 def adk_services_options():
@@ -655,6 +979,16 @@ def fast_api_common_options():
         help="Optional. Whether to enable cloud trace for telemetry.",
     )
     @click.option(
+        "--otel_to_cloud",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help=(
+            "EXPERIMENTAL Optional. Whether to write OTel data to Google Cloud"
+            " Observability services - Cloud Trace and Cloud Logging."
+        ),
+    )
+    @click.option(
         "--reload/--no-reload",
         default=True,
         help=(
@@ -685,6 +1019,26 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--extra_plugins",
+        help=(
+            "Optional. Comma-separated list of extra plugin classes or"
+            " instances to enable (e.g., my.module.MyPluginClass or"
+            " my.module.my_plugin_instance)."
+        ),
+        multiple=True,
+    )
+    @click.option(
+        "--url_prefix",
+        type=str,
+        help=(
+            "Optional. URL path prefix when the application is mounted behind a"
+            " reverse proxy or API gateway (e.g., '/api/v1', '/adk'). This"
+            " ensures generated URLs and redirects work correctly when the app"
+            " is not served at the root path. Must start with '/' if provided."
+        ),
+        default=None,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -705,6 +1059,7 @@ def fast_api_common_options():
 
 @main.command("web")
 @fast_api_common_options()
+@web_options()
 @adk_services_options()
 @deprecated_adk_services_options()
 @click.argument(
@@ -721,7 +1076,9 @@ def cli_web(
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
+    url_prefix: Optional[str] = None,
     trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     reload: bool = True,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -730,6 +1087,9 @@ def cli_web(
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
+    extra_plugins: Optional[list[str]] = None,
+    logo_text: Optional[str] = None,
+    logo_image_url: Optional[str] = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -749,7 +1109,7 @@ def cli_web(
 +-----------------------------------------------------------------------------+
 | ADK Web Server started                                                      |
 |                                                                             |
-| For local testing, access at http://localhost:{port}.{" "*(29 - len(str(port)))}|
+| For local testing, access at http://{host}:{port}.{" "*(29 - len(str(port)))}|
 +-----------------------------------------------------------------------------+
 """,
         fg="green",
@@ -775,11 +1135,16 @@ def cli_web(
       allow_origins=allow_origins,
       web=True,
       trace_to_cloud=trace_to_cloud,
+      otel_to_cloud=otel_to_cloud,
       lifespan=_lifespan,
       a2a=a2a,
       host=host,
       port=port,
+      url_prefix=url_prefix,
       reload_agents=reload_agents,
+      extra_plugins=extra_plugins,
+      logo_text=logo_text,
+      logo_image_url=logo_image_url,
   )
   config = uvicorn.Config(
       app,
@@ -812,7 +1177,9 @@ def cli_api_server(
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
+    url_prefix: Optional[str] = None,
     trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     reload: bool = True,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -821,6 +1188,7 @@ def cli_api_server(
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
+    extra_plugins: Optional[list[str]] = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -845,10 +1213,13 @@ def cli_api_server(
           allow_origins=allow_origins,
           web=False,
           trace_to_cloud=trace_to_cloud,
+          otel_to_cloud=otel_to_cloud,
           a2a=a2a,
           host=host,
           port=port,
+          url_prefix=url_prefix,
           reload_agents=reload_agents,
+          extra_plugins=extra_plugins,
       ),
       host=host,
       port=port,
@@ -858,7 +1229,13 @@ def cli_api_server(
   server.run()
 
 
-@deploy.command("cloud_run")
+@deploy.command(
+    "cloud_run",
+    context_settings={
+        "allow_extra_args": True,
+        "allow_interspersed_args": False,
+    },
+)
 @click.option(
     "--project",
     type=str,
@@ -971,7 +1348,9 @@ def cli_api_server(
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
 @adk_services_options()
 @deprecated_adk_services_options()
+@click.pass_context
 def cli_deploy_cloud_run(
+    ctx,
     agent: str,
     project: Optional[str],
     region: Optional[str],
@@ -996,9 +1375,14 @@ def cli_deploy_cloud_run(
 
   AGENT: The path to the agent source code folder.
 
-  Example:
+  Use '--' to separate gcloud arguments from adk arguments.
+
+  Examples:
 
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
+
+    adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
+      -- --no-allow-unauthenticated --min-instances=2
   """
   if verbosity:
     click.secho(
@@ -1010,6 +1394,36 @@ def cli_deploy_cloud_run(
 
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
+
+  # Parse arguments to separate gcloud args (after --) from regular args
+  gcloud_args = []
+  if "--" in ctx.args:
+    separator_index = ctx.args.index("--")
+    gcloud_args = ctx.args[separator_index + 1 :]
+    regular_args = ctx.args[:separator_index]
+
+    # If there are regular args before --, that's an error
+    if regular_args:
+      click.secho(
+          "Error: Unexpected arguments after agent path and before '--':"
+          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
+          " to gcloud.",
+          fg="red",
+          err=True,
+      )
+      ctx.exit(2)
+  else:
+    # No -- separator, treat all args as an error to enforce the new behavior
+    if ctx.args:
+      click.secho(
+          f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
+          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
+          " agent_path -- --min-instances=2",
+          fg="red",
+          err=True,
+      )
+      ctx.exit(2)
+
   try:
     cli_deploy.to_cloud_run(
         agent_folder=agent,
@@ -1029,6 +1443,7 @@ def cli_deploy_cloud_run(
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         a2a=a2a,
+        extra_gcloud_args=tuple(gcloud_args),
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
@@ -1141,6 +1556,17 @@ def cli_deploy_cloud_run(
         " NOTE: This flag is temporary and will be removed in the future."
     ),
 )
+@click.option(
+    "--agent_engine_config_file",
+    type=str,
+    default="",
+    help=(
+        "Optional. The filepath to the `.agent_engine_config.json` file to use."
+        " The values in this file will be overriden by the values set by other"
+        " flags. (default: the `.agent_engine_config.json` file in the `agent`"
+        " directory, if any.)"
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1161,13 +1587,15 @@ def cli_deploy_agent_engine(
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
+    agent_engine_config_file: str,
 ):
   """Deploys an agent to Agent Engine.
 
   Example:
 
     adk deploy agent_engine --project=[project] --region=[region]
-      --staging_bucket=[staging_bucket] --display_name=[app_name] path/to/my_agent
+      --staging_bucket=[staging_bucket] --display_name=[app_name]
+      path/to/my_agent
   """
   try:
     cli_deploy.to_agent_engine(
@@ -1184,6 +1612,7 @@ def cli_deploy_agent_engine(
         env_file=env_file,
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
+        agent_engine_config_file=agent_engine_config_file,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
@@ -1311,7 +1740,8 @@ def cli_deploy_gke(
 
   Example:
 
-    adk deploy gke --project=[project] --region=[region] --cluster_name=[cluster_name] path/to/my_agent
+    adk deploy gke --project=[project] --region=[region]
+      --cluster_name=[cluster_name] path/to/my_agent
   """
   try:
     cli_deploy.to_gke(

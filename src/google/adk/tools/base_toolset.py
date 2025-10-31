@@ -22,7 +22,9 @@ from typing import List
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
+from typing import Type
 from typing import TYPE_CHECKING
+from typing import TypeVar
 from typing import Union
 
 from ..agents.readonly_context import ReadonlyContext
@@ -30,6 +32,7 @@ from .base_tool import BaseTool
 
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
+  from .tool_configs import ToolArgsConfig
   from .tool_context import ToolContext
 
 
@@ -51,6 +54,9 @@ class ToolPredicate(Protocol):
 
     It's used to filter tools in the toolset.
     """
+
+
+SelfToolset = TypeVar("SelfToolset", bound="BaseToolset")
 
 
 class BaseToolset(ABC):
@@ -151,6 +157,22 @@ class BaseToolset(ABC):
       should ensure that any open connections, files, or other managed
       resources are properly released to prevent leaks.
     """
+
+  @classmethod
+  def from_config(
+      cls: Type[SelfToolset], config: ToolArgsConfig, config_abs_path: str
+  ) -> SelfToolset:
+    """Creates a toolset instance from a config.
+
+    Args:
+      config: The config for the tool.
+      config_abs_path: The absolute path to the config file that contains the
+        tool config.
+
+    Returns:
+      The toolset instance.
+    """
+    raise ValueError(f"from_config() not implemented for toolset: {cls}")
 
   def _is_tool_selected(
       self, tool: BaseTool, readonly_context: ReadonlyContext

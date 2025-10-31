@@ -21,6 +21,7 @@ from typing import Union
 from google.adk.agents.readonly_context import ReadonlyContext
 from typing_extensions import override
 
+from . import data_insights_tool
 from . import metadata_tool
 from . import query_tool
 from ...tools.base_tool import BaseTool
@@ -79,7 +80,12 @@ class BigQueryToolset(BaseToolset):
             metadata_tool.get_table_info,
             metadata_tool.list_dataset_ids,
             metadata_tool.list_table_ids,
+            metadata_tool.get_job_info,
             query_tool.get_execute_sql(self._tool_settings),
+            query_tool.forecast,
+            query_tool.analyze_contribution,
+            query_tool.detect_anomalies,
+            data_insights_tool.ask_data_insights,
         ]
     ]
 

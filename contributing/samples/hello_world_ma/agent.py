@@ -131,7 +131,7 @@ prime_agent = Agent(
 
 
 root_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="root_agent",
     instruction="""
       You are a helpful assistant that can roll dice and check if numbers are prime.

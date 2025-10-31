@@ -18,6 +18,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 
 from ..utils.feature_decorator import experimental
 
@@ -27,7 +28,6 @@ class BaseToolConfig(BaseModel):
   """The base class for all tool configs."""
 
   model_config = ConfigDict(extra="forbid")
-  """Forbid extra fields."""
 
 
 @experimental
@@ -114,15 +114,15 @@ class ToolConfig(BaseModel):
 
   model_config = ConfigDict(extra="forbid")
 
-  name: str
-  """The name of the tool.
+  name: str = Field(description="""\
+The name of the tool.
 
-  For ADK built-in tools, `name` is the name of the tool, e.g. `google_search`
-  or `AgentTool`.
+For ADK built-in tools, `name` is the name of the tool, e.g. `google_search`
+or `AgentTool`.
 
-  For user-defined tools, the name is the fully qualified path to the tool, e.g.
-  `my_package.my_module.my_tool`.
-  """
+For user-defined tools, the name is the fully qualified path to the tool, e.g.
+`my_package.my_module.my_tool`.""")
 
-  args: Optional[ToolArgsConfig] = None
-  """The args for the tool."""
+  args: Optional[ToolArgsConfig] = Field(
+      default=None, description="The args for the tool."
+  )
