@@ -114,7 +114,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   def __init__(
       self,
       project_id: str,
-      dataset_id: str = "adk_agent_logs",
+      dataset_id: str,
       table_id: str = "agent_events",
       **kwargs,
   ):
@@ -141,7 +141,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             scopes=["https://www.googleapis.com/auth/bigquery"]
         )
         client_info = google.api_core.client_info.ClientInfo(
-            user_agent=f"google-adk-plugin/{version.__version__}"
+            user_agent=f"google-adk-bq-logger/{version.__version__}"
         )
         self._bq_client = bigquery.Client(
             project=self._project_id,
@@ -157,7 +157,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         table_ref = dataset_ref.table(self._table_id)
         # Schema without separate token columns
         schema = [
-            bigquery.SchemaField("dataset_id", "STRING"),
             bigquery.SchemaField("timestamp", "TIMESTAMP"),
             bigquery.SchemaField("event_type", "STRING"),
             bigquery.SchemaField("agent", "STRING"),
@@ -189,7 +188,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           self._table_id
       )
       default_row = {
-          "dataset_id": None,
           "timestamp": datetime.now(timezone.utc).isoformat(),
           "event_type": None,
           "agent": None,
@@ -226,7 +224,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[types.Content]:
     """Log user message and invocation start."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "USER_MESSAGE_RECEIVED",
         "agent": invocation_context.agent.name,
@@ -243,7 +240,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[types.Content]:
     """Log invocation start."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "INVOCATION_STARTING",
         "agent": invocation_context.agent.name,
@@ -259,7 +255,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[Event]:
     """Logs event data to BigQuery."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.fromtimestamp(
             event.timestamp, timezone.utc
         ).isoformat(),
@@ -285,7 +280,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[None]:
     """Log invocation completion."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "INVOCATION_COMPLETED",
         "agent": invocation_context.agent.name,
@@ -301,7 +295,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[types.Content]:
     """Log agent execution start."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "AGENT_STARTING",
         "agent": agent.name,
@@ -318,7 +311,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[types.Content]:
     """Log agent execution completion."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "AGENT_COMPLETED",
         "agent": agent.name,
@@ -386,7 +378,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     final_content = " | ".join(content_parts)
 
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "LLM_REQUEST",
         "agent": callback_context.agent_name,
@@ -444,7 +435,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     final_content = " | ".join(content_parts)
 
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "LLM_RESPONSE",
         "agent": callback_context.agent_name,
@@ -468,7 +458,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[None]:
     """Log tool execution start."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "TOOL_STARTING",
         "agent": tool_context.agent_name,
@@ -493,7 +482,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Log tool execution completion."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "TOOL_COMPLETED",
         "agent": tool_context.agent_name,
@@ -514,7 +502,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[LlmResponse]:
     """Log LLM error."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "LLM_ERROR",
         "agent": callback_context.agent_name,
@@ -536,7 +523,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Log tool error."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "TOOL_ERROR",
         "agent": tool_context.agent_name,
