@@ -18,6 +18,8 @@ import functools
 import json
 import types
 from typing import Callable
+from typing import Optional
+import uuid
 
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
@@ -34,8 +36,9 @@ def execute_sql(
     project_id: str,
     query: str,
     credentials: Credentials,
-    config: BigQueryToolConfig,
+    settings: BigQueryToolConfig,
     tool_context: ToolContext,
+    dry_run: bool = False,
 ) -> dict:
   """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
 
@@ -44,14 +47,19 @@ def execute_sql(
         executed.
       query (str): The BigQuery SQL query to be executed.
       credentials (Credentials): The credentials to use for the request.
-      config (BigQueryToolConfig): The configuration for the tool.
+      settings (BigQueryToolConfig): The settings for the tool.
       tool_context (ToolContext): The context for the tool.
+      dry_run (bool, default False): If True, the query will not be executed.
+        Instead, the query will be validated and information about the query
+        will be returned. Defaults to False.
 
   Returns:
-      dict: Dictionary representing the result of the query.
-            If the result contains the key "result_is_likely_truncated" with
-            value True, it means that there may be additional rows matching the
-            query not returned in the result.
+      dict: If `dry_run` is False, dictionary representing the result of the
+            query. If the result contains the key "result_is_likely_truncated"
+            with value True, it means that there may be additional rows matching
+            the query not returned in the result.
+            If `dry_run` is True, dictionary with "dry_run_info" field
+            containing query information returned by BigQuery.
 
   Examples:
       Fetch data or insights from a table:
@@ -76,18 +84,67 @@ def execute_sql(
                 }
             ]
           }
-  """
 
+      Validate a query and estimate costs without executing it:
+
+          >>> execute_sql(
+          ...     "my_project",
+          ...     "SELECT island FROM "
+          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     dry_run=True
+          ... )
+          {
+            "status": "SUCCESS",
+            "dry_run_info": {
+              "configuration": {
+                "dryRun": True,
+                "jobType": "QUERY",
+                "query": {
+                  "destinationTable": {
+                    "datasetId": "_...",
+                    "projectId": "my_project",
+                    "tableId": "anon..."
+                  },
+                  "priority": "INTERACTIVE",
+                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "useLegacySql": False,
+                  "writeDisposition": "WRITE_TRUNCATE"
+                }
+              },
+              "jobReference": {
+                "location": "US",
+                "projectId": "my_project"
+              }
+            }
+          }
+  """
   try:
+    # Validate compute project if applicable
+    if (
+        settings.compute_project_id
+        and project_id != settings.compute_project_id
+    ):
+      return {
+          "status": "ERROR",
+          "error_details": (
+              f"Cannot execute query in the project {project_id}, as the tool"
+              " is restricted to execute queries only in the project"
+              f" {settings.compute_project_id}."
+          ),
+      }
+
     # Get BigQuery client
     bq_client = client.get_bigquery_client(
-        project=project_id, credentials=credentials
+        project=project_id,
+        credentials=credentials,
+        location=settings.location,
+        user_agent=settings.application_name,
     )
 
     # BigQuery connection properties where applicable
     bq_connection_properties = None
 
-    if not config or config.write_mode == WriteMode.BLOCKED:
+    if not settings or settings.write_mode == WriteMode.BLOCKED:
       dry_run_query_job = bq_client.query(
           query,
           project=project_id,
@@ -98,7 +155,7 @@ def execute_sql(
             "status": "ERROR",
             "error_details": "Read-only mode only supports SELECT statements.",
         }
-    elif config.write_mode == WriteMode.PROTECTED:
+    elif settings.write_mode == WriteMode.PROTECTED:
       # In protected write mode, write operation only to a temporary artifact is
       # allowed. This artifact must have been created in a BigQuery session. In
       # such a scenario the session info (session id and the anonymous dataset
@@ -150,6 +207,18 @@ def execute_sql(
         }
 
     # Finally execute the query and fetch the result
+    if dry_run:
+      job_config_kwargs = {"dry_run": True}
+      if bq_connection_properties:
+        job_config_kwargs["connection_properties"] = bq_connection_properties
+      job_config = bigquery.QueryJobConfig(**job_config_kwargs)
+      dry_run_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=job_config,
+      )
+      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
+
     job_config = (
         bigquery.QueryJobConfig(connection_properties=bq_connection_properties)
         if bq_connection_properties
@@ -159,7 +228,7 @@ def execute_sql(
         query,
         job_config=job_config,
         project=project_id,
-        max_results=config.max_query_result_rows,
+        max_results=settings.max_query_result_rows,
     )
     rows = []
     for row in row_iterator:
@@ -175,8 +244,8 @@ def execute_sql(
 
     result = {"status": "SUCCESS", "rows": rows}
     if (
-        config.max_query_result_rows is not None
-        and len(rows) == config.max_query_result_rows
+        settings.max_query_result_rows is not None
+        and len(rows) == settings.max_query_result_rows
     ):
       result["result_is_likely_truncated"] = True
     return result
@@ -187,7 +256,85 @@ def execute_sql(
     }
 
 
-_execute_sql_write_examples = """
+def _execute_sql_write_mode(*args, **kwargs) -> dict:
+  """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      query (str): The BigQuery SQL query to be executed.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+      dry_run (bool, default False): If True, the query will not be executed.
+        Instead, the query will be validated and information about the query
+        will be returned. Defaults to False.
+
+  Returns:
+      dict: If `dry_run` is False, dictionary representing the result of the
+            query. If the result contains the key "result_is_likely_truncated"
+            with value True, it means that there may be additional rows matching
+            the query not returned in the result.
+            If `dry_run` is True, dictionary with "dry_run_info" field
+            containing query information returned by BigQuery.
+
+  Examples:
+      Fetch data or insights from a table:
+
+          >>> execute_sql("my_project",
+          ... "SELECT island, COUNT(*) AS population "
+          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          {
+            "status": "SUCCESS",
+            "rows": [
+                {
+                    "island": "Dream",
+                    "population": 124
+                },
+                {
+                    "island": "Biscoe",
+                    "population": 168
+                },
+                {
+                    "island": "Torgersen",
+                    "population": 52
+                }
+            ]
+          }
+
+      Validate a query and estimate costs without executing it:
+
+          >>> execute_sql(
+          ...     "my_project",
+          ...     "SELECT island FROM "
+          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     dry_run=True
+          ... )
+          {
+            "status": "SUCCESS",
+            "dry_run_info": {
+              "configuration": {
+                "dryRun": True,
+                "jobType": "QUERY",
+                "query": {
+                  "destinationTable": {
+                    "datasetId": "_...",
+                    "projectId": "my_project",
+                    "tableId": "anon..."
+                  },
+                  "priority": "INTERACTIVE",
+                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "useLegacySql": False,
+                  "writeDisposition": "WRITE_TRUNCATE"
+                }
+              },
+              "jobReference": {
+                "location": "US",
+                "projectId": "my_project"
+              }
+            }
+          }
+
       Create a table with schema prescribed:
 
           >>> execute_sql("my_project",
@@ -326,9 +473,88 @@ _execute_sql_write_examples = """
           - Use "CREATE OR REPLACE MODEL" instead of "CREATE MODEL".
           - First run "DROP MODEL", followed by "CREATE MODEL".
   """
+  return execute_sql(*args, **kwargs)
 
 
-_execute_sql_protecetd_write_examples = """
+def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
+  """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      query (str): The BigQuery SQL query to be executed.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+      dry_run (bool, default False): If True, the query will not be executed.
+        Instead, the query will be validated and information about the query
+        will be returned. Defaults to False.
+
+  Returns:
+      dict: If `dry_run` is False, dictionary representing the result of the
+            query. If the result contains the key "result_is_likely_truncated"
+            with value True, it means that there may be additional rows matching
+            the query not returned in the result.
+            If `dry_run` is True, dictionary with "dry_run_info" field
+            containing query information returned by BigQuery.
+
+  Examples:
+      Fetch data or insights from a table:
+
+          >>> execute_sql("my_project",
+          ... "SELECT island, COUNT(*) AS population "
+          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          {
+            "status": "SUCCESS",
+            "rows": [
+                {
+                    "island": "Dream",
+                    "population": 124
+                },
+                {
+                    "island": "Biscoe",
+                    "population": 168
+                },
+                {
+                    "island": "Torgersen",
+                    "population": 52
+                }
+            ]
+          }
+
+      Validate a query and estimate costs without executing it:
+
+          >>> execute_sql(
+          ...     "my_project",
+          ...     "SELECT island FROM "
+          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     dry_run=True
+          ... )
+          {
+            "status": "SUCCESS",
+            "dry_run_info": {
+              "configuration": {
+                "dryRun": True,
+                "jobType": "QUERY",
+                "query": {
+                  "destinationTable": {
+                    "datasetId": "_...",
+                    "projectId": "my_project",
+                    "tableId": "anon..."
+                  },
+                  "priority": "INTERACTIVE",
+                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "useLegacySql": False,
+                  "writeDisposition": "WRITE_TRUNCATE"
+                }
+              },
+              "jobReference": {
+                "location": "US",
+                "projectId": "my_project"
+              }
+            }
+          }
+
       Create a temporary table with schema prescribed:
 
           >>> execute_sql("my_project",
@@ -458,21 +684,22 @@ _execute_sql_protecetd_write_examples = """
       - Only temporary models can be created or deleted. Please do not try
       creating a permanent model (non-TEMP model) or deleting one.
   """
+  return execute_sql(*args, **kwargs)
 
 
-def get_execute_sql(config: BigQueryToolConfig) -> Callable[..., dict]:
-  """Get the execute_sql tool customized as per the given tool config.
+def get_execute_sql(settings: BigQueryToolConfig) -> Callable[..., dict]:
+  """Get the execute_sql tool customized as per the given tool settings.
 
   Args:
-      config: BigQuery tool configuration indicating the behavior of the
+      settings: BigQuery tool settings indicating the behavior of the
         execute_sql tool.
 
   Returns:
       callable[..., dict]: A version of the execute_sql tool respecting the tool
-      config.
+      settings.
   """
 
-  if not config or config.write_mode == WriteMode.BLOCKED:
+  if not settings or settings.write_mode == WriteMode.BLOCKED:
     return execute_sql
 
   # Create a new function object using the original function's code and globals.
@@ -493,9 +720,586 @@ def get_execute_sql(config: BigQueryToolConfig) -> Callable[..., dict]:
   functools.update_wrapper(execute_sql_wrapper, execute_sql)
 
   # Now, set the new docstring
-  if config.write_mode == WriteMode.PROTECTED:
-    execute_sql_wrapper.__doc__ += _execute_sql_protecetd_write_examples
+  if settings.write_mode == WriteMode.PROTECTED:
+    execute_sql_wrapper.__doc__ = _execute_sql_protected_write_mode.__doc__
   else:
-    execute_sql_wrapper.__doc__ += _execute_sql_write_examples
+    execute_sql_wrapper.__doc__ = _execute_sql_write_mode.__doc__
 
   return execute_sql_wrapper
+
+
+def forecast(
+    project_id: str,
+    history_data: str,
+    timestamp_col: str,
+    data_col: str,
+    horizon: int = 10,
+    id_cols: Optional[list[str]] = None,
+    *,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    tool_context: ToolContext,
+) -> dict:
+  """Run a BigQuery AI time series forecast using AI.FORECAST.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      history_data (str): The table id of the BigQuery table containing the
+        history time series data or a query statement that select the history
+        data.
+      timestamp_col (str): The name of the column containing the timestamp for
+        each data point.
+      data_col (str): The name of the column containing the numerical values to
+        be forecasted.
+      horizon (int, optional): The number of time steps to forecast into the
+        future. Defaults to 10.
+      id_cols (list, optional): The column names of the id columns to indicate
+        each time series when there are multiple time series in the table. All
+        elements must be strings. Defaults to None.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+
+  Returns:
+      dict: Dictionary representing the result of the forecast. The result
+            contains the forecasted values along with prediction intervals.
+
+  Examples:
+      Forecast daily sales for the next 7 days based on historical data from
+      a BigQuery table:
+
+          >>> forecast(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.my-sales-table",
+          ...     timestamp_col="sale_date",
+          ...     data_col="daily_sales",
+          ...     horizon=7
+          ... )
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "forecast_timestamp": "2025-01-08T00:00:00",
+                "forecast_value": 12345.67,
+                "confidence_level": 0.95,
+                "prediction_interval_lower_bound": 11000.0,
+                "prediction_interval_upper_bound": 13691.34,
+                "ai_forecast_status": ""
+              },
+              ...
+            ]
+          }
+
+      Forecast multiple time series using a SQL query as input:
+
+          >>> history_query = (
+          ...     "SELECT unique_id, timestamp, value "
+          ...     "FROM `my-project.my-dataset.my-timeseries-table` "
+          ...     "WHERE timestamp > '1980-01-01'"
+          ... )
+          >>> forecast(
+          ...     project_id="my-gcp-project",
+          ...     history_data=history_query,
+          ...     timestamp_col="timestamp",
+          ...     data_col="value",
+          ...     id_cols=["unique_id"],
+          ...     horizon=14
+          ... )
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "unique_id": "T1",
+                "forecast_timestamp": "1980-08-28T00:00:00",
+                "forecast_value": 1253218.75,
+                "confidence_level": 0.95,
+                "prediction_interval_lower_bound": 274252.51,
+                "prediction_interval_upper_bound": 2232184.99,
+                "ai_forecast_status": ""
+              },
+              ...
+            ]
+          }
+
+      Error Scenarios:
+          When an element in `id_cols` is not a string:
+
+          >>> forecast(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.my-sales-table",
+          ...     timestamp_col="sale_date",
+          ...     data_col="daily_sales",
+          ...     id_cols=["store_id", 123]
+          ... )
+          {
+            "status": "ERROR",
+            "error_details": "All elements in id_cols must be strings."
+          }
+
+          When `history_data` refers to a table that does not exist:
+
+          >>> forecast(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.non-existent-table",
+          ...     timestamp_col="sale_date",
+          ...     data_col="daily_sales"
+          ... )
+          {
+            "status": "ERROR",
+            "error_details": "Not found: Table
+            my-gcp-project:my-dataset.non-existent-table was not found in
+            location US"
+          }
+  """
+  model = "TimesFM 2.0"
+  confidence_level = 0.95
+  trimmed_upper_history_data = history_data.strip().upper()
+  if trimmed_upper_history_data.startswith(
+      "SELECT"
+  ) or trimmed_upper_history_data.startswith("WITH"):
+    history_data_source = f"({history_data})"
+  else:
+    history_data_source = f"TABLE `{history_data}`"
+
+  if id_cols:
+    if not all(isinstance(item, str) for item in id_cols):
+      return {
+          "status": "ERROR",
+          "error_details": "All elements in id_cols must be strings.",
+      }
+    id_cols_str = "[" + ", ".join([f"'{col}'" for col in id_cols]) + "]"
+
+    query = f"""
+  SELECT * FROM AI.FORECAST(
+    {history_data_source},
+    data_col => '{data_col}',
+    timestamp_col => '{timestamp_col}',
+    model => '{model}',
+    id_cols => {id_cols_str},
+    horizon => {horizon},
+    confidence_level => {confidence_level}
+  )
+  """
+  else:
+    query = f"""
+  SELECT * FROM AI.FORECAST(
+    {history_data_source},
+    data_col => '{data_col}',
+    timestamp_col => '{timestamp_col}',
+    model => '{model}',
+    horizon => {horizon},
+    confidence_level => {confidence_level}
+  )
+  """
+  return execute_sql(project_id, query, credentials, settings, tool_context)
+
+
+def analyze_contribution(
+    project_id: str,
+    input_data: str,
+    contribution_metric: str,
+    dimension_id_cols: list[str],
+    is_test_col: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    tool_context: ToolContext,
+    top_k_insights: int = 30,
+    pruning_method: str = "PRUNE_REDUNDANT_INSIGHTS",
+) -> dict:
+  """Run a BigQuery ML contribution analysis using ML.CREATE_MODEL and ML.GET_INSIGHTS.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      input_data (str): The data that contain the test and control data to
+        analyze. Can be a fully qualified BigQuery table ID or a SQL query.
+      dimension_id_cols (list[str]): The column names of the dimension columns.
+      contribution_metric (str): The name of the column that contains the metric
+        to analyze. Provides the expression to use to calculate the metric you
+        are analyzing. To calculate a summable metric, the expression must be in
+        the form SUM(metric_column_name), where metric_column_name is a numeric
+        data type.  To calculate a summable ratio metric, the expression must be
+        in the form
+        SUM(numerator_metric_column_name)/SUM(denominator_metric_column_name),
+        where numerator_metric_column_name and denominator_metric_column_name
+        are numeric data types.  To calculate a summable by category metric, the
+        expression must be in the form
+        SUM(metric_sum_column_name)/COUNT(DISTINCT categorical_column_name). The
+        summed column must be a numeric data type. The categorical column must
+        have type BOOL, DATE, DATETIME, TIME, TIMESTAMP, STRING, or INT64.
+      is_test_col (str): The name of the column to use to determine whether a
+        given row is test data or control data. The column must have a BOOL data
+        type.
+      credentials: The credentials to use for the request.
+      settings: The settings for the tool.
+      tool_context: The context for the tool.
+      top_k_insights (int, optional): The number of top insights to return,
+        ranked by apriori support. Defaults to 30.
+      pruning_method (str, optional): The method to use for pruning redundant
+        insights. Can be 'NO_PRUNING' or 'PRUNE_REDUNDANT_INSIGHTS'. Defaults to
+        "PRUNE_REDUNDANT_INSIGHTS".
+
+  Returns:
+      dict: Dictionary representing the result of the contribution analysis.
+
+  Examples:
+      Analyze the contribution of different dimensions to the total sales:
+
+          >>> analyze_contribution(
+          ...     project_id="my-gcp-project",
+          ...     input_data="my-dataset.my-sales-table",
+          ...     dimension_id_cols=["store_id", "product_category"],
+          ...     contribution_metric="SUM(total_sales)",
+          ...     is_test_col="is_test"
+          ... )
+          The return is:
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "store_id": "S1",
+                "product_category": "Electronics",
+                "contributors": ["S1", "Electronics"],
+                "metric_test": 120,
+                "metric_control": 100,
+                "difference": 20,
+                "relative_difference": 0.2,
+                "unexpected_difference": 5,
+                "relative_unexpected_difference": 0.043,
+                "apriori_support": 0.15
+              },
+              ...
+            ]
+          }
+
+      Analyze the contribution of different dimensions to the total sales using
+      a SQL query as input:
+
+          >>> analyze_contribution(
+          ...     project_id="my-gcp-project",
+          ...     input_data="SELECT store_id, product_category, total_sales, "
+          ...     "is_test FROM `my-project.my-dataset.my-sales-table` "
+          ...     "WHERE transaction_date > '2025-01-01'"
+          ...     dimension_id_cols=["store_id", "product_category"],
+          ...     contribution_metric="SUM(total_sales)",
+          ...     is_test_col="is_test"
+          ... )
+          The return is:
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "store_id": "S2",
+                "product_category": "Groceries",
+                "contributors": ["S2", "Groceries"],
+                "metric_test": 250,
+                "metric_control": 200,
+                "difference": 50,
+                "relative_difference": 0.25,
+                "unexpected_difference": 10,
+                "relative_unexpected_difference": 0.041,
+                "apriori_support": 0.22
+              },
+              ...
+            ]
+          }
+  """
+  if not all(isinstance(item, str) for item in dimension_id_cols):
+    return {
+        "status": "ERROR",
+        "error_details": "All elements in dimension_id_cols must be strings.",
+    }
+
+  # Generate a unique temporary model name
+  model_name = (
+      f"contribution_analysis_model_{str(uuid.uuid4()).replace('-', '_')}"
+  )
+
+  id_cols_str = "[" + ", ".join([f"'{col}'" for col in dimension_id_cols]) + "]"
+  options = [
+      "MODEL_TYPE = 'CONTRIBUTION_ANALYSIS'",
+      f"CONTRIBUTION_METRIC = '{contribution_metric}'",
+      f"IS_TEST_COL = '{is_test_col}'",
+      f"DIMENSION_ID_COLS = {id_cols_str}",
+  ]
+
+  options.append(f"TOP_K_INSIGHTS_BY_APRIORI_SUPPORT = {top_k_insights}")
+
+  upper_pruning = pruning_method.upper()
+  if upper_pruning not in ["NO_PRUNING", "PRUNE_REDUNDANT_INSIGHTS"]:
+    return {
+        "status": "ERROR",
+        "error_details": f"Invalid pruning_method: {pruning_method}",
+    }
+  options.append(f"PRUNING_METHOD = '{upper_pruning}'")
+
+  options_str = ", ".join(options)
+
+  trimmed_upper_input_data = input_data.strip().upper()
+  if trimmed_upper_input_data.startswith(
+      "SELECT"
+  ) or trimmed_upper_input_data.startswith("WITH"):
+    input_data_source = f"({input_data})"
+  else:
+    input_data_source = f"SELECT * FROM `{input_data}`"
+
+  create_model_query = f"""
+  CREATE TEMP MODEL {model_name}
+    OPTIONS ({options_str})
+  AS {input_data_source}
+  """
+
+  get_insights_query = f"""
+  SELECT * FROM ML.GET_INSIGHTS(MODEL {model_name})
+  """
+
+  # Create a session and run the create model query.
+  original_write_mode = settings.write_mode
+  try:
+    if settings.write_mode == WriteMode.BLOCKED:
+      raise ValueError("analyze_contribution is not allowed in this session.")
+    elif original_write_mode != WriteMode.PROTECTED:
+      # Running create temp model requires a session. So we set the write mode
+      # to PROTECTED to run the create model query and job query in the same
+      # session.
+      settings.write_mode = WriteMode.PROTECTED
+
+    result = execute_sql(
+        project_id,
+        create_model_query,
+        credentials,
+        settings,
+        tool_context,
+    )
+    if result["status"] != "SUCCESS":
+      return result
+
+    result = execute_sql(
+        project_id,
+        get_insights_query,
+        credentials,
+        settings,
+        tool_context,
+    )
+  except Exception as ex:  # pylint: disable=broad-except
+    return {
+        "status": "ERROR",
+        "error_details": f"Error during analyze_contribution: {str(ex)}",
+    }
+  finally:
+    # Restore the original write mode.
+    settings.write_mode == original_write_mode
+
+  return result
+
+
+def detect_anomalies(
+    project_id: str,
+    history_data: str,
+    times_series_timestamp_col: str,
+    times_series_data_col: str,
+    horizon: Optional[int] = 10,
+    times_series_id_cols: Optional[list[str]] = None,
+    anomaly_prob_threshold: Optional[float] = 0.95,
+    *,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    tool_context: ToolContext,
+) -> dict:
+  """Run a BigQuery time series ARIMA_PLUS model training and anomaly detection using CREATE MODEL and ML.DETECT_ANOMALIES clauses.
+
+  Args:
+      project_id (str): The GCP project id in which the query should be
+        executed.
+      history_data (str): The table id of the BigQuery table containing the
+        history time series data or a query statement that select the history
+        data.
+      times_series_timestamp_col (str): The name of the colum containing the
+        timestamp for each data point.
+      times_series_data_col (str): The name of the column containing the
+        numerical values to be forecasted and anomaly detected.
+      horizon (int, optional): The number of time steps to forecast into the
+        future. Defaults to 10.
+      times_series_id_cols (list, optional): The column names of the id columns
+        to indicate each time series when there are multiple time series in the
+        table. All elements must be strings. Defaults to None.
+      anomaly_prob_threshold (float, optional): The probability threshold to
+        determine if a data point is an anomaly. Defaults to 0.95.
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The settings for the tool.
+      tool_context (ToolContext): The context for the tool.
+
+  Returns:
+      dict: Dictionary representing the result of the anomaly detection. The
+            result contains the boolean value if the data point is anomaly or
+            not, lower bound, upper bound and anomaly probability for each data
+            point and also the probability of whether the data point is anomaly
+            or not.
+
+  Examples:
+      Detect Anomalies daily sales based on historical data from a BigQuery
+      table:
+
+          >>> detect_anomalies(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.my-sales-table",
+          ...     times_series_timestamp_col="sale_date",
+          ...     times_series_data_col="daily_sales"
+          ... )
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "ts_timestamp": "2021-01-01 00:00:01 UTC",
+                "ts_data": 125.3,
+                "is_anomaly": TRUE,
+                "lower_bound": 129.5,
+                "upper_bound": 133.6 ,
+                "anomaly_probability": 0.93
+              },
+              ...
+            ]
+          }
+
+      Detect Anomalies on multiple time series using a SQL query as input:
+
+          >>> history_query = (
+          ...     "SELECT unique_id, timestamp, value "
+          ...     "FROM `my-project.my-dataset.my-timeseries-table` "
+          ...     "WHERE timestamp > '1980-01-01'"
+          ... )
+          >>> detect_anomalies(
+          ...     project_id="my-gcp-project",
+          ...     history_data=history_query,
+          ...     times_series_timestamp_col="timestamp",
+          ...     times_series_data_col="value",
+          ...     times_series_id_cols=["unique_id"]
+          ... )
+          {
+            "status": "SUCCESS",
+            "rows": [
+              {
+                "unique_id": "T1",
+                "ts_timestamp": "2021-01-01 00:00:01 UTC",
+                "ts_data": 125.3,
+                "is_anomaly": TRUE,
+                "lower_bound": 129.5,
+                "upper_bound": 133.6 ,
+                "anomaly_probability": 0.93
+              },
+              ...
+            ]
+          }
+
+      Error Scenarios:
+          When an element in `times_series_id_cols` is not a string:
+
+          >>> detect_anomalies(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.my-sales-table",
+          ...     times_series_timestamp_col="sale_date",
+          ...     times_series_data_col="daily_sales",
+          ...     times_series_id_cols=["store_id", 123]
+          ... )
+          {
+            "status": "ERROR",
+            "error_details": "All elements in times_series_id_cols must be
+            strings."
+          }
+
+          When `history_data` refers to a table that does not exist:
+
+          >>> detect_anomalies(
+          ...     project_id="my-gcp-project",
+          ...     history_data="my-dataset.non-existent-table",
+          ...     times_series_timestamp_col="sale_date",
+          ...     times_series_data_col="daily_sales"
+          ... )
+          {
+            "status": "ERROR",
+            "error_details": "Not found: Table
+            my-gcp-project:my-dataset.non-existent-table was not found in
+            location US"
+          }
+  """
+  trimmed_upper_history_data = history_data.strip().upper()
+  if trimmed_upper_history_data.startswith(
+      "SELECT"
+  ) or trimmed_upper_history_data.startswith("WITH"):
+    history_data_source = f"({history_data})"
+  else:
+    history_data_source = f"SELECT * FROM `{history_data}`"
+
+  options = [
+      "MODEL_TYPE = 'ARIMA_PLUS'",
+      f"TIME_SERIES_TIMESTAMP_COL = '{times_series_timestamp_col}'",
+      f"TIME_SERIES_DATA_COL = '{times_series_data_col}'",
+      f"HORIZON = {horizon}",
+  ]
+
+  if times_series_id_cols:
+    if not all(isinstance(item, str) for item in times_series_id_cols):
+      return {
+          "status": "ERROR",
+          "error_details": (
+              "All elements in times_series_id_cols must be strings."
+          ),
+      }
+    times_series_id_cols_str = (
+        "[" + ", ".join([f"'{col}'" for col in times_series_id_cols]) + "]"
+    )
+    options.append(f"TIME_SERIES_ID_COL = {times_series_id_cols_str}")
+
+  options_str = ", ".join(options)
+
+  model_name = f"detect_anomalies_model_{str(uuid.uuid4()).replace('-', '_')}"
+
+  create_model_query = f"""
+  CREATE TEMP MODEL {model_name}
+    OPTIONS ({options_str})
+  AS {history_data_source}
+  """
+
+  anomaly_detection_query = f"""
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold))
+  """
+
+  # Create a session and run the create model query.
+  original_write_mode = settings.write_mode
+  try:
+    if settings.write_mode == WriteMode.BLOCKED:
+      raise ValueError("anomaly detection is not allowed in this session.")
+    elif original_write_mode != WriteMode.PROTECTED:
+      # Running create temp model requires a session. So we set the write mode
+      # to PROTECTED to run the create model query and job query in the same
+      # session.
+      settings.write_mode = WriteMode.PROTECTED
+
+    result = execute_sql(
+        project_id,
+        create_model_query,
+        credentials,
+        settings,
+        tool_context,
+    )
+    if result["status"] != "SUCCESS":
+      return result
+
+    result = execute_sql(
+        project_id,
+        anomaly_detection_query,
+        credentials,
+        settings,
+        tool_context,
+    )
+  except Exception as ex:  # pylint: disable=broad-except
+    return {
+        "status": "ERROR",
+        "error_details": f"Error during anomaly detection: {str(ex)}",
+    }
+  finally:
+    # Restore the original write mode.
+    settings.write_mode == original_write_mode
+
+  return result

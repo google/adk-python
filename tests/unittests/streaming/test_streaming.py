@@ -110,8 +110,15 @@ def test_live_streaming_function_call_single():
 
       try:
         session = self.session
-        # Add timeout to prevent hanging
-        asyncio.run(asyncio.wait_for(consume_responses(session), timeout=5.0))
+        # Create a new event loop to avoid nested event loop issues
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
       except (asyncio.TimeoutError, asyncio.CancelledError):
         # Return whatever we collected so far
         pass
@@ -217,7 +224,15 @@ def test_live_streaming_function_call_multiple():
 
       try:
         session = self.session
-        asyncio.run(asyncio.wait_for(consume_responses(session), timeout=5.0))
+        # Create a new event loop to avoid nested event loop issues
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
       except (asyncio.TimeoutError, asyncio.CancelledError):
         pass
 
@@ -315,7 +330,15 @@ def test_live_streaming_function_call_parallel():
 
       try:
         session = self.session
-        asyncio.run(asyncio.wait_for(consume_responses(session), timeout=5.0))
+        # Create a new event loop to avoid nested event loop issues
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
       except (asyncio.TimeoutError, asyncio.CancelledError):
         pass
 
@@ -407,7 +430,15 @@ def test_live_streaming_function_call_with_error():
 
       try:
         session = self.session
-        asyncio.run(asyncio.wait_for(consume_responses(session), timeout=5.0))
+        # Create a new event loop to avoid nested event loop issues
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
       except (asyncio.TimeoutError, asyncio.CancelledError):
         pass
 
@@ -490,7 +521,15 @@ def test_live_streaming_function_call_sync_tool():
 
       try:
         session = self.session
-        asyncio.run(asyncio.wait_for(consume_responses(session), timeout=5.0))
+        # Create a new event loop to avoid nested event loop issues
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
       except (asyncio.TimeoutError, asyncio.CancelledError):
         pass
 
@@ -582,7 +621,15 @@ def test_live_streaming_simple_streaming_tool():
 
       try:
         session = self.session
-        asyncio.run(asyncio.wait_for(consume_responses(session), timeout=5.0))
+        # Create a new event loop to avoid nested event loop issues
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
       except (asyncio.TimeoutError, asyncio.CancelledError):
         pass
 
@@ -686,7 +733,15 @@ def test_live_streaming_video_streaming_tool():
 
       try:
         session = self.session
-        asyncio.run(asyncio.wait_for(consume_responses(session), timeout=5.0))
+        # Create a new event loop to avoid nested event loop issues
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
       except (asyncio.TimeoutError, asyncio.CancelledError):
         pass
 
@@ -794,7 +849,15 @@ def test_live_streaming_stop_streaming_tool():
 
       try:
         session = self.session
-        asyncio.run(asyncio.wait_for(consume_responses(session), timeout=5.0))
+        # Create a new event loop to avoid nested event loop issues
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
       except (asyncio.TimeoutError, asyncio.CancelledError):
         pass
 
@@ -903,7 +966,15 @@ def test_live_streaming_multiple_streaming_tools():
 
       try:
         session = self.session
-        asyncio.run(asyncio.wait_for(consume_responses(session), timeout=5.0))
+        # Create a new event loop to avoid nested event loop issues
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
       except (asyncio.TimeoutError, asyncio.CancelledError):
         pass
 

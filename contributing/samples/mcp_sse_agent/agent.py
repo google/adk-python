@@ -53,6 +53,7 @@ Allowed directory: {_allowed_path}
                 'get_file_info',
                 'list_allowed_directories',
             ],
+            require_confirmation=True,
         )
     ],
 )

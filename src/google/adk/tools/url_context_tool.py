@@ -20,7 +20,7 @@ from google.genai import types
 from typing_extensions import override
 
 from ..utils.model_name_utils import is_gemini_1_model
-from ..utils.model_name_utils import is_gemini_2_model
+from ..utils.model_name_utils import is_gemini_2_or_above
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -50,7 +50,7 @@ class UrlContextTool(BaseTool):
     llm_request.config.tools = llm_request.config.tools or []
     if is_gemini_1_model(llm_request.model):
       raise ValueError('Url context tool can not be used in Gemini 1.x.')
-    elif is_gemini_2_model(llm_request.model):
+    elif is_gemini_2_or_above(llm_request.model):
       llm_request.config.tools.append(
           types.Tool(url_context=types.UrlContext())
       )

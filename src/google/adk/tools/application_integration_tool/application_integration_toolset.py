@@ -134,7 +134,6 @@ class ApplicationIntegrationToolset(BaseToolset):
     self._connection = connection
     self._entity_operations = entity_operations
     self._actions = actions
-    self._tool_name_prefix = tool_name_prefix
     self._tool_instructions = tool_instructions
     self._service_account_json = service_account_json
     self._auth_scheme = auth_scheme

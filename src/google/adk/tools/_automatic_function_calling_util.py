@@ -329,11 +329,28 @@ def from_function_with_options(
 
   return_annotation = inspect.signature(func).return_annotation
 
-  # Handle functions with no return annotation or that return None
+  # Handle functions with no return annotation
+  if return_annotation is inspect._empty:
+    # Functions with no return annotation can return any type
+    return_value = inspect.Parameter(
+        'return_value',
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        annotation=typing.Any,
+    )
+    declaration.response = (
+        _function_parameter_parse_util._parse_schema_from_parameter(
+            variant,
+            return_value,
+            func.__name__,
+        )
+    )
+    return declaration
+
+  # Handle functions that explicitly return None
   if (
-      return_annotation is inspect._empty
-      or return_annotation is None
+      return_annotation is None
       or return_annotation is type(None)
+      or (isinstance(return_annotation, str) and return_annotation == 'None')
   ):
     # Create a response schema for None/null return
     return_value = inspect.Parameter(

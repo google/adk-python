@@ -39,6 +39,8 @@ class GoogleApiTool(BaseTool):
       client_id: Optional[str] = None,
       client_secret: Optional[str] = None,
       service_account: Optional[ServiceAccount] = None,
+      *,
+      additional_headers: Optional[Dict[str, str]] = None,
   ):
     super().__init__(
         name=rest_api_tool.name,
@@ -46,9 +48,11 @@ class GoogleApiTool(BaseTool):
         is_long_running=rest_api_tool.is_long_running,
     )
     self._rest_api_tool = rest_api_tool
+    if additional_headers:
+      self._rest_api_tool.set_default_headers(additional_headers)
     if service_account is not None:
       self.configure_sa_auth(service_account)
-    else:
+    elif client_id is not None and client_secret is not None:
       self.configure_auth(client_id, client_secret)
 
   @override
@@ -57,7 +61,7 @@ class GoogleApiTool(BaseTool):
 
   @override
   async def run_async(
-      self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
+      self, *, args: Dict[str, Any], tool_context: Optional[ToolContext]
   ) -> Dict[str, Any]:
     return await self._rest_api_tool.run_async(
         args=args, tool_context=tool_context

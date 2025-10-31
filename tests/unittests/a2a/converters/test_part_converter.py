@@ -38,21 +38,10 @@ try:
   from google.genai import types as genai_types
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    a2a_types = DummyTypes()
-    genai_types = DummyTypes()
-    A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = "function_call"
-    A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = "function_response"
-    A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = "code_execution_result"
-    A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = "executable_code"
-    A2A_DATA_PART_METADATA_TYPE_KEY = "type"
-    convert_a2a_part_to_genai_part = lambda x: None
-    convert_genai_part_to_a2a_part = lambda x: None
-    _get_adk_metadata_key = lambda x: f"adk_{x}"
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 

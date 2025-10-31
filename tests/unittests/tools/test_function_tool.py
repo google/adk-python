@@ -17,8 +17,18 @@ from unittest.mock import MagicMock
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 import pytest
+
+
+@pytest.fixture
+def mock_tool_context() -> ToolContext:
+  """Fixture that provides a mock ToolContext for testing."""
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context.session = MagicMock(spec=Session)
+  mock_invocation_context.session.state = MagicMock()
+  return ToolContext(invocation_context=mock_invocation_context)
 
 
 def function_for_testing_with_no_args():
@@ -345,3 +355,76 @@ async def test_run_async_with_tool_context_and_unexpected_argument():
       "received_arg": "world",
       "context_present": True,
   }
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_require_confirmation():
+  """Test that run_async handles require_confirmation flag."""
+
+  def sample_func(arg1: str):
+    return {"received_arg": arg1}
+
+  tool = FunctionTool(sample_func, require_confirmation=True)
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context.session = MagicMock(spec=Session)
+  mock_invocation_context.session.state = MagicMock()
+  mock_invocation_context.agent = MagicMock()
+  mock_invocation_context.agent.name = "test_agent"
+  tool_context_mock = ToolContext(invocation_context=mock_invocation_context)
+  tool_context_mock.function_call_id = "test_function_call_id"
+
+  # First call, should request confirmation
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {
+      "error": "This tool call requires confirmation, please approve or reject."
+  }
+  assert tool_context_mock._event_actions.requested_tool_confirmations[
+      "test_function_call_id"
+  ].hint == (
+      "Please approve or reject the tool call sample_func() by responding with"
+      " a FunctionResponse with an expected ToolConfirmation payload."
+  )
+
+  # Second call, user rejects
+  tool_context_mock.tool_confirmation = ToolConfirmation(confirmed=False)
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {"error": "This tool call is rejected."}
+
+  # Third call, user approves
+  tool_context_mock.tool_confirmation = ToolConfirmation(confirmed=True)
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {"received_arg": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_parameter_filtering(mock_tool_context):
+  """Test that parameter filtering works correctly for functions with explicit parameters."""
+
+  def explicit_params_func(arg1: str, arg2: int):
+    """Function with explicit parameters (no **kwargs)."""
+    return {"arg1": arg1, "arg2": arg2}
+
+  tool = FunctionTool(explicit_params_func)
+
+  # Test that unexpected parameters are still filtered out for non-kwargs functions
+  result = await tool.run_async(
+      args={
+          "arg1": "test",
+          "arg2": 42,
+          "unexpected_param": "should_be_filtered",
+      },
+      tool_context=mock_tool_context,
+  )
+
+  assert result == {"arg1": "test", "arg2": 42}
+  # Explicitly verify that unexpected_param was filtered out and not passed to the function
+  assert "unexpected_param" not in result

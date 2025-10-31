@@ -23,10 +23,10 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import model_validator
 
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 
 
-@working_in_progress("ArgumentConfig is not ready for use.")
+@experimental
 class ArgumentConfig(BaseModel):
   """An argument passed to a function or a class's constructor."""
 
@@ -42,7 +42,7 @@ class ArgumentConfig(BaseModel):
   """The argument value."""
 
 
-@working_in_progress("CodeConfig is not ready for use.")
+@experimental
 class CodeConfig(BaseModel):
   """Code reference config for a variable, a function, or a class.
 
@@ -80,6 +80,7 @@ class CodeConfig(BaseModel):
   """
 
 
+@experimental
 class AgentRefConfig(BaseModel):
   """The config for the reference to another agent."""
 

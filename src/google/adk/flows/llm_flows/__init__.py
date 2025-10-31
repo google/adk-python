@@ -18,3 +18,4 @@ from . import contents
 from . import functions
 from . import identity
 from . import instructions
+from . import request_confirmation

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
 import logging
@@ -38,12 +39,14 @@ from google.genai import types as genai_types
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
+from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
 from .part_converter import convert_genai_part_to_a2a_part
+from .part_converter import GenAIPartToA2APartConverter
 from .utils import _get_adk_metadata_key
 
 # Constants
@@ -53,6 +56,34 @@ DEFAULT_ERROR_MESSAGE = "An error occurred during processing"
 
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
+
+
+AdkEventToA2AEventsConverter = Callable[
+    [
+        Event,
+        InvocationContext,
+        Optional[str],
+        Optional[str],
+        GenAIPartToA2APartConverter,
+    ],
+    List[A2AEvent],
+]
+"""A callable that converts an ADK Event into a list of A2A events.
+
+This interface allows for custom logic to map ADK's event structure to the
+event structure expected by the A2A server.
+
+Args:
+    event: The source ADK Event to convert.
+    invocation_context: The context of the ADK agent invocation.
+    task_id: The ID of the A2A task being processed.
+    context_id: The context ID from the A2A request.
+    part_converter: A function to convert GenAI content parts to A2A
+      parts.
+
+Returns:
+    A list of A2A events.
+"""
 
 
 def _serialize_metadata_value(value: Any) -> str:
@@ -169,6 +200,7 @@ def convert_a2a_task_to_event(
     a2a_task: Task,
     author: Optional[str] = None,
     invocation_context: Optional[InvocationContext] = None,
+    part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> Event:
   """Converts an A2A task to an ADK event.
 
@@ -177,6 +209,7 @@ def convert_a2a_task_to_event(
     author: The author of the event. Defaults to "a2a agent" if not provided.
     invocation_context: The invocation context containing session information.
       If provided, the branch will be set from the context.
+    part_converter: The function to convert A2A part to GenAI part.
 
   Returns:
     An ADK Event object representing the converted task.
@@ -203,7 +236,9 @@ def convert_a2a_task_to_event(
     # Convert message if available
     if message:
       try:
-        return convert_a2a_message_to_event(message, author, invocation_context)
+        return convert_a2a_message_to_event(
+            message, author, invocation_context, part_converter=part_converter
+        )
       except Exception as e:
         logger.error("Failed to convert A2A task message to event: %s", e)
         raise RuntimeError(f"Failed to convert task message: {e}") from e
@@ -224,11 +259,12 @@ def convert_a2a_task_to_event(
     raise
 
 
-@experimental
+@a2a_experimental
 def convert_a2a_message_to_event(
     a2a_message: Message,
     author: Optional[str] = None,
     invocation_context: Optional[InvocationContext] = None,
+    part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> Event:
   """Converts an A2A message to an ADK event.
 
@@ -237,6 +273,7 @@ def convert_a2a_message_to_event(
     author: The author of the event. Defaults to "a2a agent" if not provided.
     invocation_context: The invocation context containing session information.
       If provided, the branch will be set from the context.
+    part_converter: The function to convert A2A part to GenAI part.
 
   Returns:
     An ADK Event object with converted content and long-running tool metadata.
@@ -269,7 +306,7 @@ def convert_a2a_message_to_event(
 
     for a2a_part in a2a_message.parts:
       try:
-        part = convert_a2a_part_to_genai_part(a2a_part)
+        part = part_converter(a2a_part)
         if part is None:
           logger.warning("Failed to convert A2A part, skipping: %s", a2a_part)
           continue
@@ -320,15 +357,20 @@ def convert_a2a_message_to_event(
     raise RuntimeError(f"Failed to convert message: {e}") from e
 
 
-@experimental
+@a2a_experimental
 def convert_event_to_a2a_message(
-    event: Event, invocation_context: InvocationContext, role: Role = Role.agent
+    event: Event,
+    invocation_context: InvocationContext,
+    role: Role = Role.agent,
+    part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
 ) -> Optional[Message]:
   """Converts an ADK event to an A2A message.
 
   Args:
     event: The ADK event to convert.
     invocation_context: The invocation context.
+    role: The role of the message.
+    part_converter: The function to convert GenAI part to A2A part.
 
   Returns:
     An A2A Message if the event has content, None otherwise.
@@ -347,7 +389,7 @@ def convert_event_to_a2a_message(
   try:
     a2a_parts = []
     for part in event.content.parts:
-      a2a_part = convert_genai_part_to_a2a_part(part)
+      a2a_part = part_converter(part)
       if a2a_part:
         a2a_parts.append(a2a_part)
         _process_long_running_tool(a2a_part, event)
@@ -471,12 +513,13 @@ def _create_status_update_event(
   )
 
 
-@experimental
+@a2a_experimental
 def convert_event_to_a2a_events(
     event: Event,
     invocation_context: InvocationContext,
     task_id: Optional[str] = None,
     context_id: Optional[str] = None,
+    part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
 ) -> List[A2AEvent]:
   """Converts a GenAI event to a list of A2A events.
 
@@ -485,6 +528,7 @@ def convert_event_to_a2a_events(
     invocation_context: The invocation context.
     task_id: Optional task ID to use for generated events.
     context_id: Optional Context ID to use for generated events.
+    part_converter: The function to convert GenAI part to A2A part.
 
   Returns:
     A list of A2A events representing the converted ADK event.
@@ -509,7 +553,9 @@ def convert_event_to_a2a_events(
       a2a_events.append(error_event)
 
     # Handle regular message content
-    message = convert_event_to_a2a_message(event, invocation_context)
+    message = convert_event_to_a2a_message(
+        event, invocation_context, part_converter=part_converter
+    )
     if message:
       running_event = _create_status_update_event(
           message, invocation_context, event, task_id, context_id
