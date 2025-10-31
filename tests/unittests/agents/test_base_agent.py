@@ -23,8 +23,10 @@ from typing import Union
 from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
@@ -854,3 +856,106 @@ def test_set_parent_agent_for_sub_agent_twice(
 
 if __name__ == '__main__':
   pytest.main([__file__])
+
+
+class _TestAgentState(BaseAgentState):
+  test_field: str = ''
+
+
+@pytest.mark.asyncio
+async def test_load_agent_state_not_resumable():
+  agent = BaseAgent(name='test_agent')
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  ctx = InvocationContext(
+      invocation_id='test_invocation',
+      agent=agent,
+      session=session,
+      session_service=session_service,
+  )
+
+  # Test case 1: resumability_config is None
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state is None
+
+  # Test case 2: is_resumable is False
+  ctx.resumability_config = ResumabilityConfig(is_resumable=False)
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state is None
+
+
+@pytest.mark.asyncio
+async def test_load_agent_state_with_resume():
+  agent = BaseAgent(name='test_agent')
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  ctx = InvocationContext(
+      invocation_id='test_invocation',
+      agent=agent,
+      session=session,
+      session_service=session_service,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+
+  # Test case 1: agent state not in context
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state is None
+
+  # Test case 2: agent state in context
+  persisted_state = _TestAgentState(test_field='resumed')
+  ctx.agent_states[agent.name] = persisted_state.model_dump(mode='json')
+
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state == persisted_state
+
+
+@pytest.mark.asyncio
+async def test_create_agent_state_event():
+  agent = BaseAgent(name='test_agent')
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  ctx = InvocationContext(
+      invocation_id='test_invocation',
+      agent=agent,
+      session=session,
+      session_service=session_service,
+  )
+
+  ctx.branch = 'test_branch'
+
+  # Test case 1: set agent state in context
+  state = _TestAgentState(test_field='checkpoint')
+  ctx.set_agent_state(agent.name, agent_state=state)
+  event = agent._create_agent_state_event(ctx)
+  assert event is not None
+  assert event.invocation_id == ctx.invocation_id
+  assert event.author == agent.name
+  assert event.branch == 'test_branch'
+  assert event.actions is not None
+  assert event.actions.agent_state is not None
+  assert event.actions.agent_state == state.model_dump(mode='json')
+  assert not event.actions.end_of_agent
+
+  # Test case 2: set end_of_agent in context
+  ctx.set_agent_state(agent.name, end_of_agent=True)
+  event = agent._create_agent_state_event(ctx)
+  assert event is not None
+  assert event.invocation_id == ctx.invocation_id
+  assert event.author == agent.name
+  assert event.branch == 'test_branch'
+  assert event.actions is not None
+  assert event.actions.end_of_agent
+  assert event.actions.agent_state is None
+
+  # Test case 3: reset agent state and end_of_agent in context
+  ctx.set_agent_state(agent.name)
+  event = agent._create_agent_state_event(ctx)
+  assert event is not None
+  assert event.actions.agent_state is None
+  assert not event.actions.end_of_agent

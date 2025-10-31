@@ -72,8 +72,8 @@ def upload_directory_to_gcs(
     # into hidden directories.
     dirs[:] = [d for d in dirs if not d.startswith(".")]
 
-    # Keep only .md and .py files.
-    files = [f for f in files if f.endswith(".md") or f.endswith(".py")]
+    # Keep only .md, .py and .yaml files.
+    files = [f for f in files if f.endswith((".md", ".py", ".yaml"))]
 
     for filename in files:
       local_path = os.path.join(root, filename)
@@ -98,6 +98,19 @@ def upload_directory_to_gcs(
           gcs_path = gcs_path.removesuffix(".md") + ".html"
           bucket.blob(gcs_path).upload_from_string(
               html_content, content_type=content_type
+          )
+        elif filename.lower().endswith(".yaml"):
+          # Vertex AI search doesn't recognize yaml,
+          # convert it to text and use text/plain instead
+          content_type = "text/plain"
+          with open(local_path, "r", encoding="utf-8") as f:
+            yaml_content = f.read()
+          if not yaml_content:
+            print("  - Skipped empty file: " + local_path)
+            continue
+          gcs_path = gcs_path.removesuffix(".yaml") + ".txt"
+          bucket.blob(gcs_path).upload_from_string(
+              yaml_content, content_type=content_type
           )
         else:  # Python files
           bucket.blob(gcs_path).upload_from_filename(

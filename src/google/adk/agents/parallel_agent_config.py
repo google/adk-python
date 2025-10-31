@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import ConfigDict
 from pydantic import Field
 
@@ -30,12 +28,12 @@ class ParallelAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a ParallelAgent."""
 
   model_config = ConfigDict(
-      extra='forbid',
+      extra="forbid",
   )
 
-  agent_class: Literal['ParallelAgent'] = Field(
-      default='ParallelAgent',
+  agent_class: str = Field(
+      default="ParallelAgent",
       description=(
-          'The value is used to uniquely identify the ParallelAgent class.'
+          "The value is used to uniquely identify the ParallelAgent class."
       ),
   )
