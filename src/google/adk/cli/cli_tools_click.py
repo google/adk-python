@@ -448,6 +448,12 @@ def eval_options():
         ),
         default=None,
     )
+    @click.option(
+        "--log_level",
+        type=LOG_LEVELS,
+        default="INFO",
+        help="Optional. Set the logging level",
+    )
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
       return func(*args, **kwargs)
@@ -480,6 +486,7 @@ def cli_eval(
     config_file_path: str,
     print_detailed_results: bool,
     eval_storage_uri: Optional[str] = None,
+    log_level: str = "INFO",
 ):
   """Evaluates an agent given the eval sets.
 
@@ -536,6 +543,7 @@ def cli_eval(
   PRINT_DETAILED_RESULTS: Prints detailed results on the console.
   """
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
     from ..evaluation.base_eval_service import InferenceConfig
@@ -716,10 +724,12 @@ def cli_create_eval_set(
     agent_module_file_path: str,
     eval_set_id: str,
     eval_storage_uri: Optional[str] = None,
+    log_level: str = "INFO",
 ):
   """Creates an empty EvalSet given the agent_module_file_path and eval_set_id."""
   from .cli_eval import get_eval_sets_manager
 
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
@@ -764,6 +774,7 @@ def cli_add_eval_case(
     scenarios_file: str,
     eval_storage_uri: Optional[str] = None,
     session_input_file: Optional[str] = None,
+    log_level: str = "INFO",
 ):
   """Adds eval cases to the given eval set.
 
@@ -772,6 +783,7 @@ def cli_add_eval_case(
 
   If an eval case for the generated id already exists, then we skip adding it.
   """
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
   try:
     from ..evaluation.conversation_scenarios import ConversationScenarios
     from ..evaluation.eval_case import EvalCase
