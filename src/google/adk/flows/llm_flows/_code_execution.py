@@ -20,6 +20,7 @@ import base64
 import copy
 import dataclasses
 import datetime
+import logging
 import os
 import re
 from typing import AsyncGenerator
@@ -46,6 +47,8 @@ from ._base_llm_processor import BaseLlmResponseProcessor
 
 if TYPE_CHECKING:
   from ...models.llm_request import LlmRequest
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 @dataclasses.dataclass
@@ -245,6 +248,7 @@ async def _run_pre_processor(
             ),
         ),
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_str)
     # Update the processing results to code executor context.
     code_executor_context.update_code_execution_result(
         invocation_context.invocation_id,
@@ -352,6 +356,7 @@ async def _run_post_processor(
           ),
       ),
   )
+  logger.debug('Executed code:\n```\n%s\n```', code_str)
   code_executor_context.update_code_execution_result(
       invocation_context.invocation_id,
       code_str,

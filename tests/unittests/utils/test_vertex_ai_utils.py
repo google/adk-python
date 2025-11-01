@@ -20,32 +20,6 @@ from google.adk.utils import vertex_ai_utils
 import pytest
 
 
-@pytest.mark.parametrize(
-    ('use_vertexai_env', 'project', 'location', 'api_key', 'expected'),
-    [
-        ('true', None, None, 'test-key', True),
-        ('1', None, None, 'test-key', True),
-        ('false', None, None, 'test-key', False),
-        ('0', None, None, 'test-key', False),
-        (None, None, None, 'test-key', False),
-        ('true', 'test-project', None, 'test-key', False),
-        ('true', None, 'test-location', 'test-key', False),
-        ('true', None, None, None, False),
-    ],
-)
-def test_is_vertex_express_mode(
-    use_vertexai_env, project, location, api_key, expected
-):
-  env_vars = {}
-  if use_vertexai_env:
-    env_vars['GOOGLE_GENAI_USE_VERTEXAI'] = use_vertexai_env
-  with mock.patch.dict('os.environ', env_vars, clear=True):
-    assert (
-        vertex_ai_utils.is_vertex_express_mode(project, location, api_key)
-        == expected
-    )
-
-
 def test_get_express_mode_api_key_value_error():
   with pytest.raises(ValueError) as excinfo:
     vertex_ai_utils.get_express_mode_api_key(

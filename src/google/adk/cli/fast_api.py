@@ -64,6 +64,7 @@ def get_fast_api_app(
     a2a: bool = False,
     host: str = "127.0.0.1",
     port: int = 8000,
+    url_prefix: Optional[str] = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload_agents: bool = False,
@@ -144,6 +145,7 @@ def get_fast_api_app(
       extra_plugins=extra_plugins,
       logo_text=logo_text,
       logo_image_url=logo_image_url,
+      url_prefix=url_prefix,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance

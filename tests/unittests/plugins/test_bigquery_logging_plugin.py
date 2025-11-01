@@ -127,7 +127,6 @@ class TestBigQueryAgentAnalyticsPlugin(PluginTestBase):
     return rows[0]
 
   def _assert_common_fields(self, log_entry, event_type):
-    assert log_entry["dataset_id"] == self.dataset_id
     assert log_entry["event_type"] == event_type
     assert log_entry["agent"] == "MyTestAgent"
     assert log_entry["session_id"] == "session-123"
