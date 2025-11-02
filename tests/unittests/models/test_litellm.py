@@ -93,6 +93,27 @@ FILE_URI_TEST_CASES = [
     pytest.param("gs://bucket/data.txt", "text/plain", id="txt"),
 ]
 
+FILE_BYTES_TEST_CASES = [
+    pytest.param(
+        b"test_pdf_data",
+        "application/pdf",
+        "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ==",
+        id="pdf",
+    ),
+    pytest.param(
+        b'{"hello":"world"}',
+        "application/json",
+        "data:application/json;base64,eyJoZWxsbyI6IndvcmxkIn0=",
+        id="json",
+    ),
+    pytest.param(
+        b"hello world",
+        "text/plain",
+        "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+        id="txt",
+    ),
+]
+
 STREAMING_MODEL_RESPONSE = [
     ModelResponse(
         choices=[
@@ -1301,43 +1322,15 @@ def test_get_content_video():
   assert content[0]["video_url"]["format"] == "video/mp4"
 
 
-def test_get_content_pdf():
-  parts = [
-      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
-  ]
+@pytest.mark.parametrize(
+    "file_data,mime_type,expected_base64", FILE_BYTES_TEST_CASES
+)
+def test_get_content_file_bytes(file_data, mime_type, expected_base64):
+  parts = [types.Part.from_bytes(data=file_data, mime_type=mime_type)]
   content = _get_content(parts)
   assert content[0]["type"] == "file"
-  assert (
-      content[0]["file"]["file_data"]
-      == "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ=="
-  )
-  assert content[0]["file"]["format"] == "application/pdf"
-
-
-def test_get_content_json():
-  parts = [
-      types.Part.from_bytes(
-          data=b'{"hello":"world"}', mime_type="application/json"
-      )
-  ]
-  content = _get_content(parts)
-  assert content[0]["type"] == "file"
-  assert (
-      content[0]["file"]["file_data"]
-      == "data:application/json;base64,eyJoZWxsbyI6IndvcmxkIn0="
-  )
-  assert content[0]["file"]["format"] == "application/json"
-
-
-def test_get_content_txt():
-  parts = [types.Part.from_bytes(data=b"hello world", mime_type="text/plain")]
-  content = _get_content(parts)
-  assert content[0]["type"] == "file"
-  assert (
-      content[0]["file"]["file_data"]
-      == "data:text/plain;base64,aGVsbG8gd29ybGQ="
-  )
-  assert content[0]["file"]["format"] == "text/plain"
+  assert content[0]["file"]["file_data"] == expected_base64
+  assert content[0]["file"]["format"] == mime_type
 
 
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
