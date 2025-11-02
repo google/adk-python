@@ -87,6 +87,10 @@ LLM_REQUEST_WITH_FUNCTION_DECLARATION = LlmRequest(
     ),
 )
 
+FILE_URI_TEST_CASES = [
+    pytest.param("gs://bucket/document.pdf", "application/pdf", id="pdf"),
+    pytest.param("gs://bucket/data.json", "application/json", id="json"),
+]
 
 STREAMING_MODEL_RESPONSE = [
     ModelResponse(
@@ -1088,15 +1092,7 @@ def test_content_to_message_param_user_message():
   assert message["content"] == "Test prompt"
 
 
-@pytest.mark.parametrize(
-    "file_uri,mime_type",
-    [
-        ("gs://bucket/document.pdf", "application/pdf"),
-        ("gs://bucket/data.json", "application/json"),
-        ("gs://bucket/spreadsheet.csv", "text/csv"),
-    ],
-    ids=["pdf", "json", "csv"],
-)
+@pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
 def test_content_to_message_param_user_message_with_file_uri(
     file_uri, mime_type
 ):
@@ -1119,10 +1115,11 @@ def test_content_to_message_param_user_message_with_file_uri(
   assert message["content"][1]["file"]["format"] == mime_type
 
 
-def test_content_to_message_param_user_message_file_uri_only():
-  file_part = types.Part.from_uri(
-      file_uri="gs://bucket/only.pdf", mime_type="application/pdf"
-  )
+@pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
+def test_content_to_message_param_user_message_file_uri_only(
+    file_uri, mime_type
+):
+  file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
   content = types.Content(
       role="user",
       parts=[
@@ -1134,8 +1131,8 @@ def test_content_to_message_param_user_message_file_uri_only():
   assert message["role"] == "user"
   assert isinstance(message["content"], list)
   assert message["content"][0]["type"] == "file"
-  assert message["content"][0]["file"]["file_id"] == "gs://bucket/only.pdf"
-  assert message["content"][0]["file"]["format"] == "application/pdf"
+  assert message["content"][0]["file"]["file_id"] == file_uri
+  assert message["content"][0]["file"]["format"] == mime_type
 
 
 def test_content_to_message_param_multi_part_function_response():
@@ -1316,17 +1313,28 @@ def test_get_content_pdf():
   assert content[0]["file"]["format"] == "application/pdf"
 
 
-def test_get_content_file_uri():
+def test_get_content_json():
   parts = [
-      types.Part.from_uri(
-          file_uri="gs://bucket/document.pdf",
-          mime_type="application/pdf",
+      types.Part.from_bytes(
+          data=b'{"hello":"world"}', mime_type="application/json"
       )
   ]
   content = _get_content(parts)
   assert content[0]["type"] == "file"
-  assert content[0]["file"]["file_id"] == "gs://bucket/document.pdf"
-  assert content[0]["file"]["format"] == "application/pdf"
+  assert (
+      content[0]["file"]["file_data"]
+      == "data:application/json;base64,eyJoZWxsbyI6IndvcmxkIn0="
+  )
+  assert content[0]["file"]["format"] == "application/json"
+
+
+@pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
+def test_get_content_file_uri(file_uri, mime_type):
+  parts = [types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)]
+  content = _get_content(parts)
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == file_uri
+  assert content[0]["file"]["format"] == mime_type
 
 
 def test_get_content_audio():
