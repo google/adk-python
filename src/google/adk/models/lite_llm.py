@@ -80,7 +80,7 @@ _FINISH_REASON_MAPPING = {
 }
 
 _SUPPORTED_FILE_CONTENT_MIME_TYPES = set(
-    ["application/pdf", "application/json"]
+    ["application/pdf", "application/json", "text/plain"]
 )
 
 

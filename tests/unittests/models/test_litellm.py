@@ -90,6 +90,7 @@ LLM_REQUEST_WITH_FUNCTION_DECLARATION = LlmRequest(
 FILE_URI_TEST_CASES = [
     pytest.param("gs://bucket/document.pdf", "application/pdf", id="pdf"),
     pytest.param("gs://bucket/data.json", "application/json", id="json"),
+    pytest.param("gs://bucket/data.txt", "text/plain", id="txt"),
 ]
 
 STREAMING_MODEL_RESPONSE = [
@@ -1326,6 +1327,17 @@ def test_get_content_json():
       == "data:application/json;base64,eyJoZWxsbyI6IndvcmxkIn0="
   )
   assert content[0]["file"]["format"] == "application/json"
+
+
+def test_get_content_txt():
+  parts = [types.Part.from_bytes(data=b"hello world", mime_type="text/plain")]
+  content = _get_content(parts)
+  assert content[0]["type"] == "file"
+  assert (
+      content[0]["file"]["file_data"]
+      == "data:text/plain;base64,aGVsbG8gd29ybGQ="
+  )
+  assert content[0]["file"]["format"] == "text/plain"
 
 
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
