@@ -90,6 +90,7 @@ def to_a2a(
     port: int = 8000,
     protocol: str = "http",
     agent_card: Optional[Union[AgentCard, str]] = None,
+    runner: Optional[Runner] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -101,6 +102,8 @@ def to_a2a(
       agent_card: Optional pre-built AgentCard object or path to agent card
                   JSON. If not provided, will be built automatically from the
                   agent.
+      runner: Optional pre-built Runner object. If not provided, a default
+              runner will be created using in-memory services.
 
   Returns:
       A Starlette application that can be run with uvicorn
@@ -132,7 +135,7 @@ def to_a2a(
   task_store = InMemoryTaskStore()
 
   agent_executor = A2aAgentExecutor(
-      runner=create_runner,
+      runner=runner or create_runner,
   )
 
   request_handler = DefaultRequestHandler(

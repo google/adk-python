@@ -73,6 +73,24 @@ async def test_output_schema_with_tools_validation_removed():
 
 
 @pytest.mark.asyncio
+async def test_output_schema_with_sub_agents():
+  """Test that LlmAgent now allows output_schema with sub_agents."""
+  sub_agent = LlmAgent(
+      name='sub_agent',
+      model='gemini-1.5-flash',
+  )
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-1.5-flash',
+      output_schema=PersonSchema,
+      sub_agents=[sub_agent],
+  )
+
+  assert agent.output_schema == PersonSchema
+  assert len(agent.sub_agents) == 1
+
+
+@pytest.mark.asyncio
 async def test_basic_processor_skips_output_schema_with_tools():
   """Test that basic processor doesn't set output_schema when tools are present."""
   from google.adk.flows.llm_flows.basic import _BasicLlmRequestProcessor
@@ -252,6 +270,39 @@ async def test_output_schema_helper_functions():
 
   extracted_json = get_structured_model_response(other_function_response_event)
   assert extracted_json is None
+
+
+@pytest.mark.asyncio
+async def test_get_structured_model_response_with_non_ascii():
+  """Test get_structured_model_response with non-ASCII characters."""
+  from google.adk.events.event import Event
+  from google.adk.flows.llm_flows._output_schema_processor import get_structured_model_response
+  from google.genai import types
+
+  # Test with a dictionary containing non-ASCII characters
+  test_dict = {'city': 'São Paulo'}
+  expected_json = '{"city": "São Paulo"}'
+
+  # Create a function response event
+  function_response_event = Event(
+      author='test_agent',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='set_model_response', response=test_dict
+                  )
+              )
+          ],
+      ),
+  )
+
+  # Get the structured response
+  extracted_json = get_structured_model_response(function_response_event)
+
+  # Assert that the output is the expected JSON string without escaped characters
+  assert extracted_json == expected_json
 
 
 @pytest.mark.asyncio

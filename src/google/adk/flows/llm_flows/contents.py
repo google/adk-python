@@ -40,8 +40,10 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
+
+    # Preserve all contents that were added by instruction processor
+    # (since llm_request.contents will be completely reassigned below)
+    instruction_related_contents = llm_request.contents
 
     if agent.include_contents == 'default':
       # Include full conversation history
@@ -58,6 +60,11 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           agent.name,
       )
 
+    # Add instruction-related contents to proper position in conversation
+    await _add_instructions_to_user_content(
+        invocation_context, llm_request, instruction_related_contents
+    )
+
     # Maintain async generator behavior
     if False:  # Ensures it behaves as a generator
       yield  # This is a no-op but maintains generator structure
@@ -71,7 +78,7 @@ def _rearrange_events_for_async_function_responses_in_history(
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
 
-  function_call_id_to_response_events_index: dict[str, list[Event]] = {}
+  function_call_id_to_response_events_index: dict[str, int] = {}
   for i, event in enumerate(events):
     function_responses = event.get_function_responses()
     if function_responses:
@@ -128,12 +135,13 @@ def _rearrange_events_for_latest_function_response(
   Returns:
     A list of events with the latest function_response rearranged.
   """
-  if not events:
+  if len(events) < 2:
+    # No need to process, since there is no function_call.
     return events
 
   function_responses = events[-1].get_function_responses()
   if not function_responses:
-    # No need to process, since the latest event is not fuction_response.
+    # No need to process, since the latest event is not function_response.
     return events
 
   function_responses_ids = set()
@@ -206,6 +214,8 @@ def _contains_empty_content(event: Event) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
   This can happen to the evnets that only changed session state.
+  When both content and transcriptions are empty, the event will be considered
+  as empty.
 
   Args:
     event: The event to check.
@@ -213,12 +223,73 @@ def _contains_empty_content(event: Event) -> bool:
   Returns:
     True if the event should be skipped, False otherwise.
   """
+  if event.actions and event.actions.compaction:
+    return False
+
   return (
       not event.content
       or not event.content.role
       or not event.content.parts
       or event.content.parts[0].text == ''
-  )
+  ) and (not event.output_transcription and not event.input_transcription)
+
+
+def _process_compaction_events(events: list[Event]) -> list[Event]:
+  """Processes events by applying compaction.
+
+  Identifies compacted ranges and filters out events that are covered by
+  compaction summaries.
+
+  Args:
+    events: A list of events to process.
+
+  Returns:
+    A list of events with compaction applied.
+  """
+  # example of compaction events:
+  # [event_1(timestamp=1), event_2(timestamp=2),
+  # compaction_1(event_1, event_2, timestamp=3), event_3(timestamp=4),
+  # compaction_2(event_2, event_3, timestamp=5), event_4(timestamp=6)]
+  # for each compaction event, it only covers the events at most between the
+  # current compaction and the previous compaction. So during copmaction, we
+  # don't have to go across compaction boundaries.
+  # Compaction events are always strictly in order based on event timestamp.
+  events_to_process = []
+  last_compaction_start_time = float('inf')
+
+  # Iterate in reverse to easily handle overlapping compactions.
+  for event in reversed(events):
+    if event.actions and event.actions.compaction:
+      compaction = event.actions.compaction
+      if (
+          compaction.start_timestamp is not None
+          and compaction.end_timestamp is not None
+      ):
+        # Create a new event for the compacted summary.
+        new_event = Event(
+            timestamp=compaction.end_timestamp,
+            author='model',
+            content=compaction.compacted_content,
+            branch=event.branch,
+            invocation_id=event.invocation_id,
+            actions=event.actions,
+        )
+        # Prepend to maintain chronological order in the final list.
+        events_to_process.insert(0, new_event)
+        # Update the boundary for filtering. Events with timestamps greater than
+        # or equal to this start time have been compacted.
+        last_compaction_start_time = min(
+            last_compaction_start_time, compaction.start_timestamp
+        )
+    elif event.timestamp < last_compaction_start_time:
+      # This event is not a compaction and is before the current compaction
+      # range. Prepend to maintain chronological order.
+      events_to_process.insert(0, event)
+    else:
+      # skip the event
+      pass
+
+  return events_to_process
 
 
 def _get_contents(
@@ -236,10 +307,33 @@ def _get_contents(
   Returns:
     A list of processed contents.
   """
-  filtered_events = []
+  accumulated_input_transcription = ''
+  accumulated_output_transcription = ''
+
+  # Filter out events that are annulled by a rewind.
+  # By iterating backward, when a rewind event is found, we skip all events
+  # from that point back to the `rewind_before_invocation_id`, thus removing
+  # them from the history used for the LLM request.
+  rewind_filtered_events = []
+  i = len(events) - 1
+  while i >= 0:
+    event = events[i]
+    if event.actions and event.actions.rewind_before_invocation_id:
+      rewind_invocation_id = event.actions.rewind_before_invocation_id
+      for j in range(0, i, 1):
+        if events[j].invocation_id == rewind_invocation_id:
+          i = j
+          break
+    else:
+      rewind_filtered_events.append(event)
+    i -= 1
+  rewind_filtered_events.reverse()
+
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
-  for event in events:
+  raw_filtered_events = []
+  has_compaction_events = False
+  for event in rewind_filtered_events:
     if _contains_empty_content(event):
       continue
     if not _is_event_belongs_to_branch(current_branch, event):
@@ -251,6 +345,52 @@ def _get_contents(
     if _is_request_confirmation_event(event):
       # Skip request confirmation events.
       continue
+
+    if event.actions and event.actions.compaction:
+      has_compaction_events = True
+    raw_filtered_events.append(event)
+
+  if has_compaction_events:
+    events_to_process = _process_compaction_events(raw_filtered_events)
+  else:
+    events_to_process = raw_filtered_events
+
+  filtered_events = []
+  # aggregate transcription events
+  for i in range(len(events_to_process)):
+    event = events_to_process[i]
+    if not event.content:
+      # Convert transcription into normal event
+      if event.input_transcription and event.input_transcription.text:
+        accumulated_input_transcription += event.input_transcription.text
+        if (
+            i != len(events_to_process) - 1
+            and events_to_process[i + 1].input_transcription
+            and events_to_process[i + 1].input_transcription.text
+        ):
+          continue
+        event = event.model_copy(deep=True)
+        event.input_transcription = None
+        event.content = types.Content(
+            role='user',
+            parts=[types.Part(text=accumulated_input_transcription)],
+        )
+        accumulated_input_transcription = ''
+      elif event.output_transcription and event.output_transcription.text:
+        accumulated_output_transcription += event.output_transcription.text
+        if (
+            i != len(events_to_process) - 1
+            and events_to_process[i + 1].output_transcription
+            and events_to_process[i + 1].output_transcription.text
+        ):
+          continue
+        event = event.model_copy(deep=True)
+        event.output_transcription = None
+        event.content = types.Content(
+            role='model',
+            parts=[types.Part(text=accumulated_output_transcription)],
+        )
+        accumulated_output_transcription = ''
 
     if _is_other_agent_reply(agent_name, event):
       if converted_event := _present_other_agent_message(event):
@@ -270,8 +410,9 @@ def _get_contents(
   contents = []
   for event in result_events:
     content = copy.deepcopy(event.content)
-    remove_client_function_call_id(content)
-    contents.append(content)
+    if content:
+      remove_client_function_call_id(content)
+      contents.append(content)
   return contents
 
 
@@ -300,6 +441,8 @@ def _get_current_turn_contents(
   # Find the latest event that starts the current turn and process from there
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
+    if not event.content:
+      continue
     if event.author == 'user' or _is_other_agent_reply(agent_name, event):
       return _get_contents(current_branch, events[i:], agent_name)
 
@@ -451,7 +594,12 @@ def _is_event_belongs_to_branch(
   """
   if not invocation_branch or not event.branch:
     return True
-  return invocation_branch.startswith(event.branch)
+  # We use dot to delimit branch nodes. To avoid simple prefix match
+  # (e.g. agent_0 unexpectedly matching agent_00), require either perfect branch
+  # match, or match prefix with an additional explicit '.'
+  return invocation_branch == event.branch or invocation_branch.startswith(
+      f'{event.branch}.'
+  )
 
 
 def _is_function_call_event(event: Event, function_name: str) -> bool:
@@ -474,3 +622,105 @@ def _is_auth_event(event: Event) -> bool:
 def _is_request_confirmation_event(event: Event) -> bool:
   """Checks if the event is a request confirmation event."""
   return _is_function_call_event(event, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+
+
+def _is_live_model_audio_event(event: Event) -> bool:
+  """Check if the event is an audio event produced by live/bidi models
+
+  There are two possible cases:
+  content=Content(
+    parts=[
+      Part(
+        file_data=FileData(
+          file_uri='artifact://live_bidi_streaming_multi_agent/user/cccf0b8b-4a30-449a-890e-e8b8deb661a1/_adk_live/adk_live_audio_storage_input_audio_1756092402277.pcm#1',
+          mime_type='audio/pcm'
+        )
+      ),
+    ],
+    role='user'
+  )
+  content=Content(
+    parts=[
+      Part(
+        inline_data=Blob(
+          data=b'\x01\x00\x00...',
+          mime_type='audio/pcm;rate=24000'
+        )
+      ),
+    ],
+    role='model'
+  ) grounding_metadata=None partial=None turn_complete=None finish_reason=None
+  error_code=None error_message=None ...
+  """
+  if not event.content:
+    return False
+  if not event.content.parts:
+    return False
+  # If it's audio data, then one event only has one part of audio.
+  for part in event.content.parts:
+    if (
+        part.inline_data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith('audio/')
+    ):
+      return True
+    if (
+        part.file_data
+        and part.file_data.mime_type
+        and part.file_data.mime_type.startswith('audio/')
+    ):
+      return True
+  return False
+
+
+def _content_contains_function_response(content: types.Content) -> bool:
+  """Checks whether the content includes any function response parts."""
+  if not content.parts:
+    return False
+  for part in content.parts:
+    if part.function_response:
+      return True
+  return False
+
+
+async def _add_instructions_to_user_content(
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+    instruction_contents: list,
+) -> None:
+  """Insert instruction-related contents at proper position in conversation.
+
+  This function inserts instruction-related contents (passed as parameter) at
+  the
+  proper position in the conversation flow, specifically before the last
+  continuous
+  batch of user content to maintain conversation context.
+
+  Args:
+    invocation_context: The invocation context
+    llm_request: The LLM request to modify
+    instruction_contents: List of instruction-related contents to insert
+  """
+  if not instruction_contents:
+    return
+
+  # Find the insertion point: before the last continuous batch of user content
+  # Walk backwards to find the first non-user content, then insert after it
+  insert_index = len(llm_request.contents)
+
+  if llm_request.contents:
+    for i in range(len(llm_request.contents) - 1, -1, -1):
+      content = llm_request.contents[i]
+      if content.role != 'user':
+        insert_index = i + 1
+        break
+      if _content_contains_function_response(content):
+        insert_index = i + 1
+        break
+      insert_index = i
+  else:
+    # No contents remaining, just append at the end
+    insert_index = 0
+
+  # Insert all instruction contents at the proper position using efficient slicing
+  llm_request.contents[insert_index:insert_index] = instruction_contents

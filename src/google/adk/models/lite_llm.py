@@ -64,9 +64,25 @@ logger = logging.getLogger("google_adk." + __name__)
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 
+# Mapping of LiteLLM finish_reason strings to FinishReason enum values
+# Note: tool_calls/function_call map to STOP because:
+# 1. FinishReason.TOOL_CALL enum does not exist (as of google-genai 0.8.0)
+# 2. Tool calls represent normal completion (model stopped to invoke tools)
+# 3. Gemini native responses use STOP for tool calls (see lite_llm.py:910)
+_FINISH_REASON_MAPPING = {
+    "length": types.FinishReason.MAX_TOKENS,
+    "stop": types.FinishReason.STOP,
+    "tool_calls": (
+        types.FinishReason.STOP
+    ),  # Normal completion with tool invocation
+    "function_call": types.FinishReason.STOP,  # Legacy function call variant
+    "content_filter": types.FinishReason.SAFETY,
+}
 
-class ChatCompletionFileUrlObject(TypedDict):
+
+class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
+  file_id: str
   format: str
 
 
@@ -152,6 +168,53 @@ def _safe_json_serialize(obj) -> str:
     return json.dumps(obj, ensure_ascii=False)
   except (TypeError, OverflowError):
     return str(obj)
+
+
+def _part_has_payload(part: types.Part) -> bool:
+  """Checks whether a Part contains usable payload for the model."""
+  if part.text:
+    return True
+  if part.inline_data and part.inline_data.data:
+    return True
+  if part.file_data and (part.file_data.file_uri or part.file_data.data):
+    return True
+  return False
+
+
+def _append_fallback_user_content_if_missing(
+    llm_request: LlmRequest,
+) -> None:
+  """Ensures there is a user message with content for LiteLLM backends.
+
+  Args:
+    llm_request: The request that may need a fallback user message.
+  """
+  for content in reversed(llm_request.contents):
+    if content.role == "user":
+      parts = content.parts or []
+      if any(_part_has_payload(part) for part in parts):
+        return
+      if not parts:
+        content.parts = []
+      content.parts.append(
+          types.Part.from_text(
+              text="Handle the requests as specified in the System Instruction."
+          )
+      )
+      return
+  llm_request.contents.append(
+      types.Content(
+          role="user",
+          parts=[
+              types.Part.from_text(
+                  text=(
+                      "Handle the requests as specified in the System"
+                      " Instruction."
+                  )
+              ),
+          ],
+      )
+  )
 
 
 def _content_to_message_param(
@@ -281,6 +344,16 @@ def _get_content(
         })
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
+    elif part.file_data and part.file_data.file_uri:
+      file_object: ChatCompletionFileUrlObject = {
+          "file_id": part.file_data.file_uri,
+      }
+      if part.file_data.mime_type:
+        file_object["format"] = part.file_data.mime_type
+      content_objects.append({
+          "type": "file",
+          "file": file_object,
+      })
 
   return content_objects
 
@@ -311,8 +384,8 @@ TYPE_LABELS = {
 
 
 def _schema_to_dict(schema: types.Schema) -> dict:
-  """
-  Recursively converts a types.Schema to a pure-python dict
+  """Recursively converts a types.Schema to a pure-python dict
+
   with all enum values written as lower-case strings.
 
   Args:
@@ -437,10 +510,17 @@ def _model_response_to_chunk(
       for tool_call in message.get("tool_calls"):
         # aggregate tool_call
         if tool_call.type == "function":
+          func_name = tool_call.function.name
+          func_args = tool_call.function.arguments
+
+          # Ignore empty chunks that don't carry any information.
+          if not func_name and not func_args:
+            continue
+
           yield FunctionChunk(
               id=tool_call.id,
-              name=tool_call.function.name,
-              args=tool_call.function.arguments,
+              name=func_name,
+              args=func_args,
               index=tool_call.index,
           ), finish_reason
 
@@ -476,13 +556,26 @@ def _model_response_to_generate_content_response(
   """
 
   message = None
-  if response.get("choices", None):
-    message = response["choices"][0].get("message", None)
+  finish_reason = None
+  if (choices := response.get("choices")) and choices:
+    first_choice = choices[0]
+    message = first_choice.get("message", None)
+    finish_reason = first_choice.get("finish_reason", None)
 
   if not message:
     raise ValueError("No message in response")
 
   llm_response = _message_to_generate_content_response(message)
+  if finish_reason:
+    # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
+    # it directly. Otherwise, map the finish_reason string to the enum.
+    if isinstance(finish_reason, types.FinishReason):
+      llm_response.finish_reason = finish_reason
+    else:
+      finish_reason_str = str(finish_reason).lower()
+      llm_response.finish_reason = _FINISH_REASON_MAPPING.get(
+          finish_reason_str, types.FinishReason.OTHER
+      )
   if response.get("usage", None):
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=response["usage"].get("prompt_tokens", 0),
@@ -538,7 +631,8 @@ def _get_completion_inputs(
     llm_request: The LlmRequest to convert.
 
   Returns:
-    The litellm inputs (message list, tool dictionary, response format and generation params).
+    The litellm inputs (message list, tool dictionary, response format and
+    generation params).
   """
   # 1. Construct messages
   messages: List[Message] = []
@@ -683,7 +777,7 @@ def _is_litellm_gemini_model(model_string: str) -> bool:
 
   Args:
     model_string: A LiteLLM model string (e.g., "gemini/gemini-2.5-pro" or
-      "vertex_ai/gemini-1.5-flash")
+      "vertex_ai/gemini-2.5-flash")
 
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise
@@ -800,6 +894,7 @@ class LiteLlm(BaseLlm):
     """
 
     self._maybe_append_user_content(llm_request)
+    _append_fallback_user_content_if_missing(llm_request)
     logger.debug(_build_request_log(llm_request))
 
     messages, tools, response_format, generation_params = (
@@ -811,7 +906,7 @@ class LiteLlm(BaseLlm):
       tools = None
 
     completion_args = {
-        "model": self.model,
+        "model": llm_request.model or self.model,
         "messages": messages,
         "tools": tools,
         "response_format": response_format,
@@ -826,6 +921,7 @@ class LiteLlm(BaseLlm):
       # Track function calls by index
       function_calls = {}  # index -> {name, args, id}
       completion_args["stream"] = True
+      completion_args["stream_options"] = {"include_usage": True}
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None

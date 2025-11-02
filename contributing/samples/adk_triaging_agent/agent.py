@@ -14,7 +14,6 @@
 
 from typing import Any
 
-from adk_triaging_agent.settings import BOT_LABEL
 from adk_triaging_agent.settings import GITHUB_BASE_URL
 from adk_triaging_agent.settings import IS_INTERACTIVE
 from adk_triaging_agent.settings import OWNER
@@ -36,9 +35,10 @@ LABEL_TO_OWNER = {
     "eval": "ankursharmas",
     "live": "hangfei",
     "models": "genquan9",
-    "tracing": "Jacksunwei",
+    "tracing": "jawoszek",
     "core": "Jacksunwei",
     "web": "wyf7107",
+    "a2a": "seanzhou1023",
 }
 
 APPROVAL_INSTRUCTION = (
@@ -103,7 +103,7 @@ def add_label_and_owner_to_issue(
   label_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/labels"
   )
-  label_payload = [label, BOT_LABEL]
+  label_payload = [label]
 
   try:
     response = post_request(label_url, label_payload)
@@ -183,7 +183,8 @@ root_agent = Agent(
       - If it's about tracing, label it with "tracing".
       - If it's agent orchestration, agent definition, label it with "core".
       - If it's about agent engine, label it with "agent engine".
-      - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with "mcp".
+      - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with both "mcp" and "tools".
+      - If it's about A2A integrations or workflows, label it with "a2a".
       - If you can't find a appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
 
       Call the `add_label_and_owner_to_issue` tool to label the issue, which will also assign the issue to the owner of the label.
