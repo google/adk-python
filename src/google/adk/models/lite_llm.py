@@ -79,6 +79,10 @@ _FINISH_REASON_MAPPING = {
     "content_filter": types.FinishReason.SAFETY,
 }
 
+_SUPPORTED_FILE_CONTENT_MIME_TYPES = set(
+    ["application/pdf", "application/json", "application/csv"]
+)
+
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
@@ -336,7 +340,7 @@ def _get_content(
             "type": "audio_url",
             "audio_url": {"url": data_uri, "format": format_type},
         })
-      elif part.inline_data.mime_type == "application/pdf":
+      elif part.inline_data.mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         format_type = part.inline_data.mime_type
         content_objects.append({
             "type": "file",

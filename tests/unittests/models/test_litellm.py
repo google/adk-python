@@ -1088,10 +1088,19 @@ def test_content_to_message_param_user_message():
   assert message["content"] == "Test prompt"
 
 
-def test_content_to_message_param_user_message_with_file_uri():
-  file_part = types.Part.from_uri(
-      file_uri="gs://bucket/document.pdf", mime_type="application/pdf"
-  )
+@pytest.mark.parametrize(
+    "file_uri,mime_type",
+    [
+        ("gs://bucket/document.pdf", "application/pdf"),
+        ("gs://bucket/data.json", "application/json"),
+        ("gs://bucket/spreadsheet.csv", "text/csv"),
+    ],
+    ids=["pdf", "json", "csv"],
+)
+def test_content_to_message_param_user_message_with_file_uri(
+    file_uri, mime_type
+):
+  file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
   content = types.Content(
       role="user",
       parts=[
@@ -1106,8 +1115,8 @@ def test_content_to_message_param_user_message_with_file_uri():
   assert message["content"][0]["type"] == "text"
   assert message["content"][0]["text"] == "Summarize this file."
   assert message["content"][1]["type"] == "file"
-  assert message["content"][1]["file"]["file_id"] == "gs://bucket/document.pdf"
-  assert message["content"][1]["file"]["format"] == "application/pdf"
+  assert message["content"][1]["file"]["file_id"] == file_uri
+  assert message["content"][1]["file"]["format"] == mime_type
 
 
 def test_content_to_message_param_user_message_file_uri_only():
