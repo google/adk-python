@@ -183,10 +183,7 @@ async def run_cli(
         content = event.content
         if not content or not content.parts or not content.parts[0].text:
           continue
-        if event.author == 'user':
-          click.echo(f'[user]: {content.parts[0].text}')
-        else:
-          click.echo(f'[{event.author}]: {content.parts[0].text}')
+        click.echo(f'[{event.author}]: {content.parts[0].text}')
 
     await run_interactively(
         root_agent,
