@@ -234,6 +234,6 @@ has resources that is helpful for contributors.
 
 ## Vibe Coding
 
-If you want to contribute by leveraging viber coding, the AGENTS.md
+If you want to contribute by leveraging vibe coding, the AGENTS.md
 (https://github.com/google/adk-python/tree/main/AGENTS.md) could be used as
 context to your LLM.
