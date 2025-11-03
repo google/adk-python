@@ -345,7 +345,7 @@ def to_agent_engine(
     temp_folder: str,
     adk_app: str,
     staging_bucket: str,
-    trace_to_cloud: bool,
+    trace_to_cloud: Optional[bool] = None,
     agent_engine_id: Optional[str] = None,
     absolutize_imports: bool = True,
     project: Optional[str] = None,

@@ -42,6 +42,11 @@ class TestExtractModelName:
     path_model_3 = 'projects/test-project/locations/europe-west1/publishers/google/models/claude-3-sonnet'
     assert extract_model_name(path_model_3) == 'claude-3-sonnet'
 
+  def test_extract_model_name_with_models_prefix(self):
+    """Test extraction of model names with 'models/' prefix."""
+    assert extract_model_name('models/gemini-2.5-pro') == 'gemini-2.5-pro'
+    assert extract_model_name('models/gemini-1.5-flash') == 'gemini-1.5-flash'
+
   def test_extract_model_name_invalid_path(self):
     """Test that invalid path formats return the original string."""
     invalid_paths = [

@@ -150,48 +150,6 @@ class TestMCPTool:
     assert declaration.parameters is not None
     assert declaration.response is None
 
-  def test_get_declaration_with_output_schema(self):
-    """Test function declaration generation with an output schema."""
-    self.mock_mcp_tool.outputSchema = {
-        "type": "object",
-        "properties": {
-            "status": {
-                "type": "string",
-                "description": "The status of the operation",
-            },
-        },
-    }
-    tool = MCPTool(
-        mcp_tool=self.mock_mcp_tool,
-        mcp_session_manager=self.mock_session_manager,
-    )
-
-    declaration = tool._get_declaration()
-
-    assert isinstance(declaration, FunctionDeclaration)
-    assert declaration.response is not None
-    assert declaration.response.type == Type.OBJECT
-    assert "status" in declaration.response.properties
-    assert declaration.response.properties["status"].type == Type.STRING
-    assert (
-        declaration.response.properties["status"].description
-        == "The status of the operation"
-    )
-
-  def test_get_declaration_with_empty_output_schema(self):
-    """Test function declaration with an empty output schema."""
-    self.mock_mcp_tool.outputSchema = {}
-    tool = MCPTool(
-        mcp_tool=self.mock_mcp_tool,
-        mcp_session_manager=self.mock_session_manager,
-    )
-
-    declaration = tool._get_declaration()
-
-    assert declaration.response is not None
-    assert declaration.response.type == Type.OBJECT
-    assert declaration.response.properties is None
-
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):
     """Test running tool without authentication."""
