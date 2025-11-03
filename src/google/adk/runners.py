@@ -878,7 +878,7 @@ class Runner:
       message)
     """
     # If the last event is a function response, should send this response to
-    # the agent that returned the corressponding function call regardless the
+    # the agent that returned the corresponding function call regardless the
     # type of the agent. e.g. a remote a2a agent may surface a credential
     # request as a special long running function tool call.
     event = find_matching_function_call(session.events)

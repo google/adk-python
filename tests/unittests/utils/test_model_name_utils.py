@@ -120,7 +120,7 @@ class TestIsGeminiModel:
     assert is_gemini_model('gemini_1_5_flash') is False
 
   def test_is_gemini_model_case_sensitivity(self):
-    """Test that model detection is case sensitive."""
+    """Test that model detection is case-sensitive."""
     assert is_gemini_model('Gemini-2.5-pro') is False
     assert is_gemini_model('GEMINI-2.5-pro') is False
     assert is_gemini_model('gemini-2.5-PRO') is True  # Only the start matters

@@ -274,7 +274,7 @@ def test_clone_invalid_field():
   """Test that cloning with invalid fields raises an error."""
   original = LlmAgent(name="test_agent", description="Test agent")
 
-  with pytest.raises(ValueError, match="Cannot update non-existent fields"):
+  with pytest.raises(ValueError, match="Cannot update nonexistent fields"):
     original.clone(update={"invalid_field": "value"})
 
 

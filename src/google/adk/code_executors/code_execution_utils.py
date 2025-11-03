@@ -122,12 +122,12 @@ class CodeExecutionUtils:
         the code blocks.
 
     Returns:
-      The first code block if found, otherwise None.
+      The first code block if found; otherwise, None.
     """
     if not content or not content.parts:
       return
 
-    # Extract the code from the executable code parts if there're no associated
+    # Extract the code from the executable code parts if there are no associated
     # code execution result parts.
     for idx, part in enumerate(content.parts):
       if part.executable_code and (

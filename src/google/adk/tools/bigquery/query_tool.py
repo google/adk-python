@@ -158,7 +158,7 @@ def execute_sql(
     elif settings.write_mode == WriteMode.PROTECTED:
       # In protected write mode, write operation only to a temporary artifact is
       # allowed. This artifact must have been created in a BigQuery session. In
-      # such a scenario the session info (session id and the anonymous dataset
+      # such a scenario, the session info (session id and the anonymous dataset
       # containing the artifact) is persisted in the tool context.
       bq_session_info = tool_context.state.get(BIGQUERY_SESSION_INFO_KEY, None)
       if bq_session_info:
