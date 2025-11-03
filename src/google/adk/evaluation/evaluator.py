@@ -54,7 +54,7 @@ class EvaluationResult(BaseModel):
 
 
 class Evaluator(ABC):
-  """A merics evaluator interface."""
+  """A metrics evaluator interface."""
 
   criterion_type: ClassVar[type[BaseCriterion]] = BaseCriterion
 
