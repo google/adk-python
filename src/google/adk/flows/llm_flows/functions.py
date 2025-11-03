@@ -275,6 +275,40 @@ async def _execute_single_function_call_async(
     tool_confirmation: Optional[ToolConfirmation] = None,
 ) -> Optional[Event]:
   """Execute a single function call with thread safety for state modifications."""
+
+  async def _run_on_tool_error_callbacks(
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> Optional[dict[str, Any]]:
+    """Runs the on_tool_error_callbacks for the given tool."""
+    error_response = (
+        await invocation_context.plugin_manager.run_on_tool_error_callback(
+            tool=tool,
+            tool_args=tool_args,
+            tool_context=tool_context,
+            error=error,
+        )
+    )
+    if error_response is not None:
+      return error_response
+
+    for callback in agent.canonical_on_tool_error_callbacks:
+      error_response = callback(
+          tool=tool,
+          args=tool_args,
+          tool_context=tool_context,
+          error=error,
+      )
+      if inspect.isawaitable(error_response):
+        error_response = await error_response
+      if error_response is not None:
+        return error_response
+
+    return None
+
   # Do not use "args" as the variable name, because it is a reserved keyword
   # in python debugger.
   # Make a deep copy to avoid being modified.
@@ -290,13 +324,11 @@ async def _execute_single_function_call_async(
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(name=function_call.name, description='Tool not found')
-    error_response = (
-        await invocation_context.plugin_manager.run_on_tool_error_callback(
-            tool=tool,
-            tool_args=function_args,
-            tool_context=tool_context,
-            error=tool_error,
-        )
+    error_response = await _run_on_tool_error_callbacks(
+        tool=tool,
+        tool_args=function_args,
+        tool_context=tool_context,
+        error=tool_error,
     )
     if error_response is not None:
       return __build_response_event(
@@ -305,7 +337,9 @@ async def _execute_single_function_call_async(
     else:
       raise tool_error
 
-  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+  async def _run_with_trace():
+    nonlocal function_args
+
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
     function_response = (
@@ -333,13 +367,11 @@ async def _execute_single_function_call_async(
             tool, args=function_args, tool_context=tool_context
         )
       except Exception as tool_error:
-        error_response = (
-            await invocation_context.plugin_manager.run_on_tool_error_callback(
-                tool=tool,
-                tool_args=function_args,
-                tool_context=tool_context,
-                error=tool_error,
-            )
+        error_response = await _run_on_tool_error_callbacks(
+            tool=tool,
+            tool_args=function_args,
+            tool_context=tool_context,
+            error=tool_error,
         )
         if error_response is not None:
           function_response = error_response
@@ -391,12 +423,22 @@ async def _execute_single_function_call_async(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    trace_tool_call(
-        tool=tool,
-        args=function_args,
-        function_response_event=function_response_event,
-    )
     return function_response_event
+
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    try:
+      function_response_event = await _run_with_trace()
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+      )
+      return function_response_event
+    except:
+      trace_tool_call(
+          tool=tool, args=function_args, function_response_event=None
+      )
+      raise
 
 
 async def handle_function_calls_live(
@@ -467,13 +509,17 @@ async def _execute_single_function_call_live(
   tool, tool_context = _get_tool_and_context(
       invocation_context, function_call, tools_dict
   )
-  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+
+  function_args = (
+      copy.deepcopy(function_call.args) if function_call.args else {}
+  )
+
+  async def _run_with_trace():
+    nonlocal function_args
+
     # Do not use "args" as the variable name, because it is a reserved keyword
     # in python debugger.
     # Make a deep copy to avoid being modified.
-    function_args = (
-        copy.deepcopy(function_call.args) if function_call.args else {}
-    )
     function_response = None
 
     # Handle before_tool_callbacks - iterate through the canonical callback
@@ -527,12 +573,22 @@ async def _execute_single_function_call_live(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    trace_tool_call(
-        tool=tool,
-        args=function_args,
-        function_response_event=function_response_event,
-    )
     return function_response_event
+
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    try:
+      function_response_event = await _run_with_trace()
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+      )
+      return function_response_event
+    except:
+      trace_tool_call(
+          tool=tool, args=function_args, function_response_event=None
+      )
+      raise
 
 
 async def _process_function_live_helper(
@@ -660,10 +716,17 @@ def _get_tool(
 ):
   """Returns the tool corresponding to the function call."""
   if function_call.name not in tools_dict:
-    raise ValueError(
-        f'Function {function_call.name} is not found in the tools_dict:'
-        f' {tools_dict.keys()}.'
+    available = list(tools_dict.keys())
+    error_msg = (
+        f"Tool '{function_call.name}' not found.\nAvailable tools:"
+        f" {', '.join(available)}\n\nPossible causes:\n  1. LLM hallucinated"
+        ' the function name - review agent instruction clarity\n  2. Tool not'
+        ' registered - verify agent.tools list\n  3. Name mismatch - check for'
+        ' typos\n\nSuggested fixes:\n  - Review agent instruction to ensure'
+        ' tool usage is clear\n  - Verify tool is included in agent.tools'
+        ' list\n  - Check for typos in function name'
     )
+    raise ValueError(error_msg)
 
   return tools_dict[function_call.name]
 

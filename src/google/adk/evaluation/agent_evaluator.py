@@ -477,7 +477,6 @@ class AgentEvaluator:
   ) -> BaseAgent:
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
-    print(dir(agent_module))
 
     # One of the two things should be satisfied, either the module should have
     # an "agent" as a member in it or the module name itself should end with

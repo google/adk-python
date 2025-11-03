@@ -108,6 +108,10 @@ class Invocation(EvalBaseModel):
   """Details about the App that was used for this invocation."""
 
 
+SessionState: TypeAlias = dict[str, Any]
+"""The state of the session."""
+
+
 class SessionInput(EvalBaseModel):
   """Values that help initialize a Session."""
 
@@ -117,7 +121,7 @@ class SessionInput(EvalBaseModel):
   user_id: str
   """The user id."""
 
-  state: dict[str, Any] = Field(default_factory=dict)
+  state: SessionState = Field(default_factory=dict)
   """The state of the session."""
 
 
@@ -158,6 +162,9 @@ class EvalCase(EvalBaseModel):
       default=None,
   )
   """A list of rubrics that are applicable to all the invocations in the conversation of this eval case."""
+
+  final_session_state: Optional[SessionState] = Field(default_factory=dict)
+  """The expected final session state at the end of the conversation."""
 
   @model_validator(mode="after")
   def ensure_conversation_xor_conversation_scenario(self) -> EvalCase:

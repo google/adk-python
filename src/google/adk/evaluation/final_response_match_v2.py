@@ -147,7 +147,11 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
       self,
       eval_metric: EvalMetric,
   ):
-    super().__init__(eval_metric, FinalResponseMatchV2Evaluator.criterion_type)
+    super().__init__(
+        eval_metric,
+        FinalResponseMatchV2Evaluator.criterion_type,
+        expected_invocations_required=True,
+    )
     self._auto_rater_prompt_template = _FINAL_RESPONSE_MATCH_V2_PROMPT
 
   @staticmethod
@@ -166,8 +170,13 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
 
   @override
   def format_auto_rater_prompt(
-      self, actual_invocation: Invocation, expected_invocation: Invocation
+      self,
+      actual_invocation: Invocation,
+      expected_invocation: Optional[Invocation],
   ) -> str:
+    if expected_invocation is None:
+      raise ValueError("expected_invocation is required for this metric.")
+
     reference = get_text_from_content(expected_invocation.final_response)
     response = get_text_from_content(actual_invocation.final_response)
     user_prompt = get_text_from_content(expected_invocation.user_content)

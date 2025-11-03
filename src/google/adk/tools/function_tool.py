@@ -205,6 +205,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
                 ' ToolConfirmation payload.'
             ),
         )
+        tool_context.actions.skip_summarization = True
         return {
             'error': (
                 'This tool call requires confirmation, please approve or'

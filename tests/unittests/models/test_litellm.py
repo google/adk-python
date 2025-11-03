@@ -19,6 +19,7 @@ from unittest.mock import Mock
 import warnings
 
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _message_to_generate_content_response
@@ -545,6 +546,88 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
           "type"
       ]
       == "string"
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_model_override(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      model="overridden_model",
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    assert response.content.parts[0].text == "Test response"
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "overridden_model"
+  assert kwargs["messages"][0]["role"] == "user"
+  assert kwargs["messages"][0]["content"] == "Test prompt"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_without_model_override(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      model=None,
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "test_model"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_adds_fallback_user_message(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  user_messages = [
+      message for message in kwargs["messages"] if message["role"] == "user"
+  ]
+  assert any(
+      message.get("content")
+      == "Handle the requests as specified in the System Instruction."
+      for message in user_messages
+  )
+  assert (
+      sum(1 for content in llm_request.contents if content.role == "user") == 1
+  )
+  assert llm_request.contents[-1].parts[0].text == (
+      "Handle the requests as specified in the System Instruction."
   )
 
 
@@ -1571,6 +1654,40 @@ async def test_generate_content_async_stream_with_usage_metadata(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_with_usage_metadata_only(
+    mock_completion, lite_llm_instance
+):
+  streaming_model_response_with_usage_metadata = [
+      ModelResponse(
+          usage={
+              "prompt_tokens": 10,
+              "completion_tokens": 5,
+              "total_tokens": 15,
+          },
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(content=""),
+              )
+          ],
+      ),
+  ]
+  mock_completion.return_value = iter(
+      streaming_model_response_with_usage_metadata
+  )
+
+  unused_responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  mock_completion.assert_called_once()
+  _, kwargs = mock_completion.call_args
+  assert kwargs["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_multiple_function_calls(
     mock_completion, lite_llm_instance
 ):
@@ -1903,3 +2020,113 @@ def test_non_gemini_litellm_no_warning():
     # Test with non-Gemini model
     LiteLlm(model="openai/gpt-4o")
     assert len(w) == 0
+
+
+@pytest.mark.parametrize(
+    "finish_reason,response_content,expected_content,has_tool_calls",
+    [
+        ("length", "Test response", "Test response", False),
+        ("stop", "Complete response", "Complete response", False),
+        (
+            "tool_calls",
+            "",
+            "",
+            True,
+        ),
+        ("content_filter", "", "", False),
+    ],
+    ids=["length", "stop", "tool_calls", "content_filter"],
+)
+@pytest.mark.asyncio
+async def test_finish_reason_propagation(
+    mock_acompletion,
+    lite_llm_instance,
+    finish_reason,
+    response_content,
+    expected_content,
+    has_tool_calls,
+):
+  """Test that finish_reason is properly propagated from LiteLLM response."""
+  tool_calls = None
+  if has_tool_calls:
+    tool_calls = [
+        ChatCompletionMessageToolCall(
+            type="function",
+            id="test_id",
+            function=Function(
+                name="test_function",
+                arguments='{"arg": "value"}',
+            ),
+        )
+    ]
+
+  mock_response = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content=response_content,
+                  tool_calls=tool_calls,
+              ),
+              finish_reason=finish_reason,
+          )
+      ]
+  )
+  mock_acompletion.return_value = mock_response
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    # Verify finish_reason is mapped to FinishReason enum
+    assert isinstance(response.finish_reason, types.FinishReason)
+    # Verify correct enum mapping using the actual mapping from lite_llm
+    assert response.finish_reason == _FINISH_REASON_MAPPING[finish_reason]
+    if expected_content:
+      assert response.content.parts[0].text == expected_content
+    if has_tool_calls:
+      assert len(response.content.parts) > 0
+      assert response.content.parts[-1].function_call.name == "test_function"
+
+  mock_acompletion.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_unknown_maps_to_other(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that unknown finish_reason values map to FinishReason.OTHER."""
+  mock_response = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="Test response",
+              ),
+              finish_reason="unknown_reason_type",
+          )
+      ]
+  )
+  mock_acompletion.return_value = mock_response
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    # Unknown finish_reason should map to OTHER
+    assert isinstance(response.finish_reason, types.FinishReason)
+    assert response.finish_reason == types.FinishReason.OTHER
+
+  mock_acompletion.assert_called_once()
