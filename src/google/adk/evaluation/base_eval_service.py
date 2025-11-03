@@ -31,7 +31,7 @@ from .eval_result import EvalCaseResult
 
 
 class EvaluateConfig(BaseModel):
-  """Contains configurations needed to run an evaluation."""
+  """Contains configurations needed to run evaluations."""
 
   model_config = ConfigDict(
       alias_generator=alias_generators.to_camel,
