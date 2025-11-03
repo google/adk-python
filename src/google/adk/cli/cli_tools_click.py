@@ -1495,11 +1495,11 @@ def cli_deploy_cloud_run(
     ),
 )
 @click.option(
-    "--trace_to_cloud",
+    "--trace_to_cloud/--no-trace_to_cloud",
     type=bool,
     is_flag=True,
     show_default=True,
-    default=False,
+    default=None,
     help="Optional. Whether to enable Cloud Trace for Agent Engine.",
 )
 @click.option(
@@ -1591,7 +1591,7 @@ def cli_deploy_agent_engine(
     region: str,
     staging_bucket: str,
     agent_engine_id: Optional[str],
-    trace_to_cloud: bool,
+    trace_to_cloud: Optional[bool],
     display_name: str,
     description: str,
     adk_app: str,
