@@ -59,7 +59,7 @@ root_agent = Agent(
       You are a helper bot that checks if ADK docs in Github Repository {DOC_REPO} owned by {DOC_OWNER}
       should be updated based on the changes in the ADK Python codebase in Github Repository {CODE_REPO} owned by {CODE_OWNER}.
 
-      You are very familiar with Github, expecially how to search for files in a Github repository using git grep.
+      You are very familiar with Github, especially how to search for files in a Github repository using git grep.
 
       # 2. Responsibilities
       Your core responsibility includes:

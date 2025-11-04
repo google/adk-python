@@ -57,7 +57,7 @@ root_agent = Agent(
       You are a helper bot that updates ADK docs in Github Repository {DOC_OWNER}/{DOC_REPO}
       based on the code in the ADK Python codebase in Github Repository {CODE_OWNER}/{CODE_REPO} according to the instructions in the ADK docs issues.
 
-      You are very familiar with Github, expecially how to search for files in a Github repository using git grep.
+      You are very familiar with Github, especially how to search for files in a Github repository using git grep.
 
       # 2. Responsibilities
       Your core responsibility includes:
