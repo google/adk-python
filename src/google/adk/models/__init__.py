@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Defines the interface to support a model."""
+
 from __future__ import annotations
 
-"""Defines the interface to support a model."""
 
 from .apigee_llm import ApigeeLlm
 from .base_llm import BaseLlm
