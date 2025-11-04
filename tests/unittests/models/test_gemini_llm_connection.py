@@ -109,3 +109,73 @@ async def test_close(gemini_connection, mock_gemini_session):
   await gemini_connection.close()
 
   mock_gemini_session.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_receive_usage_metadata_and_server_content(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive with usage metadata and server content in one message."""
+  usage_metadata = types.UsageMetadata(
+      prompt_token_count=10,
+      cached_content_token_count=5,
+      response_token_count=20,
+      total_token_count=35,
+      thoughts_token_count=2,
+      prompt_tokens_details=[
+          types.ModalityTokenCount(modality='text', token_count=10)
+      ],
+      cache_tokens_details=[
+          types.ModalityTokenCount(modality='text', token_count=5)
+      ],
+      response_tokens_details=[
+          types.ModalityTokenCount(modality='text', token_count=20)
+      ],
+  )
+  mock_content = types.Content(
+      role='model', parts=[types.Part.from_text(text='response text')]
+  )
+  mock_server_content = mock.Mock()
+  mock_server_content.model_turn = mock_content
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.turn_complete = False
+
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = usage_metadata
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert responses
+
+  usage_response = next((r for r in responses if r.usage_metadata), None)
+  assert usage_response is not None
+  content_response = next((r for r in responses if r.content), None)
+  assert content_response is not None
+
+  expected_usage = types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=10,
+      cached_content_token_count=5,
+      candidates_token_count=None,
+      total_token_count=35,
+      thoughts_token_count=2,
+      prompt_tokens_details=[
+          types.ModalityTokenCount(modality='text', token_count=10)
+      ],
+      cache_tokens_details=[
+          types.ModalityTokenCount(modality='text', token_count=5)
+      ],
+      candidates_tokens_details=None,
+  )
+  assert usage_response.usage_metadata == expected_usage
+  assert content_response.content == mock_content
