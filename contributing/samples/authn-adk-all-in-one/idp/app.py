@@ -344,7 +344,7 @@ def generate_token():
   client = CLIENT_REGISTRY.get(client_id)
 
   if not client:
-    logging.error(f"invlid client {client_id}")
+    logging.error(f"invalid client {client_id}")
     return (
         jsonify(
             {"error": "invalid_client", "error_description": "Client not found"}
