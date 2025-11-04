@@ -1063,6 +1063,7 @@ async def test_generate_content_async_with_usage_metadata(
           "prompt_tokens": 10,
           "completion_tokens": 5,
           "total_tokens": 15,
+          "cached_tokens": 8,
       },
   )
   mock_acompletion.return_value = mock_response_with_usage_metadata
@@ -1083,6 +1084,7 @@ async def test_generate_content_async_with_usage_metadata(
     assert response.usage_metadata.prompt_token_count == 10
     assert response.usage_metadata.candidates_token_count == 5
     assert response.usage_metadata.total_token_count == 15
+    assert response.usage_metadata.cached_content_token_count == 8
 
   mock_acompletion.assert_called_once()
 
@@ -1718,37 +1720,42 @@ async def test_generate_content_async_stream_with_usage_metadata(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_stream_with_usage_metadata_only(
+async def test_generate_content_async_stream_with_usage_metadata(
     mock_completion, lite_llm_instance
 ):
+  """Tests that cached prompt tokens are propagated in streaming mode."""
   streaming_model_response_with_usage_metadata = [
+      *STREAMING_MODEL_RESPONSE,
       ModelResponse(
           usage={
               "prompt_tokens": 10,
               "completion_tokens": 5,
               "total_tokens": 15,
+              "cached_tokens": 8,
           },
           choices=[
               StreamingChoices(
-                  finish_reason="stop",
-                  delta=Delta(content=""),
+                  finish_reason=None,
               )
           ],
       ),
   ]
+
   mock_completion.return_value = iter(
       streaming_model_response_with_usage_metadata
   )
 
-  unused_responses = [
+  responses = [
       response
       async for response in lite_llm_instance.generate_content_async(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  mock_completion.assert_called_once()
-  _, kwargs = mock_completion.call_args
-  assert kwargs["stream_options"] == {"include_usage": True}
+  assert len(responses) == 4
+  assert responses[3].usage_metadata.prompt_token_count == 10
+  assert responses[3].usage_metadata.candidates_token_count == 5
+  assert responses[3].usage_metadata.total_token_count == 15
+  assert responses[3].usage_metadata.cached_content_token_count == 8
 
 
 @pytest.mark.asyncio
@@ -2036,6 +2043,36 @@ def test_function_declaration_to_tool_param_edge_cases():
 
   # Verify no 'required' field is added when parameters is None
   assert "required" not in result["function"]["parameters"]
+
+
+@pytest.mark.parametrize(
+    "usage, expected_tokens",
+    [
+        ({"prompt_tokens_details": {"cached_tokens": 123}}, 123),
+        (
+            {
+                "prompt_tokens_details": [
+                    {"cached_tokens": 50},
+                    {"cached_tokens": 25},
+                ]
+            },
+            75,
+        ),
+        ({"cached_prompt_tokens": 45}, 45),
+        ({"cached_tokens": 67}, 67),
+        ({"prompt_tokens": 100}, 0),
+        ({}, 0),
+        ("not a dict", 0),
+        (None, 0),
+        ({"prompt_tokens_details": {"cached_tokens": "not a number"}}, 0),
+        (json.dumps({"cached_tokens": 89}), 89),
+        (json.dumps({"some_key": "some_value"}), 0),
+    ],
+)
+def test_extract_cached_prompt_tokens(usage, expected_tokens):
+  from google.adk.models.lite_llm import _extract_cached_prompt_tokens
+
+  assert _extract_cached_prompt_tokens(usage) == expected_tokens
 
 
 def test_gemini_via_litellm_warning(monkeypatch):
