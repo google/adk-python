@@ -16,7 +16,7 @@ the response is always audio.
 - Please ensure you grant the right mic/sound device permission to the terminal
  that runs the script. Sometimes, terminal inside VSCode etc dones't really work
   well. So try native terminals if you have permission issue.
-- start api server first for your agent folder. For example, my anents are
+- start api server first for your agent folder. For example, my agents are
  locoated in contributing/samples. So I will run
   `adk api_server contributing/samples/`. Keep this running.
 - then in a separate window, run `python3 live_agent_example.py`
