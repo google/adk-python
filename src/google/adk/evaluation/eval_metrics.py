@@ -126,7 +126,7 @@ class RubricsBasedCriterion(BaseCriterion):
           "Rubrics to be used by Metric. Not all metrics rely on rubrics, but"
           " metrics like `rubric_based_final_response_quality_v1` do. Metrics"
           " that don't use Rubrics, will just ignore this field, if specified."
-          " Metrics that do use rubrics will raise an execption, if they are"
+          " Metrics that do use rubrics will raise an exception, if they are"
           " not specified."
       ),
   )
