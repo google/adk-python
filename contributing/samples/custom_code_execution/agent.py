@@ -109,7 +109,7 @@ def base_system_instruction():
   ```
 
   **Output Visibility:** Always print the output of code execution to visualize results, especially for data exploration and analysis. For example:
-    - To look a the shape of a pandas.DataFrame do:
+    - To look at the shape of a pandas.DataFrame do:
       ```tool_code
       print(df.shape)
       ```
