@@ -355,7 +355,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 * Update `openai` dependency version, based on correct OPENAI release ([bb8ebd1](https://github.com/google/adk-python/commit/bb8ebd15f90768b518cd0e21a59b269e30d6d944))
 * Add the missing license header for core_callback_config init file ([f8fd6a4](https://github.com/google/adk-python/commit/f8fd6a4f09ab520b8ecdbd8f9fe48228dbff7ebe))
 * Creates yaml_utils.py in utils to allow adk dump yaml in the same style ([1fd58cb](https://github.com/google/adk-python/commit/1fd58cb3633992cd88fa7e09ca6eda0f9b34236f))
-* Return explict None type for DELETE endpoints ([f03f167](https://github.com/google/adk-python/commit/f03f1677790c0a9e59b6ba6f46010d0b7b64be50))
+* Return explicit None type for DELETE endpoints ([f03f167](https://github.com/google/adk-python/commit/f03f1677790c0a9e59b6ba6f46010d0b7b64be50))
 * Add _config suffix to all yaml-based agent examples ([43f302c](https://github.com/google/adk-python/commit/43f302ce1ab53077ee8f1486d5294540678921e6))
 * Rename run related method and request to align with the conventions ([ecaa7b4](https://github.com/google/adk-python/commit/ecaa7b4c9847b478c7cdc37185b1525f733bb403))
 * Update models in samples/ folder to be gemini 2.0+ ([6c217ba](https://github.com/google/adk-python/commit/6c217bad828edf62b41ec06b168f8a6cb7ece2ed))
