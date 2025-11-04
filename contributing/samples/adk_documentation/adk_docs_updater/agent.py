@@ -79,7 +79,7 @@ root_agent = Agent(
         - You should focus on the main ADK Python codebase, ignore the changes in tests or other auxiliary files.
         - You should find all the related Python files, not only the most relevant one.
       7. Read the specified or found Python files using the `read_local_git_repo_file_content` tool to find all the related code.
-        - You can ignore unit test files, unless you are sure that the test code is uesful to understand the related concepts.
+        - You can ignore unit test files, unless you are sure that the test code is useful to understand the related concepts.
         - You should read all the found files to find all the related code, unless you already know the content of the file or you are sure that the file is not related to the ADK doc.
       8. Update the ADK doc file according to the doc update instructions and the related code.
         - Use active voice phrasing in your doc updates.
