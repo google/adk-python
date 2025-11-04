@@ -48,6 +48,7 @@ except ImportError as e:
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+
 class StdioConnectionParams(BaseModel):
   """Parameters for the MCP Stdio connection.
 
@@ -56,11 +57,13 @@ class StdioConnectionParams(BaseModel):
       timeout: Timeout in seconds for establishing the connection to the MCP
         stdio server.
   """
+
   server_params: StdioServerParameters
   timeout: float = 5.0
 
   class Config:
     arbitrary_types_allowed = True
+
 
 class SseConnectionParams(BaseModel):
   """Parameters for the MCP SSE connection.
@@ -76,10 +79,12 @@ class SseConnectionParams(BaseModel):
       sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
         server.
   """
+
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
+
 
 class StreamableHTTPConnectionParams(BaseModel):
   """Parameters for the MCP Streamable HTTP connection.
@@ -97,22 +102,24 @@ class StreamableHTTPConnectionParams(BaseModel):
       terminate_on_close: Whether to terminate the MCP Streamable HTTP server
         when the connection is closed.
   """
+
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
 
+
 def retry_on_closed_resource(func):
   """Decorator to automatically retry action when MCP session is closed.
 
   CRITICAL WARNING: This decorator is UNSAFE for non-idempotent operations.
-  Do NOT use with tool calls that create, update, or delete resources as 
+  Do NOT use with tool calls that create, update, or delete resources as
   retrying can cause duplicate operations or data corruption.
-  
-  Only use with read-only, idempotent operations like list_tools, 
+
+  Only use with read-only, idempotent operations like list_tools,
   list_resources, or read_resource.
-  
+
   Do NOT apply to generic tool execution methods like _run_async_impl.
 
   When MCP session was closed, the decorator will automatically retry the
@@ -125,6 +132,7 @@ def retry_on_closed_resource(func):
   Returns:
       The decorated function.
   """
+
   @functools.wraps(func)  # Preserves original function metadata
   async def wrapper(self, *args, **kwargs):
     try:
@@ -134,7 +142,9 @@ def retry_on_closed_resource(func):
       # detecting and replacing disconnected sessions
       logger.info('Retrying %s due to closed/broken resource', func.__name__)
       return await func(self, *args, **kwargs)
+
   return wrapper
+
 
 class MCPSessionManager:
   """Manages MCP client sessions.
@@ -389,6 +399,7 @@ class MCPSessionManager:
           )
         finally:
           del self._sessions[session_key]
+
 
 SseServerParams = SseConnectionParams
 StreamableHTTPServerParams = StreamableHTTPConnectionParams
