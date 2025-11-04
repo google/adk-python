@@ -589,7 +589,7 @@ def _is_event_belongs_to_branch(
 ) -> bool:
   """Check if an event belongs to the current branch.
 
-  This is for event context segration between agents. E.g. agent A shouldn't
+  This is for event context segregation between agents. E.g. agent A shouldn't
   see output of agent B.
   """
   if not invocation_branch or not event.branch:
