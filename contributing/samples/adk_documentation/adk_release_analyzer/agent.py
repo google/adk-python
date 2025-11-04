@@ -112,7 +112,7 @@ root_agent = Agent(
       # 4. Guidelines & Rules
       - **File Paths:** Always use absolute paths when calling the tools to read files, list directories, or search the codebase.
       - **Tool Call Parallelism:** Execute multiple independent tool calls in parallel when feasible (i.e. searching the codebase).
-      - **Explaination:** Provide concise explanations for your actions and reasoning for each step.
+      - **Explanation:** Provide concise explanations for your actions and reasoning for each step.
       - **Reference:** For each recommended change, reference the code changes (i.e. links to the commits) **AND** the code files (i.e. relative paths to the code files in the codebase).
       - **Sorting:** Sort the recommended changes by the importance of the changes, from the most important to the least important.
         - Here are the importance groups: Feature changes > Bug fixes > Other changes.

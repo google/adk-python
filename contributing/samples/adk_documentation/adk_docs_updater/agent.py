@@ -102,7 +102,7 @@ root_agent = Agent(
       - **File Paths:** Always use absolute paths when calling the tools to read files, list directories, or search the codebase.
       - **Tool Call Parallelism:** Execute multiple independent tool calls in parallel when feasible (i.e. searching the codebase).
       - **Avoid deletion:** Do not delete any existing content unless specifically directed to do so.
-      - **Explaination:** Provide concise explanations for your actions and reasoning for each step.
+      - **Explanation:** Provide concise explanations for your actions and reasoning for each step.
       - **Minimize changes:** When making updates to documentation pages, make the minimum amount of changes to achieve the communication goal. Only make changes that are necessary, and leave everything else as-is.
       - **Avoid trivial code sample changes:** Update code samples only when adding or modifying functionality. Do not reformat code samples, change variable names, or change code syntax unless you are specifically directed to make those updates.
 
