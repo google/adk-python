@@ -26,7 +26,7 @@ from google.genai import types
 class _TestPlugin(base_plugin.BasePlugin):
 
   def __init__(self, outputs):
-    super().__init__(name="test-pluggin")
+    super().__init__(name="test-plugin")
     self._model_output_idx = 0
     self.got_llm_requests = []
     self._outputs = outputs
