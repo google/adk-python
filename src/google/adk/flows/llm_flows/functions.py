@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Handles function callings for LLM flow."""
+"""Handles function calling for LLM flow."""
 
 from __future__ import annotations
 
