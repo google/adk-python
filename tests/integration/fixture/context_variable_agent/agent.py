@@ -43,7 +43,7 @@ def echo_info(customer_id: str) -> str:
 
 def build_global_instruction(invocation_context: InvocationContext) -> str:
   return (
-      'This is the gloabl agent instruction for invocation:'
+      'This is the global agent instruction for invocation:'
       f' {invocation_context.invocation_id}.'
   )
 

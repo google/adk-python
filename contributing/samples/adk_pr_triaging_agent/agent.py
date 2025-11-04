@@ -58,7 +58,7 @@ def get_pull_request_details(pr_number: int) -> str:
   """Get the details of the specified pull request.
 
   Args:
-    pr_number: number of the Github pull request.
+    pr_number: number of the GitHub pull request.
 
   Returns:
     The status of this request, with the details when successful.
@@ -162,7 +162,7 @@ def add_label_to_pr(pr_number: int, label: str) -> dict[str, Any]:
   """Adds a specified label on a pull request.
 
   Args:
-      pr_number: the number of the Github pull request
+      pr_number: the number of the GitHub pull request
       label: the label to add
 
   Returns:
@@ -175,7 +175,7 @@ def add_label_to_pr(pr_number: int, label: str) -> dict[str, Any]:
         f"Error: Label '{label}' is not an allowed label. Will not apply."
     )
 
-  # Pull Request is a special issue in Github, so we can use issue url for PR.
+  # Pull Request is a special issue in GitHub, so we can use issue url for PR.
   label_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{pr_number}/labels"
   )
@@ -197,7 +197,7 @@ def add_comment_to_pr(pr_number: int, comment: str) -> dict[str, Any]:
   """Add the specified comment to the given PR number.
 
   Args:
-    pr_number: the number of the Github pull request
+    pr_number: the number of the GitHub pull request
     comment: the comment to add
 
   Returns:
@@ -205,7 +205,7 @@ def add_comment_to_pr(pr_number: int, comment: str) -> dict[str, Any]:
   """
   print(f"Attempting to add comment '{comment}' to issue #{pr_number}")
 
-  # Pull Request is a special issue in Github, so we can use issue url for PR.
+  # Pull Request is a special issue in GitHub, so we can use issue url for PR.
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{pr_number}/comments"
   payload = {"body": comment}
 
@@ -225,7 +225,7 @@ root_agent = Agent(
     description="Triage ADK pull requests.",
     instruction=f"""
       # 1. Identity
-      You are a Pull Request (PR) triaging bot for the Github {REPO} repo with the owner {OWNER}.
+      You are a Pull Request (PR) triaging bot for the GitHub {REPO} repo with the owner {OWNER}.
 
       # 2. Responsibilities
       Your core responsibility includes:
@@ -242,7 +242,7 @@ root_agent = Agent(
       - If it's about session, memory, artifacts services, label it with "services"
       - If it's about UI/web, label it with "web"
       - If it's related to tools, label it with "tools"
-      - If it's about agent evalaution, then label it with "eval".
+      - If it's about agent evaluation, then label it with "eval".
       - If it's about streaming/live, label it with "live".
       - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
@@ -280,7 +280,7 @@ root_agent = Agent(
       - Call the `get_pull_request_details` tool to get the details of the PR.
       - Skip the PR (i.e. do not label or comment) if any of the following is true:
         - the PR is closed
-        - the PR is labeled with "google-contributior"
+        - the PR is labeled with "google-contributor"
         - the PR is already labelled with the above labels (e.g. "documentation", "services", "tools", etc.).
       - Check if the PR is following the contribution guidelines.
         - If it's not following the guidelines, recommend or add a comment to the PR that points to the contribution guidelines (https://github.com/google/adk-python/blob/main/CONTRIBUTING.md).

@@ -368,7 +368,7 @@ class TestIntegration:
     assert result is not None
     assert (
         result.user_id == "A2A_USER_test_session_456"
-    )  # Should fallback to context ID
+    )  # Should fall back to context ID
     assert result.session_id == "test_session_456"
     assert isinstance(result.new_message, genai_types.Content)
     assert result.new_message.role == "user"

@@ -392,8 +392,8 @@ def validate_exclusive(ctx, param, value):
     ),
     help=(
         "The json file that contains a previously saved session (by"
-        "--save_session option). The previous session will be re-displayed. And"
-        " user can continue to interact with the agent."
+        " --save_session option). The previous session will be re-displayed."
+        " And user can continue to interact with the agent."
     ),
     callback=validate_exclusive,
 )
@@ -518,7 +518,7 @@ def cli_eval(
 
   This will only run eval_1, eval_2 and eval_3 from sample_eval_set_file.json.
 
-  *Eval Set Id*
+  *Eval Set ID*
   For each eval set, all evals will be run by default.
 
   If you want to run only specific evals from a eval set, first create a comma
@@ -911,7 +911,7 @@ def adk_services_options():
 
 
 def deprecated_adk_services_options():
-  """Depracated ADK services options."""
+  """Deprecated ADK services options."""
 
   def warn(alternative_param, ctx, param, value):
     if value:
@@ -1495,11 +1495,11 @@ def cli_deploy_cloud_run(
     ),
 )
 @click.option(
-    "--trace_to_cloud",
+    "--trace_to_cloud/--no-trace_to_cloud",
     type=bool,
     is_flag=True,
     show_default=True,
-    default=False,
+    default=None,
     help="Optional. Whether to enable Cloud Trace for Agent Engine.",
 )
 @click.option(
@@ -1591,7 +1591,7 @@ def cli_deploy_agent_engine(
     region: str,
     staging_bucket: str,
     agent_engine_id: Optional[str],
-    trace_to_cloud: bool,
+    trace_to_cloud: Optional[bool],
     display_name: str,
     description: str,
     adk_app: str,

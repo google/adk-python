@@ -200,7 +200,7 @@ class TestToGeminiSchema:
         },
     }
     gemini_schema = _to_gemini_schema(openapi_schema)
-    # Since metadata is not properties nor item, it will call to_gemini_schema recursively.
+    # Since metadata is neither properties nor item, it will call to_gemini_schema recursively.
     assert isinstance(gemini_schema.properties["metadata"], Schema)
     assert (
         gemini_schema.properties["metadata"].type == Type.OBJECT
@@ -544,7 +544,7 @@ class TestToGeminiSchema:
         "properties": {
             "case_id": {
                 "description": "The ID of the case.",
-                "title": "Case Id",
+                "title": "Case ID",
                 "type": "string",
             },
             "next_page_token": {
@@ -567,7 +567,7 @@ class TestToGeminiSchema:
         "properties": {
             "case_id": {
                 "description": "The ID of the case.",
-                "title": "Case Id",
+                "title": "Case ID",
                 "type": "string",
             },
             "next_page_token": {

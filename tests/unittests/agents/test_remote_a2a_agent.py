@@ -360,7 +360,7 @@ class TestRemoteA2aAgentResolution:
 
   @pytest.mark.asyncio
   async def test_resolve_agent_card_from_file_not_found(self):
-    """Test agent card resolution from non-existent file raises error."""
+    """Test agent card resolution from nonexistent file raises error."""
     agent = RemoteA2aAgent(
         name="test_agent", agent_card="/path/to/nonexistent.json"
     )

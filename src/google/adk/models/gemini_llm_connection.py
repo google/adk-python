@@ -40,7 +40,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     """Sends the conversation history to the gemini model.
 
     You call this method right after setting up the model connection.
-    The model will respond if the last content is from user, otherwise it will
+    The model will respond if the last content is from user; otherwise, it will
     wait for new user input before responding.
 
     Args:

@@ -469,7 +469,7 @@ class TestPauseInvocationWithLlmAgentTree(BasePauseInvocationTest):
 
 
 class TestPauseInvocationWithWithTransferLoop(BasePauseInvocationTest):
-  """Tests the pausing the invocation when the agent transfer forms a loop."""
+  """Tests pausing the invocation when the agent transfer forms a loop."""
 
   @pytest.fixture
   def agent(self) -> LlmAgent:

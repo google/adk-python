@@ -202,6 +202,19 @@ tools:
 ```
 **DO NOT create Python files like `tools/google_search_tool.py` for built-in tools!**
 
+- **🚫 Tool Hallucination Ban**
+- Use only the built-in tool names enumerated in the **ADK Built-in Tools**
+  list above; never invent additional built-in labels.
+- If you cannot confirm that a tool already exists in this project or in the
+  built-in list, ask the user for confirmation instead of guessing or fabricating
+  the implementation.
+- Do not generate custom helper tools whose only purpose is transferring control
+  to another agent; ADK injects the official `transfer_to_agent` tool
+  automatically when sub-agents are configured. Avoid creating look-alikes such
+  as `transfer_to_agent_tool`.
+- `tool_code` is reserved by some runtimes for code execution. Do not reuse that
+  name for ADK tools or dotted paths.
+
 **Custom Tools** (require Python implementation):
 - **Naming**: Use dotted path: `{{project_folder_name}}.tools.{{module_name}}.{{function_name}}`
 - **Require Python file**: Must create actual Python file in `tools/` directory
