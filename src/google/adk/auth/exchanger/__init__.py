@@ -14,6 +14,7 @@
 
 """Credential exchanger module."""
 
+from __future__ import annotations
 from .base_credential_exchanger import BaseCredentialExchanger
 
 __all__ = [

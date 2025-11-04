@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from .openapi_spec_parser import OpenAPIToolset
 from .openapi_spec_parser import RestApiTool
 

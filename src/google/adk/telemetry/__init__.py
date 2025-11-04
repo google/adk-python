@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from .tracing import trace_call_llm
 from .tracing import trace_merged_tool_calls
 from .tracing import trace_send_data

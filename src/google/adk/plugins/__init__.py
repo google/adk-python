@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from .base_plugin import BasePlugin
 from .logging_plugin import LoggingPlugin
 from .plugin_manager import PluginManager

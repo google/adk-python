@@ -14,6 +14,7 @@
 
 """Credential refresher module."""
 
+from __future__ import annotations
 from .base_credential_refresher import BaseCredentialRefresher
 
 __all__ = [

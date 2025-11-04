@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from .base_agent import BaseAgent
 from .invocation_context import InvocationContext
 from .live_request_queue import LiveRequest

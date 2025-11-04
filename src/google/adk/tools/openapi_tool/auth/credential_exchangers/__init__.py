@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from .auto_auth_credential_exchanger import AutoAuthCredentialExchanger
 from .base_credential_exchanger import BaseAuthCredentialExchanger
 from .oauth2_exchanger import OAuth2CredentialExchanger

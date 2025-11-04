@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from .base_planner import BasePlanner
 from .built_in_planner import BuiltInPlanner
 from .plan_re_act_planner import PlanReActPlanner

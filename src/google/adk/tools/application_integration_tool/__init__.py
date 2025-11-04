@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from .application_integration_toolset import ApplicationIntegrationToolset
 from .integration_connector_tool import IntegrationConnectorTool
 
