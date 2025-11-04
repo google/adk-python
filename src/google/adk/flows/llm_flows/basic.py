@@ -25,6 +25,7 @@ from typing_extensions import override
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
+from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
 
 
@@ -52,8 +53,9 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     # support output_schema and tools together. we have a workaround to support
     # both output_schema and tools at the same time. see
     # _output_schema_processor.py for details
-    if agent.output_schema and not agent.tools:
-      llm_request.set_output_schema(agent.output_schema)
+    if agent.output_schema:
+      if not agent.tools or can_use_output_schema_with_tools(agent.model):
+        llm_request.set_output_schema(agent.output_schema)
 
     llm_request.live_connect_config.response_modalities = (
         invocation_context.run_config.response_modalities
