@@ -102,7 +102,7 @@ root_agent = Agent(
              **Reference**:
              Reference to the code file (e.g. src/google/adk/tools/spanner/metadata_tool.py).
           ```
-        - When referncing doc file, use the full relative path of the doc file in the ADK Docs repository (e.g. docs/sessions/memory.md).
+        - When referencing doc file, use the full relative path of the doc file in the ADK Docs repository (e.g. docs/sessions/memory.md).
       9. Create or recommend to create a GitHub issue in the GitHub Repository {DOC_REPO} with the instructions using the `create_issue` tool.
         - The title of the issue should be "Found docs updates needed from ADK python release <start_tag> to <end_tag>", where start_tag and end_tag are the release tags.
         - The body of the issue should be the instructions about how to update the ADK docs.
