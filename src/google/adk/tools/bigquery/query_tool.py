@@ -1116,7 +1116,7 @@ def detect_anomalies(
       history_data (str): The table id of the BigQuery table containing the
         history time series data or a query statement that select the history
         data.
-      times_series_timestamp_col (str): The name of the colum containing the
+      times_series_timestamp_col (str): The name of the column containing the
         timestamp for each data point.
       times_series_data_col (str): The name of the column containing the
         numerical values to be forecasted and anomaly detected.
