@@ -13,4 +13,7 @@
 # limitations under the License.
 
 # version: major.minor.patch
+
+from __future__ import annotations
+
 __version__ = "1.17.0"

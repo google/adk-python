@@ -14,6 +14,8 @@
 
 """The persistent context used to configure the code executor."""
 
+from __future__ import annotations
+
 import copy
 import dataclasses
 import datetime

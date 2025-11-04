@@ -14,6 +14,8 @@
 
 """Utility functions for converting examples to a string that can be used in system instructions in the prompt."""
 
+from __future__ import annotations
+
 import logging
 from typing import Optional
 from typing import TYPE_CHECKING

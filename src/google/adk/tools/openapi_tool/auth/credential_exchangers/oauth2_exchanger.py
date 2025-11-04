@@ -14,6 +14,8 @@
 
 """Credential fetcher for OpenID Connect."""
 
+from __future__ import annotations
+
 from typing import Optional
 
 from .....auth.auth_credential import AuthCredential
