@@ -252,7 +252,7 @@
 * Fix discussion answering github action workflow to escape the quote in the discussion content JSON [43c9681](https://github.com/google/adk-python/commit/43c96811da891a5b0c9cf1be525665e65f346a13)
 * Send full MIME types for image/video/pdf in get_content [e45c3be](https://github.com/google/adk-python/commit/e45c3be23895b5ec68908ad9ee19bd622dcbd003)
 * Fix flaky unit tests: tests/unittests/flows/llm_flows/test_functions_simple.py [b92b288](https://github.com/google/adk-python/commit/b92b288c978a9b3d1a76c8bcb96cc8f439ce610b)
-* Make UT of a2a consistent about how tests should be skipped when python verison < 3.10 [98b0426](https://github.com/google/adk-python/commit/98b0426cd2dc5e28014ead22b22dbf50d42d0a9a)
+* Make UT of a2a consistent about how tests should be skipped when python version < 3.10 [98b0426](https://github.com/google/adk-python/commit/98b0426cd2dc5e28014ead22b22dbf50d42d0a9a)
 
 ### Improvements
 
