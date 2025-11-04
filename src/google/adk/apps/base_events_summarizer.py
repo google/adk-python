@@ -35,7 +35,7 @@ class BaseEventsSummarizer(abc.ABC):
     If compaction failed, return None. Otherwise, compact into a content and
     return it.
 
-    This method will summarize the events and return a new summray event
+    This method will summarize the events and return a new summary event
     indicating the range of events it summarized.
 
     Args:
