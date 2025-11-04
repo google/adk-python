@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
 """BigQuery Tools (Experimental).
 
 BigQuery Tools under this module are hand crafted and customized while the tools
@@ -28,6 +26,8 @@ definition. The rationales to have customized tool are:
 4. We want to provide extra access guardrails in those tools. For example,
    execute_sql can't arbitrarily mutate existing data.
 """
+
+from __future__ import annotations
 
 from .bigquery_credentials import BigQueryCredentialsConfig
 from .bigquery_toolset import BigQueryToolset

@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
 """Bigtable Tools (Experimental).
 
 Bigtable tools under this module are hand crafted and customized while the tools
@@ -26,6 +24,8 @@ with Bigtable for building AI Agent applications quickly.
 3. Use Bigtable Toolset for more customization and control to interact with
 Bigtable tables.
 """
+
+from __future__ import annotations
 
 from .bigtable_credentials import BigtableCredentialsConfig
 from .bigtable_toolset import BigtableToolset

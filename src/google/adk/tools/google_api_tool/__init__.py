@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
 """Auto-generated tools and toolsets for Google APIs.
 
 These tools and toolsets are auto-generated based on the API specifications
 provided by the Google API Discovery API.
 """
+
+from __future__ import annotations
 
 from .google_api_tool import GoogleApiTool
 from .google_api_toolset import GoogleApiToolset

@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
 """Spanner Tools (Experimental).
 
 Spanner Tools under this module are hand crafted and customized while the tools
@@ -31,6 +29,8 @@ analytics queries.
 5. Use Spanner Toolset for more customization and control to interact with
 Spanner database and tables.
 """
+
+from __future__ import annotations
 
 from . import spanner_credentials
 from .spanner_toolset import SpannerToolset
