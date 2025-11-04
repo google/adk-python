@@ -39,3 +39,13 @@ except ImportError:
       'DatabaseSessionService require sqlalchemy>=2.0, please ensure it is'
       ' installed correctly.'
   )
+
+try:
+  from .redis_session_service import RedisSessionService
+
+  __all__.append('RedisSessionService')
+except ImportError:
+  logger.debug(
+      'RedisSessionService requires redis>=4.0.0, please ensure it is'
+      ' installed correctly.'
+  )

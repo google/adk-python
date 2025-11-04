@@ -62,6 +62,7 @@ dependencies = [
   "uvicorn>=0.34.0, <1.0.0",                                 # ASGI server for FastAPI
   "watchdog>=6.0.0, <7.0.0",                                 # For file change detection and hot reload
   "websockets>=15.0.1, <16.0.0",                             # For BaseLlmFlow
+  "redis>=4.0.0, <5.0.0",                                      # For RedisSessionService
   # go/keep-sorted end
 ]
 dynamic = ["version"]
