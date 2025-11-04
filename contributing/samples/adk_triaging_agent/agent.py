@@ -185,7 +185,7 @@ root_agent = Agent(
       - If it's about agent engine, label it with "agent engine".
       - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with both "mcp" and "tools".
       - If it's about A2A integrations or workflows, label it with "a2a".
-      - If you can't find a appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
+      - If you can't find an appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
 
       Call the `add_label_and_owner_to_issue` tool to label the issue, which will also assign the issue to the owner of the label.
 
