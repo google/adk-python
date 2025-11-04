@@ -1099,7 +1099,7 @@ class Runner:
     if not session.events:
       raise ValueError(f'Session {session.id} has no events to resume.')
 
-    # Step 1: Maybe retrive a previous user message for the invocation.
+    # Step 1: Maybe retrieve a previous user message for the invocation.
     user_message = new_message or self._find_user_message_for_invocation(
         session.events, invocation_id
     )
