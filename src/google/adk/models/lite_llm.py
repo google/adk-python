@@ -314,33 +314,28 @@ def _get_content(
     ):
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
       data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
+      # LiteLLM providers extract the MIME type from the data URI; avoid
+      # passing a separate `format` field that some backends reject.
 
       if part.inline_data.mime_type.startswith("image"):
-        # Use full MIME type (e.g., "image/png") for providers that validate it
-        format_type = part.inline_data.mime_type
         content_objects.append({
             "type": "image_url",
-            "image_url": {"url": data_uri, "format": format_type},
+            "image_url": {"url": data_uri},
         })
       elif part.inline_data.mime_type.startswith("video"):
-        # Use full MIME type (e.g., "video/mp4") for providers that validate it
-        format_type = part.inline_data.mime_type
         content_objects.append({
             "type": "video_url",
-            "video_url": {"url": data_uri, "format": format_type},
+            "video_url": {"url": data_uri},
         })
       elif part.inline_data.mime_type.startswith("audio"):
-        # Use full MIME type (e.g., "audio/mpeg") for providers that validate it
-        format_type = part.inline_data.mime_type
         content_objects.append({
             "type": "audio_url",
-            "audio_url": {"url": data_uri, "format": format_type},
+            "audio_url": {"url": data_uri},
         })
       elif part.inline_data.mime_type == "application/pdf":
-        format_type = part.inline_data.mime_type
         content_objects.append({
             "type": "file",
-            "file": {"file_data": data_uri, "format": format_type},
+            "file": {"file_data": data_uri},
         })
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
@@ -348,8 +343,6 @@ def _get_content(
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
       }
-      if part.file_data.mime_type:
-        file_object["format"] = part.file_data.mime_type
       content_objects.append({
           "type": "file",
           "file": file_object,

@@ -1107,7 +1107,7 @@ def test_content_to_message_param_user_message_with_file_uri():
   assert message["content"][0]["text"] == "Summarize this file."
   assert message["content"][1]["type"] == "file"
   assert message["content"][1]["file"]["file_id"] == "gs://bucket/document.pdf"
-  assert message["content"][1]["file"]["format"] == "application/pdf"
+  assert "format" not in message["content"][1]["file"]
 
 
 def test_content_to_message_param_user_message_file_uri_only():
@@ -1126,7 +1126,7 @@ def test_content_to_message_param_user_message_file_uri_only():
   assert isinstance(message["content"], list)
   assert message["content"][0]["type"] == "file"
   assert message["content"][0]["file"]["file_id"] == "gs://bucket/only.pdf"
-  assert message["content"][0]["file"]["format"] == "application/pdf"
+  assert "format" not in message["content"][0]["file"]
 
 
 def test_content_to_message_param_multi_part_function_response():
@@ -1278,7 +1278,7 @@ def test_get_content_image():
       content[0]["image_url"]["url"]
       == "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
   )
-  assert content[0]["image_url"]["format"] == "image/png"
+  assert "format" not in content[0]["image_url"]
 
 
 def test_get_content_video():
@@ -1291,7 +1291,7 @@ def test_get_content_video():
       content[0]["video_url"]["url"]
       == "data:video/mp4;base64,dGVzdF92aWRlb19kYXRh"
   )
-  assert content[0]["video_url"]["format"] == "video/mp4"
+  assert "format" not in content[0]["video_url"]
 
 
 def test_get_content_pdf():
@@ -1304,7 +1304,7 @@ def test_get_content_pdf():
       content[0]["file"]["file_data"]
       == "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ=="
   )
-  assert content[0]["file"]["format"] == "application/pdf"
+  assert "format" not in content[0]["file"]
 
 
 def test_get_content_file_uri():
@@ -1317,7 +1317,7 @@ def test_get_content_file_uri():
   content = _get_content(parts)
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_id"] == "gs://bucket/document.pdf"
-  assert content[0]["file"]["format"] == "application/pdf"
+  assert "format" not in content[0]["file"]
 
 
 def test_get_content_audio():
@@ -1330,7 +1330,7 @@ def test_get_content_audio():
       content[0]["audio_url"]["url"]
       == "data:audio/mpeg;base64,dGVzdF9hdWRpb19kYXRh"
   )
-  assert content[0]["audio_url"]["format"] == "audio/mpeg"
+  assert "format" not in content[0]["audio_url"]
 
 
 def test_to_litellm_role():
