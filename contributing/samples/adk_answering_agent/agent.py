@@ -61,7 +61,7 @@ Here are the steps to help answer GitHub discussions:
 
 3. **Decide whether to respond**:
    * If all the following conditions are met, try to add a comment to the
-     discussion, otherwise, do not respond:
+     discussion; otherwise, do not respond:
      - The discussion is not closed.
      - The latest comment is not from you or other agents (marked as
        "Response from XXX Agent").
