@@ -14,6 +14,8 @@
 
 """Tests for the artifact service."""
 
+from __future__ import annotations
+
 from datetime import datetime
 import enum
 from typing import Any

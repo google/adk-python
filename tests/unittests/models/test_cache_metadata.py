@@ -14,6 +14,8 @@
 
 """Tests for CacheMetadata."""
 
+from __future__ import annotations
+
 import time
 
 from google.adk.models.cache_metadata import CacheMetadata

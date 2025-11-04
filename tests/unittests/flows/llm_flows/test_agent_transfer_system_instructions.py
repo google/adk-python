@@ -19,6 +19,8 @@ the request processor and checking the resulting system instructions not just
 implementation.
 """
 
+from __future__ import annotations
+
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService

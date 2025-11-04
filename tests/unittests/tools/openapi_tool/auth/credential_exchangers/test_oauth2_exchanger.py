@@ -14,6 +14,8 @@
 
 """Tests for OAuth2CredentialExchanger."""
 
+from __future__ import annotations
+
 import copy
 from unittest.mock import MagicMock
 

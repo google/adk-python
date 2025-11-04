@@ -14,6 +14,8 @@
 
 """Unit tests for canonical_xxx fields in LlmAgent."""
 
+from __future__ import annotations
+
 from typing import Any
 from typing import Optional
 from unittest import mock

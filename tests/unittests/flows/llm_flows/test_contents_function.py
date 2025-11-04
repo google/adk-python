@@ -14,6 +14,8 @@
 
 """Tests for function call/response rearrangement in contents module."""
 
+from __future__ import annotations
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import contents

@@ -14,6 +14,8 @@
 
 """Unit tests for LlmAgent output saving functionality."""
 
+from __future__ import annotations
+
 import logging
 from unittest.mock import patch
 

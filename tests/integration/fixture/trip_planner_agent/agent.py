@@ -14,6 +14,8 @@
 
 # https://github.com/crewAIInc/crewAI-examples/tree/main/trip_planner
 
+from __future__ import annotations
+
 from google.adk import Agent
 
 # Agent that selects the best city for the trip.

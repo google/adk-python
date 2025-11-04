@@ -14,6 +14,8 @@
 
 """Tests for LlmResponse, including log probabilities feature."""
 
+from __future__ import annotations
+
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 

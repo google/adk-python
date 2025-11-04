@@ -14,6 +14,8 @@
 
 """Tests for LlmRequest functionality."""
 
+from __future__ import annotations
+
 import asyncio
 from typing import Optional
 

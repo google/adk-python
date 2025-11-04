@@ -14,6 +14,8 @@
 
 """Tests for log_utils module."""
 
+from __future__ import annotations
+
 import json
 import sys
 from unittest.mock import Mock

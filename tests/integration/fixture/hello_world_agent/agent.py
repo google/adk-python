@@ -13,6 +13,9 @@
 # limitations under the License.
 
 # Hello world agent from agent 1.0 - https://colab.sandbox.google.com/drive/1Zq-nqmgK0nCERCv8jKIaoeTTgbNn6oSo?resourcekey=0-GYaz9pFT4wY8CI8Cvjy5GA#scrollTo=u3X3XwDOaCv9
+
+from __future__ import annotations
+
 import random
 
 from google.adk import Agent

@@ -14,6 +14,8 @@
 
 """Unit tests for the ContextFilteringPlugin."""
 
+from __future__ import annotations
+
 from unittest.mock import Mock
 
 from google.adk.agents.callback_context import CallbackContext

@@ -14,6 +14,7 @@
 
 """Testings for the Trajectory Evaluator."""
 
+from __future__ import annotations
 
 from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import Invocation

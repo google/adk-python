@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.google_llm import Gemini

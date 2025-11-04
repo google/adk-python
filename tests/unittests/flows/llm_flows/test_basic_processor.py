@@ -14,6 +14,8 @@
 
 """Tests for basic LLM request processor."""
 
+from __future__ import annotations
+
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext

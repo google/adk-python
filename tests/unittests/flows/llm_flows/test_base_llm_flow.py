@@ -14,6 +14,8 @@
 
 """Unit tests for BaseLlmFlow toolset integration."""
 
+from __future__ import annotations
+
 from unittest import mock
 from unittest.mock import AsyncMock
 

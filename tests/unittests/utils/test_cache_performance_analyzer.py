@@ -14,6 +14,8 @@
 
 """Tests for CachePerformanceAnalyzer."""
 
+from __future__ import annotations
+
 import time
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock

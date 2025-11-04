@@ -14,6 +14,8 @@
 
 """Testings for the SequentialAgent."""
 
+from __future__ import annotations
+
 from typing import AsyncGenerator
 
 from google.adk.agents.base_agent import BaseAgent

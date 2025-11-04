@@ -14,6 +14,8 @@
 
 """Unit tests for BaseToolset."""
 
+from __future__ import annotations
+
 from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext

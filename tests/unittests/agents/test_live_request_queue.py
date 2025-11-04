@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -6,7 +8,6 @@ from google.adk.agents.live_request_queue import LiveRequest
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.genai import types
 import pytest
-
 
 @pytest.mark.asyncio
 async def test_close_queue():

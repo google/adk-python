@@ -14,6 +14,8 @@
 
 """Tests for the Response Evaluator."""
 
+from __future__ import annotations
+
 from google.adk.dependencies.vertexai import vertexai
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric

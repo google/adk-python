@@ -14,6 +14,8 @@
 
 """Evaluate all agents in fixture folder if evaluation test files exist."""
 
+from __future__ import annotations
+
 import os
 
 from google.adk.evaluation.agent_evaluator import AgentEvaluator

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from google.adk.tools._gemini_schema_util import _sanitize_schema_formats_for_gemini
 from google.adk.tools._gemini_schema_util import _to_gemini_schema
 from google.adk.tools._gemini_schema_util import _to_snake_case

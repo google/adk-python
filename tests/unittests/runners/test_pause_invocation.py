@@ -14,6 +14,8 @@
 
 """Tests for the resumption flow with different agent structures."""
 
+from __future__ import annotations
+
 import asyncio
 from typing import AsyncGenerator
 

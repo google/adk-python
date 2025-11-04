@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from google.adk.tools.spanner.spanner_credentials import SpannerCredentialsConfig
 # Mock the Google OAuth and API dependencies
 import google.auth.credentials

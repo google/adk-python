@@ -13,3 +13,5 @@
 # limitations under the License.
 
 """Tests for credential exchanger."""
+
+from __future__ import annotations

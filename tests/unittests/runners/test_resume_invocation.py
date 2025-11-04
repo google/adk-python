@@ -13,6 +13,8 @@
 # limitations under the License.
 """Tests for edge cases of resuming invocations."""
 
+from __future__ import annotations
+
 import copy
 
 from google.adk.agents.llm_agent import LlmAgent

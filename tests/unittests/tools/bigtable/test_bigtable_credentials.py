@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from unittest import mock
 
 from google.adk.tools.bigtable.bigtable_credentials import BIGTABLE_DEFAULT_SCOPE

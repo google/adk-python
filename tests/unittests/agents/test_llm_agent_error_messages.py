@@ -13,6 +13,9 @@
 # limitations under the License.
 
 """Tests for enhanced error messages in agent handling."""
+
+from __future__ import annotations
+
 from google.adk.agents import LlmAgent
 import pytest
 

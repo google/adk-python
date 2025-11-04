@@ -14,6 +14,8 @@
 
 """Unit tests for Code Execution logic."""
 
+from __future__ import annotations
+
 import datetime
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock

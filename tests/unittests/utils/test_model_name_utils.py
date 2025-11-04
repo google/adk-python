@@ -14,6 +14,8 @@
 
 """Tests for model name utility functions."""
 
+from __future__ import annotations
+
 from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
 from google.adk.utils.model_name_utils import is_gemini_2_or_above

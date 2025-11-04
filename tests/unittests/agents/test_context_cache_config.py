@@ -14,6 +14,8 @@
 
 """Tests for ContextCacheConfig."""
 
+from __future__ import annotations
+
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from pydantic import ValidationError
 import pytest

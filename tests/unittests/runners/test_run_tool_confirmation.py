@@ -14,6 +14,8 @@
 
 """Tests for HITL flows with different agent structures."""
 
+from __future__ import annotations
+
 import copy
 from unittest import mock
 

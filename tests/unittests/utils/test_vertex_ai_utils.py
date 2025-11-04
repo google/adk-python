@@ -14,6 +14,8 @@
 
 """Tests for vertex_utils."""
 
+from __future__ import annotations
+
 from unittest import mock
 
 from google.adk.utils import vertex_ai_utils

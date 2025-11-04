@@ -14,6 +14,8 @@
 
 """Tests for CredentialRefresherRegistry."""
 
+from __future__ import annotations
+
 from unittest.mock import Mock
 
 from google.adk.auth.auth_credential import AuthCredentialTypes

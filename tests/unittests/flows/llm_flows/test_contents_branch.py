@@ -18,6 +18,8 @@ Branch format: agent_1.agent_2.agent_3 (parent.child.grandchild)
 Child agents can see parent agents' events, but not sibling agents' events.
 """
 
+from __future__ import annotations
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.contents import request_processor

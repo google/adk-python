@@ -14,6 +14,8 @@
 
 """Unit tests for base_computer module."""
 
+from __future__ import annotations
+
 from typing import Literal
 
 from google.adk.tools.computer_use.base_computer import BaseComputer

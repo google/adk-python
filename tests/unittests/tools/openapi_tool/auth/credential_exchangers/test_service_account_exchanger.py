@@ -14,6 +14,8 @@
 
 """Unit tests for the service account credential exchanger."""
 
+from __future__ import annotations
+
 from unittest.mock import MagicMock
 
 from google.adk.auth.auth_credential import AuthCredential

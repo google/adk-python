@@ -14,6 +14,8 @@
 
 """Unit tests for McpToolset."""
 
+from __future__ import annotations
+
 import sys
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock

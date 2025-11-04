@@ -14,6 +14,8 @@
 
 """Unit tests to check if any Click options and method parameters mismatch."""
 
+from __future__ import annotations
+
 import inspect
 from typing import MutableMapping
 from typing import Optional

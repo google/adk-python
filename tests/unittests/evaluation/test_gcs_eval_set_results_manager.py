@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation._eval_set_results_manager_utils import _sanitize_eval_set_result_name
 from google.adk.evaluation._eval_set_results_manager_utils import create_eval_set_result

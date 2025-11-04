@@ -14,6 +14,8 @@
 
 """Tests for runner.rewind_async."""
 
+from __future__ import annotations
+
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event

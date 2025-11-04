@@ -14,6 +14,8 @@
 
 """Tests for artifact_util."""
 
+from __future__ import annotations
+
 from google.adk.artifacts import artifact_util
 from google.genai import types
 import pytest

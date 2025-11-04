@@ -14,6 +14,8 @@
 
 """Unit tests for NL planning logic."""
 
+from __future__ import annotations
+
 from unittest.mock import MagicMock
 
 from google.adk.agents.llm_agent import Agent
