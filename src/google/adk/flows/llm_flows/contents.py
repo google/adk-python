@@ -213,7 +213,7 @@ def _rearrange_events_for_latest_function_response(
 def _contains_empty_content(event: Event) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
-  This can happen to the evnets that only changed session state.
+  This can happen to the events that only changed session state.
   When both content and transcriptions are empty, the event will be considered
   as empty.
 
