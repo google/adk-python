@@ -46,7 +46,7 @@ class TestAgentEngineSandboxCodeExecutor:
     """Tests that class attributes can be overridden at instantiation."""
     with pytest.raises(ValueError):
       AgentEngineSandboxCodeExecutor(
-          sandbox_resource_name="projects/123/locations/us-central1/reasoningEgines/456/sandboxes/789",
+          sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxes/789",
       )
 
   def test_init_with_agent_engine_overrides_throws_error(self):
