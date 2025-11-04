@@ -1,7 +1,7 @@
 # What's this?
 
 This is a sample that shows how to start the ADK api server, and how to connect
-your agents in a live(bidi-stremaing) way. It works text and audio input, and
+your agents in a live(bidi-streaming) way. It works text and audio input, and
 the response is always audio.
 
 ## Prerequisite
