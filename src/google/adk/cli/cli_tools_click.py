@@ -1598,7 +1598,7 @@ def cli_deploy_cloud_run(
     default="",
     help=(
         "Optional. The filepath to the `.agent_engine_config.json` file to use."
-        " The values in this file will be overriden by the values set by other"
+        " The values in this file will be overridden by the values set by other"
         " flags. (default: the `.agent_engine_config.json` file in the `agent`"
         " directory, if any.)"
     ),
