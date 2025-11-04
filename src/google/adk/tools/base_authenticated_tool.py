@@ -69,10 +69,9 @@ class BaseAuthenticatedTool(BaseTool):
     if auth_config and auth_config.auth_scheme:
       self._credentials_manager = CredentialManager(auth_config=auth_config)
     else:
-      logger.warning(
-          "auth_config or auth_config.auth_scheme is missing. Will skip"
-          " authentication.Using FunctionTool instead if authentication is not"
-          " required."
+      logger.debug(
+          "auth_config or auth_config.auth_scheme is missing, so authentication"
+          " will be skipped."
       )
       self._credentials_manager = None
     self._response_for_auth_required = response_for_auth_required
